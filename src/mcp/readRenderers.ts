@@ -16,7 +16,7 @@
 //   list_projects  worktrees[].parentProject / .parentPath — byte-identical to
 //                  the project header one line above (list_worktrees, which has
 //                  no such header, does render them).
-//                  worktrees[].sessions.{archivedCount,lastMtime} — per-worktree
+//                  worktrees[].sessions.{archivedCount,lastActivity} — per-worktree
 //                  session detail, a 2-call derivation away via
 //                  list_sessions({project, worktree}). Accepted: a leaner
 //                  default listing is worth the second call.
@@ -73,7 +73,7 @@ function sessionSummary(v: unknown): string {
   const s = asRow(v);
   const dev = deviations(s, SESSION_SUMMARY_DEVIANT);
   const archived = dev.length ? ` (${dev.join(', ')})` : '';
-  return `sessions ${dash(s.count ?? 0)}${archived}   last ${ts(s.lastMtime)}`;
+  return `sessions ${dash(s.count ?? 0)}${archived}   last ${ts(s.lastActivity)}`;
 }
 
 // An instance's `worktree` is the whole WorktreeMeta object (plus a
@@ -196,7 +196,7 @@ function inactiveRows(rows: Row[]): string[] {
   const flagged: Row[] = rows.map(r => ({ ...r, resumesHot: resumesHot(String(r.resumeMode ?? '')) }));
   return table(flagged.map(s => [
     String(dash(s.sessionId)),
-    ts(s.mtime),
+    ts(s.lastActivity),
     s.playbook ? `${dash(s.playbook)}/${dash(s.stage)}` : DASH,
     deviations(s, SESSION_DEVIANT).join(',') || DASH,
     trunc(s.title ?? s.firstPrompt, 60),

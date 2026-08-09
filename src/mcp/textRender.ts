@@ -17,7 +17,7 @@ export function dash(v: unknown): string {
   return String(v);
 }
 
-// Timestamps arrive as epoch-ms (session mtimes, lastResponseAt) OR as ISO
+// Timestamps arrive as epoch-ms (session lastActivity, lastResponseAt) OR as ISO
 // strings (worktree createdAt), so both are accepted and normalised to one
 // UTC form. 0 is the "never" sentinel summarizeSessions returns.
 export function ts(v: unknown): string {

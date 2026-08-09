@@ -79,7 +79,7 @@ test('truncate at N=1 drops everything from the 2nd user prompt onward', async (
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 1,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'second');
   assert.equal(result.lastSurvivingUuid, 'a1');
@@ -105,7 +105,7 @@ test('truncate at N=0 empties the file, no metadata appended', async () => {
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 0,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'first');
   assert.equal(result.lastSurvivingUuid, null);
@@ -141,7 +141,7 @@ test('fork copies the prefix to a new sessionId and leaves the original intact',
 
   const result = await forkSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 1,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   assert.ok(result.newSessionId && result.newSessionId !== sid, 'fresh sessionId');
   assert.equal(result.droppedText, 'second');
@@ -192,7 +192,7 @@ test('predicate: tool_result-only user lines do NOT increment the user-message c
   const { cwd, sid, file } = await makeFixture(lines);
   const result = await truncateSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 1,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   // We expect droppedText='second' (the 2nd real user prompt), not the tool_result.
   assert.equal(result.droppedText, 'second');
@@ -284,7 +284,7 @@ test('fork targeting a queued_command auto-approve mid-session succeeds and pref
   // The 4th forkable bubble (index 3) is "Please start" — must succeed.
   const result = await forkSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 3,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'Please start',
     'index 3 maps to the 4th forkable bubble — the post-auto-approve user prompt');
@@ -338,7 +338,7 @@ test('fork targeting a real prompt after a background-subagent task-notification
   // UI ever rendered. Must not drift because of the task-notification line.
   const result = await forkSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 2,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'third prompt',
     'index 2 maps to the 3rd real user prompt, unaffected by the task-notification line');
@@ -371,7 +371,7 @@ test('fork targeting the queued_command itself prefills the queued text and drop
   const { cwd, sid, dir } = await makeFixture(lines);
   const result = await forkSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 1,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText,
     'I approve the plan. Please proceed with the implementation.',
@@ -399,7 +399,7 @@ test('fork with attachment-bearing user message strips the marker from droppedTe
   const { cwd, sid } = await makeFixture(lines);
   const result = await forkSessionAtUserMessage({
     cwd, sessionId: sid, userMessageIndex: 0,
-    permissionMode: 'bypassPermissions',
+    mode: 'bypassPermissions',
   });
   assert.equal(result.droppedText, 'look at this',
     'Attached file: marker line is stripped from the composer prefill text');

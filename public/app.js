@@ -1028,10 +1028,10 @@ async function refreshProjects() {
   const names = Array.isArray(workspaces) ? workspaces.map(w => w.name).filter(Boolean) : [];
   sidebar.setWorkspaces(names);
   const count = Array.isArray(conductSessions) ? conductSessions.length : 0;
-  const lastMtime = count > 0
-    ? conductSessions.reduce((max, s) => Math.max(max, s.mtime ?? 0), 0)
+  const lastActivity = count > 0
+    ? conductSessions.reduce((max, s) => Math.max(max, s.lastActivity ?? 0), 0)
     : 0;
-  sidebar.setConductSessions({ count, lastMtime });
+  sidebar.setConductSessions({ count, lastActivity });
 }
 const instancesGuard = latestOnly();
 async function refreshInstances() {

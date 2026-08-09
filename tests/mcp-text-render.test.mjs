@@ -128,7 +128,7 @@ const WORKTREE = {
   baseBranch: 'main',
   baseSha: '04746607c1b2',
   createdAt: '2026-08-06T09:12:00.000Z',
-  sessions: { count: 3, archivedCount: 0, lastMtime: 1786000000000 },
+  sessions: { count: 3, archivedCount: 0, lastActivity: 1786000000000 },
   mergeStatus: { ahead: 2, behind: 0 },
 };
 
@@ -142,7 +142,7 @@ describe('renderProjects', () => {
         liveCount: 1,
         isGitRepo: true,
         worktrees: [WORKTREE],
-        sessions: { count: 11, archivedCount: 1, lastMtime: 1786001000000 },
+        sessions: { count: 11, archivedCount: 1, lastActivity: 1786001000000 },
       },
       {
         name: 'notes',
@@ -151,7 +151,7 @@ describe('renderProjects', () => {
         liveCount: 0,
         isGitRepo: false,
         worktrees: [],
-        sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
+        sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
       },
     ]);
     assert.equal(out, [
@@ -179,7 +179,7 @@ describe('renderProjects', () => {
     const out = renderProjects([{
       name: 'p', path: '/p', workspace: null, liveCount: 0, isGitRepo: true,
       worktrees: [{ ...WORKTREE, parentProject: 'COLD_PARENT', parentPath: '/COLD_PARENT_PATH' }],
-      sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
+      sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
     }]);
     assert.ok(!out.includes('COLD_PARENT'), 'parentProject/parentPath are dropped here — the project header carries them');
   });
@@ -192,7 +192,7 @@ describe('renderProjects', () => {
     const out = renderProjects([{
       name: 'p', path: '/p', workspace: null, liveCount: 0, isGitRepo: true,
       worktrees: [{ ...WORKTREE, mergeStatus: { ahead: null, behind: null } }],
-      sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
+      sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
     }]);
     assert.match(out, /ahead \?  behind \?/);
   });
@@ -204,7 +204,7 @@ describe('renderProjects', () => {
     // must never come back.
     const out = renderProjects([{
       name: 'p', path: '/p', workspace: null, liveCount: 3, isGitRepo: true,
-      worktrees: [], sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
+      worktrees: [], sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
       // Present in the payload but must not reach the text.
       sessionIds: [SID_A, SID_B],
     }]);
@@ -219,7 +219,7 @@ describe('renderProjects', () => {
     // a project with nobody working on it.
     const out = renderProjects([{
       name: 'p', path: '/p', workspace: null, liveCount: null, isGitRepo: true,
-      worktrees: [], sessions: { count: 0, archivedCount: 0, lastMtime: 0 },
+      worktrees: [], sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
     }]);
     assert.match(out, /^ {2}live —$/m);
   });
@@ -265,7 +265,7 @@ const grp = (over = {}) => ({
 // playbook join and the EFFECTIVE resume mode.
 const stoppedRow = (over = {}) => ({
   sessionId: SID_B, firstPrompt: 'Draft release notes', title: null,
-  conducted: false, temp: false, archived: false, mtime: 1786001000000, size: 4300,
+  conducted: false, temp: false, archived: false, lastActivity: 1786001000000, size: 4300,
   playbook: null, stage: null, resumeMode: 'plan', ...over,
 });
 const liveOnly = (rows, opts) => renderSessions([grp({ live: rows })], opts);
@@ -384,11 +384,11 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
   });
 
   test('inactive rows render in the order given, and every one of them', () => {
-    // Ordering is the caller's (newest first by mtime); the renderer must not
+    // Ordering is the caller's (newest first by lastActivity); the renderer must not
     // reorder or drop. Two rows minimum — one row cannot detect either bug.
     const out = renderSessions([grp({ inactive: [
-      stoppedRow({ sessionId: SID_A, title: 'newest', mtime: 1786001000000 }),
-      stoppedRow({ sessionId: SID_B, title: 'older', mtime: 1785900000000 }),
+      stoppedRow({ sessionId: SID_A, title: 'newest', lastActivity: 1786001000000 }),
+      stoppedRow({ sessionId: SID_B, title: 'older', lastActivity: 1785900000000 }),
     ] })]);
     const lines = out.split('\n').filter(l => l.includes('newest') || l.includes('older'));
     assert.equal(lines.length, 2, 'both rows must render');
@@ -606,7 +606,7 @@ describe('handles and shas', () => {
     const projects = renderProjects([{
       name: 'p', path: '/very/long/absolute/path/to/a/project/root/p', workspace: null,
       liveCount: 1, isGitRepo: true, worktrees: [WORKTREE],
-      sessions: { count: 1, archivedCount: 0, lastMtime: 1 },
+      sessions: { count: 1, archivedCount: 0, lastActivity: 1 },
     }]);
     assert.ok(projects.includes('/very/long/absolute/path/to/a/project/root/p'));
     assert.ok(projects.includes(WORKTREE.worktreePath), 'worktree path must not be abbreviated');
@@ -625,7 +625,7 @@ describe('handles and shas', () => {
     const wt = { ...WORKTREE, baseSha: FULL_SHA };
     for (const out of [
       renderProjects([{ name: 'p', path: '/p', workspace: null, liveCount: 0, isGitRepo: true,
-        worktrees: [wt], sessions: { count: 0, archivedCount: 0, lastMtime: 0 } }]),
+        worktrees: [wt], sessions: { count: 0, archivedCount: 0, lastActivity: 0 } }]),
       renderWorktrees([{ worktree: 'w', parentProject: 'p', parentPath: '/p', worktreePath: '/w',
         branch: 'b', baseBranch: 'main', baseSha: FULL_SHA, createdAt: 0 }]),
       renderProjectStatus({ project: 'p', worktree: 'w', cwd: '/w', files: [], isGitRepo: true,

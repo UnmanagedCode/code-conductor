@@ -7,6 +7,7 @@ import { loadAll as loadAllConducted, unmarkConducted } from './conductedSession
 import { loadAllTemps } from './tempSessions.ts';
 import { loadAllArchived, markArchived, unmarkArchived } from './archivedSessions.ts';
 import { loadAll as loadAllSessionModes, effectiveResumeMode, unmarkSessionMode } from './sessionModes.ts';
+import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 
 // Default projects root = parent directory of the code-conductor repo,
@@ -499,7 +500,9 @@ export interface SessionRow {
   conducted: boolean;
   temp: boolean;
   archived: boolean;
-  mtime: number;
+  // Epoch ms of the session's newest real record — see sessionActivity.ts for
+  // why this is not the transcript's mtime.
+  lastActivity: number;
   size: number;
   // What `spawn_instance({resume})` would actually come up as — the recorded
   // mode, or DEFAULT_RESUME_MODE when there is none. Always the EFFECTIVE
@@ -563,12 +566,12 @@ export async function listSessionsForCwdWithCounts(
       conducted: conducted.has(sid),
       temp: temps.has(sid),
       archived: isArchived,
-      mtime: stat.mtimeMs,
+      lastActivity: await lastActivityOf(full, stat),
       size: stat.size,
       resumeMode: effectiveResumeMode(modes.get(sid) ?? null),
     });
   }
-  out.sort((a, b) => b.mtime - a.mtime);
+  out.sort((a, b) => b.lastActivity - a.lastActivity);
   return { rows: out, archivedCount };
 }
 
@@ -687,7 +690,7 @@ export interface ArchivedSessionRow {
   sessionId: string;
   title: string | null;
   firstPrompt: string | null;
-  mtime: number;
+  lastActivity: number;
   size: number;
   worktreeName: string | null;
 }
@@ -697,7 +700,7 @@ export interface ArchivedSessionRow {
 // enumerate known project + worktree paths and keep the rows
 // listSessionsForCwd already flags as archived (it also reads firstPrompt
 // + title). Used by the Settings → Archived page. Only projects with at
-// least one archived session are returned; sessions are mtime-desc.
+// least one archived session are returned; sessions are lastActivity-desc.
 export async function listArchivedGroupedByProject(): Promise<{ project: string; sessions: ArchivedSessionRow[] }[]> {
   const projects: ProjectInfo[] = await listProjects();
 
@@ -717,7 +720,7 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
     for (const s of projRows) {
       sessions.push({
         sessionId: s.sessionId, title: s.title, firstPrompt: s.firstPrompt,
-        mtime: s.mtime, size: s.size, worktreeName: null,
+        lastActivity: s.lastActivity, size: s.size, worktreeName: null,
       });
     }
     let wts: WorktreeMeta[] = [];
@@ -727,12 +730,12 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
       for (const s of wtRows) {
         sessions.push({
           sessionId: s.sessionId, title: s.title, firstPrompt: s.firstPrompt,
-          mtime: s.mtime, size: s.size, worktreeName: wt.worktreeName,
+          lastActivity: s.lastActivity, size: s.size, worktreeName: wt.worktreeName,
         });
       }
     }
     if (sessions.length > 0) {
-      sessions.sort((a, b) => b.mtime - a.mtime);
+      sessions.sort((a, b) => b.lastActivity - a.lastActivity);
       groups.push({ project: proj.name, sessions });
     }
   }
@@ -740,36 +743,44 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
 }
 
 // Lightweight session summary — used by /api/projects to show a count +
-// "last active" stamp in the sidebar without paying the file-read cost
-// of listSessionsForCwd (which extracts firstPrompt from every jsonl).
-// Just readdir + stat, no opens.
+// "last active" stamp in the sidebar without paying the firstPrompt read
+// listSessionsForCwd does on every jsonl.
+//
+// It reports the SAME recency value as the session rows underneath it, so a
+// project's "last N ago" can't disagree with its own sessions. That costs a
+// bounded tail read per transcript, but only on a transcript that changed
+// since the last walk (lastActivityOf memoizes on the stat this loop already
+// does) — so the steady-state fan-out across every project stays readdir +
+// stat, which is the property this walk has always been protecting.
 export async function summarizeSessions(
   absCwd: string,
   excludeSessionIds: Set<string> | null = null,
-): Promise<{ count: number; archivedCount: number; lastMtime: number }> {
+): Promise<{ count: number; archivedCount: number; lastActivity: number }> {
   const dir = path.join(claudeProjectsRoot(), encodeCwd(absCwd));
   let entries: string[];
   try { entries = await fs.readdir(dir); }
-  catch (e) { if (errCode(e) === 'ENOENT') return { count: 0, archivedCount: 0, lastMtime: 0 }; throw e; }
+  catch (e) { if (errCode(e) === 'ENOENT') return { count: 0, archivedCount: 0, lastActivity: 0 }; throw e; }
   const archivedSet = await loadAllArchived();
   let count = 0;
   let archivedCount = 0;
-  let lastMtime = 0;
+  let lastActivity = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
+    const full = path.join(dir, name);
     let stat: Awaited<ReturnType<typeof fs.stat>>;
-    try { stat = await fs.stat(path.join(dir, name)); } catch { continue; }
+    try { stat = await fs.stat(full); } catch { continue; }
     if (!stat.isFile()) continue;
     if (archivedSet.has(sid)) {
       archivedCount++;
     } else {
       count++;
-      if (stat.mtimeMs > lastMtime) lastMtime = stat.mtimeMs;
+      const ts = await lastActivityOf(full, stat);
+      if (ts > lastActivity) lastActivity = ts;
     }
   }
-  return { count, archivedCount, lastMtime };
+  return { count, archivedCount, lastActivity };
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

@@ -71,7 +71,7 @@ test('hasResumableConversation: false for a marker-only crash stub (no conversat
     // Exactly the shape a crash-during-resume leaves behind: our best-effort
     // markers, no user/assistant lines. This is the real -4470 stub shape.
     await writeSessionMetadata({
-      cwd, sessionId, leafUuid: 'leaf-x', permissionMode: 'bypassPermissions',
+      cwd, sessionId, leafUuid: 'leaf-x', mode: 'bypassPermissions',
     });
     assert.equal(await hasResumableConversation({ cwd, sessionId }), false);
   });
@@ -146,7 +146,7 @@ test('spawn_instance({resume:<marker-only stub>, project}) soft-refuses SESSION_
     const projectPath = path.join(ctx.projectsRoot, 'demo');
     // A crash stub: markers only, no user/assistant records.
     await writeSessionMetadata({
-      cwd: projectPath, sessionId: stubId, leafUuid: 'leaf-y', permissionMode: 'bypassPermissions',
+      cwd: projectPath, sessionId: stubId, leafUuid: 'leaf-y', mode: 'bypassPermissions',
     });
 
     const res = await spawnInstance({ resume: stubId, project: 'demo', mode: 'bypassPermissions' }, { instances: ctx.instances });

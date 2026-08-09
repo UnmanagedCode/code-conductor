@@ -47,7 +47,7 @@ test('no synthetic Conduct row when there is no live .conduct instance', async (
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [],
     isGitRepo: false, worktrees: [],
-    sessions: { count: 0, lastMtime: 0 },
+    sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([]);
   await new Promise(r => setTimeout(r, 0));
@@ -61,7 +61,7 @@ test('synthetic 🎼 Conduct row appears at the top when a live .conduct instanc
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [],
     isGitRepo: false, worktrees: [],
-    sessions: { count: 0, lastMtime: 0 },
+    sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-c', project: '.conduct', sessionId: 'sid-c', status: 'idle', mode: 'bypassPermissions', worktree: null, temp: true },

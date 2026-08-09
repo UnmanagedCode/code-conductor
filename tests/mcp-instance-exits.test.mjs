@@ -186,8 +186,9 @@ test('a stopped session with no instance at all is listed, newest first', async 
   for (const sid of [older, newer]) {
     await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
   }
-  // Explicit mtimes rather than write order — this must assert on mtime, not on
-  // readdir order, which is not guaranteed to correlate.
+  // These stub transcripts carry no timestamped record, so lastActivity falls
+  // back to mtime (sessionActivity.ts) — set it explicitly rather than relying
+  // on write order, which need not correlate with readdir order.
   await fs.utimes(path.join(dir, `${older}.jsonl`), new Date(1_000_000), new Date(1_000_000));
   await fs.utimes(path.join(dir, `${newer}.jsonl`), new Date(2_000_000), new Date(2_000_000));
 
