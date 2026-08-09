@@ -1,7 +1,8 @@
 // MCP tool result shaping. The MCP server wraps every handler return into the
 // JSON-RPC tools/call `content[]` array. Most tools return a plain object that
-// becomes a single compact-JSON block. The recon read tools instead return a
-// `textResult(text)` — one plain-text block, no JSON at all. Tools that carry a
+// becomes a single compact-JSON block. The read tools whose whole answer is a
+// rendering instead return a `textResult(text)` — one plain-text block, no JSON
+// at all (see its comment below). Tools that carry a
 // large text body
 // (file contents, a unified diff, assistant prose) instead return a
 // `textPayload(meta, bodies)` so the server can emit a compact-JSON metadata
@@ -29,7 +30,8 @@ export function isTextPayload(v: unknown): v is TextPayload {
   return !!v && typeof v === 'object' && (v as Partial<TextPayload>)[PAYLOAD] === true;
 }
 
-// The recon read tools' channel: their whole result IS a plain-text rendering,
+// The rendered read tools' channel — the five recon read tools plus
+// describe_playbook's success path: the whole result IS a plain-text rendering,
 // emitted as one raw block with no metadata block at all. Same Symbol-tag
 // discipline as textPayload, and for the same reason — the default path
 // JSON-stringifies, so a bare string cannot express this, and sniffing

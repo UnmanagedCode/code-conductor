@@ -42,6 +42,7 @@ import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel }
 import { textPayload, textResult } from './content.ts';
 import {
   renderProjects, renderInstances, renderWorktrees, renderSessions, renderProjectStatus,
+  renderPlaybook,
 } from './readRenderers.ts';
 import { pageInstanceEvents } from '../eventArchive.ts';
 import { indexDiffLines, paginateDiff } from './diffPaging.ts';
@@ -419,7 +420,10 @@ export async function describePlaybook({ id }: { id: string }) {
       known: [...playbooks.keys()].sort(),
     };
   }
-  return {
+  // The payload is assembled here and rendered there: the two derived fields
+  // below are rules about the graph, so they stay next to the graph, and
+  // renderPlaybook stays a pure function of a payload the tests can hand-build.
+  return textResult(renderPlaybook({
     id: pb.id,
     name: pb.name,
     description: pb.description,
@@ -430,8 +434,8 @@ export async function describePlaybook({ id }: { id: string }) {
       tools: stage.tools,
       spawnable: isSpawnable(stage),
       // The conductor's move at this stage, when the definition authors one.
-      // OMITTED rather than defaulted, so the key is either absent or a
-      // non-empty string: test for it, never compare against ''/null.
+      // Left undefined when unauthored, which the rendering shows by emitting no
+      // description line at all rather than an empty one.
       ...(stage.description !== undefined && { description: stage.description }),
     }])),
     // `via` is computed: an edge with no `on` is driven by send_prompt, and an
@@ -441,7 +445,7 @@ export async function describePlaybook({ id }: { id: string }) {
       from: t.from, to: t.to, via: t.on ?? 'send_prompt',
       ...(t.description !== undefined && { description: t.description }),
     })),
-  };
+  }));
 }
 
 const HISTORY_CAP = 200;

@@ -91,7 +91,8 @@ async function setup({ enforcement } = {}) {
     conductorId,
     call: (name, args) => callAs(conductorId, name, args),
     callAs,
-    // The recon read tools return a plain-text rendering, not JSON.
+    // The recon read tools and describe_playbook's success path return a
+    // plain-text rendering, not JSON.
     callText: (name, args) => callRawAs(conductorId, name, args),
     async spawnWorker(args) {
       const out = await callAs(conductorId, 'spawn_instance', args);
@@ -161,32 +162,46 @@ test('list_playbooks reports a rejected definition in errors instead of silently
   } finally { await t.close(); }
 });
 
+// describe_playbook's success path is a plain-text rendering (renderPlaybook,
+// src/mcp/readRenderers.ts), pinned exactly in tests/mcp-text-render.test.mjs
+// against hand-built payloads. This is the WIRE half: it asserts the real
+// `classic` definition reaches that rendering with the derivations intact —
+// which a pure suite cannot see, since `spawnable` and `via` are computed in the
+// handler.
 test('describe_playbook returns the graph the enforcement actually uses', async () => {
   const t = await setup();
   try {
-    const pb = await t.call('describe_playbook', { id: 'classic' });
-    assert.equal(pb.id, 'classic');
+    const pb = await t.callText('describe_playbook', { id: 'classic' });
+    assert.match(pb, /^PLAYBOOK classic$/m);
+    assert.match(pb, /^entry plan$/m);
 
     // `require` — enforced argument values, reported verbatim so a caller knows
     // what will be filled in or refused.
-    assert.deepEqual(pb.stages.plan.tools.spawn_instance,
-      { require: { mode: 'plan', createWorktree: true } });
-    assert.equal(pb.stages.plan.tools.set_mode, 'deny');
+    assert.match(pb, /^ {6}spawn_instance require \{"mode":"plan","createWorktree":true\}$/m);
+    assert.match(pb, /^ {6}set_mode deny$/m);
 
-    // `needs` — worker provenance, not argument values.
-    assert.deepEqual(pb.stages.review.needs, [{ stage: 'implement', at: 'current' }]);
-    assert.equal(pb.stages.plan.workers, 'one');
+    // `needs` — worker provenance, not argument values. Read off `review`'s
+    // block, so a renderer that hung it on the wrong stage fails.
+    const stageBlock = (name) => {
+      const at = pb.indexOf(`▸ ${name} `);
+      assert.ok(at >= 0, `stage ${name} missing from:\n${pb}`);
+      const rest = pb.slice(at + 1);
+      const end = rest.indexOf('\n▸ ');
+      return rest.slice(0, end === -1 ? rest.indexOf('\nTRANSITIONS') : end);
+    };
+    assert.match(stageBlock('review'), /^ {4}needs implement@current$/m);
+    assert.match(stageBlock('plan'), /workers one/);
 
     // `spawnable` is derived from the fail-closed rule, so the caller does not
-    // have to know that a "*" wildcard confers nothing.
-    assert.equal(pb.stages.plan.spawnable, true);
-    assert.equal(pb.stages.review.spawnable, true);
-    assert.equal(pb.stages.implement.spawnable, false);
-    assert.equal(pb.stages.refine.spawnable, false);
+    // have to know that a "*" wildcard confers nothing. Both answers are
+    // asserted: a rendering that always said yes would satisfy half of this.
+    for (const name of ['plan', 'review']) assert.match(stageBlock(name), /spawnable yes/);
+    for (const name of ['implement', 'refine']) assert.match(stageBlock(name), /spawnable no/);
 
-    // `via` names the ONE tool that drives each edge.
-    const byEdge = Object.fromEntries(pb.transitions.map(x => [`${x.from}->${x.to}`, x.via]));
-    assert.deepEqual(byEdge, { 'plan->implement': 'approve_plan', 'implement->refine': 'send_prompt' });
+    // `via` names the ONE tool that drives each edge — both the declared `on`
+    // and the send_prompt default.
+    assert.match(pb, /^ {2}plan → implement {2,}via approve_plan$/m);
+    assert.match(pb, /^ {2}implement → refine {2,}via send_prompt$/m);
   } finally { await t.close(); }
 });
 
@@ -211,16 +226,25 @@ test('describe_playbook carries stage/transition descriptions, and omits them wh
       transitions: [{ from: 'a', to: 'b', description: edgeText }, { from: 'a', to: 'c' }],
     });
 
-    const pb = await t.call('describe_playbook', { id: 'described' });
-    assert.equal(pb.stages.a.description, stageText);
-    // Absent, not '' or null — the key is either missing or a non-empty string,
-    // so a consumer tests for it instead of comparing against a sentinel.
-    assert.equal('description' in pb.stages.b, false, 'an unauthored stage description must be absent');
+    const pb = await t.callText('describe_playbook', { id: 'described' });
+    // Verbatim, under its own label — authored prose is the one text a playbook
+    // author owns, so the rendering may not reflow or truncate it.
+    assert.match(pb, new RegExp(`^ {6}${stageText}$`, 'm'));
+    assert.match(pb, new RegExp(`^ {6}${edgeText}$`, 'm'));
 
-    const byEdge = Object.fromEntries(pb.transitions.map(x => [`${x.from}->${x.to}`, x]));
-    assert.equal(byEdge['a->b'].description, edgeText);
-    assert.equal('description' in byEdge['a->c'], false,
-      'an unauthored transition description must be absent');
+    // An unauthored description emits NO line — not a —, not an empty label.
+    // Stage `b` carries nothing at all, so its block ends at its tools line.
+    const blockFor = (marker, end) => {
+      const at = pb.indexOf(marker);
+      assert.ok(at >= 0, `${marker} missing from:\n${pb}`);
+      const rest = pb.slice(at + marker.length);
+      const stop = rest.indexOf(end);
+      return rest.slice(0, stop === -1 ? undefined : stop);
+    };
+    assert.equal(/description/.test(blockFor('▸ b ', '\n▸ ')), false,
+      'an unauthored stage description must render no line');
+    assert.equal(/description/.test(blockFor('  a → c ', '\n  ')), false,
+      'an unauthored transition description must render no line');
   } finally { await t.close(); }
 });
 
@@ -249,6 +273,10 @@ test('list_playbooks stays a catalog — no per-stage descriptions leak into it'
   } finally { await t.close(); }
 });
 
+// Only the SUCCESS path is text: a refusal stays a JSON `{ok:false, code}` like
+// every other soft refusal on the toolbelt, because branching on `code` is the
+// toolbelt-wide convention. `t.call` parses, so this test fails if the refusal
+// ever follows the success path into prose.
 test('describe_playbook soft-refuses an unknown id and lists the known ones', async () => {
   const t = await setup();
   try {
@@ -266,17 +294,19 @@ test('the read tools create no ledger when there is nothing to read', async () =
   // materialise the ledger itself — legitimately, and for reasons unrelated to reads.
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
-    const call = async (name, args) => {
+    const rawCall = async (name, args) => {
       const res = await fetch(ctx.baseUrl + '/mcp', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: nextRpcId++, method: 'tools/call', params: { name, arguments: args } }),
       });
       const body = await res.json();
-      return JSON.parse(body.result.content[0].text);
+      return body.result.content[0].text;
     };
+    const call = async (name, args) => JSON.parse(await rawCall(name, args));
     assert.equal((await call('list_playbooks', {})).playbooks.length, 4);
-    assert.equal((await call('describe_playbook', { id: 'classic' })).id, 'classic');
+    // describe_playbook renders text, so it is read raw rather than parsed.
+    assert.match(await rawCall('describe_playbook', { id: 'classic' }), /^PLAYBOOK classic$/m);
     assert.deepEqual((await call('playbook_state', {})).runs, []);
 
     // Give any deferred write real chances to land rather than reading once and
@@ -300,7 +330,7 @@ test('the read tools append no events to a ledger that already exists', async ()
     const before = await t.eventCount();
 
     assert.equal((await t.call('list_playbooks', {})).playbooks.length, 4);
-    assert.equal((await t.call('describe_playbook', { id: 'classic' })).id, 'classic');
+    assert.match(await t.callText('describe_playbook', { id: 'classic' }), /^PLAYBOOK classic$/m);
     assert.deepEqual((await t.call('playbook_state', {})).runs, [],
       'the illegal spawn was refused-but-allowed, so it bound no run');
     assert.equal((await t.call('playbook_state', { sessionId: worker.sessionId })).tracked, false);

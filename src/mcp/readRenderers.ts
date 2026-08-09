@@ -1,5 +1,6 @@
-// Per-tool plain-text renderers for the five MCP recon read tools:
-// list_projects, list_instances, list_worktrees, list_sessions, project_status.
+// Per-tool plain-text renderers for the MCP tools whose whole result is text:
+// the five recon read tools (list_projects, list_instances, list_worktrees,
+// list_sessions, project_status) plus describe_playbook.
 //
 // The rendering is the tool's ENTIRE result — there is no JSON channel beside
 // it (src/mcp/content.ts textResult). So the bar is: every fact a conductor acts
@@ -298,4 +299,97 @@ export function renderProjectStatus(status: unknown): string {
     parts.push(indent(commits.map(String), 2));
   }
   return block(...parts);
+}
+
+// ---------- describe_playbook ----------
+//
+// The sibling renderer is renderPlaybookConvention (src/playbookConvention.ts),
+// which renders a playbook into the conductor's SYSTEM PROMPT and deliberately
+// omits `tools`, `needs` and `spawnable` (docs/protocol.md → Playbooks). Do not
+// merge the two: this surface answers "what does this stage permit?" when asked,
+// and folding it into the prompt renderer would push every stage's tools policy
+// into every conductor's system prompt.
+//
+// Assembled by hand instead of with block(): block() collapses blank-line runs
+// and strips trailing whitespace, but an authored `description` — any non-empty
+// string readDescription accepts, blank-line runs included — must reach the
+// reader VERBATIM, never reflowed, truncated or summarised.
+
+// Authored prose goes under its own label, one level deeper than the fields
+// above it. Without the label a description line beginning "tools " or "▸ "
+// would be indistinguishable from the rendering's own field lines — and these
+// descriptions are paragraphs of conductor-facing prose that name tools.
+// Absent (unauthored) means NO line at all, not a — : the field is either
+// authored prose or nothing.
+function describedBlock(label: string, description: unknown, at: number): string[] {
+  if (typeof description !== 'string') return [];
+  return [...indent([label], at), ...indent(description.split('\n'), at + 2)];
+}
+
+// Three-way rather than truthiness, so a payload that stopped carrying the
+// derived field reads as absent instead of quietly reporting "no".
+function yesNo(v: unknown): string {
+  if (v === true) return 'yes';
+  if (v === false) return 'no';
+  return DASH;
+}
+
+// One JSON.stringify of the whole `require` map: lossless by construction, and
+// it keeps "plan" distinct from plan, true from "true", and null from absent —
+// distinctions a caller acts on, since these are the argument values the gate
+// enforces (ARG_REQUIRE_CONFLICT).
+function toolPolicy(policy: unknown): string {
+  if (policy && typeof policy === 'object' && 'require' in (policy as Row)) {
+    return `require ${JSON.stringify((policy as Row).require)}`;
+  }
+  return dash(policy);
+}
+
+// `workers` and `spawnable` are rendered unconditionally, NOT through
+// deviations(): "what does this stage permit?" needs both answers stated. That
+// deliberately differs from renderPlaybookConvention's stageFlags, which
+// suppresses the `workers: "one"` default — different surface, different rule.
+function stageBlock(name: string, stage: Row): string[] {
+  const needs = asRows(stage.needs).map(n => `${dash(n.stage)}@${dash(n.at)}`);
+  // Definition order, never sorted — the author's reading order IS the graph's.
+  const tools = Object.entries(asRow(stage.tools));
+  return [
+    `▸ ${name}   workers ${dash(stage.workers)}   spawnable ${yesNo(stage.spawnable)}`,
+    ...indent([`needs ${needs.length ? needs.join(', ') : DASH}`], 4),
+    // A line per tool rather than one packed line: these entries carry nested
+    // values, and the "*" fallback has to be readable as an entry of its own.
+    ...indent([heading('tools', tools.length)], 4),
+    ...indent(tools.map(([tool, policy]) => `${tool} ${toolPolicy(policy)}`), 6),
+    ...describedBlock('description', stage.description, 4),
+  ];
+}
+
+// `id` and `name` sit on separate lines because every built-in `name` already
+// contains an em dash, so a "<id> — <name>" header would read as three fields.
+export function renderPlaybook(playbook: unknown): string {
+  const pb = asRow(playbook);
+  const entry = Array.isArray(pb.entryStages) ? pb.entryStages.map(String) : [];
+  const stages = Object.entries(asRow(pb.stages));
+  const edges = asRows(pb.transitions);
+
+  const lines: string[] = [
+    `PLAYBOOK ${dash(pb.id)}`,
+    `name ${dash(pb.name)}`,
+    // dash(), not a bare join: entryStages is legitimately empty when no stage
+    // declares spawn_instance, and a blank `entry` line would read as a bug.
+    `entry ${entry.length ? entry.join(', ') : DASH}`,
+  ];
+  const description = describedBlock('DESCRIPTION', pb.description, 0);
+  if (description.length) lines.push('', ...description);
+
+  lines.push('', heading('STAGES', stages.length));
+  for (const [name, stage] of stages) lines.push(...stageBlock(name, asRow(stage)));
+
+  lines.push('', heading('TRANSITIONS', edges.length));
+  const cells = table(edges.map(t => [`${dash(t.from)} → ${dash(t.to)}`, `via ${dash(t.via)}`]));
+  cells.forEach((line, i) => {
+    lines.push(`  ${line}`);
+    lines.push(...describedBlock('description', edges[i].description, 4));
+  });
+  return lines.join('\n');
 }
