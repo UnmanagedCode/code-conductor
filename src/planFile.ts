@@ -20,8 +20,9 @@ export function planFileFromToolUse(name: unknown, input: unknown): string | nul
 // both plan_request construction points (live parse + jsonl replay) so a
 // self-declared path is on the event before any tracker enrichment sees it.
 export function planPathFromInput(input: Record<string, unknown> | null | undefined): string | null {
-  const named = input?.planFilePath ?? input?.planPath;
-  return typeof named === 'string' && named ? named : null;
+  if (typeof input?.planFilePath === 'string' && input.planFilePath) return input.planFilePath;
+  if (typeof input?.planPath === 'string' && input.planPath) return input.planPath;
+  return null;
 }
 
 export class PlanFileTracker {

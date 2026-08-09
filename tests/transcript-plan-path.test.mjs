@@ -49,11 +49,21 @@ const writeLine = (planFile) => ({
   ] },
 });
 
+// The line the CLI writes immediately after the Write — array content, but
+// mid-turn. Every real jsonl has one between the plan-file Write and the
+// ExitPlanMode, so every replay fixture here carries it.
+const writeResultLine = {
+  type: 'user', uuid: 'ur', message: { role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'tu_w', content: 'File written', is_error: false },
+  ] },
+};
+
 test('replay derives planPath from the session\'s plan-file Write', async () => {
   const { planRequests, planFile } = await replay(
     (pf) => [
       { type: 'user', uuid: 'u0', message: { role: 'user', content: 'plan this' } },
       writeLine(pf),
+      writeResultLine,
       { type: 'assistant', uuid: 'a1', message: { id: 'm_p', role: 'assistant', content: [
         { type: 'tool_use', id: 'tu_exit', name: 'ExitPlanMode', input: {} },
       ] } },
@@ -65,17 +75,40 @@ test('replay derives planPath from the session\'s plan-file Write', async () => 
   assert.equal(planRequests[0].plan, '# Plan\n- Make X\n', 'the file\'s contents become the plan text');
 });
 
+test('replay binds a same-turn plan-file Write to an INLINE plan across the tool_result line', async () => {
+  // The tool_result the CLI writes after the Write is array-content but
+  // mid-turn: if it counted as a turn boundary, branch 1's same-turn flag
+  // would be cleared before the ExitPlanMode and the path would exist live
+  // but vanish the moment the ring evicted the event.
+  const { planRequests, planFile } = await replay(
+    (pf) => [
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'plan this' } },
+      writeLine(pf),
+      writeResultLine,
+      { type: 'assistant', uuid: 'a1', message: { id: 'm_p', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_exit', name: 'ExitPlanMode', input: { plan: 'Step 1\nStep 2' } },
+      ] } },
+    ],
+    '# Plan\n- Make X\n',
+  );
+  assert.equal(planRequests.length, 1);
+  assert.equal(planRequests[0].planPath, planFile, 'a mid-turn tool_result must not unbind the write');
+  assert.equal(planRequests[0].plan, 'Step 1\nStep 2', 'the model\'s own text stays the plan');
+});
+
 test('replay does not attach a path to an inline plan from a later turn', async () => {
   const { planRequests } = await replay(
     (pf) => [
-      { type: 'user', uuid: 'u0', message: { role: 'user', content: [{ type: 'text', text: 'plan this' }] } },
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'plan this' } },
       writeLine(pf),
+      writeResultLine,
       { type: 'assistant', uuid: 'a1', message: { id: 'm_p1', role: 'assistant', content: [
         { type: 'tool_use', id: 'tu_exit1', name: 'ExitPlanMode', input: {} },
       ] } },
-      // A genuine user prompt line — the turn boundary that unbinds the
-      // earlier write from anything the model says next.
-      { type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'text', text: 'revise it' }] } },
+      // A genuine user prompt — and in the STRING-content shape, which is what
+      // the CLI persists for a plain typed prompt. This line, not the
+      // tool_result above, is what unbinds the write.
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'revise it' } },
       { type: 'assistant', uuid: 'a2', message: { id: 'm_p2', role: 'assistant', content: [
         { type: 'tool_use', id: 'tu_exit2', name: 'ExitPlanMode', input: { plan: 'Step 1\nStep 2' } },
       ] } },
@@ -83,6 +116,7 @@ test('replay does not attach a path to an inline plan from a later turn', async 
     '# Plan\n- Make X\n',
   );
   assert.equal(planRequests.length, 2);
+  assert.ok(planRequests[0].planPath, 'turn 1\'s empty-input plan still gets the path');
   assert.equal(planRequests[1].plan, 'Step 1\nStep 2');
   assert.equal(planRequests[1].planPath, null, 'a stale path would silently name another task\'s plan');
 });

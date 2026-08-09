@@ -20,6 +20,7 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 const SCENARIO_PLAN_FILE = path.join(__dirname, 'fixtures', 'scenario-exit-plan-file.json');
 const SCENARIO_PLAN_FILE_INLINE = path.join(__dirname, 'fixtures', 'scenario-exit-plan-file-inline.json');
 const SCENARIO_PLAN_FILE_LATER_TURN = path.join(__dirname, 'fixtures', 'scenario-exit-plan-file-later-turn.json');
+const SCENARIO_PLAN_NAMED_PATH = path.join(__dirname, 'fixtures', 'scenario-exit-plan-named-path.json');
 
 let nextRpcId = 1;
 async function rpc(baseUrl, method, params) {
@@ -132,6 +133,11 @@ test('get_recent_messages: an unreadable plan file still yields a path and still
     assert.equal(res.messages[0].hasPlan, true);
     assert.equal(res.messages[0].text, `--- plan · saved to ${planFile} ---`,
       'header alone — no content to follow it');
+    // A path-only plan is still HOISTED, so the ExitPlanMode block must not
+    // also appear raw in blocks[] — mcp/tools.ts promises it is not
+    // duplicated there once its content is in the body.
+    assert.ok(!res.messages[0].blocks?.some(b => b.name === 'ExitPlanMode'),
+      'the hoisted ExitPlanMode is not duplicated into blocks[]');
   } finally { await cleanup(); }
 });
 
@@ -165,5 +171,23 @@ test('get_recent_messages: an inline plan in a later turn does not inherit the e
     assert.equal(res.messages[0].hasPlan, true);
     assert.equal(res.messages[0].text, '--- plan ---\nStep 1\nStep 2',
       'byte-identical to the no-plan-file body');
+  } finally { await cleanup(); }
+});
+
+test('get_recent_messages: a path named by the ExitPlanMode input itself is surfaced', async () => {
+  // Branch 2 — the model declared the path in the tool input, so no plan-file
+  // Write is needed and the tracker never contributes. The read that resolves
+  // it lives at the plan_request construction points, not in reconstruction.
+  const { planFile, cleanup } = await seedPlanFile('# Plan\n- Make X\n');
+  try {
+    const sessionId = await spawnWithScenario(SCENARIO_PLAN_NAMED_PATH, 'a');
+    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+
+    const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
+    assert.equal(res.messages.length, 2, 'a path-only plan message bonds its trailing prose');
+    assert.equal(res.messages[0].planPath, planFile, 'the input-named path reaches the MCP metadata');
+    assert.equal(res.messages[0].hasPlan, true);
+    assert.equal(res.messages[0].text, `--- plan · saved to ${planFile} ---`,
+      'the input carried no plan text, so the header stands alone');
   } finally { await cleanup(); }
 });

@@ -120,6 +120,15 @@ export function replayPersistedLine(
   // allowSidechain.
   if (line.isSidechain && !allowSidechain) return events;
 
+  // A turn boundary for plan-file binding is a genuine USER PROMPT, which is
+  // exactly what isPureUserPromptLine decides — in every shape it takes
+  // (string content, text blocks, queued_command attachment). Branching on
+  // "content is an array" instead would fire on the mid-turn tool_result line
+  // the CLI writes right after a plan-file Write, unbinding the file from the
+  // ExitPlanMode two lines later, and would miss a string-content prompt
+  // entirely.
+  if (planFiles && isPureUserPromptLine(line)) planFiles.noteTurnBoundary();
+
   if (line.type === 'user') {
     const msg = line.message ?? {};
     const content = msg.content;
@@ -144,7 +153,6 @@ export function replayPersistedLine(
       // remain their own events.
       const userEvents = consolidateUserContent(content);
       attachSkillLoad(userEvents, line, pendingSkillLoads);
-      planFiles?.noteTurnBoundary();
       for (const ev of userEvents) events.push(ev);
     }
     return tagAndReturn();
@@ -172,7 +180,6 @@ export function replayPersistedLine(
     // injection marker, so passing the line itself normalizes to exactly
     // that.
     attachSkillLoad(queuedEvents, line, pendingSkillLoads);
-    planFiles?.noteTurnBoundary();
     for (const ev of queuedEvents) events.push(ev);
     return tagAndReturn();
   }

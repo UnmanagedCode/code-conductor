@@ -250,8 +250,12 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
         const pathFromEvent = typeof ev.toolUseId === 'string' ? planPaths.get(ev.toolUseId) : undefined;
         if (typeof p === 'string' && p.length > 0) { plan = p; hoisted = true; }
         else if (pathFromEvent?.plan) { plan = pathFromEvent.plan; hoisted = true; }
-        // A path with no text still hoists — otherwise an unreadable plan file
-        // leaves a bare tool_use block and the message stops bonding.
+        // A path with no text still hoists — bonding survives either way
+        // (planPath is set outside `hoisted`), but without this the
+        // ExitPlanMode block ALSO lands in blocks[], contradicting the
+        // "not duplicated in blocks[]" contract in mcp/tools.ts, and planSeq
+        // is never assigned so the plan segment sorts last instead of in
+        // arrival order.
         if (pathFromEvent) { planPath = pathFromEvent.planPath; hoisted = true; }
         if (hoisted && planSeq === null) planSeq = seq++;
       } else if (ev.name === 'AskUserQuestion') {
