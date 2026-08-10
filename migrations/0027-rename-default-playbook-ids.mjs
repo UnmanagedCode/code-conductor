@@ -4,17 +4,17 @@
 // The built-in set was cut from four to three and renamed: classic → solo,
 // split → relay, research → deleted (its read-only fan-out is now freeform's,
 // which no longer forbids a worktree). The ids themselves needed no migration —
-// nothing persists them but the ledger, which is reset — but the SELECTED
-// DEFAULT is a user setting living in the conductor conventions store as the
+// nothing persists them but the ledger, which is reset — but the PREFERRED
+// PLAYBOOK is a user setting living in the conductor conventions store as the
 // `defaultPlaybook` sibling key.
 //
 // Without this, an existing selection stops resolving and
-// defaultPlaybookConvention() silently omits the whole default-playbook section
+// defaultPlaybookConvention() silently omits the whole preferred-playbook section
 // from the conductor's system prompt: a console.warn server-side and no visible
 // signal anywhere else. That silence is the reason this migration exists.
 //
 // `research` maps to null (cleared), not to a substitute: freeform covers the
-// use, but choosing a default for the user is not this migration's business.
+// use, but choosing a preference for the user is not this migration's business.
 //
 // Idempotent: a no-op once the value is a current id, absent, null, or any
 // user-overlay id it does not recognise.

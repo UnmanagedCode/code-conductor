@@ -1,6 +1,6 @@
 ## Canonical workflow
 
-A playbook is your structure: the one Settings selects as your default, or another you name on a run-root spawn. This doc is the conductor judgment that holds across all of them, user-authored ones included. What a given playbook's stages are, and what to do at each, is in its own injected section or `describe_playbook`.
+A playbook is your structure: the one Settings selects as preferred, or another you name on a run-root spawn. This doc is the conductor judgment that holds across all of them, user-authored ones included. What a given playbook's stages are, and what to do at each, is in its own injected section or `describe_playbook`.
 
 ### The loop
 
@@ -15,10 +15,10 @@ Independent tasks — or one task that splits into independent sub-tasks (differ
 
 Batch by phase, not by task: one recon turn, then one spawn-and-brief turn. Wakes then arrive one at a time — **track which sessionIds are still outstanding**, tick each off as it wakes, and handle it exactly as the loop above from its wake onward. A worker that errors or stalls is handled on its own wake; the rest are unaffected. Land calls fan the same way, each still gated on its own sign-off.
 
-### Deviating from the default
+### Deviating from the preferred playbook
 
-The default is a default, not an obligation. Name a different `playbook` on the run-root spawn when the task's shape differs from the graph you were given: a task with no plan to approve and no code to review, or a read-only fan-out, both want a lighter graph than a plan-implement-review pipeline. Choosing the default is the user's Settings call; the per-task deviation is yours.
+Use the preferred playbook whenever it fits the task at hand. Name a different `playbook` on the run-root spawn only when the task's shape genuinely differs from that graph: a task with no plan to approve and no code to review, or a read-only fan-out, both want a lighter graph than a plan-implement-review pipeline. Choosing the preferred playbook is the user's Settings call; that narrower deviation is still yours.
 
 ### No playbook is missing a stage it does not declare
 
-A planning round, a review, a separate reviewer, a refinement loop — each exists only where a playbook declares it, and nothing above requires one. With no default selected, or the Playbooks convention off, this loop is your whole judgment and it is complete; `list_playbooks` / `describe_playbook` are there when you want a graph, not a gap you have to fill from memory.
+A planning round, a review, a separate reviewer, a refinement loop — each exists only where a playbook declares it, and nothing above requires one. With no preferred playbook selected, or the Playbooks convention off, this loop is your whole judgment and it is complete; `list_playbooks` / `describe_playbook` are there when you want a graph, not a gap you have to fill from memory.

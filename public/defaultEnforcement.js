@@ -8,7 +8,7 @@
 // Rows come from the payload's `playbookEnforcementModes`, not a client-side
 // list: src/playbooks.ts owns the allow-list.
 //
-// Fed by the conductor conventions panel's payload alongside the default-playbook
+// Fed by the conductor conventions panel's payload alongside the preferred-playbook
 // picker — one GET backs the whole block.
 //
 // Element ids: dpe-select, dpe-status.

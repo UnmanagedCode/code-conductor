@@ -114,7 +114,7 @@ test('every built-in stage\'s resolved `needs` matches the frozen table', async 
 });
 
 // The built-ins are the templates user authors copy, and (per the dynamic
-// default-playbook convention) their stage descriptions land in the conductor's
+// preferred-playbook convention) their stage descriptions land in the conductor's
 // system prompt. This pins the two MECHANICAL halves of that: every stage is
 // described, and the transition surface stays unpopulated — deliberately empty
 // on the built-ins so it is not a surface anyone has to keep trim. It cannot

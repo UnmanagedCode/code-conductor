@@ -1736,8 +1736,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // on the next conductor spawn/resume (see Instance.launch in
   // src/instances.ts), so there is nothing to regenerate here.
   //
-  // The response also carries the playbook catalog and the selected default,
-  // which the same page's Default-playbook picker consumes: the selected
+  // The response also carries the playbook catalog and the current selection,
+  // which the same page's Preferred-playbook picker consumes: the selected
   // playbook is rendered into the conductor's prompt as a generated convention
   // (src/playbookConvention.ts).
   r.get('/settings/conventions/conductor', async (req, res, next) => {

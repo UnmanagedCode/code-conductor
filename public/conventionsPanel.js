@@ -14,7 +14,7 @@
 // <prefix>-add-btn/-form/-slug/-name/-desc/-body/-save/-cancel/-error.
 //
 // `onData` receives the whole GET payload on every load, so a scope-specific
-// widget in the same block (the conductor scope's default-playbook picker) can
+// widget in the same block (the conductor scope's preferred-playbook picker) can
 // share this one fetch without this widget knowing what it is.
 
 export function installConventionsPanel({ prefix, base, hasToggle = false, hasCoreRow = false, noun = 'convention', onData = null }) {

@@ -1,4 +1,4 @@
-// The dynamic default-playbook convention: selection state, the generated
+// The dynamic preferred-playbook convention: selection state, the generated
 // rendering, and its composition into the conductor role prompt.
 //
 // The property under test is DRIFT-IMPOSSIBILITY. The convention body is
@@ -178,7 +178,7 @@ test('the fallback names a real, loadable built-in playbook', async () => {
 // A fresh install has never chosen, and must still ship with a baseline graph.
 test('unset ⇒ the built-in default playbook is composed into the prompt', async () => {
   const doc = await composeCurrentConduct();
-  assert.ok(doc.includes(`## Default playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'the fallback section is present');
+  assert.ok(doc.includes(`## Preferred playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'the fallback section is present');
   // Read from the definition, so this cannot pass on the header alone.
   const { playbooks } = await loadPlaybooks();
   for (const [name, stage] of Object.entries(playbooks.get(DEFAULT_PLAYBOOK_ID).stages)) {
@@ -196,7 +196,7 @@ test('a pre-tri-state store migrates to unset and composes the built-in default'
   await fs.writeFile(file, JSON.stringify({ enabled: ALL_SLUGS, defaultPlaybook: null }));
   await m0028.run({ root: path.dirname(orchStoreRoot()) });
   assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'unset' }, 'unset, NOT {mode:"none"}');
-  assert.ok((await composeCurrentConduct()).includes(`## Default playbook — \`${DEFAULT_PLAYBOOK_ID}\``));
+  assert.ok((await composeCurrentConduct()).includes(`## Preferred playbook — \`${DEFAULT_PLAYBOOK_ID}\``));
 });
 
 // The explicit opt-out is NOT unset: collapsing the two would render the
@@ -204,20 +204,20 @@ test('a pre-tri-state store migrates to unset and composes the built-in default'
 test('explicit none ⇒ no convention in the composed prompt', async () => {
   await setDefaultPlaybook({ mode: 'none' });
   const doc = await composeCurrentConduct();
-  assert.ok(!doc.includes('## Default playbook'), 'section absent');
+  assert.ok(!doc.includes('## Preferred playbook'), 'section absent');
 });
 
 test('an explicitly selected id beats the fallback', async () => {
   await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
   const doc = await composeCurrentConduct();
-  assert.ok(doc.includes('## Default playbook — `solo`'), 'the selected playbook is composed');
-  assert.ok(!doc.includes(`## Default playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'the fallback did not win');
+  assert.ok(doc.includes('## Preferred playbook — `solo`'), 'the selected playbook is composed');
+  assert.ok(!doc.includes(`## Preferred playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'the fallback did not win');
 });
 
 test('default selected ⇒ its stages and per-stage descriptions are in the composed prompt', async () => {
   await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
   const doc = await composeCurrentConduct();
-  assert.ok(doc.includes('## Default playbook — `solo`'), 'section present');
+  assert.ok(doc.includes('## Preferred playbook — `solo`'), 'section present');
   // LOAD-BEARING ORDER. The section deliberately omits the playbook's
   // description and a describe_playbook pointer because the listing above
   // carries both; met cold, it would cost the conductor the very round-trip this
@@ -225,8 +225,8 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
   // Presence FIRST: a bare indexOf comparison passes vacuously when the listing
   // is absent (-1 < any index) — which is the forbidden state, not the safe one.
   assert.ok(doc.includes('**Available playbooks**'), 'the listing is present at all');
-  assert.ok(doc.indexOf('**Available playbooks**') < doc.indexOf('## Default playbook'),
-    'the available-playbooks listing precedes the default-playbook section');
+  assert.ok(doc.indexOf('**Available playbooks**') < doc.indexOf('## Preferred playbook'),
+    'the available-playbooks listing precedes the preferred-playbook section');
   const { playbooks } = await loadPlaybooks();
   const pb = playbooks.get('solo');
   for (const [name, stage] of Object.entries(pb.stages)) {
@@ -238,9 +238,9 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
 test('the convention rides the playbooks convention toggle', async () => {
   await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
   await setSelection(ALL_SLUGS.filter(s => s !== 'playbooks'));
-  assert.ok(!(await composeCurrentConduct()).includes('## Default playbook'), 'absent with playbooks off');
+  assert.ok(!(await composeCurrentConduct()).includes('## Preferred playbook'), 'absent with playbooks off');
   await setSelection(ALL_SLUGS);
-  assert.ok((await composeCurrentConduct()).includes('## Default playbook'), 'present with playbooks on');
+  assert.ok((await composeCurrentConduct()).includes('## Preferred playbook'), 'present with playbooks on');
 });
 
 test('a selected id that no longer resolves omits the section rather than failing the spawn', async () => {

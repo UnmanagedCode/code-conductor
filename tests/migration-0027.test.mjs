@@ -4,7 +4,7 @@
 //
 // The failure mode this exists to prevent is silent: an unmapped selection no
 // longer resolves, so defaultPlaybookConvention() drops the entire
-// default-playbook section out of the conductor's system prompt with nothing but
+// preferred-playbook section out of the conductor's system prompt with nothing but
 // a server-side console.warn. The conductor simply stops being told its graph.
 
 import { test } from 'node:test';

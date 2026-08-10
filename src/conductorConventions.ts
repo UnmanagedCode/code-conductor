@@ -208,7 +208,7 @@ export async function playbookListing(): Promise<string> {
     ...ids.map(p => `- \`${p.id}\` — ${p.description}`)].join('\n');
 }
 
-// ── Default playbook (Settings → Conductor conventions) ─────────────────────
+// ── Preferred playbook (Settings → Conductor conventions) ───────────────────
 //
 // GLOBAL, like the convention selection above and for the same reason: the
 // conductor is a singleton, and this value is consumed by composeCurrentConduct()
@@ -302,7 +302,7 @@ export async function setDefaultPlaybookEnforcement(mode: unknown): Promise<Play
   return mode as PlaybookEnforcement;
 }
 
-// The resolved default playbook, GENERATED from its definition (see
+// The resolved preferred playbook, GENERATED from its definition (see
 // playbookConvention.ts). Empty string on the explicit opt-out, when the
 // selection no longer resolves, or when the catalog fails to load — a spawn must
 // never be blocked by this section.
@@ -313,12 +313,12 @@ export async function defaultPlaybookConvention(): Promise<string> {
     const { playbooks } = await loadPlaybooks();
     const pb = playbooks.get(id);
     if (!pb) {
-      console.warn(`conductorConventions: default playbook '${id}' is not loaded; omitting its convention`);
+      console.warn(`conductorConventions: preferred playbook '${id}' is not loaded; omitting its convention`);
       return '';
     }
     return renderPlaybookConvention(pb);
   } catch (e) {
-    console.warn(`conductorConventions: default playbook unavailable: ${e instanceof Error ? e.message : String(e)}`);
+    console.warn(`conductorConventions: preferred playbook unavailable: ${e instanceof Error ? e.message : String(e)}`);
     return '';
   }
 }
@@ -331,7 +331,7 @@ export async function composeConduct(enabledSlugs: string[]): Promise<string> {
   // Both generated sections ride the playbooks convention, so a session with
   // that convention off pays nothing for them.
   //
-  // ORDER IS LOAD-BEARING, and pinned by a test: the default-playbook section
+  // ORDER IS LOAD-BEARING, and pinned by a test: the preferred-playbook section
   // omits its playbook's description and a describe_playbook pointer BECAUSE the
   // listing carries both. Met first, it would cost the conductor the round-trip
   // that section exists to remove. Don't reorder, and don't insert between them.
