@@ -26,6 +26,7 @@ import {
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
   worktreeDirtyLines, runGit,
+  listDependentWorktrees, dependentsRefusal,
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
@@ -1360,10 +1361,14 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
       };
     }
   }
-  // Expected business refusal: uncommitted changes. Pre-check here so it
-  // returns soft rather than throwing out of removeWorktree (which stays as
-  // a true-fault backstop, called with force below).
+  // Expected business refusals: another worktree is based on this one, or
+  // uncommitted changes. Pre-checked here so they return soft rather than
+  // throwing out of removeWorktree (which stays as a true-fault backstop,
+  // called with force below, and is also what covers the REST delete path).
   if (!force) {
+    // Dependents first: a clean tree does not unblock this one.
+    const dependents = await listDependentWorktrees(project, worktree);
+    if (dependents.length > 0) return dependentsRefusal(worktree, dependents, 'deleting');
     const wt = await getWorktree(project, worktree);
     if (wt) {
       const dirty = await worktreeDirtyLines(wt.worktreePath);
