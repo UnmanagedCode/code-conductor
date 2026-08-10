@@ -519,7 +519,7 @@ test('create_worktree + list_worktrees + delete_worktree against a real git repo
   assert.equal(createRes.baseBranch, 'main');
 
   const wts = text(await callTool(baseUrl, 'list_worktrees', { project: 'demo' }));
-  assert.match(wts, /^WORKTREES \(1\) — demo {2}\S+$/m);
+  assert.match(wts, /^WORKTREES \(1\) — demo$/m);
   assert.ok(wts.includes(createRes.worktree), 'the new worktree is listed');
 
   const del = unwrap(await callTool(baseUrl, 'delete_worktree', {

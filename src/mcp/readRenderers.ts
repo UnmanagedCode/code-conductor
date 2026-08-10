@@ -301,15 +301,21 @@ export function renderWorktrees(worktrees: unknown): string {
   const rows = asRows(worktrees);
   const head = heading('WORKTREES', rows.length);
   if (!rows.length) return head;
-  // parentProject/parentPath are identical across every row (the tool takes one
-  // project), so they render once as a header instead of on each line.
+  // parentProject is identical across every row (the tool takes one project, and
+  // a worktree records the ROOT project even when it is based on another
+  // worktree), so it renders once as a header. parentPath is NOT row-invariant —
+  // a worktree based on another records that one's checkout — and is derivable
+  // anyway: for a root-based worktree it is the project path list_projects
+  // prints, and for a derived one it is the base worktree's own worktreePath
+  // line below. So it is not rendered rather than rendered per row.
   const parts: Array<string | string[]> = [
-    `${head} — ${dash(rows[0].parentProject)}  ${dash(rows[0].parentPath)}`, '',
+    `${head} — ${dash(rows[0].parentProject)}`, '',
   ];
   const cells = rows.map(w => [
     String(dash(w.worktree)),
     `br ${dash(w.branch)}`,
-    `base ${dash(w.baseBranch)}@${shortSha(w.baseSha)}`,
+    `base ${dash(w.baseBranch)}@${shortSha(w.baseSha)}` +
+      (typeof w.baseWorktree === 'string' && w.baseWorktree ? ` ← ${w.baseWorktree}` : ''),
     `created ${ts(w.createdAt)}`,
   ]);
   const lines: string[] = [];

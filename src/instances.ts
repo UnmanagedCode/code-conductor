@@ -143,6 +143,12 @@ interface CreateInstanceInput {
   contextWindowTokens?: number | null;
   backend?: string | null;
   worktree?: string | boolean | null;
+  // Both apply only to `worktree: true` (creating a fresh worktree) and are
+  // refused otherwise — see _doCreate. baseWorktree bases the new worktree on
+  // another worktree of the project instead of its root; name is slugified into
+  // the new worktree's branch + directory name.
+  baseWorktree?: string;
+  name?: string;
   temp?: boolean;
   conducted?: boolean;
   debug?: boolean;
@@ -2916,7 +2922,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // carry a session's last known capacity (fork, restart manifest) pass it so a
   // deleted custom-model row doesn't blank the ctx bar. Live registry
   // resolution wins whenever it succeeds — see finalContextWindowTokens below.
-  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}): Promise<Instance> {
+  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
@@ -3021,13 +3027,23 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
 
     // Optional worktree attachment:
-    //   worktree === true  → create a fresh worktree off the parent's HEAD
+    //   worktree === true  → create a fresh worktree off the base's HEAD
     //   worktree === '<existingName>' → spawn into the named existing worktree
     //   omitted/null/false → normal spawn at proj.path
     let worktreeMeta: WorktreeMeta | null = null;
     let cwd = proj.path;
+    // baseWorktree/name describe a worktree to be CREATED, so they are
+    // meaningless without worktree:true. Refusing rather than ignoring is what
+    // stops a caller believing it based a new worktree on a feature when it in
+    // fact attached to an existing worktree (or to none).
+    if ((baseWorktree !== undefined || name !== undefined) && worktree !== true) {
+      throw Object.assign(
+        new Error(`baseWorktree / name apply only when creating a worktree — pass createWorktree:true (MCP) or worktree:true`),
+        { statusCode: 400 },
+      );
+    }
     if (worktree === true) {
-      worktreeMeta = await createWorktree(project);
+      worktreeMeta = await createWorktree(project, { baseWorktree, name });
       cwd = worktreeMeta.worktreePath;
     } else if (typeof worktree === 'string' && worktree.trim()) {
       worktreeMeta = await getWorktree(project, worktree.trim());

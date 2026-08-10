@@ -275,7 +275,7 @@ test('POST /sync falls back to the rebase prompt when the pure-behind worktree h
   await waitFor(() => events.some(e => e.kind === 'user_echo'));
   const echo = events.find(e => e.kind === 'user_echo');
   assert.match(echo.text, /isolated git worktree/);
-  assert.match(echo.text, /git rebase main/);
+  assert.match(echo.text, /git rebase --rebase-merges main/);
   assert.match(echo.text, /REBASE_DONE/);
 });
 
@@ -348,7 +348,7 @@ test('POST /sync falls back to the rebase prompt when the diverged worktree has 
 
   await waitFor(() => events.some(e => e.kind === 'user_echo'));
   const echo = events.find(e => e.kind === 'user_echo');
-  assert.match(echo.text, /git rebase main/);
+  assert.match(echo.text, /git rebase --rebase-merges main/);
 });
 
 test('POST /sync refuses the rebase prompt when the instance is not running (conflict fallback)', async () => {

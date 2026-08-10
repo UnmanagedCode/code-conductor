@@ -704,6 +704,8 @@ interface SpawnArgs {
   resume?: string;
   worktree?: string | boolean;
   createWorktree?: boolean;
+  baseWorktree?: string;
+  name?: string;
   temp?: boolean;
   debug?: boolean;
   // Playbook-policy inputs. Declared so the router's unknown-argument rejection
@@ -799,6 +801,10 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
     backend,
     resume: args.resume,
     worktree,
+    // Only meaningful alongside createWorktree:true; create() refuses them
+    // otherwise rather than ignoring them.
+    baseWorktree: args.baseWorktree,
+    name: args.name,
     // Conductor workers default to temp (disposable). Unlike the UI's temp
     // checkbox (which the REST route maps to bypassPermissions), temp here
     // does NOT affect the mode default — create() leaves it at plan, so
@@ -1333,8 +1339,10 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
 
 // ---------- mutating: worktrees ----------
 
-export async function createWorktree({ project }: { project: string }) {
-  return toMcpWorktree(await fsCreateWorktree(project));
+export async function createWorktree(
+  { project, baseWorktree, name }: { project: string; baseWorktree?: string; name?: string },
+) {
+  return toMcpWorktree(await fsCreateWorktree(project, { baseWorktree, name }));
 }
 
 export async function deleteWorktree({ project, worktree, force = false }: { project: string; worktree: string; force?: boolean }, { instances }: McpCtx) {

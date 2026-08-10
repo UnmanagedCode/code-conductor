@@ -49,6 +49,13 @@ export interface WorktreeMeta {
   branch: string;
   baseBranch: string;
   baseSha: string;
+  // Set only when this worktree was created off ANOTHER worktree of the same
+  // project ("a feature branch"): the base worktree's worktreeName. Absent
+  // means based on the project root — the canonical shape, not a legacy one.
+  // `parentProject` stays the ROOT project name either way: listWorktrees
+  // filters on it, so a derived worktree that recorded its base there would
+  // disappear from every listing in the app.
+  baseWorktree?: string;
   createdAt: string;
 }
 
@@ -76,6 +83,25 @@ function metaPath(project: string, worktreeName: string): string {
 // avoidance across a handful of worktrees per project.
 function shortId(): string {
   return randomBytes(3).toString('hex');
+}
+
+// Max slug length. Long enough for a readable feature name, short enough to
+// keep `<project>_worktree_<slug>` a manageable directory name.
+const SLUG_MAX_LEN = 40;
+
+// Human-readable name → the id that goes into the branch + directory name. A
+// feature branch is read in `git log` for weeks, so a hash is the wrong id for
+// one. The result always matches /^[a-z0-9][a-z0-9-]*$/, which is both a valid
+// git ref component and a safe directory suffix — so the callers below need no
+// further escaping. Returns '' when the name has no usable characters; the
+// caller refuses.
+function slugifyWorktreeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, SLUG_MAX_LEN)
+    .replace(/-+$/, '');
 }
 
 function worktreeBranchName(id: string): string {
@@ -305,26 +331,97 @@ interface CreateWorktreeResult extends WorktreeMeta {
   postWorktreeCreate: PostWorktreeHookResult;
 }
 
-// Create a fresh worktree off the parent repo's current HEAD. Returns
-// the metadata that was written to disk.
-export async function createWorktree(projectName: string): Promise<CreateWorktreeResult> {
+interface CreateWorktreeOptions {
+  // worktreeName of another worktree of the same project to base this one on
+  // ("a feature branch"). Its HEAD supplies baseBranch/baseSha and its checkout
+  // becomes parentPath — so this worktree syncs against, and merges into, that
+  // worktree instead of the project root.
+  baseWorktree?: string;
+  // Human-readable name, slugified into the branch + directory name in place of
+  // the random short id.
+  name?: string;
+}
+
+// Create a fresh worktree off the base's current HEAD — the project root by
+// default, or another worktree when `baseWorktree` names one. Returns the
+// metadata that was written to disk.
+export async function createWorktree(
+  projectName: string,
+  { baseWorktree, name }: CreateWorktreeOptions = {},
+): Promise<CreateWorktreeResult> {
   const proj = await getProject(projectName);
   if (!(await isGitRepo(proj.path))) {
     throw httpError(400, `project '${projectName}' is not a git repository`);
   }
-  const head = await getHeadBranchAndSha(proj.path);
+  // Resolve the base: either the project root or another worktree. A base
+  // worktree is resolved through the store records, never by assembling a path —
+  // getProject validates only the name charset and that the directory exists, so
+  // it would happily resolve a worktree dir name.
+  let basePath = proj.path;
+  let baseLabel = `project '${projectName}'`;
+  if (baseWorktree !== undefined) {
+    const base = await getWorktree(projectName, baseWorktree);
+    if (!base) {
+      throw httpError(404, `base worktree '${baseWorktree}' not found under project '${projectName}'`);
+    }
+    // Depth cap of one. Not a safety guard: it is what keeps the
+    // dependents refusal in syncWorktree / mergeWorktreeIntoParent
+    // non-recursive — a base is always a leaf's direct parent, never a chain.
+    if (base.baseWorktree) {
+      throw httpError(
+        400,
+        `base worktree '${baseWorktree}' is itself based on '${base.baseWorktree}' — ` +
+          `a worktree can only be based on one that is itself based on the project root (depth is capped at one)`,
+      );
+    }
+    basePath = base.worktreePath;
+    baseLabel = `worktree '${baseWorktree}'`;
+  }
+  const head = await getHeadBranchAndSha(basePath);
   if (!head.branch) {
     // git worktree add can work off a detached HEAD, but tracking down
     // "what was the base" later is messy. Refuse cleanly instead.
-    throw httpError(400, `project '${projectName}' is on a detached HEAD; check out a branch before creating a worktree`);
+    throw httpError(400, `${baseLabel} is on a detached HEAD; check out a branch before creating a worktree`);
   }
-  const id = shortId();
+
+  let id: string;
+  if (name !== undefined) {
+    id = slugifyWorktreeName(name);
+    if (!id) {
+      throw httpError(400, `worktree name '${name}' has no usable characters — use letters or digits`);
+    }
+  } else {
+    id = shortId();
+  }
   const dirName = worktreeDirName(projectName, id);
   const worktreePath = path.join(projectsRoot(), dirName);
   const branch = worktreeBranchName(id);
 
+  // Collision pre-check. A random short id realistically never collides, but a
+  // slug does ('auth' twice). What this buys is a clean 409 instead of the
+  // httpError(500, 'git worktree add failed: …') git would otherwise produce —
+  // NOT cleanup: on a branch collision git fails before creating the directory,
+  // so there is nothing left behind either way.
+  //
+  // The branch ref is the only thing worth checking: the dir name and the branch
+  // both derive from the same slug, and a registered worktree always still has
+  // its branch (git refuses to delete a branch checked out in a worktree), so a
+  // directory collision implies this one. It is also strictly stronger — it
+  // catches a leftover branch with no worktree, which `removeWorktree`'s
+  // best-effort `git branch -d` can leave behind and a directory check cannot
+  // see.
+  const existingBranch = await runGit(proj.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  if (existingBranch.code === 0) {
+    throw httpError(
+      409,
+      `branch '${branch}' already exists in project '${projectName}' — ` +
+        `either that worktree is still registered, or it was deleted and left the branch behind. ` +
+        `Pick another name, or delete the branch.`,
+    );
+  }
+
   // `git worktree add <path> -b <branch> <start-point>` creates the
-  // branch off the captured SHA so subsequent activity on the parent
+  // branch off the captured SHA so subsequent activity on the base
   // branch can't drift our base.
   const add = await runGit(proj.path, ['worktree', 'add', worktreePath, '-b', branch, head.sha]);
   if (add.code !== 0) {
@@ -333,12 +430,14 @@ export async function createWorktree(projectName: string): Promise<CreateWorktre
 
   const meta: WorktreeMeta = {
     parentProject: projectName,
-    parentPath: proj.path,
+    parentPath: basePath,
     worktreeName: dirName,
     worktreePath,
     branch,
     baseBranch: head.branch,
     baseSha: head.sha,
+    // Written only when set, so a root-based record keeps its existing shape.
+    ...(baseWorktree !== undefined ? { baseWorktree } : {}),
     createdAt: new Date().toISOString(),
   };
   await writeMeta(projectName, dirName, meta);
@@ -378,6 +477,37 @@ export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]
 export async function getWorktree(projectName: string, worktreeName: string): Promise<WorktreeMeta | null> {
   const all = await listWorktrees(projectName);
   return all.find(w => w.worktreeName === worktreeName) ?? null;
+}
+
+// Worktrees that name this one as their base. The predicate is over worktree
+// RECORDS, not live instances: killing a worker is not enough — a surviving
+// child whose base sha was rewritten under it is genuinely broken, so the
+// worktree must actually be deleted before its base is allowed to move.
+export async function listDependentWorktrees(projectName: string, worktreeName: string): Promise<string[]> {
+  const all = await listWorktrees(projectName);
+  return all.filter(w => w.baseWorktree === worktreeName).map(w => w.worktreeName);
+}
+
+// The shared refusal for "this worktree is somebody's base". Minted once here
+// rather than per surface: unlike WORKTREE_BEHIND (where the REST user clicks
+// Sync and the conductor calls sync_worktree), both audiences act identically —
+// delete the children — so the wording names no button and no tool. `verb`
+// distinguishes the two call sites. Evaluated on the worktree being synced or
+// merged, NEVER on the worktree being merged INTO: it is this worktree's own
+// history that must not be rewritten under its children, and a --no-ff merge
+// onto it appends rather than rewrites. Applying it to a merge target would
+// deadlock any feature with more than one child.
+function dependentsRefusal(worktreeName: string, dependents: string[], verb: 'syncing' | 'merging'): {
+  ok: false; code: 'WORKTREE_HAS_DEPENDENTS'; dependents: string[]; reason: string;
+} {
+  return {
+    ok: false,
+    code: 'WORKTREE_HAS_DEPENDENTS',
+    dependents,
+    reason: `worktree '${worktreeName}' is the base for ${dependents.length} other worktree(s) — ` +
+      `${dependents.join(', ')} — and ${verb} it would rewrite the base they were created from. ` +
+      `Delete them first (killing their workers is not enough).`,
+  };
 }
 
 // Remove a worktree: deregister it via git, drop the directory, delete
@@ -503,6 +633,7 @@ interface MergeFailure {
   reason?: string;
   behind?: number;
   baseBranch?: string;
+  dependents?: string[];
 }
 
 interface MergeSuccess {
@@ -534,11 +665,28 @@ export async function mergeWorktreeIntoParent(
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
-  // 0. Refuse if the worktree branch is behind its base — the merge would
+  // 0. Refuse if another worktree is based on this one. THIS merge moves their
+  //    base on its own: step 7 below fast-forwards this worktree's own branch
+  //    onto the merge commit, and that branch IS what the children were created
+  //    from, so their baseSha stops being its tip the moment this call succeeds.
+  //    A fast-forward only moves the tip — the old sha stays a reachable
+  //    ancestor, so the children end up behind rather than broken — but the base
+  //    is not allowed to move at all while children exist, which is what this
+  //    gate enforces. Checked ahead of the behind-gate deliberately: merging
+  //    requires a prior sync, and that sync also refuses, so without this gate a
+  //    worktree with dependents and a moved base would report WORKTREE_BEHIND and
+  //    send the caller to a sync_worktree that refuses for the real reason. This
+  //    gate names the real blocker on the first call. Evaluated on the worktree
+  //    being MERGED, never on the one being merged INTO — see dependentsRefusal.
+  const dependents = await listDependentWorktrees(projectName, worktreeName);
+  if (dependents.length > 0) {
+    return dependentsRefusal(worktreeName, dependents, 'merging');
+  }
+  // 1. Refuse if the worktree branch is behind its base — the merge would
   //    still work, but conflicts would surface on the parent side instead of
   //    being resolved inside the worktree (where the agent can help). Checked
-  //    first so it takes precedence over the branch-mismatch / dirty gates,
-  //    matching the order the REST + MCP callers used before this moved in.
+  //    before the branch-mismatch / dirty gates, matching the order the REST +
+  //    MCP callers used before this moved in.
   //    Returns data fields only; each caller maps the code to its own
   //    audience-specific reason string (REST "click Sync first" / MCP "call
   //    sync_worktree first").
@@ -546,8 +694,10 @@ export async function mergeWorktreeIntoParent(
   if (status.behind != null && status.behind > 0) {
     return { ok: false, code: 'WORKTREE_BEHIND', behind: status.behind, baseBranch: meta.baseBranch };
   }
-  // 1. Parent must currently be on the captured base branch — otherwise
-  //    the merge would land work somewhere unexpected.
+  // 2. Parent must currently be on the captured base branch — otherwise
+  //    the merge would land work somewhere unexpected. A worktree base
+  //    satisfies this by construction: its HEAD *is* its own branch, which is
+  //    exactly this worktree's baseBranch.
   const head = await getHeadBranchAndSha(meta.parentPath);
   if (head.branch !== meta.baseBranch) {
     return {
@@ -557,8 +707,10 @@ export async function mergeWorktreeIntoParent(
         `Switch the parent back to '${meta.baseBranch}' before merging.`,
     };
   }
-  // 2. Parent's working tree must be clean — `git merge` refuses
-  //    otherwise, but the error message is friendlier from us.
+  // 3. Parent's working tree must be clean — `git merge` refuses
+  //    otherwise, but the error message is friendlier from us. Note there is no
+  //    override: a worktree used as a base is a merge target, so it has to be
+  //    kept clean.
   const dirty = await runGit(meta.parentPath, ['status', '--porcelain']);
   if (dirty.code === 0 && dirty.stdout.trim().length > 0) {
     return {
@@ -567,7 +719,7 @@ export async function mergeWorktreeIntoParent(
       reason: `parent repo has uncommitted changes — commit or stash them before merging`,
     };
   }
-  // 3. The worktree's own tree must be clean too — only committed work gets
+  // 4. The worktree's own tree must be clean too — only committed work gets
   //    merged, so uncommitted/untracked changes there would silently not
   //    land. Overridable: allowDirty:true merges anyway.
   if (!allowDirty) {
@@ -581,7 +733,7 @@ export async function mergeWorktreeIntoParent(
       };
     }
   }
-  // 4. Nothing to do if the branch has no commits ahead of its base — a
+  // 5. Nothing to do if the branch has no commits ahead of its base — a
   //    --no-ff merge here would either no-op ("Already up to date") or,
   //    depending on git version/state, still be a pointless call.
   if (status.ahead != null && status.ahead === 0) {
@@ -591,7 +743,7 @@ export async function mergeWorktreeIntoParent(
       reason: `worktree branch has no commits ahead of '${meta.baseBranch}' — nothing to merge`,
     };
   }
-  // 5. Attempt the merge. --no-ff forces a merge commit even when FF would
+  // 6. Attempt the merge. --no-ff forces a merge commit even when FF would
   //    be possible; --no-edit makes git use its default message non-
   //    interactively (we'd hang otherwise waiting on an editor).
   const merge = await runGit(meta.parentPath, ['merge', '--no-ff', '--no-edit', meta.branch]);
@@ -604,7 +756,7 @@ export async function mergeWorktreeIntoParent(
     };
   }
   const newHead = await runGit(meta.parentPath, ['rev-parse', 'HEAD']);
-  // 6. Fast-forward the worktree's own branch up to the merge commit. The
+  // 7. Fast-forward the worktree's own branch up to the merge commit. The
   //    worktree branch is one of that commit's two parents, so it's always
   //    an ancestor of the new HEAD — --ff-only can't fail on divergence.
   //    Must run from inside the worktree dir: the branch is checked out
@@ -627,6 +779,7 @@ type SyncResult =
   | { ok: true; action: 'fast-forwarded'; ahead: 0; behind: 0; newSha: string }
   | { ok: true; action: 'rebased'; ahead: number; behind: 0; newSha: string }
   | { ok: true; action: 'rebase-required'; ahead: number; behind: number }
+  | { ok: false; code: 'WORKTREE_HAS_DEPENDENTS'; dependents: string[]; reason: string }
   | { ok: false; reason: string };
 
 // Bring a worktree's branch up to date with the parent's baseBranch.
@@ -650,6 +803,15 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
+  }
+  // Refuse before anything is computed or touched if another worktree is based
+  // on this one: every sync path below rewrites or moves this branch, which is
+  // the base they were created from. Checked first, and unconditionally on
+  // ahead/behind, so the outcome never depends on whether the base happened to
+  // move — a caller must not learn this constraint only sometimes.
+  const dependents = await listDependentWorktrees(projectName, worktreeName);
+  if (dependents.length > 0) {
+    return dependentsRefusal(worktreeName, dependents, 'syncing');
   }
   const { ahead, behind } = await getWorktreeMergeStatus(meta);
   if (ahead == null || behind == null) {
@@ -692,7 +854,16 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   // Diverged + clean tree → attempt automatic rebase. On conflict, abort
   // cleanly so the worktree is never left mid-rebase, then fall back to
   // the agent rebase prompt.
-  const rebase = await runGit(meta.worktreePath, ['rebase', meta.baseBranch]);
+  //
+  // --rebase-merges is load-bearing, not a nicety: a worktree that other
+  // worktrees merged into carries their merge commits, and a bare `git rebase`
+  // FLATTENS those — silently, looking like a clean sync — collapsing the
+  // two-level `base <- merge(feature) <- merge(task)` history this exists to
+  // produce. It works off the commit graph, not branch names, so it still
+  // recreates a merge whose side branch has since been deleted. Keep it in step
+  // with buildRebasePrompt below: if only one of the two carries the flag, the
+  // conflict path undoes what the automated path preserved.
+  const rebase = await runGit(meta.worktreePath, ['rebase', '--rebase-merges', meta.baseBranch]);
   if (rebase.code === 0) {
     const newHead = await runGit(meta.worktreePath, ['rev-parse', 'HEAD']);
     return {
@@ -719,7 +890,7 @@ export function buildRebasePrompt(meta: WorktreeMeta): string {
     ``,
     `Please:`,
     `1. Commit any meaningful uncommitted changes in the worktree (ignore noise).`,
-    `2. Run \`git rebase ${meta.baseBranch}\` inside this worktree so the work sits on top of the parent's current ${meta.baseBranch}.`,
+    `2. Run \`git rebase --rebase-merges ${meta.baseBranch}\` inside this worktree so the work sits on top of the parent's current ${meta.baseBranch}. Keep \`--rebase-merges\`: without it any merge commit on this branch is silently flattened.`,
     `3. If you hit conflicts you can't resolve with high confidence, STOP and use AskUserQuestion to consult the user before continuing.`,
     `4. When the rebase is clean, run \`git status\` to confirm, then reply with the line "REBASE_DONE" on its own so I can fast-forward the parent.`,
   ].join('\n');
