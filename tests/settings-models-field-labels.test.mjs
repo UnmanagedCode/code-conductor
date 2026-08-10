@@ -203,6 +203,40 @@ test('a wrapped control still reaches its row via closest(), and the row still r
   assert.equal(li.querySelector('.sm-effort').value, 'high');
 });
 
+test('model and effort share one .sm-field-pair, and only where both exist', async () => {
+  // The pair is what puts the two selects on one line under the breakpoint. It is
+  // pure DOM: the CSS half (`.sm-field-pair` → 2-column grid) still "works" with no
+  // wrapper present, and the row just renders one field per line again — a silent
+  // regression a stylesheet cannot prevent and a screenshot at one width may not
+  // make obvious.
+  const window = await setup(modelsPayload());
+
+  for (const li of window.document.querySelectorAll('#sm-tier-list .sm-family-row')) {
+    const tier = rowName(li);
+    const pairs = li.querySelectorAll('.sm-field-pair');
+    assert.equal(pairs.length, 1, `${tier}: exactly one .sm-field-pair`);
+    const kinds = [...pairs[0].children].map(f => f.className.replace('sm-field sm-field--', ''));
+    assert.deepEqual(kinds, ['model', 'effort'], `${tier}: the pair holds model + effort, in that order`);
+    // Backend stays on its own line — it is the widest select and pairing it too
+    // would put three controls on one 232px line at 320px.
+    assert.equal(li.querySelector('.sm-field--backend').closest('.sm-field-pair'), null,
+      `${tier}: backend is not in the pair`);
+  }
+
+  const rows = [...window.document.querySelectorAll('#sm-role-list .sm-role-row')];
+  const tierBound = rows.find(li => rowName(li) === 'Conductor');
+  const custom = rows.find(li => rowName(li) === 'Mine-Own-Role');
+  assert.equal(tierBound.querySelector('.sm-field-pair'), null,
+    'a tier-bound role has no model field, so effort takes the line alone — an empty half would be a dead column');
+  assert.ok(tierBound.querySelector('.sm-field--effort'), 'effort is still rendered, just unpaired');
+  assert.equal(custom.querySelectorAll('.sm-field-pair').length, 1,
+    'a Custom-bound role does render a model field, so it pairs');
+  assert.deepEqual(
+    [...custom.querySelector('.sm-field-pair').children].map(f => f.className.replace('sm-field sm-field--', '')),
+    ['model', 'effort'],
+  );
+});
+
 test('a caption is omitted entirely rather than emitted empty', async () => {
   // An empty .sm-field-cap would still claim a 4.5em caption column on the phone
   // layout, pushing the control it wraps out of the row.

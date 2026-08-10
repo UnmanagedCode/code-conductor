@@ -15,10 +15,12 @@
 // DOM-contract half of the same fix is covered deterministically by
 // tests/settings-models-field-labels.test.mjs.
 //
-// The sweep straddles the 720px breakpoint on purpose: 719 is the widest the
-// restacked card layout ever renders, 721 the narrowest the six-column grid
+// The sweep straddles the 840px breakpoint on purpose: 839 is the widest the
+// restacked card layout ever renders, 841 the narrowest the six-column grid
 // does, so a discontinuity at the seam fails here rather than on someone's
-// tablet.
+// tablet. 719/721 stay in the narrow list too — both are inside the card range
+// now, and 721 is the width where boxing the tier list in a fieldset pushed the
+// grid's tracks past their row.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,8 +30,11 @@ import { bootOrch } from './boot-orch.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const NARROW = [320, 360, 390, 719];
-const WIDE = [721, 1024, 1280];
+// 839/841 straddle the breakpoint; 719/721 are kept because they are real widths
+// that used to straddle it and 721 is where the fieldset regression lived — the
+// seam moving must not silently drop the spot the bug stood on.
+const NARROW = [320, 360, 390, 719, 721, 839];
+const WIDE = [841, 1024, 1280];
 const WIDTHS = [...NARROW, ...WIDE];
 const TAP_MIN = 44;        // the stylesheet's own floor (#review-header, .commit-row, …)
 const SELECT_MIN_W = 100;  // a select narrower than this can't show a model name
@@ -117,13 +122,47 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
     fail('doc-overflow', `documentElement scrollWidth ${de.scrollWidth} > clientWidth ${de.clientWidth}`);
   }
 
+  // 1b. The tier list is boxed in a `fieldset.sm-group` like Roles and Custom
+  //     models are. Structural, at every width — the box is not a mobile
+  //     affordance, and its 30px of padding + border is what sets the breakpoint
+  //     below, so losing it silently would leave that value unexplained.
+  if (!document.querySelector('#sm-tier-list')?.closest('fieldset.sm-tiers')) {
+    fail('no-tier-fieldset', '#sm-tier-list is not inside a fieldset.sm-tiers — the tier group box is gone');
+  }
+
+  // 1c. Grid tracks must fit the box they are laid out in. `grid-template-columns`
+  //     resolves to used px, and a grid whose tracks exceed its content box does
+  //     NOT shrink them — it overflows, and only whichever item happens to reach
+  //     its track's right edge shows it. That is why this needs its own check: the
+  //     fieldset regression overflowed the header and all four tier rows by the
+  //     same ~27px, but the rows' last item is a centre-justified radio, so only
+  //     the header's last `.sm-col-header` span stuck out far enough for the
+  //     containment check (#3) to notice. This catches it at the source instead.
+  for (const el of [
+    document.querySelector('.sm-family-header'),
+    ...document.querySelectorAll('#sm-tier-list .sm-family-row'),
+  ]) {
+    if (!el) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none') continue;
+    const tracks = cs.gridTemplateColumns.split(/\s+/).map(parseFloat).filter(n => !Number.isNaN(n));
+    if (tracks.length < 2) continue;
+    const gap = parseFloat(cs.columnGap) || 0;
+    const need = tracks.reduce((a, b) => a + b, 0) + gap * (tracks.length - 1);
+    const have = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    if (need > have + EPS) {
+      fail('grid-tracks-fit', `${name(el)}: ${tracks.length} tracks + gaps need ${round(need)}px but the content box is ${round(have)}px (over by ${round(need - have)})`);
+    }
+  }
+
   // The WIDE role row is a pre-existing no-wrap flex that this check does not own:
   // with a max-length custom role name its min-content is ~686px, so it overflows
-  // whenever the content column is narrower than that — which at 721px it is (the
-  // sidebar is back, leaving 441px). Measured identical on `main`, so it is not a
+  // whenever the content column is narrower than that — which at 841px it is (the
+  // sidebar is back, leaving 561px). Measured identical on `main`, so it is not a
   // seam discontinuity introduced here; fixing it means changing the wide role row,
-  // which is out of scope. Recorded loudly rather than silently skipped, and only
-  // above the breakpoint — below it, the restacked role row IS owned and asserted.
+  // and it would take a ~1030px breakpoint, which would restack 1024px desktop.
+  // Recorded loudly rather than silently skipped, and only above the breakpoint —
+  // below it, the restacked role row IS owned and asserted.
   const exempt = (el) => !narrow && el.closest('#sm-role-list') !== null;
   if (!narrow) {
     const over = Math.max(0, ...[...document.querySelectorAll('#sm-role-list .sm-role-row')].map(li =>
@@ -132,18 +171,25 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
       ? `wide role row overflows its own box by ${round(over)}px (content column ${content.clientWidth}px)` +
         ` — pre-existing no-wrap flex, not asserted above the breakpoint`
       : `wide role row fits (no overflow) — not asserted above the breakpoint either way`);
-    // The six-column grid FITS at 721px but its `1fr` model column is squeezed to
-    // a stub, so "no overflow" alone would read as "fine" when it isn't. Recorded
-    // for every wide width: pre-existing (identical on `main`), and raising the
-    // breakpoint to cover it would mean a second breakpoint value, which is a
-    // scope decision rather than part of the phone fix.
-    // Only the `1fr` model column is measured: the backend (88px) and effort (76px)
-    // columns are fixed by design and their option text fits.
+    // 4b. The `1fr` model column, ASSERTED above the breakpoint. This used to be a
+    //     `[known]` line only: at 721px the column was squeezed to a 25px stub that
+    //     no amount of `min-width: 0` could recover, because a select floors at a
+    //     ~22px intrinsic UA minimum. The 840px breakpoint puts the grid's narrowest
+    //     render at 841px, where the column measures 100px on a classic-scrollbar
+    //     host — exactly the readable floor — so the stub is gone and the
+    //     measurement becomes an assertion.
+    //     Catches: any future change that re-narrows the grid — another fixed
+    //     column, wider padding on an ancestor, or the breakpoint drifting back down.
+    //     Only the `1fr` column is measured: the backend (88px) and effort (76px)
+    //     columns are fixed by design and their option text fits.
     const models = [...document.querySelectorAll('#sm-tier-list select.sm-version')].map(s => rect(s).width);
     if (models.length) {
       const min = round(Math.min(...models));
-      known.push(`narrowest tier-grid model select ${min}px` +
-        (min < SELECT_MIN_W ? ` — below the ${SELECT_MIN_W}px readable floor; the wide grid's 1fr column squeezed at this width (pre-existing)` : ' — readable'));
+      if (min < SELECT_MIN_W) {
+        fail('collapsed-select', `narrowest tier-grid model select ${min}px < ${SELECT_MIN_W} — the wide grid's 1fr column is squeezed at this width`);
+      } else {
+        known.push(`narrowest tier-grid model select ${min}px — readable`);
+      }
     }
   }
 
@@ -151,7 +197,7 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
   //    computes to `auto` on both axes — it clips and scrolls sideways rather
   //    than pushing the document out, so check #1 alone cannot see this.
   //    Above the breakpoint the role list is exempt (see `exempt`), so measure the
-  //    widest laid-out box in the TIER rows instead of the whole scroller: 721px is
+  //    widest laid-out box in the TIER rows instead of the whole scroller: 841px is
   //    the narrowest the six-column grid ever renders, and it has to fit in the
   //    content column there. Measured through `boxesOf`, or the wrappers' zero
   //    rects would reduce this to the tier label's right edge and never fire.
@@ -220,6 +266,32 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
       }
       if (cr.width <= 0 || cr.height <= 0) {
         fail('collapsed-select', `${rowName(li)}: ${name(c)} is ${round(cr.width)}x${round(cr.height)}`);
+      }
+    }
+
+    // 4b. The paired fields must actually be SIDE BY SIDE, narrow only. Nothing
+    //     else here can tell: a pair that has silently re-stacked still gives two
+    //     full-width selects that are wider than SELECT_MIN_W, are 44px tall, and
+    //     do not overlap or overflow — every other check passes. The specific way
+    //     it breaks is a descendant `grid-column: 1 / -1` from the row leaking into
+    //     the pair and making each field span both halves, which is why
+    //     `.sm-field-pair .sm-field { grid-column: auto }` exists.
+    if (narrow) {
+      for (const pair of li.querySelectorAll('.sm-field-pair')) {
+        const fields = boxesOf(pair);
+        if (fields.length !== 2) {
+          fail('pair-not-paired', `${rowName(li)}: .sm-field-pair has ${fields.length} laid-out fields, expected 2`);
+          continue;
+        }
+        const [a, b] = fields.map(rect);
+        const sameBand = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > EPS;
+        const sideBySide = Math.min(a.right, b.right) - Math.max(a.left, b.left) <= EPS;
+        if (!sameBand || !sideBySide) {
+          fail('pair-not-paired',
+            `${rowName(li)}: ${name(fields[0])} [x ${round(a.left)}..${round(a.right)}, y ${round(a.top)}..${round(a.bottom)}] and ` +
+            `${name(fields[1])} [x ${round(b.left)}..${round(b.right)}, y ${round(b.top)}..${round(b.bottom)}] ` +
+            `are not side by side on one line`);
+        }
       }
     }
 
@@ -364,7 +436,7 @@ try {
         h: document.documentElement.scrollHeight,
       }));
       // Clip to the viewport width: unclipping lets the document grow sideways too
-      // (the pre-existing wide role-row overflow does exactly that at 721px), and a
+      // (the pre-existing wide role-row overflow does exactly that at 841px), and a
       // PNG wider than the viewport misrepresents what the layout is.
       await page.screenshot({ path: out, fullPage: true, clip: { x: 0, y: 0, width, height: shot.h } });
 

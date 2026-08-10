@@ -758,7 +758,6 @@ export function installSettings({
       }, `the ${t.label} tier`);
       backendSel.dataset.tier = t.tier;
       li.appendChild(labelledField('backend', 'backend', backendSel));
-      li.appendChild(labelledField('model', 'model', modelSel));
 
       // Column 5: default effort (a separate axis from the binding above)
       const effortSel = buildEffortPicker(
@@ -766,7 +765,11 @@ export function installSettings({
       );
       effortSel.dataset.tier = t.tier;
       effortSel.setAttribute('aria-label', `Default effort for the ${t.label} tier`);
-      li.appendChild(labelledField('effort', 'effort', effortSel));
+      // Columns 4 & 5 in DOM order, but one shared line once the row restacks.
+      li.appendChild(fieldPair(
+        labelledField('model', 'model', modelSel),
+        labelledField('effort', 'effort', effortSel),
+      ));
 
       // Column 6: default radio
       const radio = document.createElement('input');
@@ -855,6 +858,7 @@ export function installSettings({
         li.appendChild(labelledField('binding', 'binding', bindingSel));
 
         // Custom backend + model pickers, only when Custom is selected.
+        let modelField = null;
         if (isCustom) {
           const { backendSel, modelSel } = buildBackendPicker(rb, true, {
             onBackend: (backend) => onPickRoleBackend(r.role, backend),
@@ -862,7 +866,7 @@ export function installSettings({
             onModel: (model) => saveRoleBinding(r.role, { backend: backendIdOf(rb), model }),
           }, rowLabel);
           li.appendChild(labelledField('backend', 'backend', backendSel));
-          li.appendChild(labelledField('model', 'model', modelSel));
+          modelField = labelledField('model', 'model', modelSel);
         }
 
         // Default effort — 'inherit' (follow the bound tier) or an explicit level.
@@ -872,7 +876,9 @@ export function installSettings({
           `Inherit (${re.inheritsTo || defaultEffort})`,
         );
         effortSel.setAttribute('aria-label', `Default effort for the ${r.label || r.role} role`);
-        li.appendChild(labelledField('effort', 'effort', effortSel));
+        const effortField = labelledField('effort', 'effort', effortSel);
+        // A tier-bound role has no model field, so effort takes the line alone.
+        li.appendChild(modelField ? fieldPair(modelField, effortField) : effortField);
 
         // Remove — user roles only. A small × icon control, not a full button.
         if (isUserRole) {
@@ -1133,6 +1139,16 @@ export function installSettings({
       wrap.appendChild(cap);
     }
     wrap.appendChild(control);
+    return wrap;
+  }
+
+  // Groups the fields that share one line once the row restacks (model + effort).
+  // Same trick as `.sm-field`: `display: contents` above the breakpoint, so each
+  // field stays the row's own grid/flex item and nothing up there sees the wrapper.
+  function fieldPair(...fields) {
+    const wrap = document.createElement('div');
+    wrap.className = 'sm-field-pair';
+    for (const f of fields) wrap.appendChild(f);
     return wrap;
   }
 

@@ -140,15 +140,18 @@
               Changes take effect immediately — no restart.
             </p>
             <div id="sm-status" class="st-status" aria-live="polite">Loading…</div>
-            <div class="sm-family-header" aria-hidden="true">
-              <span></span>
-              <span></span>
-              <span class="sm-col-header">backend</span>
-              <span class="sm-col-header">model</span>
-              <span class="sm-col-header">effort</span>
-              <span class="sm-col-header">default</span>
-            </div>
-            <ul id="sm-tier-list" class="sm-family-list"></ul>
+            <fieldset class="sm-group sm-tiers">
+              <legend>Capability tiers</legend>
+              <div class="sm-family-header" aria-hidden="true">
+                <span></span>
+                <span></span>
+                <span class="sm-col-header">backend</span>
+                <span class="sm-col-header">model</span>
+                <span class="sm-col-header">effort</span>
+                <span class="sm-col-header">default</span>
+              </div>
+              <ul id="sm-tier-list" class="sm-family-list"></ul>
+            </fieldset>
             <fieldset class="sm-group sm-roles">
               <legend>Roles</legend>
               <p class="settings-hint">A role binds to a capability tier (follows whatever that tier points at) or a <strong>Custom</strong> backend/model pair. Spawn callers (MCP <code>spawn_instance</code>'s <code>model</code>) resolve a role to its backend (case-insensitively) — the Conduct button uses the <strong>Conductor</strong> role. Add your own <strong>custom roles</strong> below (they start on the Powerful tier — rebind with the row's picker). A role's <strong>default effort</strong> follows its tier (<code>Inherit</code>, showing the level it resolves to) unless you pick a level for the role itself. <strong>Plugin</strong>-contributed rows are rebindable the same way — your binding and effort <em>override</em> the plugin's own defaults and persist — but the row itself belongs to the plugin: it can't be removed and disappears when the plugin is disabled.</p>
