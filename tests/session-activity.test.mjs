@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createLastActivityCache } from '../src/sessionActivity.ts';
+import { createLastActivityCache, TAIL_BYTES } from '../src/sessionActivity.ts';
 import { encodeCwd, listSessionsForCwd, summarizeSessions } from '../src/projects.ts';
 
 async function withTmp(fn) {
@@ -37,9 +37,9 @@ async function writeTranscript(file, { timestamp, mtimeMs, tail = true }) {
   }
 }
 
-// Pins: lastActivity is the newest in-file timestamp, NOT the file's mtime,
-// when the tail is untimestamped bookkeeping.
-test('lastActivity reads the newest record IN the transcript, not its mtime', async () => {
+// Pins: lastActivity is the timestamp on the LAST timestamped record in the
+// file, NOT the file's mtime, when the tail is untimestamped bookkeeping.
+test('lastActivity reads the last timestamped record IN the transcript, not its mtime', async () => {
   await withTmp(async (dir) => {
     const file = path.join(dir, 's.jsonl');
     const realActivity = Date.parse('2026-08-07T06:10:51.000Z');
@@ -50,6 +50,82 @@ test('lastActivity reads the newest record IN the transcript, not its mtime', as
     const got = await cache.lastActivityOf(file, await fs.stat(file));
     assert.equal(got, realActivity);
     assert.notEqual(got, bogusMtime, 'the mass-exit mtime must not be the answer');
+  });
+});
+
+// Pins that the read is of the TAIL, on a file that is actually longer than
+// the window — the arithmetic (`size - len`) every other fixture here leaves
+// unobserved, because a handful of short lines makes `len === size` and the
+// offset 0 either way. 80% of a real transcript population exceeds TAIL_BYTES,
+// and reading the head there would report the session's START time: the exact
+// wrong-ordering defect this module exists to remove.
+test('lastActivity reads the TAIL of a transcript larger than the window', async () => {
+  await withTmp(async (dir) => {
+    const file = path.join(dir, 's.jsonl');
+    const startedAt = Date.parse('2026-08-01T00:00:00.000Z');
+    const endedAt = Date.parse('2026-08-08T22:27:10.000Z');
+
+    // Head: the session's FIRST real record — what a head read would return.
+    const lines = [JSON.stringify({
+      type: 'user', uuid: 'u1', timestamp: '2026-08-01T00:00:00.000Z',
+      message: { role: 'user', content: 'hi' },
+    })];
+    // Filler carrying no timestamp of its own, so the only two candidate
+    // answers in the whole file are the head record and the tail record.
+    const filler = JSON.stringify({ type: 'filler', pad: 'x'.repeat(2048) });
+    while (lines.join('\n').length < TAIL_BYTES * 2) lines.push(filler);
+    // Tail: the last real record, then the untimestamped bookkeeping the CLI
+    // appends on exit.
+    lines.push(JSON.stringify({
+      type: 'assistant', uuid: 'a1', timestamp: '2026-08-08T22:27:10.000Z',
+      message: { role: 'assistant', content: [] },
+    }));
+    lines.push(JSON.stringify({ type: 'last-prompt', lastPrompt: 'hi', leafUuid: 'a1', sessionId: 'x' }));
+    await fs.writeFile(file, lines.join('\n') + '\n');
+
+    const st = await fs.stat(file);
+    assert.ok(st.size > TAIL_BYTES,
+      `fixture must exceed the ${TAIL_BYTES}-byte window for this test to mean anything`);
+
+    const cache = createLastActivityCache();
+    const got = await cache.lastActivityOf(file, st);
+    assert.equal(got, endedAt);
+    assert.notEqual(got, startedAt,
+      'reading the head instead of the tail would report when the session STARTED');
+  });
+});
+
+// Pins the sub-property the module header claims for the pathological case: a
+// record LONGER than the window degrades to mtime — today's value — rather
+// than the reader growing into a whole-file scan. The tail here holds nothing
+// but an unparseable fragment of that one giant record.
+test('a record longer than the window falls back to mtime, not a whole-file read', async () => {
+  await withTmp(async (dir) => {
+    const file = path.join(dir, 's.jsonl');
+    const mtimeMs = Date.parse('2026-08-09T09:12:40.000Z');
+    const earlier = Date.parse('2026-08-07T06:10:51.000Z');
+
+    await fs.writeFile(file, [
+      // A parseable record, but pushed out of the window by the one below it.
+      JSON.stringify({
+        type: 'user', uuid: 'u1', timestamp: '2026-08-07T06:10:51.000Z',
+        message: { role: 'user', content: 'hi' },
+      }),
+      // One record, on one line, longer than the whole window.
+      JSON.stringify({
+        type: 'user', uuid: 'u2', timestamp: '2026-08-08T22:27:10.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', content: 'y'.repeat(TAIL_BYTES * 2) }] },
+      }),
+    ].join('\n') + '\n');
+    await fs.utimes(file, new Date(mtimeMs), new Date(mtimeMs));
+
+    const st = await fs.stat(file);
+    const cache = createLastActivityCache();
+    const got = await cache.lastActivityOf(file, st);
+    assert.equal(got, st.mtimeMs, 'the pathological case degrades to current behaviour');
+    assert.notEqual(got, earlier, 'it must not scan back past the window to find one');
+    assert.notEqual(got, Date.parse('2026-08-08T22:27:10.000Z'),
+      'the giant record itself is unreachable — its head is outside the window');
   });
 });
 

@@ -68,6 +68,10 @@ export function effectiveResumeMode(recorded: string | null | undefined): string
 // session ran hot, and both are silent at the point of writing. The callers are
 // all internal (`Instance.mode` and the rewind/fork/prune paths that read it),
 // so anything outside MODES here is a bug in this repo, not user input.
+// It is an internal assertion, not a loud failure on every path: the
+// highest-frequency caller, Instance._writeSessionMetadata, is best-effort
+// (`.catch(() => {})`), so there the throw means NO marker is written rather
+// than a wrong one — which is the point, but it is silent.
 export function markerPermissionMode(mode: string): string {
   if (!(MODES as readonly string[]).includes(mode)) {
     throw new Error(`markerPermissionMode: unknown orchestrator mode ${JSON.stringify(mode)}`);

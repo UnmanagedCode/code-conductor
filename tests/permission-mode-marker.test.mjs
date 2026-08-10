@@ -130,14 +130,20 @@ test('setMode("ask") sends bypassPermissions on the wire and records default', a
   } finally { restore(); }
 });
 
-// Pins the mapping at the unit level. Iterates MODES rather than listing
-// literals, so a mode added to the vocabulary without a decision about how it
-// is RECORDED fails here instead of silently recording itself raw.
+// What each orchestrator mode must be RECORDED as, written out rather than
+// derived from the implementation's `ask ? 'default' : mode` rule — a
+// derived expectation is satisfied by whatever the code does, so a fourth mode
+// would record itself raw and still pass.
+const EXPECTED_RECORDING = { plan: 'plan', ask: 'default', bypassPermissions: 'bypassPermissions' };
+
+// Pins the mapping at the unit level, and pins it as TOTAL: the exhaustiveness
+// check is what makes a mode added to the vocabulary without a decision about
+// how it is recorded fail here, on the missing entry.
 test('markerPermissionMode is total over MODES, mapping only ask', () => {
+  assert.deepEqual([...MODES].sort(), Object.keys(EXPECTED_RECORDING).sort(),
+    'a new mode needs an explicit decision here about how it is RECORDED');
   for (const mode of MODES) {
-    const recorded = markerPermissionMode(mode);
-    assert.equal(recorded, mode === 'ask' ? 'default' : mode, `mode ${mode}`);
-    assert.notEqual(recorded, undefined);
+    assert.equal(markerPermissionMode(mode), EXPECTED_RECORDING[mode], `mode ${mode}`);
   }
   assert.equal(markerPermissionMode('ask'), 'default', 'the one mode that must differ');
 });

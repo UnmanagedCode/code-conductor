@@ -427,9 +427,10 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
       live: liveHere,
       // Newest first: on a list of sessions nobody is working on, "which did I
       // touch last" is the question. A stopped session has no createdAt on this
-      // surface, so the answer comes off its transcript — from the newest
-      // record INSIDE it, not the file's mtime, which a mass subprocess exit
-      // rewrites for every session at once (see sessionActivity.ts).
+      // surface, so the answer comes off its transcript — from the last
+      // timestamped record INSIDE it, not the file's mtime, which a mass
+      // subprocess exit rewrites for every session at once (see
+      // sessionActivity.ts).
       inactive: [...rows]
         .sort((a, b) => b.lastActivity - a.lastActivity)
         .map(s => ({

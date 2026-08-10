@@ -28,7 +28,7 @@ import type { Stats } from 'node:fs';
 // real record. A record longer than this (a huge tool result as the very last
 // content) falls back to mtime rather than reading the whole file: the fallback
 // is today's value, so the pathological case degrades to current behaviour.
-const TAIL_BYTES = 64 * 1024;
+export const TAIL_BYTES = 64 * 1024;
 
 // Bounded so a long-lived server fanning out over every project can't grow the
 // map without limit as sessions are created and deleted. ~200 bytes an entry,
