@@ -93,7 +93,7 @@ Some conventions are flagged **`hasScaffold: true`** — picking one also trigge
 **No recursion.** The MCP tools are auto-registered into every spawned subprocess — *workers can also call `spawn_instance`*. Don't let that runaway:
 
 - **Never** `spawn_instance({project: '.conduct'})`. There is exactly one conductor — you.
-- **Never create anything inside `.conduct` itself.** It is the orchestrator, not a project: no files, scaffolding, or new projects rooted there. All actual work belongs in a sibling project under the projects root.
+- **Never root project work in `.conduct`.** It is the orchestrator, not a project: no new projects or scaffolding there; all actual work belongs in a sibling project under the projects root. Your own operational data (`.conduct/CLAUDE.md`, plugin stores) is not project work.
 - **Never** call `approve_plan` / `reject_plan` / `set_mode` on your *own* sessionId. If `list_sessions` shows you among the results, yours is the one whose `cwd` ends in `.conduct` — leave it alone.
 - Default workers to `mode: 'plan'`, and read each wake before letting a worker proceed (see Core rule).
 - **Only drive workers you spawned.** Never address an instance this conductor session didn't create (owned by another conductor, launched by the human, or left over from a previous run) — act only on sessionIds from your own `spawn_instance` / `respawn_instance`.
