@@ -20,11 +20,12 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   SEED_CONVENTIONS, setSelection, composeCurrentConduct,
-  getDefaultPlaybook, setDefaultPlaybook, defaultPlaybookConvention, playbookListing,
+  getDefaultPlaybookSelection, setDefaultPlaybook, defaultPlaybookConvention, playbookListing,
 } from '../src/conductorConventions.ts';
 import { renderPlaybookConvention } from '../src/playbookConvention.ts';
-import { loadPlaybooks } from '../src/playbooks.ts';
+import { loadPlaybooks, DEFAULT_PLAYBOOK_ID, SEED_PLAYBOOK_IDS } from '../src/playbooks.ts';
 import { orchStoreRoot } from '../src/projects.ts';
+import * as m0028 from '../migrations/0028-tri-state-default-playbook.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -90,52 +91,131 @@ async function writeFixture(def) {
 // load path, not by handing the renderer an object built in the test.
 async function renderFixture(def) {
   await writeFixture(def);
-  await setDefaultPlaybook(FIXTURE_ID);
+  await setDefaultPlaybook({ mode: 'playbook', id: FIXTURE_ID });
   return defaultPlaybookConvention();
 }
 
+const storeJson = async () => JSON.parse(
+  await fs.readFile(path.join(orchStoreRoot(), 'conventions', 'conductor.json'), 'utf8'));
+
 // ── selection state ──────────────────────────────────────────────────────────
 
-test('default playbook is unset by default; set/clear round-trips', async () => {
-  assert.equal(await getDefaultPlaybook(), null);
-  assert.equal(await setDefaultPlaybook('solo'), 'solo');
-  assert.equal(await getDefaultPlaybook(), 'solo');
-  assert.equal(await setDefaultPlaybook(null), null);
-  assert.equal(await getDefaultPlaybook(), null);
+test('the selection is unset by default; all three states round-trip', async () => {
+  assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'unset' });
+  assert.deepEqual(await setDefaultPlaybook({ mode: 'playbook', id: 'solo' }), { mode: 'playbook', id: 'solo' });
+  assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'playbook', id: 'solo' });
+  assert.deepEqual(await setDefaultPlaybook({ mode: 'none' }), { mode: 'none' });
+  assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'none' });
+  assert.deepEqual(await setDefaultPlaybook({ mode: 'unset' }), { mode: 'unset' });
+  assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'unset' });
+});
+
+// THE load-bearing store test. Every behavioural assertion below reads through
+// getDefaultPlaybookSelection(), so a two-state store that aliased unset↔none
+// could still satisfy them by accident; this one reads the raw JSON. Absence is
+// the ONLY representation of unset, and the opt-out is a tagged object — never a
+// null or an empty string that a read site would have to interpret.
+test('the three states are distinct on disk', async () => {
+  await setDefaultPlaybook({ mode: 'unset' });
+  let store = await storeJson();
+  assert.equal(Object.hasOwn(store, 'defaultPlaybook'), false, 'unset persists NO key');
+
+  await setDefaultPlaybook({ mode: 'none' });
+  store = await storeJson();
+  assert.deepEqual(store.defaultPlaybook, { mode: 'none' }, 'none is a tagged object, not null');
+
+  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
+  store = await storeJson();
+  assert.deepEqual(store.defaultPlaybook, { mode: 'playbook', id: 'solo' }, 'an id is tagged too, not a bare string');
 });
 
 test('an unknown playbook id is refused 400 and does not change the stored value', async () => {
-  await setDefaultPlaybook('solo');
-  await assert.rejects(() => setDefaultPlaybook('nope'), e => {
+  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
+  await assert.rejects(() => setDefaultPlaybook({ mode: 'playbook', id: 'nope' }), e => {
     assert.equal(e.statusCode, 400);
     assert.match(e.message, /unknown playbook id 'nope'/);
     return true;
   });
-  assert.equal(await getDefaultPlaybook(), 'solo');
+  assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'playbook', id: 'solo' });
+});
+
+test('an unknown mode is refused 400 and does not change the stored value', async () => {
+  await setDefaultPlaybook({ mode: 'none' });
+  await assert.rejects(() => setDefaultPlaybook({ mode: 'nope' }), e => {
+    assert.equal(e.statusCode, 400);
+    return true;
+  });
+  assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'none' });
 });
 
 test('a user-overlay playbook is selectable (one catalog, not a second discovery layer)', async () => {
   await writeFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
-  assert.equal(await setDefaultPlaybook(FIXTURE_ID), FIXTURE_ID);
+  assert.deepEqual(await setDefaultPlaybook({ mode: 'playbook', id: FIXTURE_ID }),
+    { mode: 'playbook', id: FIXTURE_ID });
 });
 
 test('setting the default leaves the convention selection untouched', async () => {
   await setSelection(['playbooks']);
-  await setDefaultPlaybook('solo');
-  const store = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'conventions', 'conductor.json'), 'utf8'));
+  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
+  const store = await storeJson();
   assert.deepEqual(store.enabled, ['playbooks']);
-  assert.equal(store.defaultPlaybook, 'solo');
+  assert.deepEqual(store.defaultPlaybook, { mode: 'playbook', id: 'solo' });
+});
+
+// A fallback naming a playbook that does not load would render nothing at all,
+// which is exactly the silent failure the whole surface exists to avoid.
+test('the fallback names a real, loadable built-in playbook', async () => {
+  // The product decision, pinned literally once: every other assertion reads
+  // through the constant and would follow it to any other seed.
+  assert.equal(DEFAULT_PLAYBOOK_ID, 'relay');
+  assert.ok(SEED_PLAYBOOK_IDS.includes(DEFAULT_PLAYBOOK_ID), 'the fallback is a built-in seed');
+  const { playbooks } = await loadPlaybooks();
+  assert.ok(playbooks.has(DEFAULT_PLAYBOOK_ID), 'the fallback resolves through the real catalog');
 });
 
 // ── composition ──────────────────────────────────────────────────────────────
 
-test('no default selected ⇒ no convention in the composed prompt', async () => {
+// A fresh install has never chosen, and must still ship with a baseline graph.
+test('unset ⇒ the built-in default playbook is composed into the prompt', async () => {
+  const doc = await composeCurrentConduct();
+  assert.ok(doc.includes(`## Default playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'the fallback section is present');
+  // Read from the definition, so this cannot pass on the header alone.
+  const { playbooks } = await loadPlaybooks();
+  for (const [name, stage] of Object.entries(playbooks.get(DEFAULT_PLAYBOOK_ID).stages)) {
+    assert.ok(doc.includes(`- **${name}**`), `stage ${name} listed`);
+    assert.ok(doc.includes(stage.description), `stage ${name} description present`);
+  }
+});
+
+// End-to-end for migration 0028's decision, through the REAL reader rather than
+// the raw JSON the migration test asserts on: a store written before the
+// tri-state existed lands on the built-in default, not on the opt-out.
+test('a pre-tri-state store migrates to unset and composes the built-in default', async () => {
+  const file = path.join(orchStoreRoot(), 'conventions', 'conductor.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify({ enabled: ALL_SLUGS, defaultPlaybook: null }));
+  await m0028.run({ root: path.dirname(orchStoreRoot()) });
+  assert.deepEqual(await getDefaultPlaybookSelection(), { mode: 'unset' }, 'unset, NOT {mode:"none"}');
+  assert.ok((await composeCurrentConduct()).includes(`## Default playbook — \`${DEFAULT_PLAYBOOK_ID}\``));
+});
+
+// The explicit opt-out is NOT unset: collapsing the two would render the
+// fallback at exactly the moment the user asked for nothing.
+test('explicit none ⇒ no convention in the composed prompt', async () => {
+  await setDefaultPlaybook({ mode: 'none' });
   const doc = await composeCurrentConduct();
   assert.ok(!doc.includes('## Default playbook'), 'section absent');
 });
 
+test('an explicitly selected id beats the fallback', async () => {
+  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
+  const doc = await composeCurrentConduct();
+  assert.ok(doc.includes('## Default playbook — `solo`'), 'the selected playbook is composed');
+  assert.ok(!doc.includes(`## Default playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'the fallback did not win');
+});
+
 test('default selected ⇒ its stages and per-stage descriptions are in the composed prompt', async () => {
-  await setDefaultPlaybook('solo');
+  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
   const doc = await composeCurrentConduct();
   assert.ok(doc.includes('## Default playbook — `solo`'), 'section present');
   // LOAD-BEARING ORDER. The section deliberately omits the playbook's
@@ -156,7 +236,7 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
 });
 
 test('the convention rides the playbooks convention toggle', async () => {
-  await setDefaultPlaybook('solo');
+  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
   await setSelection(ALL_SLUGS.filter(s => s !== 'playbooks'));
   assert.ok(!(await composeCurrentConduct()).includes('## Default playbook'), 'absent with playbooks off');
   await setSelection(ALL_SLUGS);
@@ -165,7 +245,7 @@ test('the convention rides the playbooks convention toggle', async () => {
 
 test('a selected id that no longer resolves omits the section rather than failing the spawn', async () => {
   await writeFixture(fixture({ alphaDesc: 'A.', betaDesc: 'B.' }));
-  await setDefaultPlaybook(FIXTURE_ID);
+  await setDefaultPlaybook({ mode: 'playbook', id: FIXTURE_ID });
   await fs.rm(path.join(orchStoreRoot(), 'playbooks', `${FIXTURE_ID}.json`));
   assert.equal(await defaultPlaybookConvention(), '');
   await assert.doesNotReject(composeCurrentConduct());
@@ -314,31 +394,44 @@ test('GET conductor conventions carries the playbook catalog and the selected de
   assert.ok(Array.isArray(r.body.playbooks) && r.body.playbooks.length > 0, 'catalog listed');
   assert.ok(r.body.playbooks.some(p => p.id === 'solo'), 'built-ins listed');
   assert.deepEqual(r.body.playbookErrors, [], 'load errors reported');
-  assert.equal(r.body.defaultPlaybook, null);
+  assert.deepEqual(r.body.defaultPlaybook, { mode: 'unset' });
+  // The picker labels its unset row from this, so it must be the shipped
+  // constant rather than a second copy of the id on either side of the wire.
+  assert.equal(r.body.defaultPlaybookFallback, DEFAULT_PLAYBOOK_ID);
 });
 
-test('PUT default-playbook persists, clears, and refuses an unknown id', async () => {
-  let r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'relay' });
+test('PUT default-playbook round-trips all three states and refuses an unknown id', async () => {
+  const put = (defaultPlaybook) =>
+    api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { defaultPlaybook });
+  const get = async () =>
+    (await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook;
+
+  let r = await put({ mode: 'playbook', id: 'relay' });
   assert.equal(r.status, 200);
-  assert.equal(r.body.defaultPlaybook, 'relay');
-  assert.equal((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook, 'relay');
+  assert.deepEqual(r.body.defaultPlaybook, { mode: 'playbook', id: 'relay' });
+  assert.deepEqual(await get(), { mode: 'playbook', id: 'relay' });
+
+  r = await put({ mode: 'none' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await get(), { mode: 'none' }, 'the opt-out survives a round-trip as itself');
+
+  r = await put({ mode: 'unset' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await get(), { mode: 'unset' });
 
   // Must not be swallowed by the /:slug route — that would 404 as an unknown
   // convention instead of validating the id.
-  r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'nope' });
+  r = await put({ mode: 'playbook', id: 'nope' });
   assert.equal(r.status, 400);
   assert.match(r.body.error, /unknown playbook id 'nope'/);
-
-  r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: null });
-  assert.equal(r.status, 200);
-  assert.equal(r.body.defaultPlaybook, null);
 });
 
-test('PUT default-playbook with no `id` key is a 400, not a silent clear', async () => {
-  await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', { id: 'solo' });
+test('PUT default-playbook with no `defaultPlaybook` key is a 400, not a silent change', async () => {
+  await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook',
+    { defaultPlaybook: { mode: 'playbook', id: 'solo' } });
   const r = await api(baseUrl, 'PUT', '/api/settings/conventions/conductor/default-playbook', {});
   assert.equal(r.status, 400);
-  assert.match(r.body.error, /id is required/);
-  assert.equal((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook, 'solo',
-    'the selection survived the malformed request');
+  assert.match(r.body.error, /defaultPlaybook is required/);
+  assert.deepEqual((await api(baseUrl, 'GET', '/api/settings/conventions/conductor')).body.defaultPlaybook,
+    { mode: 'playbook', id: 'solo' }, 'the selection survived the malformed request');
 });

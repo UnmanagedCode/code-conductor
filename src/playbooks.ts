@@ -41,6 +41,11 @@ const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 // getPlaybooks() reads the metadata from the parsed body.
 export const SEED_PLAYBOOK_IDS = ['solo', 'relay', 'freeform'] as const;
 
+// The playbook an unset Settings selection resolves to (see
+// resolveDefaultPlaybookId in conductorConventions.ts). Typed to the seed union
+// so a typo is a compile error rather than a silently empty prompt section.
+export const DEFAULT_PLAYBOOK_ID: typeof SEED_PLAYBOOK_IDS[number] = 'relay';
+
 export const TOOL_NAME_PREFIX = 'mcp__code-conductor__';
 
 // The registered server-side tool name, with the MCP namespace prefix stripped.

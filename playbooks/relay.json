@@ -8,7 +8,7 @@
     "plan": {
       "description": "Spawn and brief a plan worker; on its wake reject with feedback, answer its question, or abandon. There is no approving it into implement — this planner never writes code, and the handoff to one that does is yours to make.",
       "tools": {
-        "spawn_instance": { "pin": { "mode": "plan", "createWorktree": true } },
+        "spawn_instance": { "pin": { "mode": "plan", "createWorktree": true, "model": "planner" } },
         "set_mode": "deny",
         "approve_plan": "deny",
         "sync_worktree": "deny"

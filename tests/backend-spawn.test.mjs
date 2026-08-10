@@ -221,6 +221,30 @@ describe('role → {backend,model} resolution (MCP spawn)', () => {
     assert.equal(inst.model, 'gemma4:cloud');
   });
 
+  // `planner` exists because relay's `plan` stage pins spawn_instance's `model`
+  // to it. A role named in a pin but absent from ROLES resolves through no branch
+  // of the ladder and refuses BAD_MODEL — the failure the pin-resolution test in
+  // playbook-schema.test.mjs records as having shipped once.
+  test('the planner role resolves — by default via its tier, and via an explicit binding', async () => {
+    await addCustomModel({ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
+    await setTierBackend('powerful', { backend: 'ollama', model: 'gemma4:cloud' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+
+    // Untouched: DEFAULT_ROLE_BINDING.planner follows the powerful tier.
+    let spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'planner' });
+    await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+    let inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+    assert.equal(inst.backend, 'ollama');
+    assert.equal(inst.model, 'gemma4:cloud');
+
+    await setRoleBinding('planner', { backend: 'claude', model: 'claude-haiku-4-5' });
+    spawned = await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'planner' });
+    await waitFor(() => instances.idsForSession(spawned.sessionId).length > 0);
+    inst = instances.get(instances.idsForSession(spawned.sessionId)[0]);
+    assert.equal(inst.backend, 'claude');
+    assert.equal(inst.model, 'claude-haiku-4-5', 'a user rebinding of the role wins');
+  });
+
   test('a custom Claude-bound role resolves to that claude model', async () => {
     await setRoleBinding('reviewer', { backend: 'claude', model: 'claude-haiku-4-5' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });

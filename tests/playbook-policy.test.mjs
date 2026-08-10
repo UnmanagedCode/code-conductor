@@ -38,6 +38,20 @@ test('spawn into an entry stage is allowed and `require` FILLS the omitted argum
   assert.deepEqual(res.move, { kind: 'spawn', to: 'plan', playbook: 'solo' });
 });
 
+// The contrast with solo above is the whole reason relay CAN pin here: its
+// planner is retired at the handoff, so the pin binds one worker rather than a
+// whole run.
+test('relay\'s plan stage pins the planner role, and refuses a spawn that names another model', () => {
+  const res = allowed(d('spawn_instance', { playbook: 'relay', stage: 'plan', project: 'demo' }));
+  assert.equal(res.patchedArgs.model, 'planner');
+  assert.equal(res.patchedArgs.mode, 'plan');
+
+  const conflict = refusal(
+    d('spawn_instance', { playbook: 'relay', stage: 'plan', project: 'demo', model: 'sonnet' }),
+    'ARG_PIN_CONFLICT');
+  assert.match(conflict.reason, /model/);
+});
+
 test('a supplied argument that contradicts `require` is refused, not overridden', () => {
   const res = refusal(
     d('spawn_instance', { playbook: 'solo', stage: 'plan', mode: 'bypassPermissions' }),
