@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
+import { DEFAULT_PLAYBOOK_ENFORCEMENT } from '../src/playbooks.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -723,13 +724,18 @@ test('a conductor born at warn records its birth and materialises the ledger', a
   } finally { await t.close(); }
 });
 
-test('a conductor spawned with no playbookEnforcement defaults to enforce', async () => {
+test('a conductor spawned with no playbookEnforcement and nothing persisted defaults to warn', async () => {
   const t = await setup();
   try {
-    // The flipped default, read at the real ingress rather than off the class
-    // field: playbooks are on unless someone turns them off.
-    assert.equal(t.instances.get(t.conductorId).playbookEnforcement, 'enforce');
-    assert.equal(t.instances.get(t.conductorId).summary().playbookEnforcement, 'enforce',
+    // A VALUE CONTRACT — what a plain conductor spawn ends up at — NOT a proof
+    // that _doCreate reads the store. With nothing persisted the constructor
+    // default already equals the constant, so deleting that store-read leaves
+    // this green. (True since the read was added, not something the default flip
+    // broke: an overclaim removed, not a regression.) The ingress read is pinned
+    // in tests/playbook-enforcement-default.test.mjs, where the persisted level
+    // is made to DIFFER from the constant.
+    assert.equal(t.instances.get(t.conductorId).playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT);
+    assert.equal(t.instances.get(t.conductorId).summary().playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT,
       'and it rides the summary, which is what every frame and REST reply carries');
   } finally { await t.close(); }
 });
@@ -746,7 +752,11 @@ test('the spawn route validates playbookEnforcement and rejects an unknown mode'
 });
 
 test('the retired `off` level is refused at both ingress boundaries', async () => {
-  const t = await setup();
+  // Spawned at an EXPLICIT enforce so "the level must not have moved" below
+  // names a level the refused call would actually have changed — at the shipped
+  // default a silent coercion of 'off' to 'warn' would leave it where it already
+  // was, and the assertion would prove nothing.
+  const t = await setup({ enforcement: 'enforce' });
   try {
     // 'off' is gone from the allow-list, so it must be REFUSED rather than
     // silently coerced — a caller asking for inert behaviour that no longer

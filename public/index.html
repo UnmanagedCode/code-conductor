@@ -341,6 +341,16 @@
                 <em>Default</em> it injects the built-in playbook named in that row; selecting <em>None</em>
                 injects nothing.
               </p>
+              <div class="st-actions">
+                <label for="dpe-select">Playbook enforcement</label>
+                <select id="dpe-select"></select>
+              </div>
+              <p class="settings-desc">
+                The level newly spawned conductor sessions start at. Under <em>Enforce</em> an off-graph
+                call is refused; under <em>Warn</em> it is ledgered and proceeds anyway. The ⋮ menu's
+                <em>Enforce Playbooks</em> toggle overrides this for one session without changing it here.
+              </p>
+              <div id="dpe-status" class="st-status" aria-live="polite"></div>
               <div id="dp-status" class="st-status" aria-live="polite"></div>
               <div id="cc-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="cc-convention-list" class="cc-convention-list"></ul>

@@ -25,6 +25,7 @@ import {
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { addBackend, addCustomModel } from '../src/appSettings.ts';
+import { getDefaultPlaybookEnforcement, setDefaultPlaybookEnforcement } from '../src/conductorConventions.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -249,9 +250,17 @@ test('a manifest carrying the retired playbookEnforcement `off` resurrects at wa
   // process, and it is consumed once at boot — so it is normalized here rather
   // than by a migration.
   //
-  // It must land on `warn`, not on the `enforce` default: that session was
-  // deliberately running unenforced, and bringing it back enforced would start
-  // refusing calls that used to be allowed with nothing announcing it.
+  // It must land on `warn`: that session was deliberately running unenforced,
+  // and bringing it back enforced would start refusing calls that used to be
+  // allowed with nothing announcing it.
+  //
+  // SCOPE, honestly: while the shipped default was `enforce` this test was also
+  // the only proof that a restored session keeps its own recorded level. It is
+  // not any more — `warn` is now the default too, so an entry that lost its
+  // level would land here anyway. That invariant is pinned by "a restarted
+  // conductor keeps its OWN level, not a default that changed under it" below,
+  // which makes the two values differ on purpose. What remains here is the
+  // migrate-on-read path itself: `off` must not reach an instance field.
   const conductorSid = randomUUID();
   const conductCwd = path.join(projectsRoot, '.conduct');
   const dir = path.join(claudeProjectsRoot, encodeCwd(conductCwd));
@@ -270,7 +279,50 @@ test('a manifest carrying the retired playbookEnforcement `off` resurrects at wa
   const inst = [...instances.byId.values()].find(i => i.sessionId === conductorSid);
   assert.ok(inst, 'conductor resumed');
   assert.equal(inst.playbookEnforcement, 'warn',
-    "the retired level must normalize to warn, never to the enforcing default");
+    "the retired level must normalize to warn, never resurrect as enforced");
+});
+
+test('a restarted conductor keeps its OWN level, not a default that changed under it', async () => {
+  // Invariant: an explicit create-time playbookEnforcement wins over the
+  // persisted Settings default, which is what makes a restart faithful.
+  //
+  // The two are made to DIFFER by construction — session at `enforce`, persisted
+  // default at `warn` — so the assertion discriminates whatever the shipped
+  // constant happens to be. Dropping the field from the manifest entry (or
+  // re-reading the default on restore) resurrects this conductor unenforced:
+  // exactly the silent downgrade the carry exists to prevent, and invisible to
+  // any test that lets the two values coincide.
+  await ensureConductProject();
+  const res = await api(baseUrl, 'POST', '/api/instances', {
+    project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions', temp: true, playbookEnforcement: 'enforce',
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  const inst = instances.get(res.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  assert.equal(inst.playbookEnforcement, 'enforce');
+
+  // The default moves AFTER the session was born, the way a user changing the
+  // setting mid-life would move it.
+  await setDefaultPlaybookEnforcement('warn');
+  assert.notEqual(await getDefaultPlaybookEnforcement(), inst.playbookEnforcement,
+    'the persisted default must differ from the session level, or this proves nothing');
+
+  const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${inst.sessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].playbookEnforcement, 'enforce', 'the recorded level rides the manifest');
+  await waitFor(() => inst.proc === null, { timeout: 20000 });
+
+  const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+  assert.equal(restored, 1);
+  const newInst = [...instances.byId.values()].find(i => i.sessionId === inst.sessionId && i.id !== inst.id);
+  assert.ok(newInst, 'conductor restored as a fresh instance');
+  assert.equal(newInst.playbookEnforcement, 'enforce',
+    'the restored session kept its own level; it did not inherit the changed default');
+  clearResumeManifest();
 });
 
 test('buildConductorResumeText lists each worker sessionId + worktree', () => {

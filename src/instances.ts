@@ -17,6 +17,7 @@ import { SessionRenewController, type RenewalOpts } from './sessionRenew.ts';
 import { isTemp, markTemp, unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
 import { CONDUCT_PROJECT_NAME, isConductorInstance, materializeCurrentConduct } from './conduct.ts';
+import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // The DEFAULT is imported rather than restated: a second copy of the level this
 // field is born at would drift from the allow-list that validates it. Safe as a
 // runtime edge — playbooks.ts reaches only projects/fragmentCatalog/playbookLedger
@@ -630,7 +631,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // How hard this session's playbook is enforced at the MCP boundary, read by
     // src/mcp/playbookGate.ts. Only meaningful on a CONDUCTOR — the gate scopes
     // itself with isConductorInstance, so the field is simply never read on any
-    // other instance. On by default: a conducted run names its playbook.
+    // other instance. The last-resort fallback only: a conductor spawned through
+    // Manager._doCreate takes the persisted Settings default (or the caller's
+    // explicit value) before it launches.
     this.playbookEnforcement = DEFAULT_PLAYBOOK_ENFORCEMENT;
     // Transient flag layered on top of `status: 'turn'`: set true when a
     // SOFT interrupt injects its hidden steering message and the model is
@@ -3246,7 +3249,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
     this.byId.set(id, inst);
     if (autoApprovePlan) inst.autoApprovePlan = true;
+    // An explicit create-time value WINS over the persisted Settings default:
+    // src/resumeRestart.ts carries a restored session's own recorded level, and
+    // inheriting a since-changed default would silently up/downgrade it. With no
+    // explicit value, a fresh conductor starts at the Settings default — read
+    // live (the catalog does not cache), so it lands on the next spawn without a
+    // server restart. Set before launch() below, so the first status frame — the
+    // one the gate ledgers off — already carries it.
     if (playbookEnforcement) inst.playbookEnforcement = playbookEnforcement;
+    else if (isConductorInstance(inst)) inst.playbookEnforcement = await getDefaultPlaybookEnforcement();
     // Fork prefill: the dropped prompt rides the new instance's first
     // `snapshot` frame (see Instance.consumePrefill / wsHub subscribe).
     if (typeof prefill === 'string') inst.pendingPrefill = prefill;
