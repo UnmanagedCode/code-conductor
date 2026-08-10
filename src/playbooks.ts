@@ -63,8 +63,10 @@ export const WILDCARD = '*';
 // Per-conductor-session enforcement level. The single home for the allow-list:
 //   • 'warn'    — the refusal is ledgered and the call PROCEEDS anyway.
 //   • 'enforce' — the refusal is returned to the caller.
-// Both levels check, patch and ledger; neither is inert. Enforcement is on by
-// default, so a conducted run must name its playbook — see decideSpawn's
+// Both levels check, patch and ledger; neither is inert. DEFAULT_ is the
+// fallback for the persisted Settings default (getDefaultPlaybookEnforcement in
+// conductorConventions.ts), which is what a new conductor is born at — so out of
+// the box a conducted run must name its playbook; see decideSpawn's
 // PLAYBOOK_UNKNOWN refusal, which carries every playbook and where to enter it.
 export const PLAYBOOK_ENFORCEMENT_MODES = ['warn', 'enforce'] as const;
 export type PlaybookEnforcement = typeof PLAYBOOK_ENFORCEMENT_MODES[number];

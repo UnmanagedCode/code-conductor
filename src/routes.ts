@@ -91,6 +91,8 @@ import {
   deleteCustomConvention as deleteConductorConvention,
   getDefaultPlaybookSelection,
   setDefaultPlaybook,
+  getDefaultPlaybookEnforcement,
+  setDefaultPlaybookEnforcement,
   type DefaultPlaybookSelection,
 } from './conductorConventions.ts';
 // The catalog read the Settings picker lists — the same one the MCP tool
@@ -1740,8 +1742,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // (src/playbookConvention.ts).
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
-      const [conventions, enabled, catalog, defaultPlaybook] = await Promise.all([
+      const [conventions, enabled, catalog, defaultPlaybook, defaultPlaybookEnforcement] = await Promise.all([
         getConductorConventionsCatalog(), getConductorSelection(), listPlaybooks(), getDefaultPlaybookSelection(),
+        getDefaultPlaybookEnforcement(),
       ]);
       res.json({
         core: CONDUCT_CORE_META, conventions, enabled,
@@ -1749,12 +1752,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // What `{mode:'unset'}` resolves to, so the picker labels that row from
         // the shipped constant instead of a second copy of the id.
         defaultPlaybookFallback: DEFAULT_PLAYBOOK_ID,
+        // The level a newly spawned conductor starts at, plus the allow-list the
+        // enforcement picker builds its rows from — the constant stays server-side.
+        defaultPlaybookEnforcement,
+        playbookEnforcementModes: PLAYBOOK_ENFORCEMENT_MODES,
       });
     } catch (e) { next(e); }
   });
 
-  // Literal /selection and /default-playbook must precede the /:slug route below
-  // so they aren't swallowed as slugs.
+  // The literal paths (/selection, /default-playbook, /default-playbook-enforcement)
+  // must precede the /:slug route below so they aren't swallowed as slugs.
   r.put('/settings/conventions/conductor/selection', async (req, res, next) => {
     try {
       const enabled = jsonBody(req).enabled as string[];
@@ -1777,6 +1784,22 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       }
       const saved = await setDefaultPlaybook(body.defaultPlaybook as DefaultPlaybookSelection);
       res.json({ defaultPlaybook: saved });
+    } catch (e) { next(e); }
+  });
+
+  r.put('/settings/conventions/conductor/default-playbook-enforcement', async (req, res, next) => {
+    try {
+      // `mode` must be PRESENT, for the same reason default-playbook's key is:
+      // a body-less PUT is malformed, not a request to pick a level.
+      const body = jsonBody(req);
+      if (!('mode' in body)) {
+        throw Object.assign(
+          new Error("mode is required, e.g. {\"mode\":\"warn\"}"),
+          { statusCode: 400 },
+        );
+      }
+      const saved = await setDefaultPlaybookEnforcement(body.mode);
+      res.json({ defaultPlaybookEnforcement: saved });
     } catch (e) { next(e); }
   });
 

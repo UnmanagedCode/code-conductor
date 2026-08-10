@@ -24,7 +24,10 @@ import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
 // dynamic import precisely so the handlers→conductorConventions edge cannot close
 // a cycle. By the time loadPlaybooks() resolves that registry, this module is
 // fully initialised.
-import { loadPlaybooks, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
+import {
+  loadPlaybooks, DEFAULT_PLAYBOOK_ID,
+  PLAYBOOK_ENFORCEMENT_MODES, normalizePlaybookEnforcement, type PlaybookEnforcement,
+} from './playbooks.ts';
 import { renderPlaybookConvention } from './playbookConvention.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
@@ -272,6 +275,31 @@ export async function setDefaultPlaybook(sel: DefaultPlaybookSelection): Promise
   }
   await catalog.patchState({ defaultPlaybook: { mode: 'playbook', id } });
   return { mode: 'playbook', id };
+}
+
+// ── Default playbook enforcement (same Settings block, same store) ──────────
+//
+// Global for the same reason the selection above is (see the note at the top of
+// that block). This is the level a NEWLY SPAWNED conductor starts at, applied in
+// Manager._doCreate; the ⋮ toggle overrides it for one session and never writes
+// back here.
+//
+// TWO states, not three: an unset key and an explicit 'enforce' behave
+// identically, so there is no "default" row to distinguish.
+export async function getDefaultPlaybookEnforcement(): Promise<PlaybookEnforcement> {
+  // normalizePlaybookEnforcement owns both the absent→DEFAULT fallback and the
+  // retired-'off'→'warn' rule; this read site adds neither.
+  return normalizePlaybookEnforcement((await catalog.readState()).defaultPlaybookEnforcement);
+}
+
+export async function setDefaultPlaybookEnforcement(mode: unknown): Promise<PlaybookEnforcement> {
+  // Validated against the allow-list rather than the normalizer: 'off' is
+  // readable (legacy tolerance) but must never be writable.
+  if (typeof mode !== 'string' || !(PLAYBOOK_ENFORCEMENT_MODES as readonly string[]).includes(mode)) {
+    throw httpError(400, `mode must be one of ${PLAYBOOK_ENFORCEMENT_MODES.join(' | ')}`);
+  }
+  await catalog.patchState({ defaultPlaybookEnforcement: mode });
+  return mode as PlaybookEnforcement;
 }
 
 // The resolved default playbook, GENERATED from its definition (see
