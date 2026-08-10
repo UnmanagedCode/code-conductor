@@ -398,8 +398,10 @@ export async function createWorktree(
   const branch = worktreeBranchName(id);
 
   // Collision pre-check. A random short id realistically never collides, but a
-  // slug does ('auth' twice). Refusing here — rather than letting `git worktree
-  // add` fail — means a refused create leaves no half-made directory or branch.
+  // slug does ('auth' twice). What this buys is a clean 409 instead of the
+  // httpError(500, 'git worktree add failed: …') git would otherwise produce —
+  // NOT cleanup: on a branch collision git fails before creating the directory,
+  // so there is nothing left behind either way.
   //
   // The branch ref is the only thing worth checking: the dir name and the branch
   // both derive from the same slug, and a registered worktree always still has
@@ -663,17 +665,19 @@ export async function mergeWorktreeIntoParent(
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
-  // 0. Refuse if another worktree is based on this one. THIS merge rewrites their
-  //    base by itself — no follow-on sync required: step 7 below fast-forwards
-  //    this worktree's own branch onto the merge commit, and that branch IS what
-  //    the children were created from, so their baseSha moves out from under them
-  //    the moment this call succeeds. Checked ahead of the behind-gate
-  //    deliberately: merging requires a prior sync, and that sync also refuses,
-  //    so without this gate a worktree with dependents and a moved base would
-  //    report WORKTREE_BEHIND and send the caller to a sync_worktree that refuses
-  //    for the real reason. This gate names the real blocker on the first call.
-  //    Evaluated on the worktree being MERGED, never on the one being merged
-  //    INTO — see dependentsRefusal.
+  // 0. Refuse if another worktree is based on this one. THIS merge moves their
+  //    base on its own: step 7 below fast-forwards this worktree's own branch
+  //    onto the merge commit, and that branch IS what the children were created
+  //    from, so their baseSha stops being its tip the moment this call succeeds.
+  //    A fast-forward only moves the tip — the old sha stays a reachable
+  //    ancestor, so the children end up behind rather than broken — but the base
+  //    is not allowed to move at all while children exist, which is what this
+  //    gate enforces. Checked ahead of the behind-gate deliberately: merging
+  //    requires a prior sync, and that sync also refuses, so without this gate a
+  //    worktree with dependents and a moved base would report WORKTREE_BEHIND and
+  //    send the caller to a sync_worktree that refuses for the real reason. This
+  //    gate names the real blocker on the first call. Evaluated on the worktree
+  //    being MERGED, never on the one being merged INTO — see dependentsRefusal.
   const dependents = await listDependentWorktrees(projectName, worktreeName);
   if (dependents.length > 0) {
     return dependentsRefusal(worktreeName, dependents, 'merging');

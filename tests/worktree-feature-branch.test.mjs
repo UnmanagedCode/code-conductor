@@ -271,7 +271,8 @@ test('T7: a name is slugified into the branch + dir; collisions and empty slugs 
     () => createWorktree('demo', { name: 'auth' }),
     (e) => { assert.equal(e.statusCode, 409); return true; },
   );
-  // The collision is caught before `git worktree add`, so nothing was created.
+  // The pre-check turns what would be git's 500 into a clean 409, and no second
+  // record appears under the taken name.
   assert.equal((await listWorktrees('demo')).length, countBefore);
 
   // The unnamed path is unchanged: still a random short id.
