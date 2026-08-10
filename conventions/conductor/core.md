@@ -61,8 +61,9 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `send_prompt` — send a turn; auto-subscribes unless `subscribe:false`. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn.
 - `subscribe_to_idle` / `unsubscribe_from_idle` — re-arm / cancel a one-shot wake without sending a prompt.
 - `wait_for_idle` — blocking fallback; discouraged (see Core rule).
-- `set_mode` (switch the worker's permission mode at runtime — see the mode enum on `set_mode`/`spawn_instance`) · `interrupt_turn` · `kill_instance` · `respawn_instance` (resume a just-exited instance).
-- `promote_session` — flip a temp worker to a persistent session (`claude --resume` finds it). Soft-refuses when the session is not live or unknown.
+- `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
+- `interrupt_turn` · `kill_instance` · `respawn_instance` (resume a just-exited instance).
+- `promote_session` — flip a temp worker to a persistent session (`claude --resume` finds it). Use it when an assignment legitimately spans many turns and you want the worker to survive a session restart. Soft-refuses when the session is not live or unknown.
 
 **`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`, or `respawn_instance` if it only just exited); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
 
