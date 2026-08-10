@@ -6,10 +6,9 @@
 //
 //  1. STORE. The level rides conventions/conductor.json as a sibling of
 //     `defaultPlaybook`, so the two must not clobber each other; and the read
-//     path must keep normalizePlaybookEnforcement's retired-'off'→'warn' rule.
-//     That assertion only discriminates because DEFAULT_PLAYBOOK_ENFORCEMENT is
-//     'enforce' — 'off' landing on the default would be the WRONG answer here,
-//     and the test says so explicitly rather than leaving it to the reader.
+//     path must go through normalizePlaybookEnforcement rather than returning
+//     raw store text. What the retired-'off' assertion can and cannot pin now
+//     that the shipped default is 'warn' is spelled out at that test.
 //  2. INHERITANCE. A conductor spawned with no explicit playbookEnforcement
 //     starts at the persisted level; an explicit one still wins (the restart
 //     path in src/resumeRestart.ts depends on that).

@@ -279,7 +279,7 @@ test('a manifest carrying the retired playbookEnforcement `off` resurrects at wa
   const inst = [...instances.byId.values()].find(i => i.sessionId === conductorSid);
   assert.ok(inst, 'conductor resumed');
   assert.equal(inst.playbookEnforcement, 'warn',
-    "the retired level must normalize to warn, never to the enforcing default");
+    "the retired level must normalize to warn, never resurrect as enforced");
 });
 
 test('a restarted conductor keeps its OWN level, not a default that changed under it', async () => {
