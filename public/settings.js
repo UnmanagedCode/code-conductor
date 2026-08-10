@@ -102,7 +102,7 @@ export function installSettings({
   // Conventions group — one reusable widget mounted three times (cascade order
   // Conductor → Workspace → Project). Each owns its own DOM (by id prefix) and
   // its scope's REST endpoints; see public/conventionsPanel.js.
-  // The conductor block also carries the default-playbook and playbook-enforcement
+  // The conductor block also carries the preferred-playbook and playbook-enforcement
   // pickers, both fed from the same GET payload rather than a second fetch.
   const defaultPlaybook = installDefaultPlaybook({ base: '/api/settings/conventions/conductor' });
   const defaultEnforcement = installDefaultEnforcement({ base: '/api/settings/conventions/conductor' });

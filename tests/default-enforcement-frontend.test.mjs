@@ -47,7 +47,7 @@ function setup({ payload = PAYLOAD } = {}) {
   globalThis.window = window;
   globalThis.document = window.document;
   window.document.body.innerHTML = `
-    <div class="st-actions"><label for="dp-select">Default playbook</label><select id="dp-select"></select></div>
+    <div class="st-actions"><label for="dp-select">Preferred playbook</label><select id="dp-select"></select></div>
     <div id="dp-status"></div>
     <div class="st-actions"><label for="dpe-select">Playbook enforcement</label><select id="dpe-select"></select></div>
     <div id="dpe-status"></div>
@@ -134,7 +134,7 @@ test('a failed save is reported rather than silently swallowed', async () => {
 
 test('one panel load feeds BOTH conductor pickers', async () => {
   // The seam, as settings.js composes it: a single onData fans out to the
-  // default-playbook picker and this one. Dropping either call leaves every
+  // preferred-playbook picker and this one. Dropping either call leaves every
   // server test green and that widget permanently empty.
   const { window } = setup();
   const [{ installConventionsPanel }, { installDefaultPlaybook }, { installDefaultEnforcement }] = await Promise.all([
