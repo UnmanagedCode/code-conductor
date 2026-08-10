@@ -1534,9 +1534,15 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-version { min-width: 0; }
 .sm-effort { min-width: 0; }
 .sm-family-row input[type="radio"] { justify-self: center; }
-@media (max-width: 720px) {
-  .sm-family-row { padding: 7px 10px; }
-}
+/* Every control in a tier/role row is wrapped in a `label.sm-field` carrying a
+   caption (settings.js `labelledField`). On the wide layout the wrapper is
+   erased — the control itself stays the row's grid/flex item, so every rule
+   above still targets it — and the captions are the `.sm-family-header` row.
+   The mobile block below restacks the row and turns each field into a
+   `caption + control` line. */
+.sm-field { display: contents; }
+.sm-field-pair { display: contents; }
+.sm-field-cap { display: none; }
 
 /* Roles sub-panel inside the Models group. Roles use a simple flex row (not the
    6-column tier grid): label + binding select + optional custom pickers +
@@ -1584,6 +1590,130 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-custom-form input { flex: 1 1 140px; min-width: 0; }
 .sm-custom-form select { flex: 0 0 auto; }
 .sm-custom-form .btn { flex: 0 0 auto; }
+
+/* Models view at narrow widths. The wide tier grid never wraps and floors at a
+   406px row box — 20+76+88+22+76+48 tracks + 5 gaps + padding + border, where the
+   22px is the model select's intrinsic UA minimum (it does NOT shrink to 0 despite
+   `min-width: 0`, so past this the grid stops absorbing and simply overflows). So
+   below the breakpoint each tier/role row restacks into a card: an identity line,
+   then one `caption + control` line per field, with model + effort sharing one.
+   The captions come from `.sm-field-cap` (hidden above), which is why
+   `.sm-family-header` can go — its column names no longer line up with anything.
+
+   The breakpoint is 850px, not the app-wide 720px, because the tier list sits in a
+   `fieldset.sm-group` (30px of padding + border) and the sidebar is still present
+   above 720: at 721px the grid's tracks overflow their row by ~27px.
+
+   The binding constraint is not that overflow — which clears at a lower width — but
+   the `1fr` model column staying readable (>= 100px, `SELECT_MIN_W` in
+   debug/check-models-responsive.mjs). That needs a 484px row box (20+76+88+100+76+48
+   + 5 gaps + padding + border), so 546px of content column, so an effective width of
+   826px once the 280px sidebar and 32px of column padding are taken off. "Effective"
+   because a classic scrollbar's gutter comes off too, and its width is the host's,
+   not ours: at 850 the grid's narrowest render is 851px, which holds >= 100px for any
+   gutter up to 25px (17px → 108px, 20px → 105px). Sitting on 840 instead would put a
+   17px-scrollbar host at 98px and fail the check with nothing having changed.
+
+   Placement is by explicit row 1 + full-width auto-placement for the fields, not
+   `grid-template-areas`: a role row's backend/model fields only exist on a
+   Custom binding, and named areas with no item would leave empty tracks (and
+   their gaps) behind. */
+@media (max-width: 850px) {
+  .sm-family-header { display: none; }
+
+  /* Identity line first (enable + name + the default radio, which is about the
+     row's identity rather than a field), then the fields. `minmax(0, 1fr)` for the
+     name column, not `1fr`: a bare `1fr` floors at the name's min-content, and a
+     custom role name is a user-supplied token up to CUSTOM_ROLE_MAX chars with no
+     break opportunity, which is exactly what pushes the row past the viewport. */
+  .sm-family-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    padding: 10px 12px;
+  }
+  .sm-family-row .sm-field,
+  .sm-family-row .sm-field-pair { grid-column: 1 / -1; }
+  .sm-family-row .sm-field--enable { grid-column: 1; grid-row: 1; }
+  .sm-family-row .sm-field--default { grid-column: 3; grid-row: 1; }
+  .sm-family-row .sm-family-label {
+    grid-column: 2; grid-row: 1;
+    font-size: 14px; font-weight: 600;
+  }
+
+  .sm-role-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    padding: 10px 12px;
+  }
+  .sm-role-row .sm-field,
+  .sm-role-row .sm-field-pair { grid-column: 1 / -1; }
+  .sm-role-row .sm-role-name-wrap { grid-column: 1; grid-row: 1; min-width: 0; flex-basis: auto; }
+  .sm-role-row .sm-role-remove { grid-column: 2; grid-row: 1; }
+  /* Reset the wide row's flex sizing — inert under grid, but leaving `margin-left:
+     auto` on the effort field would shove it off its own line. */
+  .sm-role-row .sm-effort { margin-left: 0; }
+  /* A role name has no guaranteed break opportunity, so `anywhere` rather than
+     `break-word`; the tier labels are short catalog strings but share the class. */
+  .sm-role-row .sm-family-label { white-space: normal; overflow-wrap: anywhere; }
+
+  .sm-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .sm-field-cap {
+    display: block;
+    flex: 0 0 4.5em;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  /* Model + effort share one line — both are short pickers, and a phone has the
+     width for the pair. Equal halves via `minmax(0, 1fr)` so the model select can
+     shrink below its widest option instead of forcing the pair past the card. */
+  .sm-field-pair {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px 10px;
+    align-items: end;
+  }
+  /* Captions stack ABOVE their control for this pair only: side by side, a 4.5em
+     caption plus its gap leaves each select ~49px at 320px, under the readable
+     floor. Stacked, each select gets its full half — 111px at 320px. */
+  .sm-field-pair .sm-field {
+    /* Load-bearing. The two `grid-column: 1 / -1` rules above are DESCENDANT
+       selectors, so they also match the fields nested in the pair and would make
+       each span both halves and stack again — silently undoing the pairing. */
+    grid-column: auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+  .sm-field-pair .sm-field-cap { flex: 0 0 auto; }
+  /* Cap the control rather than letting it stretch the full width of a 719px
+     card, where a 600px-wide select for `high` reads as a layout accident. */
+  .sm-field select { flex: 1 1 auto; min-width: 0; max-width: 380px; }
+  /* The wide role row pins its selects to content width (and pushes effort right
+     with margin-left:auto); restated at matching specificity so a stacked field
+     fills its line like the tier rows' do. */
+  .sm-role-row .sm-role-binding,
+  .sm-role-row .sm-backend,
+  .sm-role-row .sm-version,
+  .sm-role-row .sm-effort { flex: 1 1 auto; min-width: 0; }
+
+  /* Tap targets — 44px, the same floor the review/commits/costs rows use.
+     Scoped to this view; range sliders and the two bare checkbox/radio boxes are
+     excluded (each of the latter is sized by its own `.sm-field` wrapper). */
+  #settings-models select,
+  #settings-models button,
+  #settings-models input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  #settings-models .sm-field--enable,
+  #settings-models .sm-field--default,
+  #settings-models .tt-toggle { min-height: 44px; }
+  #settings-models .sm-role-remove { min-width: 44px; }
+  #settings-models .sm-field--enable { justify-content: center; min-width: 44px; }
+}
 .ih-usage-popover-note { font-size: 11px; color: var(--muted); padding: 6px 8px 2px; }
 
 /* ── Settings → Backends group ────────────────────────────────────────────── */

@@ -612,12 +612,15 @@ export function installSettings({
     // switch (onBackend), a Claude version pick (onClaude(model)), or a
     // non-Claude model pick (onModel(model)). The backend list comes from the
     // registry, so a user-added row shows up here with no code change. Returns the
-    // two <select> elements so the caller can place them.
-    function buildBackendPicker(b, enabled, { onBackend, onClaude, onModel }) {
+    // two <select> elements so the caller can place them. `rowLabel` names the row
+    // in each select's aria-label: the visible column captions are per-row once
+    // the grid restacks, so the accessible name has to carry the row itself.
+    function buildBackendPicker(b, enabled, { onBackend, onClaude, onModel }, rowLabel) {
       const bBackend = backendIdOf(b);
       const backendSel = document.createElement('select');
       backendSel.className = 'sm-backend';
       backendSel.disabled = !enabled;
+      backendSel.setAttribute('aria-label', `Backend for ${rowLabel}`);
       for (const p of backends) {
         const opt = document.createElement('option');
         opt.value = p.id;
@@ -631,6 +634,7 @@ export function installSettings({
       const sel = document.createElement('select');
       sel.className = 'sm-version';
       sel.disabled = !enabled;
+      sel.setAttribute('aria-label', `Model for ${rowLabel}`);
       if (bBackend !== CLAUDE_BACKEND) {
         const { curated, custom } = modelsForBackend(bBackend);
         if (!curated.length && !custom.length) {
@@ -727,15 +731,18 @@ export function installSettings({
       const li = document.createElement('li');
       li.className = 'sm-family-row' + (isEnabled ? '' : ' sm-family-row--disabled');
 
-      // Column 1: enable checkbox
+      // Column 1: enable checkbox. Its `labelledField` wrapper carries no caption
+      // (the tier name sits right beside it) — it exists to give the 13px box a
+      // 44px tap target when the row restacks.
       const chk = document.createElement('input');
       chk.type = 'checkbox';
       chk.className = 'sm-enable';
       chk.dataset.tier = t.tier;
       chk.checked = isEnabled;
       chk.disabled = isLastEnabled; // prevent disabling the last one
+      chk.setAttribute('aria-label', `Enable the ${t.label} tier`);
       chk.addEventListener('change', () => onPickTierEnabled(t.tier, chk.checked));
-      li.appendChild(chk);
+      li.appendChild(labelledField('enable', '', chk));
 
       // Column 2: tier label
       const labelEl = document.createElement('span');
@@ -748,10 +755,9 @@ export function installSettings({
         onBackend: (backend) => onPickTierBackend(t.tier, backend),
         onClaude: (model) => onPickClaudeModel(t.tier, model),
         onModel: (model) => onPickTierModel(t.tier, model),
-      });
+      }, `the ${t.label} tier`);
       backendSel.dataset.tier = t.tier;
-      li.appendChild(backendSel);
-      li.appendChild(modelSel);
+      li.appendChild(labelledField('backend', 'backend', backendSel));
 
       // Column 5: default effort (a separate axis from the binding above)
       const effortSel = buildEffortPicker(
@@ -759,7 +765,11 @@ export function installSettings({
       );
       effortSel.dataset.tier = t.tier;
       effortSel.setAttribute('aria-label', `Default effort for the ${t.label} tier`);
-      li.appendChild(effortSel);
+      // Columns 4 & 5 in DOM order, but one shared line once the row restacks.
+      li.appendChild(fieldPair(
+        labelledField('model', 'model', modelSel),
+        labelledField('effort', 'effort', effortSel),
+      ));
 
       // Column 6: default radio
       const radio = document.createElement('input');
@@ -769,8 +779,9 @@ export function installSettings({
       radio.value = t.tier;
       radio.checked = isDefault;
       radio.disabled = !isEnabled;
+      radio.setAttribute('aria-label', `Default spawn tier: ${t.label}`);
       radio.addEventListener('change', () => { if (radio.checked) onPickDefaultTier(t.tier); });
-      li.appendChild(radio);
+      li.appendChild(labelledField('default', 'default', radio));
 
       smListEl.appendChild(li);
     }
@@ -797,6 +808,7 @@ export function installSettings({
         const isCustom = rb.kind !== 'tier';
         const isPlugin = !!r.plugin;
         const isUserRole = !r.builtin && !isPlugin;
+        const rowLabel = `the ${r.label || r.role} role`;
 
         const li = document.createElement('li');
         li.className = 'sm-role-row' + (isPlugin ? ' sm-role-row--plugin' : '');
@@ -838,18 +850,23 @@ export function installSettings({
         customOpt.textContent = 'Custom';
         if (isCustom) customOpt.selected = true;
         bindingSel.appendChild(customOpt);
+        bindingSel.setAttribute('aria-label', `Binding for ${rowLabel}`);
         bindingSel.addEventListener('change', () => onPickRoleBinding(r.role, bindingSel.value));
-        li.appendChild(bindingSel);
+        // Caption is `binding`, not `binds to`: it has to be contained in the
+        // aria-label above (WCAG 2.5.3 Label in Name) or a speech-input user can't
+        // say what they see to target the control.
+        li.appendChild(labelledField('binding', 'binding', bindingSel));
 
         // Custom backend + model pickers, only when Custom is selected.
+        let modelField = null;
         if (isCustom) {
           const { backendSel, modelSel } = buildBackendPicker(rb, true, {
             onBackend: (backend) => onPickRoleBackend(r.role, backend),
             onClaude: (model) => saveRoleBinding(r.role, { backend: CLAUDE_BACKEND, model }),
             onModel: (model) => saveRoleBinding(r.role, { backend: backendIdOf(rb), model }),
-          });
-          li.appendChild(backendSel);
-          li.appendChild(modelSel);
+          }, rowLabel);
+          li.appendChild(labelledField('backend', 'backend', backendSel));
+          modelField = labelledField('model', 'model', modelSel);
         }
 
         // Default effort — 'inherit' (follow the bound tier) or an explicit level.
@@ -859,7 +876,9 @@ export function installSettings({
           `Inherit (${re.inheritsTo || defaultEffort})`,
         );
         effortSel.setAttribute('aria-label', `Default effort for the ${r.label || r.role} role`);
-        li.appendChild(effortSel);
+        const effortField = labelledField('effort', 'effort', effortSel);
+        // A tier-bound role has no model field, so effort takes the line alone.
+        li.appendChild(modelField ? fieldPair(modelField, effortField) : effortField);
 
         // Remove — user roles only. A small × icon control, not a full button.
         if (isUserRole) {
@@ -1101,6 +1120,37 @@ export function installSettings({
     }
   }
 
+
+  // Wraps a Models-row control in a <label> carrying a caption. On the wide
+  // layout `.sm-field` is `display: contents`, so the label box vanishes and the
+  // control itself stays the row's grid/flex item (the column captions live in
+  // `.sm-family-header` there, and `.sm-field-cap` is hidden). Under the mobile
+  // breakpoint the row restacks and each field becomes a `caption + control`
+  // line. Label association is DOM-based, so it holds either way. Pass an empty
+  // caption for a control whose neighbour already names it (no caption node is
+  // emitted at all) — the wrapper is then just the 44px tap target.
+  function labelledField(kind, caption, control) {
+    const wrap = document.createElement('label');
+    wrap.className = `sm-field sm-field--${kind}`;
+    if (caption) {
+      const cap = document.createElement('span');
+      cap.className = 'sm-field-cap';
+      cap.textContent = caption;
+      wrap.appendChild(cap);
+    }
+    wrap.appendChild(control);
+    return wrap;
+  }
+
+  // Groups the fields that share one line once the row restacks (model + effort).
+  // Same trick as `.sm-field`: `display: contents` above the breakpoint, so each
+  // field stays the row's own grid/flex item and nothing up there sees the wrapper.
+  function fieldPair(...fields) {
+    const wrap = document.createElement('div');
+    wrap.className = 'sm-field-pair';
+    for (const f of fields) wrap.appendChild(f);
+    return wrap;
+  }
 
   function escapeHtml(s) {
     return String(s ?? '').replace(/[&<>"']/g, c => (

@@ -3,3 +3,4 @@ node_modules/
 .claude/
 server.log
 .mutation/
+debug/screenshots/
