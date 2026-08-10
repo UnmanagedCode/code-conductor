@@ -264,7 +264,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
     const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
       ...w,
-      sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, lastMtime: 0 })),
+      sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
       mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
     })));
     return {
@@ -272,7 +272,7 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
       isGitRepo: await isGitRepo(p.path),
       worktrees: worktreesWithSessions,
-      sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, lastMtime: 0 })),
+      sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
   }));
   return textResult(renderProjects(enriched));
@@ -426,10 +426,13 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
       mergeStatus,
       live: liveHere,
       // Newest first: on a list of sessions nobody is working on, "which did I
-      // touch last" is the question. mtime, since a stopped session has no
-      // createdAt on this surface and its transcript's mtime IS its last activity.
+      // touch last" is the question. A stopped session has no createdAt on this
+      // surface, so the answer comes off its transcript — from the last
+      // timestamped record INSIDE it, not the file's mtime, which a mass
+      // subprocess exit rewrites for every session at once (see
+      // sessionActivity.ts).
       inactive: [...rows]
-        .sort((a, b) => b.mtime - a.mtime)
+        .sort((a, b) => b.lastActivity - a.lastActivity)
         .map(s => ({
           ...s,
           playbook: tracked(s.sessionId)?.playbook ?? null,

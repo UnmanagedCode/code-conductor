@@ -533,11 +533,11 @@ async function copySubAgentDir({ cwd, sessionId, newSessionId }: { cwd: string; 
 // Returns { newSessionId, saved:{thinking,toolInputs,toolOutputs}, lastSurvivingUuid }.
 export async function pruneSessionToNewId({
   cwd, sessionId, cutTurnIndex, pruneThinking = false, inputMode = 'truncate',
-  permissionMode, newSessionId,
+  mode, newSessionId,
 }: {
   cwd: string; sessionId: string; cutTurnIndex: number;
   pruneThinking?: boolean; inputMode?: InputMode;
-  permissionMode?: string; newSessionId?: string;
+  mode: string; newSessionId?: string;
 }): Promise<{ newSessionId: string; saved: { thinking: number; toolInputs: number; toolOutputs: number }; lastSurvivingUuid: string | null }> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   if (!INPUT_MODES.has(inputMode)) {
@@ -603,7 +603,7 @@ export async function pruneSessionToNewId({
     await writeSessionMetadata({
       cwd, sessionId: newSid,
       leafUuid: lastSurvivingUuid,
-      permissionMode: permissionMode ?? 'bypassPermissions',
+      mode,
     });
   }
 

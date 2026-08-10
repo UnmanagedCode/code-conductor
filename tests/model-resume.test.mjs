@@ -40,7 +40,7 @@ test('writeSessionMetadata writes only last-prompt + permission-mode (no orchest
     const cwd = path.join(tmpDir, 'proj');
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     await writeSessionMetadata({
-      cwd, sessionId, leafUuid: 'leaf-1', permissionMode: 'bypassPermissions',
+      cwd, sessionId, leafUuid: 'leaf-1', mode: 'bypassPermissions',
     });
     const sessionDir = path.join(claudeProjects, encodeCwd(cwd));
     const text = await fs.readFile(path.join(sessionDir, `${sessionId}.jsonl`), 'utf8');
@@ -72,7 +72,7 @@ test('readLastSessionModel returns null when no assistant line is present', asyn
     const cwd = path.join(tmpDir, 'proj');
     const sessionId = 'cccccccc-dddd-eeee-ffff-000000000000';
     await writeSessionMetadata({
-      cwd, sessionId, leafUuid: 'leaf-2', permissionMode: 'bypassPermissions',
+      cwd, sessionId, leafUuid: 'leaf-2', mode: 'bypassPermissions',
     });
     const result = await readLastSessionModel({ cwd, sessionId });
     assert.equal(result, null);

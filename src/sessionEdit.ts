@@ -157,8 +157,8 @@ function joinLines(entries: Array<{ raw: string }>): string {
 // After the rewrite, appends a fresh last-prompt / permission-mode metadata
 // pair pointing at lastSurvivingUuid (skipped when N==0 — the empty-history
 // case where no leaf exists to anchor the picker).
-export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessageIndex, permissionMode }: {
-  cwd: string; sessionId: string; userMessageIndex: number; permissionMode?: string;
+export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessageIndex, mode }: {
+  cwd: string; sessionId: string; userMessageIndex: number; mode: string;
 }): Promise<{ droppedText: string; droppedLineCount: number; remainingLineCount: number; lastSurvivingUuid: string | null }> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
@@ -177,7 +177,7 @@ export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessage
     await writeSessionMetadata({
       cwd, sessionId,
       leafUuid: lastSurvivingUuid,
-      permissionMode: permissionMode ?? 'bypassPermissions',
+      mode,
     });
   }
 
@@ -195,8 +195,8 @@ export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessage
 // copied line to the new id — purely cosmetic (the filename is what
 // `--resume` reads) but keeps the file self-consistent for any downstream
 // tooling. Returns { newSessionId, droppedText, lastSurvivingUuid }.
-export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageIndex, permissionMode, newSessionId }: {
-  cwd: string; sessionId: string; userMessageIndex: number; permissionMode?: string; newSessionId?: string;
+export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageIndex, mode, newSessionId }: {
+  cwd: string; sessionId: string; userMessageIndex: number; mode: string; newSessionId?: string;
 }): Promise<{ newSessionId: string; droppedText: string; lastSurvivingUuid: string | null }> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   if (!Number.isInteger(userMessageIndex) || userMessageIndex < 0) {
@@ -226,7 +226,7 @@ export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageInde
     await writeSessionMetadata({
       cwd, sessionId: newSid,
       leafUuid: lastSurvivingUuid,
-      permissionMode: permissionMode ?? 'bypassPermissions',
+      mode,
     });
   }
 

@@ -112,7 +112,7 @@ function stubRestoreFetch() {
   const archivedGroups = {
     groups: [{
       project: 'demoproj',
-      sessions: [{ sessionId: 'sid-1', title: 'Fix the thing', worktreeName: null, mtime: 0 }],
+      sessions: [{ sessionId: 'sid-1', title: 'Fix the thing', worktreeName: null, lastActivity: 0 }],
     }],
   };
 
@@ -155,7 +155,7 @@ test('settings: onSessionRestored does not fire when the restore request fails',
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve({
-          groups: [{ project: 'demoproj', sessions: [{ sessionId: 'sid-1', title: 'x', worktreeName: null, mtime: 0 }] }],
+          groups: [{ project: 'demoproj', sessions: [{ sessionId: 'sid-1', title: 'x', worktreeName: null, lastActivity: 0 }] }],
         }),
       });
     }

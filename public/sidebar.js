@@ -60,14 +60,14 @@ function mergeLive(onDisk, liveInstances) {
         // as it's alive (see tempSessionIdsForCwd), so it lands in this
         // synthetic branch on EVERY render, not just its first. Both fallbacks
         // MUST be stable across renders: a per-render Date.now() here would
-        // re-stamp mtime to "now" on every render — freezing the "ago" label at
+        // re-stamp lastActivity to "now" on every render — freezing the "ago" label at
         // ~0s and, worse, jumping every such row in lockstep to the exact
         // timestamp of whichever session most recently completed a turn (its
         // turn_end triggers the render). inst.lastResponseAt (set once per
         // completed turn, same field header.js uses) covers post-first-turn;
         // inst.createdAt (stamped once at spawn) covers the pre-first-turn case
         // so a brand-new/idle session shows its true "created Xs ago" age.
-        mtime: inst.lastResponseAt ?? inst.createdAt,
+        lastActivity: inst.lastResponseAt ?? inst.createdAt,
         size: 0,
         instanceId: inst.id,
         instanceStatus: inst.status,
@@ -83,7 +83,7 @@ function mergeLive(onDisk, liveInstances) {
     }
   }
   const out = [...byId.values()];
-  out.sort((a, b) => b.mtime - a.mtime);
+  out.sort((a, b) => b.lastActivity - a.lastActivity);
   return out;
 }
 
@@ -187,7 +187,7 @@ export class Sidebar {
     // Previous status per known instance id. setInstances uses this to
     // detect "turn just ended" transitions, which imply the session's
     // jsonl was just written and the matching subnode's cache is now
-    // stale (firstPrompt may have just appeared, mtime advanced, etc.).
+    // stale (firstPrompt may have just appeared, lastActivity advanced, etc.).
     this._prevStatusById = new Map();
     // Per-sessionId count of turn_notifications that landed while the
     // user wasn't viewing this session. Driven from app.js; cleared on
@@ -195,7 +195,7 @@ export class Sidebar {
     // (a new instance id for the same session).
     this.unreadBySessionId = new Map();
     this.conductSessionCount = 0;
-    this.conductSessionLastMtime = 0;
+    this.conductSessionLastActivity = 0;
   }
 
   setProjects(projects) { this.projects = projects; this.render(); }
@@ -205,9 +205,9 @@ export class Sidebar {
     this.render();
   }
   setUnread(map) { this.unreadBySessionId = map ?? new Map(); this.render(); }
-  setConductSessions({ count = 0, lastMtime = 0 } = {}) {
+  setConductSessions({ count = 0, lastActivity = 0 } = {}) {
     this.conductSessionCount = count;
-    this.conductSessionLastMtime = lastMtime;
+    this.conductSessionLastActivity = lastActivity;
     this.render();
   }
   setInstances(instances) {
@@ -226,7 +226,7 @@ export class Sidebar {
     // ended → CLI flushed user/assistant lines and the orchestrator
     // appended last-prompt metadata), invalidate that instance's
     // subnode cache so the next render reloads the on-disk list and
-    // picks up the real firstPrompt / mtime in place of the synthetic
+    // picks up the real firstPrompt / lastActivity in place of the synthetic
     // "(new session)" placeholder.
     const nextStatus = new Map();
     for (const inst of instances) {
@@ -247,17 +247,17 @@ export class Sidebar {
   setActive(id) { this.activeInstanceId = id; this.render(); }
 
   // Refreshes every live "Xs/Xm/Xh ago" label in place from its cached
-  // data-mtime, without rebuilding the DOM (unlike render(), this doesn't
+  // data-activity, without rebuilding the DOM (unlike render(), this doesn't
   // disturb <details> open/collapsed state or scroll position). Driven by
   // a timer in app.js — mirrors header.js's tickIdleAgo(), which solves the
   // identical "formatAgo is a snapshot, nothing re-ticks it" problem for the
   // turn-indicator's idle label.
   tickAgo() {
-    for (const node of this.list.querySelectorAll('.session-ago[data-mtime]')) {
-      node.textContent = formatAgo(Number(node.dataset.mtime));
+    for (const node of this.list.querySelectorAll('.session-ago[data-activity]')) {
+      node.textContent = formatAgo(Number(node.dataset.activity));
     }
-    for (const node of this.list.querySelectorAll('.sessions-last-ago[data-mtime]')) {
-      node.textContent = ` · last ${formatAgo(Number(node.dataset.mtime))}`;
+    for (const node of this.list.querySelectorAll('.sessions-last-ago[data-activity]')) {
+      node.textContent = ` · last ${formatAgo(Number(node.dataset.activity))}`;
     }
   }
 
@@ -350,9 +350,9 @@ export class Sidebar {
       }
       if (k === 'ago') {
         const ago = ex ?? el('span', { class: 'session-ago' });
-        ago.textContent = formatAgo(session.mtime);
-        if (session.mtime) ago.dataset.mtime = String(session.mtime);
-        else delete ago.dataset.mtime;
+        ago.textContent = formatAgo(session.lastActivity);
+        if (session.lastActivity) ago.dataset.activity = String(session.lastActivity);
+        else delete ago.dataset.activity;
         return ago;
       }
       if (k === 'preview') {
@@ -449,7 +449,7 @@ export class Sidebar {
         }
         // Two pinned sections below the normal list, each under a dim
         // divider, so the user can see them at a glance without losing the
-        // mtime sort over the normal sessions above:
+        // lastActivity sort over the normal sessions above:
         //   — temp —       live temp sessions that are NOT conducted
         //   — conducted —  sessions spawned via the MCP spawn_instance tool
         // Precedence: conducted wins over temp for grouping; the conducted
@@ -497,13 +497,13 @@ export class Sidebar {
         const total = this._sessionsTotal({ project, worktreeName, liveInstances, summary });
         const liveSummary = liveInstances.length > 0 ? ` · ${liveInstances.length} live` : '';
         det._summaryText.nodeValue = `Sessions (${total})${liveSummary}`;
-        if (summary?.lastMtime) {
+        if (summary?.lastActivity) {
           if (!det._lastAgoSpan) {
             det._lastAgoSpan = el('span', { class: 'sessions-last-ago' });
             det._summaryEl.appendChild(det._lastAgoSpan);
           }
-          det._lastAgoSpan.textContent = ` · last ${formatAgo(summary.lastMtime)}`;
-          det._lastAgoSpan.dataset.mtime = String(summary.lastMtime);
+          det._lastAgoSpan.textContent = ` · last ${formatAgo(summary.lastActivity)}`;
+          det._lastAgoSpan.dataset.activity = String(summary.lastActivity);
         } else if (det._lastAgoSpan) {
           det._lastAgoSpan.remove();
           det._lastAgoSpan = null;
@@ -814,7 +814,7 @@ export class Sidebar {
         workspace: null,
         isGitRepo: false,
         worktrees: [],
-        sessions: { count: this.conductSessionCount, lastMtime: this.conductSessionLastMtime },
+        sessions: { count: this.conductSessionCount, lastActivity: this.conductSessionLastActivity },
         mergeStatus: { ahead: null, behind: null, upstream: null },
         sessionIds: conductInstances.map(i => i.sessionId),
         isConduct: true,

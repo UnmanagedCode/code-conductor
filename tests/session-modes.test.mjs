@@ -70,7 +70,7 @@ test('a fresh spawn default is cold and distinct from the resume default', () =>
 
 const row = (over = {}) => ({
   sessionId: SID_A, firstPrompt: null, title: 't', conducted: false, temp: false,
-  archived: false, mtime: 1, size: 1, playbook: null, stage: null,
+  archived: false, lastActivity: 1, size: 1, playbook: null, stage: null,
   resumeMode: DEFAULT_RESUME_MODE, ...over,
 });
 const group = (rows) => [{

@@ -43,14 +43,14 @@ async function setupSidebar({ onLoadSessions } = {}) {
 test('Sessions subnode merges a live instance with its on-disk row (single combined entry)', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [
-      { sessionId: 'sid-running', firstPrompt: 'old prompt', mtime: Date.now() - 60_000, size: 100 },
-      { sessionId: 'sid-historical', firstPrompt: 'historical', mtime: Date.now() - 3600_000, size: 50 },
+      { sessionId: 'sid-running', firstPrompt: 'old prompt', lastActivity: Date.now() - 60_000, size: 100 },
+      { sessionId: 'sid-historical', firstPrompt: 'historical', lastActivity: Date.now() - 3600_000, size: 50 },
     ],
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [],
     isGitRepo: false, worktrees: [],
-    sessions: { count: 2, lastMtime: Date.now() - 60_000 },
+    sessions: { count: 2, lastActivity: Date.now() - 60_000 },
   }]);
   sidebar.setInstances([
     { id: 'inst-a', project: 'demo', sessionId: 'sid-running', status: 'turn', mode: 'plan', worktree: null },
@@ -76,7 +76,7 @@ test('Sessions subnode renders a synthetic row for a freshly-spawned instance wi
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [],
     isGitRepo: false, worktrees: [],
-    sessions: { count: 0, lastMtime: 0 },
+    sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-fresh', project: 'demo', sessionId: 'sid-fresh', status: 'spawning', mode: 'plan', worktree: null },
@@ -95,14 +95,14 @@ test('Clicking a live session row calls onSelectInstance; clicking a historical 
   const now = Date.now();
   const { root, sidebar, calls } = await setupSidebar({
     onLoadSessions: async () => [
-      { sessionId: 'sid-live', firstPrompt: 'live', mtime: now - 60_000, size: 10 },
-      { sessionId: 'sid-old', firstPrompt: 'old', mtime: now - 3600_000, size: 10 },
+      { sessionId: 'sid-live', firstPrompt: 'live', lastActivity: now - 60_000, size: 10 },
+      { sessionId: 'sid-old', firstPrompt: 'old', lastActivity: now - 3600_000, size: 10 },
     ],
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [],
     isGitRepo: false, worktrees: [],
-    sessions: { count: 2, lastMtime: now - 60_000 },
+    sessions: { count: 2, lastActivity: now - 60_000 },
   }]);
   sidebar.setInstances([
     { id: 'inst-x', project: 'demo', sessionId: 'sid-live', status: 'idle', mode: 'plan', worktree: null },
@@ -130,18 +130,18 @@ test('Worktree row carries its own Sessions subnode, scoped to its own live inst
     onLoadSessions: async (projectName, worktreeName) => {
       // Two separate session histories — project root vs the worktree.
       if (worktreeName) {
-        return [{ sessionId: 'wt-sid', firstPrompt: 'in worktree', mtime: now - 30_000, size: 10 }];
+        return [{ sessionId: 'wt-sid', firstPrompt: 'in worktree', lastActivity: now - 30_000, size: 10 }];
       }
-      return [{ sessionId: 'root-sid', firstPrompt: 'at root', mtime: now - 60_000, size: 10 }];
+      return [{ sessionId: 'root-sid', firstPrompt: 'at root', lastActivity: now - 60_000, size: 10 }];
     },
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: true,
-    sessions: { count: 1, lastMtime: now - 60_000 },
+    sessions: { count: 1, lastActivity: now - 60_000 },
     worktrees: [{
       worktreeName: 'demo_worktree_abc123', branch: 'code-conductor/abc123',
       baseBranch: 'main', baseSha: 'deadbeef0000', parentProject: 'demo',
-      sessions: { count: 1, lastMtime: now - 30_000 },
+      sessions: { count: 1, lastActivity: now - 30_000 },
     }],
   }]);
   sidebar.setInstances([
@@ -191,13 +191,13 @@ test('Synthetic "(new session)" row refreshes to the real firstPrompt once the j
   const onLoadSessions = async () => {
     call++;
     if (call === 1) return []; // jsonl doesn't exist yet — fresh spawn
-    return [{ sessionId: 'sid-fresh', firstPrompt: 'hello world', mtime: Date.now(), size: 1024 }];
+    return [{ sessionId: 'sid-fresh', firstPrompt: 'hello world', lastActivity: Date.now(), size: 1024 }];
   };
   const { root, sidebar } = await setupSidebar({ onLoadSessions });
 
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-    sessions: { count: 0, lastMtime: 0 },
+    sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst', project: 'demo', sessionId: 'sid-fresh', status: 'spawning', mode: 'plan', worktree: null },
@@ -221,13 +221,13 @@ test('idle → turn does not invalidate the sessions cache; turn → idle does',
   let call = 0;
   const onLoadSessions = async () => {
     call++;
-    return [{ sessionId: 'sid', firstPrompt: 'preview', mtime: call * 1000, size: 100 }];
+    return [{ sessionId: 'sid', firstPrompt: 'preview', lastActivity: call * 1000, size: 100 }];
   };
   const { sidebar } = await setupSidebar({ onLoadSessions });
 
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-    sessions: { count: 1, lastMtime: 1000 },
+    sessions: { count: 1, lastActivity: 1000 },
   }]);
   sidebar.setInstances([{ id: 'i', project: 'demo', sessionId: 'sid', status: 'idle', mode: 'plan', worktree: null }]);
   await new Promise(r => setTimeout(r, 0));
@@ -249,20 +249,20 @@ test('Cache invalidation on turn→idle is scoped to the instance\'s worktree ke
     calls.push({ projectName, worktreeName });
     if (worktreeName) {
       return calls.filter(c => c.worktreeName === worktreeName).length >= 2
-        ? [{ sessionId: 'wt-sid', firstPrompt: 'fresh-prompt', mtime: Date.now(), size: 100 }]
+        ? [{ sessionId: 'wt-sid', firstPrompt: 'fresh-prompt', lastActivity: Date.now(), size: 100 }]
         : [];
     }
-    return [{ sessionId: 'root-sid', firstPrompt: 'root-prompt', mtime: Date.now() - 60_000, size: 100 }];
+    return [{ sessionId: 'root-sid', firstPrompt: 'root-prompt', lastActivity: Date.now() - 60_000, size: 100 }];
   };
   const { root, sidebar } = await setupSidebar({ onLoadSessions });
 
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: true,
-    sessions: { count: 1, lastMtime: Date.now() - 60_000 },
+    sessions: { count: 1, lastActivity: Date.now() - 60_000 },
     worktrees: [{
       worktreeName: 'demo_worktree_xyz', branch: 'code-conductor/xyz',
       baseBranch: 'main', baseSha: 'cafef00d', parentProject: 'demo',
-      sessions: { count: 0, lastMtime: 0 },
+      sessions: { count: 0, lastActivity: 0 },
     }],
   }]);
   sidebar.expandedWorktrees.add('demo');
@@ -300,13 +300,13 @@ test('setUnread renders a numeric pill on the matching session row; clearing the
   const now = Date.now();
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [
-      { sessionId: 'sid-a', firstPrompt: 'aaa', mtime: now - 60_000, size: 10 },
-      { sessionId: 'sid-b', firstPrompt: 'bbb', mtime: now - 30_000, size: 10 },
+      { sessionId: 'sid-a', firstPrompt: 'aaa', lastActivity: now - 60_000, size: 10 },
+      { sessionId: 'sid-b', firstPrompt: 'bbb', lastActivity: now - 30_000, size: 10 },
     ],
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-    sessions: { count: 2, lastMtime: now - 30_000 },
+    sessions: { count: 2, lastActivity: now - 30_000 },
   }]);
   sidebar.setInstances([
     { id: 'inst-a', project: 'demo', sessionId: 'sid-a', status: 'idle', mode: 'plan', worktree: null },
@@ -337,12 +337,12 @@ test('setUnread renders a numeric pill on the matching session row; clearing the
 test('Sessions subnode is default-expanded; manual collapse persists across re-renders', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [
-      { sessionId: 's', firstPrompt: 'hi', mtime: Date.now(), size: 10 },
+      { sessionId: 's', firstPrompt: 'hi', lastActivity: Date.now(), size: 10 },
     ],
   });
   sidebar.setProjects([{
     name: 'p', path: '/x', sessionIds: [], isGitRepo: false, worktrees: [],
-    sessions: { count: 1, lastMtime: Date.now() },
+    sessions: { count: 1, lastActivity: Date.now() },
   }]);
   sidebar.setInstances([]);
   // Default expanded.
@@ -361,13 +361,13 @@ test('Projects with a workspace render under a <details> workspace container at 
   const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
   sidebar.setProjects([
     { name: 'alpha', path: '/p/alpha', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: null },
+      sessions: { count: 0, lastActivity: 0 }, workspace: null },
     { name: 'work-thing', path: '/p/work', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: 'Work' },
+      sessions: { count: 0, lastActivity: 0 }, workspace: 'Work' },
     { name: 'play-thing', path: '/p/play', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: 'Side' },
+      sessions: { count: 0, lastActivity: 0 }, workspace: 'Side' },
     { name: 'work-other', path: '/p/wo', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: 'Work' },
+      sessions: { count: 0, lastActivity: 0 }, workspace: 'Work' },
   ]);
   sidebar.setInstances([]);
   // Top-level <li> children: two workspace items (Side, Work — sorted
@@ -395,7 +395,7 @@ test('Empty workspaces (from setWorkspaces) render with (0) count and an empty h
   const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
   sidebar.setProjects([
     { name: 'alpha', path: '/p/alpha', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: null },
+      sessions: { count: 0, lastActivity: 0 }, workspace: null },
   ]);
   // The registry knows about a workspace nobody is in.
   sidebar.setWorkspaces(['Lonely']);
@@ -411,7 +411,7 @@ test('Clicking the workspace ✎ button calls onEditWorkspace with the name and 
   const { root, sidebar, calls } = await setupSidebar({ onLoadSessions: async () => [] });
   sidebar.setProjects([
     { name: 'a', path: '/p/a', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: 'Stuff' },
+      sessions: { count: 0, lastActivity: 0 }, workspace: 'Stuff' },
   ]);
   sidebar.setInstances([]);
   const det = root.querySelector('details.project-workspace');
@@ -450,9 +450,9 @@ test('Workspace expand state is read from localStorage on construction', async (
   });
   sidebar.setProjects([
     { name: 'a', path: '/p/a', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: 'Hidden' },
+      sessions: { count: 0, lastActivity: 0 }, workspace: 'Hidden' },
     { name: 'b', path: '/p/b', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 }, workspace: 'Visible' },
+      sessions: { count: 0, lastActivity: 0 }, workspace: 'Visible' },
   ]);
   sidebar.setInstances([]);
   const workspaces = [...root.querySelectorAll('details.project-workspace')];
@@ -468,7 +468,7 @@ test('Temp instances render inside the unified Sessions subnode below a dim sepa
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+    worktrees: [], sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-normal', project: 'demo', sessionId: 'sid-normal',
@@ -504,7 +504,7 @@ test('Conducted instances render below a — conducted — separator, separate f
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+    worktrees: [], sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-normal', project: 'demo', sessionId: 'sid-normal',
@@ -541,7 +541,7 @@ test('A conducted+temp session groups under — conducted — but keeps the .tem
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+    worktrees: [], sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-ct', project: 'demo', sessionId: 'sid-ct',
@@ -563,12 +563,12 @@ test('On-disk conducted metadata (no live instance) still groups under — condu
   const { root, sidebar } = await setupSidebar({
     // Historical, non-live session carrying the persisted conducted flag.
     onLoadSessions: async () => [
-      { sessionId: 'sid-hist', firstPrompt: 'hi', title: null, conducted: true, mtime: 1, size: 10 },
+      { sessionId: 'sid-hist', firstPrompt: 'hi', title: null, conducted: true, lastActivity: 1, size: 10 },
     ],
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 1, lastMtime: 1 },
+    worktrees: [], sessions: { count: 1, lastActivity: 1 },
   }]);
   sidebar.setInstances([]);
   // The subnode is default-expanded; wait a tick for the lazy load.
@@ -586,7 +586,7 @@ test('Sessions subnode renders no separator when there are zero temp instances',
   const { root, sidebar } = await setupSidebar({});
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+    worktrees: [], sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-x', project: 'demo', sessionId: 'sid-x',
@@ -603,7 +603,7 @@ test('Temp session row exposes a ↑ promote button wired to onPromoteSession', 
   sidebar.onPromoteSession = (arg) => promoteCalls.push(arg);
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+    worktrees: [], sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-temp', project: 'demo', sessionId: 'sid-temp',
@@ -625,7 +625,7 @@ test('Regular (non-temp) session rows do NOT show the promote button', async () 
   const { root, sidebar } = await setupSidebar({});
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false,
-    worktrees: [], sessions: { count: 0, lastMtime: 0 },
+    worktrees: [], sessions: { count: 0, lastActivity: 0 },
   }]);
   sidebar.setInstances([
     { id: 'inst-normal', project: 'demo', sessionId: 'sid-normal',
@@ -647,13 +647,13 @@ test('Re-discovered temp session with NO live instance groups under — temp —
   const now = Date.now();
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [
-      { sessionId: 'sid-normal', firstPrompt: 'normal', temp: false, mtime: now - 30_000, size: 10 },
-      { sessionId: 'sid-temp', firstPrompt: 'a temp one', temp: true, mtime: now - 60_000, size: 10 },
+      { sessionId: 'sid-normal', firstPrompt: 'normal', temp: false, lastActivity: now - 30_000, size: 10 },
+      { sessionId: 'sid-temp', firstPrompt: 'a temp one', temp: true, lastActivity: now - 60_000, size: 10 },
     ],
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-    sessions: { count: 2, lastMtime: now - 30_000 },
+    sessions: { count: 2, lastActivity: now - 30_000 },
   }]);
   sidebar.setInstances([]); // no live instances — the post-restart state
   await new Promise(r => setTimeout(r, 0));
@@ -683,12 +683,12 @@ test('A just-promoted live session (inst.temp=false) overrides a stale on-disk t
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [
       // Disk sidecar not yet unmarked — listSessionsForCwd still reports temp:true.
-      { sessionId: 'sid-promoted', firstPrompt: 'promoted', temp: true, mtime: now - 60_000, size: 10 },
+      { sessionId: 'sid-promoted', firstPrompt: 'promoted', temp: true, lastActivity: now - 60_000, size: 10 },
     ],
   });
   sidebar.setProjects([{
     name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-    sessions: { count: 1, lastMtime: now - 60_000 },
+    sessions: { count: 1, lastActivity: now - 60_000 },
   }]);
   // Live instance reports temp:false (the authoritative just-promoted state).
   sidebar.setInstances([
@@ -709,12 +709,12 @@ test('tickAgo() recomputes "Xs/Xm ago" labels for an idle session without a full
     Date.now = () => base;
     const { root, sidebar } = await setupSidebar({
       onLoadSessions: async () => [
-        { sessionId: 'sid-x', firstPrompt: 'hi', mtime: base - 2_000, size: 10 },
+        { sessionId: 'sid-x', firstPrompt: 'hi', lastActivity: base - 2_000, size: 10 },
       ],
     });
     sidebar.setProjects([{
       name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 1, lastMtime: base - 2_000 },
+      sessions: { count: 1, lastActivity: base - 2_000 },
     }]);
     await new Promise(r => setTimeout(r, 0));
 
@@ -729,7 +729,7 @@ test('tickAgo() recomputes "Xs/Xm ago" labels for an idle session without a full
     Date.now = () => base + 63_000;
     sidebar.tickAgo();
 
-    assert.equal(agoSpan.textContent, '1m ago', 'session-ago re-ticks from data-mtime instead of staying frozen');
+    assert.equal(agoSpan.textContent, '1m ago', 'session-ago re-ticks from data-activity instead of staying frozen');
     assert.equal(lastAgoSpan.textContent, ' · last 1m ago');
   } finally {
     Date.now = realNow;
@@ -747,7 +747,7 @@ test('a live temp session (excluded from the on-disk list while alive) uses inst
     const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
     sidebar.setProjects([{
       name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 1, lastMtime: 0 },
+      sessions: { count: 1, lastActivity: 0 },
     }]);
     const liveTempInstance = {
       id: 'inst-temp', project: 'demo', sessionId: 'sid-temp', status: 'idle',
@@ -762,7 +762,7 @@ test('a live temp session (excluded from the on-disk list while alive) uses inst
     // Advance the clock and force several MORE full re-renders (setInstances
     // unconditionally calls render(), which re-runs mergeLive from scratch —
     // this is what happens on every unrelated instance's status broadcast).
-    // Before the fix, each of these re-stamped mtime to Date.now(), pinning
+    // Before the fix, each of these re-stamped lastActivity to Date.now(), pinning
     // the label at ~0s forever.
     Date.now = () => base + 20_000;
     sidebar.setInstances([{ ...liveTempInstance }]);
@@ -787,7 +787,7 @@ test('a synthetic session with no lastResponseAt (pre-first-turn) uses inst.crea
     const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
     sidebar.setProjects([{
       name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
-      sessions: { count: 0, lastMtime: 0 },
+      sessions: { count: 0, lastActivity: 0 },
     }]);
     const instA = {
       id: 'inst-a', project: 'demo', sessionId: 'sid-a', status: 'idle',

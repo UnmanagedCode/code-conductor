@@ -377,14 +377,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const enriched = await Promise.all(projects.map(async (p) => {
         // Git facts are cached for TTL_MS; concurrent requests coalesce.
         const gitFacts = await getOrCompute(p.name, () => computeGitFacts(p));
-        // Attach a lightweight session count + last-active mtime to
+        // Attach a lightweight session count + last-active timestamp to
         // each worktree too, so the sidebar can decide whether to show
         // its "Sessions (N)" subnode without an extra fetch.
         const worktreesWithSessions = await Promise.all(gitFacts.worktrees.map(async (w) => {
           const wtTempSids = instances ? instances.tempSessionIdsForCwd(w.worktreePath) : null;
           return {
             ...w,
-            sessions: await summarizeSessions(w.worktreePath, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastMtime: 0 })),
+            sessions: await summarizeSessions(w.worktreePath, wtTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           };
         }));
         const projTempSids = instances ? instances.tempSessionIdsForCwd(p.path) : null;
@@ -393,7 +393,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
           isGitRepo: gitFacts.isGitRepo,
           worktrees: worktreesWithSessions,
-          sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastMtime: 0 })),
+          sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
         };
       }));
@@ -1057,7 +1057,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
             cwd: inst.cwd,
             sessionId: inst.sessionId,
             userMessageIndex: idx,
-            permissionMode: inst.mode === 'ask' ? 'bypassPermissions' : inst.mode,
+            mode: inst.mode,
           });
         } finally {
           inst._mutating = false;

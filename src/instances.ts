@@ -273,6 +273,14 @@ export function parseResetEpochSecs(info: unknown): number | null {
 // bypassPermissions value; the orchestrator tracks `ask` separately and
 // uses it to decide whether the interactive hook callback should prompt
 // the user or auto-allow.
+//
+// LIVE WIRE ONLY — its two call sites are the `--permission-mode` argv below
+// and the `set_permission_mode` control request. The collapse is the mechanism
+// there: the CLI must stop prompting so the hook can. It is NOT how a mode is
+// recorded; the durable jsonl marker goes through markerPermissionMode
+// (sessionModes.ts), which maps `ask` to `default` instead. Reaching for this
+// one when writing a record is the bug that made the marker claim every gated
+// session ran hot.
 function cliPermissionMode(mode: string): string {
   return mode === 'ask' ? 'bypassPermissions' : mode;
 }
@@ -1910,15 +1918,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.temp) return;
     if (!this.sessionId || !this._lastLeafUuid) return;
     try {
-      // Persist the CLI-level permission mode (not the orchestrator's
-      // 'ask' label) so `claude --resume` from the shell can pick up
-      // a valid value. The 'ask' nuance is orchestrator-only and
-      // doesn't survive a shell-side resume — deliberate.
       await writeSessionMetadata({
         cwd: this.cwd,
         sessionId: this.sessionId,
         leafUuid: this._lastLeafUuid,
-        permissionMode: cliPermissionMode(this.mode),
+        mode: this.mode,
       });
     } catch { /* best effort */ }
   }
@@ -2422,7 +2426,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         cwd: this.cwd,
         sessionId,
         userMessageIndex,
-        permissionMode: cliPermissionMode(this.mode),
+        mode: this.mode,
       });
 
       // Wipe in-memory state and tell subscribers to drop their conversation
@@ -2507,7 +2511,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         cutTurnIndex: cutTurnIndex as number,
         pruneThinking: !!pruneThinking,
         inputMode: effInputMode as 'truncate' | 'minimal',
-        permissionMode: cliPermissionMode(this.mode),
+        mode: this.mode,
       });
 
       this._wipeForResume();

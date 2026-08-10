@@ -1554,7 +1554,7 @@ export function installSettings({
         main.appendChild(titleSpan);
         const meta = document.createElement('span');
         meta.className = 'archived-row-meta';
-        meta.textContent = (s.worktreeName ? `⌥ ${s.worktreeName} · ` : '') + `last ${formatAgo(s.mtime)}`;
+        meta.textContent = (s.worktreeName ? `⌥ ${s.worktreeName} · ` : '') + `last ${formatAgo(s.lastActivity)}`;
         main.appendChild(meta);
         row.appendChild(main);
 

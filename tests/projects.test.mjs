@@ -124,7 +124,7 @@ test('GET /api/projects/:name/sessions reads jsonl headers', async () => {
   assert.equal(r.body.length, 1);
   assert.equal(r.body[0].sessionId, sid);
   assert.match(r.body[0].firstPrompt, /hello from fixture/);
-  assert.ok(r.body[0].mtime > 0);
+  assert.ok(r.body[0].lastActivity > 0);
   assert.ok(r.body[0].size > 0);
 });
 
@@ -193,7 +193,7 @@ test('DELETE /api/projects/:name 404s unknown project', async () => {
   assert.equal(r.status, 404);
 });
 
-test('GET /api/projects exposes a per-project sessions summary (count + lastMtime)', async () => {
+test('GET /api/projects exposes a per-project sessions summary (count + lastActivity)', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
   // Pre-populate two fake session jsonls under the encoded cwd.
   const encoded = path.join(projectsRoot, 'sess').replace(/[^A-Za-z0-9_-]/g, '-');
@@ -207,7 +207,7 @@ test('GET /api/projects exposes a per-project sessions summary (count + lastMtim
   const proj = list.body.find(p => p.name === 'sess');
   assert.ok(proj.sessions, 'sessions summary present');
   assert.equal(proj.sessions.count, 2, `expected 2 sessions, got ${proj.sessions.count}`);
-  assert.ok(proj.sessions.lastMtime > 0, 'lastMtime should be the newer of the two file mtimes');
+  assert.ok(proj.sessions.lastActivity > 0, 'lastActivity should be the newer of the two sessions');
 });
 
 test('GET /api/projects exposes a sessions summary on each worktree too', async () => {
@@ -235,7 +235,7 @@ test('GET /api/projects exposes a sessions summary on each worktree too', async 
   const proj = list.body.find(p => p.name === 'demo');
   assert.equal(proj.worktrees.length, 1);
   assert.equal(proj.worktrees[0].sessions.count, 1);
-  assert.ok(proj.worktrees[0].sessions.lastMtime > 0);
+  assert.ok(proj.worktrees[0].sessions.lastActivity > 0);
 });
 
 test('DELETE /api/projects/:name/sessions/:sid removes the jsonl', async () => {
