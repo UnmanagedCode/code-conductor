@@ -83,12 +83,16 @@ test('an unset key reads as the shipped default and both levels round-trip', asy
   assert.equal(await getDefaultPlaybookEnforcement(), DEFAULT_PLAYBOOK_ENFORCEMENT);
 });
 
-test("a persisted legacy 'off' reads as warn, NOT as the default", async () => {
+// HONEST LABEL: a value contract, not a branch — same standing as its
+// pure-function twin in tests/playbook-enforcement-levels.test.mjs, which carries
+// the full reasoning. While the shipped default was 'enforce' this also
+// distinguished normalizePlaybookEnforcement's `off` branch from its fallback;
+// the default is now 'warn', so the two coincide and nothing can kill that
+// mutant. What it still pins is that a hand-edited legacy value reaches the read
+// path at all, i.e. that the getter normalizes rather than returning raw store
+// text — which IS killable: a getter returning `'off'` unnormalized fails here.
+test("a persisted legacy 'off' reads as a live level, never raw", async () => {
   await writeStore({ defaultPlaybookEnforcement: 'off' });
-  // The assertion discriminates precisely because the shipped default is
-  // 'enforce': 'off' → 'warn' is a downgrade-preserving read, and 'off' →
-  // DEFAULT_PLAYBOOK_ENFORCEMENT would be the silent upgrade the rule forbids.
-  assert.equal(DEFAULT_PLAYBOOK_ENFORCEMENT, 'enforce', 'this test only proves anything while the default is enforce');
   assert.equal(await getDefaultPlaybookEnforcement(), 'warn');
 });
 

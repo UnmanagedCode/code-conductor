@@ -181,8 +181,8 @@ export function createPlaybookGate(
     if (!isConductorInstance({ project: String(summary.project) })) return;
     const mode = normalizePlaybookEnforcement(summary.playbookEnforcement);
     // The FIRST observation of a conductor is its BIRTH, not a change: a
-    // conductor created at `warn` was never at the `enforce` default, so
-    // {from:'enforce'} would put a value in the audit trail that never held. A
+    // conductor created at one level was never at any other, so a synthesized
+    // {from:<default>} would put a value in the audit trail that never held. A
     // birth is recorded with `from: null` instead.
     //
     // Every birth is recorded, at either level — neither is inert. The first tick
