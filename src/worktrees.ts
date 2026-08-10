@@ -353,16 +353,14 @@ export async function createWorktree(
   if (!(await isGitRepo(proj.path))) {
     throw httpError(400, `project '${projectName}' is not a git repository`);
   }
-  const known = await listWorktrees(projectName);
-
   // Resolve the base: either the project root or another worktree. A base
-  // worktree is resolved through the store records (`known`), never by
-  // assembling a path — getProject validates only the name charset and that the
-  // directory exists, so it would happily resolve a worktree dir name.
+  // worktree is resolved through the store records, never by assembling a path —
+  // getProject validates only the name charset and that the directory exists, so
+  // it would happily resolve a worktree dir name.
   let basePath = proj.path;
   let baseLabel = `project '${projectName}'`;
   if (baseWorktree !== undefined) {
-    const base = known.find(w => w.worktreeName === baseWorktree);
+    const base = await getWorktree(projectName, baseWorktree);
     if (!base) {
       throw httpError(404, `base worktree '${baseWorktree}' not found under project '${projectName}'`);
     }
@@ -399,15 +397,25 @@ export async function createWorktree(
   const worktreePath = path.join(projectsRoot(), dirName);
   const branch = worktreeBranchName(id);
 
-  // Collision pre-checks. A random short id realistically never collides, but a
+  // Collision pre-check. A random short id realistically never collides, but a
   // slug does ('auth' twice). Refusing here — rather than letting `git worktree
   // add` fail — means a refused create leaves no half-made directory or branch.
-  if (known.some(w => w.worktreeName === dirName)) {
-    throw httpError(409, `worktree '${dirName}' already exists under project '${projectName}'`);
-  }
+  //
+  // The branch ref is the only thing worth checking: the dir name and the branch
+  // both derive from the same slug, and a registered worktree always still has
+  // its branch (git refuses to delete a branch checked out in a worktree), so a
+  // directory collision implies this one. It is also strictly stronger — it
+  // catches a leftover branch with no worktree, which `removeWorktree`'s
+  // best-effort `git branch -d` can leave behind and a directory check cannot
+  // see.
   const existingBranch = await runGit(proj.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
   if (existingBranch.code === 0) {
-    throw httpError(409, `branch '${branch}' already exists in project '${projectName}' — delete it or pick another name`);
+    throw httpError(
+      409,
+      `branch '${branch}' already exists in project '${projectName}' — ` +
+        `either that worktree is still registered, or it was deleted and left the branch behind. ` +
+        `Pick another name, or delete the branch.`,
+    );
   }
 
   // `git worktree add <path> -b <branch> <start-point>` creates the
@@ -655,14 +663,17 @@ export async function mergeWorktreeIntoParent(
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
-  // 0. Refuse if another worktree is based on this one — merging it into its own
-  //    base is fine for THEM, but a merge is followed by a sync, and that sync
-  //    would rewrite the base they were created from. Checked ahead of the
-  //    behind-gate deliberately: merging requires a prior sync, and that sync
-  //    also refuses, so without this gate a feature with dependents and a moved
-  //    base would report WORKTREE_BEHIND and send the caller to a
-  //    sync_worktree that refuses for the real reason. This gate names the real
-  //    blocker on the first call.
+  // 0. Refuse if another worktree is based on this one. THIS merge rewrites their
+  //    base by itself — no follow-on sync required: step 7 below fast-forwards
+  //    this worktree's own branch onto the merge commit, and that branch IS what
+  //    the children were created from, so their baseSha moves out from under them
+  //    the moment this call succeeds. Checked ahead of the behind-gate
+  //    deliberately: merging requires a prior sync, and that sync also refuses,
+  //    so without this gate a worktree with dependents and a moved base would
+  //    report WORKTREE_BEHIND and send the caller to a sync_worktree that refuses
+  //    for the real reason. This gate names the real blocker on the first call.
+  //    Evaluated on the worktree being MERGED, never on the one being merged
+  //    INTO — see dependentsRefusal.
   const dependents = await listDependentWorktrees(projectName, worktreeName);
   if (dependents.length > 0) {
     return dependentsRefusal(worktreeName, dependents, 'merging');

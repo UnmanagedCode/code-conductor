@@ -159,9 +159,11 @@ test('T2: buildRebasePrompt tells the agent to rebase with --rebase-merges', asy
   await makeRealRepo('demo');
   const feature = await createWorktree('demo', { name: 'auth' });
   const prompt = buildRebasePrompt(feature);
-  // T1 cannot see this string: it exercises the server-side rebase only. If the
-  // flag lived on just one of the two call sites, the agent-driven conflict path
-  // would flatten exactly what the automated path preserved.
+  // T1 cannot see this string — it exercises the server-side rebase only — so a
+  // flag on just one of the two call sites would let the agent-driven conflict
+  // path flatten exactly what the automated path preserved. This is not the only
+  // catcher: two rebase-prompt assertions in tests/worktrees.test.mjs match the
+  // command text too. This one states the invariant directly.
   assert.match(prompt, /git rebase --rebase-merges main/);
 });
 
@@ -276,6 +278,36 @@ test('T7: a name is slugified into the branch + dir; collisions and empty slugs 
   const anon = await createWorktree('demo');
   assert.match(anon.worktreeName, /^demo_worktree_[0-9a-f]{6}$/);
   assert.equal(anon.baseWorktree, undefined, 'a root-based record carries no baseWorktree');
+});
+
+// ---------------------------------------------------------------------------
+// T13 — the collision check is on the branch ref, so it also catches the state
+//       a directory check cannot see: a leftover branch with no worktree.
+// ---------------------------------------------------------------------------
+test('T13: a slug whose branch survived a deleted worktree refuses 409', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'auth' });
+  // An unmerged commit makes removeWorktree's best-effort `git branch -d` fail,
+  // which is exactly how this state arises in practice: the worktree and its
+  // record go, the branch stays.
+  await commitFile(wt.worktreePath, 'wip.js', 'export const wip = 1;\n', 'unmerged work');
+  await removeWorktree('demo', wt.worktreeName);
+
+  // Premise, asserted rather than assumed: branch present, record and dir gone.
+  assert.equal(
+    await gitCode(repoPath, 'rev-parse', '--verify', '--quiet', 'refs/heads/code-conductor/auth'), 0,
+    'precondition: the branch should have survived the delete',
+  );
+  assert.equal(await exists(wt.worktreePath), false);
+  const countBefore = (await listWorktrees('demo')).length;
+  assert.equal(countBefore, 0, 'precondition: no worktree record remains');
+
+  await assert.rejects(
+    () => createWorktree('demo', { name: 'auth' }),
+    (e) => { assert.equal(e.statusCode, 409); return true; },
+  );
+  assert.equal((await listWorktrees('demo')).length, countBefore);
+  assert.equal(await exists(wt.worktreePath), false, 'the refused create made no directory');
 });
 
 // ---------------------------------------------------------------------------
@@ -415,6 +447,10 @@ test('T12: a task rebases onto its feature, not onto main', async () => {
   //     on it. WORKTREE_HAS_DEPENDENTS is about the worktree being merged, never
   //     the merge target — applied to the target, no feature with two children
   //     could ever take a merge and the concurrent discipline would deadlock.
+  //     A target-scoped check also breaks T1/T10, which merge a lone task into
+  //     its feature; what is unique here is isolating the SCOPE distinction —
+  //     this is the only test with a second, non-merging dependent, so it is the
+  //     only one that fails for the right reason rather than incidentally.
   const mergedA = await mergeWorktreeIntoParent('demo', a.worktreeName);
   assert.equal(mergedA.ok, true, `merging A into the feature failed: ${JSON.stringify(mergedA)}`);
   assert.deepEqual(await listDependentWorktrees('demo', feature.worktreeName), [a.worktreeName, b.worktreeName]);
