@@ -24,7 +24,7 @@ import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
 // dynamic import precisely so the handlers→conductorConventions edge cannot close
 // a cycle. By the time loadPlaybooks() resolves that registry, this module is
 // fully initialised.
-import { loadPlaybooks } from './playbooks.ts';
+import { loadPlaybooks, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
 import { renderPlaybookConvention } from './playbookConvention.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
@@ -213,38 +213,73 @@ export async function playbookListing(): Promise<string> {
 // materializeCurrentConduct in conduct.ts). It rides the same store as a sibling
 // key, so there is no second state file and no second Settings surface.
 //
-// null = nothing selected = no convention injected (the conductor falls back to
-// list_playbooks/describe_playbook).
+// THREE states, and they are not interchangeable: never having chosen is not the
+// same as having chosen nothing. Unset resolves to DEFAULT_PLAYBOOK_ID so a fresh
+// install ships with a baseline graph; `none` is the explicit opt-out that keeps
+// injecting nothing.
+export type DefaultPlaybookSelection =
+  | { mode: 'unset' }                     // never persisted — the KEY'S ABSENCE is this state
+  | { mode: 'none' }
+  | { mode: 'playbook'; id: string };
 
-export async function getDefaultPlaybook(): Promise<string | null> {
+// Every persisted value is a tagged object, so no read site infers a state from
+// null-vs-string-vs-empty. Absence is unset because a fresh install has no file
+// to have written. Migration 0028 converts the pre-tri-state shape.
+export async function getDefaultPlaybookSelection(): Promise<DefaultPlaybookSelection> {
   const v = (await catalog.readState()).defaultPlaybook;
-  return typeof v === 'string' && v ? v : null;
+  if (v === undefined) return { mode: 'unset' };
+  const mode = (v as { mode?: unknown } | null)?.mode;
+  if (mode === 'none') return { mode: 'none' };
+  if (mode === 'playbook') {
+    const id = (v as { id?: unknown }).id;
+    if (typeof id === 'string' && id) return { mode: 'playbook', id };
+  }
+  console.warn(`conductorConventions: unrecognised defaultPlaybook value ${JSON.stringify(v)}; reading as unset`);
+  return { mode: 'unset' };
 }
 
-// Validated against the LOADED definitions — built-ins plus the user overlay,
-// through the one catalog in playbooks.ts. A selection that no definition backs
-// would silently render nothing.
-export async function setDefaultPlaybook(id: string | null): Promise<string | null> {
-  if (id !== null && typeof id !== 'string') {
-    throw httpError(400, 'id must be a playbook id string, or null to clear');
-  }
-  const value = id ? id : null;
-  if (value) {
-    const { playbooks } = await loadPlaybooks();
-    if (!playbooks.has(value)) {
-      throw httpError(400, `unknown playbook id '${value}' (known: ${[...playbooks.keys()].sort().join(', ') || '(none)'})`);
-    }
-  }
-  await catalog.patchState({ defaultPlaybook: value });
-  return value;
+// THE resolution path, and the only home of the fallback.
+export async function resolveDefaultPlaybookId(): Promise<string | null> {
+  const sel = await getDefaultPlaybookSelection();
+  if (sel.mode === 'playbook') return sel.id;
+  return sel.mode === 'unset' ? DEFAULT_PLAYBOOK_ID : null;
 }
 
-// The selected default playbook, GENERATED from its definition (see
-// playbookConvention.ts). Empty string when nothing is selected, when the
+// A `playbook` id is validated against the LOADED definitions — built-ins plus
+// the user overlay, through the one catalog in playbooks.ts. A selection that no
+// definition backs would silently render nothing.
+export async function setDefaultPlaybook(sel: DefaultPlaybookSelection): Promise<DefaultPlaybookSelection> {
+  const mode = (sel as { mode?: unknown } | null)?.mode;
+  if (mode === 'unset') {
+    // undefined, not null: JSON.stringify drops the key, and absence IS unset.
+    await catalog.patchState({ defaultPlaybook: undefined });
+    return { mode: 'unset' };
+  }
+  if (mode === 'none') {
+    await catalog.patchState({ defaultPlaybook: { mode: 'none' } });
+    return { mode: 'none' };
+  }
+  if (mode !== 'playbook') {
+    throw httpError(400, "mode must be one of 'unset', 'none', 'playbook'");
+  }
+  const id = (sel as { id?: unknown }).id;
+  if (typeof id !== 'string' || !id) {
+    throw httpError(400, "mode 'playbook' requires an id");
+  }
+  const { playbooks } = await loadPlaybooks();
+  if (!playbooks.has(id)) {
+    throw httpError(400, `unknown playbook id '${id}' (known: ${[...playbooks.keys()].sort().join(', ') || '(none)'})`);
+  }
+  await catalog.patchState({ defaultPlaybook: { mode: 'playbook', id } });
+  return { mode: 'playbook', id };
+}
+
+// The resolved default playbook, GENERATED from its definition (see
+// playbookConvention.ts). Empty string on the explicit opt-out, when the
 // selection no longer resolves, or when the catalog fails to load — a spawn must
 // never be blocked by this section.
 export async function defaultPlaybookConvention(): Promise<string> {
-  const id = await getDefaultPlaybook();
+  const id = await resolveDefaultPlaybookId();
   if (!id) return '';
   try {
     const { playbooks } = await loadPlaybooks();

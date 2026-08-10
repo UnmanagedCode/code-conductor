@@ -48,6 +48,7 @@ const DEFAULT_TIER_LABELS = { fast: 'Fast', balanced: 'Balanced', powerful: 'Pow
 const DEFAULT_ROLE_BINDING = {
   conductor: { kind: 'tier', tier: 'powerful' },
   reviewer:  { kind: 'tier', tier: 'powerful' },
+  planner:   { kind: 'tier', tier: 'powerful' },
 };
 
 // First-paint seed for the end of the effort chain (mirrors DEFAULT_EFFORT in

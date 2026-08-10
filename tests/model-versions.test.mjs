@@ -110,6 +110,9 @@ describe('known-* guards and defaultVersion', () => {
     assert.ok(isKnownTier('powerful'));
     assert.ok(!isKnownTier('ultra'));
     assert.ok(isKnownRole('conductor'));
+    // relay's `plan` stage pins spawn_instance to this role; a role missing from
+    // ROLES makes every plan spawn refuse BAD_MODEL.
+    assert.ok(isKnownRole('planner'));
     assert.ok(!isKnownRole('director'));
     assert.ok(!isKnownFamily(undefined));
   });

@@ -32,7 +32,7 @@ import { BOOT_ID } from './bootId.ts';
 import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
-import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement } from './playbooks.ts';
+import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
 import {
   isAvailable as transcribeAvailable, transcribe, modelPathForName,
 } from './transcribe.ts';
@@ -89,8 +89,9 @@ import {
   addCustomConvention as addConductorConvention,
   updateCustomConvention as updateConductorConvention,
   deleteCustomConvention as deleteConductorConvention,
-  getDefaultPlaybook,
+  getDefaultPlaybookSelection,
   setDefaultPlaybook,
+  type DefaultPlaybookSelection,
 } from './conductorConventions.ts';
 // The catalog read the Settings picker lists — the same one the MCP tool
 // answers with, imported rather than reimplemented per surface.
@@ -1740,11 +1741,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
       const [conventions, enabled, catalog, defaultPlaybook] = await Promise.all([
-        getConductorConventionsCatalog(), getConductorSelection(), listPlaybooks(), getDefaultPlaybook(),
+        getConductorConventionsCatalog(), getConductorSelection(), listPlaybooks(), getDefaultPlaybookSelection(),
       ]);
       res.json({
         core: CONDUCT_CORE_META, conventions, enabled,
         playbooks: catalog.playbooks, playbookErrors: catalog.errors, defaultPlaybook,
+        // What `{mode:'unset'}` resolves to, so the picker labels that row from
+        // the shipped constant instead of a second copy of the id.
+        defaultPlaybookFallback: DEFAULT_PLAYBOOK_ID,
       });
     } catch (e) { next(e); }
   });
@@ -1761,14 +1765,18 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
   r.put('/settings/conventions/conductor/default-playbook', async (req, res, next) => {
     try {
-      // `id` must be PRESENT — clearing is `{"id": null}`, never an empty body.
-      // A body-less PUT is a malformed request, and treating it as "clear"
-      // discards the selection silently.
+      // `defaultPlaybook` must be PRESENT. A body-less PUT is a malformed
+      // request, and treating it as any of the three states discards the
+      // selection silently.
       const body = jsonBody(req);
-      if (!('id' in body)) {
-        throw Object.assign(new Error('id is required (pass null to clear the default playbook)'), { statusCode: 400 });
+      if (!('defaultPlaybook' in body)) {
+        throw Object.assign(
+          new Error("defaultPlaybook is required, e.g. {\"defaultPlaybook\":{\"mode\":\"none\"}}"),
+          { statusCode: 400 },
+        );
       }
-      res.json({ defaultPlaybook: await setDefaultPlaybook(body.id as string | null) });
+      const saved = await setDefaultPlaybook(body.defaultPlaybook as DefaultPlaybookSelection);
+      res.json({ defaultPlaybook: saved });
     } catch (e) { next(e); }
   });
 

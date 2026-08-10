@@ -30,7 +30,7 @@
 
 export type FamilyName = 'fable' | 'opus' | 'sonnet' | 'haiku';
 export type TierName = 'fast' | 'balanced' | 'powerful' | 'frontier';
-export type RoleName = 'conductor' | 'reviewer';
+export type RoleName = 'conductor' | 'reviewer' | 'planner';
 
 export interface ModelVersion {
   id: string;
@@ -192,12 +192,14 @@ export function isKnownTier(tier: unknown): tier is TierName {
 export const ROLES: readonly Role[] = [
   { role: 'conductor', label: 'Conductor' },
   { role: 'reviewer',  label: 'Reviewer' },
+  { role: 'planner',   label: 'Planner' },
 ];
 
-// Default role → binding. Both point at the `powerful` tier out of the box.
+// Default role → binding. Every role points at the `powerful` tier out of the box.
 export const DEFAULT_ROLE_BINDING: Record<RoleName, TierBinding> = {
   conductor: { kind: 'tier', tier: 'powerful' },
   reviewer:  { kind: 'tier', tier: 'powerful' },
+  planner:   { kind: 'tier', tier: 'powerful' },
 };
 
 export function isKnownRole(role: unknown): boolean {
