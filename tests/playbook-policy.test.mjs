@@ -130,9 +130,14 @@ test('a run-root spawn must name a playbook; an unknown playbook or stage is nam
 
 // ── the first-spawn refusal has to be recoverable in ONE round-trip ─────────
 //
-// Enforcement is on by default, so a fresh conductor's first spawn is refused
-// unless it already names a playbook — and it cannot know one without asking.
-// That refusal is the only channel (there is no server→client notification and
+// What is pinned here is the refusal PAYLOAD, computed by calling decide()
+// directly — so it holds at either enforcement level, and says nothing about
+// which one ships. (Both levels decide and ledger; `enforce` returns this
+// payload to the caller, `warn` warns with it and lets the spawn proceed
+// untracked.)
+//
+// A run-root spawn that names no playbook cannot know one without asking, and
+// this refusal is the only channel (there is no server→client notification and
 // the tool list is fetched once), so it must carry both halves of the answer:
 // which playbooks exist AND where each can be entered. `legalMoves` structurally
 // cannot say this — it describes edges out of one known stage, and there is no
