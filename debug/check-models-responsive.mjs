@@ -15,8 +15,8 @@
 // DOM-contract half of the same fix is covered deterministically by
 // tests/settings-models-field-labels.test.mjs.
 //
-// The sweep straddles the 840px breakpoint on purpose: 839 is the widest the
-// restacked card layout ever renders, 841 the narrowest the six-column grid
+// The sweep straddles the 850px breakpoint on purpose: 849 is the widest the
+// restacked card layout ever renders, 851 the narrowest the six-column grid
 // does, so a discontinuity at the seam fails here rather than on someone's
 // tablet. 719/721 stay in the narrow list too — both are inside the card range
 // now, and 721 is the width where boxing the tier list in a fieldset pushed the
@@ -30,11 +30,11 @@ import { bootOrch } from './boot-orch.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// 839/841 straddle the breakpoint; 719/721 are kept because they are real widths
+// 849/851 straddle the breakpoint; 719/721 are kept because they are real widths
 // that used to straddle it and 721 is where the fieldset regression lived — the
 // seam moving must not silently drop the spot the bug stood on.
-const NARROW = [320, 360, 390, 719, 721, 839];
-const WIDE = [841, 1024, 1280];
+const NARROW = [320, 360, 390, 719, 721, 849];
+const WIDE = [851, 1024, 1280];
 const WIDTHS = [...NARROW, ...WIDE];
 const TAP_MIN = 44;        // the stylesheet's own floor (#review-header, .commit-row, …)
 const SELECT_MIN_W = 100;  // a select narrower than this can't show a model name
@@ -157,7 +157,7 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
 
   // The WIDE role row is a pre-existing no-wrap flex that this check does not own:
   // with a max-length custom role name its min-content is ~686px, so it overflows
-  // whenever the content column is narrower than that — which at 841px it is (the
+  // whenever the content column is narrower than that — which at 851px it is (the
   // sidebar is back, leaving 561px). Measured identical on `main`, so it is not a
   // seam discontinuity introduced here; fixing it means changing the wide role row,
   // and it would take a ~1030px breakpoint, which would restack 1024px desktop.
@@ -174,10 +174,12 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
     // 4b. The `1fr` model column, ASSERTED above the breakpoint. This used to be a
     //     `[known]` line only: at 721px the column was squeezed to a 25px stub that
     //     no amount of `min-width: 0` could recover, because a select floors at a
-    //     ~22px intrinsic UA minimum. The 840px breakpoint puts the grid's narrowest
-    //     render at 841px, where the column measures 100px on a classic-scrollbar
-    //     host — exactly the readable floor — so the stub is gone and the
-    //     measurement becomes an assertion.
+    //     ~22px intrinsic UA minimum. The 850px breakpoint puts the grid's narrowest
+    //     render at 851px, which clears the readable floor for any scrollbar gutter
+    //     up to 25px — so the stub is gone and the measurement becomes an assertion.
+    //     The gutter matters because it comes off the content column and its width is
+    //     the host's, not ours: this must not fail on a machine with fatter
+    //     scrollbars than the one it was tuned on.
     //     Catches: any future change that re-narrows the grid — another fixed
     //     column, wider padding on an ancestor, or the breakpoint drifting back down.
     //     Only the `1fr` column is measured: the backend (88px) and effort (76px)
@@ -197,7 +199,7 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
   //    computes to `auto` on both axes — it clips and scrolls sideways rather
   //    than pushing the document out, so check #1 alone cannot see this.
   //    Above the breakpoint the role list is exempt (see `exempt`), so measure the
-  //    widest laid-out box in the TIER rows instead of the whole scroller: 841px is
+  //    widest laid-out box in the TIER rows instead of the whole scroller: 851px is
   //    the narrowest the six-column grid ever renders, and it has to fit in the
   //    content column there. Measured through `boxesOf`, or the wrappers' zero
   //    rects would reduce this to the tier label's right edge and never fire.
@@ -347,6 +349,21 @@ function measure({ TAP_MIN, SELECT_MIN_W, EPS, narrow }) {
         fail('label-in-name', `${rowName(li)}: caption '${text}' is not contained in aria-label '${aria}' (WCAG 2.5.3)`);
       }
     }
+    // 7b. …and EVERY caption in the row renders, not just the ones attached to a
+    //     select. The loop above walks selects, so the `default` radio's caption —
+    //     the one caption on the identity line, and the only label the radio has
+    //     once `.sm-family-header` is hidden — had no visibility assertion at all
+    //     and could be `display: none`-ed silently. Emptiness is already covered
+    //     for every caption by the DOM test; this is the rendered half.
+    if (narrow) {
+      for (const cap of li.querySelectorAll('.sm-field-cap')) {
+        const text = (cap.textContent || '').trim();
+        if (getComputedStyle(cap).display === 'none' || rect(cap).width === 0) {
+          const field = (cap.closest('.sm-field')?.className || '?').trim();
+          fail('no-visible-caption', `${rowName(li)}: caption '${text || '(empty)'}' in [${field}] is not visible at this width`);
+        }
+      }
+    }
 
     // 8. Wide layout: the row must still be ONE line, and the mobile rules must
     //    not have leaked up here.
@@ -436,7 +453,7 @@ try {
         h: document.documentElement.scrollHeight,
       }));
       // Clip to the viewport width: unclipping lets the document grow sideways too
-      // (the pre-existing wide role-row overflow does exactly that at 841px), and a
+      // (the pre-existing wide role-row overflow does exactly that at 851px), and a
       // PNG wider than the viewport misrepresents what the layout is.
       await page.screenshot({ path: out, fullPage: true, clip: { x: 0, y: 0, width, height: shot.h } });
 

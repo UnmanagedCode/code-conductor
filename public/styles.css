@@ -1600,19 +1600,25 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
    The captions come from `.sm-field-cap` (hidden above), which is why
    `.sm-family-header` can go — its column names no longer line up with anything.
 
-   The breakpoint is 840px, not the app-wide 720px, because the tier list sits in a
+   The breakpoint is 850px, not the app-wide 720px, because the tier list sits in a
    `fieldset.sm-group` (30px of padding + border) and the sidebar is still present
-   above 720: at 721px the grid's tracks overflow their row by ~27px. Measured, with
-   the seeded worst case: the overflow clears at 748px (overlay scrollbars) / 763px
-   (classic), and the `1fr` model column only reaches a readable 100px at 826px /
-   841px. 840 is the least value that leaves no width worse than it was — at 841px
-   with a classic scrollbar the select measures exactly 100px.
+   above 720: at 721px the grid's tracks overflow their row by ~27px.
+
+   The binding constraint is not that overflow — which clears at a lower width — but
+   the `1fr` model column staying readable (>= 100px, `SELECT_MIN_W` in
+   debug/check-models-responsive.mjs). That needs a 484px row box (20+76+88+100+76+48
+   + 5 gaps + padding + border), so 546px of content column, so an effective width of
+   826px once the 280px sidebar and 32px of column padding are taken off. "Effective"
+   because a classic scrollbar's gutter comes off too, and its width is the host's,
+   not ours: at 850 the grid's narrowest render is 851px, which holds >= 100px for any
+   gutter up to 25px (17px → 108px, 20px → 105px). Sitting on 840 instead would put a
+   17px-scrollbar host at 98px and fail the check with nothing having changed.
 
    Placement is by explicit row 1 + full-width auto-placement for the fields, not
    `grid-template-areas`: a role row's backend/model fields only exist on a
    Custom binding, and named areas with no item would leave empty tracks (and
    their gaps) behind. */
-@media (max-width: 840px) {
+@media (max-width: 850px) {
   .sm-family-header { display: none; }
 
   /* Identity line first (enable + name + the default radio, which is about the

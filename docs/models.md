@@ -371,14 +371,14 @@ immediately — no restart. Endpoints: [protocol.md](protocol.md#rest-endpoints)
 tiers`), the same box **Roles** and **Custom models** use — at every width, not just narrow
 ones. Its 30px of horizontal padding + border is what sets the narrow breakpoint below.
 
-**Narrow widths.** Under the Models view's own `max-width: 840px` breakpoint each tier/role
+**Narrow widths.** Under the Models view's own `max-width: 850px` breakpoint each tier/role
 row restacks into a card: an identity line (enable checkbox + name, and for a tier the
 `default` radio) followed by one `caption + control` line per field. The captions come from
 a `label.sm-field` > `.sm-field-cap` wrapper around each control (`labelledField` in
 `public/settings.js`); above the breakpoint that wrapper is `display: contents` — the
 control itself stays the row's grid/flex item, so the wide six-column layout keeps its
 geometry — and the captions are the `.sm-family-header` row, which the narrow block hides.
-Selects in a card are capped at `max-width: 380px` so they don't stretch across an 840px card.
+Selects in a card are capped at `max-width: 380px` so they don't stretch across an 850px card.
 
 `model` and `effort` share one line, wrapped together in a `div.sm-field-pair` (`fieldPair`
 in `public/settings.js`, `display: contents` above the breakpoint like `.sm-field`) laid out
@@ -388,18 +388,25 @@ select ~49px. A tier-bound role has no model field, so its effort takes the line
 pair is emitted. `.sm-field-pair .sm-field { grid-column: auto }` is load-bearing — the row's
 own `grid-column: 1 / -1` rules are descendant selectors and otherwise re-stack the pair.
 
-**Why 840 and not the app-wide 720.** The six-column tier grid never wraps and floors at a
+**Why 850 and not the app-wide 720.** The six-column tier grid never wraps and floors at a
 406px row box: `20+76+88+22+76+48` tracks + 5 gaps + padding + border, where the 22px is the
 model select's *intrinsic UA minimum* — it does not shrink to 0 despite `min-width: 0`, so
 past this the grid overflows rather than absorbing. Above 720px the sidebar is still present,
-so the content column is `W − 280 − 32` (−15 more where scrollbars are classic). Measured
-with worst-case content: overflow clears at 748px (overlay) / 763px (classic), and the `1fr`
-model column only reaches a readable 100px at 826px / 841px. 840 is the least value leaving
-no width worse than it was — at 841px with a classic scrollbar the select measures exactly
-100px. The app-wide `max-width: 720px` breakpoint is untouched.
+so the content column is `W − 280 − 32`, minus a classic scrollbar's gutter where the host
+has one.
+
+That overflow is not what sets the breakpoint — it clears at a lower width. The binding
+constraint is the `1fr` model column staying readable (≥100px, `SELECT_MIN_W` in
+`debug/check-models-responsive.mjs`), which needs a 484px row box
+(`20+76+88+100+76+48` + 5 gaps + padding + border) → 546px content column → an **effective**
+width of 826px after the sidebar and column padding. Effective, because the gutter comes off
+too and its width belongs to the host, not to us: at `max-width: 850px` the grid's narrowest
+render is 851px, which holds ≥100px for any gutter up to 25px (17px → 108px, 20px → 105px).
+840 would have put a 17px-scrollbar host at 98px and failed the check with nothing changed.
+The app-wide `max-width: 720px` breakpoint is untouched.
 
 The `min-height: 44px` tap floor in that block is scoped to `#settings-models`, not to the
-rows, so under 840px it also enlarges the **Custom models** add form (label /
+rows, so under 850px it also enlarges the **Custom models** add form (label /
 model-id / context inputs, backend select, Add button: 30–32px → 44px), the **Roles** add
 form, the Cost dashboard button, and the two `.tt-toggle` checkbox labels. The enable
 checkbox and default radio keep their intrinsic ~13px box — it is their `.sm-field`
