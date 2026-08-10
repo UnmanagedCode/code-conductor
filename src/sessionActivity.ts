@@ -8,14 +8,17 @@
 // whole tail.
 //
 // Why mtime is wrong: the Claude CLI appends untimestamped bookkeeping records
-// (`last-prompt`, `mode`, `ai-title`, `queue-operation`) as its process exits,
-// and `writeSessionMetadata` appends its own marker pair. When a batch of live
+// (`last-prompt`, `mode`, `ai-title`) as its process exits, and
+// `writeSessionMetadata` appends its own marker pair. When a batch of live
 // subprocesses dies together — a server drain/restart — every one of those
 // files gets an mtime within milliseconds of the others, hours or days after
 // the sessions they describe actually stopped. Sorting on mtime then sorts on
 // noise and collapses distinct sessions into one indistinguishable minute.
-// Those bookkeeping records carry no `timestamp`, so a reverse scan skips past
-// them and lands on real content.
+// Those three records carry no `timestamp`, so a reverse scan skips past them
+// and lands on real content. `queue-operation` is NOT one of them — it does
+// carry a `timestamp` and the scan does land on it (4% of a real transcript
+// population), which is correct: enqueueing a prompt is real activity, and it
+// sits a fraction of a second from the last content record anyway.
 //
 // The reader is a bounded tail read, and its result is memoized per file, so a
 // fan-out across every project costs readdir + stat + a Map lookup in the
@@ -34,7 +37,7 @@ export const TAIL_BYTES = 64 * 1024;
 // map without limit as sessions are created and deleted. ~200 bytes an entry,
 // and ~6x the transcript count of a busy projects root, so eviction is the rare
 // case rather than the steady state.
-export const LAST_ACTIVITY_CACHE_MAX = 5000;
+const LAST_ACTIVITY_CACHE_MAX = 5000;
 
 // The identity + change-detection tuple, all read off the stat the caller
 // already has.

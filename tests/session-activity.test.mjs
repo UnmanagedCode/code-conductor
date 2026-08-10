@@ -1,10 +1,11 @@
 // Session recency comes off the transcript's CONTENT, not its mtime.
 //
 // The defect these pin: the Claude CLI appends untimestamped bookkeeping
-// records (`last-prompt`, `mode`, `ai-title`, `queue-operation`) as its process
-// exits, so when a batch of live subprocesses dies together the whole batch's
-// transcripts get an mtime within milliseconds of each other — hours or days
-// after those sessions actually stopped. Sorting on mtime then sorts on noise.
+// records (`last-prompt`, `mode`, `ai-title` — not `queue-operation`, which
+// carries a real timestamp) as its process exits, so when a batch of live
+// subprocesses dies together the whole batch's transcripts get an mtime within
+// milliseconds of each other — hours or days after those sessions actually
+// stopped. Sorting on mtime then sorts on noise.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -92,6 +93,41 @@ test('lastActivity reads the TAIL of a transcript larger than the window', async
     assert.equal(got, endedAt);
     assert.notEqual(got, startedAt,
       'reading the head instead of the tail would report when the session STARTED');
+  });
+});
+
+// Pins that the window is big enough to be USEFUL, not merely that a window
+// exists. Sized in HARDCODED bytes on purpose: the two fixtures around it scale
+// off TAIL_BYTES, so they shrink with it and leave the constant free to be cut
+// to 1 KB with the suite green — which on the real transcript population would
+// sink 92% of sessions back onto mtime, silently un-fixing this card for almost
+// everyone. Nothing in this test may be derived from TAIL_BYTES.
+test('the window reaches a real record 32 KB from the end of the file', async () => {
+  await withTmp(async (dir) => {
+    const file = path.join(dir, 's.jsonl');
+    const endedAt = Date.parse('2026-08-08T22:27:10.000Z');
+    const bogusMtime = Date.parse('2026-08-09T09:12:40.000Z');
+
+    // The session's last real record, then 32 KB of the untimestamped
+    // bookkeeping the CLI appends on exit — a tail that size is ordinary, and
+    // a window that cannot see past it reports the mass-exit mtime instead.
+    const lines = [JSON.stringify({
+      type: 'assistant', uuid: 'a1', timestamp: '2026-08-08T22:27:10.000Z',
+      message: { role: 'assistant', content: [] },
+    })];
+    const filler = JSON.stringify({ type: 'last-prompt', leafUuid: 'a1', sessionId: 'x', pad: 'x'.repeat(1024) });
+    let padded = 0;
+    while (padded < 32 * 1024) { lines.push(filler); padded += filler.length + 1; }
+    await fs.writeFile(file, lines.join('\n') + '\n');
+    await fs.utimes(file, new Date(bogusMtime), new Date(bogusMtime));
+
+    const st = await fs.stat(file);
+    assert.ok(st.size > 32 * 1024, 'fixture must carry 32 KB+ of tail past the last real record');
+
+    const cache = createLastActivityCache();
+    const got = await cache.lastActivityOf(file, st);
+    assert.equal(got, endedAt, 'a window under ~32 KB cannot reach this record');
+    assert.notEqual(got, bogusMtime, 'shrinking the window degrades this session to its mtime');
   });
 });
 
