@@ -495,7 +495,10 @@ describe('renderSessions — the resumes-hot safety flag', () => {
 });
 
 describe('renderWorktrees', () => {
-  test('parent renders once as a header, path under each row', () => {
+  // parentProject is row-invariant (a worktree records the ROOT project even when
+  // based on another worktree) so it heads the block. parentPath is NOT — see the
+  // derived-row test below — so it is not rendered at all.
+  test('project renders once as a header, path under each row', () => {
     assert.equal(renderWorktrees([
       { worktree: 'demo_worktree_ab12', parentProject: 'demo', parentPath: '/w/cc-projects/demo',
         worktreePath: '/w/cc-projects/demo_worktree_ab12', branch: 'demo/ab12',
@@ -504,11 +507,33 @@ describe('renderWorktrees', () => {
         worktreePath: '/w/cc-projects/demo_worktree_c9', branch: 'demo/c9',
         baseBranch: 'main', baseSha: 'def5678', createdAt: '2026-08-02T11:30:00.000Z' },
     ]), [
-      'WORKTREES (2) — demo  /w/cc-projects/demo',
+      'WORKTREES (2) — demo',
       '',
       'demo_worktree_ab12  br demo/ab12  base main@abc1234  created 2026-08-01 10:00Z',
       '  /w/cc-projects/demo_worktree_ab12',
       'demo_worktree_c9    br demo/c9    base main@def5678  created 2026-08-02 11:30Z',
+      '  /w/cc-projects/demo_worktree_c9',
+    ].join('\n'));
+  });
+
+  // The rows here have DIFFERENT parentPaths, which is exactly why the header
+  // can't hoist one: the derived row's parent is the feature's checkout.
+  test('a derived worktree names the worktree it is based on', () => {
+    assert.equal(renderWorktrees([
+      { worktree: 'demo_worktree_auth', parentProject: 'demo', parentPath: '/w/cc-projects/demo',
+        worktreePath: '/w/cc-projects/demo_worktree_auth', branch: 'code-conductor/auth',
+        baseBranch: 'main', baseSha: 'abc1234', createdAt: '2026-08-01T10:00:00.000Z' },
+      { worktree: 'demo_worktree_c9', parentProject: 'demo',
+        parentPath: '/w/cc-projects/demo_worktree_auth',
+        worktreePath: '/w/cc-projects/demo_worktree_c9', branch: 'demo/c9',
+        baseBranch: 'code-conductor/auth', baseSha: 'def5678',
+        baseWorktree: 'demo_worktree_auth', createdAt: '2026-08-02T11:30:00.000Z' },
+    ]), [
+      'WORKTREES (2) — demo',
+      '',
+      'demo_worktree_auth  br code-conductor/auth  base main@abc1234                                      created 2026-08-01 10:00Z',
+      '  /w/cc-projects/demo_worktree_auth',
+      'demo_worktree_c9    br demo/c9              base code-conductor/auth@def5678 ← demo_worktree_auth  created 2026-08-02 11:30Z',
       '  /w/cc-projects/demo_worktree_c9',
     ].join('\n'));
   });

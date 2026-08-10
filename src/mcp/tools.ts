@@ -212,6 +212,14 @@ export function buildTools(): Tool[] {
             type: 'boolean',
             description: 'If true, create a fresh worktree off the project\'s HEAD and spawn into it. Takes precedence over worktree.',
           },
+          baseWorktree: {
+            type: 'string',
+            description: 'Requires createWorktree:true (else refused). Same meaning as create_worktree\'s — see that tool\'s schema.',
+          },
+          name: {
+            type: 'string',
+            description: 'Requires createWorktree:true (else refused). Names the new WORKTREE, not the session — see create_worktree\'s schema.',
+          },
           temp: { type: 'boolean', default: true, description: 'If true, the session jsonl is removed on subprocess exit. Defaults to true for MCP spawns; pass false to keep the session (or promote_session later).' },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
           playbook: {
@@ -538,7 +546,23 @@ export function buildTools(): Tool[] {
         'Use spawn_instance({worktree:<name>}) afterwards to attach an agent to it.',
       inputSchema: {
         type: 'object',
-        properties: { project: { type: 'string' } },
+        properties: {
+          project: { type: 'string' },
+          baseWorktree: {
+            type: 'string',
+            description:
+              'Base the new worktree on this existing worktree of the project instead of the project\'s HEAD, ' +
+              'so it syncs against and merges into that worktree — how a multi-task feature integrates as a unit ' +
+              'before landing. Depth is capped at one: a worktree that is itself based on another is refused as a base.',
+          },
+          name: {
+            type: 'string',
+            description:
+              'Name for the NEW worktree, slugified into its branch (code-conductor/<slug>) and directory. ' +
+              'Omitted ⇒ a random short id. Worth setting for a worktree others will be based on, whose branch ' +
+              'is read in git log long after it is created.',
+          },
+        },
         required: ['project'],
       },
       handler: h.createWorktree,
@@ -565,7 +589,10 @@ export function buildTools(): Tool[] {
       description:
         'Bring a worktree up to date with its base branch — server-side fast-forward when possible; ' +
         'otherwise attempts an automatic git rebase and only sends a rebase prompt to the worktree\'s ' +
-        'live agent when conflicts block the rebase. Caller passes the worktree\'s attached worker sessionId.',
+        'live agent when conflicts block the rebase. Caller passes the worktree\'s attached worker sessionId. ' +
+        'Refuses WORKTREE_HAS_DEPENDENTS (listing them) while any worktree is based on this one, since every ' +
+        'sync path rewrites the base they were created from — delete those worktrees first; killing their ' +
+        'workers is not enough.',
       inputSchema: {
         type: 'object',
         properties: { sessionId: { type: 'string', description: 'Worker sessionId attached to the worktree.' } },
@@ -581,8 +608,11 @@ export function buildTools(): Tool[] {
         'mergeable again later. Refuses with a friendly reason if the worktree hasn\'t been synced ' +
         'first (WORKTREE_BEHIND), the parent is on the wrong branch or dirty (BASE_BRANCH_MISMATCH / ' +
         'PARENT_DIRTY), the worktree\'s own tree has uncommitted or untracked changes that would not ' +
-        'land (WORKTREE_DIRTY — pass allowDirty:true to merge anyway), or the branch has no commits ' +
-        'to merge (NOTHING_TO_MERGE).',
+        'land (WORKTREE_DIRTY — pass allowDirty:true to merge anyway), the branch has no commits ' +
+        'to merge (NOTHING_TO_MERGE), or another worktree is based on this one ' +
+        '(WORKTREE_HAS_DEPENDENTS, listing them — see sync_worktree). That last one is about the worktree ' +
+        'being merged, never the one being merged INTO: merging a task into a feature succeeds while the ' +
+        'feature still has other tasks based on it.',
       inputSchema: {
         type: 'object',
         properties: {

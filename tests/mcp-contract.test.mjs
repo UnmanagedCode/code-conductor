@@ -420,7 +420,10 @@ test('a real worktree reaches the rendering with its branch, base and paths', as
 
   const wts = text(await callTool('list_worktrees', { project: 'demo' }));
   assert.ok(wts.includes(wtName), 'the worktree name is in the rendering');
-  assert.ok(wts.includes(`— demo  ${repoPath}`), 'the parent header carries the project path');
+  assert.ok(wts.includes('— demo'), 'the header carries the parent project');
+  // parentPath is deliberately absent: it is not row-invariant once a worktree
+  // can be based on another (see tests/worktree-feature-branch.test.mjs T11).
+  assert.ok(!wts.split('\n')[0].includes(repoPath), 'the header must not hoist a row parentPath');
   assert.match(wts, /br \S+ {2}base \S+@[0-9a-f]{12} {2}created /);
 
   const projects = text(await callTool('list_projects', {}));
