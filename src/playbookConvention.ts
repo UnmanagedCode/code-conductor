@@ -1,6 +1,6 @@
 // Renders a playbook definition as the conductor-prompt section for the
-// SELECTED DEFAULT playbook (Settings → Conductor conventions → Default
-// playbook). Composed into the role prompt by src/conductorConventions.ts.
+// PREFERRED playbook (Settings → Conductor conventions → Preferred playbook).
+// Composed into the role prompt by src/conductorConventions.ts.
 //
 // GENERATED, NEVER HAND-AUTHORED. That is the whole point: the JSON owns the
 // structure, each stage's `description` owns the conductor's move at that stage,
@@ -40,7 +40,7 @@ export function renderPlaybookConvention(pb: Playbook): string {
   // pointer at describe_playbook. The available-playbooks listing sits directly
   // above this section in the same prompt and carries both — echoing them is the
   // duplication this whole surface exists to kill.
-  const lines: string[] = [`## Default playbook — \`${pb.id}\``, ''];
+  const lines: string[] = [`## Preferred playbook — \`${pb.id}\``, ''];
 
   for (const [name, stage] of Object.entries(pb.stages)) {
     const flags = stageFlags(stage);

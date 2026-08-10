@@ -1,4 +1,4 @@
-// The Settings → Conductor default-playbook picker (public/defaultPlaybook.js)
+// The Settings → Conductor preferred-playbook picker (public/defaultPlaybook.js)
 // and the seam that feeds it (conventionsPanel's `onData`), driven under
 // happy-dom against a scripted fetch.
 //
@@ -46,7 +46,7 @@ function setup({ payload = PAYLOAD } = {}) {
   globalThis.window = window;
   globalThis.document = window.document;
   window.document.body.innerHTML = `
-    <div class="st-actions"><label for="dp-select">Default playbook</label><select id="dp-select"></select></div>
+    <div class="st-actions"><label for="dp-select">Preferred playbook</label><select id="dp-select"></select></div>
     <div id="dp-status"></div>
     <div id="cc-status"></div>
     <ul id="cc-convention-list"></ul>
@@ -71,7 +71,7 @@ test('renders the unset and None rows plus one per playbook, and preselects the 
 
   const sel = window.document.getElementById('dp-select');
   assert.deepEqual(optionsOf(sel), [
-    ['unset', 'Default — freeform (nothing selected)'],
+    ['unset', 'Unset — falls back to freeform'],
     ['none', 'None — no playbook convention injected'],
     ['playbook:solo', 'solo — Solo — one worker'],
     ['playbook:relay', 'relay — Relay — plan and implement are distinct'],
@@ -81,7 +81,7 @@ test('renders the unset and None rows plus one per playbook, and preselects the 
 
 // The two states a two-row picker would collapse. Rendering unset as None (or
 // vice versa) misreports what the conductor is actually getting.
-test('unset selects the Default row; None selects the None row', async () => {
+test('unset selects the Unset row; None selects the None row', async () => {
   const { window } = setup();
   const { installDefaultPlaybook } = await freshImport('defaultPlaybook.js');
   const picker = installDefaultPlaybook({ base: BASE });

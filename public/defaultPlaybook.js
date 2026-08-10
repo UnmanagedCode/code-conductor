@@ -1,4 +1,4 @@
-// Settings → Conventions → Conductor → Default playbook picker.
+// Settings → Conventions → Conductor → Preferred playbook picker.
 //
 // The selected playbook is rendered into the conductor's role prompt as a
 // generated convention (see src/playbookConvention.ts), so a conductor knows its
@@ -30,7 +30,7 @@ export function installDefaultPlaybook({ base }) {
       selectEl.appendChild(opt);
     };
     // The fallback id comes from the payload — the server constant is its one home.
-    add('unset', `Default — ${data.defaultPlaybookFallback} (nothing selected)`);
+    add('unset', `Unset — falls back to ${data.defaultPlaybookFallback}`);
     add('none', 'None — no playbook convention injected');
     // `playbook:` prefixed so an id of "none"/"unset" can't collide with a mode.
     for (const pb of playbooks) add(`playbook:${pb.id}`, `${pb.id} — ${pb.name}`);

@@ -115,7 +115,7 @@ test('a newly authored playbook reaches the prompt with no second edit', async (
 
 // The listing is a CATALOG of what exists, not a rendering of any one graph. A
 // stage `description` is per-session prompt cost for a playbook the conductor
-// may never drive; it belongs to the selected default playbook's own convention.
+// may never drive; it belongs to the preferred playbook's own convention.
 test('a per-stage description never reaches the composed prompt listing', async () => {
   const sentinel = 'ZZQX-per-stage-sentinel-never-in-the-prompt-ZZQX';
   const dir = path.join(projectsRoot, '.code-conductor', 'playbooks');
