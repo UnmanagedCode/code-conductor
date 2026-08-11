@@ -1,7 +1,7 @@
 // Live-browser regression test for the app-switcher "leave session → default
 // view" bug. Skipped by default — opt-in via `RUN_PLAYWRIGHT=1` (needs the
 // code-playwright sibling repo + a system Chromium; see
-// debug/README.md). The import of that sibling repo is deferred into the test
+// harness/playwright/README.md). The import of that sibling repo is deferred into the test
 // body so this file loads cleanly (and shows as skipped) on machines that
 // don't have it cloned.
 //

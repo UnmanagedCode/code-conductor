@@ -16,7 +16,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer } from '../../code-playwright/browser.mjs';
+import { bootServer } from '../../../code-playwright/browser.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ORCH_ROOT = path.resolve(__dirname, '..');
