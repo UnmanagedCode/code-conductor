@@ -57,6 +57,7 @@ import * as m0025 from './0025-seed-explicit-tier-role-effort.mjs';
 import * as m0026 from './0026-drop-sonnet-window-state.mjs';
 import * as m0027 from './0027-rename-default-playbook-ids.mjs';
 import * as m0028 from './0028-tri-state-default-playbook.mjs';
+import * as m0029 from './0029-enable-playbooks-conductor-convention.mjs';
 
 // Ordered list. Numeric (lexicographic) order IS execution order — keep it that
 // way: append to the end, or letter-suffix (`0018b`) when a migration must slot
@@ -67,7 +68,7 @@ import * as m0028 from './0028-tri-state-default-playbook.mjs';
 // must consume `models.sonnetContextWindow` before 0019 deletes it, but 0026
 // later drops the `window` key that proves it did, so asserting on the
 // end state alone would pass even with the two reordered.
-export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028];
+export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028, m0029];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {
