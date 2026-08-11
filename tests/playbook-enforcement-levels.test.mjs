@@ -14,30 +14,26 @@ import {
   isPlaybookEnforcement, normalizePlaybookEnforcement,
 } from '../src/playbooks.ts';
 
-test('the allow-list is exactly the two surviving levels, defaulting to warn', () => {
+test('the allow-list is exactly the two surviving levels, defaulting to enforce', () => {
   // Every ingress validator (the spawn route, the WS toggle) derives its accepted
   // set from this constant, so widening it here silently widens both.
   assert.deepEqual([...PLAYBOOK_ENFORCEMENT_MODES], ['warn', 'enforce']);
   // The shipped default: a fresh install with nothing persisted starts
-  // UNENFORCED. This is the fallback behind getDefaultPlaybookEnforcement, not a
+  // ENFORCED. This is the fallback behind getDefaultPlaybookEnforcement, not a
   // second source — see tests/playbook-enforcement-default.test.mjs.
-  assert.equal(DEFAULT_PLAYBOOK_ENFORCEMENT, 'warn');
+  assert.equal(DEFAULT_PLAYBOOK_ENFORCEMENT, 'enforce');
   assert.equal(isPlaybookEnforcement('off'), false,
     'the retired level must not validate, or the ingress boundaries would still accept it');
   assert.equal(isPlaybookEnforcement('warn'), true);
   assert.equal(isPlaybookEnforcement('enforce'), true);
 });
 
-// HONEST LABEL: this assertion pins a VALUE CONTRACT, not a branch.
-//
-// It was written when DEFAULT_PLAYBOOK_ENFORCEMENT was 'enforce', where it also
-// distinguished the `if (v === 'off') return 'warn'` branch from the fallback.
-// The shipped default is now 'warn', so the two coincide and deleting that branch
-// changes nothing observable — no test here or anywhere else can kill that
-// mutant, and none pretends to. What survives is the contract that matters in
-// production: a session recorded as unenforced must never come back enforced.
-// Should the shipped default ever return to 'enforce', this regains its power
-// with no edit.
+// This pins the branch AND the contract: 'off' must resolve to 'warn'
+// specifically, not merely "whatever the default currently is" — a session
+// recorded as unenforced must never come back enforced. Written literally
+// (not derived from DEFAULT_PLAYBOOK_ENFORCEMENT) so a future flip of the
+// shipped default back to 'warn' cannot make this assertion vacuously true
+// again; it stays a real branch check either way.
 test('a persisted `off` normalizes to warn — an unenforced session never resurrects enforced', () => {
   assert.equal(normalizePlaybookEnforcement('off'), 'warn');
 });

@@ -68,7 +68,7 @@ export const WILDCARD = '*';
 // conductorConventions.ts), which is what a new conductor is born at.
 export const PLAYBOOK_ENFORCEMENT_MODES = ['warn', 'enforce'] as const;
 export type PlaybookEnforcement = typeof PLAYBOOK_ENFORCEMENT_MODES[number];
-export const DEFAULT_PLAYBOOK_ENFORCEMENT: PlaybookEnforcement = 'warn';
+export const DEFAULT_PLAYBOOK_ENFORCEMENT: PlaybookEnforcement = 'enforce';
 
 export function isPlaybookEnforcement(v: unknown): v is PlaybookEnforcement {
   return typeof v === 'string' && (PLAYBOOK_ENFORCEMENT_MODES as readonly string[]).includes(v);
@@ -79,11 +79,10 @@ export function isPlaybookEnforcement(v: unknown): v is PlaybookEnforcement {
 // written by the previous build during a graceful drain and consumed once at the
 // next boot — so there is no durable state left for a migration to rewrite.
 //
-// 'off' lands on 'warn' rather than on the default: bringing a session that was
-// running unenforced back as enforced is a silent UPGRADE, the mirror of the
-// silent downgrade src/resumeRestart.ts carries this field to avoid. The two
-// coincide while the shipped default is 'warn'; the branch states the rule so a
-// future change to the constant cannot quietly reintroduce that upgrade.
+// 'off' always lands on 'warn', never on DEFAULT_PLAYBOOK_ENFORCEMENT: bringing a
+// session that was running unenforced back as enforced is a silent UPGRADE, the
+// mirror of the silent downgrade src/resumeRestart.ts carries this field to
+// avoid. This must hold regardless of what the shipped default currently is.
 export function normalizePlaybookEnforcement(v: unknown): PlaybookEnforcement {
   if (v === 'off') return 'warn';
   return isPlaybookEnforcement(v) ? v : DEFAULT_PLAYBOOK_ENFORCEMENT;

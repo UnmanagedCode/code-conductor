@@ -7,8 +7,7 @@
 //  1. STORE. The level rides conventions/conductor.json as a sibling of
 //     `defaultPlaybook`, so the two must not clobber each other; and the read
 //     path must go through normalizePlaybookEnforcement rather than returning
-//     raw store text. What the retired-'off' assertion can and cannot pin now
-//     that the shipped default is 'warn' is spelled out at that test.
+//     raw store text.
 //  2. INHERITANCE. A conductor spawned with no explicit playbookEnforcement
 //     starts at the persisted level; an explicit one still wins (the restart
 //     path in src/resumeRestart.ts depends on that).
@@ -82,14 +81,10 @@ test('an unset key reads as the shipped default and both levels round-trip', asy
   assert.equal(await getDefaultPlaybookEnforcement(), DEFAULT_PLAYBOOK_ENFORCEMENT);
 });
 
-// HONEST LABEL: a value contract, not a branch — same standing as its
-// pure-function twin in tests/playbook-enforcement-levels.test.mjs, which carries
-// the full reasoning. While the shipped default was 'enforce' this also
-// distinguished normalizePlaybookEnforcement's `off` branch from its fallback;
-// the default is now 'warn', so the two coincide and nothing can kill that
-// mutant. What it still pins is that a hand-edited legacy value reaches the read
-// path at all, i.e. that the getter normalizes rather than returning raw store
-// text — which IS killable: a getter returning `'off'` unnormalized fails here.
+// Pins that a hand-edited legacy value reaches the read path at all, i.e.
+// that the getter normalizes rather than returning raw store text — see
+// tests/playbook-enforcement-levels.test.mjs for why the target is written
+// literally as 'warn' rather than derived from the current default.
 test("a persisted legacy 'off' reads as a live level, never raw", async () => {
   await writeStore({ defaultPlaybookEnforcement: 'off' });
   assert.equal(await getDefaultPlaybookEnforcement(), 'warn');
