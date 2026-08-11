@@ -492,20 +492,29 @@ export async function listDependentWorktrees(projectName: string, worktreeName: 
 // rather than per surface: unlike WORKTREE_BEHIND (where the REST user clicks
 // Sync and the conductor calls sync_worktree), both audiences act identically —
 // delete the children — so the wording names no button and no tool. `verb`
-// distinguishes the two call sites. Evaluated on the worktree being synced or
-// merged, NEVER on the worktree being merged INTO: it is this worktree's own
-// history that must not be rewritten under its children, and a --no-ff merge
-// onto it appends rather than rewrites. Applying it to a merge target would
-// deadlock any feature with more than one child.
-function dependentsRefusal(worktreeName: string, dependents: string[], verb: 'syncing' | 'merging'): {
+// distinguishes the three call sites, and keys the one clause whose content is
+// verb-specific: sync and merge REWRITE the base under the children, delete
+// takes the branch away entirely. Evaluated on the worktree being synced,
+// merged, or deleted, NEVER on the worktree being merged INTO: it is this
+// worktree's own history that must not be rewritten under its children, and a
+// --no-ff merge onto it appends rather than rewrites. Applying it to a merge
+// target would deadlock any feature with more than one child.
+export function dependentsRefusal(
+  worktreeName: string,
+  dependents: string[],
+  verb: 'syncing' | 'merging' | 'deleting',
+): {
   ok: false; code: 'WORKTREE_HAS_DEPENDENTS'; dependents: string[]; reason: string;
 } {
+  const consequence = verb === 'deleting'
+    ? 'deleting it would delete the branch they are based on'
+    : `${verb} it would rewrite the base they were created from`;
   return {
     ok: false,
     code: 'WORKTREE_HAS_DEPENDENTS',
     dependents,
     reason: `worktree '${worktreeName}' is the base for ${dependents.length} other worktree(s) — ` +
-      `${dependents.join(', ')} — and ${verb} it would rewrite the base they were created from. ` +
+      `${dependents.join(', ')} — and ${consequence}. ` +
       `Delete them first (killing their workers is not enough).`,
   };
 }
@@ -513,7 +522,10 @@ function dependentsRefusal(worktreeName: string, dependents: string[], verb: 'sy
 // Remove a worktree: deregister it via git, drop the directory, delete
 // the branch, drop the central-store entry. We refuse if the working
 // tree has uncommitted changes so the user can't silently throw away
-// in-progress agent work.
+// in-progress agent work, or if another worktree is based on this one —
+// the branch delete below would take that child's base out from under it.
+// Both refusals precede every removal, so a refused delete leaves the
+// directory, the branch, and the store entry intact.
 export async function removeWorktree(
   projectName: string,
   worktreeName: string,
@@ -526,6 +538,12 @@ export async function removeWorktree(
   const parentPath = meta.parentPath;
 
   if (!force) {
+    // Dependents first: a clean tree does not unblock this one, so checking it
+    // second would name a blocker the caller can clear and still be refused.
+    const dependents = await listDependentWorktrees(projectName, worktreeName);
+    if (dependents.length > 0) {
+      throw httpError(409, dependentsRefusal(worktreeName, dependents, 'deleting').reason);
+    }
     const dirty = await worktreeDirtyLines(meta.worktreePath);
     if (dirty.ok && dirty.lines.length > 0) {
       throw httpError(

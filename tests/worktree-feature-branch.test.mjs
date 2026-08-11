@@ -6,16 +6,19 @@
 //   - a feature's own history survives its sync (--rebase-merges, both call
 //     sites) — T1, T2, T10
 //   - a task rebases onto its FEATURE, not onto the project's branch — T12
-//   - WORKTREE_HAS_DEPENDENTS gates sync/merge over worktree RECORDS, is
+//   - WORKTREE_HAS_DEPENDENTS gates sync/merge/delete over worktree RECORDS, is
 //     unconditional on ahead/behind, precedes WORKTREE_BEHIND, and applies to
 //     the worktree being synced/merged and never to the merge TARGET — T3-T5, T12
+//   - the delete gate holds on all three surfaces (service layer, MCP soft
+//     channel, REST), leaves dir + record + branch intact, is cleared by
+//     deleting the children, and is overridden by force — T14-T18
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { api, bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   createWorktree, getWorktree, listWorktrees, listDependentWorktrees,
   syncWorktree, mergeWorktreeIntoParent, removeWorktree, buildRebasePrompt,
@@ -81,6 +84,11 @@ async function commitFile(cwd, filename, content, message) {
 
 const headSha = async (cwd) => (await git(cwd, 'rev-parse', 'HEAD')).stdout.trim();
 const exists = async (p) => { try { await fs.access(p); return true; } catch { return false; } };
+// Is `branch` still a ref in the repo? The branch is the third thing a delete
+// destroys (after the dir and the store entry) and the one that actually breaks
+// the children, so the refusal tests assert it separately.
+const branchExists = async (repoPath, branch) =>
+  (await gitCode(repoPath, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`)) === 0;
 
 // Count merge commits (>=2 parents) on `branch` that are not on `notOn`.
 async function mergeCommitCount(cwd, branch, notOn) {
@@ -428,6 +436,129 @@ test('T10: a landed feature yields main <- merge(feature) <- merge(task)', async
   const firstParent = (await git(repoPath, 'log', '--first-parent', '--format=%s', '-1', 'main')).stdout.trim();
   assert.match(firstParent, /^Merge branch 'code-conductor\/auth'/);
   assert.equal(await exists(path.join(repoPath, 'task.js')), true);
+});
+
+// ---------------------------------------------------------------------------
+// T14 — the delete gate in the shared git layer, and its ordering: nothing is
+//       removed before it fires.
+// ---------------------------------------------------------------------------
+test('T14: removeWorktree refuses 409 for a base, leaving dir + record + branch intact', async () => {
+  const { repoPath, feature, tasks } = await makeFeature('demo', { name: 'auth', tasks: 1 });
+  const task = tasks[0];
+
+  await assert.rejects(
+    () => removeWorktree('demo', feature.worktreeName),
+    (e) => {
+      assert.equal(e.statusCode, 409);
+      assert.match(e.message, /is the base for/);
+      assert.ok(e.message.includes(task.worktreeName), `message does not name ${task.worktreeName}`);
+      return true;
+    },
+  );
+
+  // THE invariant: the guard precedes every removal removeWorktree performs, so
+  // a refused delete is a no-op on all three. Without the check the call above
+  // resolves and this test fails at assert.rejects; with the check placed after
+  // `git worktree remove` / `git branch -d` it fails here instead. It cannot
+  // pass either way.
+  assert.equal(await exists(feature.worktreePath), true, 'the refused delete removed the directory');
+  assert.ok(await getWorktree('demo', feature.worktreeName), 'the refused delete dropped the store record');
+  assert.equal(
+    await branchExists(repoPath, feature.branch), true,
+    'the refused delete deleted the branch the child is based on',
+  );
+  assert.equal((await listWorktrees('demo')).length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// T15 — the MCP half of the same gate: a business refusal, not a fault.
+// ---------------------------------------------------------------------------
+test('T15: MCP delete_worktree refuses on the soft channel with dependents[]', async () => {
+  const { repoPath, feature, tasks } = await makeFeature('demo', { name: 'auth', tasks: 1 });
+  const task = tasks[0];
+
+  const refused = await callTool('delete_worktree', { project: 'demo', worktree: feature.worktreeName });
+  // Without the handler's pre-check this still refuses — but as removeWorktree's
+  // 409 travelling the ERROR channel, with no ok/code/dependents for the caller
+  // to branch on. That is what these four assertions separate.
+  assert.ok(!refused.isError, 'a dependents refusal must not use the error channel');
+  const body = unwrap(refused);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, 'WORKTREE_HAS_DEPENDENTS');
+  assert.deepEqual(body.dependents, [task.worktreeName]);
+  assert.ok(body.reason.includes(task.worktreeName), 'reason does not name the dependent');
+
+  assert.ok(await getWorktree('demo', feature.worktreeName));
+  assert.equal(await branchExists(repoPath, feature.branch), true);
+});
+
+// ---------------------------------------------------------------------------
+// T16 — force overrides the gate, and orphaning is the documented consequence.
+// ---------------------------------------------------------------------------
+test('T16: delete_worktree force:true deletes the base and orphans its child', async () => {
+  const { repoPath, feature, tasks } = await makeFeature('demo', { name: 'auth', tasks: 1 });
+  const task = tasks[0];
+
+  const done = unwrap(await callTool('delete_worktree', {
+    project: 'demo', worktree: feature.worktreeName, force: true,
+  }));
+  assert.equal(done.ok, undefined, 'success is bare data, no ok');
+  assert.equal(done.worktree, feature.worktreeName);
+  assert.equal(await getWorktree('demo', feature.worktreeName), null);
+  assert.equal(await exists(feature.worktreePath), false);
+
+  // The documented cost of forcing, asserted rather than only written down: the
+  // child survives still pointing at a base branch that is now gone.
+  assert.equal(await branchExists(repoPath, feature.branch), false);
+  const orphan = await getWorktree('demo', task.worktreeName);
+  assert.equal(orphan.baseWorktree, feature.worktreeName);
+  assert.equal(orphan.baseBranch, feature.branch);
+});
+
+// ---------------------------------------------------------------------------
+// T17 — the path the refusal steers callers toward, and the direction of the
+//       predicate.
+// ---------------------------------------------------------------------------
+test('T17: deleting the child is unaffected, and child-then-feature needs no force', async () => {
+  const { feature, tasks } = await makeFeature('demo', { name: 'auth', tasks: 1 });
+  const task = tasks[0];
+
+  // The predicate is "worktrees based on THIS one", not "this one has a base" —
+  // an inverted implementation passes T14 and fails right here.
+  await removeWorktree('demo', task.worktreeName);
+  assert.equal(await getWorktree('demo', task.worktreeName), null);
+
+  // And the refusal is transient: it clears with the last dependent record, so
+  // the normal serialized flow lands without ever reaching for force. An
+  // implementation keyed on a flag stamped at creation passes the line above and
+  // fails this one.
+  await removeWorktree('demo', feature.worktreeName);
+  assert.equal(await getWorktree('demo', feature.worktreeName), null);
+  assert.equal(await exists(feature.worktreePath), false);
+  assert.equal((await listWorktrees('demo')).length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// T18 — the REST/GUI surface, which reaches removeWorktree directly.
+// ---------------------------------------------------------------------------
+test('T18: REST DELETE refuses 409 naming the child; ?force=1 clears it', async () => {
+  const { repoPath, feature, tasks } = await makeFeature('demo', { name: 'auth', tasks: 1 });
+  const task = tasks[0];
+  const url = `/api/projects/demo/worktrees/${encodeURIComponent(feature.worktreeName)}`;
+
+  // The sidebar's × drives this endpoint and shows body.error in its "Force
+  // remove anyway?" confirm — so this surface, not the MCP one, is where an
+  // unguarded delete would silently orphan children. A handler-only guard fails
+  // here with a 200.
+  const refused = await api(baseUrl, 'DELETE', url);
+  assert.equal(refused.status, 409);
+  assert.ok(refused.body.error.includes(task.worktreeName), `error does not name the child: ${refused.body.error}`);
+  assert.ok(await getWorktree('demo', feature.worktreeName));
+  assert.equal(await branchExists(repoPath, feature.branch), true);
+
+  const forced = await api(baseUrl, 'DELETE', `${url}?force=1`);
+  assert.equal(forced.status, 200);
+  assert.equal(await getWorktree('demo', feature.worktreeName), null);
 });
 
 // ---------------------------------------------------------------------------
