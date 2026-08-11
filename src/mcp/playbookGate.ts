@@ -285,6 +285,18 @@ export function createPlaybookGate(
     if (isRecord(result) && result.ok === false) return;
     const provenance = suppliedProvenance(args.provenance);
 
+    // A RESUME un-retires an existing worker; it never re-declares one. Writing a
+    // `spawn` here would reset that worker's stageHistory and empty its provenance
+    // (see the spawn arm of applyEvent), erasing the history every downstream
+    // `needs` is answered from. The sessionId comes from the RESULT for the same
+    // reason as below — the result is the authority on which worker came back.
+    if (move.kind === 'resume') {
+      const sessionId = asRecord(result).sessionId;
+      if (typeof sessionId !== 'string' || !sessionId) return;
+      await append({ kind: 'resume', sessionId });
+      return;
+    }
+
     if (move.kind === 'spawn' && move.playbook && move.to) {
       // The new worker's identity comes from the RESULT, not the arguments:
       // createWorktree:true generates the worktree name server-side, and the
@@ -298,7 +310,7 @@ export function createPlaybookGate(
         sessionId,
         playbook: move.playbook,
         stage: move.to,
-        // Absent `needs` ⇒ a run root. Keep it off the event entirely rather
+        // Absent `provenance` ⇒ a run root. Keep it off the event entirely rather
         // than writing `{}`, so the fold can tell the two apart.
         ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
         ...(typeof view.project === 'string' ? { project: view.project } : {}),
@@ -361,7 +373,7 @@ export function createPlaybookGate(
   return { check, readProjection, readHistory, ledger: () => ledger };
 }
 
-// The caller's `needs` map, narrowed to the {stage: sessionId} string pairs the
+// The caller's `provenance` map, narrowed to the {stage: sessionId} string pairs the
 // ledger stores. Prefix values have already been resolved to full sessionIds at
 // the transport's prefix chokepoint.
 function suppliedProvenance(v: unknown): Record<string, string> {

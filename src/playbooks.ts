@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, validateSlug, type ExtraEntry } from './fragmentCatalog.ts';
 import {
-  type Projection, hasEverBeen, liveInStage, runRootOf, sameRun,
+  type Projection, type WorkerState, hasEverBeen, liveInStage, runRootOf, sameRun,
 } from './playbookLedger.ts';
 
 const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playbooks');
@@ -500,11 +500,13 @@ function validateToolPolicy(
   const out: Record<string, PinLiteral> = {};
   for (const [arg, val] of Object.entries(policy.pin)) {
     // ORDER IS LOAD-BEARING: the forbidden-key check must precede the
-    // exists-in-inputSchema check. spawn_instance does not (yet) declare
-    // `playbook`/`stage`/`needs` as arguments, so checking existence first would
-    // report a `pin` on `stage` as a typo today and silently start reporting
-    // it as a policy-layer input once those arguments are added. A test pins
-    // this precedence.
+    // exists-in-inputSchema check, so a `pin` on a policy-layer input always
+    // reports as one rather than as a typo. WHICH of PIN_FORBIDDEN_KEYS a given
+    // tool declares varies — spawn_instance declares `playbook`/`stage`/
+    // `provenance` but no `sessionId`, and send_prompt the reverse — so
+    // exists-first would report a `pin` on `sessionId` as an unknown argument of
+    // spawn_instance, and would keep changing its message as tool schemas gain or
+    // lose those properties. A test pins this precedence.
     if ((PIN_FORBIDDEN_KEYS as readonly string[]).includes(arg)) {
       err(`stage '${stage}': tools.${toolName}.pin cannot constrain '${arg}' — it is a policy-layer ` +
           'input (the stage/playbook/worker this call is about), not an ordinary tool argument.');
@@ -647,12 +649,16 @@ export interface LegalMoves {
 // What the call DID to the graph, so the enforcement gate knows what to ledger.
 // A self-edge ('self') and an ordinary governed call ('none') move nothing.
 export interface Move {
-  kind: 'spawn' | 'transition' | 'self' | 'none';
+  // 'resume' — spawn_instance({resume}) bringing a playbook-tracked worker back.
+  // It carries `to` + `playbook` like a 'spawn', both read off the SESSION RECORD
+  // rather than the arguments, but it is a distinct kind because it enters no
+  // stage: see decideResume.
+  kind: 'spawn' | 'resume' | 'transition' | 'self' | 'none';
   from?: string;
   to?: string;
   via?: string;
   // Set on a 'spawn' only: the playbook the new worker is bound to, which on a
-  // non-root spawn is INHERITED from the `needs` ancestors rather than supplied.
+  // non-root spawn is INHERITED from the `provenance` ancestors rather than supplied.
   // Carried here so the gate can write the `spawn` ledger event without
   // re-deriving that inheritance.
   playbook?: string;
@@ -775,6 +781,16 @@ function decideSpawn(
   }
   const noMoves: LegalMoves = { playbook: null, stage: null, transitions: [] };
 
+  // A RESUME OF A TRACKED WORKER IS NOT A SPAWN. The binding is already on the
+  // session record, so it is read from there rather than demanded again — which
+  // is what makes the bare spawn_instance({resume}) the SESSION_NOT_LIVE refusal
+  // names actually work. A `resume` naming no tracked worker falls through to the
+  // run-root logic below, so adopting a loose session by naming playbook + stage
+  // is unchanged.
+  const resumeId = typeof args.resume === 'string' ? args.resume : '';
+  const recorded = resumeId ? projection.bySession.get(resumeId) : undefined;
+  if (recorded) return decideResume({ args, resumeId, recorded, playbooks });
+
   // Playbook binding: declared at the run root, inherited along `needs` edges.
   let playbookId: string | null = null;
   const ancestors = Object.values(suppliedProvenance);
@@ -784,27 +800,38 @@ function decideSpawn(
       const st = projection.bySession.get(sid);
       if (!st) {
         return refuse('NEEDS_UNSATISFIED',
-          `needs names sessionId '${sid}', which is not a playbook-tracked worker — its playbook and stage ` +
+          `provenance names sessionId '${sid}', which is not a playbook-tracked worker — its playbook and stage ` +
           'are unknown, so it cannot satisfy a `needs` entry.', noMoves);
       }
       seen.add(st.playbook);
     }
     if (seen.size > 1) {
       return refuse('PLAYBOOK_MISMATCH',
-        `the workers named in \`needs\` disagree about their playbook (${[...seen].sort().join(', ')}) — ` +
+        `the workers named in \`provenance\` disagree about their playbook (${[...seen].sort().join(', ')}) — ` +
         'a spawn inherits one playbook along its `needs` edges.', noMoves);
     }
     playbookId = [...seen][0];
     if (typeof args.playbook === 'string' && args.playbook && args.playbook !== playbookId) {
       return refuse('PLAYBOOK_MISMATCH',
         `playbook '${args.playbook}' was supplied, but this spawn inherits '${playbookId}' from the workers ` +
-        'named in `needs`. Omit `playbook` on a non-root spawn, or name the inherited one.', noMoves);
+        'named in `provenance`. Omit `playbook` on a non-root spawn, or name the inherited one.', noMoves);
     }
   } else if (typeof args.playbook === 'string' && args.playbook) {
     playbookId = args.playbook;
+  } else if (resumeId) {
+    // Reached only when `resume` names a session the ledger holds nothing for —
+    // the tracked case returned above. Naming the case matters: the remedy for an
+    // untracked session (declare a binding) is not the remedy for a mistyped id
+    // (re-send the full one), and `resume` is the one sessionId argument the
+    // transport does NOT prefix-resolve.
+    return refuse('PLAYBOOK_UNKNOWN',
+      `session ${short(resumeId)} is not playbook-tracked — the ledger holds no playbook/stage for it ` +
+      "(list_sessions renders those as '—'), so resuming it starts a new run and must name a `playbook` and a " +
+      '`stage`. `resume` takes a full sessionId; prefixes are not resolved here. ' +
+      `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, noMoves);
   } else {
     return refuse('PLAYBOOK_UNKNOWN',
-      'this spawn has no `needs`, so it starts a new run and must name a `playbook` and a `stage`. ' +
+      'this spawn has no `provenance`, so it starts a new run and must name a `playbook` and a `stage`. ' +
       `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, noMoves);
   }
 
@@ -860,6 +887,72 @@ function decideSpawn(
     stage, stageName, playbook, toolName: 'spawn_instance', args,
     move: { kind: 'spawn', to: stageName, playbook: playbook.id },
   });
+}
+
+// spawn_instance({resume}) where the resumed session IS playbook-tracked.
+//
+// A RESUME IS NOT A STAGE ENTRY — one principle, and it decides every check at
+// once: no spawnability, no `needs`, no capacity count, no `pin`. The worker is
+// already bound to this stage and already belongs to this run; it is coming back
+// to where it was, not arriving. Two of those follow necessarily rather than as a
+// preference:
+//   • `pin` — relay's `plan` stage pins createWorktree/mode, so patching a resume
+//     would hand a resumed session a brand-new worktree.
+//   • spawnability — a worker that transitioned into a transition-only stage (say
+//     solo's `implement`) and then died must still be resumable, and isSpawnable
+//     is false for exactly those stages.
+// So `patchedArgs` is the caller's `args` UNCHANGED — the same object, not a copy.
+//
+// The binding therefore comes off the record, and a supplied one is checked
+// against it rather than applied: MATCH-OR-REFUSE, the same rule (and the same
+// PLAYBOOK_MISMATCH code) a non-root spawn already uses for an inherited playbook
+// — "omit it, or name the recorded one". `playbook` and `stage` are checked
+// INDEPENDENTLY: a matching playbook with a differing stage is still a conflict.
+function decideResume(
+  { args, resumeId, recorded, playbooks }:
+  { args: Record<string, unknown>; resumeId: string; recorded: WorkerState; playbooks: Map<string, Playbook> },
+): Decision {
+  const playbook = playbooks.get(recorded.playbook) ?? null;
+  const bound = `'${recorded.playbook}'/'${recorded.stage}'`;
+  const moves = legalMovesFrom(playbook, recorded.stage);
+
+  // Same fact as decideTargeted's: definitions are not pinned to a run, so a
+  // worker can outlive its own. Refused here rather than resumed into nothing.
+  // A recorded STAGE that no longer exists is deliberately not checked — nothing
+  // on this path reads the stage object, and the next send_prompt gets
+  // decideTargeted's STAGE_UNKNOWN, which explains the same cause.
+  if (!playbook) {
+    return refuse('PLAYBOOK_UNKNOWN',
+      `session ${short(resumeId)} is bound to playbook '${recorded.playbook}', which is no longer loaded — its ` +
+      'definition was removed or renamed. Playbook definitions are not pinned to a worker. ' +
+      `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, moves);
+  }
+
+  if (isRecord(args.provenance) && Object.keys(args.provenance).length > 0) {
+    return refuse('PLAYBOOK_MISMATCH',
+      `spawn_instance({resume:"${short(resumeId)}"}) restores a worker already bound to ${bound}; a resume enters ` +
+      'no stage, so it satisfies no `needs` and takes no `provenance`. Drop `provenance` to resume it, or omit ' +
+      '`resume` to spawn a new worker into that stage.', moves);
+  }
+
+  const suppliedPlaybook = typeof args.playbook === 'string' && args.playbook ? args.playbook : null;
+  const suppliedStage = typeof args.stage === 'string' && args.stage ? args.stage : null;
+  if ((suppliedPlaybook !== null && suppliedPlaybook !== recorded.playbook)
+      || (suppliedStage !== null && suppliedStage !== recorded.stage)) {
+    // BOTH pairs are printed. One refusal has to be enough to retry legally —
+    // the same standard the run-root PLAYBOOK_UNKNOWN meets by listing every
+    // playbook with its entry stages.
+    return refuse('PLAYBOOK_MISMATCH',
+      `spawn_instance({resume:"${short(resumeId)}"}) restores a worker already bound to ${bound}, but this call ` +
+      `names '${suppliedPlaybook ?? recorded.playbook}'/'${suppliedStage ?? recorded.stage}'. A resume inherits ` +
+      'its binding from the session record — omit `playbook`/`stage`, or name the recorded pair.', moves);
+  }
+
+  return {
+    ok: true,
+    patchedArgs: args,
+    move: { kind: 'resume', to: recorded.stage, playbook: recorded.playbook },
+  };
 }
 
 function decideTargeted(

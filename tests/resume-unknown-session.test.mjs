@@ -11,8 +11,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor } from './helpers.mjs';
-import { encodeCwd } from '../src/projects.ts';
+import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,12 +32,9 @@ async function withTmpClaudeRoot(fn) {
   }
 }
 
-async function seedJsonl(claudeProjects, cwd, sessionId, records) {
-  const dir = path.join(claudeProjects, encodeCwd(cwd));
-  await fs.mkdir(dir, { recursive: true });
-  const body = records.map(r => JSON.stringify(r)).join('\n') + '\n';
-  await fs.writeFile(path.join(dir, `${sessionId}.jsonl`), body);
-}
+// Shared with tests/playbook-enforce.test.mjs — one implementation of "what the
+// CLI would have written", since the fake engine writes no transcript.
+const seedJsonl = seedSessionJsonl;
 
 // --- Unit tests: hasResumableConversation ---
 

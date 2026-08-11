@@ -131,6 +131,41 @@ test('liveInStage counts only live members of the same run, so a retire frees th
   assert.equal(liveInStage(fold([...events, { kind: 'retire', sessionId: 'w1', reason: 'killed' }]), 'root', 'b'), 1);
 });
 
+test('a `resume` un-retires a worker IN PLACE, resetting no history and no provenance', () => {
+  // A resumed worker re-attaches where it already is, so `live` is the only field
+  // the event may touch. Implementing the resume as a second `spawn` instead — the
+  // obvious shortcut, since a resume comes in through spawn_instance — would fold
+  // through the spawn arm and REPLACE this state: stageHistory collapses to
+  // ['implement'] and provenance empties, which silently breaks hasEverBeen for
+  // every downstream `needs`.
+  const events = [
+    { kind: 'spawn', sessionId: 'root', playbook: 'solo', stage: 'plan' },
+    { kind: 'spawn', sessionId: 'w1', playbook: 'solo', stage: 'plan' },
+    { kind: 'transition', sessionId: 'w1', from: 'plan', to: 'implement', via: 'approve_plan',
+      provenance: { plan: 'root' } },
+    { kind: 'retire', sessionId: 'w1', reason: 'subprocess exited' },
+  ];
+  const dead = fold(events).bySession.get('w1');
+  assert.equal(dead.live, false, 'premise: the worker is retired before the resume');
+
+  const back = fold([...events, { kind: 'resume', sessionId: 'w1' }]);
+  const st = back.bySession.get('w1');
+  assert.equal(st.live, true, 'a resume must bring the worker back to live');
+  assert.equal(st.stage, 'implement');
+  assert.deepEqual(st.stageHistory, ['plan', 'implement'], 'stageHistory must survive the resume');
+  assert.deepEqual(st.provenance, { plan: 'root' }, 'the run-graph edges must survive the resume');
+  assert.equal(st.runRoot, 'root', 'run membership must survive the resume');
+  assert.equal(hasEverBeen(back, 'w1', 'plan'), true,
+    'a downstream `needs` anchored on `plan` must still be satisfiable after a resume');
+  // And the slot it holds is counted again, since capacity counts live workers.
+  assert.equal(liveInStage(back, 'root', 'implement'), 1);
+});
+
+test('a `resume` for an unknown worker is folded as a no-op rather than materialising one', () => {
+  const p = fold([{ kind: 'resume', sessionId: 'ghost' }]);
+  assert.equal(p.bySession.size, 0, 'a resume must never invent a worker with no binding');
+});
+
 // ── run components ─────────────────────────────────────────────────────────
 
 test('run membership is the connected component over `needs` edges', () => {

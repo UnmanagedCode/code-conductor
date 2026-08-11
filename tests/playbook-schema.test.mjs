@@ -271,10 +271,12 @@ test('pin on a policy-layer input is rejected for each of sessionId/stage/playbo
   }
 });
 
-// This is the precedence the plan calls out explicitly. `spawn_instance` has NO
-// `stage`/`playbook`/`needs` property today (step 4 adds them), so checking
-// existence-in-inputSchema first would report these as typos now and silently
-// start reporting them as policy-layer inputs later. Pin the order.
+// The forbidden-key check runs first so a `pin` on a policy-layer input always
+// reports as one rather than as a typo. WHICH of PIN_FORBIDDEN_KEYS a tool
+// declares varies — spawn_instance declares `playbook`/`stage`/`provenance` but no
+// `sessionId`, and set_mode the reverse — so exists-first would report the same
+// mistake differently per tool, and would keep changing as schemas gain or lose
+// those properties. Both directions are asserted below.
 test('the pin-forbidden-key check PRECEDES the exists-in-inputSchema check', () => {
   for (const key of ['stage', 'playbook', 'provenance']) {
     const res = validatePlaybook(
