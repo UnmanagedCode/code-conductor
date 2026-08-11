@@ -26,6 +26,7 @@ import { renderPlaybookConvention } from '../src/playbookConvention.ts';
 import { loadPlaybooks, DEFAULT_PLAYBOOK_ID, SEED_PLAYBOOK_IDS } from '../src/playbooks.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import * as m0028 from '../migrations/0028-tri-state-default-playbook.mjs';
+import * as m0029 from '../migrations/0029-enable-playbooks-conductor-convention.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -241,6 +242,29 @@ test('the convention rides the playbooks convention toggle', async () => {
   assert.ok(!(await composeCurrentConduct()).includes('## Preferred playbook'), 'absent with playbooks off');
   await setSelection(ALL_SLUGS);
   assert.ok((await composeCurrentConduct()).includes('## Preferred playbook'), 'present with playbooks on');
+});
+
+// Reproduces the SYMPTOM (card 2026-0120), not the intentional toggle above:
+// a store frozen before `playbooks` was seeded loses the section not because
+// anyone unchecked it, but because it was never in `enabled` to begin with.
+// The migration must repair exactly that, through the real read path.
+test('a pre-playbooks-slug store loses the section, and migration 0029 restores it', async () => {
+  const preSlugs = SEED_CONVENTIONS.map(m => m.slug).filter(s => s !== 'playbooks');
+  const file = path.join(orchStoreRoot(), 'conventions', 'conductor.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify({
+    enabled: preSlugs,
+    defaultPlaybook: { mode: 'playbook', id: 'solo' },
+  }));
+
+  assert.ok(!(await composeCurrentConduct()).includes('## Preferred playbook'),
+    'the frozen pre-existing selection omits the section entirely');
+
+  await m0029.run({ root: path.dirname(orchStoreRoot()) });
+
+  const doc = await composeCurrentConduct();
+  assert.ok(doc.includes('## Preferred playbook — `solo`'), 'the section is restored');
+  assert.ok(doc.includes('**Available playbooks**'), 'the listing is restored too');
 });
 
 test('a selected id that no longer resolves omits the section rather than failing the spawn', async () => {
