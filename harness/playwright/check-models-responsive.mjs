@@ -1,8 +1,8 @@
 // Settings → Models responsive check: screenshots + geometry assertions at a
 // fixed width sweep, run against a sandboxed scratch orchestrator.
 //
-//   node debug/check-models-responsive.mjs [--out DIR]   # default DIR: debug/screenshots
-//   FORCE_SCROLLBAR_GUTTER=1 node debug/check-models-responsive.mjs
+//   node harness/playwright/check-models-responsive.mjs [--out DIR]   # default DIR: harness/playwright/screenshots
+//   FORCE_SCROLLBAR_GUTTER=1 node harness/playwright/check-models-responsive.mjs
 //     Makes the content column reserve a classic scrollbar gutter (this Chromium's
 //     scrollbars are overlay/zero-width). Exercises `capture-perturbed-layout`,
 //     which compares the column width before and after the screenshot unclip.
@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { withPage } from '../../code-playwright/browser.mjs';
+import { withPage } from '../../../code-playwright/browser.mjs';
 import { bootOrch } from './boot-orch.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

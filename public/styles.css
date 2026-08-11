@@ -1606,7 +1606,7 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 
    The binding constraint is not that overflow — which clears at a lower width — but
    the `1fr` model column staying readable (>= 100px, `SELECT_MIN_W` in
-   debug/check-models-responsive.mjs). That needs a 484px row box (20+76+88+100+76+48
+   harness/playwright/check-models-responsive.mjs). That needs a 484px row box (20+76+88+100+76+48
    + 5 gaps + padding + border), so 546px of content column, so an effective width of
    826px once the 280px sidebar and 32px of column padding are taken off. "Effective"
    because a classic scrollbar's gutter comes off too, and its width is the host's,

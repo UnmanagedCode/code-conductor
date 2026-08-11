@@ -1,6 +1,6 @@
 # Visual debug harness
 
-Orchestrator-specific glue around the generic [`code-playwright`](../../code-playwright/) — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the sibling repo so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.ts`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
+Orchestrator-specific glue around the generic [`code-playwright`](../../../code-playwright/) — Playwright + system Chromium for visually verifying UI changes. The reusable plumbing (`launchBrowser`, `withPage`, `waitForServer`, `bootServer`) lives in the sibling repo so other Termux webapps can share it; this directory just bakes in the orchestrator's defaults (`server.ts`, fake-claude, sandboxed `PROJECTS_ROOT` / `CLAUDE_PROJECTS_ROOT`).
 
 ## Prereqs
 
@@ -13,14 +13,14 @@ cd code-playwright && npm install
 pkg install chromium                                            # Termux system browser
 ```
 
-That's it — nothing to install in `code-conductor/debug/` itself. Imports resolve via `../../code-playwright/`.
+That's it — nothing to install in `code-conductor/harness/playwright/` itself. Imports resolve via `../../../code-playwright/`.
 
 ## Quick smoke test
 
 Boot a sandboxed scratch orchestrator, snap, tear down — one process:
 
 ```bash
-cd code-conductor/debug
+cd code-conductor/harness/playwright
 node snap.mjs --boot ./home.png
 # [boot] http://127.0.0.1:<ephemeral>
 # ./home.png   (PNG, headless, viewport 1280×800)
@@ -32,7 +32,7 @@ Or point at an already-running server:
 node snap.mjs http://127.0.0.1:8787 ./home.png
 ```
 
-See the sibling [`code-playwright/README.md`](../../code-playwright/README.md) for the full `SNAP_VIEWPORT` / `SNAP_WAIT` / `SNAP_FULL_PAGE` env-var surface and troubleshooting.
+See the sibling [`code-playwright/README.md`](../../../code-playwright/README.md) for the full `SNAP_VIEWPORT` / `SNAP_WAIT` / `SNAP_FULL_PAGE` env-var surface and troubleshooting.
 
 ## Writing a custom debug script
 
@@ -40,8 +40,8 @@ Use `bootOrch()` from this directory for the orch's sandboxed-spawn shape, or `b
 
 ```js
 // /tmp/repro-something.mjs
-import { withPage } from '../../code-playwright/browser.mjs';
-import { bootOrch } from '../code-conductor/debug/boot-orch.mjs';
+import { withPage } from '../../../code-playwright/browser.mjs';
+import { bootOrch } from '../code-conductor/harness/playwright/boot-orch.mjs';
 
 const orch = await bootOrch({
   sandbox: true,
@@ -58,7 +58,7 @@ try {
 }
 ```
 
-The sibling harness's "[growing the harness while debugging](../../code-playwright/README.md#growing-the-harness-while-debugging)" guidance applies here too: ephemeral one-off scripts stay in `/tmp/`, only genuinely reusable building blocks earn a place in this directory.
+The sibling harness's "[growing the harness while debugging](../../../code-playwright/README.md#growing-the-harness-while-debugging)" guidance applies here too: ephemeral one-off scripts stay in `/tmp/`, only genuinely reusable building blocks earn a place in this directory.
 
 ## Committed checks
 
@@ -66,7 +66,7 @@ Runnable, re-runnable, non-zero exit on failure. Not wired into `npm test` (see 
 
 | Script | What it asserts |
 |---|---|
-| `check-models-responsive.mjs` | **Settings → Models** layout across a width sweep straddling the view's 850px breakpoint (narrow 320 / 360 / 390 / 719 / 721 / 849, wide 851 / 1024 / 1280 — 719 and 721 are kept although both are now inside the card range, because 721 is where boxing the tier list in a fieldset once pushed the grid's tracks past their row). Boots a sandboxed orch, seeds worst-case content (a `CUSTOM_ROLE_MAX`-length custom role on a Custom binding + a long model id bound to a tier), then per width: no document overflow; `#sm-tier-list` inside a `fieldset.sm-tiers`; every grid's resolved `grid-template-columns` + gaps fitting its content box; no sideways overflow of `.settings-content` below the breakpoint, and above it that the six-column tier grid's rightmost box fits the content column; every panel descendant contained in the panel box; no collapsed select — including the tier grid's `1fr` model column at wide widths; each `.sm-field-pair`'s two fields side by side on one line at narrow widths; ≥44px tap targets; no sibling overlap; an `aria-label` per control, and at narrow widths that **every** `.sm-field-cap` in a row renders (not just the ones on a select — the `default` radio's caption is the only label it has once `.sm-family-header` is hidden); and at wide widths that each row is still one line and the narrow rules haven't leaked up. Writes `models-<width>.png` to `--out DIR` (default `debug/screenshots/`, gitignored). Above the breakpoint it also prints a `[known]` line for the wide role row's no-wrap flex — a pre-existing overflow it deliberately does *not* assert, so it can't read as "covered". |
+| `check-models-responsive.mjs` | **Settings → Models** layout across a width sweep straddling the view's 850px breakpoint (narrow 320 / 360 / 390 / 719 / 721 / 849, wide 851 / 1024 / 1280 — 719 and 721 are kept although both are now inside the card range, because 721 is where boxing the tier list in a fieldset once pushed the grid's tracks past their row). Boots a sandboxed orch, seeds worst-case content (a `CUSTOM_ROLE_MAX`-length custom role on a Custom binding + a long model id bound to a tier), then per width: no document overflow; `#sm-tier-list` inside a `fieldset.sm-tiers`; every grid's resolved `grid-template-columns` + gaps fitting its content box; no sideways overflow of `.settings-content` below the breakpoint, and above it that the six-column tier grid's rightmost box fits the content column; every panel descendant contained in the panel box; no collapsed select — including the tier grid's `1fr` model column at wide widths; each `.sm-field-pair`'s two fields side by side on one line at narrow widths; ≥44px tap targets; no sibling overlap; an `aria-label` per control, and at narrow widths that **every** `.sm-field-cap` in a row renders (not just the ones on a select — the `default` radio's caption is the only label it has once `.sm-family-header` is hidden); and at wide widths that each row is still one line and the narrow rules haven't leaked up. Writes `models-<width>.png` to `--out DIR` (default `harness/playwright/screenshots/`, gitignored). Above the breakpoint it also prints a `[known]` line for the wide role row's no-wrap flex — a pre-existing overflow it deliberately does *not* assert, so it can't read as "covered". |
 
 **Two assertions exist because a weaker check passed through the bug they cover.** `grid-tracks-fit` is separate from the containment check because a grid whose tracks exceed its content box does not shrink them — it overflows, and only whichever item reaches its track's right edge reveals it. When the tier fieldset landed, the header and all four tier rows overflowed by the same ~27px, but the rows' last item is a centre-justified radio, so only the header's last `.sm-col-header` span stuck out far enough for containment to notice. `pair-not-paired` exists because a `.sm-field-pair` that has silently re-stacked still yields two full-width selects that clear `SELECT_MIN_W`, are 44px tall, and neither overlap nor overflow — every other assertion in the file passes. Both were mutation-checked: reverting the breakpoint to 720px fails with `grid-tracks-fit` **and** `containment` at 721px; deleting `.sm-field-pair .sm-field { grid-column: auto }` fails `pair-not-paired` at every narrow width and nothing else, as does collapsing the pair's `grid-template-columns` to a single track.
 
@@ -81,8 +81,8 @@ The gutter's width is the **host's**, not ours, which is why the breakpoint is n
 Geometry loops here walk `boxesOf(row)`, which flattens `display: contents` children, **not** `row.children`: a `display: contents` element returns a zero rect from `getBoundingClientRect()`, and above the breakpoint every control sits inside such a wrapper — reading `row.children` there measures the wrappers and skips every control. The script self-checks this (`zero-box`, `uncovered-control`) so the loops can't go vacuous again unnoticed.
 
 ```bash
-node debug/check-models-responsive.mjs
-FORCE_SCROLLBAR_GUTTER=1 node debug/check-models-responsive.mjs
+node harness/playwright/check-models-responsive.mjs
+FORCE_SCROLLBAR_GUTTER=1 node harness/playwright/check-models-responsive.mjs
 ```
 
 ## Why no Playwright test runner?

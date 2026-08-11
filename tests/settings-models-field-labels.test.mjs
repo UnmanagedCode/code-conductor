@@ -11,7 +11,7 @@
 // was the only thing naming the two binding selects.
 //
 // Geometry (overflow, tap targets, clipping) is checked in the browser by
-// debug/check-models-responsive.mjs; this file is the deterministic half.
+// harness/playwright/check-models-responsive.mjs; this file is the deterministic half.
 //
 // Harness mirrors tests/settings-models-effort-panel.test.mjs (cache-busted import
 // so module-level state doesn't leak between tests).

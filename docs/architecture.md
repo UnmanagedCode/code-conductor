@@ -143,7 +143,7 @@
   - **Models & usage** — `models.js` (client mirror of the server model catalog; `resolveSpawnModel(tier)` the three spawn pickers call — resolves a capability tier to its bound backend + version, fed by `src/modelVersions.ts` via `/api/settings/models`), `usage.js` (`UsageTracker` / `RateLimitTracker`).
   - **Sidebar, composer & misc** — `sidebar.js` (Project ▸ Sessions ▸ Worktrees subnodes), `composer.js` (Enter / Shift+Enter, attachments, hold-to-dictate), `notifications.js` (Service-Worker OS pings), `anchor.js` (`#session=<sid>` helpers), `dismissable.js` (`makeDismissable` — click-outside/Esc factory), `external-links.js` (`installExternalLinkOpener` — Android `target=_blank` workaround), `sw.js` (Service Worker).
 - **tests/** — `node:test` suite (see Testing below).
-- **debug/** — Opt-in Playwright + Termux-Chromium harness (sibling-repo dep).
+- **harness/playwright/** — Opt-in Playwright + Termux-Chromium harness (sibling-repo dep).
 - **migrations/** — Idempotent on-disk migrations; see "Migrations" below.
 
 ## Conventions
