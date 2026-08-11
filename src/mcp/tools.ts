@@ -789,7 +789,9 @@ export function buildTools(): Tool[] {
         'pass its sessionId under), whether it must still be running (live / retired / any), and which ' +
         'stages it may be in NOW. `tools` maps a tool to allow / ' +
         'deny / pin {json} of enforced argument values — a `*` entry is the fallback for every ' +
-        'tool the stage does not name. Each stage also reports `spawnable`, the per-stage form of ' +
+        'tool the stage does not name, and with no `*` an unnamed tool is allowed. `workers` is the ' +
+        'stage\'s capacity for live workers of one run: `one` refuses a second, `many` permits ' +
+        'several live at once. Each stage also reports `spawnable`, the per-stage form of ' +
         'list_playbooks\' `spawnableStages`. On an edge, `via` is the tool that drives it and the ' +
         'ONLY tool that can. Refuses {ok:false, code:"PLAYBOOK_UNKNOWN", known:[…]} for an unknown id.',
       inputSchema: {
