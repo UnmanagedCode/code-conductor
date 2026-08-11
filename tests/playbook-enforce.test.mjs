@@ -724,15 +724,14 @@ test('a conductor born at warn records its birth and materialises the ledger', a
   } finally { await t.close(); }
 });
 
-test('a conductor spawned with no playbookEnforcement and nothing persisted defaults to warn', async () => {
+test('a conductor spawned with no playbookEnforcement and nothing persisted defaults to DEFAULT_PLAYBOOK_ENFORCEMENT', async () => {
   const t = await setup();
   try {
     // A VALUE CONTRACT — what a plain conductor spawn ends up at — NOT a proof
     // that _doCreate reads the store. With nothing persisted the constructor
     // default already equals the constant, so deleting that store-read leaves
-    // this green. (True since the read was added, not something the default flip
-    // broke: an overclaim removed, not a regression.) The ingress read is pinned
-    // in tests/playbook-enforcement-default.test.mjs, where the persisted level
+    // this green. The ingress read is pinned in
+    // tests/playbook-enforcement-default.test.mjs, where the persisted level
     // is made to DIFFER from the constant.
     assert.equal(t.instances.get(t.conductorId).playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT);
     assert.equal(t.instances.get(t.conductorId).summary().playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT,

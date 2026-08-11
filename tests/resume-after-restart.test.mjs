@@ -252,15 +252,12 @@ test('a manifest carrying the retired playbookEnforcement `off` resurrects at wa
   //
   // It must land on `warn`: that session was deliberately running unenforced,
   // and bringing it back enforced would start refusing calls that used to be
-  // allowed with nothing announcing it.
-  //
-  // SCOPE, honestly: while the shipped default was `enforce` this test was also
-  // the only proof that a restored session keeps its own recorded level. It is
-  // not any more — `warn` is now the default too, so an entry that lost its
-  // level would land here anyway. That invariant is pinned by "a restarted
-  // conductor keeps its OWN level, not a default that changed under it" below,
-  // which makes the two values differ on purpose. What remains here is the
-  // migrate-on-read path itself: `off` must not reach an instance field.
+  // allowed with nothing announcing it. This is independent of whichever level
+  // is currently the shipped default — "a restarted conductor keeps its OWN
+  // level, not a default that changed under it" below covers that invariant
+  // separately, by making the two values differ on purpose. What this test
+  // pins is the migrate-on-read path itself: `off` must not reach an instance
+  // field.
   const conductorSid = randomUUID();
   const conductCwd = path.join(projectsRoot, '.conduct');
   const dir = path.join(claudeProjectsRoot, encodeCwd(conductCwd));
