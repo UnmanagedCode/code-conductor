@@ -183,7 +183,8 @@ export function buildTools(): Tool[] {
         'further instances — guard against runaway recursion by keeping child agents in plan mode. ' +
         'PLAYBOOKS: playbook / stage / provenance declare which workflow graph this worker joins and where. ' +
         'A spawn with no `provenance` starts a new run and requires playbook + stage; a refusal lists every ' +
-        'playbook with its entry stages and the legal moves from there.',
+        'playbook with its entry stages and the legal moves from there. Resuming a playbook-tracked session is ' +
+        'NOT a new run — it inherits that session\'s recorded playbook + stage, so the bare form needs neither.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -203,7 +204,15 @@ export function buildTools(): Tool[] {
               'A capability tier (fast / balanced / powerful / frontier — the primary vocabulary), a role, ' +
               'or a specific model id to pin one exact model. Empty/omitted uses the account default.',
           },
-          resume: { type: 'string', description: 'Optional sessionId to resume (vs. spawning a fresh session).' },
+          resume: {
+            type: 'string',
+            description:
+              'Optional sessionId to resume (vs. spawning a fresh session). Must be a FULL sessionId — unlike ' +
+              'every other sessionId argument, this one is not prefix-resolved. When the session is ' +
+              'playbook-tracked, its recorded playbook + stage are recovered too, alongside the project + ' +
+              'worktree above: a resume re-attaches a worker where it already is, so it enters no stage and the ' +
+              'entered-stage checks (`needs`, `pin`, spawnability, capacity) do not apply.',
+          },
           worktree: {
             type: 'string',
             description: 'Name of an existing worktree to spawn into. To create a fresh one instead, use createWorktree:true.',
@@ -224,11 +233,11 @@ export function buildTools(): Tool[] {
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
           playbook: {
             type: 'string',
-            description: 'Playbook id (list_playbooks / describe_playbook). REQUIRED on a run root — a spawn with no `provenance`. On a non-root spawn it is inherited from the workers named in `provenance`; supplying a different one is refused PLAYBOOK_MISMATCH.',
+            description: 'Playbook id (list_playbooks / describe_playbook). REQUIRED on a run root — a spawn with no `provenance`. On a non-root spawn it is inherited from the workers named in `provenance`, and on a resume of a playbook-tracked session from that session\'s record; supplying a different one is refused PLAYBOOK_MISMATCH.',
           },
           stage: {
             type: 'string',
-            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and the entry conditions (`needs`, `pin`).',
+            description: 'The playbook stage this worker enters. It must declare spawn_instance in its tools map, else STAGE_NOT_SPAWNABLE — transition-only stages cannot be spawned into. The entered stage supplies both the permission and the entry conditions (`needs`, `pin`). On a resume of a playbook-tracked session it is inherited from that session\'s record instead (the worker enters no stage); supplying a different one is refused PLAYBOOK_MISMATCH.',
           },
           provenance: {
             type: 'object',
@@ -789,7 +798,9 @@ export function buildTools(): Tool[] {
         'pass its sessionId under), whether it must still be running (live / retired / any), and which ' +
         'stages it may be in NOW. `tools` maps a tool to allow / ' +
         'deny / pin {json} of enforced argument values — a `*` entry is the fallback for every ' +
-        'tool the stage does not name, and with no `*` an unnamed tool is allowed. `workers` is the ' +
+        'tool the stage does not name, and with no `*` an unnamed tool is allowed — except ' +
+        'spawn_instance, which fails closed: a stage must name it to be spawnable, and a `*` does not ' +
+        'confer that. `workers` is the ' +
         'stage\'s capacity for live workers of one run: `one` refuses a second, `many` permits ' +
         'several live at once. Each stage also reports `spawnable`, the per-stage form of ' +
         'list_playbooks\' `spawnableStages`. On an edge, `via` is the tool that drives it and the ' +

@@ -1,6 +1,6 @@
 // Playbook enforcement, end to end through the MCP router with the fake claude
 // engine — the wiring the pure decide() unit tests cannot reach: the single
-// checkpoint in dispatch(), the ledger writes, `needs` prefix resolution, the
+// checkpoint in dispatch(), the ledger writes, `provenance` prefix resolution, the
 // conductor-only scope, and the playbookEnforcement toggle.
 //
 // The caller here is a REAL conductor (a `.conduct` instance whose instanceId
@@ -14,8 +14,9 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './helpers.mjs';
 import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
+// (foldProjection is used by the resume tests below to assert the un-retire.)
 import { DEFAULT_PLAYBOOK_ENFORCEMENT } from '../src/playbooks.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -736,6 +737,96 @@ test('a conductor spawned with no playbookEnforcement and nothing persisted defa
     assert.equal(t.instances.get(t.conductorId).playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT);
     assert.equal(t.instances.get(t.conductorId).summary().playbookEnforcement, DEFAULT_PLAYBOOK_ENFORCEMENT,
       'and it rides the summary, which is what every frame and REST reply carries');
+  } finally { await t.close(); }
+});
+
+// ── resuming a playbook-bound worker under `enforce` ────────────────────────
+//
+// The recovery path a conductor reaches for after a SESSION_NOT_LIVE refusal.
+// `enforce` is the level that matters here: under `warn` a refused resume would
+// have proceeded anyway, so the bug these two pin is only observable enforcing.
+//
+// The fake engine writes no transcript, so the sequence is: spawn a real
+// playbook-bound worker, seed the jsonl the CLI would have left, kill it, resume.
+// `temp: false` is load-bearing — a temp session's jsonl is removed on exit, so a
+// temp worker is not resumable at all.
+async function killedBoundWorker(t) {
+  const w = await t.spawnWorker({
+    project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',
+  });
+  assert.ok(w.sessionId, `the bound spawn must succeed: ${JSON.stringify(w)}`);
+  // freeform pins nothing, so the worker sits in the project root with no worktree
+  // — which is also the cwd the resume's `project`/`worktree` recovery resolves to.
+  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'), w.sessionId);
+  await t.call('kill_instance', { sessionId: w.sessionId });
+  await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
+  // The retire lands off the status stream, asynchronously from the kill's reply.
+  await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+  return w;
+}
+
+test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await killedBoundWorker(t);
+
+    // The whole card, in one call: no project, no worktree, no playbook, no stage.
+    const back = await t.call('spawn_instance', { resume: w.sessionId });
+    assert.notEqual(back.ok, false,
+      `a bare resume of a playbook-tracked worker must not be refused: ${JSON.stringify(back)}`);
+    assert.equal(back.sessionId, w.sessionId, 'a resume keeps the session id');
+
+    // ONE non-empty read backs every claim below, so a mutation that breaks ledger
+    // writing entirely cannot pass the absence assertions by writing nothing.
+    const evs = await waitFor(async () => {
+      const all = await t.events();
+      return all.some(e => e.kind === 'resume' && e.sessionId === w.sessionId) ? all : false;
+    });
+    assert.ok(evs.length > 0, 'the ledger read must be non-empty');
+    assert.equal(evs.filter(e => e.kind === 'resume' && e.sessionId === w.sessionId).length, 1,
+      'exactly one resume event');
+    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId).length, 1,
+      'and no SECOND spawn event — a resume must not re-declare the binding');
+    assert.deepEqual(evs.filter(e => e.kind === 'refusal' && e.code === 'PLAYBOOK_UNKNOWN'), [],
+      'the bug\'s fingerprint: a bare resume must record no PLAYBOOK_UNKNOWN refusal');
+
+    // The projection has it live again, so its stage slot is counted and its
+    // eventual exit will retire it.
+    const st = foldProjection(evs).bySession.get(w.sessionId);
+    assert.deepEqual({ live: st.live, stage: st.stage, history: st.stageHistory },
+      { live: true, stage: 'freeform', history: ['freeform'] });
+
+    // And the binding is what the conductor's own read tool reports — the surface
+    // the incident used (list_sessions showing freeform/freeform) reads the same
+    // projection, so a resumed worker is governable again rather than merely alive.
+    const state = await t.call('playbook_state', { sessionId: w.sessionId });
+    assert.equal(state.tracked, true);
+    assert.deepEqual(
+      { playbook: state.worker.playbook, stage: state.worker.stage, live: state.worker.live },
+      { playbook: 'freeform', stage: 'freeform', live: true });
+  } finally { await t.close(); }
+});
+
+test('enforce: the SESSION_NOT_LIVE remedy text round-trips into a legal call', async () => {
+  // Acceptance that the PROSE and the BEHAVIOUR agree, asserted by executing the
+  // prose rather than by reading it: the refusal names a call, so parse that call
+  // back out and make it. Modelled on the run-root refusal's round-trip test in
+  // tests/playbook-policy.test.mjs. This is the assertion that fails if the two
+  // ever drift apart again — which is the whole of the incident.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await killedBoundWorker(t);
+
+    const dead = refused(await t.call('send_prompt', { sessionId: w.sessionId, text: 'go', subscribe: false }),
+      'SESSION_NOT_LIVE');
+    const m = /spawn_instance\(\{resume:"([0-9a-f-]+)"\}\)/.exec(dead.reason);
+    assert.ok(m, `the refusal must name a parseable remedy; got: ${dead.reason}`);
+    assert.equal(m[1], w.sessionId);
+
+    const back = await t.call('spawn_instance', { resume: m[1] });
+    assert.notEqual(back.ok, false,
+      `the call the refusal told the caller to make must work: ${JSON.stringify(back)}`);
+    assert.equal(back.sessionId, w.sessionId);
   } finally { await t.close(); }
 });
 

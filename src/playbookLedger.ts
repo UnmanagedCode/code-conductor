@@ -45,6 +45,11 @@ export type LedgerEvent =
   | { seq: number; ts: string; kind: 'transition'; sessionId: string; from: string; to: string;
       via: string; provenance?: Record<string, string> }
   | { seq: number; ts: string; kind: 'retire'; sessionId: string; reason: string }
+  // A resumed worker coming back to life. NOT a second `spawn`: the spawn arm
+  // below REPLACES the worker's state (stageHistory reset to the entered stage,
+  // provenance emptied), which for a mid-run worker would erase the history
+  // every downstream `needs` is answered from. A resume un-retires in place.
+  | { seq: number; ts: string; kind: 'resume'; sessionId: string }
   | { seq: number; ts: string; kind: 'refusal'; sessionId?: string; tool: string; code: string; reason: string }
   // `from: null` is a BIRTH — the conductor was created at this level and was
   // never in any prior one, so naming the other level would assert a past it
@@ -58,6 +63,7 @@ export type NewLedgerEvent =
   | Omit<Extract<LedgerEvent, { kind: 'spawn' }>, 'seq' | 'ts'>
   | Omit<Extract<LedgerEvent, { kind: 'transition' }>, 'seq' | 'ts'>
   | Omit<Extract<LedgerEvent, { kind: 'retire' }>, 'seq' | 'ts'>
+  | Omit<Extract<LedgerEvent, { kind: 'resume' }>, 'seq' | 'ts'>
   | Omit<Extract<LedgerEvent, { kind: 'refusal' }>, 'seq' | 'ts'>
   | Omit<Extract<LedgerEvent, { kind: 'enforcement' }>, 'seq' | 'ts'>;
 
@@ -161,6 +167,15 @@ export function applyEvent(p: Projection, ev: LedgerEvent): void {
       // so a retired worker still answers a need's provenance half (history is
       // history) and never its liveness:"live" half.
       if (st) st.live = false;
+      break;
+    }
+    case 'resume': {
+      const st = p.bySession.get(ev.sessionId);
+      // `live` is the ONLY field a resume touches — a resume re-attaches a worker
+      // where it already is, so its stage, stageHistory, provenance and run
+      // membership are all unchanged. An unknown sessionId folds to nothing
+      // rather than materialising a worker with no binding, like `transition`.
+      if (st) st.live = true;
       break;
     }
     case 'refusal':

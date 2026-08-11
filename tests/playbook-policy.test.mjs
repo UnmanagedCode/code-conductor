@@ -120,8 +120,13 @@ test('a "*": "allow" wildcard does NOT make a stage spawnable — spawn_instance
 });
 
 test('a run-root spawn must name a playbook; an unknown playbook or stage is named as such', () => {
-  assert.match(refusal(d('spawn_instance', { stage: 'plan' }), 'PLAYBOOK_UNKNOWN').reason,
-    /has no `needs`, so it starts a new run and must name a `playbook`/);
+  const root = refusal(d('spawn_instance', { stage: 'plan' }), 'PLAYBOOK_UNKNOWN');
+  // The refusal must name the argument the caller actually passes. `needs` is the
+  // STAGE's declaration; the argument was renamed to `provenance`, and a caller
+  // acting literally on the old text fails a second time.
+  assert.match(root.reason, /has no `provenance`, so it starts a new run and must name a `playbook`/);
+  assert.doesNotMatch(root.reason, /has no `needs`/,
+    'the refusal must not name `needs` as the argument to pass — no tool accepts it');
   refusal(d('spawn_instance', { playbook: 'nope', stage: 'plan' }), 'PLAYBOOK_UNKNOWN');
   refusal(d('spawn_instance', { playbook: 'solo', stage: 'nope' }), 'STAGE_UNKNOWN');
   assert.match(refusal(d('spawn_instance', { playbook: 'solo' }), 'STAGE_UNKNOWN').reason,
@@ -176,6 +181,131 @@ test('naming a playbook but no stage still names that playbook\'s entry stages',
   // The second step of recovery, if the conductor supplies only the playbook.
   assert.match(refusal(d('spawn_instance', { playbook: 'solo' }), 'STAGE_UNKNOWN').reason,
     /can be entered at: plan/);
+});
+
+// ── resume of a playbook-tracked worker ─────────────────────────────────────
+//
+// A RESUME IS NOT A STAGE ENTRY. The binding is already on the session record, so
+// it is read from there rather than demanded again — which is what makes the bare
+// spawn_instance({resume}) that the SESSION_NOT_LIVE refusal names actually work.
+// The worker is coming back to where it already is, so none of the entered-stage
+// checks (spawnability, `needs`, capacity, `pin`) apply.
+
+// The planner has been approved into `implement` and then died. `implement` is
+// solo's non-entry, NON-SPAWNABLE stage, which is the interesting case: a resume
+// has to work there, and an entry check would refuse it.
+const RESUMABLE = [
+  ...SOLO_RUN.slice(0, 2),
+  { kind: 'retire', sessionId: 'w-planner-1', reason: 'subprocess exited' },
+];
+
+test('a BARE resume of a playbook-tracked worker is allowed — no playbook/stage needed', () => {
+  const res = allowed(d('spawn_instance', { resume: 'w-planner-1' }, RESUMABLE));
+  assert.equal(res.move.kind, 'resume');
+});
+
+test('a bare resume inherits the RECORDED stage, and spawnability is never consulted', () => {
+  // Pins two mutations at once: taking the stage from entryStages (would give
+  // 'plan'), and applying isSpawnable to the resume path (would refuse
+  // STAGE_NOT_SPAWNABLE, since solo's `implement` declares no spawn_instance).
+  const res = allowed(d('spawn_instance', { resume: 'w-planner-1' }, RESUMABLE));
+  assert.deepEqual(res.move, { kind: 'resume', to: 'implement', playbook: 'solo' });
+  assert.equal(PB.get('solo').entryStages.includes('implement'), false,
+    'the fixture is only meaningful while `implement` is NOT an entry stage');
+});
+
+test('a resume does NOT apply the entered-stage `pin` — the args pass through untouched', () => {
+  // The highest-value case in this section: relay's `plan` stage pins `model` AND
+  // `mode`, and solo's pins createWorktree:true — so routing a resume through
+  // applyPin would silently hand a resumed session a brand-new worktree, which no
+  // other assertion here would notice.
+  const events = [{ kind: 'spawn', sessionId: 'w-relay-p1', playbook: 'relay', stage: 'plan', project: 'demo' }];
+  const args = { resume: 'w-relay-p1' };
+  const res = allowed(d('spawn_instance', args, events));
+  // Identity, not deep-equal: the contract is "unchanged", and deep-equal would
+  // still pass on a defensive copy that a later edit could start mutating.
+  assert.equal(res.patchedArgs, args, 'patchedArgs must be the caller\'s own args object');
+  assert.deepEqual(Object.keys(res.patchedArgs), ['resume']);
+  // Guard the premise: relay's plan really does pin, so this test is about the
+  // resume path skipping it rather than about a stage with nothing to apply.
+  assert.equal(allowed(d('spawn_instance', { playbook: 'relay', stage: 'plan' })).patchedArgs.model, 'planner');
+});
+
+test('an explicit binding EQUAL to the record is accepted, and is still a resume', () => {
+  // The incident's step 2 (resume + the binding re-stated) must keep working: both
+  // the SESSION_NOT_LIVE text and the schema push callers toward re-stating what
+  // they know. And it must resolve as a RESUME, not fall back to a run-root spawn
+  // — a spawn event here would reset the worker's stageHistory.
+  const res = allowed(d('spawn_instance',
+    { resume: 'w-planner-1', playbook: 'solo', stage: 'implement' }, RESUMABLE));
+  assert.deepEqual(res.move, { kind: 'resume', to: 'implement', playbook: 'solo' });
+});
+
+test('a resume naming a DIFFERENT playbook is PLAYBOOK_MISMATCH, printing both pairs', () => {
+  const res = refusal(d('spawn_instance',
+    { resume: 'w-planner-1', playbook: 'relay', stage: 'implement' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+  // One refusal has to be enough to retry legally, so BOTH halves of the recorded
+  // pair and the supplied value appear.
+  assert.match(res.reason, /'solo'\/'implement'/, 'the recorded pair must be printed');
+  assert.match(res.reason, /'relay'\/'implement'/, 'the supplied pair must be printed');
+  assert.match(res.reason, /omit `playbook`\/`stage`, or name the recorded pair/);
+});
+
+test('a resume naming a different STAGE under a MATCHING playbook is still a conflict', () => {
+  // Pins the independence of the two comparisons — the natural mutation is to
+  // compare only `playbook`, which would let this through and re-enter the worker
+  // at a stage it never reached.
+  const res = refusal(d('spawn_instance',
+    { resume: 'w-planner-1', playbook: 'solo', stage: 'review' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+  assert.match(res.reason, /'solo'\/'implement'/);
+  assert.match(res.reason, /'solo'\/'review'/);
+});
+
+test('a resume naming only a conflicting `stage` is refused with no `playbook` supplied at all', () => {
+  refusal(d('spawn_instance', { resume: 'w-planner-1', stage: 'review' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+  // …and naming only the matching stage is fine.
+  assert.equal(allowed(d('spawn_instance', { resume: 'w-planner-1', stage: 'implement' }, RESUMABLE)).move.kind,
+    'resume');
+});
+
+test('`provenance` alongside a tracked resume is refused, not silently ignored', () => {
+  const res = refusal(d('spawn_instance',
+    { resume: 'w-planner-1', provenance: { plan: 'w-review-01' } }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+  assert.match(res.reason, /enters no stage, so it satisfies no `needs` and takes no `provenance`/);
+  // An EMPTY provenance map is not a claim about anything, so it resumes.
+  assert.equal(allowed(d('spawn_instance', { resume: 'w-planner-1', provenance: {} }, RESUMABLE)).move.kind,
+    'resume');
+});
+
+test('the two PLAYBOOK_UNKNOWN reasons are distinguishable: untracked resume vs. bare run root', () => {
+  // The card's requirement that the refusal say WHICH case it hit. The remedies
+  // differ: an untracked session needs a binding declared, a mistyped id needs the
+  // full id re-sent — so collapsing these onto one message loses real information.
+  const untracked = refusal(d('spawn_instance', { resume: 'w-nobody-01' }, RESUMABLE), 'PLAYBOOK_UNKNOWN');
+  assert.match(untracked.reason, /is not playbook-tracked/);
+  assert.match(untracked.reason, /takes a full sessionId; prefixes are not resolved here/);
+  assert.match(untracked.reason, /must name a `playbook` and a `stage`/, 'it must still say what to pass');
+
+  const root = refusal(d('spawn_instance', { project: 'demo' }, RESUMABLE), 'PLAYBOOK_UNKNOWN');
+  assert.doesNotMatch(root.reason, /is not playbook-tracked/,
+    'a spawn with no `resume` must not be described as an untracked resume');
+});
+
+test('a resume of an UNTRACKED session that names playbook + stage is still a legal run root', () => {
+  // Regression guard: adopting a loose session into a playbook is unchanged, and
+  // the resume branch must not swallow ids the ledger knows nothing about.
+  const res = allowed(d('spawn_instance',
+    { resume: 'w-nobody-01', playbook: 'solo', stage: 'plan' }, RESUMABLE));
+  assert.deepEqual(res.move, { kind: 'spawn', to: 'plan', playbook: 'solo' });
+});
+
+test('a resume whose recorded playbook is no longer loaded is refused, naming the cause', () => {
+  // Definition drift (settled): definitions are not pinned to a run, so a worker
+  // can outlive its own. Without this guard the resume binds to nothing.
+  const events = [{ kind: 'spawn', sessionId: 'w-ghost-001', playbook: 'deleted-pb', stage: 'somewhere' }];
+  const res = refusal(d('spawn_instance', { resume: 'w-ghost-001' }, events), 'PLAYBOOK_UNKNOWN');
+  assert.match(res.reason, /bound to playbook 'deleted-pb', which is no longer loaded/);
+  assert.match(res.reason, /definition was removed or renamed/);
 });
 
 // ── needs: worker provenance, on spawn-entry AND transition-entry ───────────
