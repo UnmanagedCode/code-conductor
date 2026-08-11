@@ -274,9 +274,10 @@ test('pin on a policy-layer input is rejected for each of sessionId/stage/playbo
 // The forbidden-key check runs first so a `pin` on a policy-layer input always
 // reports as one rather than as a typo. WHICH of PIN_FORBIDDEN_KEYS a tool
 // declares varies — spawn_instance declares `playbook`/`stage`/`provenance` but no
-// `sessionId`, and set_mode the reverse — so exists-first would report the same
-// mistake differently per tool, and would keep changing as schemas gain or lose
-// those properties. Both directions are asserted below.
+// `sessionId`; set_mode is the reverse, declaring `sessionId` alone — so
+// exists-first would report the same mistake differently per tool, and would keep
+// changing as schemas gain or lose those properties. Both directions are asserted
+// below, and both are asserted against the live index rather than trusted.
 test('the pin-forbidden-key check PRECEDES the exists-in-inputSchema check', () => {
   for (const key of ['stage', 'playbook', 'provenance']) {
     const res = validatePlaybook(

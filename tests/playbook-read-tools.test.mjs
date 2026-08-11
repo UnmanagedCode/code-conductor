@@ -490,9 +490,9 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
       'the advertised reason is the enforced reason, verbatim');
 
     // Step 3 — a reviewer now exists, and the prediction DELIBERATELY still says
-    // NEEDS_UNSATISFIED. `needs` is a caller-supplied argument, not an ambient
-    // fact, so the dry run describes the bare call: "call this with no needs and
-    // you get this". Inferring which worker the caller meant would be a second
+    // NEEDS_UNSATISFIED. `provenance` is a caller-supplied argument, not an ambient
+    // fact, so the dry run describes the bare call: "call this with no `provenance`
+    // and you get this". Inferring which worker the caller meant would be a second
     // reading of the rules, and a wrong guess would advertise a move that then
     // fails. What the prediction owes the caller is an actionable recipe, and its
     // `reason` is one.

@@ -1,6 +1,6 @@
 // Playbook enforcement, end to end through the MCP router with the fake claude
 // engine — the wiring the pure decide() unit tests cannot reach: the single
-// checkpoint in dispatch(), the ledger writes, `needs` prefix resolution, the
+// checkpoint in dispatch(), the ledger writes, `provenance` prefix resolution, the
 // conductor-only scope, and the playbookEnforcement toggle.
 //
 // The caller here is a REAL conductor (a `.conduct` instance whose instanceId

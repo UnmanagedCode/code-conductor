@@ -503,10 +503,10 @@ function validateToolPolicy(
     // exists-in-inputSchema check, so a `pin` on a policy-layer input always
     // reports as one rather than as a typo. WHICH of PIN_FORBIDDEN_KEYS a given
     // tool declares varies — spawn_instance declares `playbook`/`stage`/
-    // `provenance` but no `sessionId`, and send_prompt the reverse — so
-    // exists-first would report a `pin` on `sessionId` as an unknown argument of
-    // spawn_instance, and would keep changing its message as tool schemas gain or
-    // lose those properties. A test pins this precedence.
+    // `provenance` but no `sessionId`; set_mode is the reverse, declaring
+    // `sessionId` alone — so exists-first would report a `pin` on `sessionId` as an
+    // unknown argument of spawn_instance, and would keep changing its message as
+    // tool schemas gain or lose those properties. A test pins this precedence.
     if ((PIN_FORBIDDEN_KEYS as readonly string[]).includes(arg)) {
       err(`stage '${stage}': tools.${toolName}.pin cannot constrain '${arg}' — it is a policy-layer ` +
           'input (the stage/playbook/worker this call is about), not an ordinary tool argument.');
