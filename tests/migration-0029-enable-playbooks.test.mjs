@@ -9,6 +9,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0029 from '../migrations/0029-enable-playbooks-conductor-convention.mjs';
+import { runMigrations } from '../migrations/index.mjs';
 
 async function mkTmp() {
   return mkdtemp('cc-enable-playbooks-');
@@ -109,4 +110,21 @@ test('store present but `enabled` absent: no-op, file left untouched', async () 
   assert.equal(res.applied, false);
   const after = await fs.readFile(file, 'utf8');
   assert.equal(after, before, 'file untouched');
+});
+
+// Pins the PRODUCTION BOOT PATH, not just the module's own logic: server.ts
+// calls runMigrations({root}) — which iterates migrations/index.mjs's `ALL`
+// — before the listener binds. A correct 0029 module that is never added to
+// `ALL` would fix nothing in production while every direct m0029.run() test
+// above still passes, since none of them go through the registered chain.
+test('runMigrations (the real boot entrypoint) enables playbooks for a pre-existing selection', async () => {
+  const root = await mkTmp();
+  const file = storeFile(root);
+  await writeJson(file, { enabled: [...PRE_PLAYBOOKS_SLUGS] });
+
+  await runMigrations({ root, log: () => {} });
+
+  const store = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.ok(store.enabled.includes('playbooks'), '0029 ran as part of the registered chain, not just standalone');
+  assert.equal(store.enabled[store.enabled.length - 1], 'playbooks', 'appended at the end');
 });
