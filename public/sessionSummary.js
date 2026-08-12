@@ -62,7 +62,7 @@ export function installSessionSummary({ dom, getActiveSid, applySessionTitle }) 
   //   - selectedLength if it has a summary, else medium, else first available.
   function applyData(data, preferLen) {
     cachedData = data;
-    const TIERS = ['short', 'medium', 'long', 'title'];
+    const TIERS = ['title', 'short', 'medium', 'long']; // left-to-right dialog order
     const target = preferLen ?? selectedLength;
     if (data[target]) {
       setTier(target);

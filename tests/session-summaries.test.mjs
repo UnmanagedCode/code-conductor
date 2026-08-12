@@ -242,6 +242,11 @@ test('POST title sends the title prompt (not the summary template) and persists 
     const prompt = await fs.readFile(stdinFile, 'utf8');
     assert.match(prompt, /Name the CURRENT end goal/);
     assert.doesNotMatch(prompt, /Summarize the following Claude Code session/);
+    // The checkout-derived project name is passed as a labelled hint (the
+    // conversation itself is the primary source — see projectNameHint in
+    // src/summarize.ts), not appended to the model's output after the fact.
+    assert.match(prompt, /Hint only, derived from the session's checkout path/);
+    assert.match(prompt, /"post-title"/);
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN;
     else process.env.CLAUDE_BIN = origBin;
@@ -484,5 +489,40 @@ test('POST /api/sessions/:sid/summary succeeds for a .conduct session', async ()
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN;
     else process.env.CLAUDE_BIN = origBin;
+  }
+});
+
+// The hidden `.conduct` project (a conductor session's own cwd) is never a
+// real project name — projectNameHint must suppress it rather than pass it
+// through as a hint (the model would otherwise have no way to tell it apart
+// from a genuine project it should trust).
+test('POST title for a .conduct session never hints "conduct" as the project', async () => {
+  const conductPath = path.join(projectsRoot, '.conduct');
+  await fs.mkdir(conductPath, { recursive: true });
+  const sid = 'sid-conduct-title';
+  await plantJsonl(conductPath, sid, [
+    { type: 'user', message: { role: 'user', content: 'hello' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+  ]);
+
+  const stdinFile = path.join(os.tmpdir(), `cc-test-stdin-conduct-${Date.now()}.txt`);
+  const origBin = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+  process.env.FAKE_SUMMARIZE_STDIN_FILE = stdinFile;
+  try {
+    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'title' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+
+    const prompt = await fs.readFile(stdinFile, 'utf8');
+    // No hint sentence at all — the resolved project name (.conduct) must be
+    // dropped, not passed through as if it were a legitimate hint. (The fixed
+    // "never output conduct" instruction text always mentions ".conduct"
+    // literally, so that alone isn't a meaningful assertion here.)
+    assert.doesNotMatch(prompt, /Hint only, derived from the session's checkout path/);
+  } finally {
+    if (origBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = origBin;
+    delete process.env.FAKE_SUMMARIZE_STDIN_FILE;
+    await fs.unlink(stdinFile).catch(() => {});
   }
 });

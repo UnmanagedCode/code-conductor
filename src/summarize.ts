@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
+import { claudeProjectsRoot, encodeCwd, orchStoreRoot, findSessionLocation } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
@@ -167,18 +167,46 @@ ${conversationText}
 Provide the summary only, no preamble:`;
 }
 
-// Names the session's CURRENT end goal, not a recap.
-function titlePrompt(conversationText: string): string {
+// Names the session's CURRENT end goal, not a recap. Prefixed with the
+// project the session concerns, e.g. "code-conductor: Add cost readout to
+// the summary dialog". The project name comes from the CONVERSATION, not the
+// filesystem: a conductor session's own cwd is the orchestrator's hidden
+// `.conduct` project, but the session is almost always orchestrating some
+// OTHER project named in the transcript (paths it touches, workers it spawns
+// into, repos it discusses) — cwd-derived resolution would just be wrong for
+// exactly the sessions this feature matters most for. `projectHint`, when
+// given (see projectNameHint), is passed as a fallback the model may use
+// only when the conversation itself is ambiguous — it never overrides what
+// the conversation says.
+function titlePrompt(conversationText: string, projectHint: string | null): string {
   return `Name the CURRENT end goal of the following Claude Code session.
 
 This is not a recap. Work that is already finished matters only as context: say what the session is trying to achieve RIGHT NOW — the objective the most recent turns are working toward. If the goal changed mid-session, the latest one wins. If the latest turns are verifying or fixing up earlier work, that clean-up IS the current goal.
 
-Output exactly one title, at most 60 characters. Plain text only: no markdown, no surrounding quotes, no trailing period, no "Session:" or "Title:" prefix, no explanation before or after. Sentence case. Prefer a concrete noun phrase naming the thing being built, fixed, or investigated ("Add cost readout to the summary dialog"), never a vague category ("Code improvements").
+First, determine which PROJECT this session concerns, from the conversation itself: the projects it spawns workers into, the paths and repos it operates on or discusses. If it touches several, name the one the CURRENT goal concerns. This may be an orchestrator/conductor session whose own working directory is not a project at all — never output "conduct" or ".conduct" as the project name; a conductor session is always actually about some OTHER project named somewhere in the conversation.${projectHint ? ` Hint only, derived from the session's checkout path, to use if the conversation itself is ambiguous — it does NOT override what the conversation says: "${projectHint}".` : ''}
+
+If you identified a project: output exactly one line in the form "<Project>: <title>" — the project name, a colon, a space, then the title. The <title> part on its own (not counting the "<Project>: " prefix): at most 60 characters.
+If you could not identify any project: output just the title on its own, at most 60 characters total — no prefix, no colon, no invented project name.
+
+Either way, the title itself: plain text only, no markdown, no surrounding quotes, no trailing period, no "Session:" or "Title:" prefix, no explanation before or after. Sentence case. Prefer a concrete noun phrase naming the thing being built, fixed, or investigated, never a vague category ("Code improvements").
 
 CONVERSATION:
 ${conversationText}
 ---
-Provide the title only, no preamble:`;
+Provide the title line only, no preamble:`;
+}
+
+// Best-effort HINT for the title prompt: the project a session's checkout
+// path belongs to, worktree-aware (`cwd` may be `<project>_worktree_<id>`,
+// whose directory name is NOT the project name — findSessionLocation already
+// solves this; it's the same lookup routes.ts used to resolve `cwd` from
+// `sessionId` in the first place, so reuse it rather than parsing `cwd`).
+// Returns null (no hint) when the session can't be located, or when it
+// resolves to the hidden `.conduct` conductor project — that's never a real
+// project name, so it must never even reach the prompt as a hint.
+async function projectNameHint(sessionId: string): Promise<string | null> {
+  const hit = await findSessionLocation(sessionId).catch(() => null);
+  return hit && hit.project !== '.conduct' ? hit.project : null;
 }
 
 // Generate a summary (or title) of a session by running `claude -p` as a
@@ -190,7 +218,7 @@ export async function generateSummary(sessionId: string, cwd: string, length: Su
 
   const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
   const prompt = length === 'title'
-    ? titlePrompt(conversationText)
+    ? titlePrompt(conversationText, await projectNameHint(sessionId))
     : summaryPrompt(LENGTH_INSTRUCTIONS[length], conversationText);
 
   // Honor the fast tier's bound backend unconditionally — same reasoning as
