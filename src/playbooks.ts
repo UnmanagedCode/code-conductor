@@ -827,7 +827,7 @@ function decideSpawn(
     return refuse('PLAYBOOK_UNKNOWN',
       `session ${short(resumeId)} is not playbook-tracked — the ledger holds no playbook/stage for it ` +
       "(list_sessions renders those as '—'), so resuming it starts a new run and must name a `playbook` and a " +
-      '`stage`. `resume` takes a full sessionId; prefixes are not resolved here. ' +
+      '`stage`. `resume` takes a complete sessionId; prefixes are not resolved here. ' +
       `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, noMoves);
   } else {
     return refuse('PLAYBOOK_UNKNOWN',

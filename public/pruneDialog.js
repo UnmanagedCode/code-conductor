@@ -150,10 +150,11 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
       });
       if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
       await r.json();
-      // The instance keeps its id (only the sessionId rotated), so focus is
+      // The instance keeps its id AND its sessionId (only the internal backing
+      // id rotated), so focus is
       // already correct — the snapshot_reset from the respawn clears and replays
       // the pruned transcript. Just re-sync the sidebar so the archived original
-      // and the new sessionId land in the right places.
+      // land in the right places.
       await refreshInstances();
       dialog.close();
     } catch (e) {

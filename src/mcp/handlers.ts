@@ -963,7 +963,8 @@ export async function unsubscribeFromIdle({ sessionId }: { sessionId: string }, 
 
 // Renew the CALLING session: capture a self-authored handoff summary, then
 // (at this turn's end) code-conductor drives a server-side `/clear` on the
-// caller — rotating its context in place (fresh sessionId, SAME process) — and
+// caller — rotating its context in place (SAME process and SAME public sessionId;
+// only the CLI's internal backing id moves) — and
 // seeds the cleared session with the summary (plus a server-generated
 // mechanical state block, built at reseed time) as its first user turn. Caller
 // identity comes from the MCP URL's ?caller=<sessionId>, so this only works for

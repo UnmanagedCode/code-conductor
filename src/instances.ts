@@ -1630,12 +1630,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.mcpServerUrl) {
       // Bake THIS worker's own stable INSTANCE id into ?caller= so the MCP server
       // can identify it when it calls caller-dependent tools (subscribe_to_idle,
-      // renew_session). The instanceId (NOT the sessionId) is used deliberately:
-      // a managed /clear rotates the sessionId in place, but this URL is frozen in
-      // the subprocess's --mcp-config for the life of the process — a baked
-      // sessionId would go stale after the first renewal. The instanceId
-      // never rotates; the MCP boundary resolves it to the caller's CURRENT
-      // sessionId per request (see InstanceManager.callerSessionId / mcp/server.ts).
+      // renew_session). The instanceId (NOT the sessionId) is used deliberately,
+      // though no longer for the original reason — a baked PUBLIC sessionId would
+      // now stay valid, since a rotation cannot move it. What the instanceId buys
+      // is that it names the PROCESS, which is what a caller-addressed tool acts
+      // on, and it needs no store read to resolve. The MCP boundary translates it
+      // to the caller's sessionId per request (InstanceManager.callerSessionId).
       const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.id)}`;
       args.push('--mcp-config', buildMcpConfigJSON({ url }));
     }
@@ -2332,7 +2332,8 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   // Drive a server-managed `/clear` on this session: send the slash command on
   // the SAME stdin path a user turn uses, which rotates the CLI's context in
-  // place — a fresh sessionId, SAME OS process/pid, and the old jsonl preserved.
+  // place — a fresh BACKING id, SAME OS process/pid, and the old jsonl preserved.
+  // `this.sessionId` (the public id) does NOT move; see the field declarations.
   // Deliberately bypasses prompt()'s user_echo + overage-queue intercept: this
   // is a server-internal control send, not a user turn. The rotation is picked
   // up by the system/init handler (which updates this.sessionId), and the
@@ -2761,9 +2762,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Prune this session's context: write a stubbed COPY of the jsonl under a
-  // fresh sessionId, then respawn this SAME instance against it. Mechanically a
+  // fresh BACKING id, then respawn this SAME instance against it. Mechanically a
   // cousin of rewindToUserMessage (kill → rewrite → wipe → relaunch), but it
-  // rotates the sessionId like renew_session does, so it borrows that path's
+  // rotates the backing id like renew_session does, so it borrows that path's
   // marker carry + auto-archive of the abandoned id.
   //
   // Two divergences from renew_session, both deliberate:
@@ -2773,9 +2774,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   //     turn, which auto-starts a turn. A pruned session must come up IDLE, so
   //     nothing here calls prompt().
   //
-  // The instanceId is preserved (only the sessionId rotates), so the
-  // idle-subscription graph, overage timers, the renew controller and every
-  // `?caller=<instanceId>` MCP handle stay valid with no migration.
+  // The instanceId AND the public sessionId are both preserved (only the backing
+  // id rotates), so the idle-subscription graph, overage timers, the renew
+  // controller, every `?caller=<instanceId>` MCP handle and every id a conductor
+  // holds stay valid with no migration.
   async pruneSession({ cutTurnIndex, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
     // THE interlock (decision D6). A prune sets `_mutating`, which makes prompt()
     // 409 — and a renewal's reseed IS a prompt(). Interleaving them would clear the
@@ -3002,7 +3004,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Managed session renewal (`renew_session` MCP tool): drives a server-side
     // `/clear` at the caller's turn_end and reseeds the rotated session with a
     // handoff summary. Keyed by instanceId so it tracks the caller across the
-    // sessionId rotation `/clear` performs. See src/sessionRenew.ts.
+    // backing-id rotation `/clear` performs. See src/sessionRenew.ts.
     this._sessionRenew = new SessionRenewController(this);
     // Server-side usage poller: a second, equal-footing source for the overage
     // auto-stop. The stream `rate_limit_event` only reports near Anthropic's own

@@ -359,7 +359,7 @@ test('renew_session: an outgoing idle subscription survives the caller\'s /clear
   try {
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     // `worker` is watched; `sub` watches it and then renews ITSELF — the
-    // self-renewal case where the caller's own sessionId rotates while it holds
+    // self-renewal case where the caller's own backing id rotates while it holds
     // an outgoing subscription. Because the idle-subscription graph is keyed by
     // the stable instanceId (which /clear preserves), the entry is untouched by
     // the rotation — nothing to re-key. The snapshot is a sessionId-shaped view,
@@ -427,10 +427,11 @@ test('renew_session defers the /clear while an overage-queued turn is pending, t
 });
 
 // The `?caller=` staleness regression: the baked caller handle is the stable
-// INSTANCE id, so it keeps resolving after a /clear rotates the sessionId in place
-// — repeated renewal works. On the old sessionId-baked behavior the second
-// (post-rotation) call resolved to a rotated-away id and soft-refused. The rpc
-// helper passes `caller` through unchanged when it's already an instanceId.
+// INSTANCE id, so it keeps resolving across a /clear — repeated renewal works. On
+// the old sessionId-baked behavior the second (post-rotation) call resolved to a
+// rotated-away id and soft-refused; the public id is pinned now, so the handle
+// resolves to the SAME value each time. The rpc helper passes `caller` through
+// unchanged when it's already an instanceId.
 test('renew_session: the baked caller handle survives a /clear so a session can renew repeatedly', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
@@ -745,7 +746,7 @@ test('an ABANDONED renewal closes the rotation window and wakes its subscriber',
   }
 });
 
-test('renew_session against the real claude binary rotates the sessionId', { skip: process.env.RUN_REAL_CLAUDE !== '1' }, async () => {
+test('renew_session against the real claude binary rotates the BACKING id and pins the public one', { skip: process.env.RUN_REAL_CLAUDE !== '1' }, async () => {
   const srv = await bootServer({ useRealClaude: true });
   mgr = srv.instances;
   try {
@@ -758,13 +759,20 @@ test('renew_session against the real claude binary rotates the sessionId', { ski
     await callTool(srv.baseUrl, 'renew_session', { summary: 'REAL-SMOKE: continue' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'hello' });
 
-    await waitFor(() => {
-      const cur = srv.instances.get(instForSession(srv.instances, sid1)?.id ?? spawn.body.id);
-      return cur && cur.sessionId !== sid1 && cur.status === 'idle';
-    }, { timeout: 60000 });
-    const rotated = srv.instances.get(spawn.body.id);
-    assert.notEqual(rotated.sessionId, sid1, 'real /clear rotated the sessionId');
-    assert.equal(rotated.pid, pidBefore, 'same process across the real /clear');
+    // The REAL CLI mints the new id, so the value is unknown up front — wait for
+    // the backing id to move off whatever it started as.
+    const inst = srv.instances.get(spawn.body.id);
+    const firstBacking = inst.backingSessionId;
+    await waitFor(() => inst.backingSessionId !== firstBacking && inst.status === 'idle',
+      { timeout: 60000 });
+    assert.notEqual(inst.backingSessionId, firstBacking, 'real /clear rotated the BACKING id');
+    assert.equal(inst.sessionId, sid1, 'and the public id is pinned across it');
+    assert.equal(inst.pid, pidBefore, 'same process across the real /clear');
+    // The rotation reached the durable store, against the real CLI's own ids.
+    const { segmentsFor } = await import('../src/sessionLineage.ts');
+    await waitFor(async () => (await segmentsFor(sid1)).length === 2);
+    assert.deepEqual((await segmentsFor(sid1)).map(g => [g.id, g.reason]),
+      [[firstBacking, 'initial'], [inst.backingSessionId, 'renew']]);
   } finally {
     await srv.close();
   }
@@ -772,7 +780,7 @@ test('renew_session against the real claude binary rotates the sessionId', { ski
 
 test('renew_session carries the mode record for an `ask` session, which nothing else writes', async () => {
   // The carry at Instance.carryMarkersAcrossRenewal is redundant for `plan` and
-  // `bypassPermissions`: the system/init handler rotates the sessionId and
+  // `bypassPermissions`: the system/init handler rotates the backing id and
   // records the CLI-reported mode in the same breath, and the fork path
   // relaunches, so spawn() records there. `ask` is the one mode it cannot
   // cover — `ask` is orchestrator-only, the CLI reports the rotated session as

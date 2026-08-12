@@ -176,7 +176,7 @@ export class SessionRenewController {
     // No side-structure migration is needed across the rotation: the
     // idle-subscription graph and overage timers are keyed by the stable
     // instanceId, which `/clear` preserves. The Instance itself already followed
-    // the sessionId rotation via its system/init handler.
+    // the backing-id rotation via its system/init handler.
     // The mechanical state block is built HERE — at reseed time, not arm time —
     // since live instances/subscriptions can change in the window between the
     // tool call and the actual clear firing.

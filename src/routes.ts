@@ -1141,7 +1141,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
     // Prune the active session: stub tool outputs / oversized tool inputs in the
     // turns before `cutTurnIndex` (and, independently, thinking blocks) into a
-    // COPY under a fresh sessionId, archive the original, and respawn this same
+    // COPY under a fresh BACKING id (the public sessionId is pinned), archive the
+    // original, and respawn this same
     // instance against the pruned file. The session comes back IDLE — unlike
     // renew_session, nothing is seeded as a first turn.
     r.post('/instances/:id/prune', async (req, res, next) => {

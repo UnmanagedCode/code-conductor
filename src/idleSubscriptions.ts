@@ -7,7 +7,7 @@
 // mid-turn gets a plain stub delivered live into its running turn as a steering
 // callback.
 //
-// Keyed internally by the stable `instanceId` (NOT the rotating sessionId): the
+// Keyed internally by the stable `instanceId` (NOT a sessionId): the
 // event stream carries the instanceId, and an in-place `/clear` rotates a
 // session's sessionId while keeping its instanceId, so instanceId keying needs
 // no migration across a rotation. sessionId lives only at the boundary — the

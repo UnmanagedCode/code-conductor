@@ -3,7 +3,8 @@
 //   POST /api/instances/:id/prune
 //
 // The behaviours worth pinning here are the ones a reader would otherwise have
-// to infer from the plan: the instanceId survives (only the sessionId rotates),
+// to infer from the plan: the instanceId and the public sessionId both survive
+// (only the internal backing id rotates),
 // the original jsonl is untouched and archived, and — the easiest thing to get
 // wrong by copying renew_session — the pruned session comes back IDLE with
 // nothing seeded as a first turn.
@@ -85,8 +86,8 @@ test('prune rotates the BACKING id, PINS the public id, archives the original, a
     assert.ok(pr.body.newSessionId && pr.body.newSessionId !== sid);
     assert.ok(pr.body.saved.toolOutputs > 900);
     // The instanceId is the stable handle every side structure keys off — a
-    // prune must not rotate it (only the sessionId rotates).
-    assert.equal(pr.body.instance.id, id, 'same instance, new sessionId');
+    // prune must not rotate it (only the backing id rotates).
+    assert.equal(pr.body.instance.id, id, 'same instance, new backing id');
 
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
