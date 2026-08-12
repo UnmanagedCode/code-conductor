@@ -270,7 +270,17 @@ test('process exits after arming: a later boundary event is harmless', async () 
   assert.equal(await interruptCount(), 0);
 });
 
-test('tool parked on a permission card: fires despite an unreturned tool', async () => {
+// An ask-mode PreToolUse callback the hook broker holds open, with a stub
+// Response that records what we eventually answer it.
+function fakeHookRes() {
+  return {
+    headersSent: false, statusCode: null, body: null,
+    status(code) { this.statusCode = code; return this; },
+    json(body) { this.body = body; this.headersSent = true; return this; },
+  };
+}
+
+test('tool parked on a permission card: fires despite an unreturned tool, and releases the card', async () => {
   const inst = await setupInstance({ mode: 'ask' });
   const evs = collect(inst);
   inst.prompt('open tool');
@@ -278,13 +288,88 @@ test('tool parked on a permission card: fires despite an unreturned tool', async
   inject(inst, blockStop(0)); // dispatched: the tool span is open
   assert.equal(inst._quiescence.empty, false, 'a tool is outstanding');
 
-  // Park it: an ask-mode PreToolUse callback held open by the hook broker.
-  const res = { headersSent: false, status() { return this; }, json() { this.headersSent = true; return this; } };
+  const res = fakeHookRes();
   inst.handleHookCallback({ tool_use_id: 'tu_di_bash', tool_name: 'Bash', tool_input: {} }, res);
   assert.equal(inst._blockedOnPermission(), true, 'a decision is pending');
+  assert.equal(res.headersSent, false, 'the hook response is held open');
 
   await inst.interrupt();
   assert.equal(inst._interruptFired, true, 'a never-started tool does not hold the interrupt');
+  // The fire is synchronous inside interrupt(); the ACK cannot have arrived yet
+  // (it takes I/O), and the card must NOT be released ahead of it.
+  assert.equal(res.headersSent, false, 'still held open until the abort is ACKed');
+  await waitInterrupts(1);
+
+  // The severed turn will never run that tool: the held-open hook response and
+  // the UI card resolve on the ACK instead of waiting out the 9-min broker
+  // timeout. Deliberately NOT before the request — see
+  // Instance._releaseParkedPermissions.
+  await waitFor(() => inst._hooks.pendingCount === 0);
+  assert.equal(res.headersSent, true, 'the hook response was answered');
+  assert.equal(res.body?.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(res.body?.hookSpecificOutput?.permissionDecisionReason ?? '', /interrupted/);
+  const resolved = evs.filter(e => e.kind === 'permission_resolved');
+  assert.equal(resolved.length, 1, 'the card was resolved for every subscribed tab');
+  assert.equal(resolved[0].allow, false);
+  assert.equal(resolved[0].toolUseId, 'tu_di_bash');
+  assert.equal(resolved[0].reason, 'interrupted', 'distinguishable from an exit-time discard');
+});
+
+test('a windDown steer is NOT an armed interrupt: no control_request, ever', async () => {
+  const inst = await setupInstance();
+  const evs = collect(inst);
+  inst.prompt('open text');
+  await waitFor(() => evs.some(e => e.kind === 'text_delta'));
+
+  // windDown() raises the SAME `interrupting` flag the WS frames carry, and its
+  // user_echo force-resets the quiescence scan — so anything that gates the fire
+  // on `interrupting` instead of `_interruptArmed` aborts this turn here.
+  inst.windDown('wrap up: the orchestrator is restarting');
+  assert.equal(inst.interrupting, true, 'wind-down raises the UI flag');
+  assert.equal(inst._interruptArmed, false, 'but nothing is armed');
+  assert.equal(inst._interruptFired, false);
+  assert.equal(await interruptCount(), 0, 'no abort at steer time');
+
+  // ...nor at the next boundary, nor at the one after it.
+  inject(inst, blockStop(0));
+  assert.equal(inst._interruptFired, false, 'no fire at the block close');
+  inject(inst, toolResult('tu_di_bash'));
+  assert.equal(inst._interruptFired, false, 'no fire at a tool_result either');
+  assert.equal(inst.status, 'turn', 'the turn is winding down, not severed');
+
+  const lines = await stdinLines();
+  assert.equal(interruptsIn(lines).length, 0, 'the CLI received NO interrupt control_request');
+  // The steer itself did go out — otherwise the negative above is vacuous.
+  const steers = lines.filter(l => l.type === 'user' && JSON.stringify(l).includes('wrap up'));
+  assert.equal(steers.length, 1, 'the wind-down message reached the CLI');
+  assert.ok(JSON.stringify(steers[0]).includes('[[cc:soft-interrupt]]'), 'marked so replay drops it');
+});
+
+test('a failed fire is re-armable within the same turn', async () => {
+  const { inst } = await armedMidTextBlock();
+
+  // Force the control request to fail (a real timeout is 5s of wall clock).
+  const real = inst._controlRequest.bind(inst);
+  let attempts = 0;
+  inst._controlRequest = async () => { attempts += 1; throw new Error('boom'); };
+
+  inject(inst, blockStop(0));
+  assert.equal(attempts, 1, 'the boundary fired a request');
+  await waitFor(() => inst.interrupting === false);
+  assert.equal(inst._interruptArmed, false, 'disarmed by the failure');
+  assert.equal(inst._interruptFired, false, 'and re-armable — the abort never landed');
+  const evs = inst.ring.toArray().filter(e => e.kind === 'system' && e.subtype === 'stderr');
+  assert.match(evs.at(-1)?.data?.line ?? '', /interrupt failed: boom/);
+  assert.equal(attempts, 1, 'the failure annotation must not spin a retry');
+  assert.equal(await interruptCount(), 0, 'nothing reached the CLI');
+
+  // Re-arm: the turn is still running, so a second ⏸ must try again. The text
+  // block is already closed, so this one fires straight away.
+  assert.equal(inst.status, 'turn');
+  inst._controlRequest = real;
+  await inst.interrupt();
+  assert.equal(inst.interrupting, true, 're-armed');
+  assert.equal(inst._interruptFired, true, 'second attempt fired');
   await waitInterrupts(1);
 });
 

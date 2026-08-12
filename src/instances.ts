@@ -2331,6 +2331,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // later boundary must not send a second control_request.
       this._interruptFired = true;
       await this._controlRequest({ subtype: 'interrupt' });
+      this._releaseParkedPermissions();
       // Open the drain window synchronously in the same microtask as the ACK.
       // Any system/init that follows (the CLI dequeuing its leftover input queue)
       // will be caught before the spurious API round-trip begins. Opening here
@@ -2355,6 +2356,20 @@ export class Instance extends EventEmitter implements InstanceLike {
   // forced tier is for.
   _blockedOnPermission(): boolean { return this._hooks.pendingCount > 0; }
 
+  // Called once an interrupt has been ACKED: the turn is severed, so a tool
+  // still parked at a permission card will never run. Deny it — freeing the
+  // held-open hook HTTP response and resolving the UI card — instead of leaving
+  // both hanging until HOOK_PENDING_TIMEOUT_MS (9 min). Scoped by construction
+  // to the aborted turn: a pending decision only exists for a tool_use the CLI
+  // was about to dispatch in it.
+  //
+  // ONLY after the ACK, never before the request: a deny released first comes
+  // back as an error tool_result, and the CLI's agent loop would spend exactly
+  // the extra model round-trip this whole path exists to avoid.
+  _releaseParkedPermissions(): void {
+    this._hooks.discardAll('turn interrupted before the tool ran', 'interrupted');
+  }
+
   // Fire an armed deferred interrupt if the stream is at a boundary. Called
   // from interrupt() (covers arming into an existing gap) and from the tail of
   // _emitUi (covers every later event). Deliberately synchronous inside the
@@ -2366,15 +2381,23 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.status !== 'turn' || !this.proc) return;
     if (!this._quiescence.empty && !this._blockedOnPermission()) return;
     this._interruptFired = true;
-    this._controlRequest({ subtype: 'interrupt' }).catch((e) => {
-      // Timed out or the process died mid-flight: surface it and disarm, so the
-      // UI never sticks on "stopping…" with nothing coming.
-      this._emitUi({ kind: 'system', subtype: 'stderr',
-        data: { line: `interrupt failed: ${(e as Error).message}` } });
-      this.interrupting = false;
-      this._interruptArmed = false;
-      this.emit('status', this.summary());
-    });
+    this._controlRequest({ subtype: 'interrupt' }).then(
+      () => this._releaseParkedPermissions(),
+      (e: Error) => {
+        // Timed out or the process died mid-flight. Disarm so the UI never
+        // sticks on "stopping…" with nothing coming, and clear _interruptFired
+        // too: the abort never landed, so this turn must stay RE-ARMABLE (a
+        // second ⏸ has to be able to try again). Both flags are cleared BEFORE
+        // the annotation is emitted — _emitUi's tail re-runs this method, and an
+        // armed-and-unfired state there would spin failed retries.
+        this.interrupting = false;
+        this._interruptArmed = false;
+        this._interruptFired = false;
+        this._emitUi({ kind: 'system', subtype: 'stderr',
+          data: { line: `interrupt failed: ${e.message}` } });
+        this.emit('status', this.summary());
+      },
+    );
     this._openDrainWindow();
   }
 

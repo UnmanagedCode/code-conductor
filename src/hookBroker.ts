@@ -125,15 +125,19 @@ export class HookBroker {
     return true;
   }
 
-  // Drain every pending callback with a deny. Called when the parent
-  // instance exits — the CLI is gone so the tool won't run anyway, but
-  // we still need to free the held-open HTTP responses and tell any
-  // subscribed UI tabs that the cards are done.
-  discardAll(reason = 'instance exited before user responded'): void {
+  // Drain every pending callback with a deny, for the cases where the parked
+  // tool provably will never run: the parent instance exited (the CLI is gone)
+  // or its turn was interrupted (Instance._releaseParkedPermissions). Either
+  // way the held-open HTTP responses must be freed and subscribed UI tabs told
+  // the cards are done. `reason` reaches the CLI as the deny reason; `event` is
+  // the slug on the emitted permission_resolved (diagnostics — the client
+  // renders the card from `allow` alone), so a reader can tell an exit-time
+  // discard from an interrupt-time one.
+  discardAll(reason = 'instance exited before user responded', event = 'exited'): void {
     for (const [toolUseId, pending] of this._pending) {
       clearTimeout(pending.timer);
       respondDeny(pending.res, reason);
-      this._emit({ kind: 'permission_resolved', toolUseId, allow: false, reason: 'exited' });
+      this._emit({ kind: 'permission_resolved', toolUseId, allow: false, reason: event });
     }
     this._pending.clear();
   }
