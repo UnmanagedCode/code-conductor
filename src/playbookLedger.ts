@@ -33,7 +33,10 @@
 // id) and the internal relaunch does not pass through the gate, so nothing
 // un-retires it. A pruned worker therefore reads tracked-with-stage but NOT live,
 // releasing its `workers:"one"` slot early. That is the safe direction — the
-// opposite of a leak — and a governed spawn_instance({resume}) re-declares it.
+// opposite of a leak. Recovery is a KILL followed by a governed
+// spawn_instance({resume}), which re-declares the binding and un-retires; a bare
+// resume while the worker is still running is refused, because one public id may
+// own at most one live session (InstanceManager's liveForSession guard).
 //
 // Both halves pinned by tests/playbook-enforce.test.mjs → "a stage binding
 // survives a renewal" and "… survives a PRUNE", the latter asserting the residual

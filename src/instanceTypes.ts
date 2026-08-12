@@ -84,6 +84,10 @@ export interface InstanceLike {
   endRotation(opts: { ok: boolean; comesUpIdle: boolean }): void;
   beginRenewal(): void;
   endRenewal(): void;
+  // Throws 409 SESSION_ROTATING when a rotation is in flight, reading the UNION of
+  // both windows. The fork route calls it so the three destructive rewrites cannot
+  // drift — see src/instances.ts.
+  _assertNoRotationInFlight(): void;
   signalRotationTurnLost(reason: 'renew' | 'prune'): void;
   carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
   // Await this instance's durable session-lineage writes, rethrowing the first

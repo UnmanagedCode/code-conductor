@@ -6,7 +6,8 @@
 //   1. BASE CASE — no row ⇒ every resolver is the identity function. This is what
 //      makes the store additive with no migration and no backfill.
 //   2. MINTING — 8 hex from the first backing id, extended to 13 on a collision
-//      against EITHER index (public or backing), full id as the loud last resort.
+//      against the PUBLIC ids only (backing ids are not in the universe and cannot
+//      be: a candidate is a slice of a UUID), full id as the loud last resort.
 //   3. ROTATION — append + advance, lazy row creation from the base case,
 //      idempotent on a retry, and exactly reversible by revertRotation.
 //   4. READ TOLERANCE — dropSegment keeps a chain from pointing at a missing file.

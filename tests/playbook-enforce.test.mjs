@@ -463,9 +463,11 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
   // that matters is on the id the worker holds AFTER the prune.
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const w = await t.spawnWorker({
-      project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',
-    });
+    // solo/plan deliberately, not freeform/freeform: distinct playbook and stage
+    // names mean a mutant that confused the two fields could not pass this. `mode`
+    // is omitted because solo/plan pins it (ARG_PIN_CONFLICT otherwise) — the prune
+    // does not care which mode the worker is in.
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan', temp: false });
     const publicId = w.sessionId;
     assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
     const inst = instForSession(t.instances, publicId);
@@ -481,7 +483,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     ]);
 
     const before = foldProjection(await t.events()).bySession.get(publicId);
-    assert.deepEqual({ live: before.live, stage: before.stage }, { live: true, stage: 'freeform' });
+    assert.deepEqual({ live: before.live, stage: before.stage }, { live: true, stage: 'plan' });
 
     await inst.pruneSession({ cutTurnIndex: 1 });
     await waitFor(() => inst.status === 'idle');
@@ -497,7 +499,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     const after = proj.bySession.get(afterId);
     assert.ok(after, `the pruned worker must still be tracked under ${afterId} — this is the production break`);
     assert.deepEqual({ stage: after.stage, playbook: after.playbook, history: after.stageHistory },
-      { stage: 'freeform', playbook: 'freeform', history: ['freeform'] }, 'binding intact');
+      { stage: 'plan', playbook: 'solo', history: ['plan'] }, 'binding intact');
 
     // One worker, one row: no orphan under either backing id, and no re-declaration.
     assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');

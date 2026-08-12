@@ -29,6 +29,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
+import { resolveBacking } from '../src/sessionLineage.ts';
 
 const ENABLED = !!process.env.RUN_REAL_CLAUDE;
 const t = ENABLED ? test : test.skip.bind(test);
@@ -92,7 +93,12 @@ t('real claude: a pruned session resumes, re-arms read-before-edit, and recovers
     await runTurn(`Use the Read tool on ${target}, then reply with just DONE.`);
     // Turn 2: gives the prune something to cut while leaving a newest turn.
     await runTurn('Reply with just READY.');
-    sessionIds.push(inst.sessionId);
+    // BACKING id: this list becomes `${sid}.jsonl` cleanup paths below. The public
+    // id names no file (card 2026-0126). Harmless today because the enclosing
+    // encoded dir is rm -rf'd anyway, but it is the same stale assumption as the
+    // assertion that used to sit at the prune below.
+    sessionIds.push(inst.backingSessionId);
+    const publicIdBefore = inst.sessionId;
 
     // The Read output must actually be worth pruning, else the shrink-only guard
     // skips it and the rest of this test would pass for the wrong reason.
@@ -108,7 +114,17 @@ t('real claude: a pruned session resumes, re-arms read-before-edit, and recovers
     assert.equal(pr.status, 200);
     sessionIds.push(pr.body.newSessionId);
     await waitFor(() => ctx.instances.get(id)?.status === 'idle', { timeout: 30_000 });
-    assert.equal(inst.sessionId, pr.body.newSessionId, 'the pruned session is now attached');
+    // A prune rotates the BACKING id and pins the public one (card 2026-0126), so
+    // `newSessionId` — pruneSession's server-minted transcript id — can never equal
+    // inst.sessionId. Assert what actually holds, against the REAL CLI: the new
+    // transcript is what the process is attached to, the public id did not move, and
+    // the lineage records the rotation so the public id resolves forward to it.
+    assert.notEqual(inst.sessionId, pr.body.newSessionId,
+      'guards the pre-card assertion this replaced: these two can never be equal again');
+    assert.equal(inst.backingSessionId, pr.body.newSessionId, 'the pruned transcript is now attached');
+    assert.equal(inst.sessionId, publicIdBefore, 'the public id is pinned across a prune');
+    assert.equal(await resolveBacking(publicIdBefore), pr.body.newSessionId,
+      'and it resolves forward to the pruned transcript');
 
     // The pruned session is genuinely LIVE, not merely loadable.
     const alive = await runTurn('Reply with just ALIVE.');

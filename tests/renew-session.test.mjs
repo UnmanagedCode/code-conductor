@@ -741,7 +741,9 @@ test('the interlock covers the RESEED window, not just arming', async () => {
     assert.match(rw.body.error, /renewal is in progress/i);
     const fk = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, { userMessageIndex: 0 });
     assert.equal(fk.status, 409, `fork must be refused mid-reseed: ${JSON.stringify(fk.body)}`);
-    assert.match(fk.body.error, /rotation is in progress/i);
+    // Same message as prune/rewind now: fork routes through the shared
+    // _assertNoRotationInFlight rather than re-checking the two flags locally.
+    assert.match(fk.body.error, /renewal is in progress/i);
     await assert.rejects(() => inst.pruneSession({ cutTurnIndex: 0 }),
       (e) => e.code === 'SESSION_ROTATING' && e.statusCode === 409);
 
@@ -753,6 +755,62 @@ test('the interlock covers the RESEED window, not just arming', async () => {
     // …and once closed, a prune is allowed again — the guard is a window, not a latch.
     assert.equal(inst.rotationPending, false);
     assert.doesNotThrow(() => inst._assertNoRotationInFlight());
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async () => {
+  // D2 step 3, and the other half of the reseed failure handling. If the lineage
+  // write fails (EACCES, ENOSPC, or a corrupt-JSON loadStrict throw), the rotation
+  // is live in memory but absent from disk: a restart before the next rotation
+  // would resolve the public id to the PRE-CLEAR transcript and orphan everything
+  // the renewed session goes on to write. That has to be said loudly — and then the
+  // reseed has to happen ANYWAY, because the clear already happened irreversibly
+  // and the summary is the only thing that can still save the session. Aborting
+  // here would leave a cleared context with no handoff at all, the exact outcome
+  // this flow exists to prevent.
+  //
+  // Nothing else in the suite ever REJECTS flushLineage (the sibling stub only
+  // delays it), so all three sub-behaviours were unpinned: the report, the
+  // reseed-anyway, and their ordering.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+
+    // Reject, do not delay — the seam the sibling test uses, driven the other way.
+    let flushCalls = 0;
+    inst.flushLineage = async () => { flushCalls++; throw new Error('ENOSPC writing session-lineage.json'); };
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'survives a failed flush' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === NEW_SID);
+
+    // (1) The failure is reported, at the LINEAGE stage specifically, naming the
+    // orphan risk rather than a generic error.
+    const errEv = await waitFor(() => inst.ringSnapshot().find(ev => ev.kind === 'system'
+      && ev.subtype === 'renew_error' && ev.data?.stage === 'lineage'));
+    assert.match(errEv.data.message, /ENOSPC writing session-lineage\.json/, 'carries the cause');
+    assert.match(errEv.data.message, /in memory\s+but not on disk/, 'and names the orphan risk');
+    assert.equal(flushCalls, 1, 'flushed exactly once — not retried behind the scenes');
+
+    // (2) …and the reseed STILL lands. This is what dies if the branch rethrows.
+    const seedEcho = await waitFor(() => inst.ringSnapshot().find(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('survives a failed flush')));
+    assert.match(seedEcho.text, /Your context was just renewed/, 'the real seed, not a stray echo');
+    // (3) Ordering: the report precedes the reseed, so a human reading the stream
+    // sees the warning attached to the rotation and not after the new turn.
+    assert.ok(errEv._seq < seedEcho._seq, 'the lineage warning precedes the reseed');
+
+    // The in-memory rotation is still authoritative for this process, and the
+    // renewal window is released even though the flush threw.
+    assert.equal(inst.sessionId, sid1, 'the public id is untouched by a flush failure');
+    await waitFor(() => inst.renewalPending === false);
   } finally {
     await srv.close();
   }
