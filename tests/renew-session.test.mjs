@@ -698,6 +698,116 @@ test('rotation interlock: renew and prune refuse to interleave (SESSION_ROTATING
   }
 });
 
+test('the interlock covers the RESEED window, not just arming', async () => {
+  // The gap review round 1 found. `_rotation` is closed at the /clear's own
+  // turn_end — it has to be, or the idle hub would never deliver at the reseed's
+  // turn_end — which leaves a window where _rotation is null, _mutating is false
+  // and status is 'idle': every guard a prune or a rewind checks. A request landing
+  // there kills the proc, and the reseed then 409s in prompt(): context cleared,
+  // handoff summary LOST, conductor silent until the watchdog. The second flag
+  // (_renewing) exists to cover exactly this window.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+
+    // Hold the renewal INSIDE the window under test: make the durable flush hang,
+    // so the sequence is parked after _clear({ok:true}) and before the reseed.
+    let releaseFlush;
+    const held = new Promise((r) => { releaseFlush = r; });
+    const realFlush = inst.flushLineage.bind(inst);
+    inst.flushLineage = async () => { await held; return realFlush(); };
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'must not be lost' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+
+    // Park: rotated, hub window CLOSED (so the wake can still be delivered by the
+    // reseed's turn_end), but the renewal is not finished.
+    await waitFor(() => inst.backingSessionId === NEW_SID && inst.rotationPending === false);
+    assert.equal(inst.status, 'idle', 'precondition: idle, so the status guard would not refuse');
+    assert.equal(inst._mutating, false, 'precondition: _mutating is clear too');
+    assert.equal(inst.renewalPending, true, 'the renewal window is still open — this is the fix');
+
+    // All three destructive rewrites must refuse in this window.
+    const pr = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/prune`, { cutTurnIndex: 0 });
+    assert.equal(pr.status, 409, `prune must be refused mid-reseed: ${JSON.stringify(pr.body)}`);
+    assert.match(pr.body.error, /renewal is in progress/i);
+    const rw = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/rewind`, { userMessageIndex: 0 });
+    assert.equal(rw.status, 409, `rewind must be refused mid-reseed: ${JSON.stringify(rw.body)}`);
+    assert.match(rw.body.error, /renewal is in progress/i);
+    const fk = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/fork`, { userMessageIndex: 0 });
+    assert.equal(fk.status, 409, `fork must be refused mid-reseed: ${JSON.stringify(fk.body)}`);
+    assert.match(fk.body.error, /rotation is in progress/i);
+    await assert.rejects(() => inst.pruneSession({ cutTurnIndex: 0 }),
+      (e) => e.code === 'SESSION_ROTATING' && e.statusCode === 409);
+
+    // Let it finish: the summary lands, and the window closes behind it.
+    releaseFlush();
+    await waitFor(() => inst.ringSnapshot().some(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('must not be lost')));
+    await waitFor(() => inst.renewalPending === false);
+    // …and once closed, a prune is allowed again — the guard is a window, not a latch.
+    assert.equal(inst.rotationPending, false);
+    assert.doesNotThrow(() => inst._assertNoRotationInFlight());
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a FAILED reseed wakes the subscriber instead of stranding it on the watchdog', async () => {
+  // endRotation closed the hub's window with comesUpIdle:false on the promise that
+  // a reseed turn was coming. When that promise breaks, the promise has to be
+  // retracted: `renew_error` is a UI event on the WORKER's stream and reaches no
+  // conductor, so without this the conductor waits out the full watchdog and is
+  // then told a healthy worker "did NOT finish".
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const target = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const watcher = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = target.body.sessionId;
+    const watcherSid = watcher.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle'
+      && instForSession(srv.instances, watcherSid)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+    const watcherInst = instForSession(srv.instances, watcherSid);
+
+    // A watchdog long enough that this test cannot pass by timing out.
+    srv.instances.subscribeIdle(watcherSid, sid1, 600_000);
+    // Break the reseed specifically — not the clear, not the lineage write.
+    const realPrompt = inst.prompt.bind(inst);
+    inst.prompt = async (text, atts, opts) => {
+      if (typeof text === 'string' && text.includes('lost handoff')) throw new Error('simulated reseed failure');
+      return realPrompt(text, atts, opts);
+    };
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'lost handoff' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+
+    // The failure is visible to the human…
+    await waitFor(() => inst.ringSnapshot().some(ev => ev.kind === 'system'
+      && ev.subtype === 'renew_error' && ev.data?.stage === 'reseed'));
+    // …AND the conductor is woken now, not in 30 minutes, and not with the
+    // watchdog's "did NOT finish" stub.
+    const stub = await waitFor(() => watcherInst.ringSnapshot().find(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('get_recent_messages')));
+    assert.ok(!stub.text.includes('did NOT finish'),
+      `the wake must come from the lost-turn signal, not the watchdog: ${stub.text}`);
+    assert.ok(stub.text.includes(sid1), 'and it names the pinned public id');
+    assert.equal(srv.instances._idleHub.hasSubscriber(inst.id), false, 'one-shot consumed');
+    // The renewal window is released even though the reseed threw, so the session
+    // is not left permanently un-prunable.
+    await waitFor(() => inst.renewalPending === false);
+  } finally {
+    await srv.close();
+  }
+});
+
 test('an ABANDONED renewal closes the rotation window and wakes its subscriber', async () => {
   // The failure mode this guards: the rotation window is opened at arm() and the
   // idle hub defers every turn_end while it is open. If an abandonment path forgot

@@ -493,6 +493,20 @@ export class Instance extends EventEmitter implements InstanceLike {
   // listener is registered BEFORE the renew controller's, which is why the
   // pre-card code consumed the one-shot on the ARMED turn_end, a turn early.
   _rotation: { reason: RotationMechanism; startedAt: number } | null;
+  // TRUE for the whole renewal sequence: from `arm()` until the reseed prompt()
+  // has actually been accepted. A SECOND flag rather than a wider `_rotation`,
+  // because the two have genuinely different lifetimes and only their union is
+  // safe to mutate against:
+  //   `_rotation` must close at the `/clear`'s own turn_end — the idle hub stops
+  //   deferring there, and if it did not, the reseed's turn_end could never
+  //   deliver a waiting conductor's wake (D3).
+  //   `_renewing` must stay set past that point, because between the turn_end and
+  //   the reseed landing, `_rotation` is null, `_mutating` is false and status is
+  //   'idle' — every guard a prune or a rewind checks. A request landing in that
+  //   window kills the proc, and the reseed then 409s in prompt(): context
+  //   cleared, handoff summary lost, conductor silent until the watchdog. Which is
+  //   exactly the outcome the interlock exists to prevent.
+  _renewing: boolean;
   // The last COMPLETED rotation. Pinning the public id removes the only tell a
   // conductor had that a rotation happened at all, so these replace it. Set here;
   // surfaced on summary() / CONDUCTOR_VIEW_KEYS in stage 8.
@@ -631,6 +645,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._lineageWrite = Promise.resolve();
     this._lineageError = null;
     this._rotation = null;
+    this._renewing = false;
     this.lastRotatedAt = null;
     this.rotationReason = null;
     this.pid = null;
@@ -2358,6 +2373,30 @@ export class Instance extends EventEmitter implements InstanceLike {
   // while a renewal arming over a PRUNE is the interleaving that must be refused.
   get rotationInFlight(): RotationMechanism | null { return this._rotation?.reason ?? null; }
 
+  // True for the whole renewal sequence, including the reseed window `_rotation`
+  // deliberately leaves open. See the field declaration.
+  get renewalPending(): boolean { return this._renewing; }
+
+  // Open / close the renewal window. Separate from beginRotation because the
+  // reseed has to be inside it and the hub's defer has to be outside it.
+  beginRenewal(): void { this._renewing = true; }
+  endRenewal(): void { this._renewing = false; }
+
+  // Refuse a destructive rewrite while ANY context rotation is in flight here.
+  // Reads the UNION of the two flags — see the `_renewing` field declaration for
+  // why one flag cannot cover both lifetimes. Shared by pruneSession and
+  // rewindToUserMessage so the two cannot drift; the fork route makes the same
+  // check through the `rotationPending`/`renewalPending` getters.
+  _assertNoRotationInFlight(): void {
+    const inFlight = this._rotation?.reason ?? (this._renewing ? 'renew' : null);
+    if (!inFlight) return;
+    throw Object.assign(
+      new Error(`a context ${inFlight === 'prune' ? 'prune' : 'renewal'} is in progress on `
+        + 'this session — retry once it completes'),
+      { statusCode: 409, code: 'SESSION_ROTATING' },
+    );
+  }
+
   // Open the rotation window. Called by SessionRenewController.arm() — mid-turn,
   // when the tool is called, well before that turn ends — and at the top of
   // pruneSession's critical section. Being set BEFORE the armed turn_end can fire
@@ -2388,9 +2427,26 @@ export class Instance extends EventEmitter implements InstanceLike {
       this.lastRotatedAt = Date.now();
       this.rotationReason = rotation.reason;
     }
+    this._emitRotationComplete(rotation.reason, ok, comesUpIdle);
+  }
+
+  // A rotation whose window is ALREADY closed has failed to produce the turn it
+  // promised — a renewal reseed that never landed. `endRotation` closed the window
+  // with `comesUpIdle:false` on the promise that a reseed turn was coming; when
+  // that promise breaks, re-announce with `comesUpIdle:true` so a conductor
+  // waiting on this worker is woken NOW. Without it the wake waits out the full
+  // idle-subscription watchdog and then reports that a perfectly healthy worker
+  // "did NOT finish" — the same reasoning that makes every ABANDONMENT path
+  // declare comesUpIdle, applied to the one failure that happens after the window
+  // has already closed. Same event the hub already consumes; no hub change.
+  signalRotationTurnLost(reason: RotationMechanism): void {
+    this._emitRotationComplete(reason, false, true);
+  }
+
+  private _emitRotationComplete(reason: RotationMechanism, ok: boolean, comesUpIdle: boolean): void {
     this._emitUi({
       kind: 'system', subtype: 'rotation_complete',
-      data: { reason: rotation.reason, ok, comesUpIdle },
+      data: { reason, ok, comesUpIdle },
     });
   }
 
@@ -2707,6 +2763,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Returns { droppedText }: the prompt text of the dropped user message,
   // so the frontend can prefill it back into the composer.
   async rewindToUserMessage(userMessageIndex: number): Promise<{ droppedText: string }> {
+    // Same interlock as pruneSession, for the same reason: a rewind kills the proc
+    // and rewrites the transcript, so one landing inside a renewal's reseed window
+    // makes the reseed 409 and loses the handoff summary.
+    this._assertNoRotationInFlight();
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork is in progress'), { statusCode: 409 });
     }
@@ -2785,12 +2845,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // after the fact. Checked before the `_mutating` guard so the more specific
     // reason wins. This is the REST/internal path, so a throw is the convention
     // here (matching BACKEND_LOCKED in setModel).
-    if (this._rotation) {
-      throw Object.assign(
-        new Error('a context renewal is in progress on this session — retry once it completes'),
-        { statusCode: 409, code: 'SESSION_ROTATING' },
-      );
-    }
+    this._assertNoRotationInFlight();
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
     }

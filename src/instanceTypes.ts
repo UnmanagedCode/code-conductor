@@ -77,8 +77,14 @@ export interface InstanceLike {
   // interleave on it. See src/instances.ts for the comesUpIdle contract.
   readonly rotationPending: boolean;
   readonly rotationInFlight: 'renew' | 'prune' | null;
+  // Wider than rotationPending: covers the reseed window the rotation flag
+  // deliberately leaves open. Any destructive rewrite must check the union.
+  readonly renewalPending: boolean;
   beginRotation(reason: 'renew' | 'prune'): void;
   endRotation(opts: { ok: boolean; comesUpIdle: boolean }): void;
+  beginRenewal(): void;
+  endRenewal(): void;
+  signalRotationTurnLost(reason: 'renew' | 'prune'): void;
   carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
   // Await this instance's durable session-lineage writes, rethrowing the first
   // failure since the last flush (see src/instances.ts). SessionRenewController

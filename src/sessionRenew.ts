@@ -122,7 +122,13 @@ export class SessionRenewController {
     // window opened any later would already have let the ARMED turn_end consume a
     // waiting conductor's one-shot a turn early. beginRotation is idempotent for
     // the same mechanism, so a re-arm does not restart it.
-    this.manager.byId.get(instanceId)?.beginRotation('renew');
+    const armed = this.manager.byId.get(instanceId);
+    armed?.beginRotation('renew');
+    // The WIDER window, held until the reseed lands. beginRotation's closes at the
+    // `/clear`'s turn_end so the idle hub can deliver; this one has to outlive that,
+    // or a prune/rewind slipping into the gap makes the reseed 409 and the handoff
+    // summary is lost. See Instance._renewing.
+    armed?.beginRenewal();
     const existing = this.pending.get(instanceId);
     if (existing) { existing.opts = opts; return { armed: true, rearmed: true }; }
     this.pending.set(instanceId, { state: 'armed', opts, oldSid: null, timerId: null });
@@ -231,6 +237,18 @@ export class SessionRenewController {
             + 'handoff summary was not delivered',
         },
       });
+      // `renew_error` is a UI event on the WORKER's stream — it reaches a human
+      // watching that session and nothing else. A conductor subscribed to this
+      // worker is still waiting for the reseed turn that endRotation promised, and
+      // that turn is never coming, so without this it waits out the full watchdog
+      // and is then told a healthy worker "did NOT finish". Wake it now, by the
+      // same rule every abandonment path already follows.
+      inst.signalRotationTurnLost('renew');
+    } finally {
+      // Release the wider window LAST — after the reseed has either landed or
+      // failed. Skipped when a NEW renewal has been armed since (arm() re-sets the
+      // flag), so this cannot clear a successor's window.
+      if (!this.pending.has(id)) inst.endRenewal();
     }
   }
 
@@ -251,7 +269,13 @@ export class SessionRenewController {
     const p = this.pending.get(id);
     if (p?.timerId) clearTimeout(p.timerId);
     this.pending.delete(id);
-    if (p) this.manager.byId.get(id)?.endRotation({ ok, comesUpIdle: !ok });
+    if (!p) return;
+    const inst = this.manager.byId.get(id);
+    inst?.endRotation({ ok, comesUpIdle: !ok });
+    // ABANDONMENT closes the renewal window too: no reseed is coming, so there is
+    // nothing left to protect. On the SUCCESS path it deliberately stays open —
+    // _onClearingTurnEnd releases it once the reseed has settled.
+    if (!ok) inst?.endRenewal();
   }
 
   // Drop a pending renewal (called on instance removal).
