@@ -73,8 +73,8 @@ test('the documented key list matches what toConductorView emits, one-for-one', 
   // Non-vacuity: a regex that matched nothing would compare [] to [] under a
   // sloppier assertion. Pin the count first, then the contents.
   assert.ok(documented.length >= 20, `parsed only ${documented.length} keys — the description shape changed`);
-  assert.equal(documented.length, 28);
-  assert.equal(CONDUCTOR_VIEW_KEYS.length, 25);
+  assert.equal(documented.length, 31);
+  assert.equal(CONDUCTOR_VIEW_KEYS.length, 28);
   assert.deepEqual(sorted(documented), sorted(expected));
 });
 

@@ -144,6 +144,12 @@ export const CONDUCTOR_VIEW_KEYS = [
   // On a watchdog-timeout wake: "silent for 30 minutes" vs "producing until a
   // moment ago".
   'lastResponseAt',
+  // The rotation tell (see Instance.summary). Deliberately rotation-generic
+  // rather than `lastRenewedAt`: prune rotates too, and pinning the public id
+  // removed the only signal a conductor had that either had happened.
+  'lastRotatedAt',
+  'rotationReason',
+  'segmentCount',
   // Explains an unexpected wake.
   'queuedCount',
   // Explain a stalled worker and when it comes back.

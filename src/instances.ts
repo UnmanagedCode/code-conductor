@@ -932,6 +932,19 @@ export class Instance extends EventEmitter implements InstanceLike {
       firstPrompt: this.firstPrompt,
       title: this.title,
       lastResponseAt: this.lastResponseAt,
+      // Rotation tell. Pinning the public id makes a rotation invisible, which
+      // removes the ONLY signal a conductor previously had that one happened — a
+      // renewed or pruned worker would otherwise be indistinguishable from one
+      // that had simply gone quiet. Rotation-GENERIC, not renew-specific: a
+      // conductor deciding what to make of a quiet worker needs to know a prune
+      // reset its context just as much as a renewal did.
+      //
+      // `backingSessionId` is deliberately NOT here. That absence IS the
+      // enforcement of the invariant: a rotating id can never reach a conductor
+      // if the one projection they all read cannot see it.
+      lastRotatedAt: this.lastRotatedAt,
+      rotationReason: this.rotationReason,
+      segmentCount: this._segments.length,
       createdAt: this.createdAt,
       autoApprovePlan: this.autoApprovePlan,
       playbookEnforcement: this.playbookEnforcement,

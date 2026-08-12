@@ -147,6 +147,12 @@ const INSTANCE_DEVIANT: DeviantSpec[] = [
   { key: 'overageActive', default: false, label: 'OVERAGE' },
   { key: 'overageResetsAt', default: null, label: 'overage-resets', fmt: ts },
   { key: 'autoResumeAt', default: null, label: 'auto-resume', fmt: ts },
+  // Rotation tell. A never-rotated worker is the common case and carries no news,
+  // so all three sit here rather than on a fixed line: `segmentCount` defaults to
+  // 1 (one segment = never rotated), the other two to null.
+  { key: 'lastRotatedAt', default: null, label: 'rotated', fmt: ts },
+  { key: 'rotationReason', default: null, label: 'rotated-by' },
+  { key: 'segmentCount', default: 1, label: 'segments' },
 ];
 
 function instanceRows(rows: Row[]): Array<string | string[]> {

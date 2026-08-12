@@ -576,6 +576,60 @@ test('renew_session: the state block renders (none) when there are no owned work
 // Real-binary confirmation that `_sendRaw` of a `/clear` user message actually
 // rotates the session on the real claude CLI (the fake fixture only simulates
 // the rotation). Gated behind RUN_REAL_CLAUDE=1 — needs auth + network.
+test('the rotation tell reaches the conductor view, and the backing id never does', async () => {
+  // Pinning the public id makes a rotation invisible — which removes the only
+  // signal a conductor had that one happened. Without this a renewed worker and a
+  // stalled one look identical, so a conductor cannot tell "fresh context" from
+  // "gone quiet". These three keys are the replacement, and the ABSENCE of
+  // backingSessionId beside them is the enforcement of the invariant.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
+    const publicId = spawn.sessionId;
+
+    // Before any rotation: the tell reads "never rotated" — and it is PRESENT,
+    // not absent, so a conductor can rely on reading it.
+    assert.ok('lastRotatedAt' in spawn, 'the key is published even when null');
+    assert.equal(spawn.lastRotatedAt, null);
+    assert.equal(spawn.rotationReason, null);
+    assert.equal(spawn.segmentCount, 1, 'one segment = never rotated');
+    assert.ok(!('backingSessionId' in spawn), 'the backing id must never reach a conductor');
+
+    await waitFor(() => instForSession(srv.instances, publicId)?.status === 'idle');
+    const inst = instForSession(srv.instances, publicId);
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'tell-check' }, { caller: publicId });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: publicId, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === NEW_SID);
+    await waitFor(() => inst.rotationPending === false);
+
+    // After: the same public id, now carrying the tell.
+    const view = await callTool(srv.baseUrl, 'wait_for_idle', { sessionId: publicId, timeoutMs: 5000 });
+    const summary = view.summary;
+    assert.equal(summary.sessionId, publicId, 'the handle did not move');
+    assert.equal(summary.rotationReason, 'renew');
+    assert.ok(summary.lastRotatedAt > 0, 'and when');
+    assert.equal(summary.segmentCount, 2, 'two segments after one rotation');
+    assert.ok(!('backingSessionId' in summary),
+      'still no backing id — that absence is what enforces the invariant');
+    assert.ok(!JSON.stringify(summary).includes(NEW_SID),
+      `the rotated backing id must not appear anywhere in the conductor view: ${JSON.stringify(summary)}`);
+
+    // …and it renders, so a conductor reading list_sessions sees it too. It is on
+    // the flags line, i.e. shown only because it deviates from never-rotated.
+    // list_sessions returns PLAIN TEXT, not JSON, so read the raw content.
+    const { body } = await rpc(srv.baseUrl, 'tools/call',
+      { name: 'list_sessions', arguments: { project: 'p' } });
+    const text = body.result.content[0].text;
+    assert.match(text, /rotated-by renew/);
+    assert.match(text, /segments 2/);
+    assert.ok(!text.includes(NEW_SID), 'and never the backing id');
+  } finally {
+    await srv.close();
+  }
+});
+
 test('rotation interlock: renew and prune refuse to interleave (SESSION_ROTATING)', async () => {
   // Prune sets `_mutating`, which makes prompt() 409 — and a renewal's reseed IS a
   // prompt(). Interleaving them clears the context and then loses the summary: no

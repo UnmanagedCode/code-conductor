@@ -62,7 +62,8 @@ export function buildTools(): Tool[] {
         'Each LIVE worker summary is ' +
         '{project, cwd, sessionId, status, displayStatus, activeAgentTasks, mode, effort, thinking, ' +
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
-        'firstPrompt, title, createdAt, lastResponseAt, queuedCount, autoResumeAt, ' +
+        'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
+        'lastResponseAt, queuedCount, autoResumeAt, ' +
         'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
         'Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
         'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity is the ' +
@@ -76,6 +77,9 @@ export function buildTools(): Tool[] {
         'read it, not `status`, to decide whether work is actually finished. ' +
         '`contextWindowTokens` is the model\'s context capacity in tokens, or null when unknown. ' +
         '`lastResponseAt` separates a long-silent worker from one producing output moments ago. ' +
+        '`rotationReason` says whether the session\'s context was last reset by its own ' +
+        '`renew_session` or by a prune, and `lastRotatedAt` when — a quiet worker that just ' +
+        'rotated has a fresh context, not a stalled one. `segmentCount` is how many times over. ' +
         '`worktree` is the worktree\'s full metadata object (or null); the rendering shows its name. ' +
         'The rendering omits pid / createdAt / contextWindowTokens, and shows ' +
         'temp / conducted / debug / overage / auto-resume / resumes-hot only when they deviate from ' +
