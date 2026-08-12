@@ -471,6 +471,64 @@ test('drainToManifest excludes exited instances still retained in byId', async (
   clearResumeManifest();
 });
 
+// --- 11b. the manifest round trip across a ROTATION (card 2026-0126) ---------
+
+test('the restart manifest carries the PUBLIC id, so a rotated session resumes its CURRENT segment', async () => {
+  // drainToManifest writes `summary().sessionId` — the public id — and
+  // restoreFromResumeManifest feeds it straight back into create({resume}). That
+  // has no resolution of its own, so the whole round trip rests on _doCreate
+  // resolving the public id to `current`. If it resolved to the FIRST segment
+  // instead, every restart after a renewal or prune would silently resurrect the
+  // pre-rotation transcript — so prove it rather than infer it.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'rot-restart' });
+  const res = await api(baseUrl, 'POST', '/api/instances', { project: 'rot-restart', mode: 'bypassPermissions' });
+  const inst = instances.get(res.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const publicId = inst.sessionId;
+  const firstBacking = inst.backingSessionId;
+
+  // Rotate through the real store API, then move the in-memory field the way the
+  // system/init handler does. (Driving a live `/clear` needs the renew fixture; the
+  // round trip under test is indifferent to which mechanism rotated it.)
+  const rotated = 'b0000000-0000-4000-8000-00000000beef';
+  const { recordRotation, resolveBacking } = await import('../src/sessionLineage.ts');
+  await recordRotation(publicId, rotated, 'renew');
+  inst.backingSessionId = rotated;
+  inst._segments.push(rotated);
+  assert.equal(await resolveBacking(publicId), rotated);
+
+  // BOTH transcripts exist, with distinguishable content: a resume onto the wrong
+  // segment would find a perfectly valid file, which is the silent failure a
+  // mere existence check would miss.
+  const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  const line = (uuid, text) => JSON.stringify({
+    type: 'user', uuid, message: { role: 'user', content: text },
+  }) + '\n';
+  await fs.writeFile(path.join(dir, `${firstBacking}.jsonl`), line('old-1', 'PRE-ROTATION'));
+  await fs.writeFile(path.join(dir, `${rotated}.jsonl`), line('new-1', 'POST-ROTATION'));
+
+  const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sessionId, publicId, 'the manifest records the PUBLIC id, not the backing one');
+  await waitFor(() => inst.proc === null, { timeout: 20000 });
+
+  const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+  assert.equal(restored, 1, 'one session restored');
+  const newInst = [...instances.byId.values()].find(i => i.sessionId === publicId && i.id !== inst.id);
+  assert.ok(newInst, 'restored as a fresh instance under the same public id');
+  await waitFor(() => newInst.status === 'idle');
+
+  assert.equal(newInst.backingSessionId, rotated, 'resumed the CURRENT segment');
+  const at = newInst._spawnArgv.indexOf('--resume');
+  assert.ok(at > 0, `--resume must be in the argv: ${JSON.stringify(newInst._spawnArgv)}`);
+  assert.equal(newInst._spawnArgv[at + 1], rotated, 'and the argv names it');
+  const echoes = newInst.ringSnapshot().filter(ev => ev.kind === 'user_echo').map(ev => ev.text);
+  assert.ok(echoes.some(t => t.includes('POST-ROTATION')), `replayed the post-rotation transcript: ${JSON.stringify(echoes)}`);
+  assert.ok(!echoes.some(t => t.includes('PRE-ROTATION')), `must NOT replay the pre-rotation one: ${JSON.stringify(echoes)}`);
+  clearResumeManifest();
+});
+
 // --- 12. firstPrompt round-trips through manifest (temp session title bug) ---
 
 test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores it on a temp session', async () => {

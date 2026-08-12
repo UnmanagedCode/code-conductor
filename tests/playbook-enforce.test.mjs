@@ -363,16 +363,21 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
     const wtName = impl.worktree.worktreeName;
     await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false });
 
-    const prefix = impl.sessionId.slice(0, 8);
+    // A public id is already only 8 chars, so a genuine PREFIX is shorter than
+    // that — and an exact match on the whole public id would resolve outright
+    // (exact always wins), which is not what this test is about.
+    const prefix = impl.sessionId.slice(0, 5);
     const rev = await t.spawnWorker({
       project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
       provenance: { implement: prefix },
     });
-    assert.ok(rev.sessionId, 'an 8-char needs prefix resolved to the full sessionId');
+    assert.ok(rev.sessionId, 'a needs prefix resolved to the full sessionId');
 
     // Ambiguity is reported the same way a top-level sessionId prefix is, and
-    // names which needs entry was ambiguous.
-    const fake = prefix + 'ffffffff-ffff-ffff-ffff-ffffffffffff'.slice(8);
+    // names which needs entry was ambiguous. The stand-in shares the prefix
+    // without being an exact match for it, so resolution genuinely has two
+    // SESSIONS to choose between.
+    const fake = prefix + 'ffffffff-ffff-ffff-ffff-ffffffffffff'.slice(prefix.length);
     t.instances.byId.set('fake-ambig', { id: 'fake-ambig', sessionId: fake, kill: async () => {} });
     try {
       const res = await t.call('spawn_instance', {
@@ -757,7 +762,10 @@ async function killedBoundWorker(t) {
   assert.ok(w.sessionId, `the bound spawn must succeed: ${JSON.stringify(w)}`);
   // freeform pins nothing, so the worker sits in the project root with no worktree
   // — which is also the cwd the resume's `project`/`worktree` recovery resolves to.
-  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'), w.sessionId);
+  // The transcript is named by the BACKING id; the resume below deliberately uses
+  // the public id, which is the only handle a conductor ever had.
+  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'),
+    instForSession(t.instances, w.sessionId).backingSessionId);
   await t.call('kill_instance', { sessionId: w.sessionId });
   await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
   // The retire lands off the status stream, asynchronously from the kill's reply.

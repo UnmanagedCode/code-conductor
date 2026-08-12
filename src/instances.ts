@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId } from './projects.ts';
 import {
-  mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor,
+  mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
@@ -185,6 +185,21 @@ const TASK_LIFECYCLE_SUBTYPES = new Set(['task_started', 'task_updated', 'task_n
 // (a 1–3 char hit that the next spawn could collide with). Uniqueness within the
 // in-memory universe remains the real guard — this is just a sanity floor.
 export const SESSION_PREFIX_MIN = 4;
+
+// The backing ids an instance has run under, in memory. Guarded because several
+// suites inject bare `{ id, sessionId }` stand-ins straight into `byId`, and the
+// resolvers below sit on the MCP hot path — they must degrade on a partial entry,
+// never throw. A real Instance always has the array (set in its constructor).
+function segmentsOf(i: Instance): string[] {
+  return i._segments ?? [];
+}
+
+// Does this instance answer to `id`? True for its PERMANENT public id and for
+// every backing id it has ever run under, so a conductor's held id, a wiki page
+// naming an old segment, and an archived sidebar row all reach the same session.
+function answersTo(i: Instance, id: string): boolean {
+  return i.sessionId === id || segmentsOf(i).includes(id);
+}
 
 // Fallback wind-down text for windDown() when the caller supplies none. It
 // asks the model to stop all work, but still to emit one brief visible line:
@@ -1303,7 +1318,16 @@ export class Instance extends EventEmitter implements InstanceLike {
     const result = await loadPersistedTranscript({
       cwd: this.cwd, sessionId: backingId, seqHint: this.ring.nextSeq,
     });
-    if (!result) return; // ENOENT or no sessionId — silent no-op.
+    if (!result) {
+      // ENOENT: the transcript this segment named is gone (Claude prunes its own
+      // ~/.claude/projects after ~30 days). Drop it from the lineage row so the
+      // chain stops pointing at a missing file. This is the ONE opportunistic
+      // self-prune, and it is here because this path is async, off the hot read
+      // path, and already holds the cwd — reads themselves stay write-free
+      // (findSessionLocation tolerates the gap instead).
+      this._kickLineageWrite(() => dropSegment(backingId));
+      return; // silent no-op for the replay itself
+    }
     for (const line of result.lines) {
       for (const ev of line.events) this._emitUi(ev);
     }
@@ -3046,7 +3070,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
   idsForSession(sessionId: string): string[] {
     return [...this.byId.values()]
-      .filter(i => i.sessionId === sessionId)
+      .filter(i => answersTo(i, sessionId))
       .map(i => i.id);
   }
   // The single live (proc-attached) instance for a sessionId, or null. Folds
@@ -3062,32 +3086,56 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this.idsForSession(sessionId).map(id => this.byId.get(id))
       .find((i): i is Instance => i != null) ?? null;
   }
-  // Resolve an MCP input that is either a full sessionId or an unambiguous PREFIX
-  // to a canonical full sessionId. The MCP dispatch layer (src/mcp/server.ts) uses
-  // this to let conductors address workers by a short prefix (e.g. first 8 chars)
-  // instead of the error-prone 36-char UUID. Universe = the distinct sessionIds
-  // across ALL byId instances (live AND exited) — broader than live-only, so a
-  // prefix unique among live workers but shared with an exited in-memory session
-  // resolves AMBIGUOUS rather than silently mis-resolving. Historical disk-only
-  // sessions are intentionally NOT in scope (they stay addressable by full id).
+  // Resolve an MCP input to a canonical PUBLIC sessionId. The MCP dispatch layer
+  // (src/mcp/server.ts) uses this so conductors can address workers by a short
+  // prefix instead of an error-prone 36-char UUID.
+  //
+  // CANDIDATE UNIVERSE — for every in-memory instance (live AND exited, which is
+  // broader than live-only on purpose: a prefix unique among live workers but
+  // shared with an exited session must refuse rather than mis-resolve): its public
+  // id PLUS every backing id it has run under. Resolution is purely in-memory, so
+  // this stays synchronous and store-free on the MCP hot path. Historical
+  // disk-only sessions are intentionally out of scope (still addressable by full
+  // id through the handlers' disk probe).
+  //
+  // Answers are ALWAYS public ids — a backing id must never reach a conductor,
+  // which is also why `ambiguous` can only ever list public ids.
   // Returns one of:
   //   null                              → no match (caller leaves the arg untouched,
   //                                         so the handler's existing SESSION_UNKNOWN /
   //                                         SESSION_NOT_LIVE / disk-probe path runs)
-  //   { sessionId }                     → exact full-id match (always wins), or a
-  //                                         unique prefix >= SESSION_PREFIX_MIN chars
-  //   { ambiguous:[fullIds], tooShort } → prefix matches >1 id, OR a too-short
-  //                                         (< SESSION_PREFIX_MIN) prefix matches >=1
+  //   { sessionId }                     → exact match on any candidate (always
+  //                                         wins), or a prefix >= SESSION_PREFIX_MIN
+  //                                         chars matching exactly ONE session
+  //   { ambiguous:[publicIds], tooShort} → a prefix matching >1 SESSION, OR a
+  //                                         too-short (< SESSION_PREFIX_MIN) prefix
+  //                                         matching >= 1
+  //
+  // Two segments of the SAME session sharing a prefix collapse to one answer, not
+  // an ambiguity — the set below is of owning sessions, not of candidate strings.
   resolveSessionRef(input: unknown): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null {
     if (typeof input !== 'string' || !input) return null;
-    const all = [...new Set([...this.byId.values()].map(i => i.sessionId)
-      .filter((sid): sid is string => sid !== null))];
-    if (all.includes(input)) return { sessionId: input }; // exact match always wins
-    const matches = all.filter(s => s.startsWith(input));
-    if (matches.length === 0) return null;
-    if (input.length < SESSION_PREFIX_MIN) return { ambiguous: matches, tooShort: true };
-    if (matches.length === 1) return { sessionId: matches[0] };
-    return { ambiguous: matches, tooShort: false };
+    // candidate → owning public id. Public ids are claimed FIRST so an exact match
+    // on a public id deterministically beats a segment of some other session.
+    const owner = new Map<string, string>();
+    for (const i of this.byId.values()) {
+      if (i.sessionId) owner.set(i.sessionId, i.sessionId);
+    }
+    for (const i of this.byId.values()) {
+      if (!i.sessionId) continue;
+      for (const seg of segmentsOf(i)) if (!owner.has(seg)) owner.set(seg, i.sessionId);
+    }
+    const exact = owner.get(input);
+    if (exact !== undefined) return { sessionId: exact }; // exact match always wins
+    const sessions = new Set<string>();
+    for (const [candidate, publicId] of owner) {
+      if (candidate.startsWith(input)) sessions.add(publicId);
+    }
+    if (sessions.size === 0) return null;
+    const ambiguous = [...sessions];
+    if (input.length < SESSION_PREFIX_MIN) return { ambiguous, tooShort: true };
+    if (ambiguous.length === 1) return { sessionId: ambiguous[0] };
+    return { ambiguous, tooShort: false };
   }
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions
@@ -3124,25 +3172,34 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (!resume) return this._doCreate(opts);
     // Already fully live: a running instance owns this session. `claude
     // --resume <sid>` would otherwise race two subprocesses on one jsonl.
-    const conflict = [...this.byId.values()].find(i => i.sessionId === resume && i.proc);
+    // liveForSession matches the public id OR any segment, so naming an old
+    // segment of a live session is caught too — it is the same transcript lineage.
+    const conflict = this.liveForSession(resume);
     if (conflict) {
       throw Object.assign(
         new Error(`session ${resume} is already attached to a running instance (${conflict.id.slice(0, 8)}…)`),
         { statusCode: 409 },
       );
     }
-    // In-flight: a concurrent create() is already resuming this sid but hasn't
+    // In-flight: a concurrent create() is already resuming this session but hasn't
     // spawned yet (so the live-guard above can't see it). Coalesce onto that
     // promise — both callers get the same restored instance, one subprocess.
-    const inflight = this._resuming.get(resume);
+    //
+    // The key is NORMALIZED to the session's public id when we know it, so two
+    // callers naming the same session by different forms (its public id and one of
+    // its segments) still coalesce instead of racing two subprocesses onto one
+    // transcript. anyForSession is synchronous and in-memory, so this stays inside
+    // the no-await prefix that makes the guards above sound.
+    const key = this.anyForSession(resume)?.sessionId ?? resume;
+    const inflight = this._resuming.get(key);
     if (inflight) return inflight;
     const p = this._doCreate(opts);
-    this._resuming.set(resume, p);
+    this._resuming.set(key, p);
     // Release when the create settles — success OR failure. On success `.proc`
     // is set, so the live-guard above covers subsequent resumes; on failure
     // (bad sid / spawn throw) we must clear the entry so it doesn't wedge
     // future resumes of this session.
-    const release = () => { if (this._resuming.get(resume) === p) this._resuming.delete(resume); };
+    const release = () => { if (this._resuming.get(key) === p) this._resuming.delete(key); };
     p.then(release, release);
     return p;
   }

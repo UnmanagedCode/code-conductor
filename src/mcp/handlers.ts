@@ -650,6 +650,9 @@ export async function locateSession({ sessionId }: { sessionId?: string }) {
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('sessionId required');
   }
+  // findSessionLocation resolves a public id / any segment / a row-less full UUID
+  // itself, and returns null (never throws) for an id nothing on disk answers to —
+  // so this stays a clean 404 rather than surfacing an assertion as a 500.
   const hit = await findSessionLocation(sessionId);
   if (!hit) {
     throw Object.assign(new Error(`session not found: ${sessionId}`), { statusCode: 404 });

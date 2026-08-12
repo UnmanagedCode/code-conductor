@@ -99,6 +99,16 @@ export function encodeCwd(abs: string): string {
 // fixture are all longer, so they pass this test.
 const MINTED_PUBLIC_ID_RE = /^[0-9a-f]{8}(-[0-9a-f]{4})?$/;
 
+// True when `id` has one of the shapes mintPublicId produces — i.e. it can only
+// ever be a PUBLIC id, so it can never name a transcript file. A caller that has
+// already resolved through resolveBacking() and STILL sees this shape is holding
+// an id no session on disk answers to: that is an UNKNOWN SESSION, not an error,
+// and it must degrade to that caller's normal miss path (null / false / 404)
+// rather than trip assertBackingId and surface as a 500.
+export function isMintedPublicId(id: unknown): boolean {
+  return typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id);
+}
+
 // Loud runtime guard on the public/backing boundary. A session's PUBLIC id is
 // neither a filename nor a `--resume` argument — those need its CURRENT backing
 // id, obtained from `resolveBacking()` (src/sessionLineage.ts) or read off
@@ -132,6 +142,22 @@ export function sessionFilePath(absCwd: string, backingId: string): string {
 export function subAgentDirPath(absCwd: string, backingId: string): string {
   assertBackingId(backingId, 'subAgentDirPath');
   return path.join(claudeProjectsRoot(), encodeCwd(absCwd), backingId);
+}
+
+// Resolve a caller-supplied session id to the BACKING id that names a transcript,
+// or null when nothing on disk can answer to it.
+//
+// The lazy import is required, not stylistic: sessionLineage.ts imports
+// orchStoreRoot() from this module, so a static edge here would close a cycle.
+// Same pattern (and same reason) as loadWorktreesFor below. Every caller is async
+// and off the hot path.
+async function resolveToBackingId(sessionId: string): Promise<string | null> {
+  if (typeof sessionId !== 'string' || !sessionId) return null;
+  const { resolveBacking } = await import('./sessionLineage.ts');
+  const backingId = await resolveBacking(sessionId);
+  // Still minted-shaped after resolution ⇒ there is no lineage row, so no file is
+  // named by it. Decline cleanly instead of letting sessionFilePath assert.
+  return isMintedPublicId(backingId) ? null : backingId;
 }
 
 export function validateName(name: string): string {
@@ -635,14 +661,16 @@ export async function listSessions(projectName: string, excludeSessionIds: Set<s
 // jsonl didn't exist (404 path from the route). This is the single
 // "remove from the normal list" action — it never deletes from disk.
 export async function archiveSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
-  const file = sessionFilePath(absCwd, sessionId);
+  const backingId = await resolveToBackingId(sessionId);
+  if (backingId === null) return false; // unknown session — the route's 404
+  const file = sessionFilePath(absCwd, backingId);
   try {
     await fs.access(file);
   } catch (e) {
     if (errCode(e) === 'ENOENT') return false;
     throw e;
   }
-  await markArchived(sessionId);
+  await markArchived(backingId);
   return true;
 }
 
@@ -654,13 +682,21 @@ export async function archiveSessionForCwd(absCwd: string, sessionId: string): P
 // responsible for killing any running instance attached to this
 // sessionId first.
 export async function deleteSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
-  const file = sessionFilePath(absCwd, sessionId);
+  const backingId = await resolveToBackingId(sessionId);
+  if (backingId === null) return false; // unknown session — the route's 404
+  const file = sessionFilePath(absCwd, backingId);
   try {
     await fs.unlink(file);
-    try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkConducted(sessionId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkArchived(sessionId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkSessionMode(sessionId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await deleteSessionTitle(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkConducted(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkArchived(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkSessionMode(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    // Chain integrity: the transcript this segment named is gone for good, so drop
+    // it from its lineage row rather than leave `current`/`segments` pointing at a
+    // missing file. Deliberately on the DELETE path, not on reads — a write inside
+    // a read path races concurrent readers.
+    try { const { dropSegment } = await import('./sessionLineage.ts'); await dropSegment(backingId); }
+    catch { /* best-effort */ }
     return true;
   } catch (e) {
     if (errCode(e) === 'ENOENT') return false;
@@ -689,6 +725,13 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
+  // Resolve ONCE, here, rather than at each of the four call sites — they pass
+  // mixed provenance (a conductor's public id, a REST path param, a segment id
+  // off an archived row, an already-backing id from _doCreate) and this is the
+  // one home that can normalise all of them.
+  const backingId = await resolveToBackingId(sessionId);
+  if (backingId === null) return null; // unknown session, not an error
+
   // Lazy import to avoid the projects.ts ↔ worktrees.ts circular dep
   // worktrees.ts already imports from projects.ts (encodeCwd, etc.).
   const projects: ProjectInfo[] = await listProjects();
@@ -703,25 +746,46 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null });
   } catch { /* .conduct doesn't exist yet — skip */ }
 
-  for (const proj of projects) {
-    const file = sessionFilePath(proj.path, sessionId);
-    try {
-      const stat = await fs.stat(file);
-      if (stat.isFile()) return { project: proj.name, worktreeName: null };
-    } catch (e) {
-      if (errCode(e) !== 'ENOENT') throw e;
-    }
-    let wts: WorktreeMeta[] = [];
-    try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
-    for (const wt of wts) {
-      const wtFile = sessionFilePath(wt.worktreePath, sessionId);
+  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null } | null> => {
+    for (const proj of projects) {
+      const file = sessionFilePath(proj.path, id);
       try {
-        const stat = await fs.stat(wtFile);
-        if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
+        const stat = await fs.stat(file);
+        if (stat.isFile()) return { project: proj.name, worktreeName: null };
       } catch (e) {
         if (errCode(e) !== 'ENOENT') throw e;
       }
+      let wts: WorktreeMeta[] = [];
+      try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
+      for (const wt of wts) {
+        const wtFile = sessionFilePath(wt.worktreePath, id);
+        try {
+          const stat = await fs.stat(wtFile);
+          if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
+        } catch (e) {
+          if (errCode(e) !== 'ENOENT') throw e;
+        }
+      }
     }
+    return null;
+  };
+
+  const hit = await probe(backingId);
+  if (hit) return hit;
+
+  // READ TOLERANCE. `current`'s transcript can vanish without going through our
+  // delete path — Claude prunes its own ~/.claude/projects after ~30 days. Walk
+  // the row's segments newest-first and locate the first one that still exists, so
+  // a session with a surviving older segment stays findable. Read-only on purpose:
+  // self-pruning here would put a write inside a hot read path and race concurrent
+  // readers (the delete path and loadHistory's ENOENT branch own the pruning).
+  const { publicIdFor, segmentsFor } = await import('./sessionLineage.ts');
+  const segments = await segmentsFor(await publicIdFor(sessionId));
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const id = segments[i].id;
+    if (id === backingId || isMintedPublicId(id)) continue;
+    const older = await probe(id);
+    if (older) return older;
   }
   return null;
 }

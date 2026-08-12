@@ -23,6 +23,7 @@ import { isTemp } from '../src/tempSessions.ts';
 import { isArchived } from '../src/archivedSessions.ts';
 import { getTitle } from '../src/sessionTitles.ts';
 import { getSessionMode } from '../src/sessionModes.ts';
+import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-renew.json');
@@ -79,13 +80,23 @@ test('renew_session drives a /clear that rotates the session in place and reseed
     // End the turn the tool was "called in" → the renewal fires.
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
 
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
     const rotated = instForSession(srv.instances, NEW_SID);
     assert.ok(rotated, 'a live instance now carries the rotated sessionId');
     assert.equal(rotated.id, instanceId, 'same Instance object across the in-place clear');
     assert.equal(rotated.pid, pidBefore, 'same OS process (pid unchanged) — in-place clear, not respawn');
-    assert.equal(instForSession(srv.instances, sid1), undefined, 'old sessionId no longer maps to a live instance');
+    // INVERTED by card 2026-0126, and this is the point of the card: the id the
+    // caller holds keeps resolving to the same live instance across the rotation.
+    // Both forms — the pinned public id and the new backing id — name it.
+    assert.equal(instForSession(srv.instances, sid1)?.id, instanceId,
+      'the public id still maps to the same live instance');
+    assert.equal(rotated.sessionId, sid1, 'and the public id itself never moved');
 
+    // The reseed is dispatched only after the DURABLE lineage write settles (see
+    // SessionRenewController), so "rotated" no longer implies "seeded".
+    await waitFor(() => rotated.ringSnapshot().some(
+      (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string'
+        && ev.text.startsWith('Your context was just renewed')));
     const seedEcho = rotated.ringSnapshot().find(
       (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-XYZ'));
     assert.ok(seedEcho, 'summary was injected as a user turn on the cleared session');
@@ -105,6 +116,155 @@ test('renew_session drives a /clear that rotates the session in place and reseed
   }
 });
 
+// ---------------------------------------------------------------------------
+// Durable identity across the rotation (card 2026-0126). These three are the
+// point of the whole phase: the public id a conductor holds must outlive every
+// `/clear`, and a resume by that id must land on the CURRENT segment.
+// ---------------------------------------------------------------------------
+
+test('identity holds across a rotation: the public id is pinned, the backing id moves', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const publicId = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, publicId)?.status === 'idle');
+    const inst = instForSession(srv.instances, publicId);
+    const firstBacking = inst.backingSessionId;
+    assert.equal(publicId, firstBacking.slice(0, 8), 'the public id is 8 hex from the first backing id');
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'pinned-id check' }, { caller: publicId });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: publicId, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === NEW_SID && inst.status === 'idle');
+
+    // The whole invariant, in three lines.
+    assert.equal(inst.sessionId, publicId, 'the public id did not move');
+    assert.equal(inst.summary().sessionId, publicId, 'and summary() still reports it');
+    assert.notEqual(inst.backingSessionId, firstBacking, 'while the backing id rotated');
+
+    // The backing id is deliberately ABSENT from summary() — that absence is what
+    // enforces "a rotating id never reaches a conductor".
+    assert.ok(!('backingSessionId' in inst.summary()),
+      'summary() must never carry the backing id');
+
+    // The lineage row lists both segments, in order, with the renew reason.
+    const { segmentsFor, resolveBacking, publicIdFor } = await import('../src/sessionLineage.ts');
+    await waitFor(async () => (await segmentsFor(publicId)).length === 2);
+    assert.deepEqual((await segmentsFor(publicId)).map(g => [g.id, g.reason]),
+      [[firstBacking, 'initial'], [NEW_SID, 'renew']]);
+    assert.equal(await resolveBacking(publicId), NEW_SID, 'the public id resolves to the NEWEST segment');
+    assert.equal(await publicIdFor(firstBacking), publicId, 'and the old segment still names its session');
+    assert.deepEqual(inst._segments, [firstBacking, NEW_SID], 'in-memory chain mirrors the row');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('resume after rotation resumes CURRENT, not the first segment', async () => {
+  // THE highest-risk edit in this card. Getting the redirection wrong resumes
+  // the PRE-CLEAR transcript — which is the duplicate-worker bug this phase
+  // exists to kill, wearing new clothes. So this asserts both halves: the argv
+  // names `current`, and the replayed conversation is the post-clear one.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const publicId = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, publicId)?.status === 'idle');
+    const inst = instForSession(srv.instances, publicId);
+    const firstBacking = inst.backingSessionId;
+    const cwd = inst.cwd;
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'resume-target check' }, { caller: publicId });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: publicId, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === NEW_SID && inst.status === 'idle');
+
+    // The fake CLI writes no transcripts, so materialise BOTH segments with
+    // distinguishable content. If the resume redirection is wrong it will find a
+    // perfectly valid file — the PRE-clear one — which is exactly the silent
+    // failure a file-existence-only assertion would miss.
+    const dir = path.join(srv.claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    const line = (uuid, text) => JSON.stringify({
+      type: 'user', uuid, message: { role: 'user', content: text },
+    }) + '\n';
+    await fs.writeFile(path.join(dir, `${firstBacking}.jsonl`), line('pre-1', 'PRE-CLEAR TURN'));
+    await fs.writeFile(path.join(dir, `${NEW_SID}.jsonl`), line('post-1', 'POST-CLEAR TURN'));
+
+    await callTool(srv.baseUrl, 'kill_instance', { sessionId: publicId });
+    await waitFor(() => !instForSession(srv.instances, publicId));
+
+    // Resume by the PUBLIC id — the only handle a conductor was ever given.
+    const resumed = await callTool(srv.baseUrl, 'spawn_instance', { resume: publicId });
+    assert.equal(resumed.sessionId, publicId, 'the resumed session reports the same public id');
+    const inst2 = instForSession(srv.instances, publicId);
+    await waitFor(() => inst2.status === 'idle');
+
+    // (1) The argv names CURRENT.
+    const argv = inst2._spawnArgv;
+    const at = argv.indexOf('--resume');
+    assert.ok(at > 0, `--resume must be in the argv: ${JSON.stringify(argv)}`);
+    assert.equal(argv[at + 1], NEW_SID, '--resume must carry the CURRENT segment');
+    assert.notEqual(argv[at + 1], firstBacking, 'and must NOT carry the first segment');
+    assert.equal(inst2.backingSessionId, NEW_SID);
+
+    // (2) The replayed conversation is the post-clear one.
+    const echoes = inst2.ringSnapshot().filter(ev => ev.kind === 'user_echo').map(ev => ev.text);
+    assert.ok(echoes.some(t => t.includes('POST-CLEAR TURN')),
+      `the post-clear transcript must be replayed; got ${JSON.stringify(echoes)}`);
+    assert.ok(!echoes.some(t => t.includes('PRE-CLEAR TURN')),
+      `the pre-clear transcript must NOT be replayed; got ${JSON.stringify(echoes)}`);
+
+    // (3) …and naming the OLD segment explicitly still opens that segment — the
+    // permanent full-id guarantee, for wiki pages and old kanban cards.
+    const { resolveBacking } = await import('../src/sessionLineage.ts');
+    assert.equal(await resolveBacking(firstBacking), firstBacking);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('no duplicate worker: the public id still resolves live after a rotation', async () => {
+  // The bug in one assertion. Before this card, a conductor addressing its
+  // worker after a self-renewal got SESSION_NOT_LIVE with advice to
+  // `spawn_instance({resume:"<old id>"})` — spawning a SECOND worker on the same
+  // worktree against the un-cleared transcript.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' });
+    const publicId = spawn.sessionId;
+    await waitFor(() => instForSession(srv.instances, publicId)?.status === 'idle');
+    const inst = instForSession(srv.instances, publicId);
+    const instanceId = inst.id;
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'still-addressable' }, { caller: publicId });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: publicId, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === NEW_SID && inst.status === 'idle');
+
+    // Addressed by the id the conductor holds: resolves LIVE, same instance.
+    // (Pre-card this answered SESSION_NOT_LIVE and advised a resume, which is
+    // what spawned the second worker.)
+    const view = await callTool(srv.baseUrl, 'wait_for_idle', { sessionId: publicId, timeoutMs: 5000 });
+    assert.notEqual(view.ok, false, `must not refuse: ${JSON.stringify(view)}`);
+    assert.equal(view.sessionId, publicId);
+    assert.equal(view.summary.sessionId, publicId, 'and the conductor view reports the public id');
+    assert.equal(instForSession(srv.instances, publicId).id, instanceId, 'same Instance, no second worker');
+
+    // All three accepted input forms land on the same session: the public id
+    // (above), a prefix of it, and any full backing/segment id — permanently.
+    const byPrefix = await callTool(srv.baseUrl, 'wait_for_idle', { sessionId: publicId.slice(0, 5), timeoutMs: 5000 });
+    assert.equal(byPrefix.sessionId, publicId, 'a prefix resolves to the public id');
+    const byBacking = await callTool(srv.baseUrl, 'wait_for_idle', { sessionId: NEW_SID, timeoutMs: 5000 });
+    assert.equal(byBacking.sessionId, publicId, 'a full backing id resolves to the public id');
+  } finally {
+    await srv.close();
+  }
+});
+
 test('renew_session carries the durable temp + conducted markers onto the rotated id and archives the old one', async () => {
   const srv = await bootServer({ scenarioPath: SCENARIO });
   mgr = srv.instances;
@@ -117,17 +277,23 @@ test('renew_session carries the durable temp + conducted markers onto the rotate
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const inst = instForSession(srv.instances, sid1);
     const id = inst.id;
+    // The temp/conducted/title/mode/backend sidecars are keyed to the TRANSCRIPT,
+    // deliberately: listSessionsForCwdWithCounts looks them up by filename, so
+    // re-keying them to public ids would have needed a migration. That makes the
+    // carry a backing→backing move, and both ends of it are named here.
+    const oldBacking = inst.backingSessionId;
+    assert.notEqual(oldBacking, sid1, 'precondition: the two ids have diverged');
     assert.equal(inst.conducted, true, 'spawn_instance yields a conducted worker');
     assert.equal(inst.temp, true, 'spawn_instance yields a temp worker');
     // temp is durably marked at spawn; conducted is marked on the first turn_end
     // (_writeSessionMetadata), i.e. by the armed 'go1' turn below — so only assert
     // the temp sidecar pre-renewal.
-    await waitFor(async () => await isTemp(sid1));
+    await waitFor(async () => await isTemp(oldBacking));
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on with the migration' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
 
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
     const rotated = instForSession(srv.instances, NEW_SID);
     assert.equal(rotated.id, id, 'same Instance across the clear');
     assert.equal(rotated.conducted, true, 'rotated session is still conducted');
@@ -141,8 +307,10 @@ test('renew_session carries the durable temp + conducted markers onto the rotate
     // mirroring _archiveTempSession, a conducted marker stays meaningful on an
     // archived row — but the fixture never durably writes one on the old id, so
     // there is nothing to assert there.)
-    await waitFor(async () => await isArchived(sid1));
-    assert.equal(await isTemp(sid1), false, 'stale temp marker on the old id was cleaned');
+    await waitFor(async () => await isArchived(oldBacking));
+    assert.equal(await isTemp(oldBacking), false, 'stale temp marker on the old id was cleaned');
+    // …and the session's own identity is untouched by any of it.
+    assert.equal(rotated.sessionId, sid1, 'the public id is pinned across the carry');
 
     // The mode record is NOT asserted here: for a bypassPermissions session the
     // system/init handler records the rotated id on the reseed turn anyway, so
@@ -171,7 +339,7 @@ test('renew_session carries a custom session title onto the rotated id', async (
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'keep the title' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
 
     // No turn_end path writes the title sidecar, so this is proof of the explicit
     // carry — the rotated id inherits the title (and the in-memory title too).
@@ -205,11 +373,16 @@ test('renew_session: an outgoing idle subscription survives the caller\'s /clear
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'keep watching the worker' }, { caller: sSid });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sSid, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
 
     snap = srv.instances._idleSubscriberSnapshot();
-    assert.ok(snap[wSid]?.includes(NEW_SID), 'subscription still present, now shown under the rotated caller sid');
-    assert.ok(!snap[wSid]?.includes(sSid), 'stale caller sid no longer resolves — not orphaned on the dead id');
+    // INVERTED by card 2026-0126. The snapshot projects instanceIds back through
+    // `inst.sessionId`, which is now PINNED — so the rotation is invisible here
+    // too: the entry does not move, and the id the conductor was given stays the
+    // one it is listed under. (Pre-card it re-keyed onto the rotated id, which is
+    // exactly how a conductor's held reference went stale.)
+    assert.ok(snap[wSid]?.includes(sSid), 'subscription still listed under the caller\'s UNCHANGED public id');
+    assert.ok(!snap[wSid]?.includes(NEW_SID), 'the internal backing id never surfaces here');
   } finally {
     await srv.close();
   }
@@ -242,7 +415,7 @@ test('renew_session defers the /clear while an overage-queued turn is pending, t
     // Drain the queue and drive another turn_end — the renewal now proceeds.
     inst._overageQueue.length = 0;
     srv.instances.emit('event', { id, ev: { kind: 'turn_end' } });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
     assert.ok(instForSession(srv.instances, NEW_SID), 'rotation proceeds once the queue drains');
     assert.ok(!srv.instances._sessionRenew.pending.has(id), 'pending renewal consumed');
   } finally {
@@ -270,17 +443,19 @@ test('renew_session: the baked caller handle survives a /clear so a session can 
     assert.equal(r1.ok, true);
     assert.equal(r1.sessionId, sid1, 'caller handle resolves to the current sessionId (pre-rotation)');
 
-    // End the turn → the managed /clear rotates sid1 → NEW_SID in place.
+    // End the turn → the managed /clear rotates the BACKING id in place.
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
-    assert.equal(instForSession(srv.instances, sid1), undefined, 'old sessionId rotated away');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
+    assert.equal(instForSession(srv.instances, sid1)?.backingSessionId, NEW_SID,
+      'the public id still names the same instance, whose backing id rotated');
 
     // SECOND caller-addressed call with the SAME baked handle, AFTER the rotation.
-    // This is the regression: it must resolve to the CURRENT (rotated) sessionId,
-    // not soft-refuse SESSION_UNKNOWN on the stale id.
     const r2 = await callTool(srv.baseUrl, 'renew_session', { summary: 'second handoff' }, { caller: handle });
     assert.equal(r2.ok, true, 'caller still resolves after the rotation (not SESSION_UNKNOWN)');
-    assert.equal(r2.sessionId, NEW_SID, 'caller handle now resolves to the rotated sessionId');
+    // Now stronger than before: the handle resolves to the SAME id it did
+    // pre-rotation, because the public id is pinned. Nothing the caller holds
+    // — the baked instanceId or the sessionId it was told — ever goes stale.
+    assert.equal(r2.sessionId, sid1, 'caller handle resolves to the SAME pinned public id');
   } finally {
     await srv.close();
   }
@@ -307,9 +482,14 @@ test('renew_session: the mechanical state block lists live spawned workers and i
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-STATE-1' }, { caller: conductorSid });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: conductorSid, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
 
     const rotated = instForSession(srv.instances, NEW_SID);
+    // The reseed is dispatched only after the DURABLE lineage write settles (see
+    // SessionRenewController), so "rotated" no longer implies "seeded".
+    await waitFor(() => rotated.ringSnapshot().some(
+      (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string'
+        && ev.text.startsWith('Your context was just renewed')));
     const seedEcho = rotated.ringSnapshot().find(
       (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-STATE-1'));
     assert.ok(seedEcho, 'summary was injected');
@@ -343,9 +523,14 @@ test('renew_session: the state block is composed at reseed time, not arm time', 
 
     // NOW end the turn — the clear (and state-block composition) fires here.
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: conductorSid, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
 
     const rotated = instForSession(srv.instances, NEW_SID);
+    // The reseed is dispatched only after the DURABLE lineage write settles (see
+    // SessionRenewController), so "rotated" no longer implies "seeded".
+    await waitFor(() => rotated.ringSnapshot().some(
+      (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string'
+        && ev.text.startsWith('Your context was just renewed')));
     const seedEcho = rotated.ringSnapshot().find(
       (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-STATE-2'));
     assert.ok(seedEcho, 'summary was injected');
@@ -367,9 +552,14 @@ test('renew_session: the state block renders (none) when there are no owned work
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-EMPTY' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
 
     const rotated = instForSession(srv.instances, NEW_SID);
+    // The reseed is dispatched only after the DURABLE lineage write settles (see
+    // SessionRenewController), so "rotated" no longer implies "seeded".
+    await waitFor(() => rotated.ringSnapshot().some(
+      (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string'
+        && ev.text.startsWith('Your context was just renewed')));
     const seedEcho = rotated.ringSnapshot().find(
       (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('HANDOFF-EMPTY'));
     assert.ok(seedEcho, 'summary was injected');
@@ -427,12 +617,13 @@ test('renew_session carries the mode record for an `ask` session, which nothing 
     const sid1 = spawn.body.sessionId;
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
     const inst = instForSession(srv.instances, sid1);
+    const oldBacking = inst.backingSessionId;
     assert.equal(inst.mode, 'ask', 'the CLI reports bypassPermissions; the orchestrator keeps `ask`');
-    await waitFor(async () => (await getSessionMode(sid1)) === 'ask');
+    await waitFor(async () => (await getSessionMode(oldBacking)) === 'ask');
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'carry on' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
-    await waitFor(() => instForSession(srv.instances, NEW_SID)?.status === 'idle');
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
     assert.equal(instForSession(srv.instances, NEW_SID).mode, 'ask',
       'the rotated worker is still in ask');
 
@@ -441,7 +632,7 @@ test('renew_session carries the mode record for an `ask` session, which nothing 
       'the rotated id must carry `ask` — nothing else writes it');
     // The old id KEEPS its record: it survives as an archived, still-listable
     // row whose resumes-hot flag has to stay accurate.
-    assert.equal(await getSessionMode(sid1), 'ask',
+    assert.equal(await getSessionMode(oldBacking), 'ask',
       'the archived pre-clear id keeps its mode record');
   } finally {
     await srv.close();

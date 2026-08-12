@@ -263,13 +263,17 @@ test('DELETE session refuses (409) when a running instance is attached; force=1 
   await api(baseUrl, 'POST', '/api/projects', { name: 'sess' });
   const r = await api(baseUrl, 'POST', '/api/instances', { project: 'sess', mode: 'bypassPermissions' });
   const id = r.body.id;
+  // Delete by the PUBLIC id (all a caller ever has) while the transcript lives
+  // under the backing id — the route resolves between them.
   const sid = r.body.sessionId;
   await waitFor(() => instances.get(id)?.proc);
+  const backing = instances.get(id).backingSessionId;
+  assert.notEqual(backing, sid, 'precondition: the two ids have diverged');
 
   // Pre-create the on-disk jsonl so the route's `removed` check passes.
   const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'sess')));
   await fs.mkdir(dir, { recursive: true });
-  await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+  await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${backing}.jsonl`));
 
   const blocked = await api(baseUrl, 'DELETE', `/api/projects/sess/sessions/${sid}`);
   assert.equal(blocked.status, 409);
@@ -280,7 +284,7 @@ test('DELETE session refuses (409) when a running instance is attached; force=1 
   assert.equal(forced.status, 200);
   // Instance killed; jsonl gone.
   await waitFor(() => instances.get(id) === undefined);
-  await assert.rejects(fs.stat(path.join(dir, `${sid}.jsonl`)), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(dir, `${backing}.jsonl`)), { code: 'ENOENT' });
 });
 
 test('DELETE session also drops the stale Instance record when the proc was already killed', async () => {
@@ -289,6 +293,7 @@ test('DELETE session also drops the stale Instance record when the proc was alre
   const id = r.body.id;
   const sid = r.body.sessionId;
   await waitFor(() => instances.get(id)?.proc);
+  const backing = instances.get(id).backingSessionId;
 
   // Kill the subprocess but keep the Instance in byId — mirrors the
   // header "Kill" button flow (so Resume stays available).
@@ -297,14 +302,35 @@ test('DELETE session also drops the stale Instance record when the proc was alre
 
   const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'sess')));
   await fs.mkdir(dir, { recursive: true });
-  await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+  await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${backing}.jsonl`));
 
   // No 409 — the instance has no live proc — and the stale record
   // should be cleaned up so the sidebar doesn't render a ghost row.
   const del = await api(baseUrl, 'DELETE', `/api/projects/sess/sessions/${sid}`);
   assert.equal(del.status, 200);
   assert.equal(instances.get(id), undefined, 'stale exited instance removed alongside the session');
-  await assert.rejects(fs.stat(path.join(dir, `${sid}.jsonl`)), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(dir, `${backing}.jsonl`)), { code: 'ENOENT' });
+});
+
+// A minted-shaped id that resolves to NOTHING is an unknown session, not a server
+// error. Without the resolve-then-decline ordering in resolveToBackingId, these
+// three paths would hand an 8-hex id straight to sessionFilePath, trip
+// assertBackingId, and turn each clean miss into a 500.
+test('an unresolvable public-shaped sessionId is a clean 404, never a 500', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'bogus404' });
+  for (const bogus of ['deadbeef', 'deadbeef-1234']) {
+    const del = await api(baseUrl, 'DELETE', `/api/projects/bogus404/sessions/${bogus}`);
+    assert.equal(del.status, 404, `DELETE ${bogus}: ${JSON.stringify(del.body)}`);
+    assert.match(del.body.error, /not found/i);
+
+    const arch = await api(baseUrl, 'POST', `/api/projects/bogus404/sessions/${bogus}/archive`);
+    assert.equal(arch.status, 404, `archive ${bogus}: ${JSON.stringify(arch.body)}`);
+
+    const loc = await api(baseUrl, 'GET', `/api/sessions/${bogus}/locate`);
+    assert.equal(loc.status, 404, `locate ${bogus}: ${JSON.stringify(loc.body)}`);
+
+    assert.equal(await findSessionLocation(bogus), null, 'and the shared helper returns null');
+  }
 });
 
 test('DELETE worktree session removes from the worktree-encoded dir (not the parent project)', async () => {
