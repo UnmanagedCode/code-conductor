@@ -608,15 +608,18 @@
       <div class="summary-dialog-head">
         <h3>Session summary</h3>
         <span id="summary-stale-badge" class="summary-stale hint" hidden>⚠ Session has grown since this summary</span>
+        <span id="summary-cost" class="hint" hidden></span>
       </div>
-      <div class="summary-tier-selector" role="group" aria-label="Summary length">
+      <div class="summary-tier-selector" role="group" aria-label="Summary type">
         <button type="button" data-len="short">Short</button>
         <button type="button" data-len="medium" class="active">Medium</button>
         <button type="button" data-len="long">Long</button>
+        <button type="button" data-len="title">Title</button>
       </div>
       <div id="summary-content" class="md summary-content"></div>
       <p id="summary-error" class="error" hidden></p>
       <menu>
+        <button type="button" id="summary-apply-title-btn" hidden>✏️ Use as session title</button>
         <button type="button" id="summary-generate-btn">Generate summary</button>
         <button value="close">Close</button>
       </menu>

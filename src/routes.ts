@@ -68,7 +68,7 @@ import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
 import { ensureRootClaudeMd } from './rootClaudeMd.ts';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
-import { getSummaries, setSummary, deleteSummaries } from './sessionSummaries.ts';
+import { getSummaries, setSummary, deleteSummaries, SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { generateSummary, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
 import { getCostSummary, getSessionStats } from './costTracking.ts';
@@ -826,12 +826,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
   type SessionSummaries = Awaited<ReturnType<typeof getSummaries>>;
 
-  // Build the three-tier response data object, adding per-tier isStale.
+  // Build the tier response data object, adding per-tier isStale.
   // currentCount should be pre-fetched (once) and passed in.
   function buildTierData(tiers: SessionSummaries, currentCount: number): Record<string, unknown> {
-    const LENGTHS = ['short', 'medium', 'long'] as const;
     const data: Record<string, unknown> = {};
-    for (const len of LENGTHS) {
+    for (const len of SUMMARY_LENGTHS) {
       const t = tiers[len];
       data[len] = t
         ? { ...t, isStale: currentCount > t.messageCount }
@@ -841,7 +840,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   }
 
   // Retrieve all stored summaries for a session, with per-tier staleness.
-  // Returns { short, medium, long } where each tier is null when absent.
+  // Returns { short, medium, long, title } where each tier is null when absent.
   r.get('/sessions/:sessionId/summary', async (req, res, next) => {
     try {
       const sid = String(req.params.sessionId || '');
@@ -862,29 +861,30 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
   // Generate (or regenerate) one tier for a session via a one-shot Haiku call.
   // Merges the new tier into the session's existing record without clobbering
-  // other tiers. Returns the same full three-tier data shape as GET so the
-  // client can refresh its cache in one round-trip.
+  // other tiers. Returns the same full tier data shape as GET so the
+  // client can refresh its cache in one round-trip, plus this generation's
+  // ephemeral cost (not persisted, not part of GET).
   r.post('/sessions/:sessionId/summary', async (req, res, next) => {
     try {
       const sid = String(req.params.sessionId || '');
       assertValidSid(sid);
-      const length = jsonBody(req).length;
-      // Equality narrowing (the original `includes` check) — only one of the
-      // three known tiers passes.
-      if (length !== 'short' && length !== 'medium' && length !== 'long') {
-        throw Object.assign(new Error('length must be short, medium, or long'), { statusCode: 400 });
+      const length = String(jsonBody(req).length);
+      if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
+        throw Object.assign(new Error(`length must be one of: ${SUMMARY_LENGTHS.join(', ')}`), { statusCode: 400 });
       }
       const hit = await findSessionLocation(sid);
       if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
       const cwd = await cwdForHit(hit);
       if (!cwd) throw Object.assign(new Error('session not found'), { statusCode: 404 });
-      const { summary, messageCount } = await generateSummary(sid, cwd, length);
-      await setSummary(sid, length, { summary, generatedAt: Date.now(), messageCount });
+      const { summary, messageCount, costUsd } = await generateSummary(sid, cwd, length as SummaryLength);
+      await setSummary(sid, length as SummaryLength, { summary, generatedAt: Date.now(), messageCount });
       broadcastProjects();
       // Re-fetch all tiers so the response mirrors the GET shape.
       const tiers = await getSummaries(sid);
       const currentCount = await countMessages(sid, cwd).catch(() => 0);
-      res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
+      // costUsd is ephemeral: what THIS generation cost. Deliberately not persisted
+      // (no field on TierRecord) and absent from the GET response.
+      res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount), costUsd });
     } catch (e) { next(e); }
   });
 

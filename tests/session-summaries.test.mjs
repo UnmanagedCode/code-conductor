@@ -60,6 +60,20 @@ test('multiple tiers coexist for one session; setSummary does not clobber others
   assert.equal(tiers.medium, undefined);
 });
 
+test('setSummary supports the title tier alongside short/long; an unknown length returns null', async () => {
+  await setSummary('sid-A', 'short', { summary: 'Short.', generatedAt: 1, messageCount: 2 });
+  await setSummary('sid-A', 'long', { summary: 'Long detailed.', generatedAt: 2, messageCount: 2 });
+  const stored = await setSummary('sid-A', 'title', { summary: 'Add title tier', generatedAt: 3, messageCount: 2 });
+  assert.equal(stored.summary, 'Add title tier');
+
+  const tiers = await getSummaries('sid-A');
+  assert.equal(tiers.short.summary, 'Short.');
+  assert.equal(tiers.long.summary, 'Long detailed.');
+  assert.equal(tiers.title.summary, 'Add title tier');
+
+  assert.equal(await setSummary('sid-A', 'huge', { summary: 'x', generatedAt: 1, messageCount: 1 }), null);
+});
+
 test('overwrite one tier does not affect other tiers', async () => {
   await setSummary('sid-A', 'short', { summary: 'First short.', generatedAt: 1, messageCount: 1 });
   await setSummary('sid-A', 'medium', { summary: 'Medium.', generatedAt: 2, messageCount: 1 });
@@ -117,6 +131,7 @@ test('GET /api/sessions/:sid/summary returns all-null when no summaries exist', 
   assert.equal(r.body.data.short, null);
   assert.equal(r.body.data.medium, null);
   assert.equal(r.body.data.long, null);
+  assert.equal(r.body.data.title, null);
 });
 
 test('GET returns per-tier data with isStale:false when counts match', async () => {
@@ -192,6 +207,102 @@ test('POST generates, saves under the right tier, and does NOT clobber other tie
     const tiers = await getSummaries(sid);
     assert.equal(tiers.short.summary, 'This is a canned test summary of the session.');
     assert.equal(tiers.long.summary, 'Pre-existing long.');
+  } finally {
+    if (origBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = origBin;
+  }
+});
+
+test('POST title sends the title prompt (not the summary template) and persists under the title key', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'post-title' });
+  const sid = 'sid-post-title';
+  await plantJsonl(path.join(projectsRoot, 'post-title'), sid, [
+    { type: 'user', message: { role: 'user', content: 'hello' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+  ]);
+
+  // Pre-seed a short summary — the title generation must not clobber it.
+  await setSummary(sid, 'short', { summary: 'Pre-existing short.', generatedAt: 1, messageCount: 2 });
+
+  const stdinFile = path.join(os.tmpdir(), `cc-test-stdin-${Date.now()}.txt`);
+  const origBin = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+  process.env.FAKE_SUMMARIZE_STDIN_FILE = stdinFile;
+  try {
+    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'title' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.data.title.summary, 'This is a canned test summary of the session.');
+    assert.equal(r.body.data.short.summary, 'Pre-existing short.');
+
+    const tiers = await getSummaries(sid);
+    assert.equal(tiers.title.summary, 'This is a canned test summary of the session.');
+    assert.equal(tiers.short.summary, 'Pre-existing short.');
+
+    const prompt = await fs.readFile(stdinFile, 'utf8');
+    assert.match(prompt, /Name the CURRENT end goal/);
+    assert.doesNotMatch(prompt, /Summarize the following Claude Code session/);
+  } finally {
+    if (origBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = origBin;
+    delete process.env.FAKE_SUMMARIZE_STDIN_FILE;
+    await fs.unlink(stdinFile).catch(() => {});
+  }
+});
+
+test('POST short still sends the summary template, not the title prompt (mirror of the title-prompt guard)', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'post-short-mirror' });
+  const sid = 'sid-post-short-mirror';
+  await plantJsonl(path.join(projectsRoot, 'post-short-mirror'), sid, [
+    { type: 'user', message: { role: 'user', content: 'hello' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+  ]);
+
+  const stdinFile = path.join(os.tmpdir(), `cc-test-stdin-${Date.now()}.txt`);
+  const origBin = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+  process.env.FAKE_SUMMARIZE_STDIN_FILE = stdinFile;
+  try {
+    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
+    assert.equal(r.status, 200);
+
+    const prompt = await fs.readFile(stdinFile, 'utf8');
+    assert.match(prompt, /Summarize the following Claude Code session/);
+    assert.doesNotMatch(prompt, /Name the CURRENT end goal/);
+  } finally {
+    if (origBin === undefined) delete process.env.CLAUDE_BIN;
+    else process.env.CLAUDE_BIN = origBin;
+    delete process.env.FAKE_SUMMARIZE_STDIN_FILE;
+    await fs.unlink(stdinFile).catch(() => {});
+  }
+});
+
+test('POST returns an ephemeral costUsd that is never persisted nor returned by GET', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'post-cost' });
+  const sid = 'sid-post-cost';
+  await plantJsonl(path.join(projectsRoot, 'post-cost'), sid, [
+    { type: 'user', message: { role: 'user', content: 'hello' } },
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
+  ]);
+
+  const origBin = process.env.CLAUDE_BIN;
+  process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+  try {
+    const r = await api(baseUrl, 'POST', `/api/sessions/${sid}/summary`, { length: 'short' });
+    assert.equal(r.status, 200);
+    assert.equal(typeof r.body.costUsd, 'number');
+    assert.equal(r.body.costUsd, 0.0001);
+
+    // Not persisted: neither the in-memory store nor the raw JSON on disk
+    // carries a cost field.
+    const tiers = await getSummaries(sid);
+    assert.equal(tiers.short.costUsd, undefined);
+    const file = path.join(orchStoreRoot(), 'session-summaries.json');
+    const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+    assert.deepEqual(Object.keys(raw.summaries[sid].short).sort(), ['generatedAt', 'messageCount', 'summary']);
+
+    // Not in GET.
+    const get = await api(baseUrl, 'GET', `/api/sessions/${sid}/summary`);
+    assert.equal(get.body.costUsd, undefined);
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN;
     else process.env.CLAUDE_BIN = origBin;

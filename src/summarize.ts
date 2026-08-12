@@ -9,6 +9,8 @@ import { randomUUID } from 'node:crypto';
 import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
+import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
+import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 
 // Dedicated cwd for one-shot summary subprocesses: a subdirectory inside
 // the .code-conductor metadata dir. It is NOT under PROJECTS_ROOT as a
@@ -136,15 +138,9 @@ interface SummaryOutput {
   cost_usd?: unknown;
 }
 
-// Generate a summary of a session by running `claude -p` as a one-shot
-// subprocess. Returns { summary, messageCount, durationMs, costUsd }.
-export async function generateSummary(sessionId: string, cwd: string, length: 'short' | 'medium' | 'long' = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
-  const tier = LENGTH_INSTRUCTIONS[length];
-  if (!tier) throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
-
-  const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
-
-  const prompt = `Summarize the following Claude Code session.
+// The existing tier-summary template, verbatim.
+function summaryPrompt(tier: { depth: string; budget: string; structure: string }, conversationText: string): string {
+  return `Summarize the following Claude Code session.
 
 Coverage: ${tier.depth}
 Word budget: ${tier.budget} of CONTENT words.
@@ -159,6 +155,33 @@ CONVERSATION:
 ${conversationText}
 ---
 Provide the summary only, no preamble:`;
+}
+
+// Names the session's CURRENT end goal, not a recap.
+function titlePrompt(conversationText: string): string {
+  return `Name the CURRENT end goal of the following Claude Code session.
+
+This is not a recap. Work that is already finished matters only as context: say what the session is trying to achieve RIGHT NOW — the objective the most recent turns are working toward. If the goal changed mid-session, the latest one wins. If the latest turns are verifying or fixing up earlier work, that clean-up IS the current goal.
+
+Output exactly one title, at most 60 characters. Plain text only: no markdown, no surrounding quotes, no trailing period, no "Session:" or "Title:" prefix, no explanation before or after. Sentence case. Prefer a concrete noun phrase naming the thing being built, fixed, or investigated ("Add cost readout to the summary dialog"), never a vague category ("Code improvements").
+
+CONVERSATION:
+${conversationText}
+---
+Provide the title only, no preamble:`;
+}
+
+// Generate a summary (or title) of a session by running `claude -p` as a
+// one-shot subprocess. Returns { summary, messageCount, durationMs, costUsd }.
+export async function generateSummary(sessionId: string, cwd: string, length: SummaryLength = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
+  if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
+    throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
+  }
+
+  const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
+  const prompt = length === 'title'
+    ? titlePrompt(conversationText)
+    : summaryPrompt(LENGTH_INSTRUCTIONS[length], conversationText);
 
   // Honor the fast tier's bound backend unconditionally — same reasoning as
   // claudeShellEnv.ts's generateBundle(): no Anthropic fallback, since a host
@@ -247,7 +270,11 @@ Provide the summary only, no preamble:`;
     summary: summary.trim(),
     messageCount,
     durationMs,
-    costUsd: (parsed.total_cost_usd ?? parsed.cost_usd ?? null) as number | null,
+    // The CLI's total_cost_usd is Anthropic list pricing — meaningless for a
+    // substitution backend (src/costTracking.ts:130-132, docs/models.md).
+    costUsd: fastBackend.backend === CLAUDE_BACKEND_ID
+      ? ((parsed.total_cost_usd ?? parsed.cost_usd ?? null) as number | null)
+      : null,
   };
 }
 
