@@ -21,11 +21,12 @@ conditions.
   (`/workspaces/cc-projects/code-conductor/node_modules`). Tree clean at every gate; 7.2 MB
   excluding `.git`/`node_modules`, 518 tracked files.
 - Suite at measurement time: `npm test` exit 0, **2616 tests / 2603 pass / 0 fail / 13 skipped**,
-  node's own `duration_ms 56777` — i.e. **~59 s**, not the ~41 s the old README claimed. The
+  node's own `duration_ms 56777` — i.e. **~57 s**, not the ~41 s the old README claimed. The
   difference is host load, not a suite change. Re-run while writing this doc (2026-08-12, a
   differently-loaded host): `2616 / 2603 / 0 fail / 13 skipped` again, `duration_ms 54744` (~55 s) —
   same counts, different wall clock, which is exactly the point: the counts are the suite's,
-  the wall clock is the host's.
+  the wall clock is the host's. A reviewer's own re-run measured `duration_ms 55913` (~56 s),
+  confirming the figure.
 - Catalog under test: **10 mutants across 10 distinct source files** (deliberately, so Phase A pays
   10 distinct narrow baselines), 9 expected `KILLED` + 1 deliberate `SURVIVED`. Measured
   2026-08-12 on branch `code-conductor/mutation-copy-bench` (bench scripts and raw artifacts were
@@ -273,7 +274,7 @@ the structural reason this section exists rather than living beside the values.
 | `testCommand` | `npm test -- {tests}` | `npm test -- <files>` forwards positionals to `tests/run.mjs`, which accepts a list of file paths. The adapter substitutes space-joined single-quoted repo-relative paths. |
 | `runner` | `node-test` | `tests/run.mjs` is bespoke but pipes through `new spec()` from `node:test/reporters` — the same reporter the adapter is pinned to. Counters (`ℹ tests/pass/fail/skipped`) land on stdout; the `✖ failing tests:` block carries `test at <repo-relative path>`, because the spec reporter emits `relative(process.cwd(), file)` and the runner resolves its args against the same cwd. A full green run trips none of the adapter's `compileError` probes. Proven here by the `baseline` canary gate. |
 | `isolation` | `in-place` | Full reasoning in §2 above. The conclusion is decided-and-deferred, not infeasible: copy mode *works* here with one `setup` hook and costs ~5% of wall clock at best (§6) — it is rejected on honesty (§2.2's three green-for-the-wrong-reason assertions) and on the ≤8% ceiling (§6), not on feasibility. Also: the suite boots real express+ws servers on ephemeral ports and forks child processes. |
-| `timeoutMs` | `300000` | Sized for the slow case, not the ~59 s (§1) full-suite baseline this host measures — a low-core/Termux host is a multiple of that, and applies to **every** measured command including the full-suite baseline itself. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. `tests/run.mjs` has its own 60 s per-file ceiling (§6), so a hung mutant surfaces well inside the 300 s cap. |
+| `timeoutMs` | `300000` | Sized for the slow case, not the ~57 s (§1) full-suite baseline this host measures — a low-core/Termux host is a multiple of that, and applies to **every** measured command including the full-suite baseline itself. A baseline `TIMEOUT` is a gate failure that blocks the whole review, so this is a cap sized against the worst realistic host, not a wait against the typical one. `tests/run.mjs` has its own 60 s per-file ceiling (§6), so a hung mutant surfaces well inside the 300 s cap. |
 | `baseBranch` | `main` | The real integration branch. Unset, `run`'s empty-diff-vs-base gate reports `not-established` and checks nothing — a branch with no committed work would read as a clean sweep. |
 
 Defaults left alone: `preserve` (in-place copies nothing, and `node_modules` is already a symlink to

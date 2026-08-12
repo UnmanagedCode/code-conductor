@@ -31,6 +31,7 @@ node ../code-mutant/mutate.mjs run --all
 node ../code-mutant/mutate.mjs run --id <id> --id <id>
 
 # Explore one mutation without a catalog entry (clean-tree gate only warns here).
+# No real id yet? Add --json and read results[0].failedTests — never hand-construct one.
 node ../code-mutant/mutate.mjs probe \
   --file src/instances.ts --anchor "some exact text" --replace "false" \
   --expect-fail 'tests/instances.test.mjs::a top-level test name'
