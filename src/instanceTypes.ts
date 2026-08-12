@@ -34,7 +34,11 @@ export interface InstanceSummary {
 
 export interface InstanceLike {
   readonly id: string;
+  // The PERMANENT public id (what summary() emits and every surface reports).
   readonly sessionId: string | null;
+  // The CLI's rotating session_id — names the transcript file, feeds `--resume`.
+  // Only transcript/launch consumers may read this; see src/instances.ts.
+  readonly backingSessionId: string | null;
   readonly model: string | null;
   readonly backend: string;
   readonly callerInstanceId: string | null;

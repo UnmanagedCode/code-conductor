@@ -429,7 +429,7 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
     // archive is cut below `trimmedBefore`, so at least one seq exists in
     // neither array and a range-based expectation would be wrong.
     const arch = await buildArchive({
-      cwd: inst.cwd, sessionId: inst.sessionId, ring: inst.ringSnapshot(),
+      cwd: inst.cwd, sessionId: inst.backingSessionId, ring: inst.ringSnapshot(),
       trimmedBefore: inst.ring.trimmedBefore, userEchoCount: inst._userEchoCount,
     });
     const universe = arch.events.slice(0, arch.cut).concat(inst.ringSnapshot());
@@ -631,7 +631,7 @@ test('archive-side Agent head reunites with its ring-side children on one page',
     { kind: 'turn_end', subtype: 'success', _seq: 26 },
   ];
   const stubInst = {
-    cwd: projectPath, sessionId: sid, _userEchoCount: 7,
+    cwd: projectPath, backingSessionId: sid, _userEchoCount: 7,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -733,7 +733,7 @@ test('a window whose sub-agent children all have ring-side heads triggers no arc
     ring.push({ kind: 'turn_end', subtype: 'success', _seq: seq() });
   }
   const stubInst = {
-    cwd: projectPath, sessionId: sid, _userEchoCount: 8,
+    cwd: projectPath, backingSessionId: sid, _userEchoCount: 8,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -792,7 +792,7 @@ test('empty page skips only the rejected window, not down to the ring head', asy
   }
   const tb = 100;
   const stubInst = {
-    cwd: '/fake', sessionId: null, _userEchoCount: 5,
+    cwd: '/fake', backingSessionId: null, _userEchoCount: 5,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -884,7 +884,7 @@ test('an empty archive-side page never returns nextBefore === before', async () 
     { kind: 'text_end', msgId: 'm_p3', blockIdx: 0, _seq: 16 },
   ];
   const stubInst = {
-    cwd: projectPath, sessionId: sid, _userEchoCount: 4,
+    cwd: projectPath, backingSessionId: sid, _userEchoCount: 4,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -945,7 +945,7 @@ test('mid-turn ring head on a non-first turn: gap marker sits at the archive/rin
     { kind: 'text_delta', msgId: 'mG', blockIdx: i, text: `g${i}`, _seq: tb + i }
   ));
   const stubInst = {
-    cwd: projectPath, sessionId: sid, _userEchoCount: 5,
+    cwd: projectPath, backingSessionId: sid, _userEchoCount: 5,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -1027,7 +1027,7 @@ test('an empty page whose window straddles the seam still yields exactly one gap
     return ev;
   });
   const stubInst = {
-    cwd: projectPath, sessionId: sid, _userEchoCount: 5,
+    cwd: projectPath, backingSessionId: sid, _userEchoCount: 5,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -1141,7 +1141,7 @@ test('the seam clamp never fires on a window that already ends on the seam', asy
     { kind: 'text_end', msgId: 'm_p3', blockIdx: 0, _seq: tb + 5 },
   ];
   const stubInst = {
-    cwd: projectPath, sessionId: sid, _userEchoCount: 4,
+    cwd: projectPath, backingSessionId: sid, _userEchoCount: 4,
     ring: { get trimmedBefore() { return tb; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -1230,7 +1230,7 @@ test('T3 (Step 5): pageInstanceEvents marks a gap for a trimmed ring with no ses
     { kind: 'text_delta', msgId: 'm', blockIdx: 1, text: 'e1', _seq: 6 },
   ];
   const stubInst = {
-    cwd: '/fake', sessionId: null, _userEchoCount: 0,
+    cwd: '/fake', backingSessionId: null, _userEchoCount: 0,
     ring: { get trimmedBefore() { return 5; } },
     ringSnapshot: () => ring.slice(),
   };
@@ -1255,7 +1255,7 @@ test('a terminal forward page above the seam still surfaces the gap marker', asy
     { kind: 'text_delta', msgId: 'm', blockIdx: i, text: `e${i}`, _seq: 5 + i }
   ));
   const stubInst = {
-    cwd: '/fake', sessionId: null, _userEchoCount: 0,
+    cwd: '/fake', backingSessionId: null, _userEchoCount: 0,
     ring: { get trimmedBefore() { return 5; } },
     ringSnapshot: () => ring.slice(),
   };

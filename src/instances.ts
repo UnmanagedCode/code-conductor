@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { promises as fsp, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId } from './projects.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
@@ -434,7 +434,22 @@ export class Instance extends EventEmitter implements InstanceLike {
   _appendSystemPromptFile: string | null;
   debugDir: string | null;
   _debugStreams: { stdin: WriteStream; stdout: WriteStream; stderr: WriteStream } | null;
+  // The session's PERMANENT public id — the one and only handle that crosses an
+  // API / MCP / WS / UI / persisted-store boundary, and the one summary() emits.
   sessionId: string | null;
+  // The CLI's OWN rotating session_id: what names the transcript file on disk and
+  // what goes to `--resume` / `--session-id`. Confined to process launch and
+  // transcript resolution, and DELIBERATELY absent from summary() — that absence
+  // is what enforces the invariant that a rotating id never reaches a conductor.
+  //
+  // Until public-id minting is wired (card 2026-0126 stage 4) every assignment
+  // site writes BOTH fields the same value, so the two are indistinguishable and
+  // the field split is provably behaviour-preserving.
+  backingSessionId: string | null;
+  // Every backing id this session has run under, oldest first — the in-memory
+  // mirror of its lineage row's segments (src/sessionLineage.ts). Held here so
+  // prefix/exact resolution on the MCP hot path stays synchronous and store-free.
+  _segments: string[];
   pid: number | null;
   status: string;
   lastResponseAt: number | null;
@@ -563,6 +578,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.debugDir = null;
     this._debugStreams = null;
     this.sessionId = null;
+    this.backingSessionId = null;
+    this._segments = [];
     this.pid = null;
     this.status = 'idle';
     // Wall-clock time of the most recent turn_end (i.e. the last completed
@@ -907,9 +924,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // sessionId becomes known so the active header chip survives a
   // resume/respawn without the user re-typing.
   async _hydrateTitle(): Promise<void> {
-    if (!this.sessionId) return;
+    if (!this.backingSessionId) return;
     try {
-      const t = await getSessionTitle(this.sessionId);
+      const t = await getSessionTitle(this.backingSessionId);
       if (t && this.title !== t) {
         this.title = t;
         this.emit('status', this.summary());
@@ -980,13 +997,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     const events = this.ring.buf.filter(ev => ev._seq < beforeSeq);
     const { activeAtEnd, hadOrphanUpdate } = reconstructTasks(events);
     const tb = this.ring.trimmedBefore;
-    if (!hadOrphanUpdate || tb <= 0 || !this.sessionId) return activeAtEnd;
+    if (!hadOrphanUpdate || tb <= 0 || !this.backingSessionId) return activeAtEnd;
     // Best-effort widening: a non-ENOENT jsonl read error (EACCES/EIO/…) must
     // never abort the snapshot frame — fall back to the ring-only result the
     // pre-archive code always returned.
     try {
       const archive = await buildArchive({
-        cwd: this.cwd, sessionId: this.sessionId,
+        cwd: this.cwd, sessionId: this.backingSessionId,
         ring: this.ringSnapshot(), trimmedBefore: tb,
         userEchoCount: this._userEchoCount,
       });
@@ -1012,7 +1029,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       mkdirSync(dir, { recursive: true });
       const meta = {
         instanceId: this.id,
-        sessionId: this.sessionId,
+        // The BACKING id: this bundle is for correlating against the raw CLI
+        // streams and the on-disk transcript, both of which are keyed to it.
+        sessionId: this.backingSessionId,
         project: this.project,
         cwd: this.cwd,
         mode: this.mode,
@@ -1267,9 +1286,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.contextWindowTokens = Number.isFinite(cw) ? cw : null;
   }
 
-  async loadHistory(sessionId: string): Promise<void> {
+  async loadHistory(backingId: string): Promise<void> {
     const result = await loadPersistedTranscript({
-      cwd: this.cwd, sessionId, seqHint: this.ring.nextSeq,
+      cwd: this.cwd, sessionId: backingId, seqHint: this.ring.nextSeq,
     });
     if (!result) return; // ENOENT or no sessionId — silent no-op.
     for (const line of result.lines) {
@@ -1326,7 +1345,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
       this._emitUi({
         kind: 'system', subtype: 'history_replayed',
-        data: { sessionId, count: result.replayedCount },
+        data: { sessionId: backingId, count: result.replayedCount },
       });
     }
   }
@@ -1411,24 +1430,35 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._setStatus('crashed');
       throw err;
     }
-    if (resume) this.sessionId = resume;
-    else if (!this.sessionId) this.sessionId = randomUUID();
-    // Local capture: a fresh spawn always has a sessionId by here, and the
+    // `resume` is ALREADY a backing id: every caller either resolved it
+    // (_doCreate) or holds one directly (pruneSession / rewind / respawn).
+    if (resume) { this.backingSessionId = resume; this.sessionId = resume; }
+    else if (!this.backingSessionId) {
+      // The `!this.backingSessionId` guard preserves rewind's empty-prefix
+      // relaunch, which deliberately reuses the same id under `--session-id`.
+      this.backingSessionId = randomUUID();
+      this.sessionId = this.backingSessionId;
+    }
+    // Local capture: a fresh spawn always has a backing id by here, and the
     // later method calls (markTemp / _hydrateTitle / getBackend) would reset
     // property narrowing — the args block below needs a non-null id.
-    const sessionId = this.sessionId;
+    const backingId = this.backingSessionId;
+    // Everything downstream of here — the `--resume`/`--session-id` argv below
+    // and the transcript-keyed sidecar markers — is a backing-id consumer. One
+    // assertion at the capture point covers all of them.
+    assertBackingId(backingId, 'Instance.spawn');
     // Persist the temp marker at spawn time so it survives a SIGKILL that
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
-    if (this.temp && this.sessionId) markTemp(this.sessionId).catch(() => {});
+    if (this.temp) markTemp(backingId).catch(() => {});
     // Persist the backend id + exact model durably (the things jsonl can't carry
     // — which backend ran it, and the full model id the inner CLI reports
     // lossily) so every resume path re-acquires them. The capacity rides along
     // as a last-known fallback for a resume after the custom-model row is
     // deleted. Runs on every spawn/resume, so a legacy model-unknown entry
     // self-heals once this.model holds a real id.
-    if (this.backend !== CLAUDE_BACKEND_ID && this.sessionId) {
-      markSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
+    if (this.backend !== CLAUDE_BACKEND_ID) {
+      markSessionBackend(backingId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
     }
     // Same reason as the temp marker: this is the first point a fresh spawn has
     // a sessionId to key the mode record on (the constructor runs before the id
@@ -1572,8 +1602,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the same value — a confirmed no-op for ollama (it consumes its own copy and
     // re-injects the tag).
     if (this.model) args.push('--model', this.model);
-    if (resume) args.push('--resume', sessionId);
-    else args.push('--session-id', sessionId);
+    if (resume) args.push('--resume', backingId);
+    else args.push('--session-id', backingId);
 
     this._setStatus('spawning');
     this.parser.reset();
@@ -1611,8 +1641,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the persisted transcript into the ring buffer first so the UI shows
     // prior history alongside the new live stream.
     (async () => {
-      if (resume && this.sessionId) {
-        try { await this.loadHistory(this.sessionId); }
+      if (resume && this.backingSessionId) {
+        try { await this.loadHistory(this.backingSessionId); }
         catch (err) {
           this._emitUi({ kind: 'system', subtype: 'history_load_error', data: { message: (err as Error).message } });
         }
@@ -1655,7 +1685,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (ev.kind === 'system' && ev.subtype === 'init') {
         const data = evData(ev);
         const sid = data?.session_id;
-        if (sid && typeof sid === 'string' && sid !== this.sessionId) {
+        if (sid && typeof sid === 'string' && sid !== this.backingSessionId) {
+          this.backingSessionId = sid;
           this.sessionId = sid;
           this._hydrateTitle().catch(() => {});
         }
@@ -1959,18 +1990,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // permission-mode write below stays after the early return — it exists
     // only to surface a session in the shell-side `claude --resume` picker,
     // which temp sessions must not appear in.
-    if (this.temp && this.sessionId) {
-      try { await markTemp(this.sessionId); } catch { /* best effort */ }
+    if (this.temp && this.backingSessionId) {
+      try { await markTemp(this.backingSessionId); } catch { /* best effort */ }
     }
-    if (this.conducted && this.sessionId) {
-      try { await markConducted(this.sessionId); } catch { /* best effort */ }
+    if (this.conducted && this.backingSessionId) {
+      try { await markConducted(this.backingSessionId); } catch { /* best effort */ }
     }
     if (this.temp) return;
-    if (!this.sessionId || !this._lastLeafUuid) return;
+    if (!this.backingSessionId || !this._lastLeafUuid) return;
     try {
       await writeSessionMetadata({
         cwd: this.cwd,
-        sessionId: this.sessionId,
+        sessionId: this.backingSessionId,
         leafUuid: this._lastLeafUuid,
         mode: this.mode,
       });
@@ -2021,10 +2052,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // restore). Title and conducted markers are kept — they are still
   // meaningful on an archived session.
   async _archiveTempSession(): Promise<void> {
-    if (!this.sessionId) return;
-    await fsp.rm(subAgentDirPath(this.cwd, this.sessionId), { recursive: true, force: true });
-    try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
-    try { await markArchived(this.sessionId); } catch { /* best-effort */ }
+    if (!this.backingSessionId) return;
+    await fsp.rm(subAgentDirPath(this.cwd, this.backingSessionId), { recursive: true, force: true });
+    try { await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
+    try { await markArchived(this.backingSessionId); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj: unknown): void {
@@ -2206,7 +2237,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // _archiveTempSession for the old id: unmarkTemp + markArchived, keeping the
   // conducted/title markers — they stay meaningful on the archived row.
   async carryMarkersAcrossRenewal(oldSid: string | null): Promise<void> {
-    const newSid = this.sessionId;
+    const newSid = this.backingSessionId;
     if (!newSid || !oldSid || newSid === oldSid) return;
     try { if (this.temp) await markTemp(newSid); } catch { /* best-effort */ }
     try { if (this.conducted) await markConducted(newSid); } catch { /* best-effort */ }
@@ -2244,8 +2275,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // DEFAULT_RESUME_MODE — the pre-store behaviour, never a wrong-and-colder
   // one. Every `this.mode` assignment after the sessionId exists routes here.
   _recordMode(mode: string): void {
-    if (!this.sessionId) return;
-    markSessionMode(this.sessionId, mode).catch(() => {});
+    if (!this.backingSessionId) return;
+    markSessionMode(this.backingSessionId, mode).catch(() => {});
   }
 
   async setMode(mode: string): Promise<unknown> {
@@ -2300,7 +2331,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   async promoteToNormal(): Promise<InstanceSummary> {
     if (!this.temp) throw Object.assign(new Error('instance is not temp'), { statusCode: 400 });
     this.temp = false;
-    try { if (this.sessionId) await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
+    try { if (this.backingSessionId) await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
     // Persist last-prompt + permission-mode now, so the standalone
     // `claude --resume` picker sees this session immediately — without
     // waiting for the next turn-end / setMode cycle to trigger it.
@@ -2504,8 +2535,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork is in progress'), { statusCode: 409 });
     }
-    const sessionId = this.sessionId;
-    if (!sessionId) {
+    const backingId = this.backingSessionId;
+    if (!backingId) {
       throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
     }
     if (this.status === 'turn') {
@@ -2525,7 +2556,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
       const result = await truncateSessionAtUserMessage({
         cwd: this.cwd,
-        sessionId,
+        sessionId: backingId,
         userMessageIndex,
         mode: this.mode,
       });
@@ -2542,11 +2573,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       // respawn with --session-id under the same id so the URL anchor stays
       // valid and the instance comes back ready for a fresh first turn.
       if (result.remainingLineCount === 0) {
-        await fsp.rm(sessionFilePath(this.cwd, sessionId), { force: true });
-        await fsp.rm(subAgentDirPath(this.cwd, sessionId), { recursive: true, force: true });
+        await fsp.rm(sessionFilePath(this.cwd, backingId), { force: true });
+        await fsp.rm(subAgentDirPath(this.cwd, backingId), { recursive: true, force: true });
         await this.launch({});
       } else {
-        await this.launch({ resume: sessionId });
+        await this.launch({ resume: backingId });
       }
 
       return { droppedText: result.droppedText };
@@ -2575,8 +2606,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
     }
-    const sessionId = this.sessionId;
-    if (!sessionId) {
+    const backingId = this.backingSessionId;
+    if (!backingId) {
       throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
     }
     if (this.status === 'turn') {
@@ -2594,7 +2625,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       );
     }
     this._mutating = true;
-    const oldSid = sessionId;
+    const oldSid = backingId;
     try {
       // Kill first so the CLI can't flush a stale tail into the jsonl while we
       // read it. _suppressTempDelete for the same reason rewind sets it: a temp
@@ -2642,6 +2673,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         // leaving the flag set would suppress a perfectly good ctx reading and
         // strand the recovered session on `ctx —` until its next turn.
         this._skipUsageSeed = false;
+        this.backingSessionId = oldSid;
         this.sessionId = oldSid;
         await this.launch({ resume: oldSid }).catch(() => {});
       }
@@ -2975,7 +3007,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   tempSessionIdsForCwd(cwd: string): Set<string> {
     const out = new Set<string>();
     for (const i of this.byId.values()) {
-      if (i.temp && i.proc && i.cwd === cwd && i.sessionId) out.add(i.sessionId);
+      if (i.temp && i.proc && i.cwd === cwd && i.backingSessionId) out.add(i.backingSessionId);
     }
     return out;
   }
@@ -3647,7 +3679,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     // A manual respawn supersedes any pending auto-resume for this session.
     this._cancelAutoResume(inst.id);
-    const sessionId = inst.sessionId;
+    const sessionId = inst.backingSessionId;
     if (!sessionId) {
       throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
     }
@@ -3705,8 +3737,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   tempCleanupSnapshot(): Array<{ cwd: string; sessionId: string }> {
     const out: Array<{ cwd: string; sessionId: string }> = [];
     for (const inst of this.byId.values()) {
-      if (!inst.temp || !inst.sessionId) continue;
-      out.push({ cwd: inst.cwd, sessionId: inst.sessionId });
+      if (!inst.temp || !inst.backingSessionId) continue;
+      out.push({ cwd: inst.cwd, sessionId: inst.backingSessionId });
     }
     return out;
   }
@@ -3753,8 +3785,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // belt-and-braces against orphaned subagent writes is still correct here.
     const wipe = (): void => {
       for (const inst of temps) {
-        if (!inst.sessionId) continue;
-        try { rmSync(subAgentDirPath(inst.cwd, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+        if (!inst.backingSessionId) continue;
+        try { rmSync(subAgentDirPath(inst.cwd, inst.backingSessionId), { recursive: true, force: true }); } catch { /* ignore */ }
       }
     };
     wipe();
@@ -3765,9 +3797,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // land in time the next boot's sweepPendingTempCleanup will pick up the
     // slack via the manifest (which now carries action:"archive").
     for (const inst of temps) {
-      if (!inst.sessionId) continue;
-      unmarkTemp(inst.sessionId).catch(() => {});
-      markArchived(inst.sessionId).catch(() => {});
+      if (!inst.backingSessionId) continue;
+      unmarkTemp(inst.backingSessionId).catch(() => {});
+      markArchived(inst.backingSessionId).catch(() => {});
     }
   }
 

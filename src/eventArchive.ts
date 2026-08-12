@@ -189,7 +189,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // guaranteed — a mid-turn `cut` can have sliced the head away too. That
   // costs one wasted replay in the degenerate case and changes nothing else.)
   const ringEnd = before != null ? firstIndexAtOrAbove(ring, before) : 0;
-  const needArchive = tb > 0 && !!inst.sessionId
+  const needArchive = tb > 0 && !!inst.backingSessionId
     && (before != null
       ? (before - max < tb || hasHeadlessChildIn(ring, Math.max(0, ringEnd - max), ringEnd))
       : (after ?? 0) < tb);
@@ -199,10 +199,10 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // Evicted history exists but this call couldn't reconstruct it (no
   // sessionId to replay from) — mark the gap even though needArchive is
   // false (it's gated on sessionId being present).
-  let gap = tb > 0 && !inst.sessionId;
+  let gap = tb > 0 && !inst.backingSessionId;
   if (needArchive) {
     const archive = await buildArchive({
-      cwd: inst.cwd, sessionId: inst.sessionId as string,
+      cwd: inst.cwd, sessionId: inst.backingSessionId as string,
       ring, trimmedBefore: tb, userEchoCount: inst._userEchoCount,
     });
     combined = archive.events.slice(0, archive.cut).concat(ring);
@@ -247,7 +247,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
       // Served down to the very start of what we have. With the archive
       // loaded that IS the beginning; without it, older events may still
       // exist below the ring — optimistic, next page resolves.
-      || (!needArchive && tb > 0 && !!inst.sessionId);
+      || (!needArchive && tb > 0 && !!inst.backingSessionId);
   } else {
     const start = firstIndexAtOrAbove(combined, (after ?? 0) + 1);
     servedStart = start;

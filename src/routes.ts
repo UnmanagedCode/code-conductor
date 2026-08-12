@@ -1024,7 +1024,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
         if (inst.temp) throw Object.assign(new Error('temp sessions cannot be forked'), { statusCode: 400 });
-        if (!inst.sessionId) {
+        if (!inst.backingSessionId) {
           throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
         }
         const idx = Number(jsonBody(req).userMessageIndex);
@@ -1058,7 +1058,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           const { forkSessionAtUserMessage } = await import('./sessionEdit.ts');
           forked = await forkSessionAtUserMessage({
             cwd: inst.cwd,
-            sessionId: inst.sessionId,
+            sessionId: inst.backingSessionId,
             userMessageIndex: idx,
             mode: inst.mode,
           });
@@ -1107,11 +1107,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw Object.assign(new Error('instance not found'), { statusCode: 404 });
-        if (!inst.sessionId) {
+        if (!inst.backingSessionId) {
           throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
         }
         const { analyzeSessionForPrune } = await import('./sessionPrune.ts');
-        res.json(await analyzeSessionForPrune({ cwd: inst.cwd, sessionId: inst.sessionId }));
+        res.json(await analyzeSessionForPrune({ cwd: inst.cwd, sessionId: inst.backingSessionId }));
       } catch (e) { next(e); }
     });
 

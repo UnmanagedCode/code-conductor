@@ -103,6 +103,47 @@ test('G4 — no `${…}.jsonl` interpolation outside src/projects.ts and the sub
   ]);
 });
 
+// ---------------------------------------------------------------------------
+// The runtime half of the same mechanism: assertBackingId.
+// ---------------------------------------------------------------------------
+
+const { sessionFilePath, subAgentDirPath, assertBackingId, encodeCwd, claudeProjectsRoot } =
+  await import('../src/projects.ts');
+
+test('the helpers throw on a minted PUBLIC id and pass everything else', () => {
+  const cwd = '/tmp/demo';
+  // Both minted forms are refused, at both helpers.
+  for (const publicId of ['12345678', 'deadbeef', '12345678-90ab']) {
+    assert.throws(() => sessionFilePath(cwd, publicId), /public session id/,
+      `sessionFilePath must refuse ${publicId}`);
+    assert.throws(() => subAgentDirPath(cwd, publicId), /public session id/,
+      `subAgentDirPath must refuse ${publicId}`);
+    assert.throws(() => assertBackingId(publicId, 'here'), /^Error: here: /);
+  }
+
+  // Everything a real backing id can be passes untouched: a full UUID (the CLI's
+  // own form), and the shapes existing fixtures use.
+  for (const backingId of [
+    'c0000000-0000-4000-8000-000000000001',  // scenario-renew's post-clear sid
+    'deadbeef-0000-1111-2222-333333333333',
+    'sess-1', 'abc', 'abcdef', 'zzzzzzzz',   // non-hex fixtures
+    '12345678-90a', '12345678-90abc',        // wrong extension length
+    '1234567', '123456789',                  // wrong base length
+    'DEADBEEF',                              // uppercase is not a minted form
+  ]) {
+    assert.doesNotThrow(() => sessionFilePath(cwd, backingId), `${backingId} must pass`);
+    assert.doesNotThrow(() => subAgentDirPath(cwd, backingId), `${backingId} must pass`);
+  }
+});
+
+test('the helpers build exactly the conventional CLI paths', () => {
+  const cwd = '/tmp/demo_worktree_x';
+  const sid = 'c0000000-0000-4000-8000-000000000001';
+  const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+  assert.equal(sessionFilePath(cwd, sid), path.join(dir, `${sid}.jsonl`));
+  assert.equal(subAgentDirPath(cwd, sid), path.join(dir, sid));
+});
+
 test('the gate fails on a planted violation (vacuity guard)', () => {
   // Proves the scanner can't silently pass: run it over a synthetic source.
   const planted = stripLineComments([

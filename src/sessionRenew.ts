@@ -18,7 +18,7 @@
 // `event` stream (turn_end only):
 //   armed    → the caller's turn_end (the turn the tool was called in): drive
 //              `/clear`, remember the pre-clear sessionId.            → clearing
-//   clearing → a turn_end where inst.sessionId has rotated off the pre-clear id
+//   clearing → a turn_end where inst.backingSessionId has rotated off the pre-clear id
 //              (i.e. `/clear`'s own turn_end, after its system/init): inject the
 //              seed and finish. A turn_end that has NOT
 //              rotated (e.g. a user turn the CLI had queued mid-turn and ran
@@ -145,7 +145,7 @@ export class SessionRenewController {
         || inst.activeAgentTaskCount > 0 || inst.taskNotificationPending) {
       return;
     }
-    p.oldSid = inst.sessionId;
+    p.oldSid = inst.backingSessionId;
     p.state = 'clearing';
     p.timerId = setTimeout(() => {
       if (this.pending.get(id) === p) this._clear(id);
@@ -158,10 +158,11 @@ export class SessionRenewController {
   private _onClearingTurnEnd(id: string, p: PendingRenewal): void {
     const inst = this.manager.byId.get(id);
     if (!inst || !inst.proc) { this._clear(id); return; }
-    // Only `/clear`'s own turn_end rotates the sessionId. Ignore any intervening
-    // turn_end that has NOT rotated (a mid-turn-queued user turn the CLI ran
-    // before `/clear` took effect) — reseeding then would land in the old id.
-    if (!inst.sessionId || inst.sessionId === p.oldSid) return;
+    // Only `/clear`'s own turn_end rotates the BACKING id (the public id is
+    // pinned for life). Ignore any intervening turn_end that has NOT rotated (a
+    // mid-turn-queued user turn the CLI ran before `/clear` took effect) —
+    // reseeding then would land in the old id.
+    if (!inst.backingSessionId || inst.backingSessionId === p.oldSid) return;
     // No side-structure migration is needed across the rotation: the
     // idle-subscription graph and overage timers are keyed by the stable
     // instanceId, which `/clear` preserves. The Instance itself already followed
