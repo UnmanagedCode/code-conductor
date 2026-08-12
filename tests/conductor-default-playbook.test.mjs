@@ -32,6 +32,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const CONVENTIONS_DIR = path.join(__dirname, '..', 'conventions', 'conductor');
 const ALL_SLUGS = SEED_CONVENTIONS.map(m => m.slug);
+// Any seed that is NOT the shipped default — derived, so a future flip of
+// DEFAULT_PLAYBOOK_ID cannot turn a fallback-vs-explicit contrast into a
+// comparison of the default against itself. Pattern per
+// tests/playbook-enforcement-default.test.mjs:38.
+const OTHER_PLAYBOOK_ID = SEED_PLAYBOOK_IDS.find(id => id !== DEFAULT_PLAYBOOK_ID);
 
 let ctx, baseUrl, instances, home;
 
@@ -168,7 +173,7 @@ test('setting the default leaves the convention selection untouched', async () =
 test('the fallback names a real, loadable built-in playbook', async () => {
   // The product decision, pinned literally once: every other assertion reads
   // through the constant and would follow it to any other seed.
-  assert.equal(DEFAULT_PLAYBOOK_ID, 'relay');
+  assert.equal(DEFAULT_PLAYBOOK_ID, 'solo');
   assert.ok(SEED_PLAYBOOK_IDS.includes(DEFAULT_PLAYBOOK_ID), 'the fallback is a built-in seed');
   const { playbooks } = await loadPlaybooks();
   assert.ok(playbooks.has(DEFAULT_PLAYBOOK_ID), 'the fallback resolves through the real catalog');
@@ -209,9 +214,11 @@ test('explicit none ⇒ no convention in the composed prompt', async () => {
 });
 
 test('an explicitly selected id beats the fallback', async () => {
-  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
+  // Must differ from DEFAULT_PLAYBOOK_ID, or this only proves the fallback
+  // beats itself.
+  await setDefaultPlaybook({ mode: 'playbook', id: OTHER_PLAYBOOK_ID });
   const doc = await composeCurrentConduct();
-  assert.ok(doc.includes('## Preferred playbook — `solo`'), 'the selected playbook is composed');
+  assert.ok(doc.includes(`## Preferred playbook — \`${OTHER_PLAYBOOK_ID}\``), 'the selected playbook is composed');
   assert.ok(!doc.includes(`## Preferred playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'the fallback did not win');
 });
 
