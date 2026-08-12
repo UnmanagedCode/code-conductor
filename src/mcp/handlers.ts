@@ -1139,8 +1139,9 @@ export async function renewSession(
       reason: 'a renewal is already pending on that worker — retry once it completes.' };
   }
   try {
-    // A normal (non-internal) prompt, exactly like sendPrompt, so overage queueing
-    // and the mid-turn annotation behave identically.
+    // A normal (non-internal) prompt, exactly like sendPrompt, so an
+    // overage-stopped worker queues it rather than losing it (the guard above
+    // means it can never be a mid-turn delivery).
     await inst.prompt(buildRenewRequest({ directive }));
   } catch (e) {
     instances.dropSessionRenewRequest(inst.id);

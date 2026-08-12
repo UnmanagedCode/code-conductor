@@ -312,20 +312,18 @@ export class IdleSubscriptionHub {
   }
 
   // A conductor's renewal request expired unconsumed on this target — the worker
-  // declined (see src/sessionRenew.ts). Recorded ONLY if someone is actually
-  // waiting, so a note can never linger for a wake that never comes:
-  //   • hasSubscriber — the still-deferred case (live subagents at that turn's end);
-  //   • wasConsumed   — the ordinary case. This hub's listener is registered FIRST,
-  //     so by the time the renew controller runs, a delivered subscription has
-  //     already been cleared out of `subscribers`; `_justConsumed` is the
-  //     "fired this dispatch cycle" record that keeps it visible.
+  // declined (see src/sessionRenew.ts). The note is filed against the conductor
+  // that ASKED (`requestedBy`), never against the target alone: two conductors may
+  // watch one worker, and telling the one that made no request is a report about
+  // something it never did, while the requester hears nothing.
+  //
+  // Recorded ONLY if that caller is actually waiting (_isWaitingOn), so a note can
+  // never linger for a wake that never comes; and consumed by whichever path ends
+  // the wait (_takeDecline), so it can never surface on a later, unrelated one.
+  //
   // Called SYNCHRONOUSLY inside the same event dispatch as the expiry, which is
   // what makes the ordering safe without depending on listener order: deliver()'s
   // body runs as a microtask, so the note is always set before it reads.
-  //
-  // Delete-on-first-read is safe because the always-armed watchdog guarantees
-  // every recorded note is eventually consumed. Residual: with two conductors
-  // watching one worker, the note reaches the first one woken.
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void {
     // sessionId in, instanceId thereafter — the same boundary translation
     // subscribe() does. A requester that is gone has nothing to be told.
@@ -572,6 +570,10 @@ export class IdleSubscriptionHub {
   // subscribed, or subscribed at the turn_end being dispatched (this hub's listener
   // runs FIRST, so by the time the renew controller expires a request the delivered
   // subscription is already out of `subscribers`; `_justConsumed` is that record).
+  // The two halves overlap for the only expiry trigger there is today — `_onTurnEnd`
+  // marks `_justConsumed` before its defer check, so a deferred decline satisfies
+  // both — but each states a different half of the invariant, so neither is dead:
+  // drop the first and any expiry outside a turn_end dispatch loses its note.
   _isWaitingOn(targetInstanceId: string, callerInstanceId: string): boolean {
     return (this.subscribers.get(targetInstanceId)?.has(callerInstanceId) ?? false)
       || (this._justConsumed.get(targetInstanceId)?.has(callerInstanceId) ?? false);
