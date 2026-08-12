@@ -353,6 +353,35 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
   }
 });
 
+test('loadHistory drops a lineage segment whose transcript is gone (the one self-prune on a read-ish path)', async () => {
+  // Card 2026-0126, decision D7. Claude prunes its own ~/.claude/projects after
+  // ~30 days, so a lineage row can outlive the files it names. Reads TOLERATE that
+  // (findSessionLocation walks surviving segments and writes nothing — a write
+  // inside a hot read path races concurrent readers). This is the one
+  // opportunistic prune: loadHistory is async, off the hot path, and already holds
+  // the cwd, so its ENOENT branch is where the chain gets cleaned up.
+  const { recordRotation, segmentsFor, resolveBacking } = await import('../src/sessionLineage.ts');
+  await setupWithProject('lineageprune');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'lineageprune', mode: 'bypassPermissions' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const publicId = inst.sessionId;
+  const first = inst.backingSessionId;
+
+  // A rotation whose transcript never made it to disk (or has since aged out).
+  const gone = 'a9a9a9a9-0000-4000-8000-0000000000ff';
+  await recordRotation(publicId, gone, 'renew');
+  assert.deepEqual((await segmentsFor(publicId)).map(g => g.id), [first, gone]);
+
+  // Replaying it finds nothing…
+  await inst.loadHistory(gone);
+  // …and the chain no longer points at the missing file, falling back to the
+  // newest survivor so the public id still opens something.
+  await waitFor(async () => (await segmentsFor(publicId)).length === 1);
+  assert.deepEqual((await segmentsFor(publicId)).map(g => g.id), [first]);
+  assert.equal(await resolveBacking(publicId), first);
+});
+
 test('respawn wipes the ring so loadHistory does not pile on top of the prior run', async () => {
   // Regression: a respawn into an instance whose ring still holds the prior
   // run's events would replay the persisted transcript on top, doubling

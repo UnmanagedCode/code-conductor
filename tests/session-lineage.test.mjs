@@ -21,6 +21,9 @@ import { mkdtemp } from './tmpRegistry.mjs';
 // env at call time, so setting it before importing is enough.
 const tmp = await mkdtemp('cc-lineage-');
 process.env.PROJECTS_ROOT = path.join(tmp, 'project');
+// The two read-tolerance tests below plant real transcripts, so the Claude
+// projects root has to be isolated too.
+process.env.CLAUDE_PROJECTS_ROOT = path.join(tmp, 'claude-projects');
 
 const {
   loadLineage, mintPublicId, recordRotation, revertRotation,
@@ -246,6 +249,89 @@ test('concurrent mintPublicId calls produce two DISTINCT ids', async () => {
   assert.equal(longer.length, PUBLIC_ID_LEN_EXTENDED);
   assert.equal(await resolveBacking(pa), a);
   assert.equal(await resolveBacking(pb), b);
+});
+
+// ---------------------------------------------------------------------------
+// Read tolerance and crash safety. These two pin the properties that let a row
+// outlive the files it names — Claude prunes its own ~/.claude/projects after
+// ~30 days, and a crash can land between a rotation and its persist.
+// ---------------------------------------------------------------------------
+
+test('a vanished segment file: reads still succeed, and NOTHING is written on a read', async () => {
+  await reset();
+  const { encodeCwd, findSessionLocation } = await import('../src/projects.ts');
+  const cwd = path.join(process.env.PROJECTS_ROOT, 'vanish');
+  const dir = path.join(process.env.CLAUDE_PROJECTS_ROOT, encodeCwd(cwd));
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(dir, { recursive: true });
+
+  const publicId = 'f0f0aaaa';
+  const older = 'f0f0aaaa-0000-4000-8000-000000000001';
+  const current = 'aaaa0000-0000-4000-8000-000000000002';
+  await recordRotation(publicId, older, 'initial');
+  await recordRotation(publicId, current, 'renew');
+  for (const id of [older, current]) {
+    await fs.writeFile(path.join(dir, `${id}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  }
+  assert.deepEqual((await findSessionLocation(publicId)), { project: 'vanish', worktreeName: null });
+
+  // Claude's own cleanup removes CURRENT's file out of band — no delete path of
+  // ours ran, so nothing pruned the chain.
+  await fs.rm(path.join(dir, `${current}.jsonl`), { force: true });
+  const rowBefore = await segmentsFor(publicId);
+
+  // The read still resolves, via the newest-first walk over surviving segments.
+  assert.deepEqual(await findSessionLocation(publicId), { project: 'vanish', worktreeName: null },
+    'the public id still locates its session through an older surviving segment');
+  assert.deepEqual(await findSessionLocation(older), { project: 'vanish', worktreeName: null });
+
+  // …and the read wrote NOTHING. This is the deviation from the design's
+  // "self-prunes on read": a write inside a hot read path races concurrent
+  // readers, which is the same objection the design raises against lazy
+  // mint-on-first-touch. The delete path and loadHistory's ENOENT branch own the
+  // pruning instead (see archive-sessions.test.mjs).
+  assert.deepEqual(await segmentsFor(publicId), rowBefore, 'a read must not mutate the row');
+  assert.equal(await resolveBacking(publicId), current,
+    'current still points at the vanished id — the row is not silently rewritten');
+
+  // With EVERY file gone the locate honestly reports nothing rather than throwing.
+  await fs.rm(path.join(dir, `${older}.jsonl`), { force: true });
+  assert.equal(await findSessionLocation(publicId), null);
+});
+
+test('crash safety: a rotation lost before its persist still resolves to a real transcript', async () => {
+  await reset();
+  const { encodeCwd, findSessionLocation } = await import('../src/projects.ts');
+  const cwd = path.join(process.env.PROJECTS_ROOT, 'crashy');
+  const dir = path.join(process.env.CLAUDE_PROJECTS_ROOT, encodeCwd(cwd));
+  await fs.mkdir(cwd, { recursive: true });
+  await fs.mkdir(dir, { recursive: true });
+
+  // The window: the CLI has already written the new transcript (it mints on
+  // `/clear`, so the file exists before we ever see the system/init), and the
+  // process dies before recordRotation lands. On disk the row still names only
+  // the OLD segment.
+  const first = 'dd00dd00-0000-4000-8000-000000000001';
+  const publicId = await mintPublicId(first);
+  const rotatedButUnrecorded = 'ee11ee11-0000-4000-8000-000000000002';
+  for (const id of [first, rotatedButUnrecorded]) {
+    await fs.writeFile(path.join(dir, `${id}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  }
+
+  // Recovery: the public id resolves to the last DURABLE segment — the pre-clear
+  // transcript. That is the honest answer and it is a real, readable file; the
+  // alternative (an unresolvable id) would strand the session entirely.
+  assert.equal(await resolveBacking(publicId), first);
+  assert.deepEqual(await findSessionLocation(publicId), { project: 'crashy', worktreeName: null });
+  assert.equal(await publicIdFor(rotatedButUnrecorded), rotatedButUnrecorded,
+    'the unrecorded segment is simply unknown — it never claims to belong');
+
+  // The tail is not lost forever: the same write, replayed after recovery, is
+  // idempotent and reattaches it in order.
+  await recordRotation(publicId, rotatedButUnrecorded, 'renew');
+  await recordRotation(publicId, rotatedButUnrecorded, 'renew');
+  assert.deepEqual((await segmentsFor(publicId)).map(g => g.id), [first, rotatedButUnrecorded]);
+  assert.equal(await resolveBacking(publicId), rotatedButUnrecorded);
 });
 
 test('loadLineage tolerates a malformed sidecar', async () => {

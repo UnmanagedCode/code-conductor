@@ -113,6 +113,61 @@ test('fork preserves original session and spawns a new instance against the pref
   } finally { await ctx.close(); }
 });
 
+test('a fork mints its OWN public id and never joins its ancestor\'s lineage', async () => {
+  // Fork is mechanically near-identical to prune — both copy a jsonl to a
+  // server-minted UUID — but it NEVER kills the source, so it leaves TWO live
+  // sessions from one ancestor. That violates "one public id ↔ at most one live
+  // session", which is why a fork must never enter its ancestor's lineage. If
+  // provenance is ever wanted it is a separate ancestry pointer, not a segment.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffff9-2222-3333-4444-555555555555';
+    await seedSession({
+      ctx, projectName: 'forklineage', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } },
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+        { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'r2' }] } },
+      ],
+    });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forklineage', mode: 'bypassPermissions', resume: sid,
+    });
+    const parent = ctx.instances.get(r.body.id);
+    await waitFor(() => parent.status === 'idle');
+    // Resumed from a seeded jsonl with no lineage row, so its public id is the
+    // full UUID it already had (the store's base case).
+    assert.equal(parent.sessionId, sid);
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${parent.id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+    const child = ctx.instances.get(fk.body.instance.id);
+    await waitFor(() => child.status === 'idle');
+
+    // BOTH are live at once — the property that makes lineage membership illegal.
+    assert.ok(parent.proc, 'the ancestor is still running');
+    assert.ok(child.proc, 'and so is the fork');
+
+    // The fork has its own identity, and neither resolves to the other.
+    assert.notEqual(child.sessionId, parent.sessionId);
+    assert.equal(child.sessionId, fk.body.newSessionId,
+      'the fork\'s public id is its own fresh id (base case: no row, so id == filename)');
+    const { segmentsFor, publicIdFor, resolveBacking } = await import('../src/sessionLineage.ts');
+    assert.deepEqual(await segmentsFor(parent.sessionId), [],
+      'the ancestor gained no segment — a fork is not a rotation');
+    assert.deepEqual(await segmentsFor(child.sessionId), []);
+    assert.equal(await publicIdFor(child.backingSessionId), child.sessionId,
+      'the fork does not resolve to its ancestor');
+    assert.equal(await resolveBacking(parent.sessionId), parent.sessionId,
+      'and the ancestor still resolves to its own transcript, not the fork\'s');
+
+    // Addressing either id reaches exactly one instance.
+    assert.deepEqual(ctx.instances.idsForSession(parent.sessionId), [parent.id]);
+    assert.deepEqual(ctx.instances.idsForSession(child.sessionId), [child.id]);
+  } finally { await ctx.close(); }
+});
+
 test('fork prefill rides the new instance\'s first snapshot frame, consumed once', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {

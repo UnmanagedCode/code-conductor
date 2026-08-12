@@ -21,6 +21,9 @@ import { DEFAULT_PLAYBOOK_ENFORCEMENT } from '../src/playbooks.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
+// Its `/clear` turn emits this fixed post-rotation sid — see the fixture.
+const SCENARIO_RENEW = path.join(__dirname, 'fixtures', 'scenario-renew.json');
+const RENEW_NEW_SID = 'c0000000-0000-4000-8000-000000000001';
 
 function git(cwd, ...args) {
   return new Promise((resolve, reject) => {
@@ -49,8 +52,8 @@ let nextRpcId = 1;
 // Boot a server, a real git project, and a live conductor at `enforcement`.
 // `call(name, args)` issues a tools/call AS THE CONDUCTOR; `callAs(handle, …)`
 // issues one as somebody else (or nobody).
-async function setup({ enforcement } = {}) {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
+async function setup({ enforcement, scenarioPath = SCENARIO } = {}) {
+  const ctx = await bootServer({ scenarioPath });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
@@ -387,6 +390,65 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
       refused(res, 'SESSION_AMBIGUOUS');
       assert.match(res.reason, /provenance\.implement/);
     } finally { t.instances.byId.delete('fake-ambig'); }
+  } finally { await t.close(); }
+});
+
+test('enforce: a stage binding survives a renewal — one row, and capacity is released on exit', async () => {
+  // The ledger's projection is sessionId-keyed. Before card 2026-0126 a
+  // `renew_session` rotated that key out from under it, so the chain broke three
+  // ways at once: the worker lost its stage binding, its pre-rotation row stayed
+  // `live:true` forever (leaking a `workers:"one"` capacity slot, since capacity
+  // counts LIVE members), and the retire on exit landed under an id nothing was
+  // bound to. src/playbookLedger.ts carried a standing note saying so. Pinning the
+  // public id fixes all three without the ledger changing at all — which is
+  // exactly what this asserts, so the note can come out against a passing test.
+  const t = await setup({ enforcement: 'enforce', scenarioPath: SCENARIO_RENEW });
+  try {
+    const w = await t.spawnWorker({
+      project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',
+    });
+    const publicId = w.sessionId;
+    assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
+    const inst = instForSession(t.instances, publicId);
+    await waitFor(() => inst.status === 'idle');
+    const firstBacking = inst.backingSessionId;
+    assert.notEqual(firstBacking, publicId, 'precondition: the two ids have diverged');
+
+    // Bound and live before the rotation.
+    const before = foldProjection(await t.events()).bySession.get(publicId);
+    assert.deepEqual({ live: before.live, stage: before.stage, playbook: before.playbook },
+      { live: true, stage: 'freeform', playbook: 'freeform' });
+
+    // The worker renews ITSELF — the real shape, since MCP tools are
+    // auto-registered into every worker.
+    const armed = await t.callAs(inst.id, 'renew_session', { summary: 'keep my stage' });
+    assert.equal(armed.ok, true, JSON.stringify(armed));
+    await t.call('send_prompt', { sessionId: publicId, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === RENEW_NEW_SID);
+    await waitFor(() => inst.rotationPending === false);
+
+    const evs = await t.events();
+    const proj = foldProjection(evs);
+    // (1) The binding survived, under the SAME key, with its history intact.
+    const after = proj.bySession.get(publicId);
+    assert.deepEqual({ live: after.live, stage: after.stage, history: after.stageHistory },
+      { live: true, stage: 'freeform', history: ['freeform'] });
+    // (2) No second declaration and no orphan row under either backing id.
+    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === publicId).length, 1,
+      'exactly one spawn event — a rotation must not re-declare the binding');
+    assert.equal(proj.bySession.get(RENEW_NEW_SID), undefined, 'no row under the rotated backing id');
+    assert.equal(proj.bySession.get(firstBacking), undefined, 'nor under the pre-clear one');
+    assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');
+
+    // (3) The capacity slot is released on exit — the retire lands under the same
+    // key the spawn did, which is what `workers:"one"` counting depends on.
+    await t.call('kill_instance', { sessionId: publicId });
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === publicId));
+    const finalProj = foldProjection(await t.events());
+    const retires = (await t.events()).filter(e => e.kind === 'retire');
+    assert.equal(retires.length, 1, 'exactly one retire');
+    assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
+    assert.equal(finalProj.bySession.get(publicId).live, false, 'the slot is free again');
   } finally { await t.close(); }
 });
 

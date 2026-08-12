@@ -10,7 +10,7 @@ import {
   writePendingTempCleanup,
   sweepPendingTempCleanup,
 } from '../src/tempCleanup.ts';
-import { loadAllArchived, isArchived } from '../src/archivedSessions.ts';
+import { loadAllArchived, isArchived, markArchived } from '../src/archivedSessions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -19,13 +19,13 @@ const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 // archived-sessions / temp sidecars start empty) and spawned instances are
 // cleared between tests. Tests use the per-test `claudeProjectsRoot` var set in
 // beforeEach when planting jsonl, NOT the boot-time root.
-let ctx, baseUrl, instances, claudeProjectsRoot, home;
+let ctx, baseUrl, instances, claudeProjectsRoot, projectsRoot, home;
 before(async () => {
   ctx = await bootServer({ scenarioPath: SCENARIO });
   ({ baseUrl, instances } = ctx);
 });
 after(async () => { await ctx.close(); });
-beforeEach(async () => { ({ home, claudeProjectsRoot } = await freshProjectsRoot()); });
+beforeEach(async () => { ({ home, claudeProjectsRoot, projectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
 // Helper: materialise a fake .jsonl for an instance (fake-claude doesn't write
@@ -37,6 +37,72 @@ async function materializeJsonl(claudeProjectsRoot, inst, content = '{"type":"us
   await fs.writeFile(file, content);
   return file;
 }
+
+// ---------------------------------------------------------------------------
+// Chain integrity vs. archive deletion (card 2026-0126, decision D7). Deleting an
+// archived transcript is a deliberate user act behind a confirm dialog, so the
+// chain SELF-PRUNES rather than the deletion being refused — a new refusal there
+// would be a worse surface than a chain that drops what it no longer has.
+// ---------------------------------------------------------------------------
+
+test('deleting an archived MID-CHAIN segment drops it from the lineage, leaving current intact', async () => {
+  const { recordRotation, segmentsFor, resolveBacking, publicIdFor } =
+    await import('../src/sessionLineage.ts');
+  const { deleteSessionForCwd } = await import('../src/projects.ts');
+  const cwd = path.join(projectsRoot, 'chainprune');
+  const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+
+  // A three-segment session: initial → renewed → renewed. All three files exist;
+  // the middle one is archived (which is what a rotation does to the id it leaves).
+  const publicId = 'ab12cd34';
+  const first = 'ab12cd34-0000-4000-8000-000000000001';
+  const mid = 'bb22cd34-0000-4000-8000-000000000002';
+  const current = 'cc33cd34-0000-4000-8000-000000000003';
+  for (const id of [first, mid, current]) {
+    await fs.writeFile(path.join(dir, `${id}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  }
+  await recordRotation(publicId, first, 'initial');
+  await recordRotation(publicId, mid, 'renew');
+  await recordRotation(publicId, current, 'renew');
+  await markArchived(mid);
+  assert.deepEqual((await segmentsFor(publicId)).map(g => g.id), [publicId, first, mid, current],
+    'precondition: the lazily-created row promotes the public id to its initial segment');
+
+  // Settings → Archived → Delete on the mid-chain segment.
+  assert.equal(await deleteSessionForCwd(cwd, mid), true);
+  await assert.rejects(fs.access(path.join(dir, `${mid}.jsonl`)), 'the transcript is gone');
+
+  // The chain dropped it and never points at a missing file.
+  const segs = await segmentsFor(publicId);
+  assert.deepEqual(segs.map(g => g.id), [publicId, first, current], 'the deleted segment is gone');
+  for (const g of segs.slice(1)) await fs.access(path.join(dir, `${g.id}.jsonl`));
+  assert.equal(await resolveBacking(publicId), current, 'current survives untouched');
+  assert.equal(await publicIdFor(mid), mid, 'and the dropped id no longer names the session');
+  assert.equal(await isArchived(mid), false, 'its archived entry is cleaned up too');
+});
+
+test('deleting CURRENT falls the chain back to the newest survivor', async () => {
+  const { recordRotation, segmentsFor, resolveBacking } = await import('../src/sessionLineage.ts');
+  const { deleteSessionForCwd } = await import('../src/projects.ts');
+  const cwd = path.join(projectsRoot, 'chainprune2');
+  const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+
+  const publicId = 'de45de45';
+  const first = 'de45de45-0000-4000-8000-000000000001';
+  const current = 'ef56ef56-0000-4000-8000-000000000002';
+  for (const id of [first, current]) {
+    await fs.writeFile(path.join(dir, `${id}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  }
+  await recordRotation(publicId, first, 'initial');
+  await recordRotation(publicId, current, 'prune');
+
+  assert.equal(await deleteSessionForCwd(cwd, current), true);
+  assert.deepEqual((await segmentsFor(publicId)).map(g => g.id), [publicId, first]);
+  assert.equal(await resolveBacking(publicId), first,
+    'current retreats to the newest surviving segment, so the public id still opens something');
+});
 
 test('killing a temp instance archives the session — .jsonl kept, archived flag set', async () => {
   {

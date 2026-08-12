@@ -12,23 +12,19 @@
 // Resolving it once at module load would make the test suite append to the real
 // ledger.
 //
-// Two known limitations live next to this module, and they are NOT the same
-// fact — do not collapse them into one sentence:
+// One known limitation lives next to this module — DEFINITION DRIFT (settled). A
+// playbook definition edited while workers are in flight is not pinned: no
+// definition snapshot, no definition hash on the `spawn` event, and a load is
+// never refused for invalidating a live run. Live workers pick up the reloaded
+// graph, and a worker whose stage or edge vanished under it gets a refusal
+// instead. That is accepted — which is why playbooks.ts makes
+// STAGE_UNKNOWN/PLAYBOOK_UNKNOWN on a LIVE worker say the definition changed,
+// rather than reading like a caller error.
 //
-//  1. DEFINITION DRIFT (settled). A playbook definition edited while workers are
-//     in flight is not pinned: no definition snapshot, no definition hash on the
-//     `spawn` event, and a load is never refused for invalidating a live run.
-//     Live workers pick up the reloaded graph, and a worker whose stage or edge
-//     vanished under it gets a refusal instead. That is accepted — which is why
-//     playbooks.ts makes STAGE_UNKNOWN/PLAYBOOK_UNKNOWN on a LIVE worker say
-//     the definition changed, rather than reading like a caller error.
-//
-//  2. `renew_session` ROTATION (out of scope). renew_session mints a new
-//     sessionId, so a renewed worker's chain breaks in this sessionId-keyed
-//     projection and it loses its stage binding. This is a projection break,
-//     not a policy-scope gap; propagating stage state across a rotation belongs
-//     to the separate renew_session remodel track. (A projection break, NOT the
-//     targeted-only policy-scope gap — that one lives in playbooks.ts.)
+// A worker's binding survives a context rotation: this projection is keyed by the
+// PERMANENT public sessionId, which a `renew_session` or a prune no longer moves
+// (see src/sessionLineage.ts). Pinned by
+// tests/playbook-enforce.test.mjs → "a stage binding survives a renewal".
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
