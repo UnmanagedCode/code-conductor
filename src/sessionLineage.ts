@@ -159,16 +159,23 @@ async function writeStore(byPublic: Map<string, LineageRow>): Promise<void> {
 // The write is part of the mint on purpose: derive-check without a write lets two
 // concurrent spawns reserve the same id.
 //
-// Collision universe = every public id UNION every segment (backing) id the store
-// knows about. Checking backing ids too is what stops a freshly minted public id
-// from shadowing another session's segment in prefix resolution.
+// Collision universe = every PUBLIC id the store knows about, and only those.
+//
+// Backing ids are deliberately NOT in it. A candidate is a `slice(0, 8)` or
+// `slice(0, 13)` of a UUID, so it can never equal a full 36-char backing id —
+// testing them would be dead code in every branch. Nor is the omission a gap: the
+// case it looks like it should cover is a minted public id that happens to be a
+// PREFIX of another session's segment, and that is resolved one layer up, where
+// an exact match always beats a prefix match (InstanceManager.resolveSessionRef;
+// pinned by tests/session-prefix.test.mjs → "an exact public-id match beats a
+// longer session's segment prefix"). A check here could not add anything that
+// resolution does not already decide, so there is nothing for a test to kill.
 //
 // Only caller: Instance.launch() on a fresh spawn.
 export function mintPublicId(firstBackingId: string): Promise<string> {
   return serialize(() => withLock(lineageFile(), async () => {
     const byPublic = await loadStrict(); // canonical re-read under lock
     const taken = new Set<string>(byPublic.keys());
-    for (const backing of indexBacking(byPublic).keys()) taken.add(backing);
     let publicId = firstBackingId.slice(0, PUBLIC_ID_LEN);
     if (taken.has(publicId)) {
       publicId = firstBackingId.slice(0, PUBLIC_ID_LEN_EXTENDED);

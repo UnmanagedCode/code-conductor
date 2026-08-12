@@ -839,6 +839,17 @@ export interface ArchivedSessionRow {
 // listSessionsForCwd already flags as archived (it also reads firstPrompt
 // + title). Used by the Settings → Archived page. Only projects with at
 // least one archived session are returned; sessions are lastActivity-desc.
+//
+// DELIBERATELY passes no `excludeSessionIds`. The public-id work required that
+// filter to run BEFORE the row projection wherever it is used (both exclusion sets
+// yield backing ids, because what they exclude is a FILE) — but there is no filter
+// to order here, and adding one would be wrong: both sets name LIVE sessions, and
+// a live session's transcript is never in the archived set (archiving force-kills
+// the instance first). So the archived view has nothing to exclude, and it keeps
+// the behaviour it had before this change. The row ids it reports come already
+// projected from listSessionsForCwd, whose rule keeps a SUPERSEDED segment's
+// filename precisely so each archived transcript stays individually addressable
+// for restore/delete — see projectRowId.
 export async function listArchivedGroupedByProject(): Promise<{ project: string; sessions: ArchivedSessionRow[] }[]> {
   const projects: ProjectInfo[] = await listProjects();
 

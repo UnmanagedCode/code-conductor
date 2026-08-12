@@ -92,25 +92,32 @@ test('mint extends to 13 chars when the 8-char form collides with an existing PU
   assert.equal(await resolveBacking(pub), second);
 });
 
-test('mint extends when the 8-char form collides with a BACKING id, not just a public one', async () => {
+test('the collision universe is PUBLIC ids only — a shadowed segment prefix is resolution\'s job', async () => {
   await reset();
-  // Seed a row whose SEGMENT id is exactly the 8-char form a later mint would
-  // derive. Its public id is different, so only the backing index catches this.
+  // A minted public id can be a PREFIX of another session's segment. Minting does
+  // NOT try to avoid that, deliberately: a candidate is a slice of a UUID and can
+  // never equal a full backing id, so testing backing ids would be dead code — and
+  // the case is already decided one layer up, where an exact match beats a prefix
+  // (see tests/session-prefix.test.mjs → "an exact public-id match beats a longer
+  // session's segment prefix"). This pins that mint does not pointlessly extend.
   const owner = await mintPublicId(backing('11111111'));
-  await recordRotation(owner, 'beef0000', 'renew');
-  assert.equal((await loadLineage()).byBacking.get('beef0000'), owner);
+  const shadowed = backing('beef0000', '1234');
+  await recordRotation(owner, shadowed, 'renew');
+  assert.equal((await loadLineage()).byBacking.get(shadowed), owner);
 
-  const fresh = backing('beef0000', '9999');
-  const pub = await mintPublicId(fresh);
-  assert.equal(pub, 'beef0000-9999', 'the backing index is part of the collision universe');
-  assert.equal(await publicIdFor('beef0000'), owner, 'the shadowed segment still resolves to its owner');
+  const pub = await mintPublicId(backing('beef0000', '9999'));
+  assert.equal(pub, 'beef0000', 'no extension: the 8-char form collides with no PUBLIC id');
+  // Both remain addressable, each by its own exact id.
+  assert.equal(await publicIdFor(shadowed), owner, 'the segment still resolves to its owner');
+  assert.equal(await publicIdFor(pub), pub);
 });
 
 test('mint falls back to the full backing id when 8 AND 13 both collide', async () => {
   await reset();
-  await mintPublicId(backing('dddddddd', 'eeee'));   // takes public 'dddddddd'
-  // Seed the 13-char candidate too, as a BACKING id, so both are taken.
-  await recordRotation(await mintPublicId(backing('22222222')), 'dddddddd-eeee', 'prune');
+  await mintPublicId(backing('dddddddd', '0000'));   // takes public 'dddddddd'
+  // A second mint sharing the 8-char head extends, which is what takes the 13-char
+  // candidate — as a PUBLIC id, the only thing the universe contains.
+  assert.equal(await mintPublicId('dddddddd-eeee-4000-8000-000000000001'), 'dddddddd-eeee');
 
   const third = 'dddddddd-eeee-4000-8000-000000000009';
   const pub = await mintPublicId(third);
