@@ -4139,11 +4139,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return out;
   }
 
-  // Synchronously kill every live temp subprocess and delete its persisted
-  // jsonl + sub-agent dir. The async `shutdown()` above relies on subprocess
-  // `exit` events to fire `_archiveTempSession()`, which races process.exit()
-  // during the restart path — so the restart path calls this first to
-  // guarantee on-disk cleanup before we exit.
+  // Synchronously kill every live temp subprocess and archive it: keep its
+  // persisted jsonl, delete its sub-agent dir. The async `shutdown()` above
+  // relies on subprocess `exit` events to fire `_archiveTempSession()`, which
+  // races process.exit() during the restart path — so the restart path calls
+  // this first to guarantee on-disk cleanup before we exit.
   //
   // SIGKILL (not SIGTERM) because claude's SIGTERM handler can flush one
   // last line to the jsonl, and the CLI opens it `O_APPEND|O_CREAT`, so a

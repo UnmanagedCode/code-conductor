@@ -1,17 +1,17 @@
 // Boot-time fallback for temp-session cleanup.
 //
-// `shutdownTempSync()` in src/instances.ts synchronously deletes every live
-// temp session's jsonl + subagents dir on the restart path. But the claude
-// CLI forks subagent processes (for Task tool calls) that aren't tracked by
-// the orchestrator and aren't killed alongside the parent — those orphans
-// can keep writing to `<sid>/<subagent-sid>.jsonl` after our parent process
-// has already exited, undoing the in-process cleanup.
+// `shutdownTempSync()` in src/instances.ts synchronously archives every live
+// temp session (jsonl kept, subagents dir deleted) on the restart path. But
+// the claude CLI forks subagent processes (for Task tool calls) that aren't
+// tracked by the orchestrator and aren't killed alongside the parent — those
+// orphans can keep writing to `<sid>/<subagent-sid>.jsonl` after our parent
+// process has already exited, undoing the in-process cleanup.
 //
 // To cover that, `scheduleRestart` writes a manifest to
 // `<orchStoreRoot>/pending-temp-cleanup.json` listing every temp session
 // that needs cleanup. On boot, `sweepPendingTempCleanup` reads the manifest,
-// deletes each entry's jsonl + subagents dir, then unlinks the manifest.
-// Idempotent and crash-safe.
+// archives each entry (jsonl kept, subagents dir deleted), then unlinks the
+// manifest. Idempotent and crash-safe.
 //
 // Entries may omit `cwd` — crash-orphaned temps (recorded in
 // temp-sessions.json with no live instance when the restart ran) have no

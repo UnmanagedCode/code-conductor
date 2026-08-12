@@ -944,8 +944,8 @@ test('a conductor spawned with no playbookEnforcement and nothing persisted defa
 //
 // The fake engine writes no transcript, so the sequence is: spawn a real
 // playbook-bound worker, seed the jsonl the CLI would have left, kill it, resume.
-// `temp: false` is load-bearing — a temp session's jsonl is removed on exit, so a
-// temp worker is not resumable at all.
+// `temp: false` here is incidental, not load-bearing — a temp session's jsonl
+// is archived (not deleted) on exit and stays just as resumable.
 async function killedBoundWorker(t) {
   const w = await t.spawnWorker({
     project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',

@@ -236,7 +236,7 @@ export function buildTools(): Tool[] {
             type: 'string',
             description: 'Requires createWorktree:true (else refused). Names the new WORKTREE, not the session — see create_worktree\'s schema.',
           },
-          temp: { type: 'boolean', default: true, description: 'If true, the session jsonl is removed on subprocess exit. Defaults to true for MCP spawns; pass false to keep the session (or promote_session later).' },
+          temp: { type: 'boolean', default: true, description: 'If true, the session is archived (not deleted) on subprocess exit. Defaults to true for MCP spawns; pass false to keep it out of the archive (or promote_session later).' },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
           playbook: {
             type: 'string',
