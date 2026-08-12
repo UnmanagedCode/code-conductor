@@ -315,6 +315,61 @@ test('tool parked on a permission card: fires despite an unreturned tool, and re
   assert.equal(resolved[0].reason, 'interrupted', 'distinguishable from an exit-time discard');
 });
 
+// Park a dispatched tool at an ask-mode permission card: the tool span is open
+// (so quiescence is false) and the hook response is held open by the broker.
+async function parkedOnPermission() {
+  const inst = await setupInstance({ mode: 'ask' });
+  const evs = collect(inst);
+  inst.prompt('open tool');
+  await waitFor(() => evs.some(e => e.kind === 'tool_use_start'));
+  inject(inst, blockStop(0));
+  const res = fakeHookRes();
+  inst.handleHookCallback({ tool_use_id: 'tu_di_bash', tool_name: 'Bash', tool_input: {} }, res);
+  assert.equal(inst._hooks.pendingCount, 1, 'a decision is pending');
+  assert.equal(res.headersSent, false, 'held open');
+  return { inst, evs, res };
+}
+
+test('forced abort over a parked permission: released on the ACK, not before it', async () => {
+  const { inst, evs, res } = await parkedOnPermission();
+
+  // Not awaited: _controlRequest writes synchronously, so this window is after
+  // the request left and before its ACK came back.
+  const forced = inst.interrupt({ force: true });
+  assert.equal(inst._hooks.pendingCount, 1, 'not released ahead of the request');
+  assert.equal(res.headersSent, false, 'hook response still open pre-ACK');
+
+  await forced; // the force branch releases right after its ACK
+  assert.equal(inst._hooks.pendingCount, 0, 'released once the abort was ACKed');
+  assert.equal(res.headersSent, true);
+  assert.equal(res.body?.hookSpecificOutput?.permissionDecision, 'deny');
+  assert.match(res.body?.hookSpecificOutput?.permissionDecisionReason ?? '', /interrupted/);
+  const resolved = evs.filter(e => e.kind === 'permission_resolved');
+  assert.equal(resolved.length, 1);
+  assert.deepEqual(
+    [resolved[0].toolUseId, resolved[0].allow, resolved[0].reason],
+    ['tu_di_bash', false, 'interrupted'],
+  );
+});
+
+test('a failed fire leaves a parked permission alone: the abort never landed', async () => {
+  const { inst, res } = await parkedOnPermission();
+  let attempts = 0;
+  inst._controlRequest = async () => { attempts += 1; throw new Error('boom'); };
+
+  await inst.interrupt(); // fires despite the parked tool, then rejects
+  assert.equal(attempts, 1, 'a request was attempted');
+  await waitFor(() => inst.interrupting === false);
+
+  // The turn was NOT severed, so the tool may still run: the card must survive
+  // for the user to answer (and the stop stays re-armable).
+  assert.equal(inst._hooks.pendingCount, 1, 'permission still pending');
+  assert.equal(res.headersSent, false, 'hook response still held open');
+  assert.equal(inst._interruptFired, false, 're-armable');
+  const stderr = inst.ring.toArray().filter(e => e.kind === 'system' && e.subtype === 'stderr');
+  assert.match(stderr.at(-1)?.data?.line ?? '', /interrupt failed: boom/);
+});
+
 test('a windDown steer is NOT an armed interrupt: no control_request, ever', async () => {
   const inst = await setupInstance();
   const evs = collect(inst);
