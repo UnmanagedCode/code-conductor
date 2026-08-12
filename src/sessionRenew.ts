@@ -113,10 +113,14 @@ export function buildRenewRequest({ directive }: { directive?: string | null } =
 //     notification, and it ends before any turn a new prompt would get.
 // TWO consumers, one predicate: the controller defers the `/clear` on it, and the
 // MCP request path refuses a target on it — a conductor's request needs a turn of
-// its OWN, and in every state above it would not get one (an owed turn ends first
-// and expires the request; an overage-parked send opens no turn at all; live
-// subagents mean the renewal it arms cannot fire until they finish). A subset copy
-// in either place is the drift this exists to prevent.
+// its OWN, and none of these states gives it one promptly. An owed re-invocation
+// turn ends before it and expires the request; an overage-parked send opens no turn
+// at all. With live subagents it is a POLICY, not a hazard: an armed renewal behind
+// them fires fine (that is what _onArmedDrain exists for), but the conductor's
+// prescribed trigger is its own subscribe_to_idle wake, which is gated on that same
+// background work — so reaching this refusal means it asked without waiting for the
+// wake, and the honest answer is to wait for it. A subset copy of this predicate in
+// either place is the drift the extraction prevents.
 export function renewalDeferredBy(inst: InstanceLike): 'overage-queue' | 'subagents' | 'task-notification' | null {
   if ((inst._overageQueue?.length ?? 0) > 0) return 'overage-queue';
   if (inst.activeAgentTaskCount > 0) return 'subagents';

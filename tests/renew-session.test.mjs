@@ -1662,3 +1662,37 @@ test('a note whose caller has no live subprocess is consumed, not saved for its 
     await srv.close();
   }
 });
+
+test('a target with LIVE SUBAGENTS is refused on the request path too', async () => {
+  // The third clause of the shared predicate, isolated at the MCP surface. It is a
+  // POLICY rather than a hazard — an accepted request would still open a turn, arm,
+  // defer and fire from the drain — which is exactly why it needs its own pin: the
+  // controller-side tests cover the same clause on the /clear path, so without this
+  // the request path's use of it could silently revert. The conductor's prescribed
+  // trigger (its own subscribe_to_idle wake) is gated on this same background work.
+  const srv = await bootServer({ scenarioPath: SCENARIO_DECLINE_DEFER });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, worker } = await pair(srv);
+    // This fixture's MARK-D turn launches a backgrounded Agent task and ends with it
+    // live, so the worker lands in the state under test: idle, one subagent running.
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: `${DIRECTIVE} start a background agent` });
+    await waitFor(() => worker.status === 'idle' && worker.summary().activeAgentTasks === 1);
+    assert.equal(worker.taskNotificationPending, false, 'precondition: no owed re-invocation turn');
+    assert.equal(worker._overageQueue.length, 0, 'precondition: nothing parked either');
+
+    const busy = await callTool(srv.baseUrl, 'renew_session',
+      { sessionId: wSid, directive: `${DIRECTIVE}: roster`, followUp: 'MARK-F: next job' }, { caller: condSid });
+    assert.equal(busy.ok, false, `must refuse: ${JSON.stringify(busy)}`);
+    assert.equal(busy.code, 'SESSION_BUSY');
+    assert.equal(busy.busy, 'subagents', 'and names the live background work');
+    assert.equal(busy.status, 'idle', 'while `status` alone would have said it was free');
+    assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false, 'nothing registered');
+    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), false, 'no subscription burned');
+    assert.equal(worker.ringSnapshot().find((ev) => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('asking you to renew')), undefined,
+      'and the worker was never prompted with a request');
+  } finally {
+    await srv.close();
+  }
+});

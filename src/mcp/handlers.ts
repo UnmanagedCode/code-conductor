@@ -1128,9 +1128,16 @@ export async function renewSession(
   // shared, never copied.
   const busy = inst.status !== 'idle' ? inst.status : renewalDeferredBy(inst);
   if (busy) {
+    // The remedy must not say "wait for idle": every `renewalDeferredBy` state
+    // reports status:'idle' already, so a conductor that called wait_for_idle would
+    // be satisfied instantly and retry into the same refusal. Name what actually
+    // frees it, per state.
+    const remedy = busy === 'overage-queue'
+      ? 'it frees up when its rate-limit window resets'
+      : 'a subscribe_to_idle wake is gated on the same work';
     return { ok: false, code: 'SESSION_BUSY', sessionId: inst.sessionId, status: inst.status, busy,
       reason: `that worker is not free (${busy}), and a renewal request needs a turn of its own — `
-        + 'wait for its next idle (subscribe_to_idle if you are not already watching it), then ask again.' };
+        + `wait until it is free (${remedy}), then ask again.` };
   }
   // Register BEFORE prompting: a turn that completed before registration would
   // leave the entry alive for an extra turn.
