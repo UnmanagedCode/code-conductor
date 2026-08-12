@@ -3131,14 +3131,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // The conductor-REQUESTED renewal (the targeted `renew_session` form): register
   // the request, then prompt the worker to author its own summary. The worker's own
   // self-call is what actually arms — see src/sessionRenew.ts.
-  requestSessionRenew(instanceId: string, opts: { followUp?: string | null } = {}): { requested: boolean; rerequested: boolean } {
+  requestSessionRenew(instanceId: string, opts: { followUp?: string | null; requestedBy?: string | null } = {}): { requested: boolean; rerequested: boolean } {
     return this._sessionRenew.request(instanceId, opts);
   }
   dropSessionRenewRequest(instanceId: string): void { this._sessionRenew.dropRequest(instanceId); }
 
   // A requested renewal expired unconsumed (the worker declined). Recorded by the
-  // idle hub so it rides the conductor's wake — see src/idleSubscriptions.ts.
-  noteRenewalDeclined(targetInstanceId: string): void { this._idleHub.noteRenewalDeclined(targetInstanceId); }
+  // idle hub so it rides the REQUESTING conductor's wake — see src/idleSubscriptions.ts.
+  noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void {
+    this._idleHub.noteRenewalDeclined(targetInstanceId, requestedBy);
+  }
 
   // Returns true when a turn_notification for instanceId should be suppressed:
   //   Condition 1 — session is a conductor mid-orchestration (subscribed as caller

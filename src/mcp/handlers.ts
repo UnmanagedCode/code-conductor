@@ -1117,9 +1117,27 @@ export async function renewSession(
     return { ok: false, code: 'SESSION_ROTATING', sessionId: inst.sessionId,
       reason: 'a context rotation is already in progress on that worker — retry once it completes.' };
   }
+  // A request needs a turn OF ITS OWN, so the target must be idle. Mid-turn, the
+  // prompt is delivered into a turn the worker did not open for it, and that turn's
+  // end would (a) expire the request as a DECLINE the worker never saw, (b) drop the
+  // followUp, and (c) spend the conductor's one-shot on an unrelated turn. Refused
+  // rather than papered over: the conductor is already subscribed to this worker (or
+  // can be), so the retry point is its next idle.
+  if (inst.status !== 'idle') {
+    return { ok: false, code: 'SESSION_BUSY', sessionId: inst.sessionId, status: inst.status,
+      reason: `that worker is ${inst.status}, and a renewal request needs a turn of its own — `
+        + 'wait for its next idle (subscribe_to_idle if you are not already watching it), then ask again.' };
+  }
   // Register BEFORE prompting: a turn that completed before registration would
   // leave the entry alive for an extra turn.
-  instances.requestSessionRenew(inst.id, { followUp: followUp ?? null });
+  const reg = instances.requestSessionRenew(inst.id, { followUp: followUp ?? null, requestedBy: callerId });
+  if (!reg.requested) {
+    // Unreachable through the interlock above, which refuses every live renewal —
+    // but a silent no-op here would prompt a worker whose renewal is already in
+    // flight, so it fails loudly instead of guessing.
+    return { ok: false, code: 'SESSION_ROTATING', sessionId: inst.sessionId,
+      reason: 'a renewal is already pending on that worker — retry once it completes.' };
+  }
   try {
     // A normal (non-internal) prompt, exactly like sendPrompt, so overage queueing
     // and the mid-turn annotation behave identically.
@@ -1132,7 +1150,6 @@ export async function renewSession(
   return {
     requested: true,
     sessionId: inst.sessionId,
-    status: inst.status,
     ...sub,
     note: 'the worker writes its own summary and may decline; you are woken either way.',
   };

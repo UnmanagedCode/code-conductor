@@ -505,7 +505,7 @@ export function buildTools(): Tool[] {
           },
           followUp: {
             type: 'string',
-            description: 'With `sessionId`: its next job, fenced into its reseed — hand it over here rather than in a separate send_prompt.',
+            description: 'With `sessionId`: its next job, fenced into its reseed.',
           },
         },
       },

@@ -51,6 +51,11 @@ export interface RenewalOpts {
 interface PendingRenewal {
   state: 'requested' | 'armed' | 'clearing';
   opts: RenewalOpts;
+  // `requested` only: the sessionId of the conductor that asked. The decline is
+  // reported to THAT conductor and no other — with two conductors watching one
+  // worker, a target-keyed note would reach whichever woke first, which for the
+  // one that never asked is a report about a request it did not make.
+  requestedBy: string | null;
   oldSid: string | null;
   timerId: NodeJS.Timeout | null;
 }
@@ -163,11 +168,11 @@ export class SessionRenewController {
   // call in one turn) but never an armed/clearing renewal — the MCP handler's
   // renewalPending interlock makes that unreachable, and this asserts it by
   // leaving the live renewal alone rather than clobbering it.
-  request(instanceId: string, { followUp = null }: { followUp?: string | null } = {}): { requested: boolean; rerequested: boolean } {
+  request(instanceId: string, { followUp = null, requestedBy = null }: { followUp?: string | null; requestedBy?: string | null } = {}): { requested: boolean; rerequested: boolean } {
     const existing = this.pending.get(instanceId);
     if (existing && existing.state !== 'requested') return { requested: false, rerequested: false };
     this.pending.set(instanceId, {
-      state: 'requested', opts: { followUp }, oldSid: null, timerId: null,
+      state: 'requested', opts: { followUp }, requestedBy, oldSid: null, timerId: null,
     });
     return { requested: true, rerequested: !!existing };
   }
@@ -206,7 +211,7 @@ export class SessionRenewController {
       if (existing.state === 'requested') { existing.state = 'armed'; return { armed: true, rearmed: false }; }
       return { armed: true, rearmed: true };
     }
-    this.pending.set(instanceId, { state: 'armed', opts, oldSid: null, timerId: null });
+    this.pending.set(instanceId, { state: 'armed', opts, requestedBy: null, oldSid: null, timerId: null });
     return { armed: true, rearmed: false };
   }
 
@@ -237,7 +242,7 @@ export class SessionRenewController {
     // A request lives exactly one turn. Expiry is SYNCHRONOUS inside this
     // dispatch so the decline note is recorded before the idle hub's already-
     // queued delivery microtask reads it — see noteRenewalDeclined.
-    if (p.state === 'requested') this._expireRequest(id);
+    if (p.state === 'requested') this._expireRequest(id, p);
     else if (p.state === 'armed') this._onArmedTurnEnd(id, p);
     // Async since the reseed now waits on the durable lineage write. Deliberately
     // not awaited: onEvent is driven from the manager's synchronous event stream.
@@ -250,9 +255,9 @@ export class SessionRenewController {
   // That IS the decline — it may be mid-rebase or holding uncommitted state, and
   // only it knows "not now" is the right answer — so drop the request and tell the
   // hub, which reports it on the conductor's wake.
-  private _expireRequest(id: string): void {
+  private _expireRequest(id: string, p: PendingRenewal): void {
     this.pending.delete(id);
-    this.manager.noteRenewalDeclined(id);
+    this.manager.noteRenewalDeclined(id, p.requestedBy);
   }
 
   private _onArmedTurnEnd(id: string, p: PendingRenewal): void {
