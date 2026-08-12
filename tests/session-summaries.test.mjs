@@ -131,6 +131,7 @@ test('GET /api/sessions/:sid/summary returns all-null when no summaries exist', 
   assert.equal(r.body.data.short, null);
   assert.equal(r.body.data.medium, null);
   assert.equal(r.body.data.long, null);
+  assert.ok('title' in r.body.data, 'title key must be present in the response');
   assert.equal(r.body.data.title, null);
 });
 
@@ -302,7 +303,7 @@ test('POST returns an ephemeral costUsd that is never persisted nor returned by 
 
     // Not in GET.
     const get = await api(baseUrl, 'GET', `/api/sessions/${sid}/summary`);
-    assert.equal(get.body.costUsd, undefined);
+    assert.equal('costUsd' in get.body, false, 'costUsd key must be absent from the GET response');
   } finally {
     if (origBin === undefined) delete process.env.CLAUDE_BIN;
     else process.env.CLAUDE_BIN = origBin;
