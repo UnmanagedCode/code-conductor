@@ -6,9 +6,11 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
+import { claudeProjectsRoot, encodeCwd, orchStoreRoot, findSessionLocation } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
+import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
+import { SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 
 // Dedicated cwd for one-shot summary subprocesses: a subdirectory inside
 // the .code-conductor metadata dir. It is NOT under PROJECTS_ROOT as a
@@ -42,6 +44,16 @@ const LENGTH_INSTRUCTIONS: Record<'short' | 'medium' | 'long', { depth: string; 
 const INPUT_CAP = 80_000;
 const INPUT_HEAD = 20_000;
 const INPUT_TAIL = 60_000;
+
+// Generation cap. Not unbounded: this one-shot spawn isn't tracked by
+// instances.ts's registry, so nothing kills it on server shutdown or a
+// disconnected client — a wedged child would otherwise hang forever.
+// The REAL governing bound on this path is Node's http.Server default
+// requestTimeout (300_000ms — server.ts sets no override), which ends the
+// whole request-response cycle regardless of this timer. Staying under it
+// means our own timer always fires first, so a summary can never persist
+// after the client has already seen the request fail.
+const GENERATION_TIMEOUT_MS = 290_000;
 
 // A persisted session line narrowed to the fields flattenTranscript/countMessages read.
 interface TranscriptLine {
@@ -136,15 +148,9 @@ interface SummaryOutput {
   cost_usd?: unknown;
 }
 
-// Generate a summary of a session by running `claude -p` as a one-shot
-// subprocess. Returns { summary, messageCount, durationMs, costUsd }.
-export async function generateSummary(sessionId: string, cwd: string, length: 'short' | 'medium' | 'long' = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
-  const tier = LENGTH_INSTRUCTIONS[length];
-  if (!tier) throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
-
-  const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
-
-  const prompt = `Summarize the following Claude Code session.
+// The existing tier-summary template, verbatim.
+function summaryPrompt(tier: { depth: string; budget: string; structure: string }, conversationText: string): string {
+  return `Summarize the following Claude Code session.
 
 Coverage: ${tier.depth}
 Word budget: ${tier.budget} of CONTENT words.
@@ -159,6 +165,61 @@ CONVERSATION:
 ${conversationText}
 ---
 Provide the summary only, no preamble:`;
+}
+
+// Names the session's CURRENT end goal, not a recap. Prefixed with the
+// project the session concerns, e.g. "code-conductor: Add cost readout to
+// the summary dialog". The project name comes from the CONVERSATION, not the
+// filesystem: a conductor session's own cwd is the orchestrator's hidden
+// `.conduct` project, but the session is almost always orchestrating some
+// OTHER project named in the transcript (paths it touches, workers it spawns
+// into, repos it discusses) — cwd-derived resolution would just be wrong for
+// exactly the sessions this feature matters most for. `projectHint`, when
+// given (see projectNameHint), is passed as a fallback the model may use
+// only when the conversation itself is ambiguous — it never overrides what
+// the conversation says.
+function titlePrompt(conversationText: string, projectHint: string | null): string {
+  return `Name the CURRENT end goal of the following Claude Code session.
+
+This is not a recap. Work that is already finished matters only as context: say what the session is trying to achieve RIGHT NOW — the objective the most recent turns are working toward. If the goal changed mid-session, the latest one wins. If the latest turns are verifying or fixing up earlier work, that clean-up IS the current goal.
+
+First, determine which PROJECT this session concerns, from the conversation itself: the projects it spawns workers into, the paths and repos it operates on or discusses. If it touches several, name the one the CURRENT goal concerns. This may be an orchestrator/conductor session whose own working directory is not a project at all — never output "conduct" or ".conduct" as the project name; a conductor session is always actually about some OTHER project named somewhere in the conversation.${projectHint ? ` Hint only, derived from the session's checkout path, to use if the conversation itself is ambiguous — it does NOT override what the conversation says: "${projectHint}".` : ''}
+
+If you identified a project: output exactly one line in the form "<Project>: <title>" — the project name, a colon, a space, then the title. The WHOLE line, project name included, must be at most 100 characters — this is a hard limit. Aim for the <title> part alone (not counting the "<Project>: " prefix) to be around 60 characters, but if the project name is long enough that "<Project>: " plus a 60-character title would exceed 100 characters total, shorten the <title> part to fit — never shorten, abbreviate, or drop the project name to make room.
+If you could not identify any project: output just the title on its own, at most 60 characters total — no prefix, no colon, no invented project name.
+
+Either way, the title itself: plain text only, no markdown, no surrounding quotes, no trailing period, no "Session:" or "Title:" prefix, no explanation before or after. Sentence case. Prefer a concrete noun phrase naming the thing being built, fixed, or investigated, never a vague category ("Code improvements").
+
+CONVERSATION:
+${conversationText}
+---
+Provide the title line only, no preamble:`;
+}
+
+// Best-effort HINT for the title prompt: the project a session's checkout
+// path belongs to, worktree-aware (`cwd` may be `<project>_worktree_<id>`,
+// whose directory name is NOT the project name — findSessionLocation already
+// solves this; it's the same lookup routes.ts used to resolve `cwd` from
+// `sessionId` in the first place, so reuse it rather than parsing `cwd`).
+// Returns null (no hint) when the session can't be located, or when it
+// resolves to the hidden `.conduct` conductor project — that's never a real
+// project name, so it must never even reach the prompt as a hint.
+async function projectNameHint(sessionId: string): Promise<string | null> {
+  const hit = await findSessionLocation(sessionId).catch(() => null);
+  return hit && hit.project !== '.conduct' ? hit.project : null;
+}
+
+// Generate a summary (or title) of a session by running `claude -p` as a
+// one-shot subprocess. Returns { summary, messageCount, durationMs, costUsd }.
+export async function generateSummary(sessionId: string, cwd: string, length: SummaryLength = 'medium'): Promise<{ summary: string; messageCount: number; durationMs: number; costUsd: number | null }> {
+  if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
+    throw Object.assign(new Error(`invalid length: ${length}`), { statusCode: 400 });
+  }
+
+  const { conversationText, messageCount } = await flattenTranscript(sessionId, cwd);
+  const prompt = length === 'title'
+    ? titlePrompt(conversationText, await projectNameHint(sessionId))
+    : summaryPrompt(LENGTH_INSTRUCTIONS[length], conversationText);
 
   // Honor the fast tier's bound backend unconditionally — same reasoning as
   // claudeShellEnv.ts's generateBundle(): no Anthropic fallback, since a host
@@ -202,8 +263,8 @@ Provide the summary only, no preamble:`;
 
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error('summary generation timed out after 60s'));
-    }, 60_000);
+      reject(new Error(`summary generation timed out after ${GENERATION_TIMEOUT_MS / 1000}s`));
+    }, GENERATION_TIMEOUT_MS);
 
     // A spawn that never starts (ENOENT/EACCES — e.g. a backend template naming a
     // command that isn't installed) emits 'error', never 'close'. Without this
@@ -247,7 +308,11 @@ Provide the summary only, no preamble:`;
     summary: summary.trim(),
     messageCount,
     durationMs,
-    costUsd: (parsed.total_cost_usd ?? parsed.cost_usd ?? null) as number | null,
+    // The CLI's total_cost_usd is Anthropic list pricing — meaningless for a
+    // substitution backend (src/costTracking.ts:130-132, docs/models.md).
+    costUsd: fastBackend.backend === CLAUDE_BACKEND_ID
+      ? ((parsed.total_cost_usd ?? parsed.cost_usd ?? null) as number | null)
+      : null,
   };
 }
 

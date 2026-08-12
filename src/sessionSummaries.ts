@@ -12,8 +12,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.ts';
 
-const VALID_LENGTHS = new Set(['short', 'medium', 'long'] as const);
-type TierLength = 'short' | 'medium' | 'long';
+// The generation options the dialog offers. `title` is not a length — it names
+// the session's current goal — but it stores and renders exactly like a tier.
+export const SUMMARY_LENGTHS = ['short', 'medium', 'long', 'title'] as const;
+export type SummaryLength = typeof SUMMARY_LENGTHS[number];
+const VALID_LENGTHS = new Set<string>(SUMMARY_LENGTHS);
 
 interface TierRecord {
   summary: string;
@@ -21,7 +24,7 @@ interface TierRecord {
   messageCount: number;
 }
 
-type SessionEntry = Partial<Record<TierLength, TierRecord>>;
+type SessionEntry = Partial<Record<SummaryLength, TierRecord>>;
 
 function summariesFile(): string {
   return path.join(orchStoreRoot(), 'session-summaries.json');
@@ -43,7 +46,7 @@ function normalizeEntry(raw: unknown): SessionEntry | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const entry: SessionEntry = {};
-  for (const len of VALID_LENGTHS) {
+  for (const len of SUMMARY_LENGTHS) {
     if (r[len] != null) {
       const rec = normalizeTierRecord(r[len]);
       if (rec) entry[len] = rec;
@@ -106,7 +109,7 @@ async function writeMap(map: Map<string, SessionEntry>): Promise<void> {
 export function setSummary(sessionId: string, length: string, record: unknown): Promise<TierRecord | null> {
   return serialize(async () => {
     if (typeof sessionId !== 'string' || !sessionId) return null;
-    if (!VALID_LENGTHS.has(length as TierLength)) return null;
+    if (!VALID_LENGTHS.has(length)) return null;
     const tier = normalizeTierRecord(record);
     if (!tier) return null;
 

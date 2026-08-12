@@ -11,6 +11,8 @@
 //     asserting the composed command line, e.g. a backend template's prefix).
 //   FAKE_SUMMARIZE_ENV_FILE  — path to dump process.env as JSON (for asserting a
 //     backend row's injected env reached the child).
+//   FAKE_SUMMARIZE_STDIN_FILE — path to dump the drained stdin (the prompt) to,
+//     so a test can assert which prompt template was sent.
 // Name-agnostic: this same script also stands in for a backend's WRAPPER command
 // (named by that row's `template`), since it only reacts to argv/stdin/env, never
 // to which binary name invoked it.
@@ -34,9 +36,13 @@ if (process.env.FAKE_SUMMARIZE_ENV_FILE) {
   await fs.writeFile(process.env.FAKE_SUMMARIZE_ENV_FILE, JSON.stringify(process.env)).catch(() => {});
 }
 
-// Drain stdin.
+// Drain stdin, optionally accumulating it for the stdin-assertion seam.
 const rl = createInterface({ input: process.stdin });
-for await (const _ of rl) { /* drain */ }
+const stdinLines = [];
+for await (const line of rl) { stdinLines.push(line); }
+if (process.env.FAKE_SUMMARIZE_STDIN_FILE) {
+  await fs.writeFile(process.env.FAKE_SUMMARIZE_STDIN_FILE, stdinLines.join('\n')).catch(() => {});
+}
 
 // Write cwd to the designated file (for test assertion).
 if (process.env.FAKE_SUMMARIZE_CWD_OUT) {
@@ -59,5 +65,6 @@ process.stdout.write(JSON.stringify({
   result: 'This is a canned test summary of the session.',
   session_id: sessionId ?? 'fake-session-id',
   cost_usd: 0.0001,
+  total_cost_usd: 0.0001,
 }) + '\n');
 process.exit(0);

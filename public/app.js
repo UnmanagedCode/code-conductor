@@ -677,6 +677,27 @@ dom.autoApprovePlanBtn.addEventListener('click', () => {
   send('auto_approve_plan', { id: state.activeId, enabled: next });
 });
 
+// PUT a session title and mirror it locally. Shared by ⋮ Rename and the
+// summary dialog's "Use as session title" button.
+async function applySessionTitle(sessionId, title) {
+  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: title.trim().slice(0, 100) }),
+  });
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.error ?? `HTTP ${r.status}`);
+  }
+  const result = await r.json();
+  // Optimistic local mirror — the broadcast `status` frame will reassert.
+  const inst = state.instances.find(i => i.sessionId === sessionId);
+  if (inst) inst.title = result.title ?? null;
+  headerHandle.update();
+  await refreshProjects();
+  return result.title ?? null;
+}
+
 dom.renameSessionBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   const inst = state.instances.find(i => i.id === state.activeId);
@@ -688,20 +709,7 @@ dom.renameSessionBtn.addEventListener('click', async () => {
   const trimmed = next.trim().slice(0, 100);
   if (trimmed === (cur ?? '').trim()) return; // no change
   try {
-    const r = await fetch(`/api/sessions/${encodeURIComponent(inst.sessionId)}/title`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: trimmed }),
-    });
-    if (!r.ok) {
-      const body = await r.json().catch(() => ({}));
-      throw new Error(body.error ?? `HTTP ${r.status}`);
-    }
-    const result = await r.json();
-    // Optimistic local mirror — the broadcast `status` frame will reassert.
-    inst.title = result.title ?? null;
-    headerHandle.update();
-    await refreshProjects();
+    await applySessionTitle(inst.sessionId, trimmed);
   } catch (e) {
     alert('Rename failed: ' + e.message);
   }
@@ -1000,7 +1008,7 @@ const getActiveSid = () => {
   const inst = state.instances.find(i => i.id === state.activeId);
   return inst?.sessionId ?? null;
 };
-const summaryHandle = installSessionSummary({ dom, getActiveSid });
+const summaryHandle = installSessionSummary({ dom, getActiveSid, applySessionTitle });
 const statsHandle = installSessionStats({ dom, getActiveSid });
 const pruneHandle = installPruneDialog({
   dom, getActiveId: () => state.activeId, refreshInstances,
