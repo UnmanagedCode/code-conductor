@@ -520,6 +520,23 @@ test('the restart manifest carries the PUBLIC id, so a rotated session resumes i
   await waitFor(() => newInst.status === 'idle');
 
   assert.equal(newInst.backingSessionId, rotated, 'resumed the CURRENT segment');
+  // The WHOLE chain is rehydrated, not just `current`. _segments is never
+  // persisted — the lineage store is the durable copy and _doCreateResolved's
+  // segmentsFor() is the rehydration point — and it is the entire candidate
+  // universe for resolveSessionRef (D4 keeps that synchronous by staying
+  // in-memory). Without the rebuild a restored session answers to its public id
+  // and its current backing id but to NO older segment, so a conductor, wiki page
+  // or kanban card naming a pre-rotation id gets SESSION_NOT_LIVE instead of the
+  // live worker, and segmentCount under-reports. Asserted on the RESTORED
+  // instance: the `_segments.push` above is fixture setup on the pre-drain one,
+  // and reading that back would prove nothing about the restore.
+  assert.deepEqual(newInst._segments, [firstBacking, rotated],
+    'the restored instance carries its full segment chain, oldest first');
+  assert.deepEqual(instances.resolveSessionRef(firstBacking), { sessionId: publicId },
+    'so the pre-rotation id still resolves to the live session after a restart');
+  assert.equal(instances.liveForSession(firstBacking)?.id, newInst.id,
+    'and reaches the restored instance, not SESSION_NOT_LIVE');
+  assert.equal(newInst.summary().segmentCount, 2, 'and segmentCount reports the real chain length');
   const at = newInst._spawnArgv.indexOf('--resume');
   assert.ok(at > 0, `--resume must be in the argv: ${JSON.stringify(newInst._spawnArgv)}`);
   assert.equal(newInst._spawnArgv[at + 1], rotated, 'and the argv names it');
