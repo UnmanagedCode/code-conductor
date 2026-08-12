@@ -473,3 +473,13 @@ test('send_prompt, approve_plan, reject_plan, answer_question all expose subscri
     assert.ok(!required.includes('subscribeTimeoutMs'), `${name}.subscribeTimeoutMs must not be required`);
   }
 });
+
+// ---------- send_prompt({forward}) schema ----------
+
+test('send_prompt exposes forward as an optional object param', async () => {
+  const { body } = await rpc('tools/list');
+  const tool = body.result.tools.find(t => t.name === 'send_prompt');
+  assert.ok(tool, 'tools/list missing send_prompt');
+  assert.equal(tool.inputSchema.properties.forward?.type, 'object');
+  assert.ok(!(tool.inputSchema.required ?? []).includes('forward'), 'forward must not be required — text stays the instruction');
+});

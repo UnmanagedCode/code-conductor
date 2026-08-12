@@ -174,6 +174,14 @@ test('describeToolInput: send_prompt without stage shows only sessionId', () => 
   assert.equal(s, 'sessionId=abc123');
 });
 
+test('describeToolInput: send_prompt with a forward appends its 8-char id', () => {
+  const s = describeToolInput('mcp__code-conductor__send_prompt', {
+    sessionId: 'abc123', text: 'implement it', forward: { sessionId: '12345678-aaaa-bbbb-cccc-000000000000' },
+  });
+  assert.match(s, /^sessionId=abc123/);
+  assert.match(s, /forward=12345678$/);
+});
+
 test('ToolResultBlock: renders a base64 image content block as <img>', () => {
   setupDOM();
   const block = new ToolResultBlock({

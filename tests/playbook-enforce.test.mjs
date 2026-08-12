@@ -359,6 +359,46 @@ test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate
   } finally { await t.close(); }
 });
 
+test('enforce: a send_prompt whose transition would be legal is not ledgered when forward refuses NOTHING_TO_FORWARD', async () => {
+  // send_prompt has never soft-refused before `forward` — this is a genuinely
+  // NEW interaction: playbookGate's decide() computes the SAME legal move
+  // whether or not `forward` is attached (it knows nothing about it), so the
+  // only thing that can stop the transition from being ledgered is dispatch's
+  // gate.commit dropping any handler result with ok===false. If that wiring
+  // ever regressed, this is the one test that would catch it.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const wtName = impl.worktree.worktreeName;
+    await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false }); // plan -> implement
+    const rev = await t.spawnWorker({
+      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
+      provenance: { implement: impl.sessionId },
+    });
+    assert.equal((await t.call('send_prompt', {
+      sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
+      provenance: { review: rev.sessionId },
+    })).ok, undefined, 'implement -> refine is legal once its needs are satisfied');
+
+    // A fresh, live, ungoverned-by-this-call source with no output: forward
+    // from it refuses NOTHING_TO_FORWARD before send_prompt's handler ever
+    // calls inst.prompt.
+    const source = await t.spawnWorker({ project: 'demo', playbook: 'freeform', stage: 'freeform' });
+    const before = (await t.events()).filter(e => e.kind === 'transition').length;
+
+    // solo DECLARES refine->refine as a self-loop, so absent the forward
+    // refusal this exact call would ledger a transition (see the "ROUND 2"
+    // case above) — the only difference here is the attached `forward`.
+    refused(await t.call('send_prompt', {
+      sessionId: impl.sessionId, text: 'round 2', stage: 'refine', subscribe: false,
+      forward: { sessionId: source.sessionId },
+    }), 'NOTHING_TO_FORWARD');
+
+    assert.equal((await t.events()).filter(e => e.kind === 'transition').length, before,
+      'a handler-refused forward must record no move — the transition never happened');
+  } finally { await t.close(); }
+});
+
 test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous one', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
