@@ -56,12 +56,19 @@ function liveCountOf(text, project) {
 
 // Split a list_sessions rendering into its live and inactive sessionId lists.
 // Live rows are `[n] LIVE <sid>`; an inactive row starts with the bare sid.
+//
+// The id token is matched by SHAPE rather than at a fixed 36-char width: a row
+// reports its session's PUBLIC id, which is 8 hex chars for anything minted since
+// card 2026-0126 and a full UUID for a session that has no lineage row (the base
+// case — including every hand-written fixture in this file).
 function sections(text) {
   const lines = text.split('\n');
   const live = lines.filter(l => /^\s*\[\d+\] LIVE /.test(l))
     .map(l => l.slice(l.indexOf('LIVE ') + 'LIVE '.length).trim());
-  const inactive = lines.filter(l => /^\s+[0-9a-f-]{36}(\s|$)/.test(l))
-    .map(l => l.trim().slice(0, 36));
+  const inactive = lines
+    .map(l => /^\s+([0-9a-f][0-9a-f-]{7,35})(\s|$)/.exec(l))
+    .filter(Boolean)
+    .map(m => m[1]);
   return { live, inactive };
 }
 
@@ -98,7 +105,8 @@ test('a non-temp instance retained in byId after exit is not counted live', asyn
   // `!isDeadStatus(i.status)` clause in liveCountForProject and this reads 1.
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
   const inst = await spawn('demo', { temp: false });
-  const sid = inst.backingSessionId;   // inactive rows come off disk, keyed by filename
+  const sid = inst.sessionId;          // an inactive row reports the session's PUBLIC id
+  const backing = inst.backingSessionId; // …while its transcript is named by the backing id
   await materializeJsonl(inst);
   assert.equal(liveCountOf(await call('list_projects'), 'demo'), 1, 'live while running');
 
@@ -152,7 +160,8 @@ test('an archived session is never listed, and a killed temp session is archived
   // worker must disappear from BOTH sections, not migrate into the inactive rows.
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
   const inst = await spawn('demo', { temp: true });
-  const sid = inst.backingSessionId;   // inactive rows come off disk, keyed by filename
+  const sid = inst.sessionId;          // an inactive row reports the session's PUBLIC id
+  const backing = inst.backingSessionId; // …while its transcript is named by the backing id
   await materializeJsonl(inst);
   await killAndWait(inst);
   await waitFor(async () => {
@@ -162,6 +171,7 @@ test('an archived session is never listed, and a killed temp session is archived
 
   const text = await call('list_sessions', { project: 'demo' });
   assert.ok(!text.includes(sid), `an archived session must not be listed anywhere:\n${text}`);
+  assert.ok(!text.includes(backing), `nor under its backing id:\n${text}`);
   assert.deepEqual(sections(text), { live: [], inactive: [] });
   // ...but it is still COUNTED, so an archived session is never silently invisible.
   assert.deepEqual(groupCounts(text), [[0, 0, 1]]);

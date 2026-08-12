@@ -160,6 +160,30 @@ async function resolveToBackingId(sessionId: string): Promise<string | null> {
   return isMintedPublicId(backingId) ? null : backingId;
 }
 
+// Project a transcript FILENAME to the id a client should be handed.
+//
+// A row is projected to its session's PUBLIC id only when it is that session's
+// CURRENT segment (or has no lineage row at all — the base case, where the two are
+// the same string anyway). That is what makes the sidebar's live/on-disk
+// correlation work: a live instance reports its public id, and its one
+// non-archived row on disk is always `current`, so the two match again.
+//
+// A SUPERSEDED segment deliberately keeps its filename. Such a row exists to
+// address one specific transcript — Settings → Archived restores and deletes
+// individual files — and every superseded segment of a session shares one public
+// id, so projecting them would collapse distinct rows onto a single ambiguous
+// handle and point Delete at the live transcript instead of the archived one.
+function projectRowId(
+  filename: string,
+  lineage: { byPublic: Map<string, LineageRowLike>; byBacking: Map<string, string> },
+): string {
+  const publicId = lineage.byBacking.get(filename);
+  if (!publicId) return filename; // no row ⇒ public id IS the filename
+  return lineage.byPublic.get(publicId)?.current === filename ? publicId : filename;
+}
+
+interface LineageRowLike { current: string }
+
 export function validateName(name: string): string {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     throw httpError(400, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
@@ -606,11 +630,18 @@ export async function listSessionsForCwdWithCounts(
   // One bulk read per scanned cwd, like the four sidecars above — never a file
   // open per session.
   const modes = await loadAllSessionModes();
+  // Sixth bulk load, same rule. Lazy import: sessionLineage.ts imports
+  // orchStoreRoot() from here, so a static edge would close a cycle.
+  const { loadLineage } = await import('./sessionLineage.ts');
+  const lineage = await loadLineage();
   const out: SessionRow[] = [];
   let archivedCount = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
+    // The exclusion filter runs BEFORE the projection, deliberately: both
+    // tempSessionIdsForCwd and liveBackingIdsForCwd yield backing ids, because
+    // what they exclude is a FILE. Projecting first would make every set miss.
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
     const isArchived = archived.has(sid);
     const full = path.join(dir, name);
@@ -626,7 +657,10 @@ export async function listSessionsForCwdWithCounts(
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
     out.push({
-      sessionId: sid,
+      // The one projected field. Every sidecar below stays keyed to the FILENAME
+      // — that is what they are keyed to on disk, and re-keying them would have
+      // needed a migration this card deliberately does not have.
+      sessionId: projectRowId(sid, lineage),
       firstPrompt,
       title: titles.get(sid) ?? null,
       conducted: conducted.has(sid),

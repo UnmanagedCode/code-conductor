@@ -330,12 +330,15 @@ test('renew_session carries a custom session title onto the rotated id', async (
     const sid1 = spawn.body.sessionId;
     await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
 
-    // Persist a custom title on the pre-clear id (route sets both the sidecar and
-    // the instance's in-memory this.title, which the carry reads).
+    // Persist a custom title through the route, addressed by the PUBLIC id — the
+    // only id a UI client has. The route resolves it to the backing id, because
+    // that is what the sidecar is keyed to; it also sets the instance's in-memory
+    // this.title, which the carry reads.
+    const oldBacking = instForSession(srv.instances, sid1).backingSessionId;
     const TITLE = 'Migration follow-up';
     const put = await api(srv.baseUrl, 'PUT', `/api/sessions/${sid1}/title`, { title: TITLE });
     assert.equal(put.status, 200);
-    await waitFor(async () => (await getTitle(sid1)) === TITLE);
+    await waitFor(async () => (await getTitle(oldBacking)) === TITLE);
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'keep the title' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });

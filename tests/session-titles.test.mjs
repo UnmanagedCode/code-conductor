@@ -211,6 +211,74 @@ test('temp session exit preserves its custom title in the sidecar', async () => 
   }
 });
 
+// ---------------------------------------------------------------------------
+// THE regression this pair exists to pin (card 2026-0126). A UI client only ever
+// holds the session's PUBLIC id, while session-titles.json is keyed to the
+// TRANSCRIPT filename — which is what both readers use: the sidebar row (via
+// listSessionsForCwdWithCounts' bulk title load, matched by filename) and
+// Instance._hydrateTitle on a resume. A route that wrote the title under the id it
+// was handed would write somewhere no reader looks, so the title would live in
+// memory and then vanish the next time the session came back.
+// ---------------------------------------------------------------------------
+
+test('a title PUT by PUBLIC id survives a resume and reaches the sidebar row', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'title-public' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'title-public', mode: 'bypassPermissions' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const publicId = inst.sessionId;
+  const backing = inst.backingSessionId;
+  assert.notEqual(publicId, backing, 'precondition: the two ids have diverged');
+
+  // Exactly what the ⋮ → Rename action does: PUT against the id the client has.
+  const put = await api(baseUrl, 'PUT', `/api/sessions/${publicId}/title`, { title: 'keep me' });
+  assert.equal(put.status, 200);
+  assert.equal(put.body.title, 'keep me');
+  assert.equal(put.body.sessionId, publicId, 'the response echoes the caller\'s id');
+  assert.equal(inst.title, 'keep me', 'in-memory title set immediately');
+
+  // READER 1 — the sidebar row. listSessionsForCwdWithCounts looks titles up by
+  // FILENAME, so this is false if the route wrote under the public id.
+  const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${backing}.jsonl`),
+    `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } })}\n`);
+  const rows = await api(baseUrl, 'GET', '/api/projects/title-public/sessions');
+  const row = rows.body.find(x => x.sessionId === publicId);
+  assert.ok(row, `the session must be listed under its public id: ${JSON.stringify(rows.body)}`);
+  assert.equal(row.title, 'keep me', 'the sidebar row carries the title');
+
+  // READER 2 — _hydrateTitle on a resume. A fresh Instance starts with title:null
+  // and must re-acquire it from the sidecar.
+  await instances.remove(inst.id);
+  const resumed = await instances.create({ project: 'title-public', resume: publicId });
+  await waitFor(() => resumed.status === 'idle');
+  await waitFor(() => resumed.title === 'keep me');
+  assert.equal(resumed.title, 'keep me', 'the title survived the resume');
+  assert.equal(resumed.sessionId, publicId, 'and the session kept its public id');
+
+  // Clearing it goes through the same resolution.
+  const cleared = await api(baseUrl, 'PUT', `/api/sessions/${publicId}/title`, { title: '' });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.title, null);
+  assert.equal(await getTitle(backing), null, 'cleared at the key the readers use');
+});
+
+test('a title PUT by a SEGMENT id still addresses that segment', async () => {
+  // The permanent full-id guarantee, on a write path: naming a backing/segment id
+  // directly resolves to that segment rather than being redirected to `current`,
+  // so an old wiki page or an archived row can still be renamed.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'title-seg' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'title-seg', mode: 'bypassPermissions' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const backing = inst.backingSessionId;
+
+  const put = await api(baseUrl, 'PUT', `/api/sessions/${backing}/title`, { title: 'by backing id' });
+  assert.equal(put.status, 200);
+  assert.equal(await getTitle(backing), 'by backing id');
+});
+
 test('resuming a crashed session recovers firstPrompt from disk instead of losing it to the next message', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'crash-resumed' });
 

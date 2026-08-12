@@ -69,6 +69,7 @@ import * as ttsInstall from './ttsInstall.ts';
 import { ensureRootClaudeMd } from './rootClaudeMd.ts';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { getSummaries, setSummary, deleteSummaries, SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
+import { resolveBacking } from './sessionLineage.ts';
 import { generateSummary, countMessages } from './summarize.ts';
 import { getAccountUsage } from './accountUsage.ts';
 import { getCostSummary, getSessionStats } from './costTracking.ts';
@@ -116,6 +117,27 @@ function assertValidSid(sid: string): void {
   if (!SID_RE.test(sid)) {
     throw Object.assign(new Error('invalid sessionId'), { statusCode: 400 });
   }
+}
+
+// THE shared read for every session-scoped route's `:sessionId` path param.
+//
+// A client only ever holds the PUBLIC id — that is the whole point of the
+// pinned-identity change — while the transcript jsonl and the filename-keyed
+// sidecars (session-titles, archived-sessions, session-modes, session-backends)
+// are all keyed to the CURRENT backing id. A route that wrote a sidecar under the
+// id it was handed would write somewhere no reader looks: a title set in the UI
+// would survive in memory and then vanish on the next resume.
+//
+// `sid` stays the caller's id (that is what the response echoes and what the
+// client keeps using); `backing` is for the filesystem and those sidecars.
+// Naming a SEGMENT directly resolves to that segment, so an archived row stays
+// individually addressable, and an unknown id passes through unchanged (the
+// lineage store's base case) — which is what keeps every pre-rotation session
+// working with no migration.
+async function sidParam(raw: unknown): Promise<{ sid: string; backing: string }> {
+  const sid = String(raw || '');
+  assertValidSid(sid);
+  return { sid, backing: await resolveBacking(sid) };
 }
 
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
@@ -669,18 +691,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // Idempotent — restoring a non-archived session is a no-op.
   r.post('/projects/:name/sessions/:sid/restore', async (req, res, next) => {
     try {
-      const sid = String(req.params.sid || '');
-      assertValidSid(sid);
-      await unmarkArchived(sid);
+      const { backing } = await sidParam(req.params.sid);
+      await unmarkArchived(backing);
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
 
   r.post('/projects/:name/worktrees/:wt/sessions/:sid/restore', async (req, res, next) => {
     try {
-      const sid = String(req.params.sid || '');
-      assertValidSid(sid);
-      await unmarkArchived(sid);
+      const { backing } = await sidParam(req.params.sid);
+      await unmarkArchived(backing);
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
@@ -795,13 +815,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // re-renders without a page reload.
   r.put('/sessions/:sessionId/title', async (req, res, next) => {
     try {
-      const sid = String(req.params.sessionId || '');
-      assertValidSid(sid);
+      const { sid, backing } = await sidParam(req.params.sessionId);
       const raw = jsonBody(req).title;
       if (raw != null && typeof raw !== 'string') {
         throw Object.assign(new Error('title must be a string'), { statusCode: 400 });
       }
-      const stored = await setSessionTitle(sid, raw ?? '');
+      // Keyed to the TRANSCRIPT: listSessionsForCwdWithCounts looks titles up by
+      // filename and Instance._hydrateTitle reads the backing id, so a title
+      // written under the public id would reach neither.
+      const stored = await setSessionTitle(backing, raw ?? '');
       if (instances) {
         for (const id of instances.idsForSession(sid)) {
           const inst = instances.get(id);
@@ -843,8 +865,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // Returns { short, medium, long, title } where each tier is null when absent.
   r.get('/sessions/:sessionId/summary', async (req, res, next) => {
     try {
-      const sid = String(req.params.sessionId || '');
-      assertValidSid(sid);
+      // `sid` keys the summaries store, which is cc-owned (<store>/session-
+      // summaries.json) and NOT filename-keyed, so it needs no resolve — only the
+      // transcript read below does.
+      const { sid, backing } = await sidParam(req.params.sessionId);
       const tiers = await getSummaries(sid);
       let currentCount = 0;
       const hasTiers = Object.keys(tiers).length > 0;
@@ -852,7 +876,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         const hit = await findSessionLocation(sid);
         if (hit) {
           const cwd = await cwdForHit(hit);
-          if (cwd) currentCount = await countMessages(sid, cwd).catch(() => 0);
+          if (cwd) currentCount = await countMessages(backing, cwd).catch(() => 0);
         }
       }
       res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
@@ -866,8 +890,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // ephemeral cost (not persisted, not part of GET).
   r.post('/sessions/:sessionId/summary', async (req, res, next) => {
     try {
-      const sid = String(req.params.sessionId || '');
-      assertValidSid(sid);
+      const { sid, backing } = await sidParam(req.params.sessionId);
       const length = String(jsonBody(req).length);
       if (!(SUMMARY_LENGTHS as readonly string[]).includes(length)) {
         throw Object.assign(new Error(`length must be one of: ${SUMMARY_LENGTHS.join(', ')}`), { statusCode: 400 });
@@ -876,12 +899,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
       const cwd = await cwdForHit(hit);
       if (!cwd) throw Object.assign(new Error('session not found'), { statusCode: 404 });
-      const { summary, messageCount, costUsd } = await generateSummary(sid, cwd, length as SummaryLength);
+      // The transcript reads take the backing id; the summaries store keeps the
+      // caller's id (cc-owned, not filename-keyed — see the GET above).
+      const { summary, messageCount, costUsd } = await generateSummary(backing, cwd, length as SummaryLength);
       await setSummary(sid, length as SummaryLength, { summary, generatedAt: Date.now(), messageCount });
       broadcastProjects();
       // Re-fetch all tiers so the response mirrors the GET shape.
       const tiers = await getSummaries(sid);
-      const currentCount = await countMessages(sid, cwd).catch(() => 0);
+      const currentCount = await countMessages(backing, cwd).catch(() => 0);
       // costUsd is ephemeral: what THIS generation cost. Deliberately not persisted
       // (no field on TierRecord) and absent from the GET response.
       res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount), costUsd });
@@ -890,15 +915,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
   r.get('/sessions/:sessionId/locate', async (req, res, next) => {
     try {
-      const sid = String(req.params.sessionId || '');
-      assertValidSid(sid);
+      const { sid, backing } = await sidParam(req.params.sessionId);
       const hit = await findSessionLocation(sid);
       if (!hit) throw Object.assign(new Error('session not found'), { statusCode: 404 });
       // Report archived-ness so the client's anchor auto-resume can skip a
       // session that was archived on a plain restart (its jsonl is retained,
       // so locate still 200s) instead of silently resurrecting it. Deliberate
       // resume-from-archived stays allowed — this only feeds the automatic path.
-      res.json({ ...hit, archived: await isArchived(sid) });
+      res.json({ ...hit, archived: await isArchived(backing) });
     } catch (e) { next(e); }
   });
 

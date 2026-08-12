@@ -32,7 +32,8 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     const tempId = tempRes.body.id;
     const tempInst = instances.get(tempId);
     await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-    const tempSid = tempInst.backingSessionId;
+    const tempSid = tempInst.backingSessionId;   // the filename the filter matches
+    const tempPublicId = tempInst.sessionId;     // what a listed row would carry
 
     // Spawn a NON-temp instance in the same project so the sessions
     // listing has a non-temp entry to keep around as a control.
@@ -40,7 +41,8 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     assert.equal(normalRes.status, 201);
     const normalInst = instances.get(normalRes.body.id);
     await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
-    const normalSid = normalInst.backingSessionId;
+    const normalSid = normalInst.backingSessionId;   // the filename
+    const normalPublicId = normalInst.sessionId;      // what a listed row carries
 
     // Materialize both jsonls (CLI normally writes these; the fake CLI
     // doesn't, so we write directly into ~/.claude/projects/<encoded>/).
@@ -58,8 +60,13 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     const list = await api(baseUrl, 'GET', '/api/projects/tempfilter/sessions');
     assert.equal(list.status, 200);
     const sids = list.body.map(s => s.sessionId);
-    assert.ok(!sids.includes(tempSid), `temp sessionId ${tempSid} must NOT be in regular sessions list`);
-    assert.ok(sids.includes(normalSid), `normal sessionId ${normalSid} must be in regular sessions list`);
+    // The filter matches FILENAMES, the rows report PUBLIC ids — so neither form
+    // of the excluded temp session appears, and the control does appear as its
+    // public id (its backing id, being a different string, must not).
+    assert.ok(!sids.includes(tempSid), `temp filename ${tempSid} must NOT be in regular sessions list`);
+    assert.ok(!sids.includes(tempPublicId), `temp public id ${tempPublicId} must NOT be in regular sessions list`);
+    assert.ok(sids.includes(normalPublicId), `normal sessionId ${normalPublicId} must be in regular sessions list`);
+    assert.ok(!sids.includes(normalSid), 'a listed row reports the public id, never the backing one');
 
     // The summary endpoint must also exclude the temp jsonl from the count.
     const projList = await api(baseUrl, 'GET', '/api/projects');
@@ -82,12 +89,12 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
 
     // Default list excludes archived sessions.
     const list2 = await api(baseUrl, 'GET', '/api/projects/tempfilter/sessions');
-    assert.ok(!list2.body.find(s => s.sessionId === tempSid), 'archived temp session absent from default list');
-    assert.ok(list2.body.find(s => s.sessionId === normalSid), 'normal sessionId still there');
+    assert.ok(!list2.body.find(s => s.sessionId === tempPublicId), 'archived temp session absent from default list');
+    assert.ok(list2.body.find(s => s.sessionId === normalPublicId), 'normal sessionId still there');
 
     // With includeArchived=1 it appears with archived:true.
     const list2incl = await api(baseUrl, 'GET', '/api/projects/tempfilter/sessions?includeArchived=1');
-    const entry = list2incl.body.find(s => s.sessionId === tempSid);
+    const entry = list2incl.body.find(s => s.sessionId === tempPublicId);
     assert.ok(entry, 'archived temp session appears with includeArchived=1');
     assert.equal(entry.archived, true, 'temp session is archived after kill');
   } finally { await close(); }
@@ -102,12 +109,13 @@ test('temp session jsonl that survives on disk reappears in the list after the l
     const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'tempfilter2', temp: true });
     const tempInst = instances.get(tempRes.body.id);
     await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-    const tempSid = tempInst.backingSessionId;
+    const tempSid = tempInst.backingSessionId;   // the filename
+    const tempPublicId = tempInst.sessionId;     // what a listed row would carry
     const cwd = tempInst.cwd;
 
     // Filtered while alive.
     let list = await api(baseUrl, 'GET', '/api/projects/tempfilter2/sessions');
-    assert.equal(list.body.find(s => s.sessionId === tempSid), undefined);
+    assert.equal(list.body.find(s => s.sessionId === tempPublicId), undefined);
 
     // Kill, then re-create a jsonl by hand with the same sid.
     // Killing a temp instance archives the session, so it is excluded from
@@ -125,10 +133,10 @@ test('temp session jsonl that survives on disk reappears in the list after the l
 
     // Default list excludes it (it is archived).
     list = await api(baseUrl, 'GET', '/api/projects/tempfilter2/sessions');
-    assert.equal(list.body.find(s => s.sessionId === tempSid), undefined, 'archived session absent from default list');
+    assert.equal(list.body.find(s => s.sessionId === tempPublicId), undefined, 'archived session absent from default list');
     // But it is reachable via includeArchived=1.
     const listIncl = await api(baseUrl, 'GET', '/api/projects/tempfilter2/sessions?includeArchived=1');
     const sids = listIncl.body.map(s => s.sessionId);
-    assert.ok(sids.includes(tempSid), 'jsonl accessible via includeArchived=1 once no live temp instance owns it');
+    assert.ok(sids.includes(tempPublicId), 'jsonl accessible via includeArchived=1 once no live temp instance owns it');
   } finally { await close(); }
 });

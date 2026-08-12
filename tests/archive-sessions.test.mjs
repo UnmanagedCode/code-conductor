@@ -46,7 +46,8 @@ test('killing a temp instance archives the session — .jsonl kept, archived fla
     assert.equal(res.status, 201);
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
 
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -75,7 +76,8 @@ test('archived session appears in list_sessions with archived:true, excluded fro
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivelist', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
     // Kill so it gets archived.
@@ -87,12 +89,12 @@ test('archived session appears in list_sessions with archived:true, excluded fro
     const listRes = await api(baseUrl, 'GET', `/api/projects/archivelist/sessions`);
     assert.equal(listRes.status, 200);
     const sessions = listRes.body;
-    assert.ok(!sessions.find(s => s.sessionId === sid), 'archived session must not appear in default list');
+    assert.ok(!sessions.find(s => s.sessionId === publicId), 'archived session must not appear in default list');
 
     // With includeArchived=1 the session appears with archived:true.
     const inclRes = await api(baseUrl, 'GET', `/api/projects/archivelist/sessions?includeArchived=1`);
     assert.equal(inclRes.status, 200);
-    const found = inclRes.body.find(s => s.sessionId === sid);
+    const found = inclRes.body.find(s => s.sessionId === publicId);
     assert.ok(found, 'archived session should appear with includeArchived=1');
     assert.equal(found.archived, true, 'archived flag must be true');
 
@@ -115,7 +117,8 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archiverestore', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
     await api(baseUrl, 'DELETE', `/api/instances/${inst.id}`);
@@ -123,7 +126,7 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
     await waitFor(async () => (await isArchived(sid)));
 
     // Restore the session.
-    const restoreRes = await api(baseUrl, 'POST', `/api/projects/archiverestore/sessions/${sid}/restore`);
+    const restoreRes = await api(baseUrl, 'POST', `/api/projects/archiverestore/sessions/${publicId}/restore`);
     assert.equal(restoreRes.status, 200);
     assert.equal(restoreRes.body.ok, true);
 
@@ -131,7 +134,7 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
 
     // list_sessions should return it with archived:false.
     const listRes = await api(baseUrl, 'GET', '/api/projects/archiverestore/sessions');
-    const found = listRes.body.find(s => s.sessionId === sid);
+    const found = listRes.body.find(s => s.sessionId === publicId);
     assert.ok(found, 'session should still exist after restore');
     assert.equal(found.archived, false, 'archived flag should be false after restore');
   }
@@ -144,7 +147,8 @@ test('killing a non-temp instance does NOT archive it', async () => {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivenotemp', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst);
 
     await api(baseUrl, 'DELETE', `/api/instances/${inst.id}`);
@@ -164,7 +168,8 @@ test('MCP kill_instance archives temp session', async () => {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivemcp', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
 
     // Use the MCP kill_instance handler directly (same code path as the tool).
@@ -192,7 +197,8 @@ test('shutdownTempSync archives temp sessions — .jsonl kept, subagents dir rem
     const res = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'archivesync', temp: true });
     const inst = rp.instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.backingSessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived/temp sidecars
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
 
     const dir = path.join(rp.claudeProjectsRoot, encodeCwd(inst.cwd));
     await fs.mkdir(dir, { recursive: true });

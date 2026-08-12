@@ -426,8 +426,10 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   // on-disk sidecar, not the in-memory instance.
   await callTool(baseUrl, 'kill_instance', { sessionId: cond.sessionId });
   const out2 = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  // Now an INACTIVE row, so it is keyed by the transcript filename.
-  assert.match(entryFor(condBacking, out2) ?? '', /\bconducted\b/,
+  // Now an INACTIVE row off its own transcript. It still reports the session's
+  // PUBLIC id (that transcript is `current`), while the durable marker it is
+  // flagged from is looked up by filename — the two ids doing their own jobs.
+  assert.match(entryFor(condSid, out2) ?? '', /\bconducted\b/,
     'conducted marker persists after the instance exits');
 });
 
