@@ -138,6 +138,8 @@ export class HookBroker {
     this._pending.clear();
   }
 
-  // Test helper — count of in-flight pending callbacks.
+  // In-flight pending callbacks. Read by Instance._blockedOnPermission (a tool
+  // parked on a permission card must not hold an armed deferred interrupt) and
+  // by tests.
   get pendingCount(): number { return this._pending.size; }
 }

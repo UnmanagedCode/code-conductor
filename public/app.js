@@ -641,8 +641,8 @@ dom.killBtn.addEventListener('click', () => {
   if (!state.activeId) return;
   closeOverflow();
   if (state.activeStatus === 'turn') {
-    // Default interrupt is SOFT — a hidden steer asking the model to wind
-    // down. Escalate to a hard abort via the "Interrupt now" button.
+    // Default interrupt is SOFT — arms an abort that fires at the next output
+    // boundary. Escalate to an immediate one via the "Interrupt now" button.
     send('interrupt', { id: state.activeId });
   } else if (confirm('Terminate this instance?')) {
     send('kill', { id: state.activeId });

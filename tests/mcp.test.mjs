@@ -309,7 +309,7 @@ test('wait_for_idle resolves when an in-flight turn completes', async () => {
   }
 });
 
-test('interrupt_turn: soft (default) sets interrupting, force aborts the turn', async () => {
+test('interrupt_turn: soft (default) reports interrupting (armed) and sends nothing; force aborts the turn', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
@@ -320,15 +320,18 @@ test('interrupt_turn: soft (default) sets interrupting, force aborts the turn', 
     await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one' });
     await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle');
 
-    // Slow turn — stays in `turn` (scenario emits no result for it).
+    // Slow turn — stays in `turn` (scenario emits no result for it). Wait for
+    // its text block to open so the armed abort has a boundary to wait for.
     await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two please be slow' });
-    await waitFor(() => instForSession(instances, spawn.sessionId).status === 'turn');
+    const inst = instForSession(instances, spawn.sessionId);
+    await waitFor(() => inst.status === 'turn' && !inst._quiescence.empty);
 
-    // Soft (force omitted): flag set, turn continues.
+    // Soft (force omitted): armed, turn continues, nothing sent to the CLI yet.
     const soft = unwrap(await callTool(baseUrl, 'interrupt_turn', { sessionId: spawn.sessionId }));
     assert.equal(soft.status, 'turn');
-    assert.equal(soft.interrupting, true);
-    assert.equal(instForSession(instances, spawn.sessionId).interrupting, true);
+    assert.equal(soft.interrupting, true, 'interrupting:true means ARMED');
+    assert.equal(inst.interrupting, true);
+    assert.equal(inst._interruptFired, false, 'no control_request while a block is open');
 
     // Force: hard abort ends the turn and clears the flag.
     await callTool(baseUrl, 'interrupt_turn', { sessionId: spawn.sessionId, force: true });

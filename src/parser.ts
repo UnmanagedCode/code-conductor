@@ -449,9 +449,13 @@ export class Parser {
   _handleUser(obj: WireEnvelope): UiEvent[] {
     const msg = obj.message ?? {};
     const content = msg.content;
-    // If the CLI echoes the soft-interrupt steer back on stdout, surface it
+    // If the CLI echoes a marked wind-down steer back on stdout, surface it
     // as a system annotation so the user can see a stop was requested.
     if (isSoftInterruptContent(content)) return [{ kind: 'system', subtype: 'soft_interrupted' }];
+    // The CLI's own post-abort marker line. Same annotation, same reason: a
+    // deferred (⏸) interrupt now produces one on every stop, and a user bubble
+    // would both render wrong and shift the rewind/fork prompt index.
+    if (isInterruptMarkerContent(content)) return [{ kind: 'system', subtype: 'soft_interrupted' }];
     // Background-subagent completion ping the CLI re-injects into a
     // worker's own conversation as though it were a user turn. Drop
     // silently — the streaming `system/task_notification` event already
@@ -508,19 +512,21 @@ export interface Attachment {
   name: string;
 }
 
-// Sentinel on the steering message a SOFT interrupt injects mid-turn
-// (Instance.interrupt() without force). The CLI persists the injected prompt
-// to the session jsonl — as a `type:"user"` line live, or a
-// `type:"attachment"` queued_command line when received mid-turn — so this
-// marker lets the live parser, the transcript replay, and the rewind/fork
-// prompt-counter all recognise it. It renders as a `system/soft_interrupted`
-// annotation rather than a user bubble, and never shifts the user-message index.
+// Sentinel on the wind-down steer Instance.windDown() injects mid-turn (and on
+// the soft-interrupt steer of every session recorded before ⏸ became a deferred
+// abort — historical jsonls still carry it, so the VALUE must not change). The
+// CLI persists the injected prompt to the session jsonl — as a `type:"user"`
+// line live, or a `type:"attachment"` queued_command line when received
+// mid-turn — so this marker lets the live parser, the transcript replay, and the
+// rewind/fork prompt-counter all recognise it. It renders as a
+// `system/soft_interrupted` annotation rather than a user bubble, and never
+// shifts the user-message index.
 export const SOFT_INTERRUPT_MARKER = '[[cc:soft-interrupt]]';
 
 // True when a user-message `content` (string or block array) or a
-// queued_command `prompt` array is the hidden soft-interrupt steer —
-// detected by the marker appearing anywhere in a text block (marker is
-// now appended at the end of the text, not the beginning).
+// queued_command `prompt` array is a marked orchestrator steer — detected by
+// the marker appearing anywhere in a text block (marker is appended at the end
+// of the text, not the beginning).
 export function isSoftInterruptContent(content: unknown): boolean {
   if (typeof content === 'string') return content.includes(SOFT_INTERRUPT_MARKER);
   if (!Array.isArray(content)) return false;
@@ -529,6 +535,22 @@ export function isSoftInterruptContent(content: unknown): boolean {
            && typeof (b as { text?: unknown }).text === 'string'
            && (b as { text: string }).text.includes(SOFT_INTERRUPT_MARKER),
   );
+}
+
+// The CLI writes its own marker line as a plain `type:"user"` message after
+// an `interrupt` control_request lands — "…for tool use" when the abort caught
+// a dispatched tool, the bare form otherwise. Anchored to a LONE text block so
+// a model quoting the phrase mid-answer is never swallowed. Filtered at the
+// same three sites as SOFT_INTERRUPT_MARKER.
+const INTERRUPT_MARKER_RE = /^\[Request interrupted by user(?: for tool use)?\]$/;
+
+export function isInterruptMarkerContent(content: unknown): boolean {
+  const isMarker = (text: unknown) => typeof text === 'string' && INTERRUPT_MARKER_RE.test(text.trim());
+  if (typeof content === 'string') return isMarker(content);
+  if (!Array.isArray(content) || content.length !== 1) return false;
+  const b = content[0];
+  return !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'text'
+    && isMarker((b as { text?: unknown }).text);
 }
 
 // True when a user-message `content` (string or block array) is the CLI's
@@ -844,6 +866,11 @@ export function snapStartToGroupBoundary(arr: UiEvent[], start: number, end: num
 // between blocks of one message — so a boundary snap normally moves a few
 // indices, never a whole turn.
 //
+// SECOND CONSUMER: Instance feeds one QuiescenceScan live from _emitUi and
+// fires an armed deferred (⏸) interrupt the moment it reads empty — the same
+// "nothing half-streamed, no tool unreturned" invariant, applied to a cut in
+// time rather than in the array.
+//
 // Outer user_echo / turn_end FORCE-RESET the state: they are always
 // boundaries. Without the reset, a hard-interrupted turn (a tool_use whose
 // tool_result never arrives) would poison every later index forever; the
@@ -874,7 +901,7 @@ function isOuterTurnEnd(ev: UiEvent): boolean {
   return ev?.kind === 'turn_end' && !ev.parentToolUseId;
 }
 
-class QuiescenceScan {
+export class QuiescenceScan {
   openBlocks = new Set<string>();   // `${msgId}:${blockIdx}:${type}` mid-stream
   pendingTools = new Set<string>(); // toolUseId awaiting its tool_result
   get empty(): boolean { return this.openBlocks.size === 0 && this.pendingTools.size === 0; }

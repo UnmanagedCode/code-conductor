@@ -215,7 +215,7 @@ test('forced interrupt (force:true) mid-turn emits turn_end and returns to idle'
   assert.equal(inst.interrupting, false, 'interrupting flag cleared on turn exit');
 });
 
-test('soft interrupt (default) injects a hidden steer, sets interrupting, shows a visible annotation without shifting the user-prompt index', async () => {
+test('soft interrupt (default) arms a deferred abort: no steer written, no user-index shift, forced escalation still works', async () => {
   await setupWithProject();
   const transcriptPath = path.join(home, 'soft-stdin.log');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
@@ -248,45 +248,38 @@ test('soft interrupt (default) injects a hidden steer, sets interrupting, shows 
     assert.ok(statuses.some(s => s.id === id && s.interrupting === true),
       'a status event was broadcast with interrupting:true');
 
-    // No new user_echo bubble entered the ring for the steer — a system
-    // annotation is used instead so the live userIndex counter (which
-    // rewind/fork key off of) isn't shifted out of sync with the
-    // JSONL-derived count (which deliberately excludes the steer).
+    // Nothing at all entered the ring for the arm: no user_echo (which would
+    // shift the live userIndex the rewind/fork keys derive from) and no
+    // annotation either — the abort's own marker produces that, later.
     const newEvents = inst.ring.toArray().slice(ringBefore);
-    const newEchoes = newEvents.filter(e => e.kind === 'user_echo');
-    assert.equal(newEchoes.length, 0, 'soft steer emits no user_echo');
-    assert.equal(inst._userEchoCount, userEchoCountBefore, 'soft steer does not shift the user-echo index');
+    assert.equal(newEvents.filter(e => e.kind === 'user_echo').length, 0, 'arming emits no user_echo');
+    assert.equal(inst._userEchoCount, userEchoCountBefore, 'arming does not shift the user-echo index');
+    assert.equal(newEvents.filter(e => e.kind === 'system' && e.subtype === 'soft_interrupted').length, 0,
+      'no annotation at arm time');
 
-    // A visible system/soft_interrupted annotation carries the steer text.
-    const STEER_TEXT = 'Stop now. Do not make any more tool calls or start any new work. Reply with one short line acknowledging you have stopped, then end your turn.';
-    const annotations = newEvents.filter(e => e.kind === 'system' && e.subtype === 'soft_interrupted');
-    assert.equal(annotations.length, 1, 'exactly one soft_interrupted annotation is emitted live');
-    assert.equal(annotations[0].data?.text, STEER_TEXT, 'annotation carries the steer text');
+    // NOTHING was written to the subprocess: no steer message, and no
+    // control_request yet — the scenario's slow turn left a text block open, so
+    // the armed abort is still waiting for its boundary.
+    const stdinLines = async () => (await fs.readFile(transcriptPath, 'utf8').catch(() => ''))
+      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const afterFirstTurn = (await stdinLines()).length;
+    assert.equal(inst._interruptFired, false, 'mid-block: not fired');
+    assert.ok(!(await fs.readFile(transcriptPath, 'utf8')).includes('[[cc:soft-interrupt]]'),
+      'no steer written to stdin');
 
-    // The hidden steer WAS written to the subprocess stdin (with marker).
-    // fake-claude appends stdin to the transcript asynchronously, so poll.
-    const steerLines = async () => (await fs.readFile(transcriptPath, 'utf8').catch(() => ''))
-      .split('\n').filter(l => l.includes('[[cc:soft-interrupt]]'));
-    await waitFor(async () => (await steerLines()).length === 1);
-    const parsed = JSON.parse((await steerLines())[0]);
-    assert.equal(parsed.type, 'user');
-
-    // Idempotent: a second soft while already interrupting writes nothing more.
-    // (The ring's overall length isn't a stable baseline here — the slow
-    // second turn keeps streaming text_delta events in the background — so
-    // check specifically for a second soft_interrupted annotation instead.)
-    const ringBeforeSecond = inst.ring.toArray().length;
+    // Idempotent: a second soft while already armed writes nothing more.
     await inst.interrupt();
-    await new Promise(r => setTimeout(r, 60));
-    assert.equal((await steerLines()).length, 1, 'second soft is a no-op (idempotent)');
-    const secondAnnotations = inst.ring.toArray().slice(ringBeforeSecond)
-      .filter(e => e.kind === 'system' && e.subtype === 'soft_interrupted');
-    assert.equal(secondAnnotations.length, 0, 'second soft emits no additional annotation');
+    assert.equal((await stdinLines()).length, afterFirstTurn, 'second soft writes nothing');
+    assert.equal(inst.interrupting, true, 'still armed after the repeat');
 
-    // Escalate to forced — turn ends, interrupting clears.
+    // Escalate to forced — turn ends, interrupting clears, and exactly one
+    // interrupt control_request was ever sent (the armed one never fired).
     await inst.interrupt({ force: true });
     await waitFor(() => inst.status === 'idle');
     assert.equal(inst.interrupting, false, 'interrupting cleared after turn_end');
+    const interrupts = (await stdinLines())
+      .filter(l => l.type === 'control_request' && l.request?.subtype === 'interrupt');
+    assert.equal(interrupts.length, 1, 'exactly one interrupt control_request');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
   }
@@ -308,8 +301,9 @@ test('soft interrupt is a no-op when not in a turn', async () => {
 
     await inst.interrupt(); // idle — guard returns
     assert.equal(inst.interrupting, false);
-    const stdin = await fs.readFile(transcriptPath, 'utf8');
-    assert.ok(!stdin.includes('[[cc:soft-interrupt]]'), 'no steer written when idle');
+    const stdin = (await fs.readFile(transcriptPath, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+    assert.equal(stdin.filter(l => l.type === 'control_request' && l.request?.subtype === 'interrupt').length, 0,
+      'nothing written to the subprocess when idle');
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
   }

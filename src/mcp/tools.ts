@@ -498,12 +498,12 @@ export function buildTools(): Tool[] {
     },
     {
       name: 'interrupt_turn',
-      description: 'Stop the current turn of a running instance. Default (soft) injects a hidden steering message asking the model to stop work and end its turn gracefully. Pass force:true for a hard control_request abort that severs the turn and discards partial work.',
+      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped; use wait_for_idle to confirm the turn ended. Pass force:true to abort immediately, discarding in-progress work.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
-          force: { type: 'boolean', default: false, description: 'true = hard abort; omitted/false = soft graceful stop' },
+          force: { type: 'boolean', default: false, description: 'true = abort now; omitted/false = abort at the next output boundary' },
         },
         required: ['sessionId'],
       },

@@ -648,7 +648,7 @@ test('forced interrupt via WS (force:true) returns instance to idle', async () =
   }
 });
 
-test('soft interrupt via WS broadcasts interrupting:true without ending the turn', async () => {
+test('soft interrupt via WS broadcasts interrupting:true (armed) without ending the turn', async () => {
   const { baseUrl, wsUrl, instances, close } = await setup(SCENARIO_INTERRUPT);
   let c = null;
   try {
@@ -663,14 +663,18 @@ test('soft interrupt via WS broadcasts interrupting:true without ending the turn
     await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end');
 
     c.send({ t: 'prompt', id, text: 'two please be slow' });
-    await waitFor(() => instances.get(id).status === 'turn');
+    // Wait for the slow turn's text block to OPEN: the armed abort then has a
+    // boundary to wait for, so `interrupting` is observable (armed at a
+    // quiescent gap it would fire — and end the turn — immediately).
+    await c.wait(m => m.t === 'event' && m.ev.kind === 'text_delta' && /still|thinking/.test(m.ev.text ?? ''));
 
     // Soft interrupt — no force field.
     c.send({ t: 'interrupt', id });
     await c.wait(m => m.t === 'status' && m.id === id && m.interrupting === true);
-    // Still in turn (soft does not sever it), flag set server-side.
+    // Still in turn (the abort is armed, not sent), flag set server-side.
     assert.equal(instances.get(id).status, 'turn');
     assert.equal(instances.get(id).interrupting, true);
+    assert.equal(instances.get(id)._interruptFired, false, 'nothing sent while a block is open');
   } finally {
     if (c) await c.close();
     await close();
