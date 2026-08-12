@@ -1,0 +1,47 @@
+{
+  "_comment": "Drives the CONDUCTOR-REQUESTED renewal. scenario-renew.json plus a leading text-filtered turn that matches the request prompt (which carries the test's `directive` marker MARK-D) and emits NOTHING: a prompt with no matching output leaves the worker in `turn`, which is the only way a test can inject the worker's renew_session self-call INSIDE turn A (the fake CLI cannot call MCP tools). The test then drives turn A's end with a second prompt, which matches a catch-all. matchTurn() consumes turns in array order, so both text-filtered turns must precede the catch-alls.",
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt", "text": "MARK-D" },
+      "emit": []
+    },
+    {
+      "on": { "type": "prompt", "text": "/clear" },
+      "emit": [
+        { "type": "system", "subtype": "init", "session_id": "c0000000-0000-4000-8000-000000000001", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0001, "is_error": false, "usage": { "input_tokens": 1, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_a", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0002, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_b", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0003, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_c", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0004, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_d", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0005, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    }
+  ]
+}

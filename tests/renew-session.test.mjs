@@ -18,6 +18,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
+import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
 import { isConducted } from '../src/conductedSessions.ts';
 import { isTemp } from '../src/tempSessions.ts';
 import { isArchived } from '../src/archivedSessions.ts';
@@ -27,6 +28,13 @@ import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-renew.json');
+// The conductor-REQUESTED renewal: scenario-renew plus a leading turn matching
+// DIRECTIVE that emits nothing, so turn A stays open for the worker's self-call.
+const SCENARIO_REQUEST = path.join(__dirname, 'fixtures', 'scenario-renew-request.json');
+const SCENARIO_DRAIN = path.join(__dirname, 'fixtures', 'scenario-renew-drain.json');
+// Must be a substring of every `directive` below — it is what the fixture's
+// leading turn filters on.
+const DIRECTIVE = 'MARK-D';
 // Must match the session_id the `/clear` turn emits in scenario-renew.json.
 const NEW_SID = 'c0000000-0000-4000-8000-000000000001';
 
@@ -982,6 +990,244 @@ test('renew_session carries the mode record for an `ask` session, which nothing 
     // row whose resumes-hot flag has to stay accurate.
     assert.equal(await getSessionMode(oldBacking), 'ask',
       'the archived pre-clear id keeps its mode record');
+  } finally {
+    await srv.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 (card 2026-0127): the conductor can REQUEST a worker renewal. The
+// conductor triggers and guides; the worker authors its own summary and may
+// decline. `renew_session({sessionId, directive?, followUp?})`.
+//
+// The fake CLI cannot call MCP tools, so the worker's self-call is injected out
+// of band — which is faithful, because the real shape is exactly that: the
+// worker calls the SAME bare renew_session these tests call. The request
+// fixture's leading turn emits nothing, so turn A stays open and the self-call
+// lands INSIDE the turn the request opened, as it does in production.
+// ---------------------------------------------------------------------------
+
+// Spawn `conductor` + `worker` (both idle) in project p.
+async function pair(srv) {
+  await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const conductor = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+  const worker = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+  const condSid = conductor.body.sessionId;
+  const wSid = worker.body.sessionId;
+  await waitFor(() => instForSession(srv.instances, condSid)?.status === 'idle'
+    && instForSession(srv.instances, wSid)?.status === 'idle');
+  return { condSid, wSid, cond: instForSession(srv.instances, condSid), worker: instForSession(srv.instances, wSid) };
+}
+
+const echoWith = (inst, needle) => inst.ringSnapshot().find(
+  (ev) => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes(needle));
+
+test('a requested renewal: the worker authors the summary, and the followUp lands under its own fence', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, worker } = await pair(srv);
+
+    const req = await callTool(srv.baseUrl, 'renew_session', {
+      sessionId: wSid,
+      directive: `${DIRECTIVE}: name the sentinel you agreed with me`,
+      followUp: 'MARK-F: next, land the worktree',
+    }, { caller: condSid });
+    // Bare data, no `ok` — the acknowledgement-tool convention.
+    assert.equal(req.requested, true, JSON.stringify(req));
+    assert.equal(req.ok, undefined, 'an acknowledgement carries no ok');
+    assert.equal(req.sessionId, wSid, 'and names the PUBLIC id it targeted');
+    assert.equal(req.subscribed, true, 'the targeted form always auto-subscribes the conductor');
+
+    // Turn A: the request reached the worker, carrying the conductor's PRE-directive.
+    const reqEcho = await waitFor(() => echoWith(worker, DIRECTIVE));
+    assert.match(reqEcho.text, /renew_session/, 'the request tells the worker what to call');
+    assert.match(reqEcho.text, /DECLINE/, 'and that it may refuse');
+
+    // The worker answers with its OWN summary, inside the turn the request opened.
+    const armed = await callTool(srv.baseUrl, 'renew_session', { summary: 'MARK-S: the live roster' }, { caller: wSid });
+    assert.equal(armed.ok, true, JSON.stringify(armed));
+    assert.equal(armed.willClearAtTurnEnd, true);
+    // The interlock, widened to the TARGET: a second request now refuses rather
+    // than clobbering the renewal the worker just armed.
+    const again = await callTool(srv.baseUrl, 'renew_session',
+      { sessionId: wSid, directive: `${DIRECTIVE}: again?` }, { caller: condSid });
+    assert.equal(again.ok, false, `a request over an armed renewal must refuse: ${JSON.stringify(again)}`);
+    assert.equal(again.code, 'SESSION_ROTATING');
+    assert.equal(again.sessionId, wSid, 'and the refusal names the target');
+    // End turn A → the renewal fires, and the request is consumed by the arm.
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
+    await waitFor(() => worker.backingSessionId === NEW_SID);
+    const seed = await waitFor(() => echoWith(worker, 'MARK-S'));
+
+    // Fence separation: summary section first, then the conductor's follow-up
+    // under a marker of its own. The summary is memory; the followUp is a task.
+    const iSummary = seed.text.indexOf('--- HANDOFF SUMMARY ---');
+    const iS = seed.text.indexOf('MARK-S');
+    const iFence = seed.text.indexOf('--- YOUR CONDUCTOR\'S FOLLOW-UP DIRECTIVE ---');
+    const iF = seed.text.indexOf('MARK-F');
+    assert.ok(iF > 0, `the followUp must reach the reseed: ${seed.text}`);
+    assert.ok(iSummary >= 0 && iS > iSummary, 'the summary sits under the handoff fence');
+    assert.ok(iFence > iS, 'the follow-up fence comes AFTER the summary section');
+    assert.ok(iF > iFence, 'and the followUp text sits under that fence, not inside the summary');
+    assert.ok(!seed.text.includes(DIRECTIVE),
+      `the PRE-directive shapes the summary and must not leak into the seed: ${seed.text}`);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a DECLINED request: nothing is cleared, and the decline rides the conductor\'s wake', async () => {
+  const transcript = path.join(os.tmpdir(), `renew-decline-${process.pid}.jsonl`);
+  await fs.rm(transcript, { force: true });
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, cond, worker } = await pair(srv);
+    const backingBefore = worker.backingSessionId;
+
+    await callTool(srv.baseUrl, 'renew_session',
+      { sessionId: wSid, directive: `${DIRECTIVE}: capture the roster` }, { caller: condSid });
+    await waitFor(() => echoWith(worker, DIRECTIVE));
+    // The worker never self-calls. Ending the turn IS the decline — it may be
+    // mid-rebase, and only it knows "not now" is the right answer.
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
+    await waitFor(() => worker.status === 'idle'); // turn A has ended
+
+    // (a) No `/clear` ever reached the CLI…
+    const texts = userTexts(await fs.readFile(transcript, 'utf8'));
+    assert.ok(!texts.some((t) => t.trim() === '/clear'),
+      `a declined request must not clear anything; stdin was ${JSON.stringify(texts)}`);
+    // (b) …and the session is untouched: same backing id, no rotated instance.
+    assert.equal(worker.backingSessionId, backingBefore, 'the backing id never moved');
+    assert.equal(instForSession(srv.instances, NEW_SID), undefined, 'no rotation happened');
+    // (c) The conductor is told, server-side, with no inferring from prose — and
+    // in the ALWAYS-VISIBLE part of the stub, not the collapsed payload.
+    const stub = await waitFor(() => echoWith(cond, 'DECLINED'));
+    assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER), 'delivered as a wake stub');
+    assert.equal(stub.text.indexOf('Renewal request DECLINED'), WAKE_CALLBACK_MARKER.length,
+      'the note leads the summary, right after the marker');
+    const iSep = stub.text.indexOf(WAKE_BODY_SEP);
+    assert.ok(iSep > WAKE_CALLBACK_MARKER.length, 'and before the folded body separator');
+    assert.ok(stub.text.includes(wSid), 'the note names the worker by its public id');
+    assert.ok(!stub.text.includes('did NOT finish'), `not the watchdog stub: ${stub.text}`);
+  } finally {
+    await srv.close();
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    await fs.rm(transcript, { force: true });
+  }
+});
+
+test('a request lives exactly ONE turn: a later self-renewal does not inherit the followUp', async () => {
+  // The leak that sank the original post_renew_prompt sketch: a stored follow-up
+  // with no bound lifetime gets injected into whatever renewal happens next,
+  // which may be days of work later and about something else entirely.
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, worker } = await pair(srv);
+
+    await callTool(srv.baseUrl, 'renew_session', {
+      sessionId: wSid, directive: `${DIRECTIVE}: roster please`, followUp: 'MARK-F: land the worktree',
+    }, { caller: condSid });
+    await waitFor(() => echoWith(worker, DIRECTIVE));
+    // Decline by ending turn A without self-calling.
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
+    await waitFor(() => worker.status === 'idle');
+    assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false,
+      'the request is gone with the turn it was made in');
+
+    // A LATER turn, on the worker's own initiative, with its own summary.
+    const armed = await callTool(srv.baseUrl, 'renew_session', { summary: 'MARK-S3: my own checkpoint' }, { caller: wSid });
+    assert.equal(armed.ok, true, JSON.stringify(armed));
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go2' });
+    await waitFor(() => worker.backingSessionId === NEW_SID);
+    const seed = await waitFor(() => echoWith(worker, 'MARK-S3'));
+    assert.ok(!seed.text.includes('MARK-F'),
+      `an expired request must not resurface in a later renewal: ${seed.text}`);
+    assert.ok(!seed.text.includes('FOLLOW-UP DIRECTIVE'), 'and no empty follow-up fence is emitted');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('renew_session form guards: one code for every combination mistake, bare form untouched', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid } = await pair(srv);
+    const refusedForm = async (args) => {
+      const res = await callTool(srv.baseUrl, 'renew_session', args, { caller: condSid });
+      assert.equal(res.ok, false, `expected a refusal for ${JSON.stringify(args)}: ${JSON.stringify(res)}`);
+      assert.equal(res.code, 'INVALID_RENEW_FORM', `${JSON.stringify(args)} → ${res.code}: ${res.reason}`);
+      return res;
+    };
+    // The conductor never authors the summary — that channel is the worker's alone.
+    const both = await refusedForm({ sessionId: wSid, summary: 'not yours to write' });
+    assert.match(both.reason, /directive/, 'and the refusal names the argument that IS the conductor\'s');
+    // A pre/post-directive with no target names no worker to renew.
+    await refusedForm({ directive: 'shape it like this' });
+    await refusedForm({ followUp: 'then do this next' });
+    // Self-target: the two forms mean different things, so it is refused rather
+    // than silently folded into the bare one.
+    await refusedForm({ sessionId: condSid });
+
+    // …and with no sessionId the behaviour is exactly what it always was.
+    const empty = await callTool(srv.baseUrl, 'renew_session', {}, { caller: condSid });
+    assert.equal(empty.code, 'INVALID_SUMMARY', JSON.stringify(empty));
+    const bare = await callTool(srv.baseUrl, 'renew_session', { summary: 'my own handoff' }, { caller: condSid });
+    assert.equal(bare.ok, true, JSON.stringify(bare));
+    assert.equal(bare.willClearAtTurnEnd, true);
+    assert.equal(bare.sessionId, condSid);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('an armed renewal fires when a background task drains an ALREADY-IDLE worker', async () => {
+  // The reachable hang the defer gate leaves: it only re-fires on a turn_end, so
+  // a background task finishing while the worker is already idle — with no
+  // re-invocation turn ever coming — would strand the renewal until the rotate
+  // watchdog, and a conductor waiting on it would be told a healthy worker "did
+  // NOT finish". Mirrors IdleSubscriptionHub's own task-drain trigger.
+  const srv = await bootServer({ scenarioPath: SCENARIO_DRAIN });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'DRAIN-SUMMARY: carry on' }, { caller: sid1 });
+    // Snapshot the state at the exact turn_end dispatch rather than polling for
+    // it: the drain lands milliseconds later, so a poll could not tell "deferred
+    // then fired by the drain" from "fired at the turn_end".
+    let atTurnEnd = null;
+    srv.instances.on('event', ({ id, ev }) => {
+      if (id !== inst.id || ev?.kind !== 'turn_end' || atTurnEnd) return;
+      atTurnEnd = {
+        renew: srv.instances._sessionRenew.pending.get(inst.id)?.state ?? null,
+        tasks: inst.activeAgentTaskCount,
+      };
+    });
+    // This turn launches a backgrounded Agent task and ends while it is live.
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'kick off a background agent' });
+    await waitFor(() => atTurnEnd);
+    // The defer still holds at that turn_end — nothing is stranded by a rotation.
+    assert.deepEqual(atTurnEnd, { renew: 'armed', tasks: 1 },
+      'at the turn_end the renewal must still be ARMED (deferred), with the task live');
+    assert.notEqual(inst.backingSessionId, NEW_SID, 'and no /clear had rotated it');
+
+    // The task now completes while the worker is idle. NO further prompt from
+    // this test: if the drain trigger is missing, nothing below ever happens.
+    await waitFor(() => inst.backingSessionId === NEW_SID);
+    const seed = await waitFor(() => echoWith(inst, 'DRAIN-SUMMARY'));
+    assert.match(seed.text, /Your context was just renewed/, 'the real reseed, not a stray echo');
+    assert.equal(inst.ringSnapshot().filter((ev) => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('kick off a background agent')).length, 1,
+      'exactly one test-driven prompt — the rotation came from the drain, not a turn we drove');
   } finally {
     await srv.close();
   }

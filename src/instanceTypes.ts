@@ -160,6 +160,10 @@ export interface InstanceManagerLike {
     status: string;
   }>;
   idleSubscriptionsOf(instanceId: string): string[];
+  // A conductor-requested renewal expired unconsumed — the worker declined.
+  // Recorded for the conductor's wake stub (src/idleSubscriptions.ts), and called
+  // synchronously from SessionRenewController's turn_end handling.
+  noteRenewalDeclined(targetInstanceId: string): void;
   shouldSuppressTurnNotification(instanceId: string): boolean;
   on(event: 'event', cb: (arg: { id: string; ev: UiEvent | null }) => void): void;
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
@@ -202,7 +206,9 @@ export interface InstanceManagerLike {
   respawn(id: string): Promise<InstanceLike>;
   subscribeIdle(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean };
   unsubscribeIdle(callerSessionId: string, targetSessionId: string): { removed: boolean };
-  armSessionRenew(instanceId: string, opts: { summary: string }): void;
+  armSessionRenew(instanceId: string, opts: { summary: string; followUp?: string | null }): void;
+  requestSessionRenew(instanceId: string, opts: { followUp?: string | null }): { requested: boolean; rerequested: boolean };
+  dropSessionRenewRequest(instanceId: string): void;
   idsForWorktree(project: string, worktreeName: string): string[];
   // Route surface (src/routes.ts).
   tempSessionIdsForCwd(cwd: string): Set<string>;

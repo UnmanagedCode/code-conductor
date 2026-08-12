@@ -1,0 +1,38 @@
+{
+  "_comment": "The drained-idle immediate clear. scenario-bg-task-idle-drain.json's background-Agent turn (result FIRST, then task_updated + task_notification while the worker is already idle, with no re-invocation turn ever following) plus scenario-renew.json's `/clear` turn. delay_ms spaces the emits so the deferred-at-turn_end state is observable before the drain fires.",
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE", "tools": [ "Bash", "Agent" ], "uuid": "init-1" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt", "text": "/clear" },
+      "emit": [
+        { "type": "system", "subtype": "init", "session_id": "c0000000-0000-4000-8000-000000000001", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0001, "is_error": false, "usage": { "input_tokens": 1, "output_tokens": 1 } }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "delay_ms": 120,
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_d1", "role": "assistant", "model": "claude-sonnet-4-6", "usage": { "input_tokens": 1, "output_tokens": 0 } } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_agent1", "name": "Agent", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"description\":\"bg task\",\"subagent_type\":\"Explore\",\"prompt\":\"look around\",\"run_in_background\":true}" } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "stream_event", "event": { "type": "message_stop" } },
+        { "type": "system", "subtype": "task_started", "task_id": "bgtask1", "tool_use_id": "tu_agent1", "description": "bg task", "subagent_type": "Explore", "task_type": "local_agent", "prompt": "look around" },
+        { "type": "user", "tool_use_result": { "isAsync": true, "status": "async_launched", "agentId": "bgtask1" }, "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_agent1", "content": [ { "type": "text", "text": "agentId: bgtask1\nThe agent is working in the background." } ], "is_error": false } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 20, "total_cost_usd": 0.0001, "is_error": false },
+        { "type": "system", "subtype": "task_updated", "task_id": "bgtask1", "patch": { "status": "completed", "end_time": 1 } },
+        { "type": "system", "subtype": "task_notification", "task_id": "bgtask1", "tool_use_id": "tu_agent1", "status": "completed", "output_file": "", "summary": "done" }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_seed", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0002, "is_error": false, "usage": { "input_tokens": 2, "output_tokens": 1 } }
+      ]
+    }
+  ]
+}

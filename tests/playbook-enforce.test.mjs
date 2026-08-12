@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './helpers.mjs';
 import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
+import { orchStoreRoot } from '../src/projects.ts';
 // (foldProjection is used by the resume tests below to assert the un-retire.)
 import { DEFAULT_PLAYBOOK_ENFORCEMENT } from '../src/playbooks.ts';
 
@@ -89,6 +90,14 @@ async function setup({ enforcement, scenarioPath = SCENARIO } = {}) {
       const out = await callAs(conductorId, 'spawn_instance', args);
       if (out.sessionId) await waitFor(() => instForSession(ctx.instances, out.sessionId)?.sessionId);
       return out;
+    },
+    // Drop a hand-authored definition into the user overlay directory — the
+    // documented way to add a playbook without touching the repo. Definitions are
+    // read per call, so this takes effect on the next tools/call.
+    async writeUserPlaybook(id, body) {
+      const dir = path.join(orchStoreRoot(), 'playbooks');
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `${id}.json`), JSON.stringify(body));
     },
     events: () => readEvents(ledgerFile()),
     async ledgerExists() {
@@ -1050,5 +1059,63 @@ test('the retired `off` level is refused at both ingress boundaries', async () =
     assert.equal(ack.ok, false, 'the WS toggle must reject it too');
     assert.equal(t.instances.get(t.conductorId).playbookEnforcement, 'enforce',
       'and the level must not have moved');
+  } finally { await t.close(); }
+});
+
+// ── renew_session is governable like any other targeted tool ────────────────
+
+test('enforce: a stage may deny a renewal REQUEST, while the conductor\'s own bare renewal still arms', async () => {
+  // Declaring an optional `sessionId` puts renew_session in the derived governable
+  // set — accepted deliberately, with no carve-out: the membership of that class is
+  // computed from buildTools() and a hand-maintained exemption would be exactly the
+  // copy src/playbooks.ts refuses to keep. Both consequences are pinned here.
+  //
+  // The escape hatch survives a denial because policy applies to CONDUCTOR callers
+  // only: the worker's own self-call is never governed, and the bare form names no
+  // worker at all, so `decideTargeted` returns before any policy is consulted.
+  const t = await setup({ enforcement: 'enforce', scenarioPath: SCENARIO_RENEW });
+  try {
+    await t.writeUserPlaybook('norenew', {
+      id: 'norenew',
+      name: 'No renew',
+      description: 'One stage that denies renew_session.',
+      entryStages: ['locked'],
+      stages: {
+        locked: {
+          description: 'A worker here may not be asked to renew.',
+          workers: 'many',
+          tools: { spawn_instance: 'allow', renew_session: 'deny' },
+        },
+      },
+      transitions: [],
+    });
+
+    const w = await t.spawnWorker({
+      project: 'demo', playbook: 'norenew', stage: 'locked', temp: false, mode: 'bypassPermissions',
+    });
+    assert.ok(w.sessionId, `bound spawn must succeed: ${JSON.stringify(w)}`);
+    const inst = instForSession(t.instances, w.sessionId);
+    await waitFor(() => inst.status === 'idle');
+
+    // (1) The conductor's REQUEST is refused by the stage — and refused before it
+    // can prompt the worker, so no request is left pending on it either.
+    const denied = refused(await t.call('renew_session',
+      { sessionId: w.sessionId, directive: 'roster please' }), 'TOOL_DENIED_IN_STAGE');
+    assert.match(denied.reason, /renew_session is denied for a worker in stage 'locked'/);
+    assert.equal(t.instances._sessionRenew.pending.has(inst.id), false,
+      'a denied request must not register anything on the worker');
+    assert.equal(inst.renewalPending, false);
+
+    // (2) The conductor's OWN bare renewal still arms: it names no worker, so the
+    // stage policy that denied (1) is never even looked up.
+    const bare = await t.call('renew_session', { summary: 'my own handoff' });
+    assert.equal(bare.ok, true, `the bare form must not be gated: ${JSON.stringify(bare)}`);
+    assert.equal(bare.willClearAtTurnEnd, true);
+    assert.equal(t.instances.get(t.conductorId).renewalPending, true, 'and it really is armed');
+
+    // (3) The worker's own self-call is ungoverned too — same tool, same denied
+    // stage, but the caller is the worker rather than the conductor.
+    const self = await t.callAs(inst.id, 'renew_session', { summary: 'keep my stage' });
+    assert.equal(self.ok, true, `a worker renewing itself is never governed: ${JSON.stringify(self)}`);
   } finally { await t.close(); }
 });

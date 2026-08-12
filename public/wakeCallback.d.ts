@@ -7,7 +7,7 @@ export const WAKE_CALLBACK_MARKER: string;
 // Separates the always-visible summary line from the collapsible folded payload.
 export const WAKE_BODY_SEP: string;
 
-export function buildWakeStub(input: { targetSessionId: string; payloadText: string }): string;
+export function buildWakeStub(input: { targetSessionId: string; payloadText: string; note?: string | null }): string;
 
 export function markPlainStub(summary: string): string;
 

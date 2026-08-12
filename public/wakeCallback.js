@@ -18,9 +18,13 @@ export const WAKE_BODY_SEP = '\n[[cc:wake-body]]\n';
 
 // Build the folded wake stub sent to (and rendered for) the conductor. The
 // summary names the worker + says what happened and that the recent output is
-// already inline; the body is the flattened get_recent_messages payload.
-export function buildWakeStub({ targetSessionId, payloadText }) {
+// already inline; the body is the flattened get_recent_messages payload. An
+// optional `note` (server-side wording, e.g. a declined renewal request) is
+// prefixed into the summary, so it lands in the always-visible line rather than
+// the collapsed body.
+export function buildWakeStub({ targetSessionId, payloadText, note = null }) {
   const summary =
+    (note ? `${note} ` : '') +
     `Worker \`${targetSessionId}\` finished its turn. ` +
     `Its recent output is folded in below (equivalent to a default ` +
     `\`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` call), ` +

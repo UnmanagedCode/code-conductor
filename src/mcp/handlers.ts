@@ -55,6 +55,7 @@ import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } fro
 import { runMembers, type Projection } from '../playbookLedger.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
+import { buildRenewRequest } from '../sessionRenew.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
@@ -1025,17 +1026,29 @@ export async function unsubscribeFromIdle({ sessionId }: { sessionId: string }, 
   return { sessionId, removed: res.removed };
 }
 
-// Renew the CALLING session: capture a self-authored handoff summary, then
-// (at this turn's end) code-conductor drives a server-side `/clear` on the
-// caller — rotating its context in place (SAME process and SAME public sessionId;
-// only the CLI's internal backing id moves) — and
-// seeds the cleared session with the summary (plus a server-generated
-// mechanical state block, built at reseed time) as its first user turn. Caller
-// identity comes from the MCP URL's ?caller=<sessionId>, so this only works for
-// a code-conductor-managed session and always acts on the caller's own session.
+// TWO FORMS, one tool.
+//
+// Bare (`{summary}`) — renew the CALLING session: capture a self-authored handoff
+// summary, then (at this turn's end) code-conductor drives a server-side `/clear`
+// on the caller — rotating its context in place (SAME process and SAME public
+// sessionId; only the CLI's internal backing id moves) — and seeds the cleared
+// session with the summary (plus a server-generated mechanical state block, built
+// at reseed time) as its first user turn. Caller identity comes from the MCP URL's
+// ?caller=<sessionId>, so this only works for a code-conductor-managed session.
 // The `/clear` is deferred to turn_end (not fired now) so this tool call's turn
 // completes normally first — see src/sessionRenew.ts.
-export async function renewSession({ summary }: { summary?: string }, { instances, callerId }: McpCtx) {
+//
+// Targeted (`{sessionId, directive?, followUp?}`) — REQUEST that worker renew
+// itself: register a one-turn request, prompt the worker with buildRenewRequest,
+// auto-subscribe the caller, return immediately. The worker's own self-call (the
+// bare form above) is the ONLY channel a summary is ever authored on, and a worker
+// that ends its turn without calling it has declined — reported on the conductor's
+// wake, see SessionRenewController._expireRequest.
+export async function renewSession(
+  { sessionId, summary, directive, followUp }:
+  { sessionId?: string; summary?: string; directive?: string; followUp?: string },
+  { instances, callerId }: McpCtx,
+) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
@@ -1044,31 +1057,84 @@ export async function renewSession({ summary }: { summary?: string }, { instance
       'code-conductor-managed instance whose MCP config carries the caller sessionId.',
     );
   }
-  if (typeof summary !== 'string' || !summary.trim()) {
-    return { ok: false, code: 'INVALID_SUMMARY', sessionId: callerId,
-      reason: 'summary must be a non-empty string — write the handoff context to seed the cleared session with.' };
+  // FORM GUARDS. One code for every combination mistake: all are caller-argument
+  // errors with the same remedy (re-call with fixed args), and `reason` names the
+  // specific violation. Cheapest first, before any I/O.
+  const invalidForm = (reason: string) =>
+    ({ ok: false, code: 'INVALID_RENEW_FORM', sessionId: callerId, reason });
+  const targeted = typeof sessionId === 'string' && sessionId !== '';
+  if (targeted && summary !== undefined) {
+    return invalidForm('a targeted renew_session asks that worker to renew itself, and only it can '
+      + 'write its own working memory — drop `summary` (use `directive` to shape what it captures), '
+      + 'or drop `sessionId` to renew your own session with a summary you wrote.');
   }
-  const r = await getInst(instances, callerId);
+  if (!targeted && (directive !== undefined || followUp !== undefined)) {
+    return invalidForm('`directive` and `followUp` are instructions for ANOTHER worker\'s renewal — '
+      + 'they need a `sessionId`. To renew your own session, call renew_session({summary}) alone.');
+  }
+  if (!targeted) {
+    if (typeof summary !== 'string' || !summary.trim()) {
+      return { ok: false, code: 'INVALID_SUMMARY', sessionId: callerId,
+        reason: 'summary must be a non-empty string — write the handoff context to seed the cleared session with.' };
+    }
+    const r = await getInst(instances, callerId);
+    if ('soft' in r) return r.soft;
+    // THE interlock (decision D6), MCP side. A prune sets `_mutating`, which makes
+    // prompt() 409 — and this renewal's reseed IS a prompt(), so arming now would
+    // clear the context and then lose the summary. MCP surfaces soft-refuse rather
+    // than throw. Re-arming a RENEWAL is deliberately still allowed: same instance,
+    // same mechanism, so arm() is idempotent and it is not an interleaving.
+    if (r.inst.rotationInFlight === 'prune' || r.inst._mutating) {
+      return { ok: false, code: 'SESSION_ROTATING', sessionId: callerId,
+        reason: 'a context prune is in progress on this session — retry once it completes, '
+          + 'then call renew_session again.' };
+    }
+    instances.armSessionRenew(r.inst.id, { summary });
+    return {
+      ok: true,
+      sessionId: callerId,
+      willClearAtTurnEnd: true,
+      message:
+        'Checkpoint captured. Your context will be cleared when this turn ends, then ' +
+        'reseeded with your summary as the first turn of the fresh session. End your ' +
+        'turn now without starting new work.',
+    };
+  }
+  const r = await getInst(instances, sessionId as string);
   if ('soft' in r) return r.soft;
-  // THE interlock (decision D6), MCP side. A prune sets `_mutating`, which makes
-  // prompt() 409 — and this renewal's reseed IS a prompt(), so arming now would
-  // clear the context and then lose the summary. MCP surfaces soft-refuse rather
-  // than throw. Re-arming a RENEWAL is deliberately still allowed: same instance,
-  // same mechanism, so arm() is idempotent and it is not an interleaving.
-  if (r.inst.rotationInFlight === 'prune' || r.inst._mutating) {
-    return { ok: false, code: 'SESSION_ROTATING', sessionId: callerId,
-      reason: 'a context prune is in progress on this session — retry once it completes, '
-        + 'then call renew_session again.' };
+  const inst = r.inst;
+  if (inst.sessionId === callerId) {
+    // Both ids are already resolved public ids, so this is exact and needs no
+    // store read. Refused rather than folded into the bare form: the two forms
+    // mean genuinely different things, and prompting yourself mid-turn is never
+    // what was meant.
+    return invalidForm('that sessionId is your own — renew_session({summary}) is the form that renews '
+      + 'you, and it takes the summary you wrote. Pass another worker\'s sessionId to ask IT to renew.');
   }
-  instances.armSessionRenew(r.inst.id, { summary });
+  // The same interlock, widened to the TARGET. `renewalPending` is what makes "the
+  // worker already has a renewal armed" refuse rather than clobber it.
+  if (inst.rotationInFlight === 'prune' || inst.renewalPending || inst._mutating) {
+    return { ok: false, code: 'SESSION_ROTATING', sessionId: inst.sessionId,
+      reason: 'a context rotation is already in progress on that worker — retry once it completes.' };
+  }
+  // Register BEFORE prompting: a turn that completed before registration would
+  // leave the entry alive for an extra turn.
+  instances.requestSessionRenew(inst.id, { followUp: followUp ?? null });
+  try {
+    // A normal (non-internal) prompt, exactly like sendPrompt, so overage queueing
+    // and the mid-turn annotation behave identically.
+    await inst.prompt(buildRenewRequest({ directive }));
+  } catch (e) {
+    instances.dropSessionRenewRequest(inst.id);
+    throw e;
+  }
+  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe: true });
   return {
-    ok: true,
-    sessionId: callerId,
-    willClearAtTurnEnd: true,
-    message:
-      'Checkpoint captured. Your context will be cleared when this turn ends, then ' +
-      'reseeded with your summary as the first turn of the fresh session. End your ' +
-      'turn now without starting new work.',
+    requested: true,
+    sessionId: inst.sessionId,
+    status: inst.status,
+    ...sub,
+    note: 'the worker writes its own summary and may decline; you are woken either way.',
   };
 }
 

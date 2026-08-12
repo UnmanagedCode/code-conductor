@@ -8,6 +8,9 @@ import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 import { MODES as VALID_MODES } from '../sessionModes.ts';
+// The summary structure has ONE home (src/sessionRenew.ts) — the request prompt a
+// conductor-triggered renewal sends carries the same text.
+import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
 
@@ -468,39 +471,43 @@ export function buildTools(): Tool[] {
     {
       name: 'renew_session',
       description:
-        'Renew your OWN session. Hand off a self-authored summary; code-conductor then clears your ' +
-        'accumulated context in place — SAME session process, fresh conversation (a managed /clear, not a ' +
-        'restart) — and seeds the cleared session with your summary (plus a server-generated block of live ' +
-        'instance/subscription state, see below) as its first turn. ' +
+        'Without `sessionId`: renew your OWN session. Hand off a self-authored summary; code-conductor then ' +
+        'clears your accumulated context in place — SAME session process, fresh conversation (a managed ' +
+        '/clear, not a restart) — and seeds the cleared session with your summary (plus a server-generated ' +
+        'block of live instance/subscription state) as its first turn. ' +
+        'With `sessionId`: ask THAT worker to renew itself the same way — it writes its own summary. ' +
         'When to use: after landing and cleaning up a job, when history about finished work is dead weight ' +
         'taxing every future turn — renew at lifecycle seams, not because context is "full". ' +
-        'The clear happens when your CURRENT turn ends: after calling this, end your turn WITHOUT starting new ' +
-        'work — anything you do after this call is discarded by the clear. Your summary (plus the appended ' +
-        'mechanical state block) is the ONLY thing carried across, so write everything the fresh session needs. ' +
-        'Caller identity is taken from the MCP URL: this always acts on the calling session and only works for ' +
-        'a code-conductor-managed instance. It stays valid across repeated renewal, so a long-lived session ' +
-        'can renew more than once.',
+        'The clear happens when your CURRENT turn ends: after calling this on yourself, end your turn WITHOUT ' +
+        'starting new work — anything you do after this call is discarded by the clear. Your summary (plus the ' +
+        'appended mechanical state block) is the ONLY thing carried across, so write everything the fresh ' +
+        'session needs. ' +
+        'Caller identity is taken from the MCP URL, so this only works for a code-conductor-managed instance. ' +
+        'It stays valid across repeated renewal, so a long-lived session can renew more than once.',
       inputSchema: {
         type: 'object',
         properties: {
+          sessionId: {
+            type: 'string',
+            description: 'Worker sessionId to ask for a renewal. Omit to renew your own session.',
+          },
           summary: {
             type: 'string',
             minLength: 1,
             description:
               'The handoff summary, seeded as the first user turn of the cleared session (the server appends ' +
               'a mechanical state block after it — do not re-enumerate live instances yourself, carry intent ' +
-              'and meaning instead). Structure it in three sections: ' +
-              '(1) Live work roster — per still-running worker: sessionId, project/worktree, task, state, ' +
-              'agreed sentinel, next action. ' +
-              '(2) Completed work index — one line per landed job: outcome + pointers to where details live ' +
-              '(merge sha, worktree name, worker sessionId — transcripts and diffs remain recoverable from ' +
-              'these). ' +
-              '(3) User context — stated preferences, decisions made, pending promises. ' +
-              'Write it as a note to your future self: everything not captured here is lost when the context ' +
-              'clears.',
+              'and meaning instead). ' + RENEW_SUMMARY_TEMPLATE,
+          },
+          directive: {
+            type: 'string',
+            description: 'With `sessionId`: what that worker should be sure to capture in the summary it writes.',
+          },
+          followUp: {
+            type: 'string',
+            description: 'With `sessionId`: its next job, fenced into its reseed — hand it over here rather than in a separate send_prompt.',
           },
         },
-        required: ['summary'],
       },
       handler: h.renewSession,
     },

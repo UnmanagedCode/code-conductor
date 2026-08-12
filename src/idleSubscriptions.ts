@@ -74,6 +74,14 @@ interface PendingSettle {
   armSeq: number;
 }
 
+// The wording for a declined renewal request, prefixed into the wake stub's
+// summary. One sentence, true whether or not the conductor supplied a followUp.
+// Server-only — the client never builds it.
+function declineNote(targetSessionId: string): string {
+  return `Renewal request DECLINED by \`${targetSessionId}\` — it ended its turn without calling `
+    + 'renew_session, so nothing was cleared.';
+}
+
 export class IdleSubscriptionHub {
   manager: InstanceManagerLike;
   // One-shot idle subscriptions: when target hits turn_end, deliver
@@ -90,12 +98,17 @@ export class IdleSubscriptionHub {
   // Pending idle task-drain settles, keyed by targetInstanceId (see
   // PendingSettle).
   _pendingSettles: Map<string, PendingSettle>;
+  // Notes to prefix into the NEXT wake stub for a target, keyed by
+  // targetInstanceId — currently only a declined renewal request. Read-and-deleted
+  // at the top of deliver()'s closure; see noteRenewalDeclined.
+  _pendingDeclines: Map<string, string>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
     this.subscribers = new Map();
     this._justConsumed = new Set();
     this._pendingSettles = new Map();
+    this._pendingDeclines = new Map();
   }
 
   // Driven by InstanceManager's `event` listener — EVERY instance event lands
@@ -293,6 +306,27 @@ export class IdleSubscriptionHub {
     }
   }
 
+  // A conductor's renewal request expired unconsumed on this target — the worker
+  // declined (see src/sessionRenew.ts). Recorded ONLY if someone is actually
+  // waiting, so a note can never linger for a wake that never comes:
+  //   • hasSubscriber — the still-deferred case (live subagents at that turn's end);
+  //   • wasConsumed   — the ordinary case. This hub's listener is registered FIRST,
+  //     so by the time the renew controller runs, a delivered subscription has
+  //     already been cleared out of `subscribers`; `_justConsumed` is the
+  //     "fired this dispatch cycle" record that keeps it visible.
+  // Called SYNCHRONOUSLY inside the same event dispatch as the expiry, which is
+  // what makes the ordering safe without depending on listener order: deliver()'s
+  // body runs as a microtask, so the note is always set before it reads.
+  //
+  // Delete-on-first-read is safe because the always-armed watchdog guarantees
+  // every recorded note is eventually consumed. Residual: with two conductors
+  // watching one worker, the note reaches the first one woken.
+  noteRenewalDeclined(targetInstanceId: string): void {
+    if (!this.hasSubscriber(targetInstanceId) && !this.wasConsumed(targetInstanceId)) return;
+    const sid = this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
+    this._pendingDeclines.set(targetInstanceId, declineNote(sid));
+  }
+
   // Cancel the pending settle for a target instance, if any. Idempotent.
   _cancelSettle(targetInstanceId: string): void {
     const pending = this._pendingSettles.get(targetInstanceId);
@@ -413,6 +447,7 @@ export class IdleSubscriptionHub {
   purge(instanceId: string): void {
     if (!instanceId) return;
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
+    this._pendingDeclines.delete(instanceId); // …and any note no wake will carry now
     const asTarget = this.subscribers.get(instanceId);
     if (asTarget) {
       for (const [, { timerId }] of asTarget) clearTimeout(timerId);
@@ -445,11 +480,16 @@ export class IdleSubscriptionHub {
     // synchronously, on the caller's status at delivery time.
     const fold = !opts?.timedOut && caller.status !== 'turn';
     const deliver = async (): Promise<void> => {
+      // Read-and-delete BEFORE any await: the expiry that recorded this note ran
+      // synchronously in the dispatch that queued this microtask, and the note
+      // belongs to exactly one wake.
+      const note = this._pendingDeclines.get(targetInstanceId) ?? null;
+      this._pendingDeclines.delete(targetInstanceId);
       try {
         if (!caller.proc) return;
         const stub = fold
-          ? await this._buildFoldedStub(targetSessionId)
-          : this._plainStub(targetSessionId, opts);
+          ? await this._buildFoldedStub(targetSessionId, note)
+          : this._plainStub(targetSessionId, { ...opts, note });
         // `internal:true` — this is an orchestrator-injected wake, not a user
         // takeover, so it must NOT cancel a pending overage auto-resume armed on
         // the caller (an overage-stopped conductor still gets woken when its
@@ -475,7 +515,7 @@ export class IdleSubscriptionHub {
   // mid-turn steering path. Tells the caller to go call get_recent_messages.
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
-  _plainStub(targetSessionId: string, opts?: { timedOut?: boolean; timeoutMs?: number }): string {
+  _plainStub(targetSessionId: string, opts?: { timedOut?: boolean; timeoutMs?: number; note?: string | null }): string {
     const summary = opts?.timedOut
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
         `it may still be busy or stuck. ` +
@@ -485,17 +525,17 @@ export class IdleSubscriptionHub {
       : `Worker \`${targetSessionId}\` finished its turn. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to inspect the result.`;
-    return markPlainStub(summary);
+    return markPlainStub(opts?.note ? `${opts.note} ${summary}` : summary);
   }
 
   // The folded stub — reuses buildRecentMessages (the SAME selection/bonding a
   // default get_recent_messages call runs) and flattens it inline so the caller
   // doesn't need the follow-up MCP round-trip. Falls back to the plain stub on a
   // soft-refusal (e.g. the worker went away between turn_end and delivery).
-  async _buildFoldedStub(targetSessionId: string): Promise<string> {
+  async _buildFoldedStub(targetSessionId: string, note: string | null = null): Promise<string> {
     const r = await buildRecentMessages({ sessionId: targetSessionId }, { instances: this.manager });
-    if ('soft' in r) return this._plainStub(targetSessionId);
-    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies) });
+    if ('soft' in r) return this._plainStub(targetSessionId, { note });
+    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies), note });
   }
 
   hasSubscriber(instanceId: string): boolean {
