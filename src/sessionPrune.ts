@@ -47,7 +47,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { encodeCwd, claudeProjectsRoot } from './projects.ts';
+import { sessionFilePath, subAgentDirPath } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import type { WireContentBlock } from './parser.ts';
 
@@ -400,7 +400,7 @@ async function readRecords({ cwd, sessionId }: { cwd: string; sessionId: string 
   records: Array<{ raw: string; obj: PersistedLine | null; turn: number; prunable: boolean; inContext: boolean }>;
   turnCount: number;
 }> {
-  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(cwd, sessionId);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) {
@@ -514,9 +514,8 @@ async function writeAtomic(file: string, content: string): Promise<void> {
 // make every sidechain silently vanish from the pruned session's transcript view
 // — copy the directory across. Best-effort: a session with no sub-agents has none.
 async function copySubAgentDir({ cwd, sessionId, newSessionId }: { cwd: string; sessionId: string; newSessionId: string }): Promise<void> {
-  const base = path.join(claudeProjectsRoot(), encodeCwd(cwd));
-  const src = path.join(base, sessionId);
-  try { await fs.cp(src, path.join(base, newSessionId), { recursive: true }); }
+  const src = subAgentDirPath(cwd, sessionId);
+  try { await fs.cp(src, subAgentDirPath(cwd, newSessionId), { recursive: true }); }
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
 }
 
@@ -593,10 +592,7 @@ export async function pruneSessionToNewId({
     }));
   }
 
-  await writeAtomic(
-    path.join(claudeProjectsRoot(), encodeCwd(cwd), `${newSid}.jsonl`),
-    out.join('\n') + '\n',
-  );
+  await writeAtomic(sessionFilePath(cwd, newSid), out.join('\n') + '\n');
   await copySubAgentDir({ cwd, sessionId, newSessionId: newSid });
 
   if (lastSurvivingUuid) {

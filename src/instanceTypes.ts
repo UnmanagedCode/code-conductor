@@ -34,7 +34,11 @@ export interface InstanceSummary {
 
 export interface InstanceLike {
   readonly id: string;
+  // The PERMANENT public id (what summary() emits and every surface reports).
   readonly sessionId: string | null;
+  // The CLI's rotating session_id — names the transcript file, feeds `--resume`.
+  // Only transcript/launch consumers may read this; see src/instances.ts.
+  readonly backingSessionId: string | null;
   readonly model: string | null;
   readonly backend: string;
   readonly callerInstanceId: string | null;
@@ -68,7 +72,28 @@ export interface InstanceLike {
   reconstructActiveTasks(beforeSeq: number): Promise<TaskRecord[]>;
   consumePrefill(): string | null;
   clearContext(): void;
+  // Rotation window (a managed `/clear` renewal, or a prune). IdleSubscriptionHub
+  // defers its one-shot while `rotationPending`, and the two mechanisms refuse to
+  // interleave on it. See src/instances.ts for the comesUpIdle contract.
+  readonly rotationPending: boolean;
+  readonly rotationInFlight: 'renew' | 'prune' | null;
+  // Wider than rotationPending: covers the reseed window the rotation flag
+  // deliberately leaves open. Any destructive rewrite must check the union.
+  readonly renewalPending: boolean;
+  beginRotation(reason: 'renew' | 'prune'): void;
+  endRotation(opts: { ok: boolean; comesUpIdle: boolean }): void;
+  beginRenewal(): void;
+  endRenewal(): void;
+  // Throws 409 SESSION_ROTATING when a rotation is in flight, reading the UNION of
+  // both windows. The fork route calls it so the three destructive rewrites cannot
+  // drift — see src/instances.ts.
+  _assertNoRotationInFlight(): void;
+  signalRotationTurnLost(reason: 'renew' | 'prune'): void;
   carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
+  // Await this instance's durable session-lineage writes, rethrowing the first
+  // failure since the last flush (see src/instances.ts). SessionRenewController
+  // waits on this before reseeding a rotated session.
+  flushLineage(): Promise<void>;
   summary(): InstanceSummary;
   _emitUi(ev: UiEvent): void;
   prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean }): Promise<unknown>;
@@ -181,6 +206,7 @@ export interface InstanceManagerLike {
   idsForWorktree(project: string, worktreeName: string): string[];
   // Route surface (src/routes.ts).
   tempSessionIdsForCwd(cwd: string): Set<string>;
+  liveBackingIdsForCwd(cwd: string): Set<string>;
   idsForSession(sessionId: string): string[];
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
   removeAllForProject(projectName: string): Promise<number>;

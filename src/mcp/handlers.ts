@@ -144,6 +144,12 @@ export const CONDUCTOR_VIEW_KEYS = [
   // On a watchdog-timeout wake: "silent for 30 minutes" vs "producing until a
   // moment ago".
   'lastResponseAt',
+  // The rotation tell (see Instance.summary). Deliberately rotation-generic
+  // rather than `lastRenewedAt`: prune rotates too, and pinning the public id
+  // removed the only signal a conductor had that either had happened.
+  'lastRotatedAt',
+  'rotationReason',
+  'segmentCount',
   // Explains an unexpected wake.
   'queuedCount',
   // Explain a stalled worker and when it comes back.
@@ -383,7 +389,9 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     .filter(r => project === null || r.project === project)
     .map(view)
     .sort(compareInstanceRows);
-  const attached = new Set(live.map(r => r.sessionId).filter((s): s is string => typeof s === 'string'));
+  // NOT built from `live` above: those rows carry PUBLIC ids, and the exclusion
+  // set below is matched against transcript filenames (backing ids). Resolved
+  // per-target-cwd inside the group loop via instances.liveBackingIdsForCwd.
 
   // Inactive rows come off disk, from the one function that already owns "which
   // sessions exist for a cwd, and which of them are archived"
@@ -405,6 +413,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // archived outnumbers active ~25:1 and the per-transcript cost is the
     // first-prompt read, which the walk skips for archived rows it is not
     // listing — so the count for a `+N archived` line is effectively free.
+    const attached = instances ? instances.liveBackingIdsForCwd(t.cwd) : null;
     const { rows, archivedCount } = await listSessionsForCwdWithCounts(t.cwd, attached, { includeArchived })
       .catch(() => ({ rows: [], archivedCount: 0 }));
     const liveHere = live.filter(r => r.project === t.project
@@ -647,6 +656,9 @@ export async function locateSession({ sessionId }: { sessionId?: string }) {
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('sessionId required');
   }
+  // findSessionLocation resolves a public id / any segment / a row-less full UUID
+  // itself, and returns null (never throws) for an id nothing on disk answers to —
+  // so this stays a clean 404 rather than surfacing an assertion as a 500.
   const hit = await findSessionLocation(sessionId);
   if (!hit) {
     throw Object.assign(new Error(`session not found: ${sessionId}`), { statusCode: 404 });
@@ -951,7 +963,8 @@ export async function unsubscribeFromIdle({ sessionId }: { sessionId: string }, 
 
 // Renew the CALLING session: capture a self-authored handoff summary, then
 // (at this turn's end) code-conductor drives a server-side `/clear` on the
-// caller — rotating its context in place (fresh sessionId, SAME process) — and
+// caller — rotating its context in place (SAME process and SAME public sessionId;
+// only the CLI's internal backing id moves) — and
 // seeds the cleared session with the summary (plus a server-generated
 // mechanical state block, built at reseed time) as its first user turn. Caller
 // identity comes from the MCP URL's ?caller=<sessionId>, so this only works for
@@ -973,6 +986,16 @@ export async function renewSession({ summary }: { summary?: string }, { instance
   }
   const r = await getInst(instances, callerId);
   if ('soft' in r) return r.soft;
+  // THE interlock (decision D6), MCP side. A prune sets `_mutating`, which makes
+  // prompt() 409 — and this renewal's reseed IS a prompt(), so arming now would
+  // clear the context and then lose the summary. MCP surfaces soft-refuse rather
+  // than throw. Re-arming a RENEWAL is deliberately still allowed: same instance,
+  // same mechanism, so arm() is idempotent and it is not an interleaving.
+  if (r.inst.rotationInFlight === 'prune' || r.inst._mutating) {
+    return { ok: false, code: 'SESSION_ROTATING', sessionId: callerId,
+      reason: 'a context prune is in progress on this session — retry once it completes, '
+        + 'then call renew_session again.' };
+  }
   instances.armSessionRenew(r.inst.id, { summary });
   return {
     ok: true,

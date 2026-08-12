@@ -7,7 +7,7 @@
 // mid-turn gets a plain stub delivered live into its running turn as a steering
 // callback.
 //
-// Keyed internally by the stable `instanceId` (NOT the rotating sessionId): the
+// Keyed internally by the stable `instanceId` (NOT a sessionId): the
 // event stream carries the instanceId, and an in-place `/clear` rotates a
 // session's sessionId while keeping its instanceId, so instanceId keying needs
 // no migration across a rotation. sessionId lives only at the boundary — the
@@ -15,14 +15,17 @@
 // entry), the sessionId woven into the wake stub in deliver(), and the
 // sessionId-shaped debug view from snapshot(). A subscription is NOT persisted
 // and is purged on remove(), so there is nothing to "survive a restart."
-// One-shot: a subscription is consumed when it fires — by whichever of THREE
+// One-shot: a subscription is consumed when it fires — by whichever of FOUR
 // trigger paths lands first:
 //   1. turn_end (the classic path — see _onTurnEnd and its defer gate),
 //   2. the idle task-drain settle (_onTaskEvent/_fireSettle — a background
 //      task finishing while the worker is already idle, with NO re-invocation
 //      turn ever coming, e.g. a nested Monitor whose completion is the last
 //      thing the stream says),
-//   3. the timeout watchdog.
+//   3. rotation completion (_onRotationComplete — a rotation that comes up IDLE
+//      with no turn at all, i.e. a prune; a renewal declares comesUpIdle:false
+//      and is delivered by its reseed turn's turn_end instead),
+//   4. the timeout watchdog.
 // Cross-instance lookups (idsForSession / byId / liveForSession) and event
 // emission go through the owning InstanceManager passed in at construction.
 
@@ -112,6 +115,8 @@ export class IdleSubscriptionHub {
     } else if (ev?.kind === 'system'
         && (ev.subtype === 'task_updated' || ev.subtype === 'task_notification')) {
       this._onTaskEvent(id);
+    } else if (ev?.kind === 'system' && ev.subtype === 'rotation_complete') {
+      this._onRotationComplete(id, ev);
     }
   }
 
@@ -168,7 +173,14 @@ export class IdleSubscriptionHub {
     // keep the subscription and its watchdog armed; a later turn_end with both
     // clear delivers. `target` is a live Instance here (a falsy `subs` above
     // already returned when it was absent), so the getters are always present.
-    if (target.activeAgentTaskCount > 0 || target.taskNotificationPending) return;
+    // …and defer while a context ROTATION is in flight, for the same reason: the
+    // turn_end being observed is the one the rotation was armed in, so firing here
+    // would wake the caller with the pre-rotation state and spend the one-shot a
+    // turn early. The window lives on the Instance (set at arm time, before this
+    // can fire), so this defer works regardless of listener registration order —
+    // which is what makes it correct without reordering the two listeners.
+    if (target.activeAgentTaskCount > 0 || target.taskNotificationPending
+        || target.rotationPending) return;
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
@@ -250,6 +262,33 @@ export class IdleSubscriptionHub {
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     for (const [callerInstanceId, { timerId }] of entries) {
       clearTimeout(timerId); // cancel watchdog — the settle won
+      this.deliver(callerInstanceId, targetInstanceId);
+    }
+  }
+
+  // A rotation finished. Fire the wake immediately IFF the mechanism declared the
+  // session comes up IDLE with no turn — a prune, where this event is the only wake
+  // point that will ever arrive. A renewal declares comesUpIdle:false: its reseed
+  // turn follows by construction, and that turn's turn_end (no longer deferred,
+  // since rotationPending is false by the time this fires) delivers instead.
+  //
+  // Declared by the mechanism rather than read off `inst.status`, because status is
+  // still 'idle' at this moment for BOTH mechanisms — microseconds before a
+  // renewal's prompt() flips it. That is also why prune's future MCP exposure needs
+  // no change here.
+  _onRotationComplete(targetInstanceId: string, ev: UiEvent): void {
+    const data = (ev as { data?: { comesUpIdle?: unknown } }).data;
+    if (data?.comesUpIdle !== true) return;
+    const subs = this.subscribers.get(targetInstanceId);
+    if (!subs || subs.size === 0) return;
+    const entries = [...subs.entries()];
+    subs.clear();
+    this.subscribers.delete(targetInstanceId);
+    // No watchers left, so any pending idle-drain settle has nothing to deliver to.
+    this._cancelSettle(targetInstanceId);
+    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+    for (const [callerInstanceId, { timerId }] of entries) {
+      clearTimeout(timerId); // cancel watchdog — the rotation won
       this.deliver(callerInstanceId, targetInstanceId);
     }
   }

@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { claudeProjectsRoot, encodeCwd, orchStoreRoot, findSessionLocation } from './projects.ts'; // claudeProjectsRoot+encodeCwd used by countMessages/flattenTranscript
+import { sessionFilePath, orchStoreRoot, findSessionLocation } from './projects.ts'; // sessionFilePath used by countMessages/flattenTranscript
 import { resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
 import { getTierBackend, getBackend } from './appSettings.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
@@ -66,7 +66,7 @@ interface TranscriptLine {
 // conversationText is formatted as "User: ...\nAssistant: ...\n\n" turns,
 // capped at INPUT_CAP chars.
 export async function flattenTranscript(sessionId: string, cwd: string): Promise<{ conversationText: string; messageCount: number }> {
-  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(cwd, sessionId);
   let raw: string;
   try { raw = await fs.readFile(file, 'utf8'); }
   catch (e) {
@@ -123,7 +123,7 @@ export async function flattenTranscript(sessionId: string, cwd: string): Promise
 // summary endpoint to detect staleness without loading the full transcript.
 // Returns 0 if the file is missing (archived/deleted session).
 export async function countMessages(sessionId: string, cwd: string): Promise<number> {
-  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(cwd, sessionId);
   let raw: string;
   try { raw = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return 0; throw e; }

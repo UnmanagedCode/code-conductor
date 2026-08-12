@@ -48,7 +48,7 @@ afterEach(async () => {
 
 // The marker records appended to a session's jsonl, newest last.
 async function markerLines(inst) {
-  const file = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd), `${inst.sessionId}.jsonl`);
+  const file = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd), `${inst.backingSessionId}.jsonl`);
   await waitFor(async () => {
     try { return (await fs.readFile(file, 'utf8')).includes('"type":"permission-mode"'); }
     catch { return false; }

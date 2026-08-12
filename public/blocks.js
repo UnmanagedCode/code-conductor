@@ -1067,7 +1067,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'compacting', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
-  'model_changed', 'cache_miss', 'playbook_warn',
+  'model_changed', 'cache_miss', 'playbook_warn', 'renew_error',
 ]);
 
 const OVERAGE_DISABLED_LABEL = { out_of_credits: 'out of credits' };
@@ -1090,6 +1090,10 @@ export class SystemBlock {
       if (subtype === 'exit') return `code=${data?.code} signal=${data?.signal ?? '-'}`;
       if (subtype === 'spawn_error' || subtype === 'crashed') return data?.message ?? '';
       if (subtype === 'history_load_error') return `couldn't replay history: ${data?.message ?? ''}`;
+      // Rendered on purpose: a renewal that cleared the context but failed to
+      // deliver the summary (or to persist the rotation) is the one failure in
+      // that flow a human has to see — it used to be swallowed silently.
+      if (subtype === 'renew_error') return `⚠️ renewal ${data?.stage ?? ''}: ${data?.message ?? ''}`;
       if (subtype === 'permission_denied') return data?.message ?? data?.reason ?? '';
       if (subtype === 'compacting') return 'auto-compacting context…';
       if (subtype === 'auto_stop_overage') {

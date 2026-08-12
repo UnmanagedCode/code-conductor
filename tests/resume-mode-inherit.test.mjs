@@ -108,7 +108,7 @@ test('a spawn records its mode, so the next resume can inherit it', async () => 
   assert.equal(first.status, 201);
   const inst = instances.get(first.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  const sid = inst.sessionId;
+  const sid = inst.backingSessionId;
 
   await waitFor(async () => (await getSessionMode(sid)) === 'plan');
   assert.equal(await getSessionMode(sid), 'plan', 'a spawn must record the mode it launched in');
@@ -119,7 +119,7 @@ test('set_mode updates the record, so a resume follows the latest mode', async (
   const res = await api(baseUrl, 'POST', '/api/instances', { project: 'record-setmode', mode: 'plan' });
   const inst = instances.get(res.body.id);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  const sid = inst.sessionId;
+  const sid = inst.backingSessionId;
   await waitFor(async () => (await getSessionMode(sid)) === 'plan');
 
   await inst.setMode('bypassPermissions');
@@ -152,14 +152,14 @@ test('the CLI-reported mode at system/init is recorded, not just the launched on
     const inst = srv.instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     // The spawn-time record is written fire-and-forget, so wait for it.
-    await waitFor(async () => (await getSessionMode(inst.sessionId)) === 'bypassPermissions');
+    await waitFor(async () => (await getSessionMode(inst.backingSessionId)) === 'bypassPermissions');
 
     inst.prompt('go');
     await waitFor(() => inst.mode === 'plan');
     assert.equal(inst.mode, 'plan', 'the CLI reported plan, so the instance is in plan');
 
-    await waitFor(async () => (await getSessionMode(inst.sessionId)) === 'plan');
-    assert.equal(await getSessionMode(inst.sessionId), 'plan',
+    await waitFor(async () => (await getSessionMode(inst.backingSessionId)) === 'plan');
+    assert.equal(await getSessionMode(inst.backingSessionId), 'plan',
       'the record must follow the CLI-reported mode, not the mode we asked for');
   } finally {
     await srv.instances.shutdown();

@@ -21,6 +21,9 @@ import { DEFAULT_PLAYBOOK_ENFORCEMENT } from '../src/playbooks.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
+// Its `/clear` turn emits this fixed post-rotation sid — see the fixture.
+const SCENARIO_RENEW = path.join(__dirname, 'fixtures', 'scenario-renew.json');
+const RENEW_NEW_SID = 'c0000000-0000-4000-8000-000000000001';
 
 function git(cwd, ...args) {
   return new Promise((resolve, reject) => {
@@ -49,8 +52,8 @@ let nextRpcId = 1;
 // Boot a server, a real git project, and a live conductor at `enforcement`.
 // `call(name, args)` issues a tools/call AS THE CONDUCTOR; `callAs(handle, …)`
 // issues one as somebody else (or nobody).
-async function setup({ enforcement } = {}) {
-  const ctx = await bootServer({ scenarioPath: SCENARIO });
+async function setup({ enforcement, scenarioPath = SCENARIO } = {}) {
+  const ctx = await bootServer({ scenarioPath });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
@@ -363,16 +366,21 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
     const wtName = impl.worktree.worktreeName;
     await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false });
 
-    const prefix = impl.sessionId.slice(0, 8);
+    // A public id is already only 8 chars, so a genuine PREFIX is shorter than
+    // that — and an exact match on the whole public id would resolve outright
+    // (exact always wins), which is not what this test is about.
+    const prefix = impl.sessionId.slice(0, 5);
     const rev = await t.spawnWorker({
       project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
       provenance: { implement: prefix },
     });
-    assert.ok(rev.sessionId, 'an 8-char needs prefix resolved to the full sessionId');
+    assert.ok(rev.sessionId, 'a needs prefix resolved to the full sessionId');
 
     // Ambiguity is reported the same way a top-level sessionId prefix is, and
-    // names which needs entry was ambiguous.
-    const fake = prefix + 'ffffffff-ffff-ffff-ffff-ffffffffffff'.slice(8);
+    // names which needs entry was ambiguous. The stand-in shares the prefix
+    // without being an exact match for it, so resolution genuinely has two
+    // SESSIONS to choose between.
+    const fake = prefix + 'ffffffff-ffff-ffff-ffff-ffffffffffff'.slice(prefix.length);
     t.instances.byId.set('fake-ambig', { id: 'fake-ambig', sessionId: fake, kill: async () => {} });
     try {
       const res = await t.call('spawn_instance', {
@@ -382,6 +390,145 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
       refused(res, 'SESSION_AMBIGUOUS');
       assert.match(res.reason, /provenance\.implement/);
     } finally { t.instances.byId.delete('fake-ambig'); }
+  } finally { await t.close(); }
+});
+
+test('enforce: a stage binding survives a renewal — one row, and capacity is released on exit', async () => {
+  // The ledger's projection is sessionId-keyed. Before card 2026-0126 a
+  // `renew_session` rotated that key out from under it, so the chain broke three
+  // ways at once: the worker lost its stage binding, its pre-rotation row stayed
+  // `live:true` forever (leaking a `workers:"one"` capacity slot, since capacity
+  // counts LIVE members), and the retire on exit landed under an id nothing was
+  // bound to. src/playbookLedger.ts carried a standing note saying so. Pinning the
+  // public id fixes all three without the ledger changing at all — which is
+  // exactly what this asserts, so the note can come out against a passing test.
+  const t = await setup({ enforcement: 'enforce', scenarioPath: SCENARIO_RENEW });
+  try {
+    const w = await t.spawnWorker({
+      project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',
+    });
+    const publicId = w.sessionId;
+    assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
+    const inst = instForSession(t.instances, publicId);
+    await waitFor(() => inst.status === 'idle');
+    const firstBacking = inst.backingSessionId;
+    assert.notEqual(firstBacking, publicId, 'precondition: the two ids have diverged');
+
+    // Bound and live before the rotation.
+    const before = foldProjection(await t.events()).bySession.get(publicId);
+    assert.deepEqual({ live: before.live, stage: before.stage, playbook: before.playbook },
+      { live: true, stage: 'freeform', playbook: 'freeform' });
+
+    // The worker renews ITSELF — the real shape, since MCP tools are
+    // auto-registered into every worker.
+    const armed = await t.callAs(inst.id, 'renew_session', { summary: 'keep my stage' });
+    assert.equal(armed.ok, true, JSON.stringify(armed));
+    await t.call('send_prompt', { sessionId: publicId, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === RENEW_NEW_SID);
+    await waitFor(() => inst.rotationPending === false);
+
+    const evs = await t.events();
+    const proj = foldProjection(evs);
+    // (1) The binding survived, under the SAME key, with its history intact.
+    const after = proj.bySession.get(publicId);
+    assert.deepEqual({ live: after.live, stage: after.stage, history: after.stageHistory },
+      { live: true, stage: 'freeform', history: ['freeform'] });
+    // (2) No second declaration and no orphan row under either backing id.
+    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === publicId).length, 1,
+      'exactly one spawn event — a rotation must not re-declare the binding');
+    assert.equal(proj.bySession.get(RENEW_NEW_SID), undefined, 'no row under the rotated backing id');
+    assert.equal(proj.bySession.get(firstBacking), undefined, 'nor under the pre-clear one');
+    assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');
+
+    // (3) The capacity slot is released on exit — the retire lands under the same
+    // key the spawn did, which is what `workers:"one"` counting depends on.
+    await t.call('kill_instance', { sessionId: publicId });
+    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === publicId));
+    const finalProj = foldProjection(await t.events());
+    const retires = (await t.events()).filter(e => e.kind === 'retire');
+    assert.equal(retires.length, 1, 'exactly one retire');
+    assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
+    assert.equal(finalProj.bySession.get(publicId).live, false, 'the slot is free again');
+  } finally { await t.close(); }
+});
+
+test('enforce: a stage binding survives a PRUNE — tracked under the same key, no second slot', async () => {
+  // The prune half of the same claim, and a DIFFERENT pre-card failure from the
+  // renewal above. A prune kills the subprocess, so the gate's status listener
+  // appended its retire while inst.sessionId was still the OLD id — meaning prune
+  // never leaked a slot. What it lost was the other end: the relaunch reassigned
+  // sessionId, nothing re-declared the binding, and the worker came back UNTRACKED
+  // by omission. (Observed in production on this very card: a pruned session's new
+  // id read `playbook — / —`.) Pinning the public id fixes that, and the assertion
+  // that matters is on the id the worker holds AFTER the prune.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    // solo/plan deliberately, not freeform/freeform: distinct playbook and stage
+    // names mean a mutant that confused the two fields could not pass this.
+    //
+    // `mode` is omitted because playbooks/solo.json's `plan` stage PINS
+    // {mode:'plan', createWorktree:true} (ARG_PIN_CONFLICT if either is supplied).
+    // So this worker runs in plan mode AND in a real git worktree — its cwd is the
+    // worktree, not the project root, which is why the transcript below is seeded
+    // at inst.cwd rather than the project path. Neither matters to the prune; both
+    // are consequences of the fixture choice, recorded so a future reader is not
+    // left wondering where the worktree came from.
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan', temp: false });
+    const publicId = w.sessionId;
+    assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
+    const inst = instForSession(t.instances, publicId);
+    await waitFor(() => inst.status === 'idle');
+    const firstBacking = inst.backingSessionId;
+    assert.notEqual(firstBacking, publicId, 'precondition: the two ids have diverged');
+    // The fake engine writes no transcript, so give the prune something to cut.
+    await seedSessionJsonl(t.claudeProjectsRoot, inst.cwd, firstBacking, [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+      { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'r2' }] } },
+    ]);
+
+    const before = foldProjection(await t.events()).bySession.get(publicId);
+    assert.deepEqual({ live: before.live, stage: before.stage }, { live: true, stage: 'plan' });
+
+    await inst.pruneSession({ cutTurnIndex: 1 });
+    await waitFor(() => inst.status === 'idle');
+    assert.notEqual(inst.backingSessionId, firstBacking, 'precondition: the prune DID rotate the backing id');
+
+    // THE assertion: the id the worker answers to after the prune is still the key
+    // its binding is filed under. Read off inst.sessionId, not the captured value —
+    // that is what makes this fail if the prune moves the public id.
+    const afterId = inst.sessionId;
+    assert.equal(afterId, publicId, 'the public id is pinned across a prune');
+    const evs = await t.events();
+    const proj = foldProjection(evs);
+    const after = proj.bySession.get(afterId);
+    assert.ok(after, `the pruned worker must still be tracked under ${afterId} — this is the production break`);
+    assert.deepEqual({ stage: after.stage, playbook: after.playbook, history: after.stageHistory },
+      { stage: 'plan', playbook: 'solo', history: ['plan'] }, 'binding intact');
+
+    // One worker, one row: no orphan under either backing id, and no re-declaration.
+    assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');
+    assert.equal(proj.bySession.get(firstBacking), undefined, 'no row under the pre-prune backing id');
+    assert.equal(proj.bySession.get(inst.backingSessionId), undefined, 'nor under the post-prune one');
+    assert.equal(evs.filter(e => e.kind === 'spawn').length, 1,
+      'exactly one spawn event — a prune must not re-declare the binding');
+
+    // No SECOND capacity slot is consumed: the one retire the prune's kill produced
+    // names the pinned id, so it lands on the row the spawn created rather than on
+    // an id nothing is bound to.
+    const retires = evs.filter(e => e.kind === 'retire');
+    assert.equal(retires.length, 1, 'exactly one retire');
+    assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
+
+    // KNOWN RESIDUAL, pinned so it cannot drift silently: `live` is false here even
+    // though the worker is alive again. The prune's kill retires it and the internal
+    // relaunch does not pass through the gate, so nothing un-retires it — a slot
+    // released EARLY, which is the safe direction and the opposite of the renewal
+    // leak. Pinning fixes the binding, not this; a governed spawn_instance({resume})
+    // re-declares and un-retires (see the resume tests below).
+    assert.equal(after.live, false,
+      'documented: a prune leaves the worker tracked-with-stage but not live');
   } finally { await t.close(); }
 });
 
@@ -757,7 +904,10 @@ async function killedBoundWorker(t) {
   assert.ok(w.sessionId, `the bound spawn must succeed: ${JSON.stringify(w)}`);
   // freeform pins nothing, so the worker sits in the project root with no worktree
   // — which is also the cwd the resume's `project`/`worktree` recovery resolves to.
-  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'), w.sessionId);
+  // The transcript is named by the BACKING id; the resume below deliberately uses
+  // the public id, which is the only handle a conductor ever had.
+  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'),
+    instForSession(t.instances, w.sessionId).backingSessionId);
   await t.call('kill_instance', { sessionId: w.sessionId });
   await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
   // The retire lands off the status stream, asynchronously from the kill's reply.

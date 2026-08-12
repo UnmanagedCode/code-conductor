@@ -401,7 +401,7 @@ test('a respawn after the custom-model row is DELETED still injects the resolved
 
   const inst = instances.get(id);
   assert.equal(inst.contextWindowTokens, 1_000_000, 'the session keeps the number it was created with');
-  const sessionId = inst.sessionId;
+  const sessionId = inst.backingSessionId;
 
   // Relaunch the session (kill + resume, the real path a user takes). The sidecar
   // carries the last known capacity, `_doCreate` falls back to it, and the env

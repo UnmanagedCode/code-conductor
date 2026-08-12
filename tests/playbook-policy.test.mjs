@@ -283,7 +283,7 @@ test('the two PLAYBOOK_UNKNOWN reasons are distinguishable: untracked resume vs.
   // full id re-sent — so collapsing these onto one message loses real information.
   const untracked = refusal(d('spawn_instance', { resume: 'w-nobody-01' }, RESUMABLE), 'PLAYBOOK_UNKNOWN');
   assert.match(untracked.reason, /is not playbook-tracked/);
-  assert.match(untracked.reason, /takes a full sessionId; prefixes are not resolved here/);
+  assert.match(untracked.reason, /takes a complete sessionId; prefixes are not resolved here/);
   assert.match(untracked.reason, /must name a `playbook` and a `stage`/, 'it must still say what to pass');
 
   const root = refusal(d('spawn_instance', { project: 'demo' }, RESUMABLE), 'PLAYBOOK_UNKNOWN');

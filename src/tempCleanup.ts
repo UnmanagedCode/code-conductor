@@ -21,7 +21,7 @@
 
 import path from 'node:path';
 import { writeFileSync, readFileSync, rmSync, existsSync, renameSync } from 'node:fs';
-import { orchStoreRoot, claudeProjectsRoot, encodeCwd } from './projects.ts';
+import { orchStoreRoot, subAgentDirPath } from './projects.ts';
 import { unmarkTemp } from './tempSessions.ts';
 import { markArchived } from './archivedSessions.ts';
 
@@ -81,7 +81,6 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
     return { swept: 0 };
   }
 
-  const root = claudeProjectsRoot();
   let swept = 0;
   for (const { cwd, sessionId } of entries) {
     if (!sessionId) continue;
@@ -92,8 +91,7 @@ export function sweepPendingTempCleanup({ log = console }: { log?: ManifestLogge
     // orphaned temps with no known cwd) have no dir to locate — bookkeeping
     // only.
     if (cwd) {
-      const dir = path.join(root, encodeCwd(cwd));
-      try { rmSync(path.join(dir, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+      try { rmSync(subAgentDirPath(cwd, sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
     }
     unmarkTemp(sessionId).catch(() => {});
     markArchived(sessionId).catch(() => {});

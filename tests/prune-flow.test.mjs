@@ -3,7 +3,8 @@
 //   POST /api/instances/:id/prune
 //
 // The behaviours worth pinning here are the ones a reader would otherwise have
-// to infer from the plan: the instanceId survives (only the sessionId rotates),
+// to infer from the plan: the instanceId and the public sessionId both survive
+// (only the internal backing id rotates),
 // the original jsonl is untouched and archived, and — the easiest thing to get
 // wrong by copying renew_session — the pruned session comes back IDLE with
 // nothing seeded as a first turn.
@@ -52,7 +53,7 @@ async function seedSession({ ctx, projectName, sid, lines }) {
   return { projectPath, sessionDir, file };
 }
 
-test('prune rotates the sessionId in place, archives the original, and lands idle', async () => {
+test('prune rotates the BACKING id, PINS the public id, archives the original, and lands idle', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {
     const sid = 'aaaaaaa1-2222-3333-4444-555555555555';
@@ -79,17 +80,38 @@ test('prune rotates the sessionId in place, archives the original, and lands idl
       cutTurnIndex: 1, pruneThinking: true, inputMode: 'truncate',
     });
     assert.equal(pr.status, 200);
+    // Both fields name TRANSCRIPTS — the file that was pruned and the copy that
+    // replaced it. The session's own identity is `instance.sessionId`, below.
     assert.equal(pr.body.oldSessionId, sid);
     assert.ok(pr.body.newSessionId && pr.body.newSessionId !== sid);
     assert.ok(pr.body.saved.toolOutputs > 900);
     // The instanceId is the stable handle every side structure keys off — a
-    // prune must not rotate it (only the sessionId rotates).
-    assert.equal(pr.body.instance.id, id, 'same instance, new sessionId');
+    // prune must not rotate it (only the backing id rotates).
+    assert.equal(pr.body.instance.id, id, 'same instance, new backing id');
 
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
-    assert.equal(inst.sessionId, pr.body.newSessionId);
+    // THE identity guarantee: the rotation is invisible on the public surface.
+    // This session was resumed from a seeded jsonl with no lineage row, so its
+    // public id is the full UUID it already had (the store's base case) — and it
+    // is that id, not the new transcript's, that survives the prune.
+    assert.equal(inst.sessionId, sid, 'the public id is pinned across a prune');
+    assert.equal(pr.body.instance.sessionId, sid, 'and the REST projection reports it');
+    assert.equal(inst.backingSessionId, pr.body.newSessionId,
+      'only the backing id moved, onto the pruned copy');
     assert.equal(resets.length, 1, 'snapshot_reset emitted exactly once');
+
+    // The lineage row was created lazily off the base case and records the prune.
+    // `reason` is load-bearing: a prune segment is a filtered COPY that OVERLAPS
+    // its predecessor, so a multi-segment reader must never concatenate across it.
+    const { segmentsFor, resolveBacking, publicIdFor } = await import('../src/sessionLineage.ts');
+    assert.deepEqual((await segmentsFor(sid)).map(g => [g.id, g.reason]),
+      [[sid, 'initial'], [pr.body.newSessionId, 'prune']]);
+    assert.equal(await resolveBacking(sid), pr.body.newSessionId,
+      'the public id resolves to the PRUNED transcript, not the original');
+    assert.equal(await resolveBacking(pr.body.newSessionId), pr.body.newSessionId,
+      'and naming a segment directly still opens that segment');
+    assert.equal(await publicIdFor(pr.body.newSessionId), sid);
 
     // Original untouched on disk…
     assert.deepEqual(await fs.readFile(file), originalBytes, 'original jsonl untouched');
@@ -231,6 +253,57 @@ test('two concurrent forks cannot both claim the flag', async () => {
   } finally { await ctx.close(); }
 });
 
+test('a prune-created segment is addressable by its new backing id, permanently', async () => {
+  // Design guarantee #3: "any full backing/segment UUID resolves, permanently".
+  // `Instance._segments` is the ENTIRE candidate universe for resolveSessionRef —
+  // D4 keeps resolution in-memory precisely so it can stay synchronous — so the
+  // push in pruneSession is what makes a prune-created segment addressable at all.
+  // Without it a live pruned worker named by its NEW backing id resolves to
+  // nothing and every handler falls through to SESSION_NOT_LIVE, and segmentCount
+  // under-reports. The renew path is covered by the no-duplicate-worker and
+  // rotation-tell tests; this is the prune equivalent.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'ba5eba11-0000-4000-8000-00000000beef';
+    await seedSession({ ctx, projectName: 'segaddr', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'segaddr', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const inst = ctx.instances.get(id);
+
+    const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 200);
+    await waitFor(() => inst.status === 'idle');
+    const newBacking = pr.body.newSessionId;
+    assert.equal(inst.backingSessionId, newBacking, 'precondition: the backing id rotated');
+    assert.equal(inst.sessionId, sid, 'precondition: the public id is pinned');
+
+    // (1) The new segment resolves — exactly, and to the session's PUBLIC id.
+    assert.deepEqual(ctx.instances.resolveSessionRef(newBacking), { sessionId: sid },
+      'the prune-created segment must resolve to its session');
+    // (2) …and reaches the live instance, which is what every MCP handler needs.
+    assert.equal(ctx.instances.liveForSession(newBacking)?.id, id,
+      'and it must reach the LIVE instance, not fall through to SESSION_NOT_LIVE');
+    assert.equal(ctx.instances.anyForSession(newBacking)?.id, id);
+    // (3) The pre-prune segment stays addressable too — "permanently" is the claim.
+    assert.deepEqual(ctx.instances.resolveSessionRef(sid), { sessionId: sid });
+    // (4) End to end over MCP, by the new backing id: the tool answers, and it
+    // answers with the PINNED public id.
+    const res = await fetch(ctx.baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'wait_for_idle', arguments: { sessionId: newBacking, timeoutMs: 5000 } } }),
+    });
+    const out = JSON.parse(JSON.parse(await res.text()).result.content[0].text);
+    assert.equal(out.sessionId, sid, `MCP must resolve the new segment: ${JSON.stringify(out)}`);
+    // (5) The count the conductor view reports tracks the real chain length.
+    assert.equal(inst.summary().segmentCount, 2, 'two segments after one prune');
+  } finally { await ctx.close(); }
+});
+
 test('a failed prune does not leave the recovered session on a suppressed ctx reading', async () => {
   // `_skipUsageSeed` is set for the PRUNED session's replay. If launch throws
   // after that, the catch replays the ORIGINAL — whose jsonl usage is accurate —
@@ -273,6 +346,94 @@ test('a failed prune does not leave the recovered session on a suppressed ctx re
     assert.ok(inst.lastContextUsage,
       "the recovered original's ctx reading must be seeded — the pruned run's suppression leaked");
     assert.equal(inst.lastContextUsage.cache_read_input_tokens, 4000);
+  } finally { await ctx.close(); }
+});
+
+test('a failed prune reverts the recorded rotation — no segment the process never ran', async () => {
+  // Prune records its segment BEFORE launch(), because it is the one rotation
+  // that CAN be durable before first use. That ordering is only safe if the
+  // rollback undoes it: otherwise a throw inside launch() leaves `current`
+  // pointing at a pruned file the session is not running, and a later restart
+  // resumes the wrong transcript.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa7-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'prunerevert', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunerevert', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const inst = ctx.instances.get(id);
+    const { segmentsFor, resolveBacking } = await import('../src/sessionLineage.ts');
+    assert.deepEqual(await segmentsFor(sid), [], 'precondition: no lineage row yet (base case)');
+
+    // Fail the pruned launch only; let the recovery launch succeed. This is the
+    // exact window the revert protects: after recordRotation, before the process
+    // ever runs the new id.
+    const realLaunch = inst.launch.bind(inst);
+    let calls = 0;
+    inst.launch = async (opts) => {
+      calls += 1;
+      if (calls === 1) throw new Error('simulated launch failure');
+      return realLaunch(opts);
+    };
+
+    const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 500, 'the real cause surfaces');
+    await waitFor(() => inst.status === 'idle');
+
+    assert.equal(inst.sessionId, sid, 'the public id never moved');
+    assert.equal(inst.backingSessionId, sid, 'the backing id is restored to the pre-prune segment');
+    assert.deepEqual(inst._segments, [sid], 'and the in-memory chain has no phantom segment');
+    // revertRotation dropped the trailing `initial`-only row entirely, restoring
+    // the base case EXACTLY — not a stub row that merely happens to resolve.
+    assert.deepEqual(await segmentsFor(sid), [], 'the lazily-created row is gone');
+    assert.equal(await resolveBacking(sid), sid, 'so the public id resolves to the intact original');
+  } finally { await ctx.close(); }
+});
+
+test('a subscriber woken by a prune does not hang, and is not told the worker failed', async () => {
+  // Prune deliberately comes up IDLE with NO turn, so there is no turn_end to
+  // deliver on. Without the rotation-completion trigger the hub's rotation defer
+  // would hold the one-shot until the 30-minute watchdog fired and told the
+  // conductor its worker "did NOT finish" — for a prune that SUCCEEDED. That is why
+  // the defer needed an explicit completion trigger rather than turn_end-retry.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa8-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'prunesub', sid, lines: sessionLines() });
+    const target = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunesub', mode: 'bypassPermissions', resume: sid,
+    });
+    const caller = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunesub', mode: 'bypassPermissions',
+    });
+    const tInst = ctx.instances.get(target.body.id);
+    const cInst = ctx.instances.get(caller.body.id);
+    await waitFor(() => tInst.status === 'idle' && cInst.status === 'idle');
+
+    // A generous watchdog: if this test ever passes by TIMING OUT rather than by
+    // the rotation trigger, it would have to wait this out, so it cannot.
+    ctx.instances.subscribeIdle(cInst.sessionId, tInst.sessionId, 600_000);
+    assert.equal(ctx.instances._idleHub.hasSubscriber(tInst.id), true);
+
+    const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${target.body.id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 200);
+
+    const stub = await waitFor(() => cInst.ringSnapshot().find(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('get_recent_messages')));
+    assert.ok(!stub.text.includes('did NOT finish'),
+      `a successful prune must not wake the conductor with the failure stub: ${stub.text}`);
+    // The wake names the PINNED public id, so the conductor's next call still works.
+    assert.ok(stub.text.includes(tInst.sessionId), `the wake must name the public id: ${stub.text}`);
+    assert.ok(!stub.text.includes(tInst.backingSessionId),
+      `and never the rotated backing id: ${stub.text}`);
+    assert.equal(ctx.instances._idleHub.hasSubscriber(tInst.id), false, 'one-shot consumed');
+    // …and the target really did come up idle with no turn of its own.
+    assert.equal(tInst.status, 'idle');
+    assert.equal(tInst.rotationPending, false, 'the rotation window is closed');
+    assert.equal(tInst.rotationReason, 'prune', 'and the completed rotation is recorded as a prune');
   } finally { await ctx.close(); }
 });
 

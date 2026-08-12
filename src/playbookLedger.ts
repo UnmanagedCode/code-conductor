@@ -12,23 +12,35 @@
 // Resolving it once at module load would make the test suite append to the real
 // ledger.
 //
-// Two known limitations live next to this module, and they are NOT the same
-// fact — do not collapse them into one sentence:
+// One known limitation lives next to this module — DEFINITION DRIFT (settled). A
+// playbook definition edited while workers are in flight is not pinned: no
+// definition snapshot, no definition hash on the `spawn` event, and a load is
+// never refused for invalidating a live run. Live workers pick up the reloaded
+// graph, and a worker whose stage or edge vanished under it gets a refusal
+// instead. That is accepted — which is why playbooks.ts makes
+// STAGE_UNKNOWN/PLAYBOOK_UNKNOWN on a LIVE worker say the definition changed,
+// rather than reading like a caller error.
 //
-//  1. DEFINITION DRIFT (settled). A playbook definition edited while workers are
-//     in flight is not pinned: no definition snapshot, no definition hash on the
-//     `spawn` event, and a load is never refused for invalidating a live run.
-//     Live workers pick up the reloaded graph, and a worker whose stage or edge
-//     vanished under it gets a refusal instead. That is accepted — which is why
-//     playbooks.ts makes STAGE_UNKNOWN/PLAYBOOK_UNKNOWN on a LIVE worker say
-//     the definition changed, rather than reading like a caller error.
+// A worker's BINDING survives a context rotation, by both mechanisms: this
+// projection is keyed by the PERMANENT public sessionId, which neither a
+// `renew_session` nor a prune moves any more (see src/sessionLineage.ts). So the
+// stage, the playbook and the stage history stay filed under the id the worker
+// still answers to, and no orphan row appears under a rotated backing id.
 //
-//  2. `renew_session` ROTATION (out of scope). renew_session mints a new
-//     sessionId, so a renewed worker's chain breaks in this sessionId-keyed
-//     projection and it loses its stage binding. This is a projection break,
-//     not a policy-scope gap; propagating stage state across a rotation belongs
-//     to the separate renew_session remodel track. (A projection break, NOT the
-//     targeted-only policy-scope gap — that one lives in playbooks.ts.)
+// The `live` flag survives a RENEWAL but not a PRUNE, and the difference is the
+// subprocess. A renewal clears in place — no exit, so no retire, so the row stays
+// live. A prune kills and relaunches: the retire fires (correctly, on the pinned
+// id) and the internal relaunch does not pass through the gate, so nothing
+// un-retires it. A pruned worker therefore reads tracked-with-stage but NOT live,
+// releasing its `workers:"one"` slot early. That is the safe direction — the
+// opposite of a leak. Recovery is a KILL followed by a governed
+// spawn_instance({resume}), which re-declares the binding and un-retires; a bare
+// resume while the worker is still running is refused, because one public id may
+// own at most one live session (InstanceManager's liveForSession guard).
+//
+// Both halves pinned by tests/playbook-enforce.test.mjs → "a stage binding
+// survives a renewal" and "… survives a PRUNE", the latter asserting the residual
+// `live:false` explicitly so it cannot drift unnoticed.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';

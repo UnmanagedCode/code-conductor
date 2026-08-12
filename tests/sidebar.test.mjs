@@ -736,6 +736,54 @@ test('tickAgo() recomputes "Xs/Xm ago" labels for an idle session without a full
   }
 });
 
+test('a live post-rotation session merges onto its on-disk row instead of double-rendering', async () => {
+  // mergeLive correlates on-disk rows with live instances by sessionId. On disk a
+  // row is keyed by TRANSCRIPT FILENAME (the backing id); a live instance reports
+  // its PERMANENT public id. Once those diverged, every live non-temp session
+  // missed its own row and fell into the synthetic-"fresh" branch — TWO rows for
+  // one session, on every render.
+  //
+  // The server closes the gap by projecting a row's `sessionId` to its session's
+  // public id (listSessionsForCwdWithCounts), so this needs no client change. That
+  // makes this test the guard on the projection: feed it what the server now emits
+  // and assert exactly one row.
+  const PUBLIC_ID = 'a1b2c3d4';                                    // 8 hex, as minted
+  const BACKING_ID = 'a1b2c3d4-9999-4999-8999-999999999999';       // its transcript
+  const { root, sidebar } = await setupSidebar({
+    onLoadSessions: async () => [{
+      // The projected row: the PUBLIC id, with everything else still read from
+      // the file the backing id names.
+      sessionId: PUBLIC_ID,
+      firstPrompt: 'do the thing', title: null, conducted: false,
+      temp: false, archived: false, lastActivity: 1_000, size: 42, resumeMode: 'plan',
+    }],
+  });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [], isGitRepo: false, worktrees: [],
+    sessions: { count: 1, lastActivity: 1_000 },
+  }]);
+  sidebar.setInstances([{
+    id: 'inst-rot', project: 'demo', sessionId: PUBLIC_ID, status: 'idle',
+    mode: 'plan', worktree: null, temp: false, lastResponseAt: 2_000,
+  }]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const rows = [...root.querySelectorAll('.session-row')];
+  assert.equal(rows.length, 1,
+    `exactly one row for the session, got ${rows.length}: ${rows.map(r => r.title).join(' | ')}`);
+  // The row's tooltip is its sessionId — so this also pins that the id a user sees
+  // and clicks is the PUBLIC one, never the rotating backing id.
+  assert.equal(rows[0].title, PUBLIC_ID);
+  assert.ok(!rows[0].title.includes(BACKING_ID.slice(9)), 'no backing id on the row');
+
+  // …and it is the MERGED row, not the synthetic one, on two independent counts:
+  // the synthetic branch carries no on-disk firstPrompt, and it would not be
+  // `.live` unless it had picked up the instance.
+  assert.ok(rows[0].classList.contains('live'), 'the row is the live/merged one');
+  assert.equal(rows[0].querySelector('.session-preview').textContent, 'do the thing',
+    'the live instance merged ONTO its on-disk row (synthetic rows have no firstPrompt)');
+});
+
 test('a live temp session (excluded from the on-disk list while alive) uses inst.lastResponseAt, not Date.now(), across repeated full re-renders', async () => {
   const realNow = Date.now;
   try {

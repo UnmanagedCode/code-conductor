@@ -94,6 +94,96 @@ export function encodeCwd(abs: string): string {
   return abs.replace(/[^A-Za-z0-9-]/g, '-');
 }
 
+// The two forms mintPublicId (src/sessionLineage.ts) produces: 8 hex chars, or
+// its `xxxxxxxx-xxxx` extension. A full UUID, a base-case id and every existing
+// fixture are all longer, so they pass this test.
+const MINTED_PUBLIC_ID_RE = /^[0-9a-f]{8}(-[0-9a-f]{4})?$/;
+
+// True when `id` has one of the shapes mintPublicId produces — i.e. it can only
+// ever be a PUBLIC id, so it can never name a transcript file. A caller that has
+// already resolved through resolveBacking() and STILL sees this shape is holding
+// an id no session on disk answers to: that is an UNKNOWN SESSION, not an error,
+// and it must degrade to that caller's normal miss path (null / false / 404)
+// rather than trip assertBackingId and surface as a 500.
+export function isMintedPublicId(id: unknown): boolean {
+  return typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id);
+}
+
+// Loud runtime guard on the public/backing boundary. A session's PUBLIC id is
+// neither a filename nor a `--resume` argument — those need its CURRENT backing
+// id, obtained from `resolveBacking()` (src/sessionLineage.ts) or read off
+// `Instance.backingSessionId`. This throws, with the call site named, when it is
+// handed something that looks exactly like one of our minted public ids.
+//
+// It is an ASSERTION, not a behavioural branch: nothing RESOLVES differently by
+// id length. If a fixture ever collides with the pattern, rename the fixture —
+// do not weaken the guard.
+export function assertBackingId(id: string, where: string): void {
+  if (typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id)) {
+    throw new Error(
+      `${where}: '${id}' is a public session id, not a backing id — resolve it through `
+      + 'resolveBacking() (src/sessionLineage.ts) or read Instance.backingSessionId',
+    );
+  }
+}
+
+// THE chokepoint for a persisted transcript path. Every read, write, append, copy
+// and unlink of a session jsonl resolves its path here — enforced by
+// tests/session-lineage-chokepoint.test.mjs, which fails on any other
+// `${…}.jsonl` construction outside this file.
+export function sessionFilePath(absCwd: string, backingId: string): string {
+  assertBackingId(backingId, 'sessionFilePath');
+  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${backingId}.jsonl`);
+}
+
+// The CLI's sibling sub-agent directory for a session — sidechain transcripts
+// live at `<this dir>/subagents/agent-<agentId>.jsonl`. Keyed to the transcript,
+// so it is a backing-id path under the same rule as sessionFilePath.
+export function subAgentDirPath(absCwd: string, backingId: string): string {
+  assertBackingId(backingId, 'subAgentDirPath');
+  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), backingId);
+}
+
+// Resolve a caller-supplied session id to the BACKING id that names a transcript,
+// or null when nothing on disk can answer to it.
+//
+// The lazy import is required, not stylistic: sessionLineage.ts imports
+// orchStoreRoot() from this module, so a static edge here would close a cycle.
+// Same pattern (and same reason) as loadWorktreesFor below. Every caller is async
+// and off the hot path.
+async function resolveToBackingId(sessionId: string): Promise<string | null> {
+  if (typeof sessionId !== 'string' || !sessionId) return null;
+  const { resolveBacking } = await import('./sessionLineage.ts');
+  const backingId = await resolveBacking(sessionId);
+  // Still minted-shaped after resolution ⇒ there is no lineage row, so no file is
+  // named by it. Decline cleanly instead of letting sessionFilePath assert.
+  return isMintedPublicId(backingId) ? null : backingId;
+}
+
+// Project a transcript FILENAME to the id a client should be handed.
+//
+// A row is projected to its session's PUBLIC id only when it is that session's
+// CURRENT segment (or has no lineage row at all — the base case, where the two are
+// the same string anyway). That is what makes the sidebar's live/on-disk
+// correlation work: a live instance reports its public id, and its one
+// non-archived row on disk is always `current`, so the two match again.
+//
+// A SUPERSEDED segment deliberately keeps its filename. Such a row exists to
+// address one specific transcript — Settings → Archived restores and deletes
+// individual files — and every superseded segment of a session shares one public
+// id, so projecting them would collapse distinct rows onto a single ambiguous
+// handle and point Delete at the live transcript instead of the archived one.
+function projectRowId(
+  filename: string,
+  lineage: { byPublic: Map<string, LineageRowLike>; byBacking: Map<string, string> },
+): string {
+  const publicId = lineage.byBacking.get(filename);
+  if (!publicId) return filename; // no row ⇒ public id IS the filename
+  return lineage.byPublic.get(publicId)?.current === filename ? publicId : filename;
+}
+
+interface LineageRowLike { current: string }
+
 export function validateName(name: string): string {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     throw httpError(400, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
@@ -540,11 +630,18 @@ export async function listSessionsForCwdWithCounts(
   // One bulk read per scanned cwd, like the four sidecars above — never a file
   // open per session.
   const modes = await loadAllSessionModes();
+  // Sixth bulk load, same rule. Lazy import: sessionLineage.ts imports
+  // orchStoreRoot() from here, so a static edge would close a cycle.
+  const { loadLineage } = await import('./sessionLineage.ts');
+  const lineage = await loadLineage();
   const out: SessionRow[] = [];
   let archivedCount = 0;
   for (const name of entries) {
     if (!name.endsWith('.jsonl')) continue;
     const sid = name.replace(/\.jsonl$/, '');
+    // The exclusion filter runs BEFORE the projection, deliberately: both
+    // tempSessionIdsForCwd and liveBackingIdsForCwd yield backing ids, because
+    // what they exclude is a FILE. Projecting first would make every set miss.
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
     const isArchived = archived.has(sid);
     const full = path.join(dir, name);
@@ -560,7 +657,10 @@ export async function listSessionsForCwdWithCounts(
     let firstPrompt: string | null = null;
     try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
     out.push({
-      sessionId: sid,
+      // The one projected field. Every sidecar below stays keyed to the FILENAME
+      // — that is what they are keyed to on disk, and re-keying them would have
+      // needed a migration this card deliberately does not have.
+      sessionId: projectRowId(sid, lineage),
       firstPrompt,
       title: titles.get(sid) ?? null,
       conducted: conducted.has(sid),
@@ -595,14 +695,16 @@ export async function listSessions(projectName: string, excludeSessionIds: Set<s
 // jsonl didn't exist (404 path from the route). This is the single
 // "remove from the normal list" action — it never deletes from disk.
 export async function archiveSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
-  const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
+  const backingId = await resolveToBackingId(sessionId);
+  if (backingId === null) return false; // unknown session — the route's 404
+  const file = sessionFilePath(absCwd, backingId);
   try {
     await fs.access(file);
   } catch (e) {
     if (errCode(e) === 'ENOENT') return false;
     throw e;
   }
-  await markArchived(sessionId);
+  await markArchived(backingId);
   return true;
 }
 
@@ -614,13 +716,21 @@ export async function archiveSessionForCwd(absCwd: string, sessionId: string): P
 // responsible for killing any running instance attached to this
 // sessionId first.
 export async function deleteSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
-  const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
+  const backingId = await resolveToBackingId(sessionId);
+  if (backingId === null) return false; // unknown session — the route's 404
+  const file = sessionFilePath(absCwd, backingId);
   try {
     await fs.unlink(file);
-    try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkConducted(sessionId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkArchived(sessionId); } catch { /* sidecar cleanup is best-effort */ }
-    try { await unmarkSessionMode(sessionId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await deleteSessionTitle(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkConducted(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkArchived(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    try { await unmarkSessionMode(backingId); } catch { /* sidecar cleanup is best-effort */ }
+    // Chain integrity: the transcript this segment named is gone for good, so drop
+    // it from its lineage row rather than leave `current`/`segments` pointing at a
+    // missing file. Deliberately on the DELETE path, not on reads — a write inside
+    // a read path races concurrent readers.
+    try { const { dropSegment } = await import('./sessionLineage.ts'); await dropSegment(backingId); }
+    catch { /* best-effort */ }
     return true;
   } catch (e) {
     if (errCode(e) === 'ENOENT') return false;
@@ -649,6 +759,13 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
   if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
+  // Resolve ONCE, here, rather than at each of the four call sites — they pass
+  // mixed provenance (a conductor's public id, a REST path param, a segment id
+  // off an archived row, an already-backing id from _doCreate) and this is the
+  // one home that can normalise all of them.
+  const backingId = await resolveToBackingId(sessionId);
+  if (backingId === null) return null; // unknown session, not an error
+
   // Lazy import to avoid the projects.ts ↔ worktrees.ts circular dep
   // worktrees.ts already imports from projects.ts (encodeCwd, etc.).
   const projects: ProjectInfo[] = await listProjects();
@@ -663,25 +780,46 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null });
   } catch { /* .conduct doesn't exist yet — skip */ }
 
-  for (const proj of projects) {
-    const file = path.join(claudeProjectsRoot(), encodeCwd(proj.path), `${sessionId}.jsonl`);
-    try {
-      const stat = await fs.stat(file);
-      if (stat.isFile()) return { project: proj.name, worktreeName: null };
-    } catch (e) {
-      if (errCode(e) !== 'ENOENT') throw e;
-    }
-    let wts: WorktreeMeta[] = [];
-    try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
-    for (const wt of wts) {
-      const wtFile = path.join(claudeProjectsRoot(), encodeCwd(wt.worktreePath), `${sessionId}.jsonl`);
+  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null } | null> => {
+    for (const proj of projects) {
+      const file = sessionFilePath(proj.path, id);
       try {
-        const stat = await fs.stat(wtFile);
-        if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
+        const stat = await fs.stat(file);
+        if (stat.isFile()) return { project: proj.name, worktreeName: null };
       } catch (e) {
         if (errCode(e) !== 'ENOENT') throw e;
       }
+      let wts: WorktreeMeta[] = [];
+      try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
+      for (const wt of wts) {
+        const wtFile = sessionFilePath(wt.worktreePath, id);
+        try {
+          const stat = await fs.stat(wtFile);
+          if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
+        } catch (e) {
+          if (errCode(e) !== 'ENOENT') throw e;
+        }
+      }
     }
+    return null;
+  };
+
+  const hit = await probe(backingId);
+  if (hit) return hit;
+
+  // READ TOLERANCE. `current`'s transcript can vanish without going through our
+  // delete path — Claude prunes its own ~/.claude/projects after ~30 days. Walk
+  // the row's segments newest-first and locate the first one that still exists, so
+  // a session with a surviving older segment stays findable. Read-only on purpose:
+  // self-pruning here would put a write inside a hot read path and race concurrent
+  // readers (the delete path and loadHistory's ENOENT branch own the pruning).
+  const { publicIdFor, segmentsFor } = await import('./sessionLineage.ts');
+  const segments = await segmentsFor(await publicIdFor(sessionId));
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const id = segments[i].id;
+    if (id === backingId || isMintedPublicId(id)) continue;
+    const older = await probe(id);
+    if (older) return older;
   }
   return null;
 }
@@ -701,6 +839,17 @@ export interface ArchivedSessionRow {
 // listSessionsForCwd already flags as archived (it also reads firstPrompt
 // + title). Used by the Settings → Archived page. Only projects with at
 // least one archived session are returned; sessions are lastActivity-desc.
+//
+// DELIBERATELY passes no `excludeSessionIds`. The public-id work required that
+// filter to run BEFORE the row projection wherever it is used (both exclusion sets
+// yield backing ids, because what they exclude is a FILE) — but there is no filter
+// to order here, and adding one would be wrong: both sets name LIVE sessions, and
+// a live session's transcript is never in the archived set (archiving force-kills
+// the instance first). So the archived view has nothing to exclude, and it keeps
+// the behaviour it had before this change. The row ids it reports come already
+// projected from listSessionsForCwd, whose rule keeps a SUPERSEDED segment's
+// filename precisely so each archived transcript stays individually addressable
+// for restore/delete — see projectRowId.
 export async function listArchivedGroupedByProject(): Promise<{ project: string; sessions: ArchivedSessionRow[] }[]> {
   const projects: ProjectInfo[] = await listProjects();
 

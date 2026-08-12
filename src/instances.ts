@@ -4,7 +4,10 @@ import readline from 'node:readline';
 import { promises as fsp, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
-import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId } from './projects.ts';
+import {
+  mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
+} from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
@@ -182,6 +185,27 @@ const TASK_LIFECYCLE_SUBTYPES = new Set(['task_started', 'task_updated', 'task_n
 // (a 1–3 char hit that the next spawn could collide with). Uniqueness within the
 // in-memory universe remains the real guard — this is just a sanity floor.
 export const SESSION_PREFIX_MIN = 4;
+
+// The two mechanisms that rotate a session's backing id. Rotation-generic on
+// purpose: prune is not MCP-exposed yet, but every seam it will land on — the
+// lineage `reason`, the interlock, the idle hub's completion trigger — treats the
+// two uniformly, so exposing it later needs no new branch.
+export type RotationMechanism = 'renew' | 'prune';
+
+// The backing ids an instance has run under, in memory. Guarded because several
+// suites inject bare `{ id, sessionId }` stand-ins straight into `byId`, and the
+// resolvers below sit on the MCP hot path — they must degrade on a partial entry,
+// never throw. A real Instance always has the array (set in its constructor).
+function segmentsOf(i: Instance): string[] {
+  return i._segments ?? [];
+}
+
+// Does this instance answer to `id`? True for its PERMANENT public id and for
+// every backing id it has ever run under, so a conductor's held id, a wiki page
+// naming an old segment, and an archived sidebar row all reach the same session.
+function answersTo(i: Instance, id: string): boolean {
+  return i.sessionId === id || segmentsOf(i).includes(id);
+}
 
 // Fallback wind-down text for windDown() when the caller supplies none. It
 // asks the model to stop all work, but still to emit one brief visible line:
@@ -434,7 +458,60 @@ export class Instance extends EventEmitter implements InstanceLike {
   _appendSystemPromptFile: string | null;
   debugDir: string | null;
   _debugStreams: { stdin: WriteStream; stdout: WriteStream; stderr: WriteStream } | null;
+  // The session's PERMANENT public id — the one and only handle that crosses an
+  // API / MCP / WS / UI / persisted-store boundary, and the one summary() emits.
   sessionId: string | null;
+  // The CLI's OWN rotating session_id: what names the transcript file on disk and
+  // what goes to `--resume` / `--session-id`. Confined to process launch and
+  // transcript resolution, and DELIBERATELY absent from summary() — that absence
+  // is what enforces the invariant that a rotating id never reaches a conductor.
+  //
+  // The two diverge from the first rotation onward. They are EQUAL only for a
+  // session with no lineage row (the store's base case — see sessionLineage.ts),
+  // where the public id simply is the first backing id.
+  backingSessionId: string | null;
+  // Every backing id this session has run under, oldest first — the in-memory
+  // mirror of its lineage row's segments (src/sessionLineage.ts). Held here so
+  // prefix/exact resolution on the MCP hot path stays synchronous and store-free.
+  _segments: string[];
+  // Serialised chain for this instance's DURABLE lineage writes, plus the last
+  // error one produced. A rotation observed in the stdout line loop is recorded
+  // in memory immediately and its persist is kicked onto this chain in the same
+  // tick — the earliest possible durability point, since the CLI has ALREADY
+  // written the new transcript by the time we see its system/init. flushLineage()
+  // is how a caller waits for it and learns whether it landed.
+  _lineageWrite: Promise<void>;
+  _lineageError: Error | null;
+  // Non-null while a context rotation is IN FLIGHT on this instance — a managed
+  // `/clear` renewal or a prune. ONE field answers "is a rotation happening here",
+  // for both mechanisms and both readers: IdleSubscriptionHub defers its one-shot
+  // on it (so a conductor's wake cannot be spent a turn early), and each mechanism
+  // refuses to start while the other holds it (SESSION_ROTATING).
+  //
+  // It lives on the Instance rather than in either controller precisely so the
+  // hub's defer does not depend on listener registration order — the hub's
+  // listener is registered BEFORE the renew controller's, which is why the
+  // pre-card code consumed the one-shot on the ARMED turn_end, a turn early.
+  _rotation: { reason: RotationMechanism; startedAt: number } | null;
+  // TRUE for the whole renewal sequence: from `arm()` until the reseed prompt()
+  // has actually been accepted. A SECOND flag rather than a wider `_rotation`,
+  // because the two have genuinely different lifetimes and only their union is
+  // safe to mutate against:
+  //   `_rotation` must close at the `/clear`'s own turn_end — the idle hub stops
+  //   deferring there, and if it did not, the reseed's turn_end could never
+  //   deliver a waiting conductor's wake (D3).
+  //   `_renewing` must stay set past that point, because between the turn_end and
+  //   the reseed landing, `_rotation` is null, `_mutating` is false and status is
+  //   'idle' — every guard a prune or a rewind checks. A request landing in that
+  //   window kills the proc, and the reseed then 409s in prompt(): context
+  //   cleared, handoff summary lost, conductor silent until the watchdog. Which is
+  //   exactly the outcome the interlock exists to prevent.
+  _renewing: boolean;
+  // The last COMPLETED rotation. Pinning the public id removes the only tell a
+  // conductor had that a rotation happened at all, so these replace it. Set here;
+  // surfaced on summary() / CONDUCTOR_VIEW_KEYS in stage 8.
+  lastRotatedAt: number | null;
+  rotationReason: RotationMechanism | null;
   pid: number | null;
   status: string;
   lastResponseAt: number | null;
@@ -563,6 +640,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.debugDir = null;
     this._debugStreams = null;
     this.sessionId = null;
+    this.backingSessionId = null;
+    this._segments = [];
+    this._lineageWrite = Promise.resolve();
+    this._lineageError = null;
+    this._rotation = null;
+    this._renewing = false;
+    this.lastRotatedAt = null;
+    this.rotationReason = null;
     this.pid = null;
     this.status = 'idle';
     // Wall-clock time of the most recent turn_end (i.e. the last completed
@@ -862,6 +947,19 @@ export class Instance extends EventEmitter implements InstanceLike {
       firstPrompt: this.firstPrompt,
       title: this.title,
       lastResponseAt: this.lastResponseAt,
+      // Rotation tell. Pinning the public id makes a rotation invisible, which
+      // removes the ONLY signal a conductor previously had that one happened — a
+      // renewed or pruned worker would otherwise be indistinguishable from one
+      // that had simply gone quiet. Rotation-GENERIC, not renew-specific: a
+      // conductor deciding what to make of a quiet worker needs to know a prune
+      // reset its context just as much as a renewal did.
+      //
+      // `backingSessionId` is deliberately NOT here. That absence IS the
+      // enforcement of the invariant: a rotating id can never reach a conductor
+      // if the one projection they all read cannot see it.
+      lastRotatedAt: this.lastRotatedAt,
+      rotationReason: this.rotationReason,
+      segmentCount: this._segments.length,
       createdAt: this.createdAt,
       autoApprovePlan: this.autoApprovePlan,
       playbookEnforcement: this.playbookEnforcement,
@@ -907,9 +1005,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // sessionId becomes known so the active header chip survives a
   // resume/respawn without the user re-typing.
   async _hydrateTitle(): Promise<void> {
-    if (!this.sessionId) return;
+    if (!this.backingSessionId) return;
     try {
-      const t = await getSessionTitle(this.sessionId);
+      const t = await getSessionTitle(this.backingSessionId);
       if (t && this.title !== t) {
         this.title = t;
         this.emit('status', this.summary());
@@ -980,13 +1078,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     const events = this.ring.buf.filter(ev => ev._seq < beforeSeq);
     const { activeAtEnd, hadOrphanUpdate } = reconstructTasks(events);
     const tb = this.ring.trimmedBefore;
-    if (!hadOrphanUpdate || tb <= 0 || !this.sessionId) return activeAtEnd;
+    if (!hadOrphanUpdate || tb <= 0 || !this.backingSessionId) return activeAtEnd;
     // Best-effort widening: a non-ENOENT jsonl read error (EACCES/EIO/…) must
     // never abort the snapshot frame — fall back to the ring-only result the
     // pre-archive code always returned.
     try {
       const archive = await buildArchive({
-        cwd: this.cwd, sessionId: this.sessionId,
+        cwd: this.cwd, sessionId: this.backingSessionId,
         ring: this.ringSnapshot(), trimmedBefore: tb,
         userEchoCount: this._userEchoCount,
       });
@@ -1012,7 +1110,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       mkdirSync(dir, { recursive: true });
       const meta = {
         instanceId: this.id,
-        sessionId: this.sessionId,
+        // The BACKING id: this bundle is for correlating against the raw CLI
+        // streams and the on-disk transcript, both of which are keyed to it.
+        sessionId: this.backingSessionId,
         project: this.project,
         cwd: this.cwd,
         mode: this.mode,
@@ -1267,11 +1367,20 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.contextWindowTokens = Number.isFinite(cw) ? cw : null;
   }
 
-  async loadHistory(sessionId: string): Promise<void> {
+  async loadHistory(backingId: string): Promise<void> {
     const result = await loadPersistedTranscript({
-      cwd: this.cwd, sessionId, seqHint: this.ring.nextSeq,
+      cwd: this.cwd, sessionId: backingId, seqHint: this.ring.nextSeq,
     });
-    if (!result) return; // ENOENT or no sessionId — silent no-op.
+    if (!result) {
+      // ENOENT: the transcript this segment named is gone (Claude prunes its own
+      // ~/.claude/projects after ~30 days). Drop it from the lineage row so the
+      // chain stops pointing at a missing file. This is the ONE opportunistic
+      // self-prune, and it is here because this path is async, off the hot read
+      // path, and already holds the cwd — reads themselves stay write-free
+      // (findSessionLocation tolerates the gap instead).
+      this._kickLineageWrite(() => dropSegment(backingId));
+      return; // silent no-op for the replay itself
+    }
     for (const line of result.lines) {
       for (const ev of line.events) this._emitUi(ev);
     }
@@ -1326,7 +1435,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
       this._emitUi({
         kind: 'system', subtype: 'history_replayed',
-        data: { sessionId, count: result.replayedCount },
+        data: { sessionId: backingId, count: result.replayedCount },
       });
     }
   }
@@ -1340,9 +1449,49 @@ export class Instance extends EventEmitter implements InstanceLike {
   // loud): a role-less conductor is worse than a surfaced error, and all
   // callers are async and return errors to REST/MCP.
   async launch({ resume }: { resume?: string } = {}): Promise<void> {
+    // THE one mint site in the codebase. It lives here rather than in spawn()
+    // because minting is async (it persists the lineage row under the store
+    // lock) and must complete BEFORE the process starts and before the first
+    // emit('status', summary()) inside _setStatus('spawning') — so no surface
+    // can ever observe a session without its permanent public id. launch() is
+    // the sole caller of spawn(), so this covers every fresh-spawn entry point.
+    //
+    // Distinguished STRUCTURALLY, never by id length: a fresh spawn is the one
+    // with neither a resume target nor an id already in hand. The
+    // `!this.backingSessionId` half is what preserves rewind's empty-prefix
+    // relaunch (`launch({})` on an instance that already has ids), which
+    // deliberately reuses the same id under `--session-id`.
+    if (!resume && !this.backingSessionId) {
+      this.backingSessionId = randomUUID();
+      this.sessionId = await mintPublicId(this.backingSessionId);
+      this._segments = [this.backingSessionId];
+    }
     this._appendSystemPromptFile = this._appendSystemPromptFileProvider
       ? await this._appendSystemPromptFileProvider() : null;
     this.spawn({ resume });
+  }
+
+  // Await every durable lineage write kicked so far, and RETHROW the first
+  // failure since the last flush. A rejection means a rotation is live in memory
+  // but absent from disk: after a crash the public id would resolve to the
+  // PRE-rotation transcript and orphan the tail. The caller decides what to do
+  // about that — this must never swallow it. The error is cleared on read so a
+  // later rotation on this instance is not blamed for an older failure.
+  async flushLineage(): Promise<void> {
+    await this._lineageWrite;
+    const err = this._lineageError;
+    if (err) { this._lineageError = null; throw err; }
+  }
+
+  // Kick a durable lineage write onto the serialised chain. The `.catch` is
+  // attached synchronously (so a failure can never surface as an unhandled
+  // rejection) and REMEMBERS rather than swallows — flushLineage() rethrows it.
+  // Remembering also keeps the chain usable: a failed write does not wedge every
+  // subsequent rotation on this instance behind a permanently rejected promise.
+  _kickLineageWrite(write: () => Promise<void>): void {
+    this._lineageWrite = this._lineageWrite.then(write).catch((err: unknown) => {
+      this._lineageError = err instanceof Error ? err : new Error(String(err));
+    });
   }
 
   spawn({ resume }: { resume?: string } = {}): void {
@@ -1411,24 +1560,38 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._setStatus('crashed');
       throw err;
     }
-    if (resume) this.sessionId = resume;
-    else if (!this.sessionId) this.sessionId = randomUUID();
-    // Local capture: a fresh spawn always has a sessionId by here, and the
+    // `resume` is ALREADY a backing id: every caller either resolved it
+    // (_doCreate, via resolveBacking) or holds one directly (pruneSession /
+    // rewind / respawn read backingSessionId). `this.sessionId` is deliberately
+    // NOT touched here — the public id is pinned for the life of the session,
+    // and every resume path has already set it.
+    if (resume) this.backingSessionId = resume;
+    // Local capture: launch() has minted one by here on a fresh spawn, and the
     // later method calls (markTemp / _hydrateTitle / getBackend) would reset
     // property narrowing — the args block below needs a non-null id.
-    const sessionId = this.sessionId;
+    const backingId = this.backingSessionId;
+    if (!backingId) {
+      // Unreachable via launch(), which is spawn()'s only caller: it mints when
+      // there is no resume target. Fail loud rather than spawn an id-less CLI.
+      this._setStatus('crashed');
+      throw new Error('spawn(): no backing session id — launch() must mint or resolve one first');
+    }
+    // Everything downstream of here — the `--resume`/`--session-id` argv below
+    // and the transcript-keyed sidecar markers — is a backing-id consumer. One
+    // assertion at the capture point covers all of them.
+    assertBackingId(backingId, 'Instance.spawn');
     // Persist the temp marker at spawn time so it survives a SIGKILL that
     // happens before the first turn_end (where _writeSessionMetadata also
     // calls markTemp). Fire-and-forget — spawn() must stay synchronous.
-    if (this.temp && this.sessionId) markTemp(this.sessionId).catch(() => {});
+    if (this.temp) markTemp(backingId).catch(() => {});
     // Persist the backend id + exact model durably (the things jsonl can't carry
     // — which backend ran it, and the full model id the inner CLI reports
     // lossily) so every resume path re-acquires them. The capacity rides along
     // as a last-known fallback for a resume after the custom-model row is
     // deleted. Runs on every spawn/resume, so a legacy model-unknown entry
     // self-heals once this.model holds a real id.
-    if (this.backend !== CLAUDE_BACKEND_ID && this.sessionId) {
-      markSessionBackend(this.sessionId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
+    if (this.backend !== CLAUDE_BACKEND_ID) {
+      markSessionBackend(backingId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
     }
     // Same reason as the temp marker: this is the first point a fresh spawn has
     // a sessionId to key the mode record on (the constructor runs before the id
@@ -1482,12 +1645,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.mcpServerUrl) {
       // Bake THIS worker's own stable INSTANCE id into ?caller= so the MCP server
       // can identify it when it calls caller-dependent tools (subscribe_to_idle,
-      // renew_session). The instanceId (NOT the sessionId) is used deliberately:
-      // a managed /clear rotates the sessionId in place, but this URL is frozen in
-      // the subprocess's --mcp-config for the life of the process — a baked
-      // sessionId would go stale after the first renewal. The instanceId
-      // never rotates; the MCP boundary resolves it to the caller's CURRENT
-      // sessionId per request (see InstanceManager.callerSessionId / mcp/server.ts).
+      // renew_session). The instanceId (NOT the sessionId) is used deliberately,
+      // though no longer for the original reason — a baked PUBLIC sessionId would
+      // now stay valid, since a rotation cannot move it. What the instanceId buys
+      // is that it names the PROCESS, which is what a caller-addressed tool acts
+      // on, and it needs no store read to resolve. The MCP boundary translates it
+      // to the caller's sessionId per request (InstanceManager.callerSessionId).
       const url = `${this.mcpServerUrl}?caller=${encodeURIComponent(this.id)}`;
       args.push('--mcp-config', buildMcpConfigJSON({ url }));
     }
@@ -1572,8 +1735,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the same value — a confirmed no-op for ollama (it consumes its own copy and
     // re-injects the tag).
     if (this.model) args.push('--model', this.model);
-    if (resume) args.push('--resume', sessionId);
-    else args.push('--session-id', sessionId);
+    if (resume) args.push('--resume', backingId);
+    else args.push('--session-id', backingId);
 
     this._setStatus('spawning');
     this.parser.reset();
@@ -1611,8 +1774,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the persisted transcript into the ring buffer first so the UI shows
     // prior history alongside the new live stream.
     (async () => {
-      if (resume && this.sessionId) {
-        try { await this.loadHistory(this.sessionId); }
+      if (resume && this.backingSessionId) {
+        try { await this.loadHistory(this.backingSessionId); }
         catch (err) {
           this._emitUi({ kind: 'system', subtype: 'history_load_error', data: { message: (err as Error).message } });
         }
@@ -1655,8 +1818,20 @@ export class Instance extends EventEmitter implements InstanceLike {
       if (ev.kind === 'system' && ev.subtype === 'init') {
         const data = evData(ev);
         const sid = data?.session_id;
-        if (sid && typeof sid === 'string' && sid !== this.sessionId) {
-          this.sessionId = sid;
+        if (sid && typeof sid === 'string' && sid !== this.backingSessionId) {
+          // A `/clear` rotation: the CLI minted a new session_id and has ALREADY
+          // written the new transcript, so durable-before-first-use is
+          // physically impossible here. In-memory truth is corrected in this
+          // tick (that is what every live consumer reads) and the durable write
+          // is kicked onto the chain immediately;
+          // SessionRenewController awaits flushLineage() before it reseeds.
+          //
+          // `this.sessionId` is NOT reassigned — pinning it across this rotation
+          // is the whole point of the public id.
+          const publicId = this.sessionId;
+          this.backingSessionId = sid;
+          this._segments.push(sid);
+          if (publicId) this._kickLineageWrite(() => recordRotation(publicId, sid, 'renew'));
           this._hydrateTitle().catch(() => {});
         }
         const mode = data?.permissionMode;
@@ -1959,18 +2134,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // permission-mode write below stays after the early return — it exists
     // only to surface a session in the shell-side `claude --resume` picker,
     // which temp sessions must not appear in.
-    if (this.temp && this.sessionId) {
-      try { await markTemp(this.sessionId); } catch { /* best effort */ }
+    if (this.temp && this.backingSessionId) {
+      try { await markTemp(this.backingSessionId); } catch { /* best effort */ }
     }
-    if (this.conducted && this.sessionId) {
-      try { await markConducted(this.sessionId); } catch { /* best effort */ }
+    if (this.conducted && this.backingSessionId) {
+      try { await markConducted(this.backingSessionId); } catch { /* best effort */ }
     }
     if (this.temp) return;
-    if (!this.sessionId || !this._lastLeafUuid) return;
+    if (!this.backingSessionId || !this._lastLeafUuid) return;
     try {
       await writeSessionMetadata({
         cwd: this.cwd,
-        sessionId: this.sessionId,
+        sessionId: this.backingSessionId,
         leafUuid: this._lastLeafUuid,
         mode: this.mode,
       });
@@ -2021,12 +2196,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // restore). Title and conducted markers are kept — they are still
   // meaningful on an archived session.
   async _archiveTempSession(): Promise<void> {
-    if (!this.sessionId) return;
-    const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
-    const subagents = path.join(dir, this.sessionId);
-    await fsp.rm(subagents, { recursive: true, force: true });
-    try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
-    try { await markArchived(this.sessionId); } catch { /* best-effort */ }
+    if (!this.backingSessionId) return;
+    await fsp.rm(subAgentDirPath(this.cwd, this.backingSessionId), { recursive: true, force: true });
+    try { await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
+    try { await markArchived(this.backingSessionId); } catch { /* best-effort */ }
   }
 
   _sendRaw(obj: unknown): void {
@@ -2174,7 +2347,8 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   // Drive a server-managed `/clear` on this session: send the slash command on
   // the SAME stdin path a user turn uses, which rotates the CLI's context in
-  // place — a fresh sessionId, SAME OS process/pid, and the old jsonl preserved.
+  // place — a fresh BACKING id, SAME OS process/pid, and the old jsonl preserved.
+  // `this.sessionId` (the public id) does NOT move; see the field declarations.
   // Deliberately bypasses prompt()'s user_echo + overage-queue intercept: this
   // is a server-internal control send, not a user turn. The rotation is picked
   // up by the system/init handler (which updates this.sessionId), and the
@@ -2188,6 +2362,92 @@ export class Instance extends EventEmitter implements InstanceLike {
       parent_tool_use_id: null,
     });
     this._setStatus('turn');
+  }
+
+  // True while a rotation is in flight. Read by IdleSubscriptionHub's defer gate
+  // and by the two refusal sites that keep renew and prune mutually exclusive.
+  get rotationPending(): boolean { return this._rotation !== null; }
+
+  // Which mechanism holds the window, or null. The refusal sites need the reason,
+  // not just the boolean: a renewal re-arming over its own window is idempotent,
+  // while a renewal arming over a PRUNE is the interleaving that must be refused.
+  get rotationInFlight(): RotationMechanism | null { return this._rotation?.reason ?? null; }
+
+  // True for the whole renewal sequence, including the reseed window `_rotation`
+  // deliberately leaves open. See the field declaration.
+  get renewalPending(): boolean { return this._renewing; }
+
+  // Open / close the renewal window. Separate from beginRotation because the
+  // reseed has to be inside it and the hub's defer has to be outside it.
+  beginRenewal(): void { this._renewing = true; }
+  endRenewal(): void { this._renewing = false; }
+
+  // Refuse a destructive rewrite while ANY context rotation is in flight here.
+  // Reads the UNION of the two flags — see the `_renewing` field declaration for
+  // why one flag cannot cover both lifetimes. Shared by pruneSession and
+  // rewindToUserMessage so the two cannot drift; the fork route makes the same
+  // check through the `rotationPending`/`renewalPending` getters.
+  _assertNoRotationInFlight(): void {
+    const inFlight = this._rotation?.reason ?? (this._renewing ? 'renew' : null);
+    if (!inFlight) return;
+    throw Object.assign(
+      new Error(`a context ${inFlight === 'prune' ? 'prune' : 'renewal'} is in progress on `
+        + 'this session — retry once it completes'),
+      { statusCode: 409, code: 'SESSION_ROTATING' },
+    );
+  }
+
+  // Open the rotation window. Called by SessionRenewController.arm() — mid-turn,
+  // when the tool is called, well before that turn ends — and at the top of
+  // pruneSession's critical section. Being set BEFORE the armed turn_end can fire
+  // is the whole point: it makes the hub's defer independent of listener order.
+  // Idempotent for the same mechanism, so a second renew_session in one turn
+  // re-arms without restarting the window.
+  beginRotation(reason: RotationMechanism): void {
+    if (this._rotation?.reason === reason) return;
+    this._rotation = { reason, startedAt: Date.now() };
+  }
+
+  // Close the rotation window and announce it. EVERY abandonment path must reach
+  // this too, or the hub's defer wedges until the watchdog fires and reports "did
+  // NOT finish" for a rotation that merely gave up.
+  //
+  // `comesUpIdle` is declared by the MECHANISM, never inferred from status:
+  //   - renew  → false. A reseed turn follows by construction, so the correct wake
+  //              point is that turn's turn_end. Reading `this.status` here would
+  //              misfire — endRotation runs while the instance is still 'idle',
+  //              microseconds before prompt() flips it.
+  //   - prune  → true. There is no turn at all; this event IS the wake trigger.
+  // That contract is why prune's later MCP exposure needs no hub change.
+  endRotation({ ok, comesUpIdle }: { ok: boolean; comesUpIdle: boolean }): void {
+    const rotation = this._rotation;
+    if (!rotation) return; // never begun, or already closed — idempotent
+    this._rotation = null;
+    if (ok) {
+      this.lastRotatedAt = Date.now();
+      this.rotationReason = rotation.reason;
+    }
+    this._emitRotationComplete(rotation.reason, ok, comesUpIdle);
+  }
+
+  // A rotation whose window is ALREADY closed has failed to produce the turn it
+  // promised — a renewal reseed that never landed. `endRotation` closed the window
+  // with `comesUpIdle:false` on the promise that a reseed turn was coming; when
+  // that promise breaks, re-announce with `comesUpIdle:true` so a conductor
+  // waiting on this worker is woken NOW. Without it the wake waits out the full
+  // idle-subscription watchdog and then reports that a perfectly healthy worker
+  // "did NOT finish" — the same reasoning that makes every ABANDONMENT path
+  // declare comesUpIdle, applied to the one failure that happens after the window
+  // has already closed. Same event the hub already consumes; no hub change.
+  signalRotationTurnLost(reason: RotationMechanism): void {
+    this._emitRotationComplete(reason, false, true);
+  }
+
+  private _emitRotationComplete(reason: RotationMechanism, ok: boolean, comesUpIdle: boolean): void {
+    this._emitUi({
+      kind: 'system', subtype: 'rotation_complete',
+      data: { reason, ok, comesUpIdle },
+    });
   }
 
   // Carry this instance's durable, sessionId-keyed state across a managed
@@ -2208,7 +2468,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // _archiveTempSession for the old id: unmarkTemp + markArchived, keeping the
   // conducted/title markers — they stay meaningful on the archived row.
   async carryMarkersAcrossRenewal(oldSid: string | null): Promise<void> {
-    const newSid = this.sessionId;
+    const newSid = this.backingSessionId;
     if (!newSid || !oldSid || newSid === oldSid) return;
     try { if (this.temp) await markTemp(newSid); } catch { /* best-effort */ }
     try { if (this.conducted) await markConducted(newSid); } catch { /* best-effort */ }
@@ -2246,8 +2506,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // DEFAULT_RESUME_MODE — the pre-store behaviour, never a wrong-and-colder
   // one. Every `this.mode` assignment after the sessionId exists routes here.
   _recordMode(mode: string): void {
-    if (!this.sessionId) return;
-    markSessionMode(this.sessionId, mode).catch(() => {});
+    if (!this.backingSessionId) return;
+    markSessionMode(this.backingSessionId, mode).catch(() => {});
   }
 
   async setMode(mode: string): Promise<unknown> {
@@ -2302,7 +2562,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   async promoteToNormal(): Promise<InstanceSummary> {
     if (!this.temp) throw Object.assign(new Error('instance is not temp'), { statusCode: 400 });
     this.temp = false;
-    try { if (this.sessionId) await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
+    try { if (this.backingSessionId) await unmarkTemp(this.backingSessionId); } catch { /* best-effort */ }
     // Persist last-prompt + permission-mode now, so the standalone
     // `claude --resume` picker sees this session immediately — without
     // waiting for the next turn-end / setMode cycle to trigger it.
@@ -2503,11 +2763,15 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Returns { droppedText }: the prompt text of the dropped user message,
   // so the frontend can prefill it back into the composer.
   async rewindToUserMessage(userMessageIndex: number): Promise<{ droppedText: string }> {
+    // Same interlock as pruneSession, for the same reason: a rewind kills the proc
+    // and rewrites the transcript, so one landing inside a renewal's reseed window
+    // makes the reseed 409 and loses the handoff summary.
+    this._assertNoRotationInFlight();
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork is in progress'), { statusCode: 409 });
     }
-    const sessionId = this.sessionId;
-    if (!sessionId) {
+    const backingId = this.backingSessionId;
+    if (!backingId) {
       throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
     }
     if (this.status === 'turn') {
@@ -2527,7 +2791,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
       const result = await truncateSessionAtUserMessage({
         cwd: this.cwd,
-        sessionId,
+        sessionId: backingId,
         userMessageIndex,
         mode: this.mode,
       });
@@ -2544,12 +2808,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       // respawn with --session-id under the same id so the URL anchor stays
       // valid and the instance comes back ready for a fresh first turn.
       if (result.remainingLineCount === 0) {
-        const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
-        await fsp.rm(path.join(dir, `${sessionId}.jsonl`), { force: true });
-        await fsp.rm(path.join(dir, sessionId), { recursive: true, force: true });
+        await fsp.rm(sessionFilePath(this.cwd, backingId), { force: true });
+        await fsp.rm(subAgentDirPath(this.cwd, backingId), { recursive: true, force: true });
         await this.launch({});
       } else {
-        await this.launch({ resume: sessionId });
+        await this.launch({ resume: backingId });
       }
 
       return { droppedText: result.droppedText };
@@ -2559,9 +2822,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Prune this session's context: write a stubbed COPY of the jsonl under a
-  // fresh sessionId, then respawn this SAME instance against it. Mechanically a
+  // fresh BACKING id, then respawn this SAME instance against it. Mechanically a
   // cousin of rewindToUserMessage (kill → rewrite → wipe → relaunch), but it
-  // rotates the sessionId like renew_session does, so it borrows that path's
+  // rotates the backing id like renew_session does, so it borrows that path's
   // marker carry + auto-archive of the abandoned id.
   //
   // Two divergences from renew_session, both deliberate:
@@ -2571,15 +2834,23 @@ export class Instance extends EventEmitter implements InstanceLike {
   //     turn, which auto-starts a turn. A pruned session must come up IDLE, so
   //     nothing here calls prompt().
   //
-  // The instanceId is preserved (only the sessionId rotates), so the
-  // idle-subscription graph, overage timers, the renew controller and every
-  // `?caller=<instanceId>` MCP handle stay valid with no migration.
+  // The instanceId AND the public sessionId are both preserved (only the backing
+  // id rotates), so the idle-subscription graph, overage timers, the renew
+  // controller, every `?caller=<instanceId>` MCP handle and every id a conductor
+  // holds stay valid with no migration.
   async pruneSession({ cutTurnIndex, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
+    // THE interlock (decision D6). A prune sets `_mutating`, which makes prompt()
+    // 409 — and a renewal's reseed IS a prompt(). Interleaving them would clear the
+    // context and then lose the summary. Refuse instead of auditing interleavings
+    // after the fact. Checked before the `_mutating` guard so the more specific
+    // reason wins. This is the REST/internal path, so a throw is the convention
+    // here (matching BACKEND_LOCKED in setModel).
+    this._assertNoRotationInFlight();
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
     }
-    const sessionId = this.sessionId;
-    if (!sessionId) {
+    const backingId = this.backingSessionId;
+    if (!backingId) {
       throw Object.assign(new Error('no sessionId — instance has not yet received a turn'), { statusCode: 400 });
     }
     if (this.status === 'turn') {
@@ -2597,7 +2868,13 @@ export class Instance extends EventEmitter implements InstanceLike {
       );
     }
     this._mutating = true;
-    const oldSid = sessionId;
+    this.beginRotation('prune');
+    let rotationOk = false;
+    const oldSid = backingId;
+    // Server-minted, up front. Unlike a renewal (where the CLI mints and the
+    // file already exists before we hear about it), prune CAN be durable before
+    // anything acts on the new id — so it is.
+    const newSid = randomUUID();
     try {
       // Kill first so the CLI can't flush a stale tail into the jsonl while we
       // read it. _suppressTempDelete for the same reason rewind sets it: a temp
@@ -2608,26 +2885,39 @@ export class Instance extends EventEmitter implements InstanceLike {
         finally { this._suppressTempDelete = false; }
       }
 
-      const { newSessionId, saved } = await pruneSessionToNewId({
+      const { saved } = await pruneSessionToNewId({
         cwd: this.cwd,
         sessionId: oldSid,
         cutTurnIndex: cutTurnIndex as number,
         pruneThinking: !!pruneThinking,
         inputMode: effInputMode as 'truncate' | 'minimal',
         mode: this.mode,
+        newSessionId: newSid,
       });
+
+      // Durable, AWAITED, and allowed to throw — the file is on disk and no
+      // process has seen the new id yet, so this is the one rotation that can be
+      // recorded before first use. `reason:'prune'` is load-bearing: this
+      // segment is a filtered COPY that OVERLAPS its predecessor, so a future
+      // multi-segment reader must never concatenate across it (a `renew`
+      // boundary it must). The rollback below reverts the record, so a throw
+      // inside launch() can never leave a segment the process never ran.
+      if (this.sessionId) await recordRotation(this.sessionId, newSid, 'prune');
 
       this._wipeForResume();
       this._skipUsageSeed = true;
-      // launch({resume}) assigns this.sessionId = newSessionId (see spawn()).
-      await this.launch({ resume: newSessionId });
+      this._segments.push(newSid);
+      // The public id is pinned across this rotation — only backingSessionId
+      // moves, and spawn() sets it from `resume`.
+      await this.launch({ resume: newSid });
       // Carry temp/conducted/title/backend onto the new id and archive the old
-      // one. Reads this.sessionId as the NEW id, so it must follow the launch.
+      // one. Reads backingSessionId as the NEW id, so it must follow the launch.
       // Awaited (unlike the renewal path, which can't block its reseed turn) so
       // the REST response can't beat the archive into the sidebar refresh.
       await this.carryMarkersAcrossRenewal(oldSid).catch(() => {});
 
-      return { oldSessionId: oldSid, newSessionId, saved };
+      rotationOk = true;
+      return { oldSessionId: oldSid, newSessionId: newSid, saved };
     } catch (e) {
       // The subprocess is already dead by the time most of this can throw, and
       // the transform has real failure surface (writeAtomic, copySubAgentDir, a
@@ -2638,6 +2928,12 @@ export class Instance extends EventEmitter implements InstanceLike {
       // ever writes a new file, so the original jsonl is intact by construction.
       // Best-effort — a failure here is already the error path, and `e` (the real
       // cause) must be what surfaces.
+      // Undo the recorded segment BEFORE relaunching from the original, so a
+      // failure anywhere after recordRotation cannot leave the chain pointing at
+      // a file this process never ran. Best-effort: `e` is what must surface.
+      if (this.sessionId) await revertRotation(this.sessionId, newSid).catch(() => {});
+      const at = this._segments.lastIndexOf(newSid);
+      if (at !== -1) this._segments.splice(at, 1);
       if (!this.proc) {
         this._wipeForResume();
         // `_skipUsageSeed` may already be set for the PRUNED session's replay. The
@@ -2645,12 +2941,16 @@ export class Instance extends EventEmitter implements InstanceLike {
         // leaving the flag set would suppress a perfectly good ctx reading and
         // strand the recovered session on `ctx —` until its next turn.
         this._skipUsageSeed = false;
-        this.sessionId = oldSid;
+        this.backingSessionId = oldSid;
         await this.launch({ resume: oldSid }).catch(() => {});
       }
       throw e;
     } finally {
       this._mutating = false;
+      // Prune comes up IDLE with no turn, so the completion event is the ONLY wake
+      // point — including on the failure path, where the recovery relaunch also
+      // lands idle and a subscriber must not be left hanging until the watchdog.
+      this.endRotation({ ok: rotationOk, comesUpIdle: true });
     }
   }
 
@@ -2713,6 +3013,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   byId: Map<string, Instance>;
   _claudeLauncher: LauncherLike;
   _resuming: Map<string, Promise<Instance>>;
+  // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
+  // whatever string the caller passed, and normalizing it to the public id means an
+  // async store read (publicIdFor) — which cannot happen in create()'s synchronous
+  // prefix, and that prefix being await-free is exactly what closes the race
+  // `_resuming` exists for. So a DISK-ONLY session named by two DIFFERENT forms —
+  // its public id and one of its segments — gets two distinct keys, does not
+  // coalesce, and ends up with TWO live instances sharing one public id: the core
+  // invariant broken, and liveForSession then picking between them nondeterministically.
+  //
+  // This closes it at the first moment the public id is known, with a
+  // check-and-claim that has NO await between the two halves — so of two concurrent
+  // resumes exactly one proceeds and the other refuses.
+  _resumingPublicIds: Set<string>;
   serverPort: number | null;
   _claudePluginDirsResolver: () => Promise<string[]>;
   _idleHub: IdleSubscriptionHub;
@@ -2740,6 +3053,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // are deleted when the create settles (success OR failure), by which point
     // .proc is set and the live-guard in create() takes over.
     this._resuming = new Map<string, Promise<Instance>>();
+    this._resumingPublicIds = new Set<string>();
     // Set by the server after `server.listen()` resolves. New instances
     // spawned without a port set get null hookCallbackUrl, which disables
     // the interactive http hook (ask mode falls back to auto-allow).
@@ -2759,7 +3073,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Managed session renewal (`renew_session` MCP tool): drives a server-side
     // `/clear` at the caller's turn_end and reseeds the rotated session with a
     // handoff summary. Keyed by instanceId so it tracks the caller across the
-    // sessionId rotation `/clear` performs. See src/sessionRenew.ts.
+    // backing-id rotation `/clear` performs. See src/sessionRenew.ts.
     this._sessionRenew = new SessionRenewController(this);
     // Server-side usage poller: a second, equal-footing source for the overage
     // auto-stop. The stream `rate_limit_event` only reports near Anthropic's own
@@ -2929,7 +3243,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
   idsForSession(sessionId: string): string[] {
     return [...this.byId.values()]
-      .filter(i => i.sessionId === sessionId)
+      .filter(i => answersTo(i, sessionId))
       .map(i => i.id);
   }
   // The single live (proc-attached) instance for a sessionId, or null. Folds
@@ -2945,40 +3259,77 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this.idsForSession(sessionId).map(id => this.byId.get(id))
       .find((i): i is Instance => i != null) ?? null;
   }
-  // Resolve an MCP input that is either a full sessionId or an unambiguous PREFIX
-  // to a canonical full sessionId. The MCP dispatch layer (src/mcp/server.ts) uses
-  // this to let conductors address workers by a short prefix (e.g. first 8 chars)
-  // instead of the error-prone 36-char UUID. Universe = the distinct sessionIds
-  // across ALL byId instances (live AND exited) — broader than live-only, so a
-  // prefix unique among live workers but shared with an exited in-memory session
-  // resolves AMBIGUOUS rather than silently mis-resolving. Historical disk-only
-  // sessions are intentionally NOT in scope (they stay addressable by full id).
+  // Resolve an MCP input to a canonical PUBLIC sessionId. The MCP dispatch layer
+  // (src/mcp/server.ts) uses this so conductors can address workers by a short
+  // prefix instead of an error-prone 36-char UUID.
+  //
+  // CANDIDATE UNIVERSE — for every in-memory instance (live AND exited, which is
+  // broader than live-only on purpose: a prefix unique among live workers but
+  // shared with an exited session must refuse rather than mis-resolve): its public
+  // id PLUS every backing id it has run under. Resolution is purely in-memory, so
+  // this stays synchronous and store-free on the MCP hot path. Historical
+  // disk-only sessions are intentionally out of scope (still addressable by full
+  // id through the handlers' disk probe).
+  //
+  // Answers are ALWAYS public ids — a backing id must never reach a conductor,
+  // which is also why `ambiguous` can only ever list public ids.
   // Returns one of:
   //   null                              → no match (caller leaves the arg untouched,
   //                                         so the handler's existing SESSION_UNKNOWN /
   //                                         SESSION_NOT_LIVE / disk-probe path runs)
-  //   { sessionId }                     → exact full-id match (always wins), or a
-  //                                         unique prefix >= SESSION_PREFIX_MIN chars
-  //   { ambiguous:[fullIds], tooShort } → prefix matches >1 id, OR a too-short
-  //                                         (< SESSION_PREFIX_MIN) prefix matches >=1
+  //   { sessionId }                     → exact match on any candidate (always
+  //                                         wins), or a prefix >= SESSION_PREFIX_MIN
+  //                                         chars matching exactly ONE session
+  //   { ambiguous:[publicIds], tooShort} → a prefix matching >1 SESSION, OR a
+  //                                         too-short (< SESSION_PREFIX_MIN) prefix
+  //                                         matching >= 1
+  //
+  // Two segments of the SAME session sharing a prefix collapse to one answer, not
+  // an ambiguity — the set below is of owning sessions, not of candidate strings.
   resolveSessionRef(input: unknown): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null {
     if (typeof input !== 'string' || !input) return null;
-    const all = [...new Set([...this.byId.values()].map(i => i.sessionId)
-      .filter((sid): sid is string => sid !== null))];
-    if (all.includes(input)) return { sessionId: input }; // exact match always wins
-    const matches = all.filter(s => s.startsWith(input));
-    if (matches.length === 0) return null;
-    if (input.length < SESSION_PREFIX_MIN) return { ambiguous: matches, tooShort: true };
-    if (matches.length === 1) return { sessionId: matches[0] };
-    return { ambiguous: matches, tooShort: false };
+    // candidate → owning public id. Public ids are claimed FIRST so an exact match
+    // on a public id deterministically beats a segment of some other session.
+    const owner = new Map<string, string>();
+    for (const i of this.byId.values()) {
+      if (i.sessionId) owner.set(i.sessionId, i.sessionId);
+    }
+    for (const i of this.byId.values()) {
+      if (!i.sessionId) continue;
+      for (const seg of segmentsOf(i)) if (!owner.has(seg)) owner.set(seg, i.sessionId);
+    }
+    const exact = owner.get(input);
+    if (exact !== undefined) return { sessionId: exact }; // exact match always wins
+    const sessions = new Set<string>();
+    for (const [candidate, publicId] of owner) {
+      if (candidate.startsWith(input)) sessions.add(publicId);
+    }
+    if (sessions.size === 0) return null;
+    const ambiguous = [...sessions];
+    if (input.length < SESSION_PREFIX_MIN) return { ambiguous, tooShort: true };
+    if (ambiguous.length === 1) return { sessionId: ambiguous[0] };
+    return { ambiguous, tooShort: false };
   }
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions
   // list — otherwise clicking the row would 409 against the live instance.
+  // BACKING ids of every non-dead instance at this cwd — the exclusion set the
+  // on-disk session walk needs. It MUST be backing ids: listSessionsForCwdWithCounts
+  // / summarizeSessions match against transcript FILENAMES, so a set of public ids
+  // would exclude nothing and every live worker would also be listed as an
+  // inactive row off its own transcript. Dead instances are deliberately absent —
+  // an exited session reappearing as an inactive row is how it stays resumable.
+  liveBackingIdsForCwd(cwd: string): Set<string> {
+    const out = new Set<string>();
+    for (const i of this.byId.values()) {
+      if (i.cwd === cwd && !isDeadStatus(i.status) && i.backingSessionId) out.add(i.backingSessionId);
+    }
+    return out;
+  }
   tempSessionIdsForCwd(cwd: string): Set<string> {
     const out = new Set<string>();
     for (const i of this.byId.values()) {
-      if (i.temp && i.proc && i.cwd === cwd && i.sessionId) out.add(i.sessionId);
+      if (i.temp && i.proc && i.cwd === cwd && i.backingSessionId) out.add(i.backingSessionId);
     }
     return out;
   }
@@ -2994,25 +3345,34 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (!resume) return this._doCreate(opts);
     // Already fully live: a running instance owns this session. `claude
     // --resume <sid>` would otherwise race two subprocesses on one jsonl.
-    const conflict = [...this.byId.values()].find(i => i.sessionId === resume && i.proc);
+    // liveForSession matches the public id OR any segment, so naming an old
+    // segment of a live session is caught too — it is the same transcript lineage.
+    const conflict = this.liveForSession(resume);
     if (conflict) {
       throw Object.assign(
         new Error(`session ${resume} is already attached to a running instance (${conflict.id.slice(0, 8)}…)`),
         { statusCode: 409 },
       );
     }
-    // In-flight: a concurrent create() is already resuming this sid but hasn't
+    // In-flight: a concurrent create() is already resuming this session but hasn't
     // spawned yet (so the live-guard above can't see it). Coalesce onto that
     // promise — both callers get the same restored instance, one subprocess.
-    const inflight = this._resuming.get(resume);
+    //
+    // The key is NORMALIZED to the session's public id when we know it, so two
+    // callers naming the same session by different forms (its public id and one of
+    // its segments) still coalesce instead of racing two subprocesses onto one
+    // transcript. anyForSession is synchronous and in-memory, so this stays inside
+    // the no-await prefix that makes the guards above sound.
+    const key = this.anyForSession(resume)?.sessionId ?? resume;
+    const inflight = this._resuming.get(key);
     if (inflight) return inflight;
     const p = this._doCreate(opts);
-    this._resuming.set(resume, p);
+    this._resuming.set(key, p);
     // Release when the create settles — success OR failure. On success `.proc`
     // is set, so the live-guard above covers subsequent resumes; on failure
     // (bad sid / spawn throw) we must clear the entry so it doesn't wedge
     // future resumes of this session.
-    const release = () => { if (this._resuming.get(resume) === p) this._resuming.delete(resume); };
+    const release = () => { if (this._resuming.get(key) === p) this._resuming.delete(key); };
     p.then(release, release);
     return p;
   }
@@ -3021,14 +3381,56 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // carry a session's last known capacity (fork, restart manifest) pass it so a
   // deleted custom-model row doesn't blank the ctx bar. Live registry
   // resolution wins whenever it succeeds — see finalContextWindowTokens below.
-  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}): Promise<Instance> {
+  // Resolve the caller's id ONCE, claim the session, then hand off to the body.
+  //
+  // `resume` may arrive as a public id (a conductor's handle, the restart
+  // manifest), as ANY segment id (a wiki page, an old kanban card, an archived
+  // sidebar row), or — for a session with no lineage row — as both at once.
+  // Everything downstream consumes the BACKING id (cwd probe, resume pre-flight,
+  // sidecar recovery, the `--resume` argv), so `resume` is rebound here and every
+  // one of those consumers is correct with no further edit. Naming a SEGMENT
+  // resolves to that segment, not to the newest one, so clicking an archived row
+  // opens the transcript it names.
+  //
+  // The claim is the only thing standing between two differently-named concurrent
+  // resumes and two live instances on one public id — see `_resumingPublicIds`.
+  // Released on settle, success or failure, so a later resume is unaffected.
+  async _doCreate(opts: CreateInstanceInput = {}): Promise<Instance> {
+    let publicId: string | null = null;
+    let resume = opts.resume;
+    if (resume) {
+      publicId = await publicIdFor(resume);
+      resume = await resolveBacking(resume);
+      // Check-and-claim, with NO await between them. `liveForSession` covers a
+      // session already spawned — which create()'s synchronous prefix can only see
+      // when the caller named a form already in memory; `_resumingPublicIds` covers
+      // one still inside its own resume, which that prefix cannot see at all.
+      const live = this.liveForSession(publicId);
+      if (live || this._resumingPublicIds.has(publicId)) {
+        throw Object.assign(
+          new Error(`session ${publicId} is already attached to a running instance`
+            + (live ? ` (${live.id.slice(0, 8)}…)` : ' (a resume is already in flight)')),
+          { statusCode: 409 },
+        );
+      }
+      this._resumingPublicIds.add(publicId);
+    }
+    try {
+      return await this._doCreateResolved({ ...opts, resume }, publicId);
+    } finally {
+      if (publicId) this._resumingPublicIds.delete(publicId);
+    }
+  }
+
+  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
     // that only knows the sessionId — and it's not cosmetic: spawn() below
     // launches the subprocess with this cwd, and the CLI derives the
     // transcript path from cwd, so a wrong cwd silently drops prior history
-    // even though --resume <id> is passed correctly.
+    // even though --resume <id> is passed correctly. `resume` is ALREADY the
+    // backing id and `publicId` the session's public one — both from _doCreate.
     if (resume && worktree === undefined) {
       const hit = await findSessionLocation(resume).catch(() => null);
       if (hit) {
@@ -3247,7 +3649,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // still holds the true first line, so this is reliable.
     let recoveredFirstPrompt: string | null = null;
     if (resume) {
-      try { recoveredFirstPrompt = await readFirstPrompt(path.join(claudeProjectsRoot(), encodeCwd(cwd), `${resume}.jsonl`)); }
+      try { recoveredFirstPrompt = await readFirstPrompt(sessionFilePath(cwd, resume)); }
       catch { /* best-effort */ }
     }
 
@@ -3376,6 +3778,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Fork prefill: the dropped prompt rides the new instance's first
     // `snapshot` frame (see Instance.consumePrefill / wsHub subscribe).
     if (typeof prefill === 'string') inst.pendingPrefill = prefill;
+    if (publicId) {
+      // Pin the public id BEFORE launch(), so the `!resume` mint guard there
+      // stays untouched and the first status frame already carries it. The base
+      // case (no lineage row) seeds a single-segment chain from the id itself,
+      // which is exactly what the store models implicitly.
+      inst.sessionId = publicId;
+      const segs = (await segmentsFor(publicId)).map(seg => seg.id);
+      inst._segments = segs.length > 0 ? segs : [resume as string];
+    }
     await inst.launch({ resume });
     this.emit('list_changed');
     return inst;
@@ -3650,7 +4061,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     // A manual respawn supersedes any pending auto-resume for this session.
     this._cancelAutoResume(inst.id);
-    const sessionId = inst.sessionId;
+    const sessionId = inst.backingSessionId;
     if (!sessionId) {
       throw Object.assign(new Error('no sessionId to resume'), { statusCode: 400 });
     }
@@ -3708,8 +4119,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   tempCleanupSnapshot(): Array<{ cwd: string; sessionId: string }> {
     const out: Array<{ cwd: string; sessionId: string }> = [];
     for (const inst of this.byId.values()) {
-      if (!inst.temp || !inst.sessionId) continue;
-      out.push({ cwd: inst.cwd, sessionId: inst.sessionId });
+      if (!inst.temp || !inst.backingSessionId) continue;
+      out.push({ cwd: inst.cwd, sessionId: inst.backingSessionId });
     }
     return out;
   }
@@ -3756,9 +4167,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // belt-and-braces against orphaned subagent writes is still correct here.
     const wipe = (): void => {
       for (const inst of temps) {
-        if (!inst.sessionId) continue;
-        const dir = path.join(claudeProjectsRoot(), encodeCwd(inst.cwd));
-        try { rmSync(path.join(dir, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+        if (!inst.backingSessionId) continue;
+        try { rmSync(subAgentDirPath(inst.cwd, inst.backingSessionId), { recursive: true, force: true }); } catch { /* ignore */ }
       }
     };
     wipe();
@@ -3769,9 +4179,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // land in time the next boot's sweepPendingTempCleanup will pick up the
     // slack via the manifest (which now carries action:"archive").
     for (const inst of temps) {
-      if (!inst.sessionId) continue;
-      unmarkTemp(inst.sessionId).catch(() => {});
-      markArchived(inst.sessionId).catch(() => {});
+      if (!inst.backingSessionId) continue;
+      unmarkTemp(inst.backingSessionId).catch(() => {});
+      markArchived(inst.backingSessionId).catch(() => {});
     }
   }
 

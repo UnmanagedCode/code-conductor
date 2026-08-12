@@ -123,7 +123,7 @@ export function reconstructMessages(events: UiEvent[], includeThinking: boolean)
 // caller degrades gracefully to ring-only.
 export async function mergeRecentWithDisk(inst: InstanceLike, ringMessages: ReconMessage[], includeThinking: boolean): Promise<ReconMessage[] | null> {
   const result = await loadPersistedTranscript({
-    cwd: inst.cwd, sessionId: inst.sessionId as string, seqHint: 0,
+    cwd: inst.cwd, sessionId: inst.backingSessionId as string, seqHint: 0,
   }).catch(() => null);
   if (!result) return null;
   let diskEvents: UiEvent[] = [];

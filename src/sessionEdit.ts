@@ -17,13 +17,9 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { encodeCwd, claudeProjectsRoot } from './projects.ts';
+import { sessionFilePath } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import { extractAttachedMarkers, type WireContentBlock } from './parser.ts';
-
-function sessionFilePath(cwd: string, sessionId: string): string {
-  return path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
-}
 
 // Parse one trimmed jsonl line, swallowing parse errors (mirrors the
 // tolerant behavior of loadPersistedTranscript).

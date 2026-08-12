@@ -52,13 +52,13 @@ test('shutdownTempSync archives temp session (jsonl kept, subagents dir deleted)
     assert.equal(tempRes.status, 201);
     const tempInst = rp.instances.get(tempRes.body.id);
     await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-    const tempSid = tempInst.sessionId;
+    const tempSid = tempInst.backingSessionId;
 
     const normalRes = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'restartcleanup' });
     assert.equal(normalRes.status, 201);
     const normalInst = rp.instances.get(normalRes.body.id);
     await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
-    const normalSid = normalInst.sessionId;
+    const normalSid = normalInst.backingSessionId;
 
     // Materialize both jsonls (fake-claude doesn't write to ~/.claude/projects).
     const dir = path.join(rp.claudeProjectsRoot, encodeCwd(tempInst.cwd));
@@ -94,7 +94,7 @@ test('tempCleanupSnapshot only includes live temp instances with a sessionId', a
 
   const snap = instances.tempCleanupSnapshot();
   assert.equal(snap.length, 1);
-  assert.deepEqual(snap[0], { cwd: tempInst.cwd, sessionId: tempInst.sessionId });
+  assert.deepEqual(snap[0], { cwd: tempInst.cwd, sessionId: tempInst.backingSessionId });
 });
 
 test('writePendingTempCleanup + sweepPendingTempCleanup round-trip archives sessions (jsonl kept, subagents removed)', async () => {
@@ -163,7 +163,7 @@ test('shutdownTempSync is a safe no-op when there are no temp instances', async 
 
   const dir = path.join(claudeProjectsRoot, encodeCwd(normalInst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  const jsonl = path.join(dir, `${normalInst.sessionId}.jsonl`);
+  const jsonl = path.join(dir, `${normalInst.backingSessionId}.jsonl`);
   await fs.writeFile(jsonl, '{"type":"user","uuid":"u1"}\n');
 
   assert.doesNotThrow(() => instances.shutdownTempSync());
@@ -184,7 +184,7 @@ test('temp marker is written at spawn time, before any turn_end', async () => {
   // Wait only for sessionId to be set — that is the synchronous part of
   // spawn(). Do NOT wait for idle (which would imply a turn completed).
   await waitFor(() => !!tempInst.sessionId);
-  const sid = tempInst.sessionId;
+  const sid = tempInst.backingSessionId;
 
   // The markTemp() fire-and-forget write should land almost immediately
   // (local file write). Poll until it does — no artificial sleep needed.
@@ -227,7 +227,7 @@ test('runTempCleanup archives a live temp and a crash-orphaned temp without doub
   const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'runtempcleanup', temp: true });
   const tempInst = instances.get(tempRes.body.id);
   await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-  const liveSid = tempInst.sessionId;
+  const liveSid = tempInst.backingSessionId;
   await waitFor(async () => isTemp(liveSid));
 
   const orphanSid = 'eeeeeeee-ffff-0000-1111-222222222222';
@@ -266,7 +266,7 @@ test('Restart + Resume (drainToManifest) archives nothing — live and orphaned 
   const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'resumecarry', temp: true });
   const tempInst = instances.get(tempRes.body.id);
   await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-  const liveSid = tempInst.sessionId;
+  const liveSid = tempInst.backingSessionId;
   await waitFor(async () => isTemp(liveSid));
 
   const orphanSid = '22222222-bbbb-cccc-dddd-eeeeeeeeeeee';

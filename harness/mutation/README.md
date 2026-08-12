@@ -93,7 +93,7 @@ added and removed:
 
 | Env flag | Surface left unproven |
 |---|---|
-| `RUN_REAL_CLAUDE` | real spawn + stream-json parsing, Bash tool call, AskUserQuestion, ask-mode PreToolUse hook (`smoke.real` 4); pruned-session resume + read-before-edit re-arm (`prune.real` 1); shell-env bundle restoring rg/find (`claudeShellEnv` 1); real `renew_session` sessionId rotation (`renew-session` 1) |
+| `RUN_REAL_CLAUDE` | real spawn + stream-json parsing, Bash tool call, AskUserQuestion, ask-mode PreToolUse hook (`smoke.real` 4); pruned-session resume + read-before-edit re-arm (`prune.real` 1); shell-env bundle restoring rg/find (`claudeShellEnv` 1); real `renew_session` backing-id rotation with a pinned public id (`renew-session` 1) |
 | `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
 | `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |

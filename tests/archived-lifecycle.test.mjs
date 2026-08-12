@@ -28,7 +28,8 @@ test('archive endpoint keeps .jsonl, marks archived, and the session leaves the 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived sidecar
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
     const cwd = inst.cwd;
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, cwd, sid);
 
@@ -44,9 +45,9 @@ test('archive endpoint keeps .jsonl, marks archived, and the session leaves the 
 
     // Excluded from the default session list; visible via includeArchived=1.
     const listRes = await api(baseUrl, 'GET', '/api/projects/arclife/sessions');
-    assert.ok(!listRes.body.find(s => s.sessionId === sid), 'archived session absent from default list');
+    assert.ok(!listRes.body.find(s => s.sessionId === publicId), 'archived session absent from default list');
     const inclRes = await api(baseUrl, 'GET', '/api/projects/arclife/sessions?includeArchived=1');
-    const found = inclRes.body.find(s => s.sessionId === sid);
+    const found = inclRes.body.find(s => s.sessionId === publicId);
     assert.ok(found && found.archived === true, 'session flagged archived with includeArchived=1');
 
     // GET /api/archived groups it under its project.
@@ -54,7 +55,7 @@ test('archive endpoint keeps .jsonl, marks archived, and the session leaves the 
     assert.equal(arch.status, 200);
     const group = arch.body.groups.find(g => g.project === 'arclife');
     assert.ok(group, 'project group present in /api/archived');
-    const gs = group.sessions.find(s => s.sessionId === sid);
+    const gs = group.sessions.find(s => s.sessionId === publicId);
     assert.ok(gs, 'archived session present in its project group');
     assert.equal(gs.worktreeName, null);
   } finally { await close(); }
@@ -67,7 +68,8 @@ test('restore drops the session from /api/archived and clears the archived flag'
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife2', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived sidecar
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
     await materializeJsonl(claudeProjectsRoot, inst.cwd, sid);
 
     let r = await api(baseUrl, 'POST', `/api/projects/arclife2/sessions/${sid}/archive`);
@@ -92,7 +94,8 @@ test('permanent delete from the archive removes the .jsonl AND unmarks archived 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife3', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;   // filenames + the archived sidecar
+    const publicId = inst.sessionId;     // what a listed row and a REST path carry
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst.cwd, sid);
 
     let r = await api(baseUrl, 'POST', `/api/projects/arclife3/sessions/${sid}/archive`);
