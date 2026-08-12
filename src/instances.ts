@@ -3013,6 +3013,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   byId: Map<string, Instance>;
   _claudeLauncher: LauncherLike;
   _resuming: Map<string, Promise<Instance>>;
+  // Public ids with a resume IN FLIGHT. `_resuming` cannot do this job: its key is
+  // whatever string the caller passed, and normalizing it to the public id means an
+  // async store read (publicIdFor) — which cannot happen in create()'s synchronous
+  // prefix, and that prefix being await-free is exactly what closes the race
+  // `_resuming` exists for. So a DISK-ONLY session named by two DIFFERENT forms —
+  // its public id and one of its segments — gets two distinct keys, does not
+  // coalesce, and ends up with TWO live instances sharing one public id: the core
+  // invariant broken, and liveForSession then picking between them nondeterministically.
+  //
+  // This closes it at the first moment the public id is known, with a
+  // check-and-claim that has NO await between the two halves — so of two concurrent
+  // resumes exactly one proceeds and the other refuses.
+  _resumingPublicIds: Set<string>;
   serverPort: number | null;
   _claudePluginDirsResolver: () => Promise<string[]>;
   _idleHub: IdleSubscriptionHub;
@@ -3040,6 +3053,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // are deleted when the create settles (success OR failure), by which point
     // .proc is set and the live-guard in create() takes over.
     this._resuming = new Map<string, Promise<Instance>>();
+    this._resumingPublicIds = new Set<string>();
     // Set by the server after `server.listen()` resolves. New instances
     // spawned without a port set get null hookCallbackUrl, which disables
     // the interactive http hook (ask mode falls back to auto-allow).
@@ -3367,29 +3381,56 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // carry a session's last known capacity (fork, restart manifest) pass it so a
   // deleted custom-model row doesn't blank the ctx bar. Live registry
   // resolution wins whenever it succeeds — see finalContextWindowTokens below.
-  async _doCreate({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}): Promise<Instance> {
+  // Resolve the caller's id ONCE, claim the session, then hand off to the body.
+  //
+  // `resume` may arrive as a public id (a conductor's handle, the restart
+  // manifest), as ANY segment id (a wiki page, an old kanban card, an archived
+  // sidebar row), or — for a session with no lineage row — as both at once.
+  // Everything downstream consumes the BACKING id (cwd probe, resume pre-flight,
+  // sidecar recovery, the `--resume` argv), so `resume` is rebound here and every
+  // one of those consumers is correct with no further edit. Naming a SEGMENT
+  // resolves to that segment, not to the newest one, so clicking an archived row
+  // opens the transcript it names.
+  //
+  // The claim is the only thing standing between two differently-named concurrent
+  // resumes and two live instances on one public id — see `_resumingPublicIds`.
+  // Released on settle, success or failure, so a later resume is unaffected.
+  async _doCreate(opts: CreateInstanceInput = {}): Promise<Instance> {
+    let publicId: string | null = null;
+    let resume = opts.resume;
+    if (resume) {
+      publicId = await publicIdFor(resume);
+      resume = await resolveBacking(resume);
+      // Check-and-claim, with NO await between them. `liveForSession` covers a
+      // session already spawned — which create()'s synchronous prefix can only see
+      // when the caller named a form already in memory; `_resumingPublicIds` covers
+      // one still inside its own resume, which that prefix cannot see at all.
+      const live = this.liveForSession(publicId);
+      if (live || this._resumingPublicIds.has(publicId)) {
+        throw Object.assign(
+          new Error(`session ${publicId} is already attached to a running instance`
+            + (live ? ` (${live.id.slice(0, 8)}…)` : ' (a resume is already in flight)')),
+          { statusCode: 409 },
+        );
+      }
+      this._resumingPublicIds.add(publicId);
+    }
+    try {
+      return await this._doCreateResolved({ ...opts, resume }, publicId);
+    } finally {
+      if (publicId) this._resumingPublicIds.delete(publicId);
+    }
+  }
+
+  async _doCreateResolved({ project, resume, mode, effort, tier, role, thinking, model, contextWindowTokens: carriedContextWindowTokens, backend: explicitBackend, worktree, baseWorktree, name, temp, conducted, callerInstanceId, debug, autoApprovePlan, playbookEnforcement, prefill }: CreateInstanceInput = {}, publicId: string | null = null): Promise<Instance> {
     // On resume, when the caller didn't pin an explicit worktree, recover the
     // session's recorded project + worktree via findSessionLocation. This is
     // what makes spawn_instance({resume}) "just work" for an MCP conductor
     // that only knows the sessionId — and it's not cosmetic: spawn() below
     // launches the subprocess with this cwd, and the CLI derives the
     // transcript path from cwd, so a wrong cwd silently drops prior history
-    // even though --resume <id> is passed correctly.
-    // Resolve the caller's id ONCE, before anything downstream reads it. `resume`
-    // may arrive as a public id (a conductor's handle, the restart manifest), as
-    // ANY segment id (a wiki page, an old kanban card, an archived sidebar row),
-    // or — for a session with no lineage row — as both at once. Everything below
-    // consumes the BACKING id (cwd probe, resume pre-flight, sidecar recovery,
-    // the `--resume` argv), so `resume` is rebound here and every one of those
-    // consumers is correct with no further edit.
-    //
-    // Naming a SEGMENT resolves to that segment, not to the newest one, so
-    // clicking an archived row opens the transcript it names.
-    let publicId: string | null = null;
-    if (resume) {
-      publicId = await publicIdFor(resume);
-      resume = await resolveBacking(resume);
-    }
+    // even though --resume <id> is passed correctly. `resume` is ALREADY the
+    // backing id and `publicId` the session's public one — both from _doCreate.
     if (resume && worktree === undefined) {
       const hit = await findSessionLocation(resume).catch(() => null);
       if (hit) {

@@ -353,6 +353,62 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
   }
 });
 
+test('one public id, at most one live session — two concurrent resumes in DIFFERENT id forms', async () => {
+  // The core invariant. create()'s `_resuming` map coalesces concurrent resumes,
+  // but its key is the raw string the caller passed: normalizing it to the public
+  // id needs an async store read, and create()'s guards must run in its
+  // synchronous prefix. So for a DISK-ONLY session named two different ways — its
+  // public id, and one of its own older segments — the two callers got two keys,
+  // did not coalesce, and BOTH spawned: two live instances reporting one public id,
+  // one of them resuming the PRE-rotation transcript, and liveForSession then
+  // choosing between them nondeterministically.
+  const { recordRotation, resolveBacking } = await import('../src/sessionLineage.ts');
+  await setupWithProject('twolive');
+  const cwd = path.join(ctx.projectsRoot, 'twolive');
+  const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+
+  // A rotated session with NOTHING in memory: both transcripts on disk, a lineage
+  // row naming both, and no live instance. This is the shape create()'s
+  // synchronous prefix is blind to.
+  const publicId = 'c1c2c3c4';
+  const older = 'c1c2c3c4-0000-4000-8000-000000000001';
+  const current = 'd4d3d2d1-0000-4000-8000-000000000002';
+  for (const id of [older, current]) {
+    await fs.writeFile(path.join(dir, `${id}.jsonl`),
+      `${JSON.stringify({ type: 'user', uuid: `u-${id}`, message: { role: 'user', content: 'hi' } })}\n`);
+  }
+  await recordRotation(publicId, older, 'initial');
+  await recordRotation(publicId, current, 'renew');
+  assert.equal(await resolveBacking(publicId), current);
+  assert.equal(instances.anyForSession(publicId), null, 'precondition: nothing in memory');
+
+  // Fire both forms at once. `older` resolves to ITSELF (naming a segment opens
+  // that segment), so the two callers would target different transcripts.
+  const results = await Promise.allSettled([
+    instances.create({ project: 'twolive', resume: publicId }),
+    instances.create({ project: 'twolive', resume: older }),
+  ]);
+  const ok = results.filter(r => r.status === 'fulfilled');
+  const failed = results.filter(r => r.status === 'rejected');
+  assert.equal(ok.length, 1, `exactly one resume may proceed, got ${ok.length}: `
+    + JSON.stringify(results.map(r => r.status === 'rejected' ? r.reason?.message : 'ok')));
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].reason.statusCode, 409);
+  assert.match(failed[0].reason.message, /already attached to a running instance/);
+
+  // …and the invariant holds in the manager: ONE live instance for that public id.
+  const live = [...instances.byId.values()].filter(i => i.proc && i.sessionId === publicId);
+  assert.equal(live.length, 1, `one public id must map to at most one live session, got ${live.length}`);
+  assert.equal(instances.liveForSession(publicId).id, live[0].id, 'so liveForSession is deterministic');
+
+  // The claim is a window, not a latch: once the winner is gone, a resume works again.
+  await instances.remove(live[0].id);
+  const again = await instances.create({ project: 'twolive', resume: publicId });
+  assert.equal(again.sessionId, publicId);
+  assert.equal(again.backingSessionId, current, 'and it still resumes CURRENT');
+});
+
 test('loadHistory drops a lineage segment whose transcript is gone (the one self-prune on a read-ish path)', async () => {
   // Card 2026-0126, decision D7. Claude prunes its own ~/.claude/projects after
   // ~30 days, so a lineage row can outlive the files it names. Reads TOLERATE that
