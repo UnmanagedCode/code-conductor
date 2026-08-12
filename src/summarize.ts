@@ -46,12 +46,14 @@ const INPUT_HEAD = 20_000;
 const INPUT_TAIL = 60_000;
 
 // Generation cap. Not unbounded: this one-shot spawn isn't tracked by
-// instances.ts's registry, so nothing kills it on server shutdown or client
-// disconnect — a wedged child would otherwise hang the request forever. 600s
-// gives a long session's transcript real room while still bounding the worst
-// case; it matches the repo's other one-shot/long-running child caps
-// (BASH_MAX_TIMEOUT_MS, send_prompt's wait cap) rather than inventing a new one.
-const GENERATION_TIMEOUT_MS = 600_000;
+// instances.ts's registry, so nothing kills it on server shutdown or a
+// disconnected client — a wedged child would otherwise hang forever.
+// The REAL governing bound on this path is Node's http.Server default
+// requestTimeout (300_000ms — server.ts sets no override), which ends the
+// whole request-response cycle regardless of this timer. Staying under it
+// means our own timer always fires first, so a summary can never persist
+// after the client has already seen the request fail.
+const GENERATION_TIMEOUT_MS = 290_000;
 
 // A persisted session line narrowed to the fields flattenTranscript/countMessages read.
 interface TranscriptLine {
