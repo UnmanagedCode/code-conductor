@@ -353,6 +353,37 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
   }
 });
 
+test('the backing-id assertion is WIRED at the spawn site, not merely defined', async () => {
+  // Mechanism 2 of the plan's three for catching a missed backing-id site: the
+  // chokepoint gate (tests/session-lineage-chokepoint.test.mjs) proves the function
+  // refuses all three minted forms, and this proves the CALL exists where the argv
+  // is built. Delete the call and a public id reaching `--resume`/`--session-id`
+  // launches a doomed subprocess in silence instead of throwing with the site
+  // named — the whole point of an assertion over a comment.
+  await setupWithProject('assertwired');
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'assertwired' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.backingSessionId);
+
+  // Simulate the failure this guards: a missed site left a PUBLIC id in the field.
+  // launch({}) with a backing id already set deliberately reuses it (rewind's
+  // empty-prefix relaunch depends on that), so this reaches the argv build.
+  await inst.kill();
+  for (const minted of ['deadbeef', 'deadbeef-1234']) {
+    inst.backingSessionId = minted;
+    await assert.rejects(() => inst.launch({}),
+      (e) => /public session id/.test(e.message) && /Instance\.spawn/.test(e.message),
+      `launch() must refuse the minted form ${minted}, naming the call site`);
+  }
+  // …and via the resume path, which is how _doCreate would deliver one.
+  inst.backingSessionId = null;
+  await assert.rejects(() => inst.launch({ resume: 'deadbeef' }), /public session id/);
+  // A full backing UUID still launches — the guard refuses only what it must.
+  inst.backingSessionId = null;
+  await inst.launch({ resume: 'fa11bac6-0000-4000-8000-000000000001' });
+  assert.equal(inst.backingSessionId, 'fa11bac6-0000-4000-8000-000000000001');
+});
+
 test('one public id, at most one live session — two concurrent resumes in DIFFERENT id forms', async () => {
   // The core invariant. create()'s `_resuming` map coalesces concurrent resumes,
   // but its key is the raw string the caller passed: normalizing it to the public

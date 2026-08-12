@@ -253,6 +253,57 @@ test('two concurrent forks cannot both claim the flag', async () => {
   } finally { await ctx.close(); }
 });
 
+test('a prune-created segment is addressable by its new backing id, permanently', async () => {
+  // Design guarantee #3: "any full backing/segment UUID resolves, permanently".
+  // `Instance._segments` is the ENTIRE candidate universe for resolveSessionRef —
+  // D4 keeps resolution in-memory precisely so it can stay synchronous — so the
+  // push in pruneSession is what makes a prune-created segment addressable at all.
+  // Without it a live pruned worker named by its NEW backing id resolves to
+  // nothing and every handler falls through to SESSION_NOT_LIVE, and segmentCount
+  // under-reports. The renew path is covered by the no-duplicate-worker and
+  // rotation-tell tests; this is the prune equivalent.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'ba5eba11-0000-4000-8000-00000000beef';
+    await seedSession({ ctx, projectName: 'segaddr', sid, lines: sessionLines() });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'segaddr', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    const inst = ctx.instances.get(id);
+
+    const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 200);
+    await waitFor(() => inst.status === 'idle');
+    const newBacking = pr.body.newSessionId;
+    assert.equal(inst.backingSessionId, newBacking, 'precondition: the backing id rotated');
+    assert.equal(inst.sessionId, sid, 'precondition: the public id is pinned');
+
+    // (1) The new segment resolves — exactly, and to the session's PUBLIC id.
+    assert.deepEqual(ctx.instances.resolveSessionRef(newBacking), { sessionId: sid },
+      'the prune-created segment must resolve to its session');
+    // (2) …and reaches the live instance, which is what every MCP handler needs.
+    assert.equal(ctx.instances.liveForSession(newBacking)?.id, id,
+      'and it must reach the LIVE instance, not fall through to SESSION_NOT_LIVE');
+    assert.equal(ctx.instances.anyForSession(newBacking)?.id, id);
+    // (3) The pre-prune segment stays addressable too — "permanently" is the claim.
+    assert.deepEqual(ctx.instances.resolveSessionRef(sid), { sessionId: sid });
+    // (4) End to end over MCP, by the new backing id: the tool answers, and it
+    // answers with the PINNED public id.
+    const res = await fetch(ctx.baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'wait_for_idle', arguments: { sessionId: newBacking, timeoutMs: 5000 } } }),
+    });
+    const out = JSON.parse(JSON.parse(await res.text()).result.content[0].text);
+    assert.equal(out.sessionId, sid, `MCP must resolve the new segment: ${JSON.stringify(out)}`);
+    // (5) The count the conductor view reports tracks the real chain length.
+    assert.equal(inst.summary().segmentCount, 2, 'two segments after one prune');
+  } finally { await ctx.close(); }
+});
+
 test('a failed prune does not leave the recovered session on a suppressed ctx reading', async () => {
   // `_skipUsageSeed` is set for the PRUNED session's replay. If launch throws
   // after that, the catch replays the ORIGINAL — whose jsonl usage is accurate —

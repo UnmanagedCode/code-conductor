@@ -464,9 +464,15 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
   const t = await setup({ enforcement: 'enforce' });
   try {
     // solo/plan deliberately, not freeform/freeform: distinct playbook and stage
-    // names mean a mutant that confused the two fields could not pass this. `mode`
-    // is omitted because solo/plan pins it (ARG_PIN_CONFLICT otherwise) — the prune
-    // does not care which mode the worker is in.
+    // names mean a mutant that confused the two fields could not pass this.
+    //
+    // `mode` is omitted because playbooks/solo.json's `plan` stage PINS
+    // {mode:'plan', createWorktree:true} (ARG_PIN_CONFLICT if either is supplied).
+    // So this worker runs in plan mode AND in a real git worktree — its cwd is the
+    // worktree, not the project root, which is why the transcript below is seeded
+    // at inst.cwd rather than the project path. Neither matters to the prune; both
+    // are consequences of the fixture choice, recorded so a future reader is not
+    // left wondering where the worktree came from.
     const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan', temp: false });
     const publicId = w.sessionId;
     assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
