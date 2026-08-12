@@ -227,6 +227,7 @@ export function describeToolInput(name, input, ctx = {}) {
   if (name === 'mcp__code-conductor__send_prompt') {
     let out = `sessionId=${trunc(input.sessionId, 100)}`;
     if (input.stage != null) out += ` stage=${input.stage}`;
+    if (typeof input.forward?.sessionId === 'string') out += ` forward=${input.forward.sessionId.slice(0, 8)}`;
     return out;
   }
   switch (renderKindFor(name)) {

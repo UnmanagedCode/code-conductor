@@ -330,6 +330,24 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
         }
         args = { ...args, provenance: resolved };
       }
+      // `forward.sessionId` (send_prompt) is a worker handle too, nested one
+      // level deep — the trap `resume` fell into (it declares `resume`, not
+      // `sessionId`, so the top-level chokepoint above misses it). Mirrors the
+      // `provenance` loop; NOT generalised into one loop with it or the
+      // top-level block — the three differ in shape (scalar vs map vs nested)
+      // and the ordering comment above is load-bearing for `provenance`.
+      if (ctx.instances?.resolveSessionRef
+          && hasSchemaProperty(tool.inputSchema, 'forward')
+          && isJsonRecord(args) && isJsonRecord(args.forward)
+          && typeof args.forward.sessionId === 'string' && args.forward.sessionId) {
+        const ref = ctx.instances.resolveSessionRef(args.forward.sessionId);
+        if (ref && 'ambiguous' in ref) {
+          return rpcResult(id, {
+            content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.forward.sessionId, 'forward.sessionId')) }],
+          });
+        }
+        if (ref?.sessionId) args = { ...args, forward: { ...args.forward, sessionId: ref.sessionId } };
+      }
       // Playbook policy — the ONE enforcement point, deliberately AFTER
       // validateArgs and after both prefix-resolution passes, and BEFORE the
       // handler. Inert unless the caller is a conductor with enforcement on;

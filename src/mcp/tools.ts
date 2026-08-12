@@ -284,6 +284,10 @@ export function buildTools(): Tool[] {
             type: 'object',
             description: '{"<stage>": "<sessionId>"} satisfying the DESTINATION stage\'s `needs` when `stage` names a transition. A stage\'s entry conditions apply however it is entered, by spawn or by transition, so a transition into a stage that declares `needs` must supply them here. Ignored on a self-edge (entering the stage you are already in re-checks nothing). sessionId prefixes are accepted.',
           },
+          forward: {
+            type: 'object',
+            description: '{sessionId:"<worker sessionId>"} — inject that worker\'s recent output into this prompt verbatim, server-side: it reaches the worker unedited and never enters your context. The payload is a whole default get_recent_messages selection, framed as context-only — you cannot trim or reorder it. Your `text` is placed LAST, after the forwarded block, as the instruction. The source must still be live — forward before retiring it. sessionId prefixes are accepted.',
+          },
         },
         required: ['sessionId', 'text'],
       },
@@ -858,7 +862,7 @@ export function buildTools(): Tool[] {
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
         'in `blocks[]` when their content is represented in the message body (see OUTPUT). ' +
         '`hasPlan` (boolean) flags a turn that called ExitPlanMode; `planPath` (string) is the plan document\'s path when a ' +
-        'file backs the plan — prefer handing that path on rather than copying the text; `questionCount` (int) ' +
+        'file backs the plan — to hand it to another worker use send_prompt({forward}), not a copy; `questionCount` (int) ' +
         'flags a turn that called AskUserQuestion, with the number of questions — these are presence markers only, ' +
         'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
         'By default, messages are returned when they have text, a plan, or questions — ' +
