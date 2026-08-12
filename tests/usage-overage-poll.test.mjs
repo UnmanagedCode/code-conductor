@@ -27,6 +27,8 @@ const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',
   model: 'claude-sonnet-4-6', permissionMode: '$MODE', tools: ['Bash'], uuid: 'init-1' };
 const RESULT = { type: 'result', subtype: 'success', stop_reason: 'end_turn',
   duration_ms: 10, total_cost_usd: 0.0001, is_error: false };
+const INTERRUPTED = { type: 'result', subtype: 'error_during_execution', stop_reason: 'interrupted',
+  duration_ms: 10, total_cost_usd: 0.0001, is_error: true };
 
 // A real overage stream trip (status:rejected + isUsingOverage), carrying the
 // five-hour `resetsAt` (epoch secs) — used to seed the cross-source dedup tests.
@@ -54,15 +56,18 @@ function spyUsage(payload) {
 }
 
 // Scenario: 'STAY' holds an instance mid-turn (emit nothing) so the poll can catch
-// it; generic prompt turns emit a RESULT so the soft-interrupt the poll triggers
-// winds the turn to idle (the transition that arms a per-session resume timer), and
-// a later resume prompt also completes. 'TRIP' emits a hard overage stream event.
+// it; the control/interrupt turn ends that turn with an INTERRUPTED result, which is
+// what the direct overage stop (a deferred interrupt, fired immediately here since
+// nothing is mid-stream) now triggers — that turn→idle transition is what arms a
+// per-session resume timer. Generic prompt turns emit a RESULT so a later resume
+// prompt completes. 'TRIP' emits a hard overage stream event.
 function pollScenario() {
   return {
     events: [INIT],
     turns: [
       { on: { type: 'prompt', text: 'TRIP' }, emit: [overageEvent({ resetsAt: nowSec() + 3600 }), RESULT] },
       { on: { type: 'prompt', text: 'STAY' }, emit: [] },
+      { on: { type: 'control', subtype: 'interrupt' }, emit: [INTERRUPTED] },
       { on: { type: 'prompt' }, emit: [RESULT] },
       { on: { type: 'prompt' }, emit: [RESULT] },
       { on: { type: 'prompt' }, emit: [RESULT] },

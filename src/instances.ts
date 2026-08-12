@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { Parser, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
+import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
 import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
@@ -183,18 +183,18 @@ const TASK_LIFECYCLE_SUBTYPES = new Set(['task_started', 'task_updated', 'task_n
 // in-memory universe remains the real guard — this is just a sanity floor.
 export const SESSION_PREFIX_MIN = 4;
 
-// The hidden steering instruction a SOFT interrupt injects mid-turn. It
-// tells the model to stop all work and wind down — a graceful stop, not a
-// hard abort — but still asks for one brief visible line of acknowledgement:
+// Fallback wind-down text for windDown() when the caller supplies none. It
+// asks the model to stop all work, but still to emit one brief visible line:
 // a fully silent turn makes the CLI inject a "no visible output" follow-up
-// prompt that re-engages the model, defeating the interrupt. Prefixed with
-// SOFT_INTERRUPT_MARKER at send time so it never renders / replays.
-const SOFT_INTERRUPT_TEXT =
+// prompt that re-engages the model, defeating the stop. Only windDown() reads
+// it — a stop with nothing to say is a deferred interrupt (see interrupt()),
+// which needs no message at all.
+const WIND_DOWN_TEXT =
   'Stop now. Do not make any more tool calls or start any new work. Reply with one short line acknowledging you have stopped, then end your turn.';
 
-// After a hard abort, the CLI's internal input queue is not cleared. Any
-// messages written to stdin before the abort (the soft steer, or several
-// prompts sent mid-turn) remain queued; the CLI dequeues them after the abort
+// After an abort, the CLI's internal input queue is not cleared. Any messages
+// written to stdin before it (a windDown() steer, or several prompts sent
+// mid-turn) remain queued; the CLI dequeues them after the abort
 // and starts a SPURIOUS NEW TURN for each one. The drain window catches these
 // by listening for system/init on the 'event' channel (the earliest per-turn-
 // start signal, firing ~39ms before the API round-trip) and immediately firing
@@ -455,6 +455,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   autoApprovePlan: boolean;
   playbookEnforcement: PlaybookEnforcement;
   interrupting: boolean;
+  _quiescence: QuiescenceScan;
+  _interruptArmed: boolean;
+  _interruptFired: boolean;
   pendingPrefill: string | null;
   _drainTimer: NodeJS.Timeout | null;
   _drainListener: ((ev: UiEvent) => void) | null;
@@ -641,12 +644,23 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Manager._doCreate takes the persisted Settings default (or the caller's
     // explicit value) before it launches.
     this.playbookEnforcement = DEFAULT_PLAYBOOK_ENFORCEMENT;
-    // Transient flag layered on top of `status: 'turn'`: set true when a
-    // SOFT interrupt injects its hidden steering message and the model is
-    // winding the turn down; cleared automatically by _setStatus on any
-    // exit from `turn` (turn_end → idle, crash, exit). Drives the
-    // "stopping…" marker + the "Interrupt now" escalate affordance.
+    // Transient flag layered on top of `status: 'turn'`: set true when a SOFT
+    // (deferred) interrupt is ARMED and the abort has not fired yet; cleared
+    // automatically by _setStatus on any exit from `turn` (turn_end → idle,
+    // crash, exit). Drives the "stopping…" marker + the "Interrupt now"
+    // escalate affordance.
     this.interrupting = false;
+    // Live quiescence of the OUTER event stream, fed from _emitUi with the same
+    // predicate the paging snap uses (QuiescenceScan, parser.ts): empty ⇒
+    // nothing is mid-stream and every dispatched tool has returned its result.
+    // An armed interrupt fires at the first such point, so no half-streamed
+    // block is cut and no completed tool work is thrown away. _interruptArmed
+    // is the fire's own gate — deliberately NOT `interrupting`, which windDown()
+    // also raises for its steer and which must never become an abort — and
+    // _interruptFired holds it to at most one control_request per arm.
+    this._quiescence = new QuiescenceScan();
+    this._interruptArmed = false;
+    this._interruptFired = false;
     // Fork drops the dropped user prompt here so it can ride the new
     // instance's first `snapshot` frame as `droppedText` — the inline
     // analogue of rewind's `reset_snapshot` droppedText. Consumed once by
@@ -1065,9 +1079,18 @@ export class Instance extends EventEmitter implements InstanceLike {
   _setStatus(next: string): void {
     if (this.status === next) return;
     this.status = next;
-    // Any exit from `turn` ends an in-flight soft interrupt — the model
-    // either wound down (turn_end → idle) or the process died.
-    if (next !== 'turn') this.interrupting = false;
+    // Any exit from `turn` ends an in-flight soft interrupt — the turn either
+    // finished on its own (turn_end → idle) or the process died. This is also
+    // what closes the "turn ends before the boundary" race BY CONSTRUCTION: the
+    // turn_end branch of _handleStdoutLine runs _setStatus('idle') BEFORE it
+    // emits the event, so by the time the scan reads empty on that turn_end the
+    // status guard in _maybeFireArmedInterrupt already rejects the fire. No
+    // armed interrupt can leak into the next turn.
+    if (next !== 'turn') {
+      this.interrupting = false;
+      this._interruptArmed = false;
+      this._interruptFired = false;
+    }
     // A new turn is starting (the early-return above means this is a real
     // transition INTO 'turn', covering both prompt()-initiated and unprompted
     // re-invocation turns) — clear the pending task-notification flag: the CLI
@@ -1117,6 +1140,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (ev.kind === 'message_start') {
       this._lastContextUsage = ev.usage ?? null;
     }
+    // Same funnel again: advance the live quiescence scan so an armed deferred
+    // interrupt can fire at the first boundary (see _maybeFireArmedInterrupt,
+    // called after the emit below).
+    this._quiescence.apply(ev);
     const wrapped = { ...ev };
     // A redacted block carries no text, so once it closes its retained ring
     // slot is the ONLY place the estimate can survive — without this, a
@@ -1147,6 +1174,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // after emit() would miss the WS frame.
     this.ring.push(wrapped); // stamps wrapped._seq
     this.emit('event', wrapped);
+    // AFTER the emit: the boundary event that makes the stream quiescent must
+    // reach subscribers (and the ring) before the abort is dispatched.
+    this._maybeFireArmedInterrupt();
   }
 
   // Track the model the CLI is actually running, live. `this.model` starts
@@ -1331,6 +1361,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     // A fresh process starts with no in-flight Agent tasks — any entries
     // from a prior run's background subagents are gone with that process.
     this._activeAgentTasks = new Map<string, string | null>();
+    // Same reasoning for the live quiescence scan: a prior run's open blocks /
+    // unreturned tools died with its process, so a stale non-empty state must
+    // not hold the next run's first armed interrupt.
+    this._quiescence = new QuiescenceScan();
+    this._interruptArmed = false;
+    this._interruptFired = false;
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
     // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
@@ -1603,6 +1639,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (leafUuidThisLine) this._lastLeafUuid = leafUuidThisLine;
 
     for (const ev of events) {
+      // The CLI's `[Request interrupted by user]` marker for a turn we are
+      // DRAINING: that turn already annotates as drain_abort, and the capture
+      // shows both would otherwise land for one drain. Dropped whole — a
+      // suppressed annotation must not dirty the idle window either.
+      if (ev.kind === 'system' && ev.subtype === 'soft_interrupted' && this._drainListener) continue;
       // Idle-window dirty tracking (see the _idleWindowDirty comment):
       // evaluated BEFORE the event's own state mutations so it reflects the
       // status the event ARRIVED under. Any idle-time event that isn't pure
@@ -2122,6 +2163,12 @@ export class Instance extends EventEmitter implements InstanceLike {
       message: { role: 'user', content },
       parent_tool_use_id: null,
     });
+    // Again, after the send: the user_echo above force-resets the quiescence
+    // scan, so a stop armed earlier in this turn FIRES right there and opens a
+    // fresh drain window — which would then sever the very turn this prompt is
+    // starting. Closing here covers that; the close at the top of prompt()
+    // stands for the ordinary post-abort case.
+    this._closeDrainWindow();
     this._setStatus('turn');
   }
 
@@ -2269,24 +2316,22 @@ export class Instance extends EventEmitter implements InstanceLike {
   handleHookCallback(envelope: unknown, res: Response): void { this._hooks.handle(envelope as HookEnvelope | null | undefined, res); }
   resolveHookCallback(toolUseId: unknown, allow: boolean): boolean { return this._hooks.resolve(toolUseId, allow); }
 
-  // Two-tier interrupt. FORCED (`force:true`) is the hard abort: a
-  // control_request the CLI honours by severing the in-flight turn and
-  // discarding partial work. SOFT (default) injects a hidden steering
-  // user message mid-turn — the CLI delivers it into the live turn (it is
-  // NOT queued until turn_end) — telling the model to stop all work and
-  // end its turn after one brief acknowledgement line, so it winds down
-  // gracefully without triggering the CLI's empty-turn follow-up. The steer
-  // itself is never echoed to the UI as a user_echo (that would shift the
-  // live userIndex rewind/fork keys off from the JSONL-derived count, which
-  // deliberately excludes it — see isPureUserPromptLine in transcript.ts).
-  // Instead we emit a live system/soft_interrupted annotation carrying the
-  // text, so the human sees what was said without affecting prompt indices.
-  // JSONL replay independently produces the same bare annotation (no text)
-  // via SOFT_INTERRUPT_MARKER filtering in parser.ts / transcript.ts.
+  // Two-tier interrupt, both tiers a real `control_request subtype:interrupt` —
+  // they differ only in WHEN it fires. FORCED (`force:true`) fires now, severing
+  // the turn and discarding whatever was in progress. SOFT (default) ARMS a
+  // DEFERRED interrupt: nothing goes to the CLI until the stream reaches its
+  // first quiescent point (no block mid-stream, every dispatched tool returned),
+  // so partial output and finished tool work survive and the model is never
+  // asked to acknowledge anything — no extra request/response round-trip is
+  // paid. `interrupting:true` therefore means ARMED, not stopped.
   async interrupt({ force = false }: { force?: boolean } = {}): Promise<void> {
     if (this.status !== 'turn') return;
     if (force) {
+      // Also disarms any pending deferred fire: the abort is happening now, so a
+      // later boundary must not send a second control_request.
+      this._interruptFired = true;
       await this._controlRequest({ subtype: 'interrupt' });
+      this._releaseParkedPermissions();
       // Open the drain window synchronously in the same microtask as the ACK.
       // Any system/init that follows (the CLI dequeuing its leftover input queue)
       // will be caught before the spurious API round-trip begins. Opening here
@@ -2295,23 +2340,72 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._openDrainWindow();
       return;
     }
-    if (this.interrupting) return; // idempotent — one steer per turn
-    this._emitUi({ kind: 'system', subtype: 'soft_interrupted', data: { text: SOFT_INTERRUPT_TEXT } });
-    this._sendRaw({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: `${SOFT_INTERRUPT_TEXT}\n${SOFT_INTERRUPT_MARKER}` }],
-      },
-      parent_tool_use_id: null,
-    });
+    // Idempotent: one arm per turn, and a no-op once windDown() has already put
+    // this turn into wind-down (its steer is on its way; escalate with force).
+    if (this.interrupting) return;
     this.interrupting = true;
+    this._interruptArmed = true;
     this.emit('status', this.summary());
+    this._maybeFireArmedInterrupt(); // fires right here if already quiescent
   }
 
-  // Like the SOFT path of interrupt() but with caller-supplied wind-down text
-  // — used by the resume-restart drain so each instance gets a restart-specific
-  // (and, for conductors, worker-aware) stop notice. The text is emitted as a
+  // True while a tool sits at an unanswered ask-mode permission card. Such a
+  // tool has NOT started, so there is no work to preserve — without this the
+  // armed interrupt would wait on a `pendingTools` entry that only a human can
+  // clear. No timer and no max-defer knob: a genuinely wedged tool is what the
+  // forced tier is for.
+  _blockedOnPermission(): boolean { return this._hooks.pendingCount > 0; }
+
+  // Called once an interrupt has been ACKED: the turn is severed, so a tool
+  // still parked at a permission card will never run. Deny it — freeing the
+  // held-open hook HTTP response and resolving the UI card — instead of leaving
+  // both hanging until HOOK_PENDING_TIMEOUT_MS (9 min). Scoped by construction
+  // to the aborted turn: a pending decision only exists for a tool_use the CLI
+  // was about to dispatch in it.
+  //
+  // ONLY after the ACK, never before the request: a deny released first comes
+  // back as an error tool_result, and the CLI's agent loop would spend exactly
+  // the extra model round-trip this whole path exists to avoid.
+  _releaseParkedPermissions(): void {
+    this._hooks.discardAll('turn interrupted before the tool ran', 'interrupted');
+  }
+
+  // Fire an armed deferred interrupt if the stream is at a boundary. Called
+  // from interrupt() (covers arming into an existing gap) and from the tail of
+  // _emitUi (covers every later event). Deliberately synchronous inside the
+  // stdout handler — same precedent as the drain listener — and NOT deferred to
+  // a microtask, which would drain only after the whole readline chunk and could
+  // let another tool dispatch first.
+  _maybeFireArmedInterrupt(): void {
+    if (!this._interruptArmed || this._interruptFired) return;
+    if (this.status !== 'turn' || !this.proc) return;
+    if (!this._quiescence.empty && !this._blockedOnPermission()) return;
+    this._interruptFired = true;
+    this._controlRequest({ subtype: 'interrupt' }).then(
+      () => this._releaseParkedPermissions(),
+      (e: Error) => {
+        // Timed out or the process died mid-flight. Disarm so the UI never
+        // sticks on "stopping…" with nothing coming, and clear _interruptFired
+        // too: the abort never landed, so this turn must stay RE-ARMABLE (a
+        // second ⏸ has to be able to try again). Both flags are cleared BEFORE
+        // the annotation is emitted — _emitUi's tail re-runs this method, and an
+        // armed-and-unfired state there would spin failed retries.
+        this.interrupting = false;
+        this._interruptArmed = false;
+        this._interruptFired = false;
+        this._emitUi({ kind: 'system', subtype: 'stderr',
+          data: { line: `interrupt failed: ${e.message}` } });
+        this.emit('status', this.summary());
+      },
+    );
+    this._openDrainWindow();
+  }
+
+  // A STEER, not an interrupt: a mid-turn user message carrying caller-supplied
+  // wind-down text — used by the resume-restart drain and the overage conductor
+  // stop, each of which has something the model must be TOLD (why it is
+  // stopping, what to do with its workers) that a bare abort cannot convey.
+  // Everything else uses interrupt()'s deferred abort. The text is emitted as a
   // visible user_echo bubble so the human sees it in the transcript. The CLI
   // receives the message with SOFT_INTERRUPT_MARKER appended so the parser
   // drops it on JSONL replay after resume (no duplicate bubble in resumed
@@ -2319,7 +2413,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   windDown(text: string): void {
     if (this.status !== 'turn') return;
     if (this.interrupting) return;
-    const body = typeof text === 'string' && text.trim() ? text : SOFT_INTERRUPT_TEXT;
+    const body = typeof text === 'string' && text.trim() ? text : WIND_DOWN_TEXT;
     // Same turn-boundary rationale as prompt() above.
     this.parser.expirePendingSkillLoads();
     this._emitUi({ kind: 'user_echo', text: body });
@@ -2570,6 +2664,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.ring.clear();
     this._userEchoCount = 0;
     this._liveThinkingTokens = null;
+    // The replay about to run feeds _emitUi, so the live quiescence scan must
+    // start from the same blank state the ring does.
+    this._quiescence = new QuiescenceScan();
+    this._interruptArmed = false;
+    this._interruptFired = false;
     // A rewind/respawn rewrites the CLI's prefix, so the pre-wipe context reading
     // must not leak into the replayed session (it would over-report a rewound
     // session's fill until its first live message_start).

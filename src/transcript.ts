@@ -13,7 +13,8 @@ import path from 'node:path';
 import { encodeCwd, claudeProjectsRoot } from './projects.ts';
 import { markerPermissionMode } from './sessionModes.ts';
 import {
-  consolidateUserContent, isSoftInterruptContent, isTaskNotificationContent, attachSkillLoad,
+  consolidateUserContent, isSoftInterruptContent, isInterruptMarkerContent,
+  isTaskNotificationContent, attachSkillLoad,
   type UiEvent, type WireEnvelope, type WireContentBlock, type PendingSkillLoad,
 } from './parser.ts';
 import { PlanFileTracker, planPathFromInput } from './planFile.ts';
@@ -62,10 +63,13 @@ export function isPureUserPromptLine(obj: unknown): boolean {
   if (line.isSidechain) return false;
   if (line.type === 'user') {
     const content = line.message?.content;
-    // Soft-interrupt steer never produces a user_echo bubble (it renders as a
-    // system/soft_interrupted annotation instead) — don't count it, or
+    // A marked wind-down steer never produces a user_echo bubble (it renders as
+    // a system/soft_interrupted annotation instead) — don't count it, or
     // fork/rewind indices would drift past the user_echo count.
     if (isSoftInterruptContent(content)) return false;
+    // The CLI's post-abort marker line — a soft_interrupted annotation, not a
+    // prompt. Every ⏸/⏹ stop leaves one, so counting it would shift indices.
+    if (isInterruptMarkerContent(content)) return false;
     // Background-subagent completion ping — dropped silently, never a
     // user_echo. See parser.ts:_handleUser.
     if (isTaskNotificationContent(content)) return false;
@@ -133,8 +137,9 @@ export function replayPersistedLine(
   if (line.type === 'user') {
     const msg = line.message ?? {};
     const content = msg.content;
-    // Soft-interrupt steer — show as a system annotation, not a user bubble.
-    if (isSoftInterruptContent(content)) {
+    // Soft-interrupt steer (historical jsonls) or the CLI's post-abort marker
+    // — both show as a system annotation, not a user bubble.
+    if (isSoftInterruptContent(content) || isInterruptMarkerContent(content)) {
       events.push({ kind: 'system', subtype: 'soft_interrupted' });
       return tagAndReturn();
     }
