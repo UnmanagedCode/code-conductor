@@ -34,7 +34,7 @@ const PAYLOAD = {
   ],
   playbookErrors: [],
   defaultPlaybook: { mode: 'playbook', id: 'relay' },
-  // DELIBERATELY not the real DEFAULT_PLAYBOOK_ID ('relay'): the label must come
+  // DELIBERATELY not the real DEFAULT_PLAYBOOK_ID: the label must come
   // from the payload, so a client-side hardcode of the shipped id fails here.
   defaultPlaybookFallback: 'freeform',
 };
