@@ -45,6 +45,14 @@ const INPUT_CAP = 80_000;
 const INPUT_HEAD = 20_000;
 const INPUT_TAIL = 60_000;
 
+// Generation cap. Not unbounded: this one-shot spawn isn't tracked by
+// instances.ts's registry, so nothing kills it on server shutdown or client
+// disconnect — a wedged child would otherwise hang the request forever. 600s
+// gives a long session's transcript real room while still bounding the worst
+// case; it matches the repo's other one-shot/long-running child caps
+// (BASH_MAX_TIMEOUT_MS, send_prompt's wait cap) rather than inventing a new one.
+const GENERATION_TIMEOUT_MS = 600_000;
+
 // A persisted session line narrowed to the fields flattenTranscript/countMessages read.
 interface TranscriptLine {
   type?: unknown;
@@ -225,8 +233,8 @@ export async function generateSummary(sessionId: string, cwd: string, length: Su
 
     const timer = setTimeout(() => {
       child.kill();
-      reject(new Error('summary generation timed out after 60s'));
-    }, 60_000);
+      reject(new Error(`summary generation timed out after ${GENERATION_TIMEOUT_MS / 1000}s`));
+    }, GENERATION_TIMEOUT_MS);
 
     // A spawn that never starts (ENOENT/EACCES — e.g. a backend template naming a
     // command that isn't installed) emits 'error', never 'close'. Without this
