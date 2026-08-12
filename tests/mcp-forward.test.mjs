@@ -25,6 +25,10 @@ const SCENARIO_SLOW = path.join(__dirname, 'fixtures', 'scenario-slow-turn.json'
 const SCENARIO_PLAN_FILE = path.join(__dirname, 'fixtures', 'scenario-exit-plan-file.json');
 
 const FRAME_HEADER = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---';
+// The header's own last sentence — used only to pin the header→payload JOIN
+// seam (after the header's fixed text ends), which is distinct from the
+// header's internal title-line break above and must not be confused with it.
+const FRAME_HEADER_TAIL = 'Your own instruction follows the END marker below.';
 const FRAME_FOOTER = '--- END FORWARDED WORKER OUTPUT ---';
 
 let ctx, baseUrl, instances, home;
@@ -161,6 +165,14 @@ test('forward: data-dependent, byte-identical to get_recent_messages, correctly 
   for (const marker of ['chars ---', '"source"', '"retained"', 'omittedToolOnly', 'textTruncated']) {
     assert.ok(!composed.includes(marker), `telemetry marker "${marker}" must not leak into the forward frame`);
   }
+
+  // 5. Seam integrity: the frame's job is delimitation — marking where quoted
+  // material ends and the worker's own instruction begins — so the boundary
+  // seams must be blank-line (exact double-newline), not merely present, or
+  // the footer runs flush against the guiding text and stops reading as a
+  // delimiter. A single-newline join must fail these.
+  assert.ok(composed.includes(`${FRAME_HEADER_TAIL}\n\n`), 'header→payload seam is a blank line, not a bare newline');
+  assert.ok(composed.endsWith(`${FRAME_FOOTER}\n\n${GUIDING}`), 'footer→guiding-text seam is a blank line, not a bare newline');
 });
 
 test('forward: multi-message payload uses bare boundaries, not get_recent_messages\' telemetry-carrying ones', async () => {
@@ -188,6 +200,12 @@ test('forward: multi-message payload uses bare boundaries, not get_recent_messag
   assert.doesNotMatch(composed, /--- message \d+\/\d+ · .* chars ---/,
     'must never use get_recent_messages\' telemetry-carrying boundary variant');
   assert.ok(composed.includes('--- plan ---\nStep 1\nStep 2'), 'the inline plan body rides along in full');
+  // Inter-message seam: a blank line between message 1's body and message 2's
+  // boundary, not a bare newline — the second mutation site (handlers.ts's
+  // messages.join('\n\n')), distinct from the header/payload/footer assembly
+  // join pinned in the test above.
+  assert.ok(composed.includes('Step 2\n\n--- message 2/2 ---'),
+    'the inter-message seam is a blank line, not a bare newline');
 });
 
 test('forward: a plan backed by a file carries the saved path and the full body inline', async () => {
