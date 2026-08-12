@@ -73,6 +73,10 @@ export interface InstanceLike {
   consumePrefill(): string | null;
   clearContext(): void;
   carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
+  // Await this instance's durable session-lineage writes, rethrowing the first
+  // failure since the last flush (see src/instances.ts). SessionRenewController
+  // waits on this before reseeding a rotated session.
+  flushLineage(): Promise<void>;
   summary(): InstanceSummary;
   _emitUi(ev: UiEvent): void;
   prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean }): Promise<unknown>;
@@ -185,6 +189,7 @@ export interface InstanceManagerLike {
   idsForWorktree(project: string, worktreeName: string): string[];
   // Route surface (src/routes.ts).
   tempSessionIdsForCwd(cwd: string): Set<string>;
+  liveBackingIdsForCwd(cwd: string): Set<string>;
   idsForSession(sessionId: string): string[];
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
   removeAllForProject(projectName: string): Promise<number>;

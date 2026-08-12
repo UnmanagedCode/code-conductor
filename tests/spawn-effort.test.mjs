@@ -370,7 +370,7 @@ describe('the resolved effort reaches the spawn', () => {
     const first = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', tier: 'fast' });
     const id = first.body.id;
     await waitFor(() => instances.get(id)?.sessionId && instances.get(id)?.status === 'idle');
-    const sid = instances.get(id).sessionId;
+    const sid = instances.get(id).backingSessionId;
     assert.equal(instances.get(id).effort, 'low');
 
     // The fake CLI doesn't write the jsonl, so seed the one line

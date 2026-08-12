@@ -94,8 +94,8 @@ test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal js
 
   const dir = path.join(claudeProjectsRoot, encodeCwd(tempInst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  const tempJsonl = path.join(dir, `${tempInst.sessionId}.jsonl`);
-  const normalJsonl = path.join(dir, `${normalInst.sessionId}.jsonl`);
+  const tempJsonl = path.join(dir, `${tempInst.backingSessionId}.jsonl`);
+  const normalJsonl = path.join(dir, `${normalInst.backingSessionId}.jsonl`);
   await fs.writeFile(tempJsonl, '{"type":"user","uuid":"u1"}\n');
   await fs.writeFile(normalJsonl, '{"type":"user","uuid":"u2"}\n');
 
@@ -306,7 +306,7 @@ test('a restarted conductor keeps its OWN level, not a default that changed unde
 
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, `${inst.sessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
 
   const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
   assert.equal(entries.length, 1);
@@ -487,7 +487,7 @@ test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores i
   // Materialize a jsonl so --resume can find the session on restore.
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, `${inst.sessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
 
   const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
   assert.equal(entries.length, 1, 'one entry in manifest');
@@ -605,7 +605,7 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   // Materialize a jsonl so the entry is a valid resume target.
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, `${inst.sessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
 
   // Arm a real overage resume: stamp the reset time + intent, then let the
   // controller compute the fire deadline (resetsAt + buffer) exactly as the

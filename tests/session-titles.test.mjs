@@ -198,7 +198,7 @@ test('temp session exit preserves its custom title in the sidecar', async () => 
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle' && !!inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;   // the title/archived sidecars are transcript-keyed
 
     await api(baseUrl, 'PUT', `/api/sessions/${sid}/title`, { title: 'ephemeral' });
     assert.equal(await getTitle(sid), 'ephemeral');
@@ -215,9 +215,10 @@ test('resuming a crashed session recovers firstPrompt from disk instead of losin
   await api(baseUrl, 'POST', '/api/projects', { name: 'crash-resumed' });
 
   const r1 = await api(baseUrl, 'POST', '/api/instances', { project: 'crash-resumed' });
-  const sid = r1.body.sessionId;
   const inst = instances.get(r1.body.id);
-  await waitFor(() => inst.status === 'idle' && inst.sessionId === sid);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId === r1.body.sessionId);
+  // The planted jsonl below and the resume both name the TRANSCRIPT.
+  const sid = inst.backingSessionId;
 
   // Plant the original first-turn content on disk — the fake CLI (like a
   // real crash) never gets to write this itself; this mirrors what a real

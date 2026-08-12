@@ -32,7 +32,7 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     const tempId = tempRes.body.id;
     const tempInst = instances.get(tempId);
     await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-    const tempSid = tempInst.sessionId;
+    const tempSid = tempInst.backingSessionId;
 
     // Spawn a NON-temp instance in the same project so the sessions
     // listing has a non-temp entry to keep around as a control.
@@ -40,7 +40,7 @@ test('temp session jsonl is filtered out of GET /api/projects/:name/sessions whi
     assert.equal(normalRes.status, 201);
     const normalInst = instances.get(normalRes.body.id);
     await waitFor(() => normalInst.status === 'idle' && normalInst.sessionId);
-    const normalSid = normalInst.sessionId;
+    const normalSid = normalInst.backingSessionId;
 
     // Materialize both jsonls (CLI normally writes these; the fake CLI
     // doesn't, so we write directly into ~/.claude/projects/<encoded>/).
@@ -102,7 +102,7 @@ test('temp session jsonl that survives on disk reappears in the list after the l
     const tempRes = await api(baseUrl, 'POST', '/api/instances', { project: 'tempfilter2', temp: true });
     const tempInst = instances.get(tempRes.body.id);
     await waitFor(() => tempInst.status === 'idle' && tempInst.sessionId);
-    const tempSid = tempInst.sessionId;
+    const tempSid = tempInst.backingSessionId;
     const cwd = tempInst.cwd;
 
     // Filtered while alive.

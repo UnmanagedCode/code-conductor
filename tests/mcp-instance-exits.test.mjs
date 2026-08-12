@@ -74,7 +74,7 @@ function groupCounts(text) {
 async function materializeJsonl(inst) {
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  const file = path.join(dir, `${inst.sessionId}.jsonl`);
+  const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
   await fs.writeFile(file, '{"type":"user","uuid":"u1"}\n');
   return file;
 }
@@ -98,7 +98,7 @@ test('a non-temp instance retained in byId after exit is not counted live', asyn
   // `!isDeadStatus(i.status)` clause in liveCountForProject and this reads 1.
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
   const inst = await spawn('demo', { temp: false });
-  const sid = inst.sessionId;
+  const sid = inst.backingSessionId;   // inactive rows come off disk, keyed by filename
   await materializeJsonl(inst);
   assert.equal(liveCountOf(await call('list_projects'), 'demo'), 1, 'live while running');
 
@@ -152,7 +152,7 @@ test('an archived session is never listed, and a killed temp session is archived
   // worker must disappear from BOTH sections, not migrate into the inactive rows.
   await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
   const inst = await spawn('demo', { temp: true });
-  const sid = inst.sessionId;
+  const sid = inst.backingSessionId;   // inactive rows come off disk, keyed by filename
   await materializeJsonl(inst);
   await killAndWait(inst);
   await waitFor(async () => {

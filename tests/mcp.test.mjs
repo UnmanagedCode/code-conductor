@@ -376,7 +376,11 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
   // Drive a turn so the durable marker is persisted on turn_end.
   await callTool(baseUrl, 'send_prompt', { sessionId: cond.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  // BOTH ids are needed here, and keeping them apart is the point: a LIVE row is
+  // rendered from the instance (public id) while an inactive row and the durable
+  // sidecar both come off disk (backing id).
   const condSid = condInst.sessionId;
+  const condBacking = condInst.backingSessionId;
 
   // Non-conducted session: spawned via the browser / HTTP path.
   const httpRes = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
@@ -384,18 +388,19 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   const httpInst = instances.get(httpRes.body.id);
   await waitFor(() => httpInst.status === 'idle' && httpInst.sessionId);
   const httpSid = httpInst.sessionId;
+  const httpBacking = httpInst.backingSessionId;
 
   // The durable marker lands in the central-store sidecar.
   const sidecar = path.join(projectsRoot, '.code-conductor', 'conducted-sessions.json');
   await waitFor(async () => {
-    try { return JSON.parse(await fs.readFile(sidecar, 'utf8')).sessions?.includes(condSid); }
+    try { return JSON.parse(await fs.readFile(sidecar, 'utf8')).sessions?.includes(condBacking); }
     catch { return false; }
   });
 
   // Materialize both jsonls (the fake CLI doesn't write them).
   const dir = path.join(claudeProjectsRoot, encodeCwd(condInst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  for (const sid of [condSid, httpSid]) {
+  for (const sid of [condBacking, httpBacking]) {
     await fs.writeFile(path.join(dir, `${sid}.jsonl`),
       '{"type":"user","uuid":"u","message":{"role":"user","content":"hi"}}\n');
   }
@@ -421,7 +426,8 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   // on-disk sidecar, not the in-memory instance.
   await callTool(baseUrl, 'kill_instance', { sessionId: cond.sessionId });
   const out2 = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  assert.match(entryFor(condSid, out2) ?? '', /\bconducted\b/,
+  // Now an INACTIVE row, so it is keyed by the transcript filename.
+  assert.match(entryFor(condBacking, out2) ?? '', /\bconducted\b/,
     'conducted marker persists after the instance exits');
 });
 
@@ -446,7 +452,7 @@ test('temp conducted session persists the conducted marker and recovers it on re
   assert.equal(spawn.temp, true, 'MCP spawn defaults to temp:true');
   const inst = instForSession(instances, spawn.sessionId);
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
-  const sid = inst.sessionId;
+  const sid = inst.backingSessionId;   // both sidecars are transcript-keyed
 
   // Drive a turn so _writeSessionMetadata() runs. Both durable markers must
   // land even though the session is temp. (Before the fix, isConducted(sid)
@@ -1355,7 +1361,10 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
     // written fire-and-forget off turn_end — wait for it to land on disk).
     await callTool(baseUrl, 'send_prompt', { sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
     const sessionDir = path.join(claudeProjectsRoot, encodeCwd(worktreePath));
-    const jsonlPath = path.join(sessionDir, `${sessionId}.jsonl`);
+    // The transcript is named by the BACKING id; `sessionId` above is the public
+    // handle the resume below deliberately uses instead.
+    const backingId = instForSession(instances, sessionId).backingSessionId;
+    const jsonlPath = path.join(sessionDir, `${backingId}.jsonl`);
     await waitFor(async () => { try { await fs.stat(jsonlPath); return true; } catch { return false; } });
 
     // Seed a distinguishable "prior conversation" line — what a resumed

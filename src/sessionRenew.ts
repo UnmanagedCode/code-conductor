@@ -128,7 +128,11 @@ export class SessionRenewController {
     const p = this.pending.get(id);
     if (!p) return;
     if (p.state === 'armed') this._onArmedTurnEnd(id, p);
-    else if (p.state === 'clearing') this._onClearingTurnEnd(id, p);
+    // Async since the reseed now waits on the durable lineage write. Deliberately
+    // not awaited: onEvent is driven from the manager's synchronous event stream.
+    // It handles its own failures (see the renew_error emissions), so the catch is
+    // only a backstop against an unhandled rejection.
+    else if (p.state === 'clearing') void this._onClearingTurnEnd(id, p).catch(() => {});
   }
 
   private _onArmedTurnEnd(id: string, p: PendingRenewal): void {
@@ -155,7 +159,7 @@ export class SessionRenewController {
     catch { this._clear(id); }
   }
 
-  private _onClearingTurnEnd(id: string, p: PendingRenewal): void {
+  private async _onClearingTurnEnd(id: string, p: PendingRenewal): Promise<void> {
     const inst = this.manager.byId.get(id);
     if (!inst || !inst.proc) { this._clear(id); return; }
     // Only `/clear`'s own turn_end rotates the BACKING id (the public id is
@@ -182,9 +186,43 @@ export class SessionRenewController {
     // Instance.carryMarkersAcrossRenewal for why _writeSessionMetadata's
     // incidental re-write on the next turn_end isn't sufficient.
     inst.carryMarkersAcrossRenewal(oldSid).catch(() => {});
+    // Wait for the rotation to be DURABLE before the reseed opens a turn against
+    // the new backing id. The write was kicked in the system/init handler (the
+    // earliest possible moment), so this normally resolves instantly. On failure
+    // the rotation is live in memory but absent from disk — recovery would resolve
+    // the public id to the pre-clear transcript and orphan everything the renewed
+    // session goes on to write — so say so, loudly, and RESEED ANYWAY: the clear
+    // already happened irreversibly and the summary is the only thing that can
+    // save the session. Failure-visible, not abort.
+    try {
+      await inst.flushLineage();
+    } catch (err) {
+      inst._emitUi({
+        kind: 'system', subtype: 'renew_error',
+        data: {
+          stage: 'lineage',
+          message: `session lineage write failed: ${errMsg(err)} — the rotation is in memory `
+            + 'but not on disk, so a restart before the next rotation would resume the pre-clear '
+            + 'transcript and orphan this session\'s new turns',
+        },
+      });
+    }
     // Seed the cleared session as its first user turn. internal:true so it does
     // not trip the overage resume-cancel path (the send itself is not throttled).
-    inst.prompt(seed, [], { internal: true }).catch(() => {});
+    // A failure here leaves the context cleared with NO summary delivered — the
+    // worst outcome in the whole flow, so it must never be swallowed.
+    try {
+      await inst.prompt(seed, [], { internal: true });
+    } catch (err) {
+      inst._emitUi({
+        kind: 'system', subtype: 'renew_error',
+        data: {
+          stage: 'reseed',
+          message: `renewal reseed failed: ${errMsg(err)} — the context was cleared but the `
+            + 'handoff summary was not delivered',
+        },
+      });
+    }
   }
 
   private _clear(id: string): void {
@@ -195,4 +233,8 @@ export class SessionRenewController {
 
   // Drop a pending renewal (called on instance removal).
   purge(instanceId: string): void { this._clear(instanceId); }
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

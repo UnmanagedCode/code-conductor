@@ -1330,17 +1330,18 @@ test('writes last-prompt + permission-mode jsonl markers after each turn (so cla
     // give the appendFile a tick to settle
     await waitFor(async () => {
       const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
-      const file = path.join(dir, `${inst.sessionId}.jsonl`);
+      const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
       try { const txt = await fsp.readFile(file, 'utf8'); return txt.includes('"type":"last-prompt"'); }
       catch { return false; }
     });
     const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
-    const file = path.join(dir, `${inst.sessionId}.jsonl`);
+    const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
     const lines = (await fsp.readFile(file, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
     const last = lines.find(l => l.type === 'last-prompt');
     const mode = lines.find(l => l.type === 'permission-mode');
     assert.ok(last, 'last-prompt line was appended');
-    assert.equal(last.sessionId, inst.sessionId);
+    // The marker is written INTO the transcript, so it names the backing id.
+    assert.equal(last.sessionId, inst.backingSessionId);
     assert.ok(last.leafUuid, 'leafUuid present');
     assert.ok(mode, 'permission-mode line was appended');
     assert.equal(mode.permissionMode, 'bypassPermissions');
@@ -1468,7 +1469,7 @@ test('temp: skips last-prompt / permission-mode metadata writes after a turn', a
     // Wait a tick to let any (unwanted) appendFile settle, then assert nothing was written.
     await new Promise(r => setTimeout(r, 50));
     const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
-    const file = path.join(dir, `${inst.sessionId}.jsonl`);
+    const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
     let exists = true;
     try { await fsp.access(file); } catch { exists = false; }
     if (exists) {
@@ -1491,8 +1492,8 @@ test('temp: archives session jsonl + removes subagents dir on subprocess exit', 
 
   // Simulate the CLI having written its transcript + a sub-agent dir.
   const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
-  const file = path.join(dir, `${inst.sessionId}.jsonl`);
-  const subDir = path.join(dir, inst.sessionId, 'subagents');
+  const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
+  const subDir = path.join(dir, inst.backingSessionId, 'subagents');
   await fsp.mkdir(subDir, { recursive: true });
   await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
   await fsp.writeFile(path.join(subDir, 'agent-x.jsonl'), '{}\n');
@@ -1500,12 +1501,12 @@ test('temp: archives session jsonl + removes subagents dir on subprocess exit', 
   const del = await api(baseUrl, 'DELETE', `/api/instances/${id}`);
   assert.equal(del.status, 200);
   // Wait for _archiveTempSession to complete — markArchived is the last write.
-  await waitFor(() => isArchived(inst.sessionId));
+  await waitFor(() => isArchived(inst.backingSessionId));
   // .jsonl is retained for resumability — must still be on disk.
   await fsp.access(file);
   // Sub-agent dir is ephemeral and must be cleaned up.
   let subStillThere = true;
-  try { await fsp.access(path.join(dir, inst.sessionId)); } catch { subStillThere = false; }
+  try { await fsp.access(path.join(dir, inst.backingSessionId)); } catch { subStillThere = false; }
   assert.equal(subStillThere, false, 'sub-agent dir for the session was removed');
 });
 
@@ -1598,7 +1599,7 @@ test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cle
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
 
     const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
-    const file = path.join(dir, `${inst.sessionId}.jsonl`);
+    const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
 
     const promote = await api(baseUrl, 'POST', `/api/instances/${id}/promote`);
     assert.equal(promote.status, 200);
@@ -1654,7 +1655,7 @@ test('non-temp: jsonl is left in place on exit', async () => {
   await waitFor(() => inst.status === 'idle' && inst.sessionId);
 
   const dir = path.join(ctx.claudeProjectsRoot, encodeCwd(inst.cwd));
-  const file = path.join(dir, `${inst.sessionId}.jsonl`);
+  const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
   await fsp.mkdir(dir, { recursive: true });
   await fsp.writeFile(file, '{"type":"user","uuid":"u1"}\n');
 

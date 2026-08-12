@@ -135,7 +135,7 @@ test('resume recovers the bare model and re-derives the window (Sonnet → [1m])
     await waitFor(() => ctx.instances.get(id1).status === 'idle');
 
     const inst1 = ctx.instances.get(id1);
-    const sessionId = inst1.sessionId;
+    const sessionId = inst1.backingSessionId;
     assert.equal(inst1.model, 'claude-sonnet-4-6[1m]', 'spawn canonicalises Sonnet to [1m]');
 
     // Run a turn so _writeSessionMetadata appends last-prompt/permission-mode.

@@ -33,7 +33,7 @@ afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 async function materializeJsonl(claudeProjectsRoot, inst, content = '{"type":"user","uuid":"u1"}\n') {
   const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
   await fs.mkdir(dir, { recursive: true });
-  const file = path.join(dir, `${inst.sessionId}.jsonl`);
+  const file = path.join(dir, `${inst.backingSessionId}.jsonl`);
   await fs.writeFile(file, content);
   return file;
 }
@@ -46,7 +46,7 @@ test('killing a temp instance archives the session — .jsonl kept, archived fla
     assert.equal(res.status, 201);
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
 
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
 
@@ -75,7 +75,7 @@ test('archived session appears in list_sessions with archived:true, excluded fro
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivelist', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
     await materializeJsonl(claudeProjectsRoot, inst);
 
     // Kill so it gets archived.
@@ -115,7 +115,7 @@ test('restore endpoint unmarks archived and session reappears as normal', async 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archiverestore', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
     await materializeJsonl(claudeProjectsRoot, inst);
 
     await api(baseUrl, 'DELETE', `/api/instances/${inst.id}`);
@@ -144,7 +144,7 @@ test('killing a non-temp instance does NOT archive it', async () => {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivenotemp', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
     await materializeJsonl(claudeProjectsRoot, inst);
 
     await api(baseUrl, 'DELETE', `/api/instances/${inst.id}`);
@@ -164,7 +164,7 @@ test('MCP kill_instance archives temp session', async () => {
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'archivemcp', temp: true });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst);
 
     // Use the MCP kill_instance handler directly (same code path as the tool).
@@ -192,7 +192,7 @@ test('shutdownTempSync archives temp sessions — .jsonl kept, subagents dir rem
     const res = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'archivesync', temp: true });
     const inst = rp.instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
 
     const dir = path.join(rp.claudeProjectsRoot, encodeCwd(inst.cwd));
     await fs.mkdir(dir, { recursive: true });

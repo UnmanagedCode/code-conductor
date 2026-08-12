@@ -383,7 +383,9 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     .filter(r => project === null || r.project === project)
     .map(view)
     .sort(compareInstanceRows);
-  const attached = new Set(live.map(r => r.sessionId).filter((s): s is string => typeof s === 'string'));
+  // NOT built from `live` above: those rows carry PUBLIC ids, and the exclusion
+  // set below is matched against transcript filenames (backing ids). Resolved
+  // per-target-cwd inside the group loop via instances.liveBackingIdsForCwd.
 
   // Inactive rows come off disk, from the one function that already owns "which
   // sessions exist for a cwd, and which of them are archived"
@@ -405,6 +407,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // archived outnumbers active ~25:1 and the per-transcript cost is the
     // first-prompt read, which the walk skips for archived rows it is not
     // listing — so the count for a `+N archived` line is effectively free.
+    const attached = instances ? instances.liveBackingIdsForCwd(t.cwd) : null;
     const { rows, archivedCount } = await listSessionsForCwdWithCounts(t.cwd, attached, { includeArchived })
       .catch(() => ({ rows: [], archivedCount: 0 }));
     const liveHere = live.filter(r => r.project === t.project

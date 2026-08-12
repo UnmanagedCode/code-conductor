@@ -28,7 +28,7 @@ test('archive endpoint keeps .jsonl, marks archived, and the session leaves the 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
     const cwd = inst.cwd;
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, cwd, sid);
 
@@ -67,7 +67,7 @@ test('restore drops the session from /api/archived and clears the archived flag'
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife2', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
     await materializeJsonl(claudeProjectsRoot, inst.cwd, sid);
 
     let r = await api(baseUrl, 'POST', `/api/projects/arclife2/sessions/${sid}/archive`);
@@ -92,7 +92,7 @@ test('permanent delete from the archive removes the .jsonl AND unmarks archived 
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'arclife3', temp: false });
     const inst = instances.get(res.body.id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
-    const sid = inst.sessionId;
+    const sid = inst.backingSessionId;
     const jsonlFile = await materializeJsonl(claudeProjectsRoot, inst.cwd, sid);
 
     let r = await api(baseUrl, 'POST', `/api/projects/arclife3/sessions/${sid}/archive`);

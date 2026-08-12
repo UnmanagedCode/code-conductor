@@ -66,8 +66,10 @@ test('a resumed, not-yet-prompted session appears live in GET /api/instances and
     assert.equal(created.status, 201);
     const firstId = created.body.id;
     await waitFor(() => ctx.instances.get(firstId).status === 'idle');
-    const sessionId = ctx.instances.get(firstId).sessionId;
+    const sessionId = ctx.instances.get(firstId).backingSessionId;
+    const publicId = ctx.instances.get(firstId).sessionId;
     assert.ok(sessionId);
+    assert.notEqual(publicId, sessionId, 'precondition: the two ids have diverged');
 
     // Give the ORIGINAL session one real turn so it has resumable history —
     // this is what makes it a "historical session" the sidebar can later
@@ -93,9 +95,13 @@ test('a resumed, not-yet-prompted session appears live in GET /api/instances and
     const id = resumed.body.id;
 
     // The POST response itself already carries the right sessionId — this
-    // is what resumeSession()'s `const inst = await r.json()` sees.
-    assert.equal(resumed.body.sessionId, sessionId,
+    // is what resumeSession()'s `const inst = await r.json()` sees. Resuming by a
+    // BACKING id reports the session's PERMANENT public id, never the backing one:
+    // that redirection is what makes one handle valid for the life of a session.
+    assert.equal(resumed.body.sessionId, publicId,
       'sessionId must be populated synchronously at resume, before the CLI ever starts');
+    assert.equal(ctx.instances.get(id).backingSessionId, sessionId,
+      'and the resumed process runs against the backing id it was handed');
 
     // (1) Sanity-check: immediately re-fetch the full list (what
     // refreshInstances() does) and confirm the resumed instance is present
@@ -104,7 +110,7 @@ test('a resumed, not-yet-prompted session appears live in GET /api/instances and
     const list = await api(ctx.baseUrl, 'GET', '/api/instances');
     const fromList = list.body.find((i) => i.id === id);
     assert.ok(fromList, 'the resumed instance must appear in GET /api/instances immediately, before any prompt');
-    assert.equal(fromList.sessionId, sessionId);
+    assert.equal(fromList.sessionId, publicId);
     assert.ok(['idle', 'turn', 'spawning'].includes(fromList.status),
       `status '${fromList.status}' must be canMenu-eligible immediately after resume`);
 
