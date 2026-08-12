@@ -128,7 +128,9 @@ Keep the mechanism and the measured trap; the *procedure* for obtaining an id no
   you to rewrite a mutant that was already correct. That is why the README makes it a rule.
 - How to obtain ids: `run --all --learn` (added upstream in `f032689`; `SKILL.md` step 5 directs it)
   reports each mutant's observed failing set without grading. Fallback for a single mutation:
-  `probe --json` and read `results[0].failedTests`. Evidence it works: in the §1 catalog, all ten
+  `probe --learn --json` and read `results[0].failedTests` — bare `probe --json` with no
+  `--expect-fail` refuses outright in counted mode (`mutate.mjs:413`); `--learn` is what lifts that
+  refusal. Evidence it works: in the §1 catalog, all ten
   `expectFail` ids were filled from an observed `--learn` pass and **all ten matched the adapter's
   ids verbatim**.
 - **A miss this doc's own drafting caught:** the README (and this file, before this pass) used to
