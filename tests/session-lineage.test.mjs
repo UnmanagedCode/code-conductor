@@ -1,0 +1,276 @@
+// Unit tests for the session-lineage store (src/sessionLineage.ts) — the
+// public-id ↔ backing-id chain that makes a session's public identity permanent
+// across a `/clear` renewal or a prune.
+//
+// The contract these pin, in order of how much depends on them:
+//   1. BASE CASE — no row ⇒ every resolver is the identity function. This is what
+//      makes the store additive with no migration and no backfill.
+//   2. MINTING — 8 hex from the first backing id, extended to 13 on a collision
+//      against EITHER index (public or backing), full id as the loud last resort.
+//   3. ROTATION — append + advance, lazy row creation from the base case,
+//      idempotent on a retry, and exactly reversible by revertRotation.
+//   4. READ TOLERANCE — dropSegment keeps a chain from pointing at a missing file.
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
+
+// Isolate the central store under a tmp PROJECTS_ROOT. projectsRoot() reads the
+// env at call time, so setting it before importing is enough.
+const tmp = await mkdtemp('cc-lineage-');
+process.env.PROJECTS_ROOT = path.join(tmp, 'project');
+
+const {
+  loadLineage, mintPublicId, recordRotation, revertRotation,
+  resolveBacking, publicIdFor, segmentsFor, dropSegment,
+  PUBLIC_ID_LEN, PUBLIC_ID_LEN_EXTENDED,
+} = await import('../src/sessionLineage.ts');
+
+const STORE_FILE = () => path.join(process.env.PROJECTS_ROOT, '.code-conductor', 'session-lineage.json');
+
+// Every test starts from an empty store — the file is unlinked when the last row
+// goes, so removing it IS the reset.
+async function reset() {
+  await fs.rm(STORE_FILE(), { force: true });
+}
+
+// A deterministic UUID-shaped backing id. `head` is the first 8 hex chars (what a
+// mint derives from) and `tag` disambiguates the rest.
+function backing(head, tag = '0000') {
+  return `${head}-${tag}-4000-8000-000000000001`;
+}
+
+test('base case: no row ⇒ both resolvers are the identity function', async () => {
+  await reset();
+  const sid = backing('aaaaaaaa');
+  assert.equal(await resolveBacking(sid), sid, 'unknown id resolves to itself');
+  assert.equal(await publicIdFor(sid), sid, 'unknown id is its own public id');
+  assert.deepEqual(await segmentsFor(sid), [], 'no row ⇒ no segments');
+  const { byPublic, byBacking } = await loadLineage();
+  assert.equal(byPublic.size, 0);
+  assert.equal(byBacking.size, 0);
+  // A missing file is the legitimate empty base case, not an error.
+  await assert.rejects(fs.access(STORE_FILE()));
+});
+
+test('mintPublicId derives 8 hex chars, persists the initial row, and round-trips', async () => {
+  await reset();
+  const first = backing('12345678');
+  const pub = await mintPublicId(first);
+  assert.equal(pub, '12345678');
+  assert.equal(pub.length, PUBLIC_ID_LEN);
+
+  assert.equal(await resolveBacking(pub), first, 'public → current backing');
+  assert.equal(await publicIdFor(first), pub, 'backing → public');
+  assert.equal(await publicIdFor(pub), pub, 'public → itself');
+
+  const segs = await segmentsFor(pub);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].id, first);
+  assert.equal(segs[0].reason, 'initial');
+  assert.ok(segs[0].at, 'segment carries a timestamp');
+
+  // File shape: { sessions: { <publicId>: { current, segments } } }.
+  const obj = JSON.parse(await fs.readFile(STORE_FILE(), 'utf8'));
+  assert.deepEqual(Object.keys(obj.sessions), [pub]);
+  assert.equal(obj.sessions[pub].current, first);
+});
+
+test('mint extends to 13 chars when the 8-char form collides with an existing PUBLIC id', async () => {
+  await reset();
+  await mintPublicId(backing('cafe0000', '1111'));           // takes public 'cafe0000'
+  const second = backing('cafe0000', '2222');
+  const pub = await mintPublicId(second);
+  assert.equal(pub, 'cafe0000-2222');
+  assert.equal(pub.length, PUBLIC_ID_LEN_EXTENDED);
+  assert.ok(second.startsWith(pub), 'the extension stays a literal prefix of the backing id');
+  assert.equal(await resolveBacking(pub), second);
+});
+
+test('mint extends when the 8-char form collides with a BACKING id, not just a public one', async () => {
+  await reset();
+  // Seed a row whose SEGMENT id is exactly the 8-char form a later mint would
+  // derive. Its public id is different, so only the backing index catches this.
+  const owner = await mintPublicId(backing('11111111'));
+  await recordRotation(owner, 'beef0000', 'renew');
+  assert.equal((await loadLineage()).byBacking.get('beef0000'), owner);
+
+  const fresh = backing('beef0000', '9999');
+  const pub = await mintPublicId(fresh);
+  assert.equal(pub, 'beef0000-9999', 'the backing index is part of the collision universe');
+  assert.equal(await publicIdFor('beef0000'), owner, 'the shadowed segment still resolves to its owner');
+});
+
+test('mint falls back to the full backing id when 8 AND 13 both collide', async () => {
+  await reset();
+  await mintPublicId(backing('dddddddd', 'eeee'));   // takes public 'dddddddd'
+  // Seed the 13-char candidate too, as a BACKING id, so both are taken.
+  await recordRotation(await mintPublicId(backing('22222222')), 'dddddddd-eeee', 'prune');
+
+  const third = 'dddddddd-eeee-4000-8000-000000000009';
+  const pub = await mintPublicId(third);
+  assert.equal(pub, third, 'falls back to the full id — unique by construction');
+  assert.equal(await resolveBacking(pub), third);
+});
+
+test('recordRotation appends, advances current, and preserves reason per segment', async () => {
+  await reset();
+  const first = backing('abcdef01');
+  const pub = await mintPublicId(first);
+  const renewed = backing('99999999');
+  const pruned = backing('88888888');
+  await recordRotation(pub, renewed, 'renew');
+  await recordRotation(pub, pruned, 'prune');
+
+  assert.deepEqual((await segmentsFor(pub)).map(s => [s.id, s.reason]), [
+    [first, 'initial'], [renewed, 'renew'], [pruned, 'prune'],
+  ]);
+  assert.equal(await resolveBacking(pub), pruned, 'current is the newest segment');
+  // Every segment stays addressable, permanently — a full backing/segment id
+  // resolves to ITSELF, not to current, so an old transcript still opens.
+  assert.equal(await resolveBacking(first), first);
+  assert.equal(await resolveBacking(renewed), renewed);
+  assert.equal(await publicIdFor(renewed), pub);
+});
+
+test('recordRotation creates the row lazily from the base case, minting nothing', async () => {
+  await reset();
+  // A pre-phase-1 session: full UUID as its public id, no row anywhere.
+  const legacy = backing('7777aaaa');
+  const rotated = backing('7777bbbb');
+  await recordRotation(legacy, rotated, 'renew');
+
+  const segs = await segmentsFor(legacy);
+  assert.deepEqual(segs.map(s => [s.id, s.reason]), [[legacy, 'initial'], [rotated, 'renew']]);
+  assert.equal(await resolveBacking(legacy), rotated);
+  assert.equal(await publicIdFor(rotated), legacy, 'the public id stays the full UUID it already had');
+});
+
+test('recordRotation is idempotent — a retried write does not double-append', async () => {
+  await reset();
+  const pub = await mintPublicId(backing('55555555'));
+  const next = backing('66666666');
+  await recordRotation(pub, next, 'renew');
+  await recordRotation(pub, next, 'renew');
+  await recordRotation(pub, next, 'renew');
+  assert.equal((await segmentsFor(pub)).length, 2);
+  assert.equal(await resolveBacking(pub), next);
+});
+
+test('revertRotation drops the trailing segment and restores current', async () => {
+  await reset();
+  const first = backing('aabbccdd');
+  const pub = await mintPublicId(first);
+  const mid = backing('11112222');
+  const tail = backing('33334444');
+  await recordRotation(pub, mid, 'renew');
+  await recordRotation(pub, tail, 'prune');
+
+  await revertRotation(pub, tail);
+  assert.deepEqual((await segmentsFor(pub)).map(s => s.id), [first, mid]);
+  assert.equal(await resolveBacking(pub), mid);
+
+  // A revert that does not name the TRAILING segment is a no-op — it must never
+  // punch a hole mid-chain.
+  await revertRotation(pub, first);
+  assert.deepEqual((await segmentsFor(pub)).map(s => s.id), [first, mid]);
+});
+
+test('revertRotation restores the base case EXACTLY for a row-less session', async () => {
+  await reset();
+  const legacy = backing('0f0f0f0f');
+  const rotated = backing('f0f0f0f0');
+  await recordRotation(legacy, rotated, 'prune');   // lazily created the row
+  await revertRotation(legacy, rotated);
+
+  assert.deepEqual(await segmentsFor(legacy), [], 'the row is gone, not left as a stub');
+  assert.equal(await resolveBacking(legacy), legacy);
+  assert.equal(await publicIdFor(legacy), legacy);
+  assert.equal((await loadLineage()).byPublic.size, 0);
+  await assert.rejects(fs.access(STORE_FILE()), 'emptying the store unlinks the file');
+});
+
+test('revertRotation on a minted session keeps the row (initial id !== public id)', async () => {
+  await reset();
+  const first = backing('4c4c4c4c');
+  const pub = await mintPublicId(first);
+  await recordRotation(pub, backing('5d5d5d5d'), 'prune');
+  await revertRotation(pub, backing('5d5d5d5d'));
+
+  assert.deepEqual((await segmentsFor(pub)).map(s => s.id), [first],
+    'the initial segment survives — its id is the full UUID, not the 8-char public id');
+  assert.equal(await resolveBacking(pub), first);
+});
+
+test('dropSegment: on current, mid-chain, and last-remaining', async () => {
+  await reset();
+  const first = backing('a1a1a1a1');
+  const pub = await mintPublicId(first);
+  const mid = backing('b2b2b2b2');
+  const tail = backing('c3c3c3c3');
+  await recordRotation(pub, mid, 'renew');
+  await recordRotation(pub, tail, 'renew');
+
+  // Mid-chain: current is untouched.
+  await dropSegment(mid);
+  assert.deepEqual((await segmentsFor(pub)).map(s => s.id), [first, tail]);
+  assert.equal(await resolveBacking(pub), tail);
+  assert.equal(await publicIdFor(mid), mid, 'the dropped segment no longer resolves to the session');
+
+  // Current: falls back to the newest survivor.
+  await dropSegment(tail);
+  assert.deepEqual((await segmentsFor(pub)).map(s => s.id), [first]);
+  assert.equal(await resolveBacking(pub), first, 'current retreats to the newest survivor');
+
+  // Last remaining: the row goes.
+  await dropSegment(first);
+  assert.deepEqual(await segmentsFor(pub), []);
+  assert.equal(await resolveBacking(pub), pub, 'back to the base case');
+
+  // Unknown id is a no-op, not a throw.
+  await dropSegment('nothing-like-this');
+});
+
+test('concurrent mintPublicId calls produce two DISTINCT ids', async () => {
+  await reset();
+  // Same 8-char head, so the second mint MUST see the first one's row and extend.
+  const a = backing('deadbeef', 'aaaa');
+  const b = backing('deadbeef', 'bbbb');
+  const [pa, pb] = await Promise.all([mintPublicId(a), mintPublicId(b)]);
+  assert.notEqual(pa, pb, 'derive-check-extend-and-write is one atomic operation');
+  const shorter = pa.length < pb.length ? pa : pb;
+  const longer = pa.length < pb.length ? pb : pa;
+  assert.equal(shorter, 'deadbeef');
+  assert.equal(longer.length, PUBLIC_ID_LEN_EXTENDED);
+  assert.equal(await resolveBacking(pa), a);
+  assert.equal(await resolveBacking(pb), b);
+});
+
+test('loadLineage tolerates a malformed sidecar', async () => {
+  await reset();
+  await fs.mkdir(path.dirname(STORE_FILE()), { recursive: true });
+  await fs.writeFile(STORE_FILE(), 'not json{');
+  const { byPublic } = await loadLineage();
+  assert.equal(byPublic.size, 0, 'garbage parses to an empty store, not a throw');
+  // …but a MUTATION must refuse to clobber a store it could not read.
+  await assert.rejects(() => recordRotation('somepub', 'somebacking', 'renew'));
+  await fs.rm(STORE_FILE(), { force: true });
+});
+
+test('a row whose segments are all unparseable is dropped, not half-loaded', async () => {
+  await reset();
+  await fs.mkdir(path.dirname(STORE_FILE()), { recursive: true });
+  await fs.writeFile(STORE_FILE(), JSON.stringify({
+    sessions: {
+      good: { current: 'x', segments: [{ id: 'x', reason: 'initial', at: '' }] },
+      bad: { current: 'y', segments: [{ id: 'y', reason: 'not-a-reason', at: '' }] },
+      alsoBad: { current: 'z' },
+    },
+  }));
+  const { byPublic, byBacking } = await loadLineage();
+  assert.deepEqual([...byPublic.keys()], ['good']);
+  assert.deepEqual([...byBacking.keys()], ['x']);
+  await fs.rm(STORE_FILE(), { force: true });
+});
