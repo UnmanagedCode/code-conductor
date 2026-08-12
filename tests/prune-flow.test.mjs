@@ -341,6 +341,50 @@ test('a failed prune reverts the recorded rotation — no segment the process ne
   } finally { await ctx.close(); }
 });
 
+test('a subscriber woken by a prune does not hang, and is not told the worker failed', async () => {
+  // Prune deliberately comes up IDLE with NO turn, so there is no turn_end to
+  // deliver on. Without the rotation-completion trigger the hub's rotation defer
+  // would hold the one-shot until the 30-minute watchdog fired and told the
+  // conductor its worker "did NOT finish" — for a prune that SUCCEEDED. That is why
+  // the defer needed an explicit completion trigger rather than turn_end-retry.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'aaaaaaa8-2222-3333-4444-555555555555';
+    await seedSession({ ctx, projectName: 'prunesub', sid, lines: sessionLines() });
+    const target = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunesub', mode: 'bypassPermissions', resume: sid,
+    });
+    const caller = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'prunesub', mode: 'bypassPermissions',
+    });
+    const tInst = ctx.instances.get(target.body.id);
+    const cInst = ctx.instances.get(caller.body.id);
+    await waitFor(() => tInst.status === 'idle' && cInst.status === 'idle');
+
+    // A generous watchdog: if this test ever passes by TIMING OUT rather than by
+    // the rotation trigger, it would have to wait this out, so it cannot.
+    ctx.instances.subscribeIdle(cInst.sessionId, tInst.sessionId, 600_000);
+    assert.equal(ctx.instances._idleHub.hasSubscriber(tInst.id), true);
+
+    const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${target.body.id}/prune`, { cutTurnIndex: 1 });
+    assert.equal(pr.status, 200);
+
+    const stub = await waitFor(() => cInst.ringSnapshot().find(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('get_recent_messages')));
+    assert.ok(!stub.text.includes('did NOT finish'),
+      `a successful prune must not wake the conductor with the failure stub: ${stub.text}`);
+    // The wake names the PINNED public id, so the conductor's next call still works.
+    assert.ok(stub.text.includes(tInst.sessionId), `the wake must name the public id: ${stub.text}`);
+    assert.ok(!stub.text.includes(tInst.backingSessionId),
+      `and never the rotated backing id: ${stub.text}`);
+    assert.equal(ctx.instances._idleHub.hasSubscriber(tInst.id), false, 'one-shot consumed');
+    // …and the target really did come up idle with no turn of its own.
+    assert.equal(tInst.status, 'idle');
+    assert.equal(tInst.rotationPending, false, 'the rotation window is closed');
+    assert.equal(tInst.rotationReason, 'prune', 'and the completed rotation is recorded as a prune');
+  } finally { await ctx.close(); }
+});
+
 test('prune is refused mid-turn and on a session with nothing to cut', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   try {

@@ -979,6 +979,16 @@ export async function renewSession({ summary }: { summary?: string }, { instance
   }
   const r = await getInst(instances, callerId);
   if ('soft' in r) return r.soft;
+  // THE interlock (decision D6), MCP side. A prune sets `_mutating`, which makes
+  // prompt() 409 — and this renewal's reseed IS a prompt(), so arming now would
+  // clear the context and then lose the summary. MCP surfaces soft-refuse rather
+  // than throw. Re-arming a RENEWAL is deliberately still allowed: same instance,
+  // same mechanism, so arm() is idempotent and it is not an interleaving.
+  if (r.inst.rotationInFlight === 'prune' || r.inst._mutating) {
+    return { ok: false, code: 'SESSION_ROTATING', sessionId: callerId,
+      reason: 'a context prune is in progress on this session — retry once it completes, '
+        + 'then call renew_session again.' };
+  }
   instances.armSessionRenew(r.inst.id, { summary });
   return {
     ok: true,

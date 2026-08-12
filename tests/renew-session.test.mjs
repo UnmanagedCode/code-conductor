@@ -573,6 +573,121 @@ test('renew_session: the state block renders (none) when there are no owned work
 // Real-binary confirmation that `_sendRaw` of a `/clear` user message actually
 // rotates the session on the real claude CLI (the fake fixture only simulates
 // the rotation). Gated behind RUN_REAL_CLAUDE=1 — needs auth + network.
+test('rotation interlock: renew and prune refuse to interleave (SESSION_ROTATING)', async () => {
+  // Prune sets `_mutating`, which makes prompt() 409 — and a renewal's reseed IS a
+  // prompt(). Interleaving them clears the context and then loses the summary: no
+  // memory, no signal. Unreachable today only because nothing external triggers a
+  // prune; reachable the moment prune is MCP-exposed. So the two are made mutually
+  // exclusive at the controller level, each refusing the later one with a code.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+
+    // ── direction 1: renewal armed, then a prune arrives ──────────────────────
+    const armed = await callTool(srv.baseUrl, 'renew_session', { summary: 'do not lose me' }, { caller: sid1 });
+    assert.equal(armed.ok, true);
+    assert.equal(inst.rotationPending, true, 'arming opens the rotation window');
+    assert.equal(inst.rotationInFlight, 'renew');
+
+    const pr = await api(srv.baseUrl, 'POST', `/api/instances/${inst.id}/prune`, { cutTurnIndex: 0 });
+    assert.equal(pr.status, 409, `prune must be refused: ${JSON.stringify(pr.body)}`);
+    assert.match(pr.body.error, /renewal is in progress/i);
+    // The `code` is asserted at the throw site: the REST error handler forwards
+    // only `statusCode` + message (pre-existing — BACKEND_LOCKED behaves the same),
+    // while the code is what prune's future MCP surface will report.
+    await assert.rejects(() => inst.pruneSession({ cutTurnIndex: 0 }),
+      (e) => e.code === 'SESSION_ROTATING' && e.statusCode === 409);
+
+    // The refusal is a REFUSAL, not a half-done rotation: the renewal is still
+    // armed and still completes normally, summary and all.
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+    await waitFor(() => instForSession(srv.instances, NEW_SID)?.backingSessionId === NEW_SID);
+    const rotated = instForSession(srv.instances, NEW_SID);
+    await waitFor(() => rotated.ringSnapshot().some(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('do not lose me')));
+    // Window closed on the success path, and the completed rotation is recorded.
+    await waitFor(() => rotated.rotationPending === false);
+    assert.equal(rotated.rotationReason, 'renew');
+    assert.ok(rotated.lastRotatedAt > 0, 'the completion is stamped');
+
+    // ── direction 2: prune in flight, then a renewal arrives ─────────────────
+    // Hold the window open by hand rather than racing a real prune: the refusal
+    // reads `rotationInFlight`, which is exactly what a live prune sets.
+    rotated.beginRotation('prune');
+    try {
+      const refused = await callTool(srv.baseUrl, 'renew_session', { summary: 'too late' }, { caller: sid1 });
+      assert.equal(refused.ok, false, `renew must soft-refuse: ${JSON.stringify(refused)}`);
+      assert.equal(refused.code, 'SESSION_ROTATING');
+      assert.equal(refused.sessionId, sid1, 'and the refusal names the public id');
+      assert.match(refused.reason, /prune is in progress/i);
+    } finally {
+      rotated.endRotation({ ok: false, comesUpIdle: true });
+    }
+
+    // Re-arming a RENEWAL over its own window stays idempotent — same instance,
+    // same mechanism, so it is not an interleaving.
+    const a1 = await callTool(srv.baseUrl, 'renew_session', { summary: 'first' }, { caller: sid1 });
+    const a2 = await callTool(srv.baseUrl, 'renew_session', { summary: 'second' }, { caller: sid1 });
+    assert.equal(a1.ok, true);
+    assert.equal(a2.ok, true, 'a second renew_session in the same turn must not be refused');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('an ABANDONED renewal closes the rotation window and wakes its subscriber', async () => {
+  // The failure mode this guards: the rotation window is opened at arm() and the
+  // idle hub defers every turn_end while it is open. If an abandonment path forgot
+  // to close it, a conductor waiting on that worker would hang until the 30-minute
+  // watchdog and then be told the worker "did NOT finish" — for a worker that is
+  // sitting there perfectly healthy, with a renewal that simply never happened.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const target = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    const watcherSid = target.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle'
+      && instForSession(srv.instances, watcherSid)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+    const watcher = instForSession(srv.instances, watcherSid);
+
+    // The watcher subscribes to the renewing session, with a watchdog long enough
+    // that this test cannot pass by timing out.
+    srv.instances.subscribeIdle(watcherSid, sid1, 600_000);
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'never delivered' }, { caller: sid1 });
+    assert.equal(inst.rotationPending, true);
+
+    // Abandon it: clearContext throws, which is the wedged/hung-subprocess path.
+    inst.clearContext = () => { throw new Error('simulated clearContext failure'); };
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+
+    // Window closed, nothing stamped (it never completed), and the session is
+    // untouched — same backing id, no clear.
+    await waitFor(() => inst.rotationPending === false);
+    assert.equal(inst.lastRotatedAt, null, 'an abandoned rotation is not stamped as completed');
+    assert.equal(inst.rotationReason, null);
+    assert.equal(inst.sessionId, sid1, 'and the public id is untouched');
+
+    // …and the watcher is woken NOW rather than waiting out the watchdog: the
+    // abandonment declares comesUpIdle, because no turn is coming.
+    const stub = await waitFor(() => watcher.ringSnapshot().find(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('get_recent_messages')));
+    assert.ok(!stub.text.includes('did NOT finish'),
+      `the wake must come from the rotation trigger, not the watchdog: ${stub.text}`);
+    assert.equal(srv.instances._idleHub.hasSubscriber(inst.id), false, 'one-shot consumed');
+  } finally {
+    await srv.close();
+  }
+});
+
 test('renew_session against the real claude binary rotates the sessionId', { skip: process.env.RUN_REAL_CLAUDE !== '1' }, async () => {
   const srv = await bootServer({ useRealClaude: true });
   mgr = srv.instances;

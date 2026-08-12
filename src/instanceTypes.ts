@@ -72,6 +72,13 @@ export interface InstanceLike {
   reconstructActiveTasks(beforeSeq: number): Promise<TaskRecord[]>;
   consumePrefill(): string | null;
   clearContext(): void;
+  // Rotation window (a managed `/clear` renewal, or a prune). IdleSubscriptionHub
+  // defers its one-shot while `rotationPending`, and the two mechanisms refuse to
+  // interleave on it. See src/instances.ts for the comesUpIdle contract.
+  readonly rotationPending: boolean;
+  readonly rotationInFlight: 'renew' | 'prune' | null;
+  beginRotation(reason: 'renew' | 'prune'): void;
+  endRotation(opts: { ok: boolean; comesUpIdle: boolean }): void;
   carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
   // Await this instance's durable session-lineage writes, rethrowing the first
   // failure since the last flush (see src/instances.ts). SessionRenewController

@@ -162,6 +162,61 @@ test('fold: real turn_end to an idle caller folds the recent-messages payload in
   assert.ok(stub.text.includes('First'), 'folded body includes the reconstructed prose');
 });
 
+// ---------------------------------------------------------------------------
+// Rotation defer (card 2026-0126). The hub's listener is registered BEFORE the
+// renew controller's, so before this the ARMED turn_end consumed the one-shot a
+// turn early: the conductor woke with pre-clear state and no later wake ever came.
+// ---------------------------------------------------------------------------
+
+test('a renewal defers the wake to the reseed turn — exactly one, naming the pinned id', async () => {
+  const RENEW = path.join(__dirname, 'fixtures', 'scenario-renew.json');
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', RENEW);
+  const target = instForSession(instances, targetId);
+  const caller = instForSession(instances, callerId);
+  const targetInstanceId = target.id;
+
+  await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
+  // The target self-renews (the real shape: MCP tools are auto-registered into
+  // every worker, so a worker renews itself), then ends its turn → the clear fires.
+  await callTool('renew_session', { summary: 'mid-assignment handoff' }, { caller: targetId });
+  await callTool('send_prompt', { sessionId: targetId, text: 'go1' });
+
+  // Catch the exact moment the one-shot is consumed and record what the target
+  // looked like then. Both post-conditions are things the pre-card build could not
+  // have satisfied: it consumed the subscription on the ARMED turn_end, which fires
+  // BEFORE `/clear` is even sent and long before the seed is composed.
+  const NEW_SID = 'c0000000-0000-4000-8000-000000000001'; // scenario-renew's post-clear sid
+  let stateAtConsume = null;
+  await waitFor(() => {
+    if (instances._idleHub.hasSubscriber(targetInstanceId)) return false;
+    stateAtConsume = {
+      backing: target.backingSessionId,
+      seeded: target.ringSnapshot().some(ev => ev.kind === 'user_echo'
+        && typeof ev.text === 'string' && ev.text.includes('mid-assignment handoff')),
+    };
+    return true;
+  });
+  assert.equal(stateAtConsume.backing, NEW_SID,
+    'the wake was held past the rotation, not spent on the armed turn_end');
+  assert.equal(stateAtConsume.seeded, true,
+    'and held past the RESEED — the conductor wakes to post-clear state, not pre-clear');
+
+  // Exactly one wake across arm → clear → reseed, naming the PINNED public id (the
+  // id the conductor was given, which it can still act on).
+  await waitFor(() => findStubFor(caller, targetId));
+  await waitFor(() => target.status === 'idle');
+  assert.equal(countUserEchoes(caller, ev => ev.text.includes('get_recent_messages')), 1,
+    'exactly one wake across arm → clear → reseed');
+  const stub = findStubFor(caller, targetId);
+  assert.ok(!stub.text.includes('did NOT finish'), `the wake must not be the watchdog stub: ${stub.text}`);
+  // The rotated BACKING id must never appear in what a conductor is handed.
+  assert.ok(!stub.text.includes(target.backingSessionId),
+    `the internal backing id must not leak into the wake stub: ${stub.text}`);
+  assert.equal(instances._idleHub.hasSubscriber(targetInstanceId), false, 'one-shot consumed');
+});
+
 test('subscribe_to_idle DEFERS the wake while the target has a live background Agent task', async () => {
   // The dispatch-and-wake contract: a wake means the worker AND all its
   // background subagents are done. This drives the target through a scenario

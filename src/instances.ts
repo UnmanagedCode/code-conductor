@@ -186,6 +186,12 @@ const TASK_LIFECYCLE_SUBTYPES = new Set(['task_started', 'task_updated', 'task_n
 // in-memory universe remains the real guard — this is just a sanity floor.
 export const SESSION_PREFIX_MIN = 4;
 
+// The two mechanisms that rotate a session's backing id. Rotation-generic on
+// purpose: prune is not MCP-exposed yet, but every seam it will land on — the
+// lineage `reason`, the interlock, the idle hub's completion trigger — treats the
+// two uniformly, so exposing it later needs no new branch.
+export type RotationMechanism = 'renew' | 'prune';
+
 // The backing ids an instance has run under, in memory. Guarded because several
 // suites inject bare `{ id, sessionId }` stand-ins straight into `byId`, and the
 // resolvers below sit on the MCP hot path — they must degrade on a partial entry,
@@ -476,6 +482,22 @@ export class Instance extends EventEmitter implements InstanceLike {
   // is how a caller waits for it and learns whether it landed.
   _lineageWrite: Promise<void>;
   _lineageError: Error | null;
+  // Non-null while a context rotation is IN FLIGHT on this instance — a managed
+  // `/clear` renewal or a prune. ONE field answers "is a rotation happening here",
+  // for both mechanisms and both readers: IdleSubscriptionHub defers its one-shot
+  // on it (so a conductor's wake cannot be spent a turn early), and each mechanism
+  // refuses to start while the other holds it (SESSION_ROTATING).
+  //
+  // It lives on the Instance rather than in either controller precisely so the
+  // hub's defer does not depend on listener registration order — the hub's
+  // listener is registered BEFORE the renew controller's, which is why the
+  // pre-card code consumed the one-shot on the ARMED turn_end, a turn early.
+  _rotation: { reason: RotationMechanism; startedAt: number } | null;
+  // The last COMPLETED rotation. Pinning the public id removes the only tell a
+  // conductor had that a rotation happened at all, so these replace it. Set here;
+  // surfaced on summary() / CONDUCTOR_VIEW_KEYS in stage 8.
+  lastRotatedAt: number | null;
+  rotationReason: RotationMechanism | null;
   pid: number | null;
   status: string;
   lastResponseAt: number | null;
@@ -608,6 +630,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._segments = [];
     this._lineageWrite = Promise.resolve();
     this._lineageError = null;
+    this._rotation = null;
+    this.lastRotatedAt = null;
+    this.rotationReason = null;
     this.pid = null;
     this.status = 'idle';
     // Wall-clock time of the most recent turn_end (i.e. the last completed
@@ -2310,6 +2335,51 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._setStatus('turn');
   }
 
+  // True while a rotation is in flight. Read by IdleSubscriptionHub's defer gate
+  // and by the two refusal sites that keep renew and prune mutually exclusive.
+  get rotationPending(): boolean { return this._rotation !== null; }
+
+  // Which mechanism holds the window, or null. The refusal sites need the reason,
+  // not just the boolean: a renewal re-arming over its own window is idempotent,
+  // while a renewal arming over a PRUNE is the interleaving that must be refused.
+  get rotationInFlight(): RotationMechanism | null { return this._rotation?.reason ?? null; }
+
+  // Open the rotation window. Called by SessionRenewController.arm() — mid-turn,
+  // when the tool is called, well before that turn ends — and at the top of
+  // pruneSession's critical section. Being set BEFORE the armed turn_end can fire
+  // is the whole point: it makes the hub's defer independent of listener order.
+  // Idempotent for the same mechanism, so a second renew_session in one turn
+  // re-arms without restarting the window.
+  beginRotation(reason: RotationMechanism): void {
+    if (this._rotation?.reason === reason) return;
+    this._rotation = { reason, startedAt: Date.now() };
+  }
+
+  // Close the rotation window and announce it. EVERY abandonment path must reach
+  // this too, or the hub's defer wedges until the watchdog fires and reports "did
+  // NOT finish" for a rotation that merely gave up.
+  //
+  // `comesUpIdle` is declared by the MECHANISM, never inferred from status:
+  //   - renew  → false. A reseed turn follows by construction, so the correct wake
+  //              point is that turn's turn_end. Reading `this.status` here would
+  //              misfire — endRotation runs while the instance is still 'idle',
+  //              microseconds before prompt() flips it.
+  //   - prune  → true. There is no turn at all; this event IS the wake trigger.
+  // That contract is why prune's later MCP exposure needs no hub change.
+  endRotation({ ok, comesUpIdle }: { ok: boolean; comesUpIdle: boolean }): void {
+    const rotation = this._rotation;
+    if (!rotation) return; // never begun, or already closed — idempotent
+    this._rotation = null;
+    if (ok) {
+      this.lastRotatedAt = Date.now();
+      this.rotationReason = rotation.reason;
+    }
+    this._emitUi({
+      kind: 'system', subtype: 'rotation_complete',
+      data: { reason: rotation.reason, ok, comesUpIdle },
+    });
+  }
+
   // Carry this instance's durable, sessionId-keyed state across a managed
   // `/clear` renewal and retire the abandoned pre-clear id. Called by the
   // SessionRenewController once the rotation is confirmed (this.sessionId is
@@ -2694,6 +2764,18 @@ export class Instance extends EventEmitter implements InstanceLike {
   // idle-subscription graph, overage timers, the renew controller and every
   // `?caller=<instanceId>` MCP handle stay valid with no migration.
   async pruneSession({ cutTurnIndex, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
+    // THE interlock (decision D6). A prune sets `_mutating`, which makes prompt()
+    // 409 — and a renewal's reseed IS a prompt(). Interleaving them would clear the
+    // context and then lose the summary. Refuse instead of auditing interleavings
+    // after the fact. Checked before the `_mutating` guard so the more specific
+    // reason wins. This is the REST/internal path, so a throw is the convention
+    // here (matching BACKEND_LOCKED in setModel).
+    if (this._rotation) {
+      throw Object.assign(
+        new Error('a context renewal is in progress on this session — retry once it completes'),
+        { statusCode: 409, code: 'SESSION_ROTATING' },
+      );
+    }
     if (this._mutating) {
       throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
     }
@@ -2716,6 +2798,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       );
     }
     this._mutating = true;
+    this.beginRotation('prune');
+    let rotationOk = false;
     const oldSid = backingId;
     // Server-minted, up front. Unlike a renewal (where the CLI mints and the
     // file already exists before we hear about it), prune CAN be durable before
@@ -2762,6 +2846,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // the REST response can't beat the archive into the sidebar refresh.
       await this.carryMarkersAcrossRenewal(oldSid).catch(() => {});
 
+      rotationOk = true;
       return { oldSessionId: oldSid, newSessionId: newSid, saved };
     } catch (e) {
       // The subprocess is already dead by the time most of this can throw, and
@@ -2792,6 +2877,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw e;
     } finally {
       this._mutating = false;
+      // Prune comes up IDLE with no turn, so the completion event is the ONLY wake
+      // point — including on the failure path, where the recovery relaunch also
+      // lands idle and a subscriber must not be left hanging until the watchdog.
+      this.endRotation({ ok: rotationOk, comesUpIdle: true });
     }
   }
 

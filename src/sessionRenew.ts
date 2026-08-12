@@ -117,6 +117,12 @@ export class SessionRenewController {
   // already pending just refreshes opts (a second renew_session call in the
   // same turn), it never starts a second `/clear`.
   arm(instanceId: string, opts: RenewalOpts = {}): { armed: true; rearmed: boolean } {
+    // Open the rotation window HERE — mid-turn, when the tool is called — not at
+    // the clear. The idle hub's listener runs before this controller's, so a
+    // window opened any later would already have let the ARMED turn_end consume a
+    // waiting conductor's one-shot a turn early. beginRotation is idempotent for
+    // the same mechanism, so a re-arm does not restart it.
+    this.manager.byId.get(instanceId)?.beginRotation('renew');
     const existing = this.pending.get(instanceId);
     if (existing) { existing.opts = opts; return { armed: true, rearmed: true }; }
     this.pending.set(instanceId, { state: 'armed', opts, oldSid: null, timerId: null });
@@ -177,7 +183,10 @@ export class SessionRenewController {
     const stateBlock = buildStateBlock(this.manager, id);
     const seed = buildRenewSeed({ ...p.opts, stateBlock });
     const oldSid = p.oldSid;
-    this._clear(id); // one-shot: settle state BEFORE the reseed turn opens
+    // One-shot: settle state — and CLOSE the rotation window — before the reseed
+    // turn opens, so the hub stops deferring and the reseed's turn_end is what
+    // delivers the wake. comesUpIdle:false: that turn follows by construction.
+    this._clear(id, { ok: true });
     // Carry the caller's durable, sessionId-keyed markers (temp/conducted/title)
     // onto the rotated id and archive the abandoned pre-clear session. This is
     // the ONE place holding both ids, so it owns the carry. Fire-and-forget: the
@@ -225,10 +234,24 @@ export class SessionRenewController {
     }
   }
 
-  private _clear(id: string): void {
+  // Settle the pending renewal AND close the rotation window. `ok` distinguishes
+  // the success path (called just before the reseed) from every abandonment path —
+  // a dead proc at either turn_end, the clearContext throw, the rotate timeout, and
+  // purge().
+  //
+  // `comesUpIdle` follows from that, and this is why every abandonment path has to
+  // reach here: on SUCCESS a reseed turn follows by construction, so the wake point
+  // is that turn's turn_end (comesUpIdle:false). On ABANDONMENT no turn is coming at
+  // all — the renewal simply did not happen — so the completion event is the only
+  // wake point there will ever be. Skipping it would leave a waiting conductor
+  // deferred until the watchdog fired and told it the worker "did NOT finish".
+  //
+  // Guarded on `p` so it only ever closes a window this controller opened.
+  private _clear(id: string, { ok = false }: { ok?: boolean } = {}): void {
     const p = this.pending.get(id);
     if (p?.timerId) clearTimeout(p.timerId);
     this.pending.delete(id);
+    if (p) this.manager.byId.get(id)?.endRotation({ ok, comesUpIdle: !ok });
   }
 
   // Drop a pending renewal (called on instance removal).
