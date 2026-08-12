@@ -452,6 +452,78 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
   } finally { await t.close(); }
 });
 
+test('enforce: a stage binding survives a PRUNE — tracked under the same key, no second slot', async () => {
+  // The prune half of the same claim, and a DIFFERENT pre-card failure from the
+  // renewal above. A prune kills the subprocess, so the gate's status listener
+  // appended its retire while inst.sessionId was still the OLD id — meaning prune
+  // never leaked a slot. What it lost was the other end: the relaunch reassigned
+  // sessionId, nothing re-declared the binding, and the worker came back UNTRACKED
+  // by omission. (Observed in production on this very card: a pruned session's new
+  // id read `playbook — / —`.) Pinning the public id fixes that, and the assertion
+  // that matters is on the id the worker holds AFTER the prune.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({
+      project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',
+    });
+    const publicId = w.sessionId;
+    assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
+    const inst = instForSession(t.instances, publicId);
+    await waitFor(() => inst.status === 'idle');
+    const firstBacking = inst.backingSessionId;
+    assert.notEqual(firstBacking, publicId, 'precondition: the two ids have diverged');
+    // The fake engine writes no transcript, so give the prune something to cut.
+    await seedSessionJsonl(t.claudeProjectsRoot, inst.cwd, firstBacking, [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'r1' }] } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+      { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'r2' }] } },
+    ]);
+
+    const before = foldProjection(await t.events()).bySession.get(publicId);
+    assert.deepEqual({ live: before.live, stage: before.stage }, { live: true, stage: 'freeform' });
+
+    await inst.pruneSession({ cutTurnIndex: 1 });
+    await waitFor(() => inst.status === 'idle');
+    assert.notEqual(inst.backingSessionId, firstBacking, 'precondition: the prune DID rotate the backing id');
+
+    // THE assertion: the id the worker answers to after the prune is still the key
+    // its binding is filed under. Read off inst.sessionId, not the captured value —
+    // that is what makes this fail if the prune moves the public id.
+    const afterId = inst.sessionId;
+    assert.equal(afterId, publicId, 'the public id is pinned across a prune');
+    const evs = await t.events();
+    const proj = foldProjection(evs);
+    const after = proj.bySession.get(afterId);
+    assert.ok(after, `the pruned worker must still be tracked under ${afterId} — this is the production break`);
+    assert.deepEqual({ stage: after.stage, playbook: after.playbook, history: after.stageHistory },
+      { stage: 'freeform', playbook: 'freeform', history: ['freeform'] }, 'binding intact');
+
+    // One worker, one row: no orphan under either backing id, and no re-declaration.
+    assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');
+    assert.equal(proj.bySession.get(firstBacking), undefined, 'no row under the pre-prune backing id');
+    assert.equal(proj.bySession.get(inst.backingSessionId), undefined, 'nor under the post-prune one');
+    assert.equal(evs.filter(e => e.kind === 'spawn').length, 1,
+      'exactly one spawn event — a prune must not re-declare the binding');
+
+    // No SECOND capacity slot is consumed: the one retire the prune's kill produced
+    // names the pinned id, so it lands on the row the spawn created rather than on
+    // an id nothing is bound to.
+    const retires = evs.filter(e => e.kind === 'retire');
+    assert.equal(retires.length, 1, 'exactly one retire');
+    assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
+
+    // KNOWN RESIDUAL, pinned so it cannot drift silently: `live` is false here even
+    // though the worker is alive again. The prune's kill retires it and the internal
+    // relaunch does not pass through the gate, so nothing un-retires it — a slot
+    // released EARLY, which is the safe direction and the opposite of the renewal
+    // leak. Pinning fixes the binding, not this; a governed spawn_instance({resume})
+    // re-declares and un-retires (see the resume tests below).
+    assert.equal(after.live, false,
+      'documented: a prune leaves the worker tracked-with-stage but not live');
+  } finally { await t.close(); }
+});
+
 test('enforce: a worker whose subprocess exits is retired without a kill_instance', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {

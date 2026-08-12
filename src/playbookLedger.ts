@@ -21,10 +21,23 @@
 // STAGE_UNKNOWN/PLAYBOOK_UNKNOWN on a LIVE worker say the definition changed,
 // rather than reading like a caller error.
 //
-// A worker's binding survives a context rotation: this projection is keyed by the
-// PERMANENT public sessionId, which a `renew_session` or a prune no longer moves
-// (see src/sessionLineage.ts). Pinned by
-// tests/playbook-enforce.test.mjs → "a stage binding survives a renewal".
+// A worker's BINDING survives a context rotation, by both mechanisms: this
+// projection is keyed by the PERMANENT public sessionId, which neither a
+// `renew_session` nor a prune moves any more (see src/sessionLineage.ts). So the
+// stage, the playbook and the stage history stay filed under the id the worker
+// still answers to, and no orphan row appears under a rotated backing id.
+//
+// The `live` flag survives a RENEWAL but not a PRUNE, and the difference is the
+// subprocess. A renewal clears in place — no exit, so no retire, so the row stays
+// live. A prune kills and relaunches: the retire fires (correctly, on the pinned
+// id) and the internal relaunch does not pass through the gate, so nothing
+// un-retires it. A pruned worker therefore reads tracked-with-stage but NOT live,
+// releasing its `workers:"one"` slot early. That is the safe direction — the
+// opposite of a leak — and a governed spawn_instance({resume}) re-declares it.
+//
+// Both halves pinned by tests/playbook-enforce.test.mjs → "a stage binding
+// survives a renewal" and "… survives a PRUNE", the latter asserting the residual
+// `live:false` explicitly so it cannot drift unnoticed.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
