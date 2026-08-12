@@ -1063,6 +1063,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // them, or two concurrent forks both pass the check, both set the flag,
         // and the first one's `finally` clears it while the second is still
         // reading — reintroducing exactly the unprotected read this guards.
+        // Narrower exposure than rewind/prune — fork never kills the source and
+        // holds `_mutating` only for its READ — but a reseed landing inside that
+        // read still 409s in prompt() and loses the handoff summary, so it takes
+        // the same interlock. Synchronous, and ahead of the claim below.
+        if (inst.rotationPending || inst.renewalPending) {
+          throw Object.assign(
+            new Error('a context rotation is in progress on this session — retry once it completes'),
+            { statusCode: 409, code: 'SESSION_ROTATING' },
+          );
+        }
         if (inst._mutating) {
           throw Object.assign(new Error('another rewind/fork/prune is in progress'), { statusCode: 409 });
         }
