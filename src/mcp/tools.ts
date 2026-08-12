@@ -862,7 +862,8 @@ export function buildTools(): Tool[] {
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
         'in `blocks[]` when their content is represented in the message body (see OUTPUT). ' +
         '`hasPlan` (boolean) flags a turn that called ExitPlanMode; `planPath` (string) is the plan document\'s path when a ' +
-        'file backs the plan — to hand it to another worker use send_prompt({forward}), not a copy; `questionCount` (int) ' +
+        'file backs the plan — prefer handing that path on rather than copying the text, or, when the source is still ' +
+        'live, send_prompt({forward}) relays the whole message verbatim; `questionCount` (int) ' +
         'flags a turn that called AskUserQuestion, with the number of questions — these are presence markers only, ' +
         'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
         'By default, messages are returned when they have text, a plan, or questions — ' +
