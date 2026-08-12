@@ -570,10 +570,14 @@ export class IdleSubscriptionHub {
   // subscribed, or subscribed at the turn_end being dispatched (this hub's listener
   // runs FIRST, so by the time the renew controller expires a request the delivered
   // subscription is already out of `subscribers`; `_justConsumed` is that record).
-  // The two halves overlap for the only expiry trigger there is today — `_onTurnEnd`
-  // marks `_justConsumed` before its defer check, so a deferred decline satisfies
-  // both — but each states a different half of the invariant, so neither is dead:
-  // drop the first and any expiry outside a turn_end dispatch loses its note.
+  // On the only production trigger — a `turn_end`, where `_onTurnEnd` marks
+  // `_justConsumed` with the whole subscriber set before its defer check — the
+  // second disjunct subsumes the first. The first is what keeps a DIRECT call
+  // correct: `noteRenewalDeclined` is public on `InstanceManagerLike`, and called
+  // outside a turn_end dispatch (`_justConsumed` empty) only it is true. That path
+  // has no production caller today; it is exercised by
+  // tests/renew-session.test.mjs → "a decline note is recorded only for a conductor
+  // that is waiting, and dies with the wait", which is why both disjuncts stay.
   _isWaitingOn(targetInstanceId: string, callerInstanceId: string): boolean {
     return (this.subscribers.get(targetInstanceId)?.has(callerInstanceId) ?? false)
       || (this._justConsumed.get(targetInstanceId)?.has(callerInstanceId) ?? false);

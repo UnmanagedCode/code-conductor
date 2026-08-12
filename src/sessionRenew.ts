@@ -101,6 +101,29 @@ export function buildRenewRequest({ directive }: { directive?: string | null } =
   return parts.join('\n\n');
 }
 
+// The states in which work is in flight that a rotation would strand, or `null`
+// when the instance is genuinely free. Named so the caller can say WHICH:
+//   • 'overage-queue'    — a user turn parked waiting for the rate-limit window to
+//     reset (server-visible `_overageQueue`, surfaced as queuedCount). Clearing now
+//     would lose it and reseed against a still-throttled account; and `prompt()`
+//     takes the queue branch, so nothing opens a turn at all.
+//   • 'subagents'        — background subagents still running.
+//   • 'task-notification'— a re-invocation turn is already OWED (see
+//     Instance._taskNotificationPending): the CLI will open it to deliver a
+//     notification, and it ends before any turn a new prompt would get.
+// TWO consumers, one predicate: the controller defers the `/clear` on it, and the
+// MCP request path refuses a target on it — a conductor's request needs a turn of
+// its OWN, and in every state above it would not get one (an owed turn ends first
+// and expires the request; an overage-parked send opens no turn at all; live
+// subagents mean the renewal it arms cannot fire until they finish). A subset copy
+// in either place is the drift this exists to prevent.
+export function renewalDeferredBy(inst: InstanceLike): 'overage-queue' | 'subagents' | 'task-notification' | null {
+  if ((inst._overageQueue?.length ?? 0) > 0) return 'overage-queue';
+  if (inst.activeAgentTaskCount > 0) return 'subagents';
+  if (inst.taskNotificationPending) return 'task-notification';
+  return null;
+}
+
 // Compose the first-turn seed for the cleared session. Three sections, each in
 // its own fence so the worker can tell them apart: the summary it wrote for
 // itself, then — when a conductor requested this renewal with a `followUp` — that
@@ -278,15 +301,8 @@ export class SessionRenewController {
     this._fireClear(id, p, inst);
   }
 
-  // Defer while there is queued or background work the rotation would strand. An
-  // overage-queued user turn (server-visible _overageQueue, surfaced as
-  // queuedCount) is parked waiting for the rate-limit window to reset — clearing
-  // now would both lose it and reseed against a still-throttled account; wait for
-  // it to drain. Likewise defer past live subagents / an owed re-invocation.
-  // Mirrors the idle hub's defer gate.
   private _deferred(inst: InstanceLike): boolean {
-    return (inst._overageQueue?.length ?? 0) > 0
-      || inst.activeAgentTaskCount > 0 || inst.taskNotificationPending;
+    return renewalDeferredBy(inst) !== null;
   }
 
   // Send the `/clear` and move to `clearing`. ONE implementation, two triggers

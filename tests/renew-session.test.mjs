@@ -1287,6 +1287,7 @@ test('a MID-TURN target is refused rather than producing a false decline', async
     assert.equal(busy.ok, false, `a mid-turn target must be refused: ${JSON.stringify(busy)}`);
     assert.equal(busy.code, 'SESSION_BUSY');
     assert.equal(busy.status, 'turn', 'the refusal says what it observed');
+    assert.equal(busy.busy, 'turn', 'and names which not-free state it is');
     assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false,
       'and registers nothing against the turn the worker is already in');
 
@@ -1391,7 +1392,9 @@ test('a MID-TURN conductor gets the decline on the plain (unfolded) steering stu
 
     const stub = await waitFor(() => echoWith(cond, 'get_recent_messages'));
     assert.ok(!stub.text.includes(WAKE_BODY_SEP), `the plain stub carries no folded body: ${stub.text}`);
-    assert.ok(stub.text.includes('DECLINED'), `and it must still carry the decline: ${stub.text}`);
+    assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER));
+    assert.equal(stub.text.indexOf('Renewal request DECLINED'), WAKE_CALLBACK_MARKER.length,
+      `the note LEADS this stub's summary too, not trailing the "finished its turn" line: ${stub.text}`);
   } finally {
     await srv.close();
   }
@@ -1528,6 +1531,133 @@ test('request() never clobbers a live renewal, and reports whether it replaced a
     assert.equal(live.opts.summary, 'S2', 'and still carries the worker\'s summary');
     assert.equal(live.opts.followUp, 'F2',
       'and the followUp it consumed — the refused request did not overwrite it with F3');
+  } finally {
+    await srv.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2: "free" is wider than `status === 'idle'`, and the drain
+// trigger's defer half / the dead-caller note drop needed pinning.
+// ---------------------------------------------------------------------------
+
+test('an IDLE target that owes a re-invocation turn is still refused', async () => {
+  // `wait_for_idle` returns on `status` alone, so wait_for_idle → renew_session
+  // walks straight into this: a task notification fired mid-turn and no top-level
+  // tool_result followed, which means the CLI WILL open a re-invocation turn. That
+  // turn ends before any turn the request would get, expiring it as a decline the
+  // worker never saw.
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, worker } = await pair(srv);
+    // The state an unconsumed mid-turn task_notification leaves behind.
+    worker._taskNotificationPending = true;
+    assert.equal(worker.status, 'idle', 'precondition: `status` alone says it is free');
+    assert.equal(worker.taskNotificationPending, true);
+
+    const busy = await callTool(srv.baseUrl, 'renew_session',
+      { sessionId: wSid, directive: `${DIRECTIVE}: roster` }, { caller: condSid });
+    assert.equal(busy.ok, false, `must refuse: ${JSON.stringify(busy)}`);
+    assert.equal(busy.code, 'SESSION_BUSY');
+    assert.equal(busy.busy, 'task-notification', 'and names the owed re-invocation turn');
+    assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false, 'nothing registered');
+    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), false, 'no subscription burned');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('an OVERAGE-PARKED target is refused rather than left to the watchdog', async () => {
+  // Deterministic, not a race: an overage-stopped worker is `idle`, and prompt()
+  // takes the queue branch WITHOUT opening a turn. Accepting the request would
+  // return subscribed:true for a turn that never runs, so the conductor eats the
+  // full watchdog and is told a healthy, merely rate-limited worker "did NOT finish".
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, worker } = await pair(srv);
+    worker._overageQueue.push({ text: 'parked turn', attachments: [], ts: 1 });
+    assert.equal(worker.status, 'idle', 'precondition: `status` alone says it is free');
+
+    const busy = await callTool(srv.baseUrl, 'renew_session',
+      { sessionId: wSid, directive: `${DIRECTIVE}: roster` }, { caller: condSid });
+    assert.equal(busy.ok, false, `must refuse: ${JSON.stringify(busy)}`);
+    assert.equal(busy.code, 'SESSION_BUSY');
+    assert.equal(busy.busy, 'overage-queue');
+    assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false, 'nothing registered');
+    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), false, 'no subscription burned');
+    // …and no request text was written to the worker either.
+    assert.equal(echoWith(worker, DIRECTIVE), undefined, 'and the worker was never prompted');
+  } finally {
+    await srv.close();
+  }
+});
+
+test('the drain trigger defers while a SECOND background task is still live', async () => {
+  // The drain path shares the turn_end path's defer predicate. Without it, the
+  // first of two tasks completing fires the /clear and strands the second.
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+    const drain = () => srv.instances.emit('event', { id: inst.id, ev: { kind: 'system', subtype: 'task_updated' } });
+    const state = () => srv.instances._sessionRenew.pending.get(inst.id)?.state;
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'TWO-TASK-SUMMARY' }, { caller: sid1 });
+    // Two backgrounded Agent tasks live while the worker sits idle.
+    inst._activeAgentTasks.set('t1', null);
+    inst._activeAgentTasks.set('t2', null);
+    assert.equal(inst.status, 'idle');
+
+    drain();
+    assert.equal(state(), 'armed', 'two tasks live → deferred');
+    inst._activeAgentTasks.delete('t1');
+    drain();
+    assert.equal(state(), 'armed', 'one still live → still deferred');
+    assert.notEqual(inst.backingSessionId, NEW_SID, 'and nothing rotated with work in flight');
+
+    // Fully drained → the same one implementation fires.
+    inst._activeAgentTasks.delete('t2');
+    drain();
+    await waitFor(() => inst.backingSessionId === NEW_SID);
+    await waitFor(() => echoWith(inst, 'TWO-TASK-SUMMARY'));
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a note whose caller has no live subprocess is consumed, not saved for its respawn', async () => {
+  // deliver() drops silently when the caller's proc is gone — but respawn reuses the
+  // same instance object AND instanceId without purging, so a retained note would
+  // resurface as a stale DECLINED on the conductor's next wake, about a request that
+  // was already answered.
+  const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
+  mgr = srv.instances;
+  try {
+    const { condSid, wSid, cond, worker } = await pair(srv);
+    const hub = srv.instances._idleHub;
+
+    srv.instances.subscribeIdle(condSid, wSid, 600_000);
+    srv.instances.noteRenewalDeclined(worker.id, condSid);
+
+    // The conductor's subprocess dies between the turn_end and the delivery microtask.
+    const proc = cond.proc;
+    cond.proc = null;
+    hub.deliver(cond.id, worker.id);
+    cond.proc = proc; // …and comes back on the same instanceId, as respawn does.
+    assert.equal(hub._takeDecline(worker.id, cond.id), null,
+      'the undeliverable note was consumed with the wake it belonged to');
+
+    // Proof of the consequence: the next real wake carries no stale decline.
+    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: wSid }, { caller: condSid });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
+    const stub = await waitFor(() => echoWith(cond, 'get_recent_messages'));
+    assert.ok(!stub.text.includes('DECLINED'), `no stale decline after respawn: ${stub.text}`);
   } finally {
     await srv.close();
   }

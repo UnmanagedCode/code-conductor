@@ -55,7 +55,7 @@ import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } fro
 import { runMembers, type Projection } from '../playbookLedger.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
-import { buildRenewRequest } from '../sessionRenew.ts';
+import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import type { UiEvent } from '../parser.ts';
@@ -1117,15 +1117,19 @@ export async function renewSession(
     return { ok: false, code: 'SESSION_ROTATING', sessionId: inst.sessionId,
       reason: 'a context rotation is already in progress on that worker — retry once it completes.' };
   }
-  // A request needs a turn OF ITS OWN, so the target must be idle. Mid-turn, the
-  // prompt is delivered into a turn the worker did not open for it, and that turn's
-  // end would (a) expire the request as a DECLINE the worker never saw, (b) drop the
-  // followUp, and (c) spend the conductor's one-shot on an unrelated turn. Refused
-  // rather than papered over: the conductor is already subscribed to this worker (or
-  // can be), so the retry point is its next idle.
-  if (inst.status !== 'idle') {
-    return { ok: false, code: 'SESSION_BUSY', sessionId: inst.sessionId, status: inst.status,
-      reason: `that worker is ${inst.status}, and a renewal request needs a turn of its own — `
+  // A request needs a turn OF ITS OWN. Mid-turn, the prompt lands in a turn the
+  // worker did not open for it, and that turn's end would (a) expire the request as
+  // a DECLINE the worker never saw, (b) drop the followUp, and (c) spend the
+  // conductor's one-shot on unrelated work. `status` alone does not answer the
+  // question: an IDLE worker can still owe a re-invocation turn, or have its sends
+  // parked in the overage queue (where `prompt()` queues and opens no turn at all,
+  // so the conductor would wait out the full watchdog and be told a healthy worker
+  // "did NOT finish"). Same predicate the controller defers the `/clear` on —
+  // shared, never copied.
+  const busy = inst.status !== 'idle' ? inst.status : renewalDeferredBy(inst);
+  if (busy) {
+    return { ok: false, code: 'SESSION_BUSY', sessionId: inst.sessionId, status: inst.status, busy,
+      reason: `that worker is not free (${busy}), and a renewal request needs a turn of its own — `
         + 'wait for its next idle (subscribe_to_idle if you are not already watching it), then ask again.' };
   }
   // Register BEFORE prompting: a turn that completed before registration would
@@ -1139,9 +1143,9 @@ export async function renewSession(
       reason: 'a renewal is already pending on that worker — retry once it completes.' };
   }
   try {
-    // A normal (non-internal) prompt, exactly like sendPrompt, so an
-    // overage-stopped worker queues it rather than losing it (the guard above
-    // means it can never be a mid-turn delivery).
+    // A normal (non-internal) prompt, like sendPrompt — but the guard above means
+    // it can be neither a mid-turn delivery nor an overage-queued one, so this
+    // always opens a turn of its own.
     await inst.prompt(buildRenewRequest({ directive }));
   } catch (e) {
     instances.dropSessionRenewRequest(inst.id);
