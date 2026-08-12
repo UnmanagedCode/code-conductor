@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { encodeCwd, claudeProjectsRoot } from './projects.ts';
+import { sessionFilePath, subAgentDirPath } from './projects.ts';
 import { markerPermissionMode } from './sessionModes.ts';
 import {
   consolidateUserContent, isSoftInterruptContent, isInterruptMarkerContent,
@@ -281,9 +281,7 @@ export async function loadSubAgentTranscript(options: {
 }): Promise<UiEvent[]> {
   const { cwd, sessionId, agentId, parentToolUseId, seqHint = 0 } = options;
   if (!cwd || !sessionId || !agentId || !parentToolUseId) return [];
-  const file = path.join(
-    claudeProjectsRoot(), encodeCwd(cwd), sessionId, 'subagents', `agent-${agentId}.jsonl`,
-  );
+  const file = path.join(subAgentDirPath(cwd, sessionId), 'subagents', `agent-${agentId}.jsonl`);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return []; throw e; }
@@ -352,7 +350,7 @@ export async function loadPersistedTranscript(options: {
 } | null> {
   const { cwd, sessionId, seqHint = 0 } = options;
   if (!cwd || !sessionId) return null;
-  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(cwd, sessionId);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
@@ -450,7 +448,7 @@ export async function loadPersistedTranscript(options: {
 export async function readLastSessionModel(options: { cwd: string; sessionId: string }): Promise<string | null> {
   const { cwd, sessionId } = options;
   if (!cwd || !sessionId) return null;
-  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(cwd, sessionId);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
@@ -480,7 +478,7 @@ export async function readLastSessionModel(options: { cwd: string; sessionId: st
 export async function hasResumableConversation(options: { cwd: string; sessionId: string }): Promise<boolean> {
   const { cwd, sessionId } = options;
   if (!cwd || !sessionId) return false;
-  const file = path.join(claudeProjectsRoot(), encodeCwd(cwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(cwd, sessionId);
   let text: string;
   try { text = await fs.readFile(file, 'utf8'); }
   catch (e) { if (errCode(e) === 'ENOENT') return false; throw e; }
@@ -513,8 +511,8 @@ export async function writeSessionMetadata(options: {
 }): Promise<void> {
   const { cwd, sessionId, leafUuid, mode } = options;
   if (!cwd || !sessionId || !leafUuid) return;
-  const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
-  const file = path.join(dir, `${sessionId}.jsonl`);
+  const file = sessionFilePath(cwd, sessionId);
+  const dir = path.dirname(file);
   const lines =
     JSON.stringify({ type: 'last-prompt', leafUuid, sessionId }) + '\n' +
     JSON.stringify({ type: 'permission-mode', permissionMode: markerPermissionMode(mode), sessionId }) + '\n';

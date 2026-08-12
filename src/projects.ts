@@ -94,6 +94,46 @@ export function encodeCwd(abs: string): string {
   return abs.replace(/[^A-Za-z0-9-]/g, '-');
 }
 
+// The two forms mintPublicId (src/sessionLineage.ts) produces: 8 hex chars, or
+// its `xxxxxxxx-xxxx` extension. A full UUID, a base-case id and every existing
+// fixture are all longer, so they pass this test.
+const MINTED_PUBLIC_ID_RE = /^[0-9a-f]{8}(-[0-9a-f]{4})?$/;
+
+// Loud runtime guard on the public/backing boundary. A session's PUBLIC id is
+// neither a filename nor a `--resume` argument — those need its CURRENT backing
+// id, obtained from `resolveBacking()` (src/sessionLineage.ts) or read off
+// `Instance.backingSessionId`. This throws, with the call site named, when it is
+// handed something that looks exactly like one of our minted public ids.
+//
+// It is an ASSERTION, not a behavioural branch: nothing RESOLVES differently by
+// id length. If a fixture ever collides with the pattern, rename the fixture —
+// do not weaken the guard.
+export function assertBackingId(id: string, where: string): void {
+  if (typeof id === 'string' && MINTED_PUBLIC_ID_RE.test(id)) {
+    throw new Error(
+      `${where}: '${id}' is a public session id, not a backing id — resolve it through `
+      + 'resolveBacking() (src/sessionLineage.ts) or read Instance.backingSessionId',
+    );
+  }
+}
+
+// THE chokepoint for a persisted transcript path. Every read, write, append, copy
+// and unlink of a session jsonl resolves its path here — enforced by
+// tests/session-lineage-chokepoint.test.mjs, which fails on any other
+// `${…}.jsonl` construction outside this file.
+export function sessionFilePath(absCwd: string, backingId: string): string {
+  assertBackingId(backingId, 'sessionFilePath');
+  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${backingId}.jsonl`);
+}
+
+// The CLI's sibling sub-agent directory for a session — sidechain transcripts
+// live at `<this dir>/subagents/agent-<agentId>.jsonl`. Keyed to the transcript,
+// so it is a backing-id path under the same rule as sessionFilePath.
+export function subAgentDirPath(absCwd: string, backingId: string): string {
+  assertBackingId(backingId, 'subAgentDirPath');
+  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), backingId);
+}
+
 export function validateName(name: string): string {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     throw httpError(400, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
@@ -595,7 +635,7 @@ export async function listSessions(projectName: string, excludeSessionIds: Set<s
 // jsonl didn't exist (404 path from the route). This is the single
 // "remove from the normal list" action — it never deletes from disk.
 export async function archiveSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
-  const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(absCwd, sessionId);
   try {
     await fs.access(file);
   } catch (e) {
@@ -614,7 +654,7 @@ export async function archiveSessionForCwd(absCwd: string, sessionId: string): P
 // responsible for killing any running instance attached to this
 // sessionId first.
 export async function deleteSessionForCwd(absCwd: string, sessionId: string): Promise<boolean> {
-  const file = path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${sessionId}.jsonl`);
+  const file = sessionFilePath(absCwd, sessionId);
   try {
     await fs.unlink(file);
     try { await deleteSessionTitle(sessionId); } catch { /* sidecar cleanup is best-effort */ }
@@ -664,7 +704,7 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   } catch { /* .conduct doesn't exist yet — skip */ }
 
   for (const proj of projects) {
-    const file = path.join(claudeProjectsRoot(), encodeCwd(proj.path), `${sessionId}.jsonl`);
+    const file = sessionFilePath(proj.path, sessionId);
     try {
       const stat = await fs.stat(file);
       if (stat.isFile()) return { project: proj.name, worktreeName: null };
@@ -674,7 +714,7 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     let wts: WorktreeMeta[] = [];
     try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
     for (const wt of wts) {
-      const wtFile = path.join(claudeProjectsRoot(), encodeCwd(wt.worktreePath), `${sessionId}.jsonl`);
+      const wtFile = sessionFilePath(wt.worktreePath, sessionId);
       try {
         const stat = await fs.stat(wtFile);
         if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };

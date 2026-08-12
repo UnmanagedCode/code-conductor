@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { promises as fsp, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
-import { getProject, claudeProjectsRoot, encodeCwd, findSessionLocation, readFirstPrompt } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath } from './projects.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
@@ -2022,9 +2022,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // meaningful on an archived session.
   async _archiveTempSession(): Promise<void> {
     if (!this.sessionId) return;
-    const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
-    const subagents = path.join(dir, this.sessionId);
-    await fsp.rm(subagents, { recursive: true, force: true });
+    await fsp.rm(subAgentDirPath(this.cwd, this.sessionId), { recursive: true, force: true });
     try { await unmarkTemp(this.sessionId); } catch { /* best-effort */ }
     try { await markArchived(this.sessionId); } catch { /* best-effort */ }
   }
@@ -2544,9 +2542,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       // respawn with --session-id under the same id so the URL anchor stays
       // valid and the instance comes back ready for a fresh first turn.
       if (result.remainingLineCount === 0) {
-        const dir = path.join(claudeProjectsRoot(), encodeCwd(this.cwd));
-        await fsp.rm(path.join(dir, `${sessionId}.jsonl`), { force: true });
-        await fsp.rm(path.join(dir, sessionId), { recursive: true, force: true });
+        await fsp.rm(sessionFilePath(this.cwd, sessionId), { force: true });
+        await fsp.rm(subAgentDirPath(this.cwd, sessionId), { recursive: true, force: true });
         await this.launch({});
       } else {
         await this.launch({ resume: sessionId });
@@ -3247,7 +3244,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // still holds the true first line, so this is reliable.
     let recoveredFirstPrompt: string | null = null;
     if (resume) {
-      try { recoveredFirstPrompt = await readFirstPrompt(path.join(claudeProjectsRoot(), encodeCwd(cwd), `${resume}.jsonl`)); }
+      try { recoveredFirstPrompt = await readFirstPrompt(sessionFilePath(cwd, resume)); }
       catch { /* best-effort */ }
     }
 
@@ -3757,8 +3754,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const wipe = (): void => {
       for (const inst of temps) {
         if (!inst.sessionId) continue;
-        const dir = path.join(claudeProjectsRoot(), encodeCwd(inst.cwd));
-        try { rmSync(path.join(dir, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
+        try { rmSync(subAgentDirPath(inst.cwd, inst.sessionId), { recursive: true, force: true }); } catch { /* ignore */ }
       }
     };
     wipe();
