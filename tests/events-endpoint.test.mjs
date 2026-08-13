@@ -134,7 +134,13 @@ test('trimmed ring: archive fallback yields no overlap and no gap at prompt gran
   }
 });
 
-test('giant single turn: paging produces a gap, never duplication', async () => {
+// T20 — Phase B (2026-0146): a giant single turn is now FULLY reconstructed,
+// not collapsed to a gap. Same fixture the pre-Phase-B echo-ordinal anchor
+// used to fail on (ORCH_EVENT_RING_CAP=10, 1 prompt + 40 text blocks, no
+// snappable echo in the trimmed ring) — the content correlator stitches the
+// archive to the ring head's own (msgId, blockIdx) exactly, so nothing
+// between them is lost. Renamed: the old name asserted the defect.
+test('giant single turn: paging fully reconstructs the turn, no gap', async () => {
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_EVENT_RING_CAP = '10';
   try {
@@ -157,22 +163,16 @@ test('giant single turn: paging produces a gap, never duplication', async () => 
     const { all } = await pageAll(ctx, id, { limit: 7 });
     // The prompt bubble is recovered from the archive, exactly once.
     assert.deepEqual(all.filter(e => e.kind === 'user_echo').map(e => e.text), ['prompt 0']);
-    // No block text duplicated; some blocks ARE missing (the gap).
+    // All 40 blocks served, each exactly once — the correlated cut means
+    // nothing between the archive and the ring head is dropped.
     const texts = all.filter(e => e.kind === 'text_delta').map(e => e.text);
     assert.equal(new Set(texts).size, texts.length, 'no duplicated assistant blocks');
-    assert.ok(texts.length < 40, 'gap exists (partial turn was evicted, not reconstructed)');
-    // The retained tail is intact through to the newest event.
-    assert.ok(texts.includes('block 39'));
-    // The evicted span is MARKED: exactly one history_gap, no _seq (matching
-    // task_completion's synthesis), sitting immediately before the ring head.
-    const gaps = all.filter(e => e.kind === 'history_gap');
-    assert.equal(gaps.length, 1, 'exactly one gap marker served');
-    assert.equal(gaps[0]._seq, undefined, 'marker carries no _seq');
-    const gi = all.findIndex(e => e.kind === 'history_gap');
-    assert.equal(all[gi + 1]._seq, inst.ring.trimmedBefore,
-      'marker sits right before the first ring-side event');
-    // Quiescent trim fallback: only WHOLE blocks are missing — every served
-    // text_delta has its text_end (no half block on either side of the gap).
+    assert.equal(texts.length, 40, 'every block reconstructed — no gap');
+    assert.ok(texts.includes('block 0') && texts.includes('block 39'));
+    // No eviction was left unreconstructed, so no marker at all.
+    assert.equal(all.filter(e => e.kind === 'history_gap').length, 0,
+      'a correlated cut means no history_gap — the turn is whole');
+    // Every served text_delta has its text_end (whole blocks throughout).
     for (const d of all.filter(e => e.kind === 'text_delta')) {
       assert.ok(all.some(e => e.kind === 'text_end'
         && e.msgId === d.msgId && e.blockIdx === d.blockIdx),
@@ -841,6 +841,10 @@ test('an archive-side headless component is served and the cursor strictly progr
 // are different pages; a limit under the ring size forces the walk to reach the
 // seam on a page of its own rather than serving everything at once. Relax either
 // and the fixture stops distinguishing seam-anchored from head-anchored.
+// Phase B (2026-0146): the stub ring's `msgId` ('mG') is foreign to the
+// jsonl, so the content correlator abandons and this fixture keeps falling
+// back to the echo anchor — `gap === true` here is now deliberate, not
+// vacuous. Do not "fix" the fixture into a correlator hit.
 test('mid-turn ring head on a non-first turn: gap marker sits at the archive/ring seam', async () => {
   const sid = 'c0c0c0c0-1111-2222-3333-444444444444';
   const { projectPath } = await seedSession({ ctx, projectName: 'seammarker', sid, lines: turnLines(5) });
@@ -929,6 +933,10 @@ test('mid-turn ring head on a non-first turn: gap marker sits at the archive/rin
 // behaviour. Every other gap fixture in this file has the back-off landing
 // exactly ON the seam (the `resetIdx` fiat cut), which is why they stay green
 // either way; this one is built so it lands below it.
+// Phase B (2026-0146): the stub ring's `msgId` ('mG') is foreign to the
+// jsonl, so the content correlator abandons and this fixture keeps falling
+// back to the echo anchor — `gap === true` here is now deliberate, not
+// vacuous. Do not "fix" the fixture into a correlator hit.
 test('a window straddling the seam is served whole, with exactly one gap marker at the seam', async () => {
   const sid = 'c1c1c1c1-1111-2222-3333-444444444444';
   const { projectPath } = await seedSession({ ctx, projectName: 'straddle', sid, lines: turnLines(5) });

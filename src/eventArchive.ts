@@ -18,14 +18,16 @@
 //     and every outer user_echo carries an absolute `userIndex` matching the
 //     Nth pure-user-prompt jsonl line. When the ring head is the echo for
 //     prompt N, the archive is cut strictly before its own echo #N — no
-//     overlap, no gap. The echo ordinal is the ONLY correlator between the
-//     two seq spaces, which is why the stitch stays turn-anchored even
-//     though page seams themselves are quiescent-aligned.
+//     overlap, no gap.
 //   - When the head is mid-turn (no echo in the trim's reach — e.g. one
-//     giant turn), the archive is cut just AFTER the echo that started the
-//     turn containing the head: the prompt bubble survives, the turn's
-//     partial content between the cut and the ring head is a gap — marked
-//     with a `history_gap` event in the served page. Gap, never duplication.
+//     giant turn), the archive is cut at the ring head's OWN content,
+//     correlated by (kind, msgId, blockIdx) or a tool_result's toolUseId —
+//     an exact stitch, no gap, no duplication. The echo ordinal is a
+//     FALLBACK for when no correlator resolves (the head's own content was
+//     itself never persisted): the archive is then cut just AFTER the echo
+//     that started the turn containing the head, and the turn's partial
+//     content between that cut and the ring head is a real gap — marked
+//     with a `history_gap` event in the served page.
 //
 // Served archive seqs are additionally clamped below ring.trimmedBefore so
 // the two spaces can never collide; both spaces are dense and the archive
@@ -102,14 +104,76 @@ function normalizeWindow(before: number | null, after: number | null, lastSeq: n
   return { before: null, after };
 }
 
+// Content key for correlating a ring event against the replayed archive —
+// computed identically on both sides so a hit means the two really are the
+// same wire content. A `tool_result` correlates by its `toolUseId` (its
+// `msgId`/`blockIdx` are meaningless); anything else needs both `msgId` and
+// a numeric `blockIdx`. Returns null when neither applies.
+function correlationKey(ev: UiEvent): string | null {
+  if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
+  if (typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number') return `${ev.kind} ${ev.msgId} ${ev.blockIdx}`;
+  return null;
+}
+
+// First-wins index of every correlatable archive event, keyed by
+// correlationKey. Built once per buildArchive call.
+function buildFlatIndex(flat: SeqEvent[]): Map<string, number> {
+  const index = new Map<string, number>();
+  for (let i = 0; i < flat.length; i++) {
+    const key = correlationKey(flat[i]);
+    if (key != null && !index.has(key)) index.set(key, i);
+  }
+  return index;
+}
+
+// Kinds the ring retains that replay never produces (module header above) —
+// they cannot appear in `flat`, so skipping them while looking for a
+// correlatable ring event can never duplicate content the echo-anchor
+// fallback would otherwise have covered.
+const RING_ONLY_KINDS = new Set(['message_start', 'turn_end', 'assistant_message']);
+
+// Correlate the ring head's own content into the replayed archive: walk
+// `ring` from its start past any RING_ONLY_KINDS, then look the first
+// remaining event up in `flatIndex`. A hit means that archive index is
+// exactly the count of archive events strictly below the ring head's own
+// content — no overlap, no hole. A miss ABANDONS correlation outright
+// (returns -1) rather than trying a later ring event, which is what stops
+// this from ever serving archive content the ring will serve again.
+function correlateRingHead(ring: SeqEvent[], flatIndex: Map<string, number>): number {
+  for (const ev of ring) {
+    if (RING_ONLY_KINDS.has(ev.kind)) continue;
+    const key = correlationKey(ev);
+    return key != null && flatIndex.has(key) ? flatIndex.get(key) as number : -1;
+  }
+  return -1;
+}
+
+// Locate the anchor-th outer echo in the archive and derive `cut` from it —
+// the shared tail of all three non-correlated anchor cases below.
+function cutFromEchoAnchor(flat: SeqEvent[], anchor: number, includeAnchorEcho: boolean): number {
+  if (anchor < 0) return 0;
+  let idx = -1, seen = 0;
+  for (let i = 0; i < flat.length; i++) {
+    if (!isOuterUserEcho(flat[i])) continue;
+    if (seen === anchor) { idx = i; break; }
+    seen += 1;
+  }
+  if (idx === -1) {
+    // Archive has fewer prompts than the anchor (e.g. recent prompts not
+    // yet flushed) — every archived turn predates the anchor, take all.
+    return flat.length;
+  }
+  return includeAnchorEcho ? idx + 1 : idx;
+}
+
 // Replay the persisted jsonl into a flat event list (dense `_seq` = array
 // index, absolute `userIndex` stamped on outer echoes — same ordinal
 // semantics as Instance._emitUi) and compute `cut`: the number of leading
 // archive events that are safe to serve without overlapping the ring.
-// `gap` is true when the ring head is mid-turn (the trim couldn't reach a
-// turn boundary): the turn's content between the cut and the ring head was
-// evicted and cannot be recovered — pageInstanceEvents marks the seam with
-// a `history_gap` event.
+// `gap` is true when the ring head is mid-turn and no correlator resolved
+// (the fallback echo anchor can't reach the exact cut): the turn's content
+// between the cut and the ring head was evicted and cannot be recovered —
+// pageInstanceEvents marks the seam with a `history_gap` event.
 export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEchoCount }: {
   cwd: string; sessionId: string; ring: SeqEvent[]; trimmedBefore: number; userEchoCount: number;
 }): Promise<{ events: SeqEvent[]; cut: number; gap: boolean }> {
@@ -121,47 +185,41 @@ export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEc
   // Content anchor: which prompt ordinal marks the first turn that is (at
   // least partially) represented in the retained ring.
   const head = ring.length ? ring[0] : null;
-  let anchor: number;
+  let cut: number;
   let includeAnchorEcho: boolean;
   if (!head) {
     // Empty ring — everything the jsonl knows about is older than "now".
-    anchor = userEchoCount;
+    cut = cutFromEchoAnchor(flat, userEchoCount, false);
     includeAnchorEcho = false;
   } else if (isOuterUserEcho(head) && typeof head.userIndex === 'number') {
     // Common case: trim snapped onto a turn boundary.
-    anchor = head.userIndex;
+    cut = cutFromEchoAnchor(flat, head.userIndex, false);
     includeAnchorEcho = false;
   } else {
-    // Head is mid-turn. The turn containing it started at the prompt just
-    // before the first retained echo (or the last prompt overall).
-    const firstEcho = ring.find(ev => isOuterUserEcho(ev) && typeof ev.userIndex === 'number');
-    anchor = (firstEcho ? firstEcho.userIndex as number : userEchoCount) - 1;
-    includeAnchorEcho = true;
+    // Head is mid-turn. Correlate its own content into the archive first —
+    // an exact stitch, no gap. Only on a miss (no correlator resolves, e.g.
+    // the head's content was itself never persisted) fall back to the
+    // echo-ordinal anchor: the turn containing the head started at the
+    // prompt just before the first retained echo (or the last prompt
+    // overall).
+    const correlated = correlateRingHead(ring, buildFlatIndex(flat));
+    if (correlated !== -1) {
+      cut = correlated;
+      includeAnchorEcho = false;
+    } else {
+      const firstEcho = ring.find(ev => isOuterUserEcho(ev) && typeof ev.userIndex === 'number');
+      const anchor = (firstEcho ? firstEcho.userIndex as number : userEchoCount) - 1;
+      cut = cutFromEchoAnchor(flat, anchor, true);
+      includeAnchorEcho = true;
+    }
   }
 
-  let cut: number;
-  if (anchor < 0) {
-    cut = 0;
-  } else {
-    // Locate the anchor-th outer echo in the archive.
-    let idx = -1, seen = 0;
-    for (let i = 0; i < flat.length; i++) {
-      if (!isOuterUserEcho(flat[i])) continue;
-      if (seen === anchor) { idx = i; break; }
-      seen += 1;
-    }
-    if (idx === -1) {
-      // Archive has fewer prompts than the anchor (e.g. recent prompts not
-      // yet flushed) — every archived turn predates the anchor, take all.
-      cut = flat.length;
-    } else {
-      cut = includeAnchorEcho ? idx + 1 : idx;
-    }
-  }
   // Safety net: keep archive seqs strictly below the ring's seq space. When
   // the anchor-derived cut exceeds trimmedBefore, this clamp silently drops
   // archive events in [trimmedBefore, cut) — real evicted history — so that
-  // must also mark the gap.
+  // must also mark the gap. Strict `>`: `cut === trimmedBefore` is the
+  // healthy, turn-aligned case (a resumed session's ring was filled by the
+  // same replay, so the two spaces align exactly) and must not mark a gap.
   const clampedCut = Math.min(cut, Math.max(0, trimmedBefore));
   const clampDroppedContent = cut > trimmedBefore;
   cut = clampedCut;
