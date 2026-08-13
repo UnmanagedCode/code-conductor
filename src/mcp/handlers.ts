@@ -182,14 +182,13 @@ function toConductorView(summary: InstanceSummary): Record<string, unknown> {
 }
 
 // The only public worker lookup that ADDRESSES a worker — every tool that
-// needs a running subprocess resolves through here. Its read-only sibling
-// getInstOrDisk (below) is the sole exception, and only the two genuinely
-// read-only tools use it. LIVE-only + soft-erroring: resolves a
-// stable sessionId to its single running (proc-attached) instance, or returns
-// a soft-refusal object the handler hands straight back (isError stays false,
-// matching the deleteWorktree/mergeWorktree soft-refusal convention). NEVER
-// auto-respawns and never special-cases reads — a dead session is a refusal,
-// not a resurrection.
+// needs a running subprocess resolves through here. Reads go through the
+// read-only sibling getInstOrDisk (below) instead. LIVE-only + soft-erroring:
+// resolves a stable sessionId to its single running (proc-attached) instance,
+// or returns a soft-refusal object the handler hands straight back (isError
+// stays false, matching the deleteWorktree/mergeWorktree soft-refusal
+// convention). NEVER auto-respawns — a dead session is a refusal, not a
+// resurrection.
 //   - SESSION_NOT_LIVE: the session is known (in byId or on disk) but has no
 //     running process → tell the conductor to spawn_instance({resume}).
 //   - SESSION_UNKNOWN: no such session anywhere.
@@ -219,9 +218,10 @@ async function getInst(instances: InstanceManagerLike | null | undefined, sessio
 // loadPersistedTranscript / pagePersistedEvents to read it, and nothing more.
 interface DiskRef { sessionId: string; backingSessionId: string; cwd: string }
 
-// The READ-ONLY sibling of getInst, used by exactly two tools
-// (get_transcript, get_recent_messages) because they need bytes, not a
-// subprocess. Resolves live-instance → disk-location → soft refusal:
+// The READ-ONLY sibling of getInst, for the call sites that need a session's
+// BYTES rather than a subprocess: get_transcript, get_recent_messages, and
+// send_prompt's `forward` source (which performs the same read).
+// Resolves live-instance → disk-location → soft refusal:
 //   1-3. identical to getInst, including the pure-in-memory hot path — no disk
 //        work happens above the liveForSession hit.
 //   4.   a dead-but-retained instance still in byId: its own cwd +
@@ -252,6 +252,11 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
   const live = instances.liveForSession(sessionId);
   if (live) return { inst: live };
 
+  // PERFORMANCE, not correctness: step 5 below agrees with this branch on the
+  // cwd/backingSessionId pair for any session both can resolve, so moving this
+  // after it would change only the cost — an in-memory hit instead of a
+  // readdir+stat sweep. Reorder freely if a reason appears; nothing depends on
+  // the order.
   const known = instances.anyForSession(sessionId);
   if (known) {
     return known.backingSessionId
@@ -977,11 +982,16 @@ async function maybeSubscribeIdle({ instances, callerId }: McpCtx, sessionId: st
 // two-session send_prompt refusal self-documenting about which side to fix,
 // which reusing SESSION_NOT_LIVE/SESSION_UNKNOWN with an extra field could not
 // do if the target and source ids happen to share a prefix.
+//
+// FORWARD_SESSION_NOT_LIVE narrowed when forward gained its disk path: a
+// non-live source is now ordinarily forwarded from its transcript, so this
+// fires only when that transcript cannot be reached — an orphaned transcript
+// whose owning worktree is no longer registered (getInstOrDisk step 6).
 function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): SoftRefusal {
   if (soft.code === 'SESSION_NOT_LIVE') {
     return {
       ok: false, code: 'FORWARD_SESSION_NOT_LIVE', forwardSessionId,
-      reason: `forward source session ${forwardSessionId} has no running process — its recent output is only readable while it is live. Call spawn_instance({resume:"${forwardSessionId}"}) to bring it back, then retry. No prompt was sent.`,
+      reason: `forward source session ${forwardSessionId} has no running process and its transcript could not be read: ${soft.reason} Call spawn_instance({resume:"${forwardSessionId}"}) to bring it back, then retry. No prompt was sent.`,
     };
   }
   return {
@@ -1032,9 +1042,7 @@ export async function sendPrompt(
     // The default `get_recent_messages` selection, no `count` — decision 2:
     // `forward` has no size/range selector, it hands over the whole default
     // selection or nothing.
-    // allowDisk:false — forward stays STRICT-LIVE. A retired source is
-    // readable via get_recent_messages but not forwardable.
-    const sel = await selectRecentMessages({ sessionId: forwardSessionId }, ctx, false);
+    const sel = await selectRecentMessages({ sessionId: forwardSessionId }, ctx);
     if ('soft' in sel) return forwardSourceRefusal(sel.soft, forwardSessionId);
     if (sel.messages.length === 0) {
       const reason = sel.omittedToolOnly > 0
@@ -1911,18 +1919,17 @@ export async function getRecentMessages(args: McpArgs, ctx: McpCtx) {
 // same way buildRecentMessages does; `requested` is the clamped `n` a caller
 // needs for the `messages.length < n` short-result test.
 //
-// `allowDisk` is REQUIRED, with no default, because the two callers differ on
-// it and nothing sensible can be inherited: buildRecentMessages (a pure read)
-// passes true and so serves a retired session from its transcript, while
-// send_prompt's `forward` passes false and stays strict-live — a forwarded
-// source id is a live handle (docs/protocol.md). A third caller must state its
-// intent rather than silently pick up a relaxation.
+// Both callers resolve through getInstOrDisk, so a retired session is served
+// from its transcript on the read AND on the forward. What keeps a forward
+// source governed is not liveness but the playbook gate, which checks it
+// against its own stage from the ledger projection (checkForwardSource,
+// ../playbooks.ts) — a projection that never asked whether a process is
+// running.
 async function selectRecentMessages(
   { sessionId, count, includeToolCalls = false, includeThinking = false }: {
     sessionId: string; count?: number; includeToolCalls?: boolean; includeThinking?: boolean;
   },
   { instances }: McpCtx,
-  allowDisk: boolean,
 ): Promise<{
   sessionId: string;
   trimmedBefore: number;
@@ -1941,8 +1948,6 @@ async function selectRecentMessages(
   const bondNeed = isDefaultCount ? n + 1 : n;
 
   if ('disk' in r) {
-    // Non-live session. Refuse exactly as before unless this caller opted in.
-    if (!allowDisk) return { soft: notLiveRefusal(r.disk.sessionId) };
     const sel = await loadDiskSelection({ cwd: r.disk.cwd, backingSessionId: r.disk.backingSessionId, includeThinking });
     const all = sel ? sel.messages : [];
     const filtered = includeToolCalls ? all : all.filter(isTextBearing);
@@ -1995,8 +2000,7 @@ async function selectRecentMessages(
 export async function buildRecentMessages({ sessionId, count, includeToolCalls = false, includeThinking = false }: {
   sessionId: string; count?: number; includeToolCalls?: boolean; includeThinking?: boolean;
 }, ctx: McpCtx): Promise<{ meta: Record<string, unknown>; bodies: string[] } | { soft: SoftRefusal }> {
-  // allowDisk:true — a read may serve a retired session from its transcript.
-  const sel = await selectRecentMessages({ sessionId, count, includeToolCalls, includeThinking }, ctx, true);
+  const sel = await selectRecentMessages({ sessionId, count, includeToolCalls, includeThinking }, ctx);
   if ('soft' in sel) return sel;
   const { ring, messages, source, omittedToolOnly, requested: n } = sel;
   const trimmedBefore = sel.trimmedBefore;
