@@ -508,7 +508,7 @@ test('update(): pulls new commits, runs postPull, and triggers a rescan', async 
     });
 
     let rescanned = 0;
-    const stubHost = { rescan: async () => { rescanned++; } };
+    const stubHost = { rescan: async () => { rescanned++; }, list: async () => [], restart: async () => {} };
     const hookCalls = [];
     const lib = createPluginLibrary({
       pluginHost: stubHost,
@@ -518,6 +518,7 @@ test('update(): pulls new commits, runs postPull, and triggers a rescan', async 
     const result = await lib.update('code-x');
     assert.equal(result.name, 'code-x');
     assert.deepEqual(result.postPull, { ran: true, ok: true, code: 0, tail: 'ran' });
+    assert.equal(result.restarted, null, 'no running rows for this project ⇒ nothing to restart');
     assert.equal(rescanned, 1);
     assert.equal(hookCalls.length, 1);
     assert.equal(hookCalls[0].command, 'echo hi');
@@ -529,5 +530,57 @@ test('update(): pulls new commits, runs postPull, and triggers a rescan', async 
     await env.restore();
     await fs.rm(remoteDir, { recursive: true, force: true });
     await fs.rm(seedDir, { recursive: true, force: true });
+  }
+});
+
+test('update(): a running plugin backend gets restarted; a restart failure is soft — update still resolves', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addProject('code-x');
+    await dropLibraryEntry('code-x.json', {
+      id: 'code-x', name: 'Code X', repo: 'https://example.com/org/code-x', postPull: 'echo hi',
+    });
+    const stubHost = {
+      rescan: async () => {},
+      list: async () => [{ id: 'code-x-backend', project: 'code-x', state: 'ready' }],
+      restart: async () => { throw new Error('boom restart'); },
+    };
+    const lib = createPluginLibrary({
+      pluginHost: stubHost,
+      _pullImpl: async () => ({ code: 0, stdout: '', stderr: '' }),
+      _runHookImpl: async (command, cwd) => ({ code: 0, output: 'ran' }),
+    });
+
+    const result = await lib.update('code-x'); // must resolve, not reject
+    assert.deepEqual(result.postPull, { ran: true, ok: true, code: 0, tail: 'ran' }, 'postPull unaffected by the restart failure');
+    assert.equal(result.restarted.ok, false);
+    assert.deepEqual(result.restarted.ids, []);
+    assert.match(result.restarted.error, /code-x-backend: boom restart/);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('update(): a plugin backend that was never running is left stopped, not started', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addProject('code-x');
+    await dropLibraryEntry('code-x.json', { id: 'code-x', name: 'Code X', repo: 'https://example.com/org/code-x' });
+    const restartCalls = [];
+    const stubHost = {
+      rescan: async () => {},
+      list: async () => [{ id: 'code-x-backend', project: 'code-x', state: 'stopped' }],
+      restart: async (id) => { restartCalls.push(id); },
+    };
+    const lib = createPluginLibrary({
+      pluginHost: stubHost,
+      _pullImpl: async () => ({ code: 0, stdout: '', stderr: '' }),
+    });
+
+    const result = await lib.update('code-x');
+    assert.equal(result.restarted, null, 'nothing running ⇒ nothing to restart');
+    assert.deepEqual(restartCalls, [], 'update never starts a stopped backend');
+  } finally {
+    await env.restore();
   }
 });

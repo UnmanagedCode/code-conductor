@@ -75,6 +75,29 @@ test('enabling a plugin with no conductor conventions leaves the selection untou
   }
 });
 
+test('rescan drops the cached fragment body so composeCurrentConduct() sees an on-disk edit — no regenerator needed for conductor scope', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('condp', { manifest: COND_PLUGIN });
+    const host = createPluginHost();
+    wire(host);
+
+    await host.enable('cond-plugin');
+    const before = await composeCurrentConduct(); // caches conventions/sample.md's V1 body
+    assert.match(before, /Visual UX verification/);
+
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V2 Convention\n- new text');
+    await host.rescan();
+
+    const after = await composeCurrentConduct();
+    assert.match(after, /V2 Convention/);
+    assert.doesNotMatch(after, /Visual UX verification/);
+  } finally {
+    setPluginConductorConventionsProvider(null);
+    await env.restore();
+  }
+});
+
 test('a manually-disabled convention is excluded and persists across disable→re-enable', async () => {
   const env = await makePluginRoot();
   try {

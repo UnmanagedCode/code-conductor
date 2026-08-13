@@ -492,6 +492,52 @@ test('conventions() surfaces body + scaffold facet for enabled+ok plugins only',
   }
 });
 
+test('rescan drops the cached fragment body so an on-disk edit reaches conventions()', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
+    const host = createPluginHost();
+    await host.enable('conv-plugin');
+
+    const before = (await host.conventions()).project.find(e => e.slug === 'conv-plugin/plain-conv');
+    assert.match(before.body, /Visual UX verification/);
+
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V2 body\n- new text');
+    await host.rescan();
+
+    const after = (await host.conventions()).project.find(e => e.slug === 'conv-plugin/plain-conv');
+    assert.match(after.body, /V2 body/);
+    assert.doesNotMatch(after.body, /Visual UX verification/);
+  } finally {
+    await env.restore();
+  }
+});
+
+test('setActiveVersion drops the cached fragment body even for a backendless (never-started) plugin', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
+    const host = createPluginHost();
+    await host.enable('conv-plugin');
+
+    const before = (await host.conventions()).project.find(e => e.slug === 'conv-plugin/plain-conv');
+    assert.match(before.body, /Visual UX verification/);
+
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V2 body\n- new text');
+    // CONTRIB_ONLY has no backend, so it never reaches 'ready'/'starting' —
+    // setActiveVersion's own restart branch never fires. The refresh has to
+    // come from the unconditional clear right after saveRegistry(), not from
+    // doStart's clear.
+    await host.setActiveVersion('conv-plugin', { type: 'main' });
+
+    const after = (await host.conventions()).project.find(e => e.slug === 'conv-plugin/plain-conv');
+    assert.match(after.body, /V2 body/);
+    assert.doesNotMatch(after.body, /Visual UX verification/);
+  } finally {
+    await env.restore();
+  }
+});
+
 // A manifest mixing project- and conductor-scope conventions, to verify
 // conventions() partitions strictly by scope with no cross-leak.
 const MIXED_SCOPE = {

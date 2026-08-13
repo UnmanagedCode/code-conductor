@@ -391,3 +391,213 @@ test('enable/disable a project-convention plugin fans out to referencing project
     assert.doesNotMatch(refreshed, /STALE BODY/);
   } finally { await boot.close(); }
 });
+
+test('restart drops the cached fragment body so /api/settings/conventions/project sees the on-disk edit', async () => {
+  const boot = await setup(); // fakeplug carries FAKE_PLUGIN_DIR's server.mjs + conventions/sample.md
+  try {
+    const dir = path.join(boot.projectsRoot, 'fakeplug');
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
+      id: 'fake-plugin', name: 'Fake Plugin', version: '1.0.0', pluginApi: 1,
+      backend: { start: 'node server.mjs', healthPath: '/health' },
+      conventions: [{ slug: 'vis', name: 'Visual check', description: 'verify UX', file: 'conventions/sample.md', scope: 'project' }],
+    }));
+
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
+    const st = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/start');
+    assert.equal(st.body.state, 'ready');
+
+    let conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
+    let g = conv.body.conventions.find(r => r.slug === 'fake-plugin/vis');
+    assert.match(g.body, /Visual UX verification/);
+
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V2 body\n- new text');
+    const restarted = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/restart');
+    assert.equal(restarted.status, 200);
+
+    conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
+    g = conv.body.conventions.find(r => r.slug === 'fake-plugin/vis');
+    assert.match(g.body, /V2 body/);
+    assert.doesNotMatch(g.body, /Visual UX verification/);
+  } finally { await boot.close(); }
+});
+
+// Shared git scaffolding for the library-update tests below: a bare "remote",
+// a "seed" working copy that pushes to it, and a project directory cloned
+// from the remote into boot.projectsRoot (mirrors the existing update() NDJSON
+// test above). `manifestExtra` is merged into the fixture's conductor.plugin.json.
+async function seedLibraryGitProject({ projectsRoot, projectName, manifestExtra = {}, withFixtureBackend = false }) {
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-remote-'));
+  const seedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lib-seed-'));
+  await git(remoteDir, '-c', 'init.defaultBranch=main', 'init', '-q', '--bare');
+  if (withFixtureBackend) await fs.cp(FAKE_PLUGIN_DIR, seedDir, { recursive: true });
+  await git(seedDir, '-c', 'init.defaultBranch=main', 'init', '-q');
+  await git(seedDir, 'config', 'user.email', 'test@test');
+  await git(seedDir, 'config', 'user.name', 'test');
+  await fs.writeFile(path.join(seedDir, 'conductor.plugin.json'), JSON.stringify({
+    id: projectName, name: projectName, version: '1.0.0', pluginApi: 1, ...manifestExtra,
+  }));
+  await git(seedDir, 'add', '-A');
+  await git(seedDir, 'commit', '-q', '-m', 'v1');
+  await git(seedDir, 'remote', 'add', 'origin', remoteDir);
+  await git(seedDir, 'push', '-q', 'origin', 'main');
+  await git(projectsRoot, 'clone', '-q', remoteDir, projectName);
+
+  const libDir = path.join(projectsRoot, '.code-conductor', 'plugins', 'library');
+  await fs.mkdir(libDir, { recursive: true });
+  await fs.writeFile(path.join(libDir, `${projectName}.json`), JSON.stringify({
+    id: projectName, name: projectName, repo: `https://example.com/org/${projectName}`,
+  }));
+  return { remoteDir, seedDir };
+}
+
+test('library update regenerates a referencing project\'s CONVENTIONS.md even when the fragment text is unchanged', async () => {
+  const boot = await bootServer();
+  let scaffold;
+  try {
+    scaffold = await seedLibraryGitProject({
+      projectsRoot: boot.projectsRoot, projectName: 'code-x',
+      manifestExtra: { conventions: [{ slug: 'vis', name: 'Visual check', description: 'verify UX', file: 'conventions/vis.md', scope: 'project' }] },
+    });
+    await fs.mkdir(path.join(scaffold.seedDir, 'conventions'), { recursive: true });
+    await fs.writeFile(path.join(scaffold.seedDir, 'conventions', 'vis.md'), '## V1 body\n- old text');
+    await git(scaffold.seedDir, 'add', '-A');
+    await git(scaffold.seedDir, 'commit', '-q', '-m', 'add fragment');
+    await git(scaffold.seedDir, 'push', '-q', 'origin', 'main');
+    await git(path.join(boot.projectsRoot, 'code-x'), 'pull', '-q'); // clone made before the fragment existed
+
+    assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/code-x/enable')).status, 200);
+    const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'refproj', conventions: ['code-x/vis'] });
+    assert.equal(created.status, 201);
+    const target = path.join(boot.projectsRoot, 'refproj', 'CONVENTIONS.md');
+    assert.match(await fs.readFile(target, 'utf8'), /V1 body/);
+
+    // Mangle (marker intact) — proves the fan-out actually rewrites, not that
+    // it happened to already hold the right text.
+    await fs.writeFile(target, '<!-- cc:conventions code-x/vis -->\n\nSTALE BODY\n');
+
+    // Upstream commit that does NOT touch the fragment.
+    await fs.writeFile(path.join(scaffold.seedDir, 'unrelated.txt'), 'noise');
+    await git(scaffold.seedDir, 'add', '-A');
+    await git(scaffold.seedDir, 'commit', '-q', '-m', 'unrelated');
+    await git(scaffold.seedDir, 'push', '-q', 'origin', 'main');
+
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/code-x/update');
+    assert.equal(r.status, 200);
+
+    const refreshed = await fs.readFile(target, 'utf8');
+    assert.match(refreshed, /V1 body/);
+    assert.doesNotMatch(refreshed, /STALE BODY/);
+  } finally {
+    await boot.close();
+    if (scaffold) { await fs.rm(scaffold.remoteDir, { recursive: true, force: true }); await fs.rm(scaffold.seedDir, { recursive: true, force: true }); }
+  }
+});
+
+test('library update propagates a changed fragment body to a referencing project\'s CONVENTIONS.md', async () => {
+  const boot = await bootServer();
+  let scaffold;
+  try {
+    scaffold = await seedLibraryGitProject({
+      projectsRoot: boot.projectsRoot, projectName: 'code-y',
+      manifestExtra: { conventions: [{ slug: 'vis', name: 'Visual check', description: 'verify UX', file: 'conventions/vis.md', scope: 'project' }] },
+    });
+    await fs.mkdir(path.join(scaffold.seedDir, 'conventions'), { recursive: true });
+    await fs.writeFile(path.join(scaffold.seedDir, 'conventions', 'vis.md'), '## V1 body\n- old text');
+    await git(scaffold.seedDir, 'add', '-A');
+    await git(scaffold.seedDir, 'commit', '-q', '-m', 'add fragment');
+    await git(scaffold.seedDir, 'push', '-q', 'origin', 'main');
+    await git(path.join(boot.projectsRoot, 'code-y'), 'pull', '-q');
+
+    assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/code-y/enable')).status, 200);
+    const created = await api(boot.baseUrl, 'POST', '/api/projects', { name: 'refproj2', conventions: ['code-y/vis'] });
+    assert.equal(created.status, 201);
+    const target = path.join(boot.projectsRoot, 'refproj2', 'CONVENTIONS.md');
+    assert.match(await fs.readFile(target, 'utf8'), /V1 body/);
+
+    // Upstream commit that CHANGES the fragment.
+    await fs.writeFile(path.join(scaffold.seedDir, 'conventions', 'vis.md'), '## V2 body\n- new text');
+    await git(scaffold.seedDir, 'add', '-A');
+    await git(scaffold.seedDir, 'commit', '-q', '-m', 'v2');
+    await git(scaffold.seedDir, 'push', '-q', 'origin', 'main');
+
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/code-y/update');
+    assert.equal(r.status, 200);
+
+    const refreshed = await fs.readFile(target, 'utf8');
+    assert.match(refreshed, /V2 body/);
+    assert.doesNotMatch(refreshed, /V1 body/);
+  } finally {
+    await boot.close();
+    if (scaffold) { await fs.rm(scaffold.remoteDir, { recursive: true, force: true }); await fs.rm(scaffold.seedDir, { recursive: true, force: true }); }
+  }
+});
+
+test('library update auto-restarts a running plugin backend and clears its staleness', async () => {
+  const boot = await bootServer();
+  let scaffold;
+  try {
+    scaffold = await seedLibraryGitProject({
+      projectsRoot: boot.projectsRoot, projectName: 'fake-lib', withFixtureBackend: true,
+      manifestExtra: { backend: { start: 'node server.mjs', healthPath: '/health' } },
+    });
+
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-lib/enable');
+    const st = await api(boot.baseUrl, 'POST', '/api/plugins/fake-lib/start');
+    assert.equal(st.body.state, 'ready');
+    const pid1 = st.body.pid;
+
+    await fs.writeFile(path.join(scaffold.seedDir, 'extra.txt'), 'v2');
+    await git(scaffold.seedDir, 'add', '-A');
+    await git(scaffold.seedDir, 'commit', '-q', '-m', 'v2');
+    await git(scaffold.seedDir, 'push', '-q', 'origin', 'main');
+
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/fake-lib/update');
+    assert.equal(r.status, 200);
+    const result = parseNdjson(r.body).find(l => l.type === 'result');
+    assert.ok(result);
+    assert.equal(result.ok, true);
+    assert.equal(result.result.restarted.ok, true);
+    assert.deepEqual(result.result.restarted.ids, ['fake-lib']);
+
+    await waitFor(() => !pidAlive(pid1));
+    const status = await api(boot.baseUrl, 'GET', '/api/plugins/fake-lib/status');
+    assert.equal(status.body.state, 'ready');
+    assert.notEqual(status.body.pid, pid1);
+    assert.equal(status.body.stale, false);
+  } finally {
+    await boot.close();
+    if (scaffold) { await fs.rm(scaffold.remoteDir, { recursive: true, force: true }); await fs.rm(scaffold.seedDir, { recursive: true, force: true }); }
+  }
+});
+
+test('library update never auto-starts a plugin backend that was never running', async () => {
+  const boot = await bootServer();
+  let scaffold;
+  try {
+    scaffold = await seedLibraryGitProject({
+      projectsRoot: boot.projectsRoot, projectName: 'fake-lib2', withFixtureBackend: true,
+      manifestExtra: { backend: { start: 'node server.mjs', healthPath: '/health' } },
+    });
+
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-lib2/enable'); // never started
+
+    await fs.writeFile(path.join(scaffold.seedDir, 'extra.txt'), 'v2');
+    await git(scaffold.seedDir, 'add', '-A');
+    await git(scaffold.seedDir, 'commit', '-q', '-m', 'v2');
+    await git(scaffold.seedDir, 'push', '-q', 'origin', 'main');
+
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/fake-lib2/update');
+    assert.equal(r.status, 200);
+    const result = parseNdjson(r.body).find(l => l.type === 'result');
+    assert.ok(result);
+    assert.equal(result.ok, true);
+    assert.equal(result.result.restarted, null);
+
+    const status = await api(boot.baseUrl, 'GET', '/api/plugins/fake-lib2/status');
+    assert.equal(status.body.state, 'stopped');
+    assert.equal(status.body.pid, null);
+  } finally {
+    await boot.close();
+    if (scaffold) { await fs.rm(scaffold.remoteDir, { recursive: true, force: true }); await fs.rm(scaffold.seedDir, { recursive: true, force: true }); }
+  }
+});

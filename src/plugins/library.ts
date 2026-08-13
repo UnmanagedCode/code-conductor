@@ -97,6 +97,7 @@ interface PluginHostLike {
   rescan(): Promise<unknown>;
   list(): Promise<Array<{ id: string | null; project: string; state: string }>>;
   enable(id: string): Promise<unknown>;
+  restart(id: string): Promise<unknown>;
 }
 
 // The git/hook command results, structurally matching gitLive.GitLiveResult
@@ -110,6 +111,27 @@ interface GitCommandResult {
 type CloneImpl = (url: string, destDir: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
 type PullImpl = (cwd: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
 type RunHookImpl = (command: string, cwd: string, opts?: { timeoutMs?: number; onChunk?: (s: string) => void }) => Promise<{ code: number; output: string }>;
+
+// Only a RUNNING child holds stale code; a stopped backend starts lazily on
+// first use and picks the pull up by itself, so update never starts one.
+// Never throws — a restart failure is soft, exactly like a failed postPull:
+// the pull already landed on disk.
+async function restartRunning(host: PluginHostLike, projectName: string, onChunk: (s: string) => void)
+  : Promise<{ ids: string[]; ok: boolean; error: string | null } | null> {
+  let running: string[];
+  try {
+    running = (await host.list())
+      .filter(r => r.project === projectName && typeof r.id === 'string' && (r.state === 'ready' || r.state === 'starting'))
+      .map(r => r.id as string);
+  } catch (e) { return { ids: [], ok: false, error: errMsg(e) }; }
+  if (running.length === 0) return null;
+  const done: string[] = [];
+  for (const id of running) {
+    try { await host.restart(id); done.push(id); onChunk(`\n[restarted ${id}]\n`); }
+    catch (e) { return { ids: done, ok: false, error: `${id}: ${errMsg(e)}` }; }
+  }
+  return { ids: done, ok: true, error: null };
+}
 
 function libraryDir(): string {
   return path.join(orchStoreRoot(), 'plugins', 'library');
@@ -223,7 +245,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
 } = {}): {
   list(): Promise<Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>>;
   install(id: string, opts?: { onChunk?: (phase: 'clone' | 'hook', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postClone: { ran: boolean; ok: boolean; code: number; tail: string } | null }>;
-  update(id: string, opts?: { onChunk?: (phase: 'pull' | 'hook', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null }>;
+  update(id: string, opts?: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: { ids: string[]; ok: boolean; error: string | null } | null }>;
 } {
   const clone = _cloneImpl ?? cloneRepo;
   const pull = _pullImpl ?? pullRepo;
@@ -314,7 +336,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     return { id, name, project: name, path: target, postClone };
   }
 
-  async function update(id: string, { onChunk, onValidated }: { onChunk?: (phase: 'pull' | 'hook', text: string) => void; onValidated?: () => void } = {}): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null }> {
+  async function update(id: string, { onChunk, onValidated }: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void } = {}): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: { ids: string[]; ok: boolean; error: string | null } | null }> {
     const entries = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
@@ -341,7 +363,8 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     if (pluginHost) await pluginHost.rescan();
 
     const postPull = await runHook(entry.postPull, target, (text) => onChunk?.('hook', text));
-    return { id, name, project: name, path: target, postPull };
+    const restarted = pluginHost ? await restartRunning(pluginHost, name, (t) => onChunk?.('restart', t)) : null;
+    return { id, name, project: name, path: target, postPull, restarted };
   }
 
   return { list, install, update };

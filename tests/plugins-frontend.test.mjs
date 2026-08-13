@@ -263,7 +263,7 @@ function ndjsonResponse(events) {
 // check. `updateAvailable` mirrors library.ts's list() ahead/behind check.
 function stubPluginManagerFetch({
   initiallyInstalled = false, updateAvailable = true,
-  installResult, installPostClone = null, updateResult, updatePostPull = null,
+  installResult, installPostClone = null, updateResult, updatePostPull = null, updateRestarted = null,
 } = {}) {
   const calls = [];
   let installed = initiallyInstalled;
@@ -302,7 +302,7 @@ function stubPluginManagerFetch({
       }
       return Promise.resolve(ndjsonResponse([
         { type: 'chunk', phase: 'pull', text: 'Updating code-share...\n' },
-        { type: 'result', ok: true, result: { id: 'code-share', name: 'code-share', postPull: updatePostPull } },
+        { type: 'result', ok: true, result: { id: 'code-share', name: 'code-share', postPull: updatePostPull, restarted: updateRestarted } },
       ]));
     }
     return Promise.resolve({ ok: true, json: async () => ({}) });
@@ -484,6 +484,45 @@ test('pluginManager: update succeeds but a failed postPull is surfaced as a warn
   assert.match(dom.libStatus.textContent, /post-update command failed/);
   assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
   assert.match(dom.tailPre.textContent, /npm ERR! boom again/);
+});
+
+test('pluginManager: update succeeds but a failed auto-restart is surfaced as a warning, not an update failure', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({ initiallyInstalled: true, updateRestarted: { ids: ['code-share'], ok: false, error: 'boom' } });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const updateBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update');
+  updateBtn.click();
+  await tick();
+
+  const row = dom.libList.querySelector('.pll-row');
+  assert.ok(row.querySelector('.pll-installed-as'), 'update (pull) itself succeeded');
+  assert.match(dom.libStatus.textContent, /restart.*failed/i);
+  assert.match(dom.libStatus.textContent, /boom/);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+});
+
+test('pluginManager: update — a failed post-update hook wins the status line over a failed auto-restart', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({
+    initiallyInstalled: true,
+    updatePostPull: { ran: true, ok: false, code: 1, tail: 'npm ERR! boom' },
+    updateRestarted: { ids: [], ok: false, error: 'restart boom' },
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const updateBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update');
+  updateBtn.click();
+  await tick();
+
+  assert.match(dom.libStatus.textContent, /post-update command failed/);
+  assert.doesNotMatch(dom.libStatus.textContent, /restart boom/, 'the hook warning wins the single status line');
 });
 
 test('pluginManager: empty library renders the empty-state message', async () => {
