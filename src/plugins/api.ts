@@ -62,8 +62,10 @@ function streamLibraryAction(res: express.Response, next: express.NextFunction, 
 // Regenerating project CONVENTIONS.md is plumbing on top of a mutation that
 // already succeeded and is already persisted — it must never turn a successful
 // rescan/enable/disable/restart/version/install/update response into an error.
-// `{ log: console }` surfaces the frozen-project warning (an unresolvable
-// marker slug) in the server log — see docs/plugins.md's known limitations.
+// A referencing project's other, resolvable conventions still refresh even
+// when this plugin's slug goes unresolvable; `{ log: console }` surfaces the
+// server log only for the residual case where nothing resolves at all — see
+// docs/plugins.md's known limitations.
 async function refreshProjectConventions(): Promise<void> {
   try { await regenerateAllProjectConventions({ log: console }); }
   catch (e) { console.warn('plugins: project CONVENTIONS.md regenerate failed:', e); }
@@ -112,9 +114,10 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   // the catalog offers (a plugin contributes conventions via
   // setPluginConventionsProvider) or which fragment bodies are cached
   // (rescan/restart/version also drop the registry's fragment-body cache —
-  // see invalidateFragmentBodies in registry.ts). No-op-safe: a disable makes
-  // the plugin's slugs unresolvable ⇒ referencing projects are skipped
-  // (frozen), never blanked; an enable re-resolves them ⇒ refresh.
+  // see invalidateFragmentBodies in registry.ts). A disable makes the plugin's
+  // slugs unresolvable: referencing projects still refresh their other,
+  // resolvable conventions, with the plugin's slugs named in a note (never
+  // blanked); an enable re-resolves them ⇒ full refresh.
   r.post('/rescan', async (req, res, next) => {
     try {
       const result = await host.rescan();

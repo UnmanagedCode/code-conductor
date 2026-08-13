@@ -1725,7 +1725,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // Selection is per-project (recorded in each project's in-tree CONVENTIONS.md
   // marker at creation); there is no global selection. Each mutation to a custom
   // convention's body fans out to regenerate every project that selected it —
-  // a since-deleted slug becomes unresolvable and is left as-is (no-op-safe).
+  // a since-deleted slug becomes unresolvable: the project's other, resolvable
+  // conventions still refresh, and the missing one is named in the file (see
+  // `src/projectClaudeMd.ts`); `{ log: console }` also surfaces the residual
+  // all-unresolvable skip in the server log (docs/architecture.md).
   r.get('/settings/conventions/project', async (req, res, next) => {
     try { res.json({ conventions: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
   });
@@ -1737,7 +1740,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const convention = await addProjectConvention({
         slug: slug as string, name: name as string, description: description as string, body: text as string,
       });
-      await regenerateAllProjectConventions();
+      await regenerateAllProjectConventions({ log: console });
       res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
@@ -1748,7 +1751,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const body = jsonBody(req);
       const { name, description, body: text } = body;
       const convention = await updateProjectConvention(slug, { name, description, body: text });
-      await regenerateAllProjectConventions();
+      await regenerateAllProjectConventions({ log: console });
       res.json({ convention });
     } catch (e) { next(e); }
   });
@@ -1757,7 +1760,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     try {
       const { slug } = req.params;
       const result = await deleteProjectConvention(slug);
-      await regenerateAllProjectConventions();
+      await regenerateAllProjectConventions({ log: console });
       res.json(result);
     } catch (e) { next(e); }
   });

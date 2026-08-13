@@ -2,9 +2,11 @@
 // (src/projectClaudeMd.ts). The file is app-owned + self-describing: line 1 is a
 // `<!-- cc:conventions … -->` marker that is the source of truth for the
 // selection, so any cc instance can regenerate the body from the file alone.
-// Regeneration is NO-OP-SAFE — it only overwrites when every marker slug
-// resolves locally; a missing file, a non-marker first line, or an unresolvable
-// slug leaves the committed file untouched (never blanks it).
+// Regeneration composes whichever marker slugs resolve locally and names the
+// rest in a visible in-body note, keeping them in the marker so they recover
+// verbatim if they resolve again; a missing file, a non-marker first line, a
+// zero-slug marker, or a marker where NOTHING resolves to a body leaves the
+// committed file untouched (never blanks it).
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,7 +15,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { createProject } from '../src/projects.ts';
-import { addCustomConvention } from '../src/projectConventions.ts';
+import {
+  addCustomConvention, deleteCustomConvention, composeProjectConventionsBlock, setPluginConventionsProvider,
+} from '../src/projectConventions.ts';
 import {
   buildMarker, parseMarker, composeProjectConventionsDoc,
   conventionsTargetPath, ensureProjectConventionsMd, regenerateAllProjectConventions,
@@ -177,4 +181,131 @@ test('deleting a custom convention leaves a project that referenced it byte-for-
   // A direct re-run of the fan-out is likewise a no-op on this project.
   await regenerateAllProjectConventions();
   assert.equal(await fs.readFile(target, 'utf8'), before);
+});
+
+// ── partial resolution: resolvable slugs refresh, unresolvable ones get a note ──
+
+test('ensureProjectConventionsMd regenerates the resolvable remainder when only some slugs are unresolvable', async () => {
+  await createProject('partial');
+  const target = conventionsPath('partial');
+  await fs.writeFile(target, '<!-- cc:conventions ghost-slug,design-guidelines -->\n\nSTALE\n');
+
+  const res = await ensureProjectConventionsMd('partial');
+  assert.equal(res.regenerated, true);
+  assert.deepEqual(res.missing, ['ghost-slug']);
+
+  const content = await fs.readFile(target, 'utf8');
+  assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions ghost-slug,design-guidelines -->', 'marker keeps the unresolvable slug verbatim');
+  assert.match(content, /## Design guidelines/);
+  assert.doesNotMatch(content, /STALE/);
+});
+
+test('unresolved-slug note has exact wording and sits above the resolvable bodies', async () => {
+  await createProject('exact-note');
+  const target = conventionsPath('exact-note');
+  await fs.writeFile(target, '<!-- cc:conventions ghost-slug,design-guidelines -->\n\nSTALE\n');
+
+  await ensureProjectConventionsMd('exact-note');
+
+  const expected = '<!-- cc:conventions ghost-slug,design-guidelines -->\n\n'
+    + '> Omitted — not available in this cc instance: `ghost-slug`. Text returns automatically once available again.\n'
+    + await composeProjectConventionsBlock(['design-guidelines']);
+  assert.equal(await fs.readFile(target, 'utf8'), expected);
+});
+
+test('regeneration with an unresolvable slug is idempotent across repeated runs', async () => {
+  await createProject('idempotent');
+  const target = conventionsPath('idempotent');
+  await fs.writeFile(target, '<!-- cc:conventions ghost-slug,design-guidelines -->\n\nSTALE\n');
+
+  await ensureProjectConventionsMd('idempotent');
+  const first = await fs.readFile(target, 'utf8');
+  await ensureProjectConventionsMd('idempotent');
+  await ensureProjectConventionsMd('idempotent');
+  const third = await fs.readFile(target, 'utf8');
+
+  assert.equal(third, first, 'Nth regeneration is byte-identical to the 1st');
+  assert.equal(third.split('Omitted —').length - 1, 1, 'the note never accumulates');
+});
+
+test('the note disappears and the real text returns byte-identically once the slug resolves again', async () => {
+  await addCustomConvention({ slug: 'house-style', name: 'House style', description: 'x', body: '## House style\n- v1 rule' });
+  const clean = await composeProjectConventionsDoc(['house-style', 'design-guidelines']);
+  await createProject('recovers', { conventionsDoc: clean });
+  const target = conventionsPath('recovers');
+
+  await deleteCustomConvention('house-style');
+  const res1 = await ensureProjectConventionsMd('recovers');
+  assert.equal(res1.regenerated, true);
+  const midway = await fs.readFile(target, 'utf8');
+  assert.match(midway, /Omitted —/);
+  assert.doesNotMatch(midway, /House style/);
+
+  await addCustomConvention({ slug: 'house-style', name: 'House style', description: 'x', body: '## House style\n- v1 rule' });
+  const res2 = await ensureProjectConventionsMd('recovers');
+  assert.deepEqual(res2.missing, []);
+  assert.equal(await fs.readFile(target, 'utf8'), clean, 'restored file is byte-identical to the never-broken original');
+});
+
+test('a marker whose only survivor is a scaffold-only (body-less) plugin convention still freezes', async () => {
+  setPluginConventionsProvider(async () => [
+    { slug: 'plug/scaffold-only', name: 'Scaffold only', description: 'x', body: '', scaffold: 'do a thing', plugin: 'plug' },
+  ]);
+  try {
+    await createProject('scaffold-frozen');
+    const target = conventionsPath('scaffold-frozen');
+    const committed = '<!-- cc:conventions plug/scaffold-only,ghost-slug -->\n\n## Real body\n- keep me\n';
+    await fs.writeFile(target, committed);
+
+    const res = await ensureProjectConventionsMd('scaffold-frozen');
+    assert.equal(res.skipped, 'unresolvable');
+    assert.deepEqual(res.missing, ['ghost-slug']);
+    assert.equal(await fs.readFile(target, 'utf8'), committed, 'never trade committed text for a bare note');
+  } finally {
+    setPluginConventionsProvider(null);
+  }
+});
+
+test('a dropped slug does not reorder the surviving conventions; the note stays above the bodies', async () => {
+  await createProject('order-check');
+  const target = conventionsPath('order-check');
+  await fs.writeFile(target, '<!-- cc:conventions documentation-guidelines,ghost-slug,design-guidelines -->\n\nSTALE\n');
+
+  await ensureProjectConventionsMd('order-check');
+  const content = await fs.readFile(target, 'utf8');
+  const noteIdx = content.indexOf('Omitted —');
+  const docIdx = content.indexOf('## Documentation guidelines');
+  const designIdx = content.indexOf('## Design guidelines');
+  assert.ok(noteIdx >= 0 && noteIdx < docIdx && noteIdx < designIdx, 'note sits above both bodies');
+  assert.ok(docIdx < designIdx, 'marker order preserved, not catalog order');
+});
+
+test('multiple unresolvable slugs are listed in marker order, not sorted', async () => {
+  await createProject('multi-missing');
+  const target = conventionsPath('multi-missing');
+  await fs.writeFile(target, '<!-- cc:conventions ghost-b,design-guidelines,ghost-a -->\n\nSTALE\n');
+
+  const res = await ensureProjectConventionsMd('multi-missing');
+  assert.deepEqual(res.missing, ['ghost-b', 'ghost-a']);
+  const content = await fs.readFile(target, 'utf8');
+  assert.ok(content.includes('`ghost-b`, `ghost-a`'), 'note lists slugs in marker order, comma-joined');
+});
+
+test('deleting a custom convention through the HTTP fan-out leaves a note and keeps the rest resolvable', async () => {
+  await addCustomConvention({ slug: 'doomed2', name: 'Doomed2', description: 'x', body: '## Doomed2\n- committed body' });
+  const created = await api(baseUrl, 'POST', '/api/projects', { name: 'mixed-refholder', conventions: ['doomed2', 'design-guidelines'] });
+  assert.equal(created.status, 201);
+  const target = conventionsPath('mixed-refholder');
+
+  const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/project/doomed2');
+  assert.equal(del.status, 200);
+
+  const content = await fs.readFile(target, 'utf8');
+  assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions doomed2,design-guidelines -->');
+  assert.match(content, /Omitted — not available in this cc instance: `doomed2`/);
+  assert.match(content, /## Design guidelines/);
+
+  // The fan-out path is idempotent, not just the direct call.
+  await regenerateAllProjectConventions();
+  assert.equal(await fs.readFile(target, 'utf8'), content);
 });
