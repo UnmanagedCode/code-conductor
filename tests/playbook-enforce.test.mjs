@@ -1137,3 +1137,132 @@ test('enforce: a stage may deny a renewal REQUEST, while the conductor\'s own ba
     assert.equal(self.ok, true, `a worker renewing itself is never governed: ${JSON.stringify(self)}`);
   } finally { await t.close(); }
 });
+
+// ── the forward SOURCE, end to end ─────────────────────────────────────────
+//
+// `send_prompt({forward:{sessionId}})` names a SECOND worker, and the gate checks
+// it against its own stage's policy for `get_recent_messages` — the read a
+// forward performs. No built-in denies that read, so these cases need a
+// hand-authored overlay definition, the documented way to add one.
+//
+// The source's ring is populated with `inst._emitUi(...)` the way
+// tests/mcp-forward.test.mjs does: a real driven turn would leave the default
+// selection empty and the call would soft-refuse NOTHING_TO_FORWARD before the
+// gate's verdict ever mattered.
+const FWD_GUARD = {
+  id: 'fwdguard',
+  name: 'Forward guard',
+  description: 'One stage whose worker may not be read out of.',
+  entryStages: ['reader', 'vault', 'mute'],
+  stages: {
+    reader: {
+      description: 'An ordinary worker: anything may be done to it.',
+      workers: 'many',
+      tools: { spawn_instance: 'allow' },
+    },
+    vault: {
+      description: 'A worker whose output may not be read out — by get_recent_messages or by a forward.',
+      workers: 'many',
+      tools: { spawn_instance: 'allow', get_recent_messages: 'deny' },
+    },
+    mute: {
+      description: 'A worker that may not be prompted at all.',
+      workers: 'many',
+      tools: { spawn_instance: 'allow', send_prompt: 'deny' },
+    },
+  },
+  transitions: [],
+};
+
+async function fwdGuardPair(t, targetStage) {
+  await t.writeUserPlaybook('fwdguard', FWD_GUARD);
+  const spawn = stage => t.spawnWorker({
+    project: 'demo', playbook: 'fwdguard', stage, mode: 'bypassPermissions', createWorktree: false,
+  });
+  const source = await spawn('vault');
+  const target = await spawn(targetStage);
+  assert.ok(source.sessionId && target.sessionId,
+    `both spawns must be bound: ${JSON.stringify({ source, target })}`);
+  // A real forwardable selection, so nothing soft-refuses ahead of the gate.
+  instForSession(t.instances, source.sessionId)._emitUi({
+    kind: 'text_delta', msgId: 'm-fwd', blockIdx: 0, text: 'Findings: FWD_GUARD_NONCE',
+  });
+  return { source: source.sessionId, target: target.sessionId };
+}
+
+test('warn: a denied forward SOURCE is recorded and warned, naming BOTH workers, and the call proceeds', async () => {
+  const t = await setup({ enforcement: 'warn' });
+  let c = null;
+  try {
+    const { source, target } = await fwdGuardPair(t, 'reader');
+    c = await watchConductor(t);
+    const res = await t.call('send_prompt', {
+      sessionId: target, text: 'act on this', stage: 'reader', forward: { sessionId: source }, subscribe: false,
+    });
+    assert.equal(res.ok, undefined, `warn lets the forward through: ${JSON.stringify(res)}`);
+    assert.equal(res.forwarded, 1, 'and it really forwarded the source\'s output');
+
+    const refusals = await waitFor(async () => {
+      const evs = (await t.events()).filter(e => e.kind === 'refusal');
+      return evs.length > 0 ? evs : false;
+    });
+    assert.equal(refusals.length, 1, 'exactly one refusal row');
+    assert.equal(refusals[0].code, 'FORWARD_DENIED_IN_STAGE');
+    assert.equal(refusals[0].tool, 'send_prompt');
+    assert.equal(refusals[0].sessionId, target, 'the row names the target');
+    assert.equal(refusals[0].forwardSessionId, source, '...and the forward source');
+
+    const m = await c.waitForWarning();
+    assert.equal(m.id, t.conductorId, 'the bubble lands on the conductor that made the call');
+    assert.deepEqual(m.ev.data, {
+      tool: 'send_prompt',
+      code: 'FORWARD_DENIED_IN_STAGE',
+      reason: m.ev.data.reason,
+      sessionId: target,
+      forwardSessionId: source,
+    });
+    assert.equal(m.ev.data.reason, refusals[0].reason, 'the bubble and the row state the same reason');
+    assert.equal(c.warnings().length, 1, 'exactly one bubble per refusal');
+  } finally { if (c) await c.close(); await t.close(); }
+});
+
+test('enforce: a denied forward SOURCE refuses the call as a normal result, with no warning', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  let c = null;
+  try {
+    const { source, target } = await fwdGuardPair(t, 'reader');
+    c = await watchConductor(t);
+    const res = refused(await t.call('send_prompt', {
+      sessionId: target, text: 'act on this', stage: 'reader', forward: { sessionId: source }, subscribe: false,
+    }), 'FORWARD_DENIED_IN_STAGE');
+    assert.match(res.reason, /get_recent_messages/);
+    assert.match(res.reason, new RegExp(source.slice(0, 8)), 'the refusal names the source');
+    // The same call without the forward is fine — the target was never the problem.
+    assert.equal((await t.call('send_prompt', {
+      sessionId: target, text: 'act on this', stage: 'reader', subscribe: false,
+    })).ok, undefined);
+
+    assert.equal((await t.events()).filter(e => e.kind === 'refusal').length, 1);
+    await c.expectNoWarning();
+  } finally { if (c) await c.close(); await t.close(); }
+});
+
+test('enforce: a refusal about the TARGET still records the forward source — one rule, no branch', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    // `mute` denies send_prompt on the target; the source (`vault`) is denied the
+    // read too, and the target's own permission is what answers — but the audit
+    // row records every worker the call named either way.
+    const { source, target } = await fwdGuardPair(t, 'mute');
+    refused(await t.call('send_prompt', {
+      sessionId: target, text: 'act on this', stage: 'mute', forward: { sessionId: source }, subscribe: false,
+    }), 'TOOL_DENIED_IN_STAGE');
+
+    const refusals = (await t.events()).filter(e => e.kind === 'refusal');
+    assert.equal(refusals.length, 1);
+    assert.equal(refusals[0].code, 'TOOL_DENIED_IN_STAGE', 'the target\'s own permission answers first');
+    assert.equal(refusals[0].sessionId, target);
+    assert.equal(refusals[0].forwardSessionId, source,
+      'the source is stamped whenever the call named one, not only on a FORWARD_DENIED_IN_STAGE');
+  } finally { await t.close(); }
+});

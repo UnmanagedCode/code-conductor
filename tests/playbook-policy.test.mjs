@@ -774,3 +774,178 @@ test('every refusal carries the playbook, the stage, and the legal transitions f
   assert.equal(res.legalMoves.stage, 'plan');
   assert.deepEqual(res.legalMoves.transitions, [{ to: 'implement', via: 'approve_plan' }]);
 });
+
+// ── the forward SOURCE is a second policy subject ───────────────────────────
+//
+// `send_prompt({forward:{sessionId}})` READS the source worker's recent output
+// (selectRecentMessages — the same selection get_recent_messages returns), so
+// the source is checked against ITS OWN current stage's policy for
+// `get_recent_messages`. Permission only: no move, no `needs`, no `pin`.
+//
+// No built-in denies that read, so the vocabulary can only be proven on a
+// synthetic playbook — which is what makes this block the difference between the
+// change and a no-op.
+
+const GUARD = pb({
+  id: 'guard', name: 'Guard', description: 'forward-source permission fixture',
+  entryStages: ['open', 'vault', 'quiet', 'guarded'],
+  stages: {
+    open: { tools: { spawn_instance: 'allow' } },
+    vault: { tools: { spawn_instance: 'allow', get_recent_messages: 'deny' } },
+    quiet: { tools: { spawn_instance: 'allow', send_prompt: 'deny' } },
+    guarded: { tools: { spawn_instance: 'allow', '*': 'deny' } },
+    pinned: {
+      tools: { spawn_instance: 'allow', get_recent_messages: { pin: { count: 3 } } },
+      needs: [{ stage: 'open', liveness: 'any' }],
+    },
+    sink: { tools: { spawn_instance: 'allow' }, needs: [{ stage: 'open', liveness: 'any' }] },
+  },
+  transitions: [],
+});
+
+const GUARD_RUN = [
+  { kind: 'spawn', sessionId: 'w-open-0001', playbook: 'guard', stage: 'open' },
+  { kind: 'spawn', sessionId: 'w-vault-001', playbook: 'guard', stage: 'vault' },
+  { kind: 'spawn', sessionId: 'w-quiet-001', playbook: 'guard', stage: 'quiet' },
+  { kind: 'spawn', sessionId: 'w-guarded-1', playbook: 'guard', stage: 'guarded' },
+  { kind: 'spawn', sessionId: 'w-pinned-01', playbook: 'guard', stage: 'pinned',
+    provenance: { open: 'w-open-0001' } },
+  { kind: 'spawn', sessionId: 'w-sink-0001', playbook: 'guard', stage: 'sink',
+    provenance: { open: 'w-open-0001' } },
+];
+
+// A send to the `sink` worker (whose own stage permits everything), forwarding
+// from `source` — so every refusal in this block is about the SOURCE unless the
+// case deliberately changes the target.
+function fwd(target, source, events = GUARD_RUN) {
+  return decide({
+    toolName: 'send_prompt',
+    args: { sessionId: target, text: 'go', stage: 'sink', ...(source !== undefined && { forward: source }) },
+    projection: proj(events),
+    playbooks: pbs(GUARD),
+  });
+}
+
+test('a forward from a stage that DENIES get_recent_messages is refused', () => {
+  const res = refusal(fwd('w-sink-0001', { sessionId: 'w-vault-001' }), 'FORWARD_DENIED_IN_STAGE');
+  assert.match(res.reason, /w-vault-/, 'the refusal names the SOURCE, not just the target');
+  assert.match(res.reason, /vault/);
+  assert.match(res.reason, /get_recent_messages/);
+  assert.match(res.reason, /Drop `forward`/, 'and both ways out');
+});
+
+test('a forward from a stage that permits the read is allowed — the check is per-source, not blanket', () => {
+  allowed(fwd('w-sink-0001', { sessionId: 'w-open-0001' }));
+});
+
+test('a source denial is a DIFFERENT refusal from a target denial', () => {
+  // Target `quiet` denies send_prompt on itself; its source is unimpeachable.
+  const target = refusal(fwd('w-quiet-001', { sessionId: 'w-open-0001' }), 'TOOL_DENIED_IN_STAGE');
+  assert.ok(!target.reason.includes('w-open-0'), 'a target denial names no source');
+  const source = refusal(fwd('w-sink-0001', { sessionId: 'w-vault-001' }), 'FORWARD_DENIED_IN_STAGE');
+  assert.match(source.reason, /w-vault-/);
+});
+
+test('ORDERING: a TRACKED target\'s own permission answers first, even with a denied source', () => {
+  // "You may not call send_prompt on this worker at all" subsumes any
+  // argument-level objection, and reporting it first costs one round-trip.
+  refusal(fwd('w-quiet-001', { sessionId: 'w-vault-001' }), 'TOOL_DENIED_IN_STAGE');
+});
+
+test('ORDERING: an UNTRACKED target does not exempt the source — the hole\'s sharpest form', () => {
+  const res = refusal(fwd('w-nobody-tgt', { sessionId: 'w-vault-001' }), 'FORWARD_DENIED_IN_STAGE');
+  assert.deepEqual(res.legalMoves, { playbook: null, stage: null, transitions: [] },
+    'a stageless target refuses with the shape decideSpawn already uses');
+});
+
+test('an UNTRACKED source is ungoverned, mirroring the untracked-target rule', () => {
+  allowed(fwd('w-sink-0001', { sessionId: 'w-nobody' }));
+});
+
+test('a malformed `forward` is the HANDLER\'s refusal — policy mints no argument check', () => {
+  allowed(fwd('w-sink-0001', {}));
+  allowed(fwd('w-sink-0001', { sessionId: 123 }));
+  allowed(fwd('w-sink-0001', { sessionId: '' }));
+  allowed(fwd('w-sink-0001', undefined));
+});
+
+test('definition drift on the SOURCE passes — an unresolvable stage lands where an unauthored one does', () => {
+  const drifted = [
+    ...GUARD_RUN,
+    { kind: 'spawn', sessionId: 'w-ghost-001', playbook: 'deleted-pb', stage: 'gone' },
+    { kind: 'spawn', sessionId: 'w-ghost-002', playbook: 'guard', stage: 'gone' },
+  ];
+  allowed(fwd('w-sink-0001', { sessionId: 'w-ghost-001' }, drifted));
+  allowed(fwd('w-sink-0001', { sessionId: 'w-ghost-002' }, drifted));
+});
+
+test('a `pin` on the source\'s get_recent_messages is not a denial — only the deny/allow axis is read', () => {
+  const res = allowed(fwd('w-sink-0001', { sessionId: 'w-pinned-01' }));
+  assert.equal('count' in res.patchedArgs, false,
+    "the source's pin must not be applied to the send_prompt call's arguments");
+});
+
+test('a "*": "deny" wildcard denies the forwarded read too', () => {
+  refusal(fwd('w-sink-0001', { sessionId: 'w-guarded-1' }), 'FORWARD_DENIED_IN_STAGE');
+});
+
+// ── relay's own forwards must stay legal (the hard constraint) ──────────────
+//
+// relay's `implement` and `review` stage descriptions both instruct a
+// send_prompt({forward}) from the live planner. If this check ever refuses one of
+// those, the shipped playbook is broken by its own gate.
+
+const RELAY_RUN = [
+  { kind: 'spawn', sessionId: 'w-rplan-001', playbook: 'relay', stage: 'plan', project: 'demo' },
+  { kind: 'spawn', sessionId: 'w-rimpl-001', playbook: 'relay', stage: 'implement',
+    provenance: { plan: 'w-rplan-001' }, project: 'demo' },
+  { kind: 'spawn', sessionId: 'w-rrev-0001', playbook: 'relay', stage: 'review',
+    provenance: { implement: 'w-rimpl-001' }, project: 'demo' },
+];
+
+test('relay: forwarding the planner\'s output into the implementer is legal', () => {
+  allowed(d('send_prompt',
+    { sessionId: 'w-rimpl-001', text: 'implement this', stage: 'implement', forward: { sessionId: 'w-rplan-001' } },
+    RELAY_RUN));
+});
+
+test('relay: forwarding the same plan into a reviewer is legal', () => {
+  allowed(d('send_prompt',
+    { sessionId: 'w-rrev-0001', text: 'review against this', stage: 'review', forward: { sessionId: 'w-rplan-001' } },
+    RELAY_RUN));
+});
+
+test('solo and freeform forwards are legal too — no built-in\'s `tools` map needs to change', () => {
+  // solo: the reviewer's findings back into the implementer.
+  allowed(d('send_prompt',
+    { sessionId: 'w-planner-1', text: 'fix these', stage: 'implement', forward: { sessionId: 'w-review-01' } },
+    SOLO_RUN));
+  // freeform: one investigator's dump into another. Each freeform worker is its
+  // own run root (the stage declares no `needs`), which is precisely the fan-out
+  // a run-membership rule would have refused.
+  const FREE = [
+    { kind: 'spawn', sessionId: 'w-free-0001', playbook: 'freeform', stage: 'freeform' },
+    { kind: 'spawn', sessionId: 'w-free-0002', playbook: 'freeform', stage: 'freeform' },
+  ];
+  allowed(d('send_prompt',
+    { sessionId: 'w-free-0002', text: 'synthesise', stage: 'freeform', forward: { sessionId: 'w-free-0001' } },
+    FREE));
+});
+
+test('cross-run forwarding is LEGAL, deliberately', () => {
+  // A DOCUMENTED LIMITATION, not a bug: "a forward source is checked for
+  // permission, never for run membership" (docs/protocol.md → Playbooks → Known
+  // limitations). A same-run rule would refuse freeform's fan-out-and-synthesise
+  // pattern outright, recoverable only by declaring `provenance` at spawn time
+  // and never retroactively. Do not "fix" this test.
+  const twoRuns = [
+    ...RELAY_RUN,
+    { kind: 'spawn', sessionId: 'w-rplan-002', playbook: 'relay', stage: 'plan', project: 'demo' },
+    { kind: 'spawn', sessionId: 'w-rimpl-002', playbook: 'relay', stage: 'implement',
+      provenance: { plan: 'w-rplan-002' }, project: 'demo' },
+  ];
+  allowed(d('send_prompt',
+    { sessionId: 'w-rimpl-002', text: 'run B, plan from run A', stage: 'implement',
+      forward: { sessionId: 'w-rplan-001' } },
+    twoRuns));
+});

@@ -62,7 +62,11 @@ export type LedgerEvent =
   // provenance emptied), which for a mid-run worker would erase the history
   // every downstream `needs` is answered from. A resume un-retires in place.
   | { seq: number; ts: string; kind: 'resume'; sessionId: string }
-  | { seq: number; ts: string; kind: 'refusal'; sessionId?: string; tool: string; code: string; reason: string }
+  // `forwardSessionId` is send_prompt's SECOND subject (the forward source),
+  // recorded whenever the call named a resolvable one — the audit trail records
+  // every worker the call named, and `code` already says which side was refused.
+  | { seq: number; ts: string; kind: 'refusal'; sessionId?: string; forwardSessionId?: string;
+      tool: string; code: string; reason: string }
   // `from: null` is a BIRTH — the conductor was created at this level and was
   // never in any prior one, so naming the other level would assert a past it
   // never had. Distinct from a change, and deliberately an explicit null rather
