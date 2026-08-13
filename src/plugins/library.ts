@@ -121,19 +121,24 @@ type RestartOutcome = { ids: string[]; ok: boolean; error: string | null } | { s
 
 // Only a RUNNING child holds stale code; a stopped backend starts lazily on
 // first use and picks the pull up by itself, so update never starts one.
-// Never throws — a restart failure is soft, exactly like a failed postPull:
-// the pull already landed on disk.
-async function restartRunning(host: PluginHostLike, projectName: string, onChunk: (s: string) => void)
-  : Promise<RestartOutcome | null> {
-  let running: string[];
+// Split from the restart loop below so update() can decide whether a failed
+// postPull should SKIP the restart (vs. report "nothing was running") from
+// the same eligible set the restart loop would use — the skip claim ("your
+// backend was left running the old code") is only true when this is non-empty.
+async function resolveRunningIds(host: PluginHostLike, projectName: string): Promise<{ ids: string[] } | { error: string }> {
   try {
-    running = (await host.list())
+    const ids = (await host.list())
       .filter(r => r.project === projectName && typeof r.id === 'string' && (r.state === 'ready' || r.state === 'starting'))
       .map(r => r.id as string);
-  } catch (e) { return { ids: [], ok: false, error: errMsg(e) }; }
-  if (running.length === 0) return null;
+    return { ids };
+  } catch (e) { return { error: errMsg(e) }; }
+}
+
+// Never throws — a restart failure is soft, exactly like a failed postPull:
+// the pull already landed on disk.
+async function restartIds(host: PluginHostLike, ids: string[], onChunk: (s: string) => void): Promise<RestartOutcome> {
   const done: string[] = [];
-  for (const id of running) {
+  for (const id of ids) {
     try { await host.restart(id); done.push(id); onChunk(`\n[restarted ${id}]\n`); }
     catch (e) { return { ids: done, ok: false, error: `${id}: ${errMsg(e)}` }; }
   }
@@ -370,17 +375,28 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     if (pluginHost) await pluginHost.rescan();
 
     const postPull = await runHook(entry.postPull, target, (text) => onChunk?.('hook', text));
-    // A postPull that ran and failed leaves the checkout half-built (broken
-    // deps, an incomplete migration) — restarting into that trades a healthy
-    // child serving old code for one that crash-loops serving no code at all.
-    // Skip the restart entirely rather than attempt-and-fail; the running
-    // backend is left exactly as it was before the update.
-    let restarted: RestartOutcome | null;
-    if (postPull && postPull.ran && !postPull.ok) {
-      restarted = { skipped: 'postPull-failed' };
-      onChunk?.('restart', '\n[skipped restart: post-update command failed]\n');
-    } else {
-      restarted = pluginHost ? await restartRunning(pluginHost, name, (t) => onChunk?.('restart', t)) : null;
+    // Resolve the eligible-to-restart set FIRST, before looking at postPull —
+    // "nothing was running" must report the same `null` regardless of postPull,
+    // and a skip claim ("your backend was left on the old code") is only true
+    // when a backend was actually found running.
+    let restarted: RestartOutcome | null = null;
+    if (pluginHost) {
+      const running = await resolveRunningIds(pluginHost, name);
+      if ('error' in running) {
+        restarted = { ids: [], ok: false, error: running.error };
+      } else if (running.ids.length === 0) {
+        restarted = null;
+      } else if (postPull && !postPull.ok) {
+        // A postPull that ran and failed leaves the checkout half-built
+        // (broken deps, an incomplete migration) — restarting into that
+        // trades a healthy child serving old code for one that crash-loops
+        // serving no code at all. Skip the restart entirely rather than
+        // attempt-and-fail; the running backend is left exactly as it was.
+        restarted = { skipped: 'postPull-failed' };
+        onChunk?.('restart', '\n[skipped restart: post-update command failed]\n');
+      } else {
+        restarted = await restartIds(pluginHost, running.ids, (t) => onChunk?.('restart', t));
+      }
     }
     return { id, name, project: name, path: target, postPull, restarted };
   }

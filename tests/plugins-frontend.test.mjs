@@ -484,6 +484,9 @@ test('pluginManager: update succeeds but a failed postPull is surfaced as a warn
   assert.match(dom.libStatus.textContent, /post-update command failed/);
   assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
   assert.match(dom.tailPre.textContent, /npm ERR! boom again/);
+  // restarted is null here (nothing was running) — must read exactly like
+  // the plain hook-failure case, never claim a backend was left on old code.
+  assert.doesNotMatch(dom.libStatus.textContent, /left running the old code/i);
 });
 
 test('pluginManager: update succeeds but a failed auto-restart is surfaced as a warning, not an update failure', async () => {

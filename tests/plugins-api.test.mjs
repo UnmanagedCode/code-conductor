@@ -663,6 +663,43 @@ test('library update skips auto-restart (not attempted, not failed) when postPul
   }
 });
 
+test('library update reports null (not a skip) when postPull fails and the plugin was never running', async () => {
+  const boot = await bootServer();
+  let scaffold;
+  try {
+    scaffold = await seedLibraryGitProject({
+      projectsRoot: boot.projectsRoot, projectName: 'fake-lib4', withFixtureBackend: true,
+      manifestExtra: { backend: { start: 'node server.mjs', healthPath: '/health' } },
+      libraryExtra: { postPull: 'exit 1' }, // a broken postPull — half-built tree
+    });
+
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-lib4/enable'); // never started
+
+    await fs.writeFile(path.join(scaffold.seedDir, 'extra.txt'), 'v2');
+    await git(scaffold.seedDir, 'add', '-A');
+    await git(scaffold.seedDir, 'commit', '-q', '-m', 'v2');
+    await git(scaffold.seedDir, 'push', '-q', 'origin', 'main');
+
+    const r = await api(boot.baseUrl, 'POST', '/api/plugins/library/fake-lib4/update');
+    assert.equal(r.status, 200);
+    const result = parseNdjson(r.body).find(l => l.type === 'result');
+    assert.ok(result);
+    assert.equal(result.ok, true);
+    assert.equal(result.result.postPull.ok, false, 'sanity: the postPull hook actually failed');
+    // Nothing was running, so this must read exactly like the plain
+    // nothing-was-running case — never the skip shape (that claim would be a lie
+    // here: there is no backend "left running the old code").
+    assert.equal(result.result.restarted, null);
+
+    const status = await api(boot.baseUrl, 'GET', '/api/plugins/fake-lib4/status');
+    assert.equal(status.body.state, 'stopped');
+    assert.equal(status.body.pid, null);
+  } finally {
+    await boot.close();
+    if (scaffold) { await fs.rm(scaffold.remoteDir, { recursive: true, force: true }); await fs.rm(scaffold.seedDir, { recursive: true, force: true }); }
+  }
+});
+
 // The four tests below each drive a plugin REST route directly and assert on
 // the on-disk CONVENTIONS.md of a project that SELECTED the plugin's
 // convention — the actual user-visible artefact — rather than the live
