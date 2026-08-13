@@ -561,6 +561,33 @@ test('update(): a running plugin backend gets restarted; a restart failure is so
   }
 });
 
+test('update(): a host.list() failure is surfaced as a restart failure, never swallowed as "nothing was running"', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addProject('code-x');
+    await dropLibraryEntry('code-x.json', { id: 'code-x', name: 'Code X', repo: 'https://example.com/org/code-x' });
+    const stubHost = {
+      rescan: async () => {},
+      list: async () => { throw new Error('boom list'); },
+      restart: async () => {},
+    };
+    const lib = createPluginLibrary({
+      pluginHost: stubHost,
+      _pullImpl: async () => ({ code: 0, stdout: '', stderr: '' }),
+    });
+
+    const result = await lib.update('code-x'); // must resolve, not reject
+    // Distinct from the plain "nothing was running" null: the caller cannot
+    // tell whether a backend was up without a working list() call, so a
+    // list() failure must surface as its own {ok:false} shape, not collapse
+    // into null.
+    assert.notEqual(result.restarted, null);
+    assert.deepEqual(result.restarted, { ids: [], ok: false, error: 'boom list' });
+  } finally {
+    await env.restore();
+  }
+});
+
 test('update(): a backend still in \'starting\' is restarted too, not just \'ready\'', async () => {
   const env = await makePluginRoot();
   try {
