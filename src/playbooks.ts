@@ -631,7 +631,7 @@ export async function loadPlaybooks(): Promise<LoadResult> {
 export type RefusalCode =
   | 'PLAYBOOK_UNKNOWN' | 'STAGE_UNKNOWN' | 'STAGE_NOT_SPAWNABLE' | 'TRANSITION_ILLEGAL'
   | 'NEEDS_UNSATISFIED' | 'NEEDS_WORKER_GONE' | 'ARG_PIN_CONFLICT' | 'TOOL_DENIED_IN_STAGE' | 'STAGE_AT_CAPACITY'
-  | 'PLAYBOOK_MISMATCH';
+  | 'PLAYBOOK_MISMATCH' | 'FORWARD_DENIED_IN_STAGE';
 
 export interface LegalMoves {
   playbook: string | null;
@@ -955,9 +955,20 @@ function decideTargeted(
 ): Decision {
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
   const subject = sessionId ? projection.bySession.get(sessionId) : undefined;
+
+  // ONE EVALUATION, TWO CONSUMPTION POINTS. The forward source is a second
+  // subject of this call (see checkForwardSource), and the ordering is
+  // load-bearing in both directions:
+  //   • The TARGET's own permission wins when the target is tracked — "you may
+  //     not call send_prompt on this worker at all" subsumes any argument-level
+  //     objection, and reporting it first costs one round-trip instead of two.
+  //   • The source check still fires when the target is UNTRACKED, which is why
+  //     it cannot live inside the tracked-subject branch below.
+  const forwardRefusal = checkForwardSource({ args, projection, playbooks, subject });
+
   // Not a playbook-tracked worker (not conducted at all, or spawned before this
   // process began tracking the run) — ungoverned, nothing to check.
-  if (!subject) return { ok: true, patchedArgs: args, move: { kind: 'none' } };
+  if (!subject) return forwardRefusal ?? { ok: true, patchedArgs: args, move: { kind: 'none' } };
 
   const playbook = playbooks.get(subject.playbook);
   if (!playbook) {
@@ -987,6 +998,7 @@ function decideTargeted(
       `${toolName} is denied for a worker in stage '${subject.stage}' of playbook '${playbook.id}'.`,
       legalMovesFrom(playbook, subject.stage));
   }
+  if (forwardRefusal) return forwardRefusal;
 
   const moved = resolveMove({ toolName, args, playbook, currentStage: subject.stage });
   if (moved.illegal) {
@@ -1114,6 +1126,54 @@ function checkNeeds(
     }
   }
   return null;
+}
+
+// The FORWARD SOURCE — send_prompt's second subject. A forward READS that
+// worker's recent output (selectRecentMessages, src/mcp/handlers.ts), so the
+// source is checked for `get_recent_messages` against ITS OWN current stage.
+// PERMISSION ONLY: `stage`/`provenance` on this call belong to the TARGET, so
+// running the target's move against the source would refuse relay's own
+// implement<-plan forward as a TRANSITION_ILLEGAL plan -> refine.
+//
+// Only the deny/allow axis is read. A `pin` names argument values of a CALL,
+// and a forward makes no get_recent_messages call to constrain.
+//
+// Run membership is deliberately NOT checked — see protocol.md's known
+// limitations. freeform declares no `needs`, so its workers are each their own
+// run root and a same-run rule would refuse the fan-out that stage invites.
+//
+// `legalMoves` is the TARGET's: it answers "where can the worker you are
+// driving go", and edges out of the source's stage are noise.
+function checkForwardSource(
+  { args, projection, playbooks, subject }:
+  { args: Record<string, unknown>; projection: Projection; playbooks: Map<string, Playbook>;
+    subject: WorkerState | undefined },
+): Decision | null {
+  // Malformed `forward` is the handler's case (FORWARD_SESSION_UNKNOWN); policy
+  // does not duplicate an argument check.
+  const forward = asRecord(args.forward);
+  const sourceId = typeof forward.sessionId === 'string' ? forward.sessionId : '';
+  if (!sourceId) return null;
+
+  // Not playbook-tracked ⇒ ungoverned, the same rule an untracked TARGET gets.
+  const source = projection.bySession.get(sourceId);
+  if (!source) return null;
+
+  // Definition drift on the source passes: resolvePolicy defaults to `allow`, so
+  // an unresolvable stage lands where an unauthored one does, and the source's
+  // own next call already reports the drift with its existing codes.
+  const sourcePlaybook = playbooks.get(source.playbook);
+  const sourceStage = sourcePlaybook?.stages[source.stage];
+  if (!sourceStage) return null;
+
+  if (resolvePolicy(sourceStage, 'get_recent_messages') !== 'deny') return null;
+
+  const targetPlaybook = subject ? playbooks.get(subject.playbook) ?? null : null;
+  return refuse('FORWARD_DENIED_IN_STAGE',
+    `forward names worker ${short(sourceId)} as the source, but get_recent_messages is denied for a worker in ` +
+    `stage '${source.stage}' of playbook '${source.playbook}' — a forward READS that worker's recent output, so ` +
+    'the source needs that permission. Drop `forward`, or forward from a worker whose stage permits the read.',
+    legalMovesFrom(targetPlaybook, subject?.stage ?? null));
 }
 
 // `pin` — ARGUMENT VALUES (not worker provenance; that is `needs`). Omitted

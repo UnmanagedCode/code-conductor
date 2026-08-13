@@ -232,7 +232,7 @@ export function createPlaybookGate(
       // anyway, and the ledger is the only trace that it should not have.
       await append({
         kind: 'refusal',
-        ...(typeof args.sessionId === 'string' ? { sessionId: args.sessionId } : {}),
+        ...subjects(args),
         tool: name,
         code: decision.code,
         reason: decision.reason,
@@ -252,7 +252,7 @@ export function createPlaybookGate(
             tool: name,
             code: decision.code,
             reason: decision.reason,
-            ...(typeof args.sessionId === 'string' ? { sessionId: args.sessionId } : {}),
+            ...subjects(args),
           },
         });
         return pass;
@@ -376,6 +376,21 @@ export function createPlaybookGate(
 // The caller's `provenance` map, narrowed to the {stage: sessionId} string pairs the
 // ledger stores. Prefix values have already been resolved to full sessionIds at
 // the transport's prefix chokepoint.
+// EVERY WORKER THE CALL NAMED, for the refusal row and the `playbook_warn`
+// bubble alike — one rule, no branch on which side was refused (`code` says
+// that). `forwardSessionId` is send_prompt's forward source, a policy subject in
+// its own right (see checkForwardSource in ../playbooks.ts). Keys are OMITTED
+// rather than set to undefined: the raw `_emitUi` payload is asserted on.
+function subjects(args: Record<string, unknown>): { sessionId?: string; forwardSessionId?: string } {
+  const forward = asRecord(args.forward);
+  return {
+    ...(typeof args.sessionId === 'string' ? { sessionId: args.sessionId } : {}),
+    ...(typeof forward.sessionId === 'string' && forward.sessionId
+      ? { forwardSessionId: forward.sessionId }
+      : {}),
+  };
+}
+
 function suppliedProvenance(v: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (!isRecord(v)) return out;
