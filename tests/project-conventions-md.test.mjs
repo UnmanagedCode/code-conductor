@@ -7,9 +7,10 @@
 // verbatim if they resolve again. The committed file is left untouched (never
 // blanked) whenever writing it would strip real text: a missing file, a
 // non-marker first line, a zero-slug marker, a degraded catalog (can't tell
-// "gone" from "temporarily unreachable"), or a marker where NOTHING resolves
-// to a body — whether because every slug is unresolvable, or because every
-// slug resolves but none of them carries one.
+// "gone" from "temporarily unreachable") holding an unresolvable slug, or a
+// marker where NOTHING resolves to a body — whether because a slug is
+// unresolvable and nothing that does resolve carries a body, or because
+// every slug resolves but none of them carries one.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

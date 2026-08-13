@@ -19,10 +19,10 @@
 // the marker so they recover verbatim if they resolve again. It declines to
 // write, leaving the committed file untouched (never blanks it), in three
 // cases: a marker slug is unresolvable while the catalog is degraded (can't
-// tell "genuinely gone" from "temporarily unreachable" — see getCatalog);
-// every slug is unresolvable; or every slug resolves but none of them carries
-// a body. Projects with no marker (grandfathered, or no conventions selected)
-// are skipped entirely.
+// tell "genuinely gone" from "temporarily unreachable" — see getCatalog); a
+// slug is unresolvable and nothing that does resolve carries a body; or
+// every slug resolves but none of them carries a body. Projects with no
+// marker (grandfathered, or no conventions selected) are skipped entirely.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -87,7 +87,7 @@ export async function composeProjectConventionsDoc(slugs: string[], missing: str
 //   - zero-slug marker          → { skipped: 'empty-marker' }
 //   - a marker slug is unresolvable AND the catalog is degraded (can't tell "gone"
 //     from "temporarily unreachable") → { skipped: 'catalog-degraded', missing }  (never blanks)
-//   - nothing resolves to a body, ≥1 slug unresolvable (catalog NOT degraded) → { skipped: 'unresolvable' }  (never blanks)
+//   - nothing resolves to a body, ≥1 slug unresolvable (catalog NOT degraded) → { skipped: 'unresolvable', missing }  (never blanks)
 //   - every slug resolves, none carries a body         → { skipped: 'no-body' }  (never blanks)
 //   - some slugs unresolvable   → recompose the rest + a note → { regenerated: true, missing }
 //   - all slugs resolve         → recompose + overwrite → { regenerated: true, missing: [] }

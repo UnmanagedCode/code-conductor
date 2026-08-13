@@ -6,7 +6,9 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginHost } from '../src/plugins/registry.ts';
 import { pidAlive } from '../src/plugins/ports.ts';
-import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir } from '../src/projects.ts';
+import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir, createProject } from '../src/projects.ts';
+import { setPluginConventionsProvider } from '../src/projectConventions.ts';
+import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
 import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 
 const run = promisify(execFile);
@@ -438,6 +440,103 @@ test('a transient init failure does not permanently poison the plugin host — t
     const rows = await host.list();
     assert.ok(Array.isArray(rows));
   } finally {
+    await env.restore();
+  }
+});
+
+// The one manifest shape whose cwd resolution can genuinely fail: an
+// activeVersion of type 'worktree' routes resolveCwd() through
+// getWorktree()->listWorktrees()->getProject(entry.project) — a REAL I/O
+// path, unlike 'main' (which is just entry.dir, no I/O, and so can never
+// throw). Deleting the plugin's MAIN checkout after the worktree version is
+// already active — without triggering a fresh rescan in between, so the
+// entry's discoveryState stays the stale 'ok' from before the deletion —
+// makes that getProject() call throw a real, deterministic 404.
+const CWD_FAIL_MANIFEST = {
+  id: 'cwdfail', name: 'CwdFail', version: '1.0.0', pluginApi: 1,
+  conventions: [{ slug: 'vis', name: 'Vis', description: 'x', file: 'conventions/sample.md', scope: 'project' }],
+};
+
+test('conventions(): a resolveCwd failure degrades every scope array, all the way through to a project regeneration outcome', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('aplug', { manifest: CWD_FAIL_MANIFEST });
+    await fabricateWorktree(env, 'aplug', 'wt1', { manifest: CWD_FAIL_MANIFEST });
+
+    const host = createPluginHost();
+    await host.enable('cwdfail');
+    await host.setActiveVersion('cwdfail', { type: 'worktree', name: 'wt1' });
+
+    // Sanity: resolves fine right now — the worktree genuinely exists.
+    const healthy = await host.conventions();
+    assert.ok(healthy.project.some(e => e.slug === 'cwdfail/vis'));
+    assert.ok(!healthy.project.degraded);
+
+    setPluginConventionsProvider(async () => (await host.conventions()).project);
+    const doc = await composeProjectConventionsDoc(['cwdfail/vis', 'design-guidelines']);
+    await createProject('referencer', { conventionsDoc: doc });
+    const target = conventionsTargetPath(path.join(env.root, 'referencer'));
+
+    // Remove the MAIN checkout only (the worktree at a sibling path survives).
+    // No rescan happens between here and the conventions() call below, so
+    // discovery still reports 'cwdfail' as 'ok' from the earlier call —
+    // resolveCwd() itself is what fails now, live.
+    await fs.rm(path.join(env.root, 'aplug'), { recursive: true, force: true });
+
+    const degraded = await host.conventions();
+    assert.equal(degraded.project.some(e => e.slug === 'cwdfail/vis'), false, 'the entry drops out when its cwd cannot be resolved');
+    assert.equal(degraded.project.degraded, true, 'a resolveCwd failure flags the scope array degraded');
+    assert.equal(degraded.conductor.degraded, true, 'every scope array is flagged, including ones with no contributions from this plugin');
+
+    const res = await ensureProjectConventionsMd('referencer');
+    assert.equal(res.skipped, 'catalog-degraded');
+    assert.deepEqual(res.missing, ['cwdfail/vis']);
+    assert.equal(await fs.readFile(target, 'utf8'), doc, 'never blank/rewrite a slug the degraded catalog cannot vouch for');
+  } finally {
+    setPluginConventionsProvider(null);
+    await env.restore();
+  }
+});
+
+test('conventions(): a vanished fragment file does NOT degrade the catalog — the referencing project keeps regenerating', async () => {
+  const env = await makePluginRoot();
+  try {
+    // Manifest validation checks a declared convention's `file` exists AT
+    // DISCOVERY TIME — a manifest declaring a file that never existed is
+    // `invalid` and never even reaches enable(). So "vanished" has to mean
+    // exactly that: present at discovery/enable, deleted afterward, with no
+    // rescan in between (a rescan would re-validate and mark it invalid,
+    // which is a different, already-tested state).
+    const manifest = {
+      id: 'ghostfrag', name: 'GhostFrag', version: '1.0.0', pluginApi: 1,
+      conventions: [{ slug: 'vis', name: 'Vis', description: 'x', file: 'conventions/sample.md', scope: 'project' }],
+    };
+    const dir = await env.addPluginProject('bplug', { manifest });
+    const host = createPluginHost();
+    await host.enable('ghostfrag'); // activeVersion defaults to 'main' — no worktree, no I/O to fail; file exists right now
+
+    await fs.rm(path.join(dir, 'conventions', 'sample.md'));
+
+    const rows = await host.conventions();
+    assert.equal(rows.project.some(e => e.slug === 'ghostfrag/vis'), false, 'a convention whose fragment 404s contributes nothing');
+    assert.ok(!rows.project.degraded, 'a vanished FILE is a different, already-accepted case — it must not be treated as degraded');
+
+    // The slug is already gone from the catalog at this point, so simulate a
+    // project committed BEFORE the fragment vanished (a hand-written stale
+    // marker + body), same fixture pattern as the other never-blanks tests.
+    setPluginConventionsProvider(async () => (await host.conventions()).project);
+    await createProject('referencer2');
+    const target = conventionsTargetPath(path.join(env.root, 'referencer2'));
+    await fs.writeFile(target, '<!-- cc:conventions ghostfrag/vis,design-guidelines -->\n\nSTALE\n');
+
+    const res = await ensureProjectConventionsMd('referencer2');
+    assert.equal(res.regenerated, true, 'a missing fragment FILE must leave the project regenerating, not frozen');
+    assert.deepEqual(res.missing, ['ghostfrag/vis']);
+    const content = await fs.readFile(target, 'utf8');
+    assert.match(content, /## Design guidelines/);
+    assert.doesNotMatch(content, /STALE/);
+  } finally {
+    setPluginConventionsProvider(null);
     await env.restore();
   }
 });

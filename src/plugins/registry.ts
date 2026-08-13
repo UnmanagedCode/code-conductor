@@ -193,7 +193,7 @@ export function createPluginHost(opts: {
   }
 
   // ── init / discovery ────────────────────────────────────────────────
-  // Memoized per projectsRoot() — but NOT on rejection: a caching a rejected
+  // Memoized per projectsRoot() — but NOT on rejection: caching a rejected
   // promise here would mean one transient init failure (e.g. a boot-time
   // EMFILE/EIO inside adoptRunning()) permanently poisons every subsequent
   // plugin-host call for the life of the process, with no retry. The `.catch`
@@ -855,9 +855,14 @@ export function createPluginHost(opts: {
   function setServerPort(p: number | null): void { serverPort = p; }
 
   // Test/shutdown teardown: kill every child this host started or adopted.
+  // No `!initPromise` early return: a FAILED init still clears `initPromise`
+  // to null (see ensureInit) but can leave `runtimeRecords` already loaded
+  // with live backends from a previous process (it's assigned before
+  // rescanInternal()/adoptRunning() run) — "never initialized" is no longer
+  // the only reason `initPromise` can be null. `runtimeRecords` starts `{}`,
+  // so skipping the await when init never ran is just as correct as awaiting it.
   async function stopAll(): Promise<void> {
-    if (!initPromise) return;
-    try { await initPromise; } catch { /* init failure — nothing running */ }
+    try { if (initPromise) await initPromise; } catch { /* init failed; stop whatever was already recorded */ }
     for (const id of Object.keys(runtimeRecords)) {
       try { await stopInternal(id); } catch { /* best-effort */ }
     }
