@@ -754,15 +754,25 @@ export function createPluginHost(opts: {
   // body, scaffold?, plugin:id } — `body` is '' when the convention carries no
   // fragment (scaffold-only); `scaffold` is the resolved directive text, present
   // only when the entry carries a scaffold facet.
-  async function conventions(): Promise<Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>> {
+  // If an entry's cwd fails to resolve, that is transient infra (e.g. a
+  // worktree checkout not yet mounted) rather than "this plugin genuinely
+  // contributes nothing here" — the entry is silently absent from every
+  // scope's list unless a reader checks `.degraded` on the returned array
+  // (see fragmentCatalog.ts's CatalogList); every populated scope is flagged,
+  // since the failure isn't attributable to a single scope. A vanished
+  // fragment/scaffold FILE is a different, already-accepted case (the file is
+  // just gone, not transiently unreachable) and is not treated as degraded —
+  // it is skipped with a warning as before, same as it always has been.
+  async function conventions(): Promise<Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }> & { degraded?: boolean }>> {
     await ensureInit();
     const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>
       = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
+    let degraded = false;
     for (const entry of contributingEntries()) {
       const list = entry.manifest.conventions ?? [];
       if (list.length === 0) continue;
       let cwd: string;
-      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${errMsg(e)}`); continue; }
+      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${errMsg(e)}`); degraded = true; continue; }
       for (const g of list) {
         if (!byScope[g.scope]) continue; // scope not routed yet — skip defensively
         let body = '';
@@ -781,6 +791,7 @@ export function createPluginHost(opts: {
         byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, ...(scaffold !== undefined ? { scaffold } : {}), plugin: entry.id });
       }
     }
+    if (degraded) for (const arr of Object.values(byScope)) Object.assign(arr, { degraded: true });
     return byScope;
   }
 
