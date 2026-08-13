@@ -17,6 +17,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader,
+  seedSessionJsonl,
 } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,10 +32,10 @@ const FRAME_HEADER = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---
 const FRAME_HEADER_TAIL = 'Your own instruction follows the END marker below.';
 const FRAME_FOOTER = '--- END FORWARDED WORKER OUTPUT ---';
 
-let ctx, baseUrl, instances, home;
+let ctx, baseUrl, instances, home, roots;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_WS }); ({ baseUrl, instances } = ctx); });
 after(async () => { await ctx.close(); });
-beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+beforeEach(async () => { roots = await freshProjectsRoot(); ({ home } = roots); });
 afterEach(async () => {
   await instances.shutdown();
   instances._idleSubscribers?.clear();
@@ -474,4 +475,41 @@ test('forward: a successful result keeps today\'s shape plus forwarded — nothi
   }));
   assert.deepEqual(Object.keys(res).sort(), ['forwarded', 'sessionId', 'status', 'subscribed'].sort(),
     'no truncation flag, payload size, or source id — the conductor has no lever for any of them');
+});
+
+// The `allowDisk` split, in one test. 2026-0142 relaxed worker resolution for
+// the two READ-ONLY tools only: selectRecentMessages takes a required
+// `allowDisk` flag, buildRecentMessages passes true and the forward call site
+// passes false. So one fully retired session — a temp worker dropped from byId
+// whose jsonl _archiveTempSession retained — is simultaneously readable and
+// un-forwardable. The existing killed-but-known test above uses a NON-temp
+// worker (still in byId), so it cannot see this.
+test('forward: a fully retired source stays strict-live even though the same session reads from disk', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', temp: true }));
+  const sourceSid = spawn.sessionId;
+  await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
+  const targetSid = await spawnReady('p');
+
+  // The transcript the CLI would have written (the fake engine writes none),
+  // named by the BACKING id — the id that actually names a file on disk.
+  await seedSessionJsonl(roots.claudeProjectsRoot, path.join(roots.projectsRoot, 'p'),
+    instForSession(instances, sourceSid).backingSessionId, [
+      { type: 'user', message: { role: 'user', content: 'review it' } },
+      { type: 'assistant', message: { id: 'm_rv', role: 'assistant', content: [{ type: 'text', text: 'retired reviewer findings' }] } },
+    ]);
+
+  await instForSession(instances, sourceSid).kill({ graceMs: 200 });
+  await waitFor(() => instances.idsForSession(sourceSid).length === 0);
+
+  const refused = unwrap(await callTool('send_prompt', {
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go',
+  }));
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'FORWARD_SESSION_NOT_LIVE', 'forward did NOT inherit the read relaxation');
+  assert.equal(refused.forwardSessionId, sourceSid);
+
+  const read = metaBodies(await callTool('get_recent_messages', { sessionId: sourceSid }));
+  assert.equal(read.meta.source, 'disk', 'the very same session is readable from disk');
+  assert.match(read.bodies[0], /retired reviewer findings/);
 });
