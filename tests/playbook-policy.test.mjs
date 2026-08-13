@@ -39,8 +39,8 @@ test('spawn into an entry stage is allowed and `require` FILLS the omitted argum
 });
 
 // The contrast with solo above is the whole reason relay CAN pin here: its
-// planner is retired at the handoff, so the pin binds one worker rather than a
-// whole run.
+// planner is a DIFFERENT worker from the implementer (no edge out of `plan`),
+// so the pin binds one worker rather than a whole run.
 test('relay\'s plan stage pins the planner role, and refuses a spawn that names another model', () => {
   const res = allowed(d('spawn_instance', { playbook: 'relay', stage: 'plan', project: 'demo' }));
   assert.equal(res.patchedArgs.model, 'planner');
@@ -439,21 +439,41 @@ test('liveness is checked BEFORE position: a worker both gone and moved on repor
 });
 
 test('liveness:"retired" refuses a live worker and names kill_instance; a retired one satisfies it', () => {
-  // relay's `implement` requires the planner to be GONE — the enforced handoff.
-  const live = [{ kind: 'spawn', sessionId: 'w-planner-r1', playbook: 'relay', stage: 'plan' }];
-  const res = refusal(d('spawn_instance',
-    { playbook: 'relay', stage: 'implement', provenance: { plan: 'w-planner-r1' } }, live), 'NEEDS_UNSATISFIED');
+  // Synthetic, because no built-in declares `retired` any more (relay's
+  // implement went to "any" so the plan can be forwarded out of a live
+  // planner). The branch still exists in decide(), so it still needs
+  // behavioural coverage of its own — both halves, so a mutant that deletes
+  // the branch and one that refuses unconditionally each fail.
+  const strictRetired = pb({
+    id: 'gone', name: 'Gone', description: 'The ancestor must be retired.', entryStages: ['root'],
+    stages: {
+      root: { tools: { spawn_instance: 'allow' } },
+      after: {
+        needs: [{ stage: 'root', liveness: 'retired' }],
+        tools: { spawn_instance: 'allow' },
+      },
+    },
+    transitions: [],
+  });
+  const pbsGone = pbs(strictRetired);
+  const live = [{ kind: 'spawn', sessionId: 'w-root-r001', playbook: 'gone', stage: 'root' }];
+  const at = (events) => decide({
+    toolName: 'spawn_instance',
+    args: { playbook: 'gone', stage: 'after', provenance: { root: 'w-root-r001' } },
+    projection: proj(events), playbooks: pbsGone,
+  });
+
+  const res = refusal(at(live), 'NEEDS_UNSATISFIED');
   assert.match(res.reason, /to be RETIRED before this stage is entered, but it is still running/);
   assert.match(res.reason, /kill_instance/);
   // …and the other half, so a mutant that refuses unconditionally also fails.
-  allowed(d('spawn_instance', { playbook: 'relay', stage: 'implement', provenance: { plan: 'w-planner-r1' } },
-    [...live, { kind: 'retire', sessionId: 'w-planner-r1', reason: 'planning done' }]));
+  allowed(at([...live, { kind: 'retire', sessionId: 'w-root-r001', reason: 'work done' }]));
 });
 
-test('the loose values — liveness:"any" and position:["*"] — are what the built-ins never use', () => {
-  // Exercised via a synthetic fixture so neither is dead code: each is the
-  // ABSENCE of a check, which is exactly the kind of branch a mutant deletes
-  // without any built-in noticing.
+test('the loose values — liveness:"any" and position:["*"] — each drop exactly one check', () => {
+  // Exercised via a synthetic fixture so both axes are pinned in one place:
+  // each value is the ABSENCE of a check, which is exactly the kind of branch
+  // a mutant deletes quietly.
   const loose = pb({
     id: 'loose', name: 'Loose', description: 'Both axes wide open.', entryStages: ['root'],
     stages: {
@@ -522,10 +542,6 @@ test('a non-root spawn inherits its playbook; disagreement is PLAYBOOK_MISMATCH'
   const mixed = [
     { kind: 'spawn', sessionId: 'w-cl-0001', playbook: 'solo', stage: 'plan' },
     { kind: 'spawn', sessionId: 'w-sp-0001', playbook: 'relay', stage: 'plan' },
-    // Retired so relay.implement's liveness:"retired" is satisfied — this case
-    // is about playbook inheritance, and an unsatisfied need would refuse first
-    // for an unrelated reason.
-    { kind: 'retire', sessionId: 'w-sp-0001', reason: 'planning done' },
   ];
   // ancestors disagree with each other
   assert.match(refusal(d('spawn_instance',

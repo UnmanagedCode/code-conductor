@@ -689,24 +689,42 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
       'the planner must still be in plan mode — approve_plan never ran');
     assert.equal(foldProjection(await t.events()).bySession.get(planner.sessionId).stage, 'plan');
 
-    // The handoff is ENFORCED, not advised: while the planner is live, the
-    // implementer cannot be spawned onto its worktree at all.
+    // The handoff is a FORWARD, not a kill: the implementer spawns onto the
+    // planner's worktree while the planner is still live, so the plan can be
+    // forwarded out of it (`forward` resolves its source strict-live).
     const handoff = {
       project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName,
       provenance: { plan: planner.sessionId },
     };
-    const early = refused(await t.call('spawn_instance', handoff), 'NEEDS_UNSATISFIED');
-    assert.match(early.reason, /to be RETIRED before this stage is entered/);
-    assert.match(early.reason, /kill_instance/, 'the refusal has to name the way forward');
-
-    // Retire the planner — that IS the handoff — and the same spawn goes through.
-    await t.call('kill_instance', { sessionId: planner.sessionId });
-    await waitFor(async () => (await t.events()).some(e => e.kind === 'retire'));
     const dev = await t.spawnWorker(handoff);
     assert.ok(dev.sessionId);
-    const folded = foldProjection(await t.events());
+    let folded = foldProjection(await t.events());
+    assert.equal(folded.bySession.get(planner.sessionId).live, true,
+      'the planner is still live at the handoff — that is the point of liveness:"any"');
     assert.equal(folded.bySession.get(dev.sessionId).playbook, 'relay', 'playbook inherited via needs');
     assert.notEqual(dev.sessionId, planner.sessionId);
+
+    // …and the other direction, which is what rules `liveness:"live"` out: a
+    // planner that has since died does not brick the stage. A second implement
+    // spawn against the now-retired planner is still allowed. (The first
+    // implementer is retired too — `implement` is workers:"one", and capacity
+    // is a different refusal from the one under test.)
+    await t.call('kill_instance', { sessionId: planner.sessionId });
+    await t.call('kill_instance', { sessionId: dev.sessionId });
+    await waitFor(async () => (await t.events()).filter(e => e.kind === 'retire').length >= 2);
+    const dev2 = await t.spawnWorker(handoff);
+    assert.ok(dev2.sessionId);
+    assert.notEqual(dev2.sessionId, dev.sessionId);
+    folded = foldProjection(await t.events());
+    assert.equal(folded.bySession.get(planner.sessionId).live, false);
+    assert.equal(folded.bySession.get(dev2.sessionId).playbook, 'relay');
+
+    // The provenance floor: `any` dropped the LIVENESS check and nothing else.
+    // Without a named planner the stage is still unenterable.
+    const orphan = refused(await t.call('spawn_instance',
+      { project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName, playbook: 'relay' }),
+      'NEEDS_UNSATISFIED');
+    assert.match(orphan.reason, /plan/);
   } finally { await t.close(); }
 });
 
