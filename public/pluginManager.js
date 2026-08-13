@@ -429,7 +429,13 @@ export function installPluginManager({ onCatalogChange } = {}) {
       await load();
       onCatalogChange?.();
       const warned = reportHookWarning(row.name, 'Updated', 'post-update', result.postPull);
-      if (!warned && result.restarted && !result.restarted.ok) {
+      if (result.restarted?.skipped) {
+        // The failed post-update command already won the status line above
+        // (warned is always true here — skipping is conditioned on that same
+        // failure) — extend it so the user also learns the backend itself
+        // was left alone, not silently restarted into a half-built tree.
+        setStatusEl(libraryStatusEl, `Updated ${row.name}, but its post-update command failed — its backend was left running the old code`, true);
+      } else if (!warned && result.restarted && !result.restarted.ok) {
         setStatusEl(libraryStatusEl, `Updated ${row.name}, but restarting its backend failed: ${result.restarted.error}`, true);
       }
     } catch (e) {

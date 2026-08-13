@@ -525,6 +525,27 @@ test('pluginManager: update — a failed post-update hook wins the status line o
   assert.doesNotMatch(dom.libStatus.textContent, /restart boom/, 'the hook warning wins the single status line');
 });
 
+test('pluginManager: update — a skipped restart (failed postPull) tells the user the backend was left running the old code', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  stubPluginManagerFetch({
+    initiallyInstalled: true,
+    updatePostPull: { ran: true, ok: false, code: 1, tail: 'npm ERR! boom' },
+    updateRestarted: { skipped: 'postPull-failed' },
+  });
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  const mgr = installPluginManager();
+  await mgr.load();
+
+  const updateBtn = [...dom.libList.querySelectorAll('button')].find(b => b.textContent === 'Update');
+  updateBtn.click();
+  await tick();
+
+  assert.match(dom.libStatus.textContent, /post-update command failed/);
+  assert.match(dom.libStatus.textContent, /left running the old code/i);
+  assert.equal(dom.libStatus.classList.contains('pl-status-err'), true);
+});
+
 test('pluginManager: empty library renders the empty-state message', async () => {
   const window = makeWindow();
   const dom = buildPluginManagerDom(window.document);

@@ -513,6 +513,31 @@ test('rescan drops the cached fragment body so an on-disk edit reaches conventio
   }
 });
 
+test('enable drops the cached fragment body so a fragment edited while disabled reaches conventions() on re-enable', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('convp', { manifest: CONTRIB_ONLY });
+    const host = createPluginHost();
+    await host.enable('conv-plugin');
+
+    // Populate the cache while enabled.
+    const before = (await host.conventions()).project.find(e => e.slug === 'conv-plugin/plain-conv');
+    assert.match(before.body, /Visual UX verification/);
+
+    await host.disable('conv-plugin');
+    // Edited while disabled — the plugin contributes nothing right now, so
+    // this must NOT be visible until (and unless) re-enable refreshes it.
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V2 body\n- new text');
+
+    await host.enable('conv-plugin');
+    const after = (await host.conventions()).project.find(e => e.slug === 'conv-plugin/plain-conv');
+    assert.match(after.body, /V2 body/);
+    assert.doesNotMatch(after.body, /Visual UX verification/);
+  } finally {
+    await env.restore();
+  }
+});
+
 test('setActiveVersion drops the cached fragment body even for a backendless (never-started) plugin', async () => {
   const env = await makePluginRoot();
   try {

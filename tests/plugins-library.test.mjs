@@ -561,6 +561,30 @@ test('update(): a running plugin backend gets restarted; a restart failure is so
   }
 });
 
+test('update(): a backend still in \'starting\' is restarted too, not just \'ready\'', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addProject('code-x');
+    await dropLibraryEntry('code-x.json', { id: 'code-x', name: 'Code X', repo: 'https://example.com/org/code-x' });
+    const restartCalls = [];
+    const stubHost = {
+      rescan: async () => {},
+      list: async () => [{ id: 'code-x-backend', project: 'code-x', state: 'starting' }],
+      restart: async (id) => { restartCalls.push(id); },
+    };
+    const lib = createPluginLibrary({
+      pluginHost: stubHost,
+      _pullImpl: async () => ({ code: 0, stdout: '', stderr: '' }),
+    });
+
+    const result = await lib.update('code-x');
+    assert.deepEqual(restartCalls, ['code-x-backend'], 'a \'starting\' backend still holds pre-pull code and must be restarted');
+    assert.deepEqual(result.restarted, { ids: ['code-x-backend'], ok: true, error: null });
+  } finally {
+    await env.restore();
+  }
+});
+
 test('update(): a plugin backend that was never running is left stopped, not started', async () => {
   const env = await makePluginRoot();
   try {

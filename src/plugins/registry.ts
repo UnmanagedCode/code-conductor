@@ -402,6 +402,9 @@ export function createPluginHost(opts: {
       activeVersion: prev?.activeVersion ?? defaultVersion,
     };
     await saveRegistry();
+    // A fragment edited while this plugin was disabled must not keep serving
+    // its pre-edit body now that enable makes it contribute again.
+    invalidateFragmentBodies();
     // Manual re-enable is the recovery path out of `failed`.
     const s = runtimeState(id);
     if (s.status === 'failed' || s.status === 'crashed') { s.status = 'stopped'; s.crashTimes = []; s.backoffUntil = 0; }
@@ -730,8 +733,12 @@ export function createPluginHost(opts: {
 
   // Bodies above are keyed by absolute path and otherwise live for the whole
   // process — a `git pull` into the same checkout leaves the key unchanged.
-  // Every explicit "the checkout on disk moved" event therefore drops the whole
-  // map (a handful of small .md files, repopulated on the next compose).
+  // Every explicit "the checkout on disk moved, or a disabled plugin's
+  // fragments are about to matter again" event therefore drops the whole
+  // map (a handful of small .md files, repopulated on the next compose):
+  // rescanInternal, doStart, setActiveVersion, and enable (a fragment can be
+  // edited while its plugin sits disabled — enable is the user's own
+  // recovery gesture for exactly that).
   function invalidateFragmentBodies(): void { fragmentBodyCache.clear(); }
 
   function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {

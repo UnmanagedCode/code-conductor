@@ -112,12 +112,19 @@ type CloneImpl = (url: string, destDir: string, opts?: { onChunk?: (s: string) =
 type PullImpl = (cwd: string, opts?: { onChunk?: (s: string) => void }) => Promise<GitCommandResult>;
 type RunHookImpl = (command: string, cwd: string, opts?: { timeoutMs?: number; onChunk?: (s: string) => void }) => Promise<{ code: number; output: string }>;
 
+// update()'s restart outcome: either an attempt (ids restarted, ok/error) or
+// a deliberate skip — 'postPull-failed' means a broken postPull left the
+// checkout in a half-built state, so restarting into it would trade a
+// healthy child serving old code for a crash-looping one serving no code at
+// all. A skip is never a failure and carries no ids/ok/error of its own.
+type RestartOutcome = { ids: string[]; ok: boolean; error: string | null } | { skipped: 'postPull-failed' };
+
 // Only a RUNNING child holds stale code; a stopped backend starts lazily on
 // first use and picks the pull up by itself, so update never starts one.
 // Never throws — a restart failure is soft, exactly like a failed postPull:
 // the pull already landed on disk.
 async function restartRunning(host: PluginHostLike, projectName: string, onChunk: (s: string) => void)
-  : Promise<{ ids: string[]; ok: boolean; error: string | null } | null> {
+  : Promise<RestartOutcome | null> {
   let running: string[];
   try {
     running = (await host.list())
@@ -245,7 +252,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
 } = {}): {
   list(): Promise<Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>>;
   install(id: string, opts?: { onChunk?: (phase: 'clone' | 'hook', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postClone: { ran: boolean; ok: boolean; code: number; tail: string } | null }>;
-  update(id: string, opts?: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: { ids: string[]; ok: boolean; error: string | null } | null }>;
+  update(id: string, opts?: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: RestartOutcome | null }>;
 } {
   const clone = _cloneImpl ?? cloneRepo;
   const pull = _pullImpl ?? pullRepo;
@@ -336,7 +343,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     return { id, name, project: name, path: target, postClone };
   }
 
-  async function update(id: string, { onChunk, onValidated }: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void } = {}): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: { ids: string[]; ok: boolean; error: string | null } | null }> {
+  async function update(id: string, { onChunk, onValidated }: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void } = {}): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: RestartOutcome | null }> {
     const entries = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
@@ -363,7 +370,18 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     if (pluginHost) await pluginHost.rescan();
 
     const postPull = await runHook(entry.postPull, target, (text) => onChunk?.('hook', text));
-    const restarted = pluginHost ? await restartRunning(pluginHost, name, (t) => onChunk?.('restart', t)) : null;
+    // A postPull that ran and failed leaves the checkout half-built (broken
+    // deps, an incomplete migration) — restarting into that trades a healthy
+    // child serving old code for one that crash-loops serving no code at all.
+    // Skip the restart entirely rather than attempt-and-fail; the running
+    // backend is left exactly as it was before the update.
+    let restarted: RestartOutcome | null;
+    if (postPull && postPull.ran && !postPull.ok) {
+      restarted = { skipped: 'postPull-failed' };
+      onChunk?.('restart', '\n[skipped restart: post-update command failed]\n');
+    } else {
+      restarted = pluginHost ? await restartRunning(pluginHost, name, (t) => onChunk?.('restart', t)) : null;
+    }
     return { id, name, project: name, path: target, postPull, restarted };
   }
 
