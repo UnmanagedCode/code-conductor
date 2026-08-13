@@ -157,9 +157,8 @@ export function buildTools(): Tool[] {
         'in-memory ring, and when fromSeq points into a range the ring has already evicted (below ' +
         'trimmedBefore) the dropped range is transparently served from the on-disk session transcript — ' +
         'ring eviction is invisible to you. A RETIRED session (no running process) is served wholly from ' +
-        'that transcript instead, reported as source:"disk" with status:"exited" — and since the CLI persists no ' +
-        'stream-only events, such a page contains NO turn_end (nor status/system events): never poll one for a ' +
-        'completion event that cannot arrive. Events carry _seq; poll ' +
+        'that transcript instead, reported as source:"disk" with status:"exited"; such a page contains no ' +
+        'turn_end. Events carry _seq; poll ' +
         'incrementally by passing the returned `nextFrom` back as the next fromSeq (forward paging, ' +
         'oldest-first). Returns {status, sessionId, source, events, lastSeq, trimmedBefore, hasMore, ' +
         'nextFrom}. Event kinds: text_delta, tool_use, ' +
@@ -293,7 +292,7 @@ export function buildTools(): Tool[] {
           },
           forward: {
             type: 'object',
-            description: '{sessionId:"<worker sessionId>"} — inject that worker\'s recent output into this prompt verbatim, server-side: it reaches the worker unedited and never enters your context. The payload is a whole default get_recent_messages selection, framed as context-only — you cannot trim or reorder it. Your `text` is placed LAST, after the forwarded block, as the instruction. The source need not still be live — a retired worker is forwarded from its transcript — but a retired one must be named by its FULL sessionId; prefixes are accepted only for a source still in memory.',
+            description: '{sessionId:"<worker sessionId>"} — inject that worker\'s recent output into this prompt verbatim, server-side: it reaches the worker unedited and never enters your context. The payload is a whole default get_recent_messages selection, framed as context-only — you cannot trim or reorder it. Your `text` is placed LAST, after the forwarded block, as the instruction. The source need not still be live; sessionId prefixes are accepted for a live source only.',
           },
         },
         required: ['sessionId', 'text'],
@@ -885,7 +884,7 @@ export function buildTools(): Tool[] {
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
         'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
         'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
-        'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false} — nothing is held in memory for it. ' +
+        'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
         'textTruncated, hasPlan?, planPath?, questionCount?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
         'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
