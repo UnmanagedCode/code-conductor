@@ -59,6 +59,16 @@ function streamLibraryAction(res: express.Response, next: express.NextFunction, 
   );
 }
 
+// Regenerating project CONVENTIONS.md is plumbing on top of a mutation that
+// already succeeded and is already persisted — it must never turn a successful
+// rescan/enable/disable/restart/version/install/update response into an error.
+// `{ log: console }` surfaces the frozen-project warning (an unresolvable
+// marker slug) in the server log — see docs/plugins.md's known limitations.
+async function refreshProjectConventions(): Promise<void> {
+  try { await regenerateAllProjectConventions({ log: console }); }
+  catch (e) { console.warn('plugins: project CONVENTIONS.md regenerate failed:', e); }
+}
+
 export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: PluginHostApiLike | null; pluginLibrary?: PluginLibraryApiLike | null } = {}): express.Router {
   const r = express.Router();
 
@@ -80,28 +90,43 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
     try { res.json(await lib.list()); } catch (e) { next(e); }
   });
 
-  r.post('/library/:id/install', (req, res, next) => streamLibraryAction(res, next, (onChunk, onValidated) => lib.install(req.params.id, { onChunk, onValidated })));
+  r.post('/library/:id/install', (req, res, next) => streamLibraryAction(res, next, async (onChunk, onValidated) => {
+    const result = await lib.install(req.params.id, { onChunk, onValidated });
+    await refreshProjectConventions();
+    return result;
+  }));
 
-  r.post('/library/:id/update', (req, res, next) => streamLibraryAction(res, next, (onChunk, onValidated) => lib.update(req.params.id, { onChunk, onValidated })));
+  r.post('/library/:id/update', (req, res, next) => streamLibraryAction(res, next, async (onChunk, onValidated) => {
+    const result = await lib.update(req.params.id, { onChunk, onValidated });
+    await refreshProjectConventions();
+    return result;
+  }));
 
   r.get('/', async (req, res, next) => {
     try { res.json(await host.list()); } catch (e) { next(e); }
   });
 
+  // Every mutating route below fans out to refreshProjectConventions() after
+  // the underlying host/library mutation succeeds — rescan/enable/disable/
+  // restart/version/install/update can all change which project conventions
+  // the catalog offers (a plugin contributes conventions via
+  // setPluginConventionsProvider) or which fragment bodies are cached
+  // (rescan/restart/version also drop the registry's fragment-body cache —
+  // see invalidateFragmentBodies in registry.ts). No-op-safe: a disable makes
+  // the plugin's slugs unresolvable ⇒ referencing projects are skipped
+  // (frozen), never blanked; an enable re-resolves them ⇒ refresh.
   r.post('/rescan', async (req, res, next) => {
-    try { res.json(await host.rescan()); } catch (e) { next(e); }
+    try {
+      const result = await host.rescan();
+      await refreshProjectConventions();
+      res.json(result);
+    } catch (e) { next(e); }
   });
 
-  // Enable/disable can change which project conventions the catalog offers
-  // (a plugin contributes conventions via setPluginConventionsProvider), so
-  // fan out to refresh every referencing project's CONVENTIONS.md — exactly as
-  // the project custom-convention CRUD routes do in src/routes.ts. No-op-safe:
-  // a disable makes the plugin's slugs unresolvable ⇒ referencing projects are
-  // skipped (frozen), never blanked; an enable re-resolves them ⇒ refresh.
   r.post('/:id/enable', async (req, res, next) => {
     try {
       const result = await host.enable(req.params.id);
-      await regenerateAllProjectConventions();
+      await refreshProjectConventions();
       res.json(result);
     } catch (e) { next(e); }
   });
@@ -109,7 +134,7 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   r.post('/:id/disable', async (req, res, next) => {
     try {
       const result = await host.disable(req.params.id);
-      await regenerateAllProjectConventions();
+      await refreshProjectConventions();
       res.json(result);
     } catch (e) { next(e); }
   });
@@ -125,7 +150,11 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   // Stop + start the running child in place — the pick-up path for a plugin
   // whose active checkout moved past the sha it was started at.
   r.post('/:id/restart', async (req, res, next) => {
-    try { res.json(await host.restart(req.params.id)); } catch (e) { next(e); }
+    try {
+      const result = await host.restart(req.params.id);
+      await refreshProjectConventions();
+      res.json(result);
+    } catch (e) { next(e); }
   });
 
   // Live probe: also flips a silently-dead child to crashed.
@@ -135,7 +164,11 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
 
   // {type:'main'} | {type:'worktree', name} — restarts the child if running.
   r.post('/:id/version', async (req, res, next) => {
-    try { res.json(await host.setActiveVersion(req.params.id, req.body ?? {})); } catch (e) { next(e); }
+    try {
+      const result = await host.setActiveVersion(req.params.id, req.body ?? {});
+      await refreshProjectConventions();
+      res.json(result);
+    } catch (e) { next(e); }
   });
 
   return r;

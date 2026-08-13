@@ -386,9 +386,10 @@ export function installPluginManager({ onCatalogChange } = {}) {
   // pull itself succeeded, only the convenience command failed. Surfaced
   // AFTER load() so it isn't clobbered by render()'s own status text.
   function reportHookWarning(name, verb, hookLabel, hookResult) {
-    if (!hookResult?.ran || hookResult.ok) return;
+    if (!hookResult?.ran || hookResult.ok) return false;
     setStatusEl(libraryStatusEl, `${verb} ${name}, but its ${hookLabel} command failed`, true);
     showLibraryTail(hookResult.tail);
+    return true;
   }
 
   async function installEntry(row, li, buttonEl) {
@@ -427,7 +428,16 @@ export function installPluginManager({ onCatalogChange } = {}) {
       const result = await streamAction('POST', `/api/plugins/library/${row.id}/update`, (text) => appendLive(livePre, text));
       await load();
       onCatalogChange?.();
-      reportHookWarning(row.name, 'Updated', 'post-update', result.postPull);
+      const warned = reportHookWarning(row.name, 'Updated', 'post-update', result.postPull);
+      if (result.restarted?.skipped) {
+        // The failed post-update command already won the status line above
+        // (warned is always true here — skipping is conditioned on that same
+        // failure) — extend it so the user also learns the backend itself
+        // was left alone, not silently restarted into a half-built tree.
+        setStatusEl(libraryStatusEl, `Updated ${row.name}, but its post-update command failed — its backend was left running the old code`, true);
+      } else if (!warned && result.restarted && !result.restarted.ok) {
+        setStatusEl(libraryStatusEl, `Updated ${row.name}, but restarting its backend failed: ${result.restarted.error}`, true);
+      }
     } catch (e) {
       buttonEl.disabled = false;
       buttonEl.textContent = 'Update';

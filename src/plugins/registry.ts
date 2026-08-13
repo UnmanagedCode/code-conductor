@@ -208,6 +208,7 @@ export function createPluginHost(opts: {
   }
 
   async function rescanInternal(): Promise<void> {
+    invalidateFragmentBodies();
     const projects = await listProjects();
     const found: Array<{ project: string; dir: string; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
     for (const p of projects) {
@@ -401,6 +402,9 @@ export function createPluginHost(opts: {
       activeVersion: prev?.activeVersion ?? defaultVersion,
     };
     await saveRegistry();
+    // A fragment edited while this plugin was disabled must not keep serving
+    // its pre-edit body now that enable makes it contribute again.
+    invalidateFragmentBodies();
     // Manual re-enable is the recovery path out of `failed`.
     const s = runtimeState(id);
     if (s.status === 'failed' || s.status === 'crashed') { s.status = 'stopped'; s.crashTimes = []; s.backoffUntil = 0; }
@@ -424,6 +428,7 @@ export function createPluginHost(opts: {
     const s = runtimeState(id);
     if (s.startPromise) return s.startPromise;
     s.startPromise = (async () => {
+      invalidateFragmentBodies();
       const entry = requireEnabled(id);
       const cwd = await resolveCwd(entry);
       // Re-read the manifest from the active checkout — contributions follow
@@ -668,6 +673,7 @@ export function createPluginHost(opts: {
     }
     persisted.plugins[id].activeVersion = next;
     await saveRegistry();
+    invalidateFragmentBodies();
     const s = runtimeState(id);
     if (s.status === 'ready' || s.status === 'starting') {
       if (s.startPromise) await s.startPromise.catch(() => {});
@@ -725,17 +731,26 @@ export function createPluginHost(opts: {
     return body;
   }
 
+  // Bodies above are keyed by absolute path and otherwise live for the whole
+  // process — a `git pull` into the same checkout leaves the key unchanged.
+  // Every explicit "the checkout on disk moved, or a disabled plugin's
+  // fragments are about to matter again" event therefore drops the whole
+  // map (a handful of small .md files, repopulated on the next compose):
+  // rescanInternal, doStart, setActiveVersion, and enable (a fragment can be
+  // edited while its plugin sits disabled — enable is the user's own
+  // recovery gesture for exactly that).
+  function invalidateFragmentBodies(): void { fragmentBodyCache.clear(); }
+
   function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {
     return [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest } =>
       e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && persisted.plugins[e.id]?.enabled === true);
   }
 
   // Convention entries contributed by enabled plugins, GROUPED BY SCOPE so
-  // each scope routes to its own catalog. Only `project` is wired today (into
-  // the project-conventions catalog via server.ts); the workspace/conductor
-  // groups already exist here (empty until their scope is enabled in
-  // manifest.ts + a provider is wired), so future routing is a localized add,
-  // not a redesign. Each entry: { slug:'<plugin-id>/<slug>', name, description,
+  // each scope routes to its own catalog. `project` and `conductor` are both
+  // wired today (server.ts routes each into its own catalog); `workspace` is
+  // rejected at manifest load (manifest.ts's SUPPORTED_CONVENTION_SCOPES), so
+  // its group here stays empty. Each entry: { slug:'<plugin-id>/<slug>', name, description,
   // body, scaffold?, plugin:id } — `body` is '' when the convention carries no
   // fragment (scaffold-only); `scaffold` is the resolved directive text, present
   // only when the entry carries a scaffold facet.
