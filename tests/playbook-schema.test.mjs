@@ -97,9 +97,13 @@ const RESOLVED_NEEDS = {
   },
   relay: {
     plan: [],
-    // Item F: the planner must be GONE. Strict position is right because
-    // relay.plan is a dead end, so a retired planner still stands in `plan`.
-    implement: [{ stage: 'plan', position: ['plan'], liveness: 'retired' }],
+    // Item F: the planner must have PASSED THROUGH `plan` — provenance only.
+    // Strict position is still right because relay.plan is a dead end, so a
+    // planner stands in `plan` whether it is live or retired. `liveness:"any"`
+    // is deliberate on both sides: the plan must survive to be forwarded into
+    // the implementer, and a planner that dies on its own must not brick the
+    // run by making `implement` permanently unenterable.
+    implement: [{ stage: 'plan', position: ['plan'], liveness: 'any' }],
     review: [{ stage: 'implement', position: ['implement', 'refine'], liveness: 'live' }],
     refine: [{ stage: 'review', position: ['review'], liveness: 'live' }],
   },
