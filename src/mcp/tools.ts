@@ -892,8 +892,9 @@ export function buildTools(): Tool[] {
         'messages[k]\'s body: its prose (if any) plus a "--- plan ---" (or "--- plan · saved to <path> ---") or "--- questions ---" fenced section when the ' +
         'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
-        'recent tool-call-only messages excluded by the default filter (the agent is active even when messages[] is ' +
-        'empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); blocks[].input is ' +
+        'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
+        'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); ' +
+        'blocks[].input is ' +
         'capped inline (inputTruncated). Default count and max per the `count` schema. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
         'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +
