@@ -17,6 +17,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader,
+  seedSessionJsonl,
 } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,10 +32,10 @@ const FRAME_HEADER = '--- FORWARDED WORKER OUTPUT (verbatim · context only) ---
 const FRAME_HEADER_TAIL = 'Your own instruction follows the END marker below.';
 const FRAME_FOOTER = '--- END FORWARDED WORKER OUTPUT ---';
 
-let ctx, baseUrl, instances, home;
+let ctx, baseUrl, instances, home, roots;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_WS }); ({ baseUrl, instances } = ctx); });
 after(async () => { await ctx.close(); });
-beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+beforeEach(async () => { roots = await freshProjectsRoot(); ({ home } = roots); });
 afterEach(async () => {
   await instances.shutdown();
   instances._idleSubscribers?.clear();
@@ -316,7 +317,7 @@ test('forward: two-session distinguishability — an unknown source names forwar
   assert.notEqual(badSource.code, badTarget.code, 'the two failure sides are distinguishable by code alone');
 });
 
-test('forward: a killed-but-known source soft-refuses FORWARD_SESSION_NOT_LIVE naming spawn_instance resume', async () => {
+test('forward: a killed-but-known source with nothing on disk soft-refuses NOTHING_TO_FORWARD', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', temp: false }));
   const sourceSid = spawn.sessionId;
@@ -324,8 +325,9 @@ test('forward: a killed-but-known source soft-refuses FORWARD_SESSION_NOT_LIVE n
   const targetSid = await spawnReady('p');
 
   // Kill the subprocess directly (NOT instances.remove) so the non-temp
-  // instance stays known but loses its proc — the SESSION_NOT_LIVE recipe
-  // (see tests/mcp.test.mjs).
+  // instance stays known but loses its proc (see tests/mcp.test.mjs). The fake
+  // engine wrote no jsonl, so there is nothing to serve the forward from —
+  // liveness is no longer what decides, READABILITY is.
   await instForSession(instances, sourceSid).kill({ graceMs: 200 });
   await waitFor(() => !instForSession(instances, sourceSid)?.proc);
 
@@ -333,9 +335,32 @@ test('forward: a killed-but-known source soft-refuses FORWARD_SESSION_NOT_LIVE n
     sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go',
   }));
   assert.equal(res.ok, false);
-  assert.equal(res.code, 'FORWARD_SESSION_NOT_LIVE');
+  assert.equal(res.code, 'NOTHING_TO_FORWARD');
   assert.equal(res.forwardSessionId, sourceSid);
-  assert.match(res.reason, new RegExp(`spawn_instance\\(\\{resume:"${sourceSid}"\\}\\)`));
+});
+
+// FORWARD_SESSION_NOT_LIVE narrowed rather than disappeared: a non-live source
+// is now forwarded from its transcript, so the code survives only for a source
+// whose transcript cannot be REACHED — one under an encoded-cwd directory no
+// registered project or worktree owns (encodeCwd is one-way, so the path cannot
+// be turned back into a cwd).
+test('forward: an unreachable (orphaned-transcript) source still soft-refuses FORWARD_SESSION_NOT_LIVE', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const targetSid = await spawnReady('p');
+  const orphanSid = '22222222-3333-4444-5555-666666666666';
+  await seedSessionJsonl(roots.claudeProjectsRoot, path.join(home, 'never-registered'), orphanSid);
+
+  const res = unwrap(await callTool('send_prompt', {
+    sessionId: targetSid, forward: { sessionId: orphanSid }, text: 'go',
+  }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'FORWARD_SESSION_NOT_LIVE');
+  assert.equal(res.forwardSessionId, orphanSid);
+  assert.match(res.reason, /no registered project or worktree owns/, 'the refusal names why it is unreadable');
+  // The remedy is RE-REGISTERING the worktree, not resurrection: spawn_instance
+  // ({resume}) cannot locate a session under an unregistered directory either.
+  assert.match(res.reason, /[Rr]e-register that worktree/);
+  assert.doesNotMatch(res.reason, /spawn_instance/);
 });
 
 test('forward: a malformed forward:{} soft-refuses FORWARD_SESSION_UNKNOWN (validateArgs does no nested validation)', async () => {
@@ -474,4 +499,80 @@ test('forward: a successful result keeps today\'s shape plus forwarded — nothi
   }));
   assert.deepEqual(Object.keys(res).sort(), ['forwarded', 'sessionId', 'status', 'subscribed'].sort(),
     'no truncation flag, payload size, or source id — the conductor has no lever for any of them');
+});
+
+// A RETIRED source is forwarded from its backing store. Liveness stopped being
+// the gatekeeper here (2026-0142): what governs a forward source is the
+// playbook gate, which resolves it from the liveness-agnostic ledger projection
+// (checkForwardSource, src/playbooks.ts) — see tests/playbook-enforce.test.mjs
+// for the retired-and-denied case.
+//
+// The assertion is on the composed prompt's BODY, not on `forwarded` alone: a
+// wrong cwd/backingSessionId pairing reads no transcript and would look like an
+// ordinary empty source, so only the seeded text proves the right session was
+// read.
+test('forward: a fully retired source is relayed from disk, verbatim, with its own content', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', temp: true }));
+  const sourceSid = spawn.sessionId;
+  await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
+  const targetSid = await spawnReady('p');
+  const calls = recordPrompt(instForSession(instances, targetSid));
+
+  // The transcript the CLI would have written (the fake engine writes none),
+  // named by the BACKING id — the id that actually names a file on disk.
+  await seedSessionJsonl(roots.claudeProjectsRoot, path.join(roots.projectsRoot, 'p'),
+    instForSession(instances, sourceSid).backingSessionId, [
+      { type: 'user', message: { role: 'user', content: 'review it' } },
+      { type: 'assistant', message: { id: 'm_rv', role: 'assistant', content: [{ type: 'text', text: 'retired reviewer findings' }] } },
+    ]);
+
+  // A TEMP worker is DROPPED from byId on exit, so this is the fully-retired
+  // case: no instance record anywhere, only the transcript.
+  await instForSession(instances, sourceSid).kill({ graceMs: 200 });
+  await waitFor(() => instances.idsForSession(sourceSid).length === 0);
+
+  const res = unwrap(await callTool('send_prompt', {
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'act on it', subscribe: false,
+  }));
+  assert.equal(res.ok, undefined, `the forward must succeed: ${JSON.stringify(res)}`);
+  assert.equal(res.forwarded, 1);
+  const composed = calls[0][0];
+  assert.ok(composed.includes('retired reviewer findings'),
+    'the retired source\'s own output was relayed into the prompt');
+  assert.ok(composed.includes(FRAME_HEADER) && composed.includes(FRAME_FOOTER));
+  assert.ok(composed.includes('act on it'), 'the caller\'s own instruction still follows the frame');
+});
+
+// A retired session is outside the in-memory prefix universe (the transport's
+// chokepoint resolves prefixes against byId), so it needs its FULL sessionId —
+// which for a minted public id is short already. A genuine prefix does not
+// silently fall through to some other session: it passes the chokepoint
+// unrewritten and refuses distinctly.
+test('forward: a PREFIX of a retired source refuses FORWARD_SESSION_UNKNOWN rather than silently missing', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', temp: true }));
+  const sourceSid = spawn.sessionId;
+  await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
+  const targetSid = await spawnReady('p');
+  await seedSessionJsonl(roots.claudeProjectsRoot, path.join(roots.projectsRoot, 'p'),
+    instForSession(instances, sourceSid).backingSessionId, [
+      { type: 'user', message: { role: 'user', content: 'review it' } },
+      { type: 'assistant', message: { id: 'm_rv', role: 'assistant', content: [{ type: 'text', text: 'retired reviewer findings' }] } },
+    ]);
+  await instForSession(instances, sourceSid).kill({ graceMs: 200 });
+  await waitFor(() => instances.idsForSession(sourceSid).length === 0);
+
+  const byPrefix = unwrap(await callTool('send_prompt', {
+    sessionId: targetSid, forward: { sessionId: sourceSid.slice(0, -2) }, text: 'go',
+  }));
+  assert.equal(byPrefix.ok, false);
+  assert.equal(byPrefix.code, 'FORWARD_SESSION_UNKNOWN', 'a prefix no longer addresses a retired session');
+
+  // ...and the same call with the FULL id succeeds, so the refusal above is
+  // about the prefix, not about the session being retired.
+  const full = unwrap(await callTool('send_prompt', {
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go', subscribe: false,
+  }));
+  assert.equal(full.forwarded, 1);
 });

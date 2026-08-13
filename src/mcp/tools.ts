@@ -156,9 +156,12 @@ export function buildTools(): Tool[] {
         'Return the instance UI-event stream. DISK-BACKED & ring-first: events are served from the ' +
         'in-memory ring, and when fromSeq points into a range the ring has already evicted (below ' +
         'trimmedBefore) the dropped range is transparently served from the on-disk session transcript — ' +
-        'ring eviction is invisible to you. Events carry _seq; poll incrementally by passing the returned ' +
-        '`nextFrom` back as the next fromSeq (forward paging, oldest-first). Returns {id, status, ' +
-        'sessionId, events, lastSeq, trimmedBefore, hasMore, nextFrom}. Event kinds: text_delta, tool_use, ' +
+        'ring eviction is invisible to you. A RETIRED session (no running process) is served wholly from ' +
+        'that transcript instead, reported as source:"disk" with status:"exited"; such a page contains no ' +
+        'turn_end. Events carry _seq; poll ' +
+        'incrementally by passing the returned `nextFrom` back as the next fromSeq (forward paging, ' +
+        'oldest-first). Returns {status, sessionId, source, events, lastSeq, trimmedBefore, hasMore, ' +
+        'nextFrom}. Event kinds: text_delta, tool_use, ' +
         'tool_result, turn_end, etc. — same shape as the WebSocket snapshot. (Caveat: an in-flight block is ' +
         'served once and then grows in place below nextFrom, so polling never shows it grow — for prose ' +
         'mid-turn use get_recent_messages.)',
@@ -289,7 +292,7 @@ export function buildTools(): Tool[] {
           },
           forward: {
             type: 'object',
-            description: '{sessionId:"<worker sessionId>"} — inject that worker\'s recent output into this prompt verbatim, server-side: it reaches the worker unedited and never enters your context. The payload is a whole default get_recent_messages selection, framed as context-only — you cannot trim or reorder it. Your `text` is placed LAST, after the forwarded block, as the instruction. The source must still be live — forward before retiring it. sessionId prefixes are accepted.',
+            description: '{sessionId:"<worker sessionId>"} — inject that worker\'s recent output into this prompt verbatim, server-side: it reaches the worker unedited and never enters your context. The payload is a whole default get_recent_messages selection, framed as context-only — you cannot trim or reorder it. Your `text` is placed LAST, after the forwarded block, as the instruction. The source need not still be live; sessionId prefixes are accepted for a live source only.',
           },
         },
         required: ['sessionId', 'text'],
@@ -869,8 +872,8 @@ export function buildTools(): Tool[] {
         'in `blocks`; ExitPlanMode and AskUserQuestion tool_use blocks are likewise not duplicated ' +
         'in `blocks[]` when their content is represented in the message body (see OUTPUT). ' +
         '`hasPlan` (boolean) flags a turn that called ExitPlanMode; `planPath` (string) is the plan document\'s path when a ' +
-        'file backs the plan — prefer handing that path on rather than copying the text, or, when the source is still ' +
-        'live, send_prompt({forward}) relays the whole message verbatim; `questionCount` (int) ' +
+        'file backs the plan — prefer handing that path on rather than copying the text, or ' +
+        'send_prompt({forward}) relays the whole message verbatim; `questionCount` (int) ' +
         'flags a turn that called AskUserQuestion, with the number of questions — these are presence markers only, ' +
         'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
         'By default, messages are returned when they have text, a plan, or questions — ' +
@@ -880,14 +883,17 @@ export function buildTools(): Tool[] {
         'DISK-BACKED & ring-first: served from the in-memory ring on the hot path; if the ring\'s retained ' +
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
         'reads back into the on-disk session transcript — so ring eviction never yields a false-empty result. ' +
+        'A RETIRED session (no running process) is served wholly from that transcript, reported as ' +
+        'source:"disk" with retained:{firstSeq:0, lastSeq:-1, trimmed:false}. ' +
         'OUTPUT: a compact-JSON metadata block (content[0]) {sessionId, messages:[{index, msgId, hasToolUse, textChars, ' +
         'textTruncated, hasPlan?, planPath?, questionCount?, blocks?}], source:"ring"|"disk", omittedToolOnly:int, retained:{firstSeq, ' +
         'lastSeq, trimmed}, hint?} oldest-first, PLUS one raw, un-escaped text block per message (content[k+1] is ' +
         'messages[k]\'s body: its prose (if any) plus a "--- plan ---" (or "--- plan · saved to <path> ---") or "--- questions ---" fenced section when the ' +
         'turn produced one, in the order those blocks actually occurred — UNLESS more than one message is returned, in ' +
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
-        'recent tool-call-only messages excluded by the default filter (the agent is active even when messages[] is ' +
-        'empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); blocks[].input is ' +
+        'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
+        'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); ' +
+        'blocks[].input is ' +
         'capped inline (inputTruncated). Default count and max per the `count` schema. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
         'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +

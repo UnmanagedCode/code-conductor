@@ -690,8 +690,9 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
     assert.equal(foldProjection(await t.events()).bySession.get(planner.sessionId).stage, 'plan');
 
     // The handoff is a FORWARD, not a kill: the implementer spawns onto the
-    // planner's worktree while the planner is still live, so the plan can be
-    // forwarded out of it (`forward` resolves its source strict-live).
+    // planner's worktree and the plan is forwarded out of the planner. The
+    // planner happens to still be live here, but that is not what makes it
+    // work — `forward` serves a retired source from its transcript too.
     const handoff = {
       project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName,
       provenance: { plan: planner.sessionId },
@@ -1264,5 +1265,62 @@ test('enforce: a refusal about the TARGET still records the forward source — o
     assert.equal(refusals[0].sessionId, target);
     assert.equal(refusals[0].forwardSessionId, source,
       'the source is stamped whenever the call named one, not only on a FORWARD_DENIED_IN_STAGE');
+  } finally { await t.close(); }
+});
+
+// The gate's grip on the forward source does not depend on that source still
+// breathing. `checkForwardSource` resolves it from the ledger PROJECTION, which
+// never asked about liveness — and since 2026-0142 a forward serves a retired
+// source from its transcript, so this is now the only thing standing between a
+// denied stage and that worker's output.
+//
+// The `reader`-stage control retired the identical way is what makes the
+// refusal attributable to policy rather than to the retirement.
+test('enforce: a retired forward SOURCE is still governed — policy, not liveness, is what refuses', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    await t.writeUserPlaybook('fwdguard', FWD_GUARD);
+    const spawn = stage => t.spawnWorker({
+      project: 'demo', playbook: 'fwdguard', stage, mode: 'bypassPermissions', createWorktree: false,
+    });
+    const denied = await spawn('vault');   // may not be read out of
+    const allowed = await spawn('reader'); // may be
+    const target = await spawn('reader');
+
+    // Retire both sources identically: seed the transcript the CLI would have
+    // written, then kill the subprocess. Non-temp, so each stays in byId and in
+    // the ledger projection — exactly the shape §A9 flagged.
+    for (const w of [denied, allowed]) {
+      const inst = instForSession(t.instances, w.sessionId);
+      await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'), inst.backingSessionId, [
+        { type: 'user', message: { role: 'user', content: 'go' } },
+        { type: 'assistant', message: { id: `m-${w.sessionId}`, role: 'assistant', content: [
+          { type: 'text', text: `findings from ${w.sessionId}` },
+        ] } },
+      ]);
+      await inst.kill({ graceMs: 200 });
+      await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
+    }
+
+    const res = refused(await t.call('send_prompt', {
+      sessionId: target.sessionId, text: 'act on this', stage: 'reader',
+      forward: { sessionId: denied.sessionId }, subscribe: false,
+    }), 'FORWARD_DENIED_IN_STAGE');
+    assert.match(res.reason, /get_recent_messages/);
+    assert.match(res.reason, new RegExp(denied.sessionId.slice(0, 8)), 'the refusal names the source');
+
+    // Control: the permitted source, retired the SAME way, forwards from disk.
+    // Without this the test would pass just as well if retirement itself broke
+    // every forward.
+    const ok = await t.call('send_prompt', {
+      sessionId: target.sessionId, text: 'act on this', stage: 'reader',
+      forward: { sessionId: allowed.sessionId }, subscribe: false,
+    });
+    assert.equal(ok.ok, undefined, `a permitted retired source must forward: ${JSON.stringify(ok)}`);
+    assert.equal(ok.forwarded, 1);
+
+    const refusals = (await t.events()).filter(e => e.kind === 'refusal');
+    assert.equal(refusals.length, 1, 'exactly the one refusal');
+    assert.equal(refusals[0].forwardSessionId, denied.sessionId);
   } finally { await t.close(); }
 });

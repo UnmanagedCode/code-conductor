@@ -14,6 +14,8 @@ import {
   createProject as fsCreateProject,
   getProject,
   findSessionLocation,
+  findOrphanedTranscript,
+  resolveToBackingId,
   summarizeWorkspaces,
   addWorkspace as fsAddWorkspace,
   removeWorkspace as fsRemoveWorkspace,
@@ -45,11 +47,12 @@ import {
   renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
   renderPlaybook,
 } from './readRenderers.ts';
-import { pageInstanceEvents } from '../eventArchive.ts';
+import { pageInstanceEvents, pagePersistedEvents } from '../eventArchive.ts';
 import { indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
   capText, MSG_TEXT_CAP, reconstructMessages, mergeRecentWithDisk, capBlockInput,
-  hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, type ReconMessage,
+  hasPlanOrQuestions, ringTurnIndex, bondTrailingTurn, loadDiskSelection,
+  type ReconMessage,
 } from './messageReconstruction.ts';
 import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } from '../playbooks.ts';
 import { runMembers, type Projection } from '../playbookLedger.ts';
@@ -178,12 +181,14 @@ function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   return out;
 }
 
-// The ONLY public worker lookup. LIVE-only + soft-erroring: resolves a
-// stable sessionId to its single running (proc-attached) instance, or returns
-// a soft-refusal object the handler hands straight back (isError stays false,
-// matching the deleteWorktree/mergeWorktree soft-refusal convention). NEVER
-// auto-respawns and never special-cases reads — a dead session is a refusal,
-// not a resurrection.
+// The only public worker lookup that ADDRESSES a worker — every tool that
+// needs a running subprocess resolves through here. Reads go through the
+// read-only sibling getInstOrDisk (below) instead. LIVE-only + soft-erroring:
+// resolves a stable sessionId to its single running (proc-attached) instance,
+// or returns a soft-refusal object the handler hands straight back (isError
+// stays false, matching the deleteWorktree/mergeWorktree soft-refusal
+// convention). NEVER auto-respawns — a dead session is a refusal, not a
+// resurrection.
 //   - SESSION_NOT_LIVE: the session is known (in byId or on disk) but has no
 //     running process → tell the conductor to spawn_instance({resume}).
 //   - SESSION_UNKNOWN: no such session anywhere.
@@ -204,12 +209,85 @@ async function getInst(instances: InstanceManagerLike | null | undefined, sessio
   // unregistered; such an edge resolves to SESSION_UNKNOWN rather than
   // SESSION_NOT_LIVE. Accepted — it never throws.
   const known = !!instances.anyForSession(sessionId) || !!(await findSessionLocation(sessionId).catch(() => null));
+  if (known) return { soft: notLiveRefusal(sessionId) };
+  return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
+    reason: `no session ${sessionId} is known to the orchestrator.` } };
+}
+
+// Where a retired session's transcript lives — enough for
+// loadPersistedTranscript / pagePersistedEvents to read it, and nothing more.
+interface DiskRef { sessionId: string; backingSessionId: string; cwd: string }
+
+// The READ-ONLY sibling of getInst, for the call sites that need a session's
+// BYTES rather than a subprocess: get_transcript, get_recent_messages, and
+// send_prompt's `forward` source (which performs the same read).
+// Resolves live-instance → disk-location → soft refusal:
+//   1-3. identical to getInst, including the pure-in-memory hot path — no disk
+//        work happens above the liveForSession hit.
+//   4.   a dead-but-retained instance still in byId: its own cwd +
+//        backingSessionId are in memory, so no probe is needed.
+//   5.   findSessionLocation: a session with no instance at all (a killed temp
+//        worker, dropped from byId, whose jsonl _archiveTempSession retained).
+//   6.   findOrphanedTranscript: the transcript exists but no registered
+//        project or worktree owns its directory.
+//   7.   nothing anywhere → SESSION_UNKNOWN.
+//
+// NOTE — the same findSessionLocation blind spot getInst records applies here,
+// and step 6 is what catches it: where an addressing tool refuses
+// SESSION_UNKNOWN for a session whose worktree is unregistered, a read refuses
+// SESSION_NOT_LIVE naming that cause. `encodeCwd` is one-way, so the found path
+// cannot be reversed into a cwd and the content genuinely cannot be served —
+// re-registering the worktree is the fix.
+//
+// This resolver never READS the file. A transcript that vanishes between probe
+// and read degrades through each call site's existing empty-result path.
+async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, sessionId: string): Promise<{ inst: InstanceLike } | { disk: DiskRef } | { soft: SoftRefusal }> {
+  if (!instances) {
+    throw Object.assign(new Error('orchestrator was started without an InstanceManager'), { statusCode: 500 });
+  }
+  if (typeof sessionId !== 'string' || !sessionId) {
+    return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId: sessionId ?? null,
+      reason: `no session ${sessionId} is known to the orchestrator.` } };
+  }
+  const live = instances.liveForSession(sessionId);
+  if (live) return { inst: live };
+
+  // PERFORMANCE, not correctness: step 5 below agrees with this branch on the
+  // cwd/backingSessionId pair for any session both can resolve, so moving this
+  // after it would change only the cost — an in-memory hit instead of a
+  // readdir+stat sweep. Reorder freely if a reason appears; nothing depends on
+  // the order.
+  const known = instances.anyForSession(sessionId);
   if (known) {
+    return known.backingSessionId
+      ? { disk: { sessionId: known.sessionId ?? sessionId, backingSessionId: known.backingSessionId, cwd: known.cwd } }
+      : { soft: notLiveRefusal(sessionId) };
+  }
+
+  const hit = await findSessionLocation(sessionId).catch(() => null);
+  if (hit) {
+    const backingSessionId = await resolveToBackingId(sessionId);
+    if (backingSessionId) {
+      const { cwd } = await resolveProjectCwd(hit.project, hit.worktreeName);
+      return { disk: { sessionId, backingSessionId, cwd } };
+    }
+  }
+
+  const orphan = await findOrphanedTranscript(sessionId).catch(() => null);
+  if (orphan) {
     return { soft: { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
-      reason: `session ${sessionId} has no running process — call spawn_instance({resume:"${sessionId}"}) to bring it back.` } };
+      reason: `session ${sessionId} has a transcript on disk (${orphan}) but no registered project or worktree owns its directory, so its content cannot be read. Re-register that worktree and retry — reads and forwards work off the transcript, so nothing has to be resurrected.` } };
   }
   return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
     reason: `no session ${sessionId} is known to the orchestrator.` } };
+}
+
+// getInst's SESSION_NOT_LIVE refusal, shared with getInstOrDisk's
+// no-backing-id branch so the two resolvers can't drift on the wording a
+// conductor is told to act on.
+function notLiveRefusal(sessionId: string): SoftRefusal {
+  return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
+    reason: `session ${sessionId} has no running process — call spawn_instance({resume:"${sessionId}"}) to bring it back.` };
 }
 
 // Resolve when `inst.status` first satisfies predicate, or reject on timeout.
@@ -688,21 +766,41 @@ export async function locateSession({ sessionId }: { sessionId?: string }) {
 // archive's dense _seq space can't overlap the live ring); get_transcript
 // covers dropped PRIOR turns — for prose mid-giant-turn use get_recent_messages.
 export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessionId: string; fromSeq?: number; limit?: number }, { instances }: McpCtx) {
-  const r = await getInst(instances, sessionId);
+  const r = await getInstOrDisk(instances, sessionId);
   if ('soft' in r) return r.soft;
-  const inst = r.inst;
-  // fromSeq is this tool's own INCLUSIVE convention; pageInstanceEvents'
-  // `after` option is EXCLUSIVE (matches the REST `after=` cursor) — the
-  // two surfaces deliberately differ by name, so translate at this
-  // boundary rather than "unifying" them.
-  const page = fromSeq == null
-    ? await pageInstanceEvents(inst, { limit })
-    : await pageInstanceEvents(inst, { after: fromSeq - 1, limit });
+  // fromSeq is this tool's own INCLUSIVE convention; the pager's `after`
+  // option is EXCLUSIVE (matches the REST `after=` cursor) — the two surfaces
+  // deliberately differ by name, so translate at this boundary rather than
+  // "unifying" them.
+  const after = fromSeq == null ? undefined : { after: fromSeq - 1 };
+  // A retired session has no process and no ring: `status` is 'exited' (the
+  // accurate member of isDeadStatus' pair, not an invented one) and `source`
+  // tells the conductor it is reading history rather than a live stream.
+  const { status, resolvedSessionId, source, page } = 'disk' in r
+    ? {
+      status: 'exited', resolvedSessionId: r.disk.sessionId, source: 'disk',
+      page: await pagePersistedEvents({ cwd: r.disk.cwd, sessionId: r.disk.backingSessionId, limit, ...after }),
+    }
+    : {
+      status: r.inst.status, resolvedSessionId: r.inst.sessionId, source: 'ring',
+      page: await pageInstanceEvents(r.inst, { limit, ...after }),
+    };
   const events = page.events;
-  const nextFrom = events.length ? (events[events.length - 1]._seq as number) + 1 : page.lastSeq + 1;
+  // The cursor comes from the last event that HAS a `_seq`, not from the last
+  // event: a page can END on a SYNTHETIC one — `task_completion` is spliced in
+  // after the TaskUpdate that completed a batch, `history_gap` at the archive
+  // seam — and both carry no `_seq` by design (see eventArchive.ts SeqEvent).
+  // Reading the array's tail blindly yields `undefined + 1` → NaN, which
+  // serializes as null and strands the poller with no way to continue.
+  let nextFrom = page.lastSeq + 1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const seq = events[i]._seq;
+    if (typeof seq === 'number') { nextFrom = seq + 1; break; }
+  }
   return {
-    status: inst.status,
-    sessionId: inst.sessionId,
+    status,
+    sessionId: resolvedSessionId,
+    source,
     events,
     lastSeq: page.lastSeq,
     trimmedBefore: page.trimmedBefore,
@@ -894,11 +992,16 @@ async function maybeSubscribeIdle({ instances, callerId }: McpCtx, sessionId: st
 // two-session send_prompt refusal self-documenting about which side to fix,
 // which reusing SESSION_NOT_LIVE/SESSION_UNKNOWN with an extra field could not
 // do if the target and source ids happen to share a prefix.
+//
+// FORWARD_SESSION_NOT_LIVE narrowed when forward gained its disk path: a
+// non-live source is now ordinarily forwarded from its transcript, so this
+// fires only when that transcript cannot be reached — an orphaned transcript
+// whose owning worktree is no longer registered (getInstOrDisk step 6).
 function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): SoftRefusal {
   if (soft.code === 'SESSION_NOT_LIVE') {
     return {
       ok: false, code: 'FORWARD_SESSION_NOT_LIVE', forwardSessionId,
-      reason: `forward source session ${forwardSessionId} has no running process — its recent output is only readable while it is live. Call spawn_instance({resume:"${forwardSessionId}"}) to bring it back, then retry. No prompt was sent.`,
+      reason: `forward source session ${forwardSessionId} has no running process and its transcript could not be read: ${soft.reason} No prompt was sent.`,
     };
   }
   return {
@@ -952,9 +1055,13 @@ export async function sendPrompt(
     const sel = await selectRecentMessages({ sessionId: forwardSessionId }, ctx);
     if ('soft' in sel) return forwardSourceRefusal(sel.soft, forwardSessionId);
     if (sel.messages.length === 0) {
-      const reason = sel.omittedToolOnly > 0
-        ? `session ${forwardSessionId} has no forwardable output — its ${sel.omittedToolOnly} most recent assistant message(s) carry only tool calls, so it is still working. Wait for its next turn_end and forward then. No prompt was sent.`
-        : `session ${forwardSessionId} has no forwardable output — no assistant text, plan or questions have arrived yet. No prompt was sent.`;
+      // A RETIRED source will never produce another turn_end, so it never gets
+      // the "wait for it" advice — that would stall the conductor forever.
+      const reason = !sel.live
+        ? `session ${forwardSessionId} has no forwardable output — it is retired (no running process) and its transcript holds no assistant text, plan or questions to forward. Waiting will not change that; resume it with spawn_instance({resume:"${forwardSessionId}"}) if it still has work to do. No prompt was sent.`
+        : sel.omittedToolOnly > 0
+          ? `session ${forwardSessionId} has no forwardable output — its ${sel.omittedToolOnly} most recent assistant message(s) carry only tool calls, so it is still working. Wait for its next turn_end and forward then. No prompt was sent.`
+          : `session ${forwardSessionId} has no forwardable output — no assistant text, plan or questions have arrived yet. No prompt was sent.`;
       return { ok: false, code: 'NOTHING_TO_FORWARD', forwardSessionId, reason };
     }
     composedText = renderForwardFrame(sel.messages, text);
@@ -1825,28 +1932,61 @@ export async function getRecentMessages(args: McpArgs, ctx: McpCtx) {
 // file. `ring` rides along so a caller can compute meta.retained.lastSeq the
 // same way buildRecentMessages does; `requested` is the clamped `n` a caller
 // needs for the `messages.length < n` short-result test.
+//
+// Both callers resolve through getInstOrDisk, so a retired session is served
+// from its transcript on the read AND on the forward. What keeps a forward
+// source governed is not liveness but the playbook gate, which checks it
+// against its own stage from the ledger projection (checkForwardSource,
+// ../playbooks.ts) — a projection that never asked whether a process is
+// running.
 async function selectRecentMessages(
   { sessionId, count, includeToolCalls = false, includeThinking = false }: {
     sessionId: string; count?: number; includeToolCalls?: boolean; includeThinking?: boolean;
   },
   { instances }: McpCtx,
 ): Promise<{
-  inst: InstanceLike;
+  sessionId: string;
+  trimmedBefore: number;
   ring: UiEvent[];
   messages: ReconMessage[];
   source: string;
   omittedToolOnly: number;
   requested: number;
+  // Is there a PROCESS behind this selection? Not the same question as
+  // `source`, which says where the bytes came from — a live worker whose ring
+  // evicted the range also reports source:'disk'. Callers that phrase a result
+  // in terms of what the worker will do next ("still working", "wait for its
+  // next turn_end", "the agent is active") must branch on THIS: a retired
+  // session will never act again, and telling a conductor to wait on one
+  // stalls it forever.
+  live: boolean;
 } | { soft: SoftRefusal }> {
-  const r = await getInst(instances, sessionId);
+  const r = await getInstOrDisk(instances, sessionId);
   if ('soft' in r) return r;
-  const inst = r.inst;
   const isDefaultCount = count === undefined;
   const n = Math.max(1, Math.min(typeof count === 'number' && Number.isInteger(count) ? count : 1, 50));
   // A defaulted call may bond in one preceding plan/question message, so the
   // ring must satisfy n+1 text messages before we trust it over disk.
   const bondNeed = isDefaultCount ? n + 1 : n;
 
+  if ('disk' in r) {
+    const sel = await loadDiskSelection({ cwd: r.disk.cwd, backingSessionId: r.disk.backingSessionId, includeThinking });
+    const all = sel ? sel.messages : [];
+    const filtered = includeToolCalls ? all : all.filter(isTextBearing);
+    let messages = filtered.slice(-n);
+    // Same bond as the ring path, over disk-side turn boundaries (the CLI
+    // never persists turn_end — see diskTurnIndex).
+    if (isDefaultCount && messages.length === 1 && sel) {
+      messages = bondTrailingTurn(filtered, sel.turnIndex);
+    }
+    return {
+      sessionId: r.disk.sessionId, trimmedBefore: 0, ring: [], messages, source: 'disk',
+      omittedToolOnly: includeToolCalls ? 0 : (all.length - filtered.length), requested: n,
+      live: false,
+    };
+  }
+
+  const inst = r.inst;
   const ring = inst.ringSnapshot();
   let all = reconstructMessages(ring, includeThinking);
   let source = 'ring';
@@ -1868,7 +2008,10 @@ async function selectRecentMessages(
   }
   const omittedToolOnly = includeToolCalls ? 0 : (all.length - filtered.length);
 
-  return { inst, ring, messages, source, omittedToolOnly, requested: n };
+  return {
+    sessionId: inst.sessionId as string, trimmedBefore: inst.ring.trimmedBefore,
+    ring, messages, source, omittedToolOnly, requested: n, live: true,
+  };
 }
 
 // Core of get_recent_messages: resolve the session, reconstruct + bond + cap the
@@ -1882,7 +2025,8 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 }, ctx: McpCtx): Promise<{ meta: Record<string, unknown>; bodies: string[] } | { soft: SoftRefusal }> {
   const sel = await selectRecentMessages({ sessionId, count, includeToolCalls, includeThinking }, ctx);
   if ('soft' in sel) return sel;
-  const { inst, ring, messages, source, omittedToolOnly, requested: n } = sel;
+  const { ring, messages, source, omittedToolOnly, requested: n, live } = sel;
+  const trimmedBefore = sel.trimmedBefore;
 
   // Multi-block: metadata block describes each message; one raw text block per
   // message carries its rendered body (prose + plan/questions, order-faithful
@@ -1920,20 +2064,30 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 
   const lastSeq = ring.length ? ring[ring.length - 1]._seq : -1;
   const meta: Record<string, unknown> = {
-    sessionId: inst.sessionId,
+    sessionId: sel.sessionId,
     messages: metaMessages,
     source,
     omittedToolOnly,
-    retained: { firstSeq: inst.ring.trimmedBefore, lastSeq, trimmed: inst.ring.trimmedBefore > 0 },
+    // On the disk path this is {firstSeq:0, lastSeq:-1, trimmed:false} —
+    // honest, since nothing is retained in memory.
+    retained: { firstSeq: trimmedBefore, lastSeq, trimmed: trimmedBefore > 0 },
   };
   // Never a bare ambiguous result: when we couldn't fill the request, say why.
+  // Every branch here is phrased for the session's ACTUAL state: on a retired
+  // read there is no agent to be active and nothing more will arrive, so the
+  // live wordings ("the agent is active", "...yet") would send a conductor off
+  // to wait on a worker that cannot act again.
   if (messages.length < n) {
     if (omittedToolOnly > 0) {
-      meta.hint = `Showing ${messages.length} text message(s); ${omittedToolOnly} recent assistant message(s) had only tool calls — the agent is active. Pass includeToolCalls:true, or use get_transcript to inspect tool activity.`;
+      meta.hint = live
+        ? `Showing ${messages.length} text message(s); ${omittedToolOnly} recent assistant message(s) had only tool calls — the agent is active. Pass includeToolCalls:true, or use get_transcript to inspect tool activity.`
+        : `Showing ${messages.length} text message(s); this session is retired (no running process) and its last ${omittedToolOnly} assistant message(s) carry only tool calls — it stopped mid-work. Pass includeToolCalls:true, or use get_transcript to see what it had done.`;
     } else if (messages.length === 0) {
-      meta.hint = inst.ring.trimmedBefore > 0 && source !== 'disk'
-        ? 'No assistant messages retained in memory and the session transcript was unavailable on disk. Try get_transcript.'
-        : 'No assistant text messages have arrived yet.';
+      meta.hint = !live
+        ? 'This session is retired (no running process) and its transcript holds no assistant text messages. Nothing further will arrive.'
+        : trimmedBefore > 0 && source !== 'disk'
+          ? 'No assistant messages retained in memory and the session transcript was unavailable on disk. Try get_transcript.'
+          : 'No assistant text messages have arrived yet.';
     }
   }
   return { meta, bodies };

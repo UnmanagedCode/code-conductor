@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Dirent } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -133,7 +133,15 @@ export function assertBackingId(id: string, where: string): void {
 // `${…}.jsonl` construction outside this file.
 export function sessionFilePath(absCwd: string, backingId: string): string {
   assertBackingId(backingId, 'sessionFilePath');
-  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), `${backingId}.jsonl`);
+  return path.join(claudeProjectsRoot(), encodeCwd(absCwd), sessionFileName(backingId));
+}
+
+// The transcript FILENAME a backing id maps to. Split out of sessionFilePath so
+// findOrphanedTranscript — which walks encoded-cwd directories it cannot decode
+// back into a cwd — names the file through the same one interpolation site
+// (tests/session-lineage-chokepoint.test.mjs G4).
+function sessionFileName(backingId: string): string {
+  return `${backingId}.jsonl`;
 }
 
 // The CLI's sibling sub-agent directory for a session — sidechain transcripts
@@ -151,7 +159,7 @@ export function subAgentDirPath(absCwd: string, backingId: string): string {
 // orchStoreRoot() from this module, so a static edge here would close a cycle.
 // Same pattern (and same reason) as loadWorktreesFor below. Every caller is async
 // and off the hot path.
-async function resolveToBackingId(sessionId: string): Promise<string | null> {
+export async function resolveToBackingId(sessionId: string): Promise<string | null> {
   if (typeof sessionId !== 'string' || !sessionId) return null;
   const { resolveBacking } = await import('./sessionLineage.ts');
   const backingId = await resolveBacking(sessionId);
@@ -820,6 +828,40 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     if (id === backingId || isMintedPublicId(id)) continue;
     const older = await probe(id);
     if (older) return older;
+  }
+  return null;
+}
+
+// Does a transcript for `sessionId` exist ANYWHERE under the Claude projects
+// root, including under an encoded-cwd directory no registered project or
+// worktree owns? Returns the absolute path on hit, null otherwise.
+//
+// Existence only — deliberately NOT a route to the content. `encodeCwd` is
+// one-way (see its note above: '_' and '/' both collapse to '-'), so the
+// directory name this finds cannot be reversed into the `cwd` that
+// `loadPersistedTranscript` requires. A caller can therefore say "this session
+// is retired and unreachable" instead of "no such session", which is all the
+// distinguishability the refusal needs.
+//
+// Callers must reach this only AFTER findSessionLocation has already missed —
+// it costs one readdir plus one stat per encoded-cwd dir, and that miss is
+// itself the proof that no registered project or worktree owns the directory.
+export async function findOrphanedTranscript(sessionId: string): Promise<string | null> {
+  const backingId = await resolveToBackingId(sessionId);
+  if (backingId === null) return null;
+  const root = claudeProjectsRoot();
+  let dirs: Dirent[];
+  try { dirs = await fs.readdir(root, { withFileTypes: true }); }
+  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const file = path.join(root, d.name, sessionFileName(backingId));
+    try {
+      const stat = await fs.stat(file);
+      if (stat.isFile()) return file;
+    } catch (e) {
+      if (errCode(e) !== 'ENOENT') throw e;
+    }
   }
   return null;
 }

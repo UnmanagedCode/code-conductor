@@ -7,8 +7,12 @@
 // identical.
 
 import { loadPersistedTranscript } from '../transcript.ts';
+// One-directional edge into the archive stamper (eventArchive.ts imports
+// nothing from this module), so the disk-replay seq space is stamped in exactly
+// one place for both the paging and the message-selection reads.
+import { stampArchiveEvents } from '../eventArchive.ts';
 import type { InstanceLike } from '../instanceTypes.ts';
-import type { UiEvent } from '../parser.ts';
+import { isOuterUserEcho, type UiEvent } from '../parser.ts';
 
 // Per-message text cap for get_recent_messages raw blocks — mirror
 // project_read/project_diff's bounded-output pattern so no tool can emit an
@@ -165,22 +169,76 @@ export function hasPlanOrQuestions(m: ReconMessage): boolean {
   return !!m.plan || !!m.planPath || (Array.isArray(m.questions) && m.questions.length > 0);
 }
 
+// What bondTrailingTurn needs to scope a walk-back to one turn: where each
+// top-level message starts, and the seqs that separate one turn from the next.
+// `turnBoundarySeqs` is deliberately not "turn_end seqs" — the ring supplies
+// turn_end seqs, the disk supplies outer-user_echo seqs (see diskTurnIndex),
+// and both partition the message list identically.
+export interface TurnIndex {
+  firstSeqByMsgId: Map<string, number>;
+  turnBoundarySeqs: number[];
+}
+
 // Index the ring for turn-scoped bonding: map each top-level msgId to the _seq
 // of its first ring event, and collect the non-parent turn_end seqs. The
 // current turn's messages are always in the ring (they just streamed), so this
 // lets the default-count bond scope its walk-back to the turn that produced the
 // last message even when the surrounding message list came from the disk merge.
-export function ringTurnIndex(ring: ReconEvent[]): { firstSeqByMsgId: Map<string, number>; turnEndSeqs: number[] } {
+export function ringTurnIndex(ring: ReconEvent[]): TurnIndex {
   const firstSeqByMsgId = new Map<string, number>();
-  const turnEndSeqs: number[] = [];
+  const turnBoundarySeqs: number[] = [];
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
-    if (ev.kind === 'turn_end') { if (ev._seq != null) turnEndSeqs.push(ev._seq); continue; }
+    if (ev.kind === 'turn_end') { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
     if (ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
       firstSeqByMsgId.set(ev.msgId, ev._seq);
     }
   }
-  return { firstSeqByMsgId, turnEndSeqs };
+  return { firstSeqByMsgId, turnBoundarySeqs };
+}
+
+// The same index over DISK-replayed events. `turn_end` is stream-only — the CLI
+// never persists it (src/transcript.ts; the reason is recorded in the header of
+// src/eventArchive.ts) — so a replayed array carries no turn_end at all and a
+// ringTurnIndex over it would hand bondTrailingTurn an empty boundary list,
+// silently pulling a previous turn's plan into the bond.
+//
+// The substitution: an outer `user_echo` STARTS a turn, so it sits between the
+// previous turn's last message and this turn's first — exactly the position a
+// turn_end occupies for partitioning purposes. Feeding echo seqs where
+// bondTrailingTurn expects boundary seqs yields the same partition, so its
+// comparison logic is unchanged.
+export function diskTurnIndex(events: ReconEvent[]): TurnIndex {
+  const firstSeqByMsgId = new Map<string, number>();
+  const turnBoundarySeqs: number[] = [];
+  for (const ev of events) {
+    if (ev.parentToolUseId) continue;
+    if (isOuterUserEcho(ev)) { if (ev._seq != null) turnBoundarySeqs.push(ev._seq); continue; }
+    if (ev.msgId && ev._seq != null && !firstSeqByMsgId.has(ev.msgId)) {
+      firstSeqByMsgId.set(ev.msgId, ev._seq);
+    }
+  }
+  return { firstSeqByMsgId, turnBoundarySeqs };
+}
+
+// Reconstruct a NON-LIVE session's recent messages entirely from its persisted
+// jsonl — no instance, no ring (src/mcp/handlers.ts getInstOrDisk's `{disk}`
+// branch). Returns null when no transcript exists, so the caller degrades to
+// the same empty-result path a live session with nothing to show takes.
+//
+// The DISK_REPLAY_TAIL_CAP slice happens AFTER stamping, so the surviving seqs
+// keep their original dense values — they stay monotonic, which is all
+// bondTrailingTurn compares. (Truncating away the echo that opened the last
+// turn is possible only for a turn longer than the cap; bonding then safely
+// degrades to last-message-only.)
+export async function loadDiskSelection({ cwd, backingSessionId, includeThinking }: {
+  cwd: string; backingSessionId: string; includeThinking: boolean;
+}): Promise<{ messages: ReconMessage[]; turnIndex: TurnIndex } | null> {
+  const result = await loadPersistedTranscript({ cwd, sessionId: backingSessionId, seqHint: 0 }).catch(() => null);
+  if (!result) return null;
+  let events: ReconEvent[] = stampArchiveEvents(result.lines) as ReconEvent[];
+  if (events.length > DISK_REPLAY_TAIL_CAP) events = events.slice(-DISK_REPLAY_TAIL_CAP);
+  return { messages: reconstructMessages(events, includeThinking), turnIndex: diskTurnIndex(events) };
 }
 
 // Default-count selection for get_recent_messages / the wake fold. Given the
@@ -192,7 +250,7 @@ export function ringTurnIndex(ring: ReconEvent[]): { firstSeqByMsgId: Map<string
 // act on. A plan from a previous turn is never pulled in (the walk stops at the
 // turn boundary), and a last message that already carries its own plan/question
 // is returned alone.
-export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: { firstSeqByMsgId: Map<string, number>; turnEndSeqs: number[] }): ReconMessage[] {
+export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: TurnIndex): ReconMessage[] {
   const lastIdx = filtered.length - 1;
   const last = filtered[lastIdx];
   if (!last) return filtered;
@@ -200,10 +258,10 @@ export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: { firstSeqB
   if (!lastIsPureProse) return [last];
   const lastFirstSeq = ringTurn.firstSeqByMsgId.get(last.msgId);
   if (lastFirstSeq == null) return [last]; // last off-ring (shouldn't happen) — no bond
-  // Turn boundary = the largest turn_end seq strictly before the last message's
+  // Turn boundary = the largest boundary seq strictly before the last message's
   // start; messages at/below it belong to an earlier turn.
   let boundary = -1;
-  for (const s of ringTurn.turnEndSeqs) if (s < lastFirstSeq && s > boundary) boundary = s;
+  for (const s of ringTurn.turnBoundarySeqs) if (s < lastFirstSeq && s > boundary) boundary = s;
   let startIdx = lastIdx;
   for (let i = lastIdx - 1; i >= 0; i--) {
     const fs = ringTurn.firstSeqByMsgId.get(filtered[i].msgId);

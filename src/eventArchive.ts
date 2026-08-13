@@ -67,9 +67,39 @@ function firstIndexAtOrAbove(arr: SeqEvent[], seq: number): number {
 // carry an absolute `userIndex` (stamped by Instance._emitUi / buildArchive).
 // Synthetic events (`history_gap`, `task_completion`) have neither and are
 // represented as plain UiEvent.
-interface SeqEvent extends UiEvent {
+export interface SeqEvent extends UiEvent {
   _seq: number;
   userIndex?: number;
+}
+
+// Stamp a replayed transcript's lines into a flat archive event list: dense
+// `_seq` = array index, absolute `userIndex` on outer echoes — the same ordinal
+// semantics Instance._emitUi gives live events. THE one home for "replayed
+// events get archive seqs"; both buildArchive and pagePersistedEvents call it,
+// as does the disk-side selection in src/mcp/messageReconstruction.ts.
+export function stampArchiveEvents(lines: Array<{ events: UiEvent[] }>): SeqEvent[] {
+  const flat: SeqEvent[] = [];
+  let echoOrdinal = 0;
+  for (const line of lines) {
+    for (const ev of line.events) {
+      const copy = { ...ev } as SeqEvent;
+      if (isOuterUserEcho(copy)) {
+        copy.userIndex = echoOrdinal;
+        echoOrdinal += 1;
+      }
+      copy._seq = flat.length;
+      flat.push(copy);
+    }
+  }
+  return flat;
+}
+
+// Resolve the paging window's cursors: with neither given, page the trailing
+// `limit`; `before` (backward) always wins over `after` (forward).
+function normalizeWindow(before: number | null, after: number | null, lastSeq: number): { before: number | null; after: number | null } {
+  if (before == null && after == null) return { before: lastSeq + 1, after: null };
+  if (before != null) return { before, after: null };
+  return { before: null, after };
 }
 
 // Replay the persisted jsonl into a flat event list (dense `_seq` = array
@@ -86,19 +116,7 @@ export async function buildArchive({ cwd, sessionId, ring, trimmedBefore, userEc
   const result = await loadPersistedTranscript({ cwd, sessionId, seqHint: 0 });
   if (!result) return { events: [], cut: 0, gap: trimmedBefore > 0 };
 
-  const flat: SeqEvent[] = [];
-  let echoOrdinal = 0;
-  for (const line of result.lines) {
-    for (const ev of line.events) {
-      const copy = { ...ev } as SeqEvent;
-      if (isOuterUserEcho(copy)) {
-        copy.userIndex = echoOrdinal;
-        echoOrdinal += 1;
-      }
-      copy._seq = flat.length;
-      flat.push(copy);
-    }
-  }
+  const flat = stampArchiveEvents(result.lines);
 
   // Content anchor: which prompt ordinal marks the first turn that is (at
   // least partially) represented in the retained ring.
@@ -171,8 +189,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   const tb = inst.ring.trimmedBefore;
   const lastSeq = ring.length ? ring[ring.length - 1]._seq : -1;
 
-  if (before == null && after == null) before = lastSeq + 1;
-  if (before != null) after = null; // before wins
+  ({ before, after } = normalizeWindow(before, after, lastSeq));
 
   // Load the archive whenever the tentative window itself dips below the
   // ring. The quiescent snap can never reach below the ring head from inside
@@ -210,6 +227,27 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
     gap = archive.gap;
   }
 
+  return pageCombined(combined, {
+    before, after, max, seamIdx, gap, trimmedBefore: tb, lastSeq,
+    // Served down to the very start of what we have. With the archive loaded
+    // that IS the beginning; without it, older events may still exist below
+    // the ring — optimistic, next page resolves.
+    optimisticMore: !needArchive && tb > 0 && !!inst.backingSessionId,
+  });
+}
+
+// The windowing core shared by the ring-backed (pageInstanceEvents) and
+// disk-only (pagePersistedEvents) entry points: quiescent page seams, the
+// empty-page cursor, the `history_gap` marker and `task_completion` injection
+// over an already-assembled, globally `_seq`-sorted `combined` list.
+//   seamIdx  — index of the first ring-side event in `combined`, doubling as
+//              the scan-opaque `resetIdx`; -1 means "no such boundary".
+//   optimisticMore — the caller knows older events exist that this call did
+//              not load (ring-only page above an evicted range).
+function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, trimmedBefore, lastSeq, optimisticMore }: {
+  before: number | null; after: number | null; max: number; seamIdx: number;
+  gap: boolean; trimmedBefore: number; lastSeq: number; optimisticMore: boolean;
+}): { events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number } {
   let events: UiEvent[];
   let hasMore: boolean;
   // Index in `combined` of this page's first served event, in BOTH directions
@@ -243,11 +281,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
     start = snapStartToQuiescent(combined, start, end, { resetIdx: seamIdx });
     servedStart = start;
     events = combined.slice(start, end);
-    hasMore = start > 0
-      // Served down to the very start of what we have. With the archive
-      // loaded that IS the beginning; without it, older events may still
-      // exist below the ring — optimistic, next page resolves.
-      || (!needArchive && tb > 0 && !!inst.backingSessionId);
+    hasMore = start > 0 || optimisticMore;
   } else {
     const start = firstIndexAtOrAbove(combined, (after ?? 0) + 1);
     servedStart = start;
@@ -330,7 +364,7 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   // mid-turn-head fixture the page above already carried the marker and this
   // would emit a second one.
   if (gap) {
-    const seamAnchor = needArchive ? seamIdx : 0;
+    const seamAnchor = seamIdx >= 0 ? seamIdx : 0;
     const at = seamAnchor - servedStart;
     if (at >= 0 && at <= events.length) events.splice(at, 0, { kind: 'history_gap' });
     else if (at < 0 && !hasMore) events.push({ kind: 'history_gap' });
@@ -343,8 +377,29 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
   const { completions } = reconstructTasks(combined);
   return {
     events: injectTaskCompletions(events, completions),
-    hasMore, nextBefore, trimmedBefore: tb, lastSeq,
+    hasMore, nextBefore, trimmedBefore, lastSeq,
   };
+}
+
+// Page a session's events straight off the persisted jsonl, with no instance
+// and no ring — the retired-session read path (src/mcp/handlers.ts
+// getInstOrDisk). The whole replayed transcript IS the history, so there is no
+// archive/ring seam (`seamIdx: -1`, its existing "no scan-opaque boundary"
+// meaning) and nothing was evicted-and-unreconstructable (`gap: false`,
+// `trimmedBefore: 0`).
+export async function pagePersistedEvents({ cwd, sessionId, before = null, after = null, limit }: {
+  cwd: string; sessionId: string; before?: number | null; after?: number | null; limit?: number;
+}): Promise<{ events: UiEvent[]; hasMore: boolean; nextBefore: number; trimmedBefore: number; lastSeq: number }> {
+  const max = clampLimit(limit);
+  const result = await loadPersistedTranscript({ cwd, sessionId, seqHint: 0 });
+  if (!result) return { events: [], hasMore: false, nextBefore: 0, trimmedBefore: 0, lastSeq: -1 };
+  const flat = stampArchiveEvents(result.lines);
+  const lastSeq = flat.length - 1;
+  const w = normalizeWindow(before, after, lastSeq);
+  return pageCombined(flat, {
+    before: w.before, after: w.after, max, seamIdx: -1, gap: false,
+    trimmedBefore: 0, lastSeq, optimisticMore: false,
+  });
 }
 
 // Splice `{kind:'task_completion', tasks}` (no `_seq`, matching the client's own

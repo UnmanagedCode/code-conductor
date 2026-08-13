@@ -6,7 +6,7 @@
 
   "stages": {
     "plan": {
-      "description": "Spawn and brief a plan worker; on its wake reject with feedback, answer its question, or abandon. There is no approving it into implement — this planner never writes code, and the handoff to one that does is yours to make. On a good one, leave it live and silent until landing: later stages forward its plan out of it, and a further turn to it displaces the plan from that window.",
+      "description": "Spawn and brief a plan worker; on its wake reject with feedback, answer its question, or abandon. There is no approving it into implement — this planner never writes code, and the handoff to one that does is yours to make. On a good one, leave it silent until landing: later stages forward its plan out of it, and a further turn to it displaces the plan from that window.",
       "tools": {
         "spawn_instance": { "pin": { "mode": "plan", "createWorktree": true, "model": "planner" } },
         "set_mode": "deny",
