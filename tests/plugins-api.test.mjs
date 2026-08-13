@@ -380,8 +380,10 @@ test('enable/disable a project-convention plugin fans out to referencing project
     // Mangle the body (marker intact) to prove the fan-out actually rewrites.
     await fs.writeFile(target, '<!-- cc:conventions projconv/vis -->\n\nSTALE BODY\n');
 
-    // Disable → fan-out runs but the slug is now unresolvable ⇒ no-op-safe skip:
-    // the (stale) committed file is frozen, never blanked.
+    // Disable → fan-out runs, but this marker's only slug is now unresolvable,
+    // so nothing resolves to a body ⇒ the (stale) committed file is left
+    // exactly as-is, never blanked (a marker with other resolvable slugs
+    // alongside a disabled one would instead recompose those and note this one).
     assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/projconv/disable')).status, 200);
     assert.equal(await fs.readFile(target, 'utf8'), '<!-- cc:conventions projconv/vis -->\n\nSTALE BODY\n', 'frozen while disabled');
 
@@ -820,9 +822,10 @@ test('POST /api/plugins/library/:id/install regenerates a pre-existing project w
     }));
 
     // A pre-existing project whose CONVENTIONS.md already references the
-    // not-yet-installed plugin's slug — frozen (unresolvable) until install
-    // clones + auto-enables it. Mirrors library.ts:299-307's own reasoning
-    // for adding this call to the install path.
+    // not-yet-installed plugin's slug — it's the marker's only slug, so
+    // nothing resolves to a body and the file is frozen until install clones
+    // + auto-enables it. Mirrors library.ts:299-307's own reasoning for
+    // adding this call to the install path.
     const refDir = path.join(boot.projectsRoot, 'preexisting');
     await fs.mkdir(refDir, { recursive: true });
     const target = path.join(refDir, 'CONVENTIONS.md');

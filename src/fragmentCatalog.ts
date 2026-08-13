@@ -62,7 +62,7 @@ export interface ExtraEntry {
   [key: string]: unknown;
 }
 
-interface CatalogEntry {
+export interface CatalogEntry {
   slug: string;
   name: string;
   description: string;
@@ -74,6 +74,16 @@ interface CatalogEntry {
   plugin?: string;
   scaffold?: string;
 }
+
+// `degraded: true` means a plugin-contributed slug may be MISSING from this
+// list because reading it transiently failed (extraProvider threw outright,
+// or a plugin's own cwd resolution failed — NOT a vanished fragment/scaffold
+// file, which is a different, already-accepted case that just contributes
+// nothing) — not because it is genuinely absent/disabled. A caller that
+// treats "not in the catalog" as "safe to drop" (e.g. ensureProjectConventionsMd's
+// never-blanks gate) must check this first: a degraded catalog can't tell
+// "gone" from "temporarily unreachable" for a slug about to be dropped.
+export type CatalogList = CatalogEntry[] & { degraded?: boolean };
 
 interface FragmentCatalogConfig {
   // seeds:    [{ slug, name, description }] — built-in metadata; body from <seedDir>/<slug><seedExt>
@@ -97,7 +107,7 @@ interface FragmentCatalogConfig {
 }
 
 interface FragmentCatalog {
-  getCatalog(): Promise<CatalogEntry[]>;
+  getCatalog(): Promise<CatalogList>;
   addCustom(input: { slug: string; name: string; description: string; body: string }): Promise<CatalogEntry>;
   updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown }): Promise<CatalogEntry>;
   deleteCustom(slug: string): Promise<{ slug: string }>;
@@ -174,17 +184,24 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
 
   // Merged catalog: seeds (builtin:true, body from fragment) + custom
   // (builtin:false, body from JSON) + optional extraProvider entries (builtin:false).
-  async function getCatalog(): Promise<CatalogEntry[]> {
+  // `degraded` (see CatalogList) is set when extraProvider failed outright, or
+  // flagged the list it DID return as incomplete (see registry.ts's `conventions()`).
+  async function getCatalog(): Promise<CatalogList> {
     const seedEntries = await Promise.all(
       seeds.map(async s => ({ ...s, body: await seedBody(s.slug), builtin: true })),
     );
     const custom = (await loadCustom()).map(r => ({ ...r, builtin: false }));
     let extra: CatalogEntry[] = [];
+    let degraded = false;
     if (extraProvider) {
-      try { extra = (await extraProvider()).map(r => ({ ...r, builtin: false })); }
-      catch (e) { console.warn(`fragmentCatalog: extraProvider failed: ${errMsg(e)}`); }
+      try {
+        const raw = await extraProvider();
+        if ((raw as ExtraEntry[] & { degraded?: boolean }).degraded) degraded = true;
+        extra = raw.map(r => ({ ...r, builtin: false }));
+      }
+      catch (e) { degraded = true; console.warn(`fragmentCatalog: extraProvider failed: ${errMsg(e)}`); }
     }
-    return [...seedEntries, ...custom, ...extra];
+    return Object.assign([...seedEntries, ...custom, ...extra], { degraded });
   }
 
   const isSeed = (slug: string): boolean => seeds.some(s => s.slug === slug);

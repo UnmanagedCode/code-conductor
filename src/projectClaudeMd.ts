@@ -13,11 +13,16 @@
 //
 // No sentinel/backup machinery (cf. rootClaudeMd.ts): CONVENTIONS.md is born
 // app-owned — created fresh only for split-model projects — so there is no
-// pre-existing hand-edited file to protect. The safety net is the no-op-safe
-// rule in ensureProjectConventionsMd: regeneration only ever overwrites when it
-// can fully resolve the marker's slugs; otherwise it leaves the committed file
-// untouched (never blanks it). Projects with no marker (grandfathered, or no
-// conventions selected) are skipped entirely.
+// pre-existing hand-edited file to protect. The safety net is the rule in
+// ensureProjectConventionsMd: regeneration composes whichever marker slugs it
+// *can* resolve and names the rest in a visible in-body note, keeping them in
+// the marker so they recover verbatim if they resolve again. It declines to
+// write, leaving the committed file untouched (never blanks it), in three
+// cases: a marker slug is unresolvable while the catalog is degraded (can't
+// tell "genuinely gone" from "temporarily unreachable" — see getCatalog); a
+// slug is unresolvable and nothing that does resolve carries a body; or
+// every slug resolves but none of them carries a body. Projects with no
+// marker (grandfathered, or no conventions selected) are skipped entirely.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -43,6 +48,17 @@ export function buildMarker(slugs: string[]): string {
   return slugs.length ? `<!-- cc:conventions ${slugs.join(',')} -->` : '<!-- cc:conventions -->';
 }
 
+// Visible in-body note naming marker slugs that don't resolve locally. This is
+// system-prompt text for every worker in the project, so it states only what
+// an agent can't otherwise tell — the document is incomplete, and which slug
+// is missing — no mechanics, no rationale, no imperative. Slugs keep marker
+// order. The note can never be mistaken for the marker (always line 1) or for
+// leftover content (the whole body is discarded before recomposition — see
+// ensureProjectConventionsMd), so nothing more needs to be said here.
+function unresolvedNote(missing: string[]): string {
+  return `> Convention unavailable: ${missing.map(s => `\`${s}\``).join(', ')}.`;
+}
+
 // Parse the first line of a CONVENTIONS.md. Returns the slug array (possibly
 // empty) if it is a valid marker, else null (not our file / grandfathered).
 export function parseMarker(firstLine: string | null | undefined): string[] | null {
@@ -53,26 +69,37 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
 }
 
 // Full CONVENTIONS.md document for a selection: marker + composed bodies.
-// Unknown slug → 400 (via composeProjectConventionsBlock) — callers at project
-// creation rely on this to reject a bad slug list.
-export async function composeProjectConventionsDoc(slugs: string[]): Promise<string> {
+// `missing` (marker slugs that don't resolve here) is kept in the MARKER — so the
+// convention recovers verbatim if it returns — but contributes a visible note
+// instead of a body. Unknown slug outside `missing` → 400 (via
+// composeProjectConventionsBlock); callers at project creation rely on that.
+export async function composeProjectConventionsDoc(slugs: string[], missing: string[] = []): Promise<string> {
   const marker = buildMarker(slugs);
-  const body = await composeProjectConventionsBlock(slugs);
-  return `${marker}\n${body || '\n'}`;
+  const gone = new Set(missing);
+  const body = await composeProjectConventionsBlock(slugs.filter(s => !gone.has(s)));
+  if (gone.size === 0) return `${marker}\n${body || '\n'}`;
+  return `${marker}\n\n${unresolvedNote(missing)}\n${body}`;
 }
 
 // Regenerate one project's CONVENTIONS.md from its own in-tree marker.
-//   - file missing            → { skipped: 'no-file' }
-//   - line 1 not a marker     → { skipped: 'no-marker' }
-//   - any slug unresolvable   → { skipped: 'unresolvable' }  (never blanks)
-//   - all slugs resolve       → recompose + overwrite → { regenerated: true }
+//   - file missing              → { skipped: 'no-file' }
+//   - line 1 not a marker       → { skipped: 'no-marker' }
+//   - zero-slug marker          → { skipped: 'empty-marker' }
+//   - a marker slug is unresolvable AND the catalog is degraded (can't tell "gone"
+//     from "temporarily unreachable") → { skipped: 'catalog-degraded', missing }  (never blanks)
+//   - nothing resolves to a body, ≥1 slug unresolvable (catalog NOT degraded) → { skipped: 'unresolvable', missing }  (never blanks)
+//   - every slug resolves, none carries a body         → { skipped: 'no-body' }  (never blanks)
+//   - some slugs unresolvable   → recompose the rest + a note → { regenerated: true, missing }
+//   - all slugs resolve         → recompose + overwrite → { regenerated: true, missing: [] }
 export async function ensureProjectConventionsMd(projectName: string, { log }: { log?: RegenerateLog } = {}): Promise<
   | { skipped: 'no-project' }
   | { skipped: 'no-file' }
   | { skipped: 'no-marker' }
   | { skipped: 'empty-marker' }
+  | { skipped: 'catalog-degraded'; missing: string[] }
   | { skipped: 'unresolvable'; missing: string[] }
-  | { path: string; regenerated: true }
+  | { skipped: 'no-body' }
+  | { path: string; regenerated: true; missing: string[] }
 > {
   const projects = await listProjects();
   const proj = projects.find(p => p.name === projectName);
@@ -90,20 +117,53 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   // it like the other skip branches — leave the committed file untouched.
   if (slugs.length === 0) return { skipped: 'empty-marker' };
 
-  // Resolve against the local catalog. If any slug is missing (a custom
-  // convention absent on this instance, a disabled/absent plugin, a retired
-  // seed), leave the committed file exactly as-is.
-  const known = new Set((await getCatalog()).map(e => e.slug));
-  const missing = slugs.filter(s => !known.has(s));
-  if (missing.length > 0) {
-    if (log?.log) log.log(`CONVENTIONS.md left as-is for '${projectName}': unresolvable ${missing.join(', ')}`);
-    return { skipped: 'unresolvable', missing };
+  const catalog = await getCatalog();
+  // Resolve against the local catalog. Unresolvable slugs (a custom convention
+  // absent on this instance, a disabled/absent plugin, a retired seed) stay in
+  // the marker — so the text returns verbatim if they do — but drop out of the
+  // body in favour of a visible note. The resolvable ones refresh normally.
+  const bySlug = new Map(catalog.map(e => [e.slug, e]));
+  const missing = slugs.filter(s => !bySlug.has(s));
+  // A degraded catalog (extraProvider threw, or a plugin's own cwd resolution
+  // transiently failed — see CatalogList) can't tell "genuinely gone" from
+  // "temporarily unreachable" for a slug it's about to drop. Degradation only
+  // ever OMITS catalog entries — it never alters the body of one that's still
+  // present — so it matters only when this marker actually has a slug about
+  // to be dropped (i.e. `missing` is non-empty here): if every marker slug
+  // still resolves, the composed output is identical to what a healthy
+  // catalog would produce, and declining the write would freeze a project
+  // over a failure that has nothing to do with it.
+  if (catalog.degraded && missing.length > 0) {
+    if (log?.log) log.log(`CONVENTIONS.md left as-is for '${projectName}': catalog degraded, unresolvable ${missing.join(', ')}`);
+    return { skipped: 'catalog-degraded', missing };
   }
 
-  const content = await composeProjectConventionsDoc(slugs);
+  const hasBody = slugs.some(s => bySlug.get(s)?.body);
+  // Never trade committed text for a bare note: if nothing that resolves
+  // contributes a body, leave the committed file exactly as-is rather than
+  // write a blank-bodied file. Two distinct ways to land here, kept distinct
+  // in the result so it stays honest about which happened:
+  //   - ≥1 slug is unresolvable (and no survivor has a body either)
+  //   - every slug resolves, but none of them carry a body (all scaffold-only
+  //     plugin conventions, or a plugin update dropped a fragment file while
+  //     keeping the same slug) — nothing is actually "unresolvable" here.
+  if (!hasBody) {
+    if (missing.length > 0) {
+      if (log?.log) log.log(`CONVENTIONS.md left as-is for '${projectName}': unresolvable ${missing.join(', ')}`);
+      return { skipped: 'unresolvable', missing };
+    }
+    if (log?.log) log.log(`CONVENTIONS.md left as-is for '${projectName}': no selected convention carries a body`);
+    return { skipped: 'no-body' };
+  }
+
+  const content = await composeProjectConventionsDoc(slugs, missing);
   await fs.writeFile(target, content);
-  if (log?.log) log.log(`CONVENTIONS.md regenerated: ${target}`);
-  return { path: target, regenerated: true };
+  if (log?.log) {
+    log.log(missing.length
+      ? `CONVENTIONS.md regenerated without unresolvable ${missing.join(', ')}: ${target}`
+      : `CONVENTIONS.md regenerated: ${target}`);
+  }
+  return { path: target, regenerated: true, missing };
 }
 
 // Boot / post-mutation fan-out over every project. Per-project try/catch so one
