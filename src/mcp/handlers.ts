@@ -1932,7 +1932,7 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
       meta.hint = `Showing ${messages.length} text message(s); ${omittedToolOnly} recent assistant message(s) had only tool calls — the agent is active. Pass includeToolCalls:true, or use get_transcript to inspect tool activity.`;
     } else if (messages.length === 0) {
       meta.hint = inst.ring.trimmedBefore > 0 && source !== 'disk'
-        ? 'No assistant messages retained in memory and the session transcript was unavailable (e.g. an exited temp session). Try get_transcript.'
+        ? 'No assistant messages retained in memory and the session transcript was unavailable on disk. Try get_transcript.'
         : 'No assistant text messages have arrived yet.';
     }
   }

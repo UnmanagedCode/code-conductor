@@ -438,7 +438,7 @@ test('temp conducted session persists the conducted marker and recovers it on re
   // conducted:true. The durable conducted marker must be written DESPITE temp
   // (i.e. before the `if (this.temp) return;` early-return in
   // _writeSessionMetadata) — otherwise an orchestrator SIGKILL (where the
-  // on-exit _deleteTempArtifacts never runs, so the jsonl + sidecars survive)
+  // on-exit _archiveTempSession never runs, so the jsonl + sidecars survive)
   // leaves nothing for create() to recover and the session resumes with
   // conducted falsy. This exercises both halves: the durable WRITE (a live
   // temp+conducted turn) and the RECOVERY (create({resume}) reading sidecars).

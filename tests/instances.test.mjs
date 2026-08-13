@@ -1708,9 +1708,9 @@ test('promote: flips temp flag, writes resume-picker metadata, skips on-exit cle
     const id = r.body.id;
     const inst = instances.get(id);
     await waitFor(() => inst.status === 'idle');
-    // Run one turn so the CLI flushes its jsonl to disk — that's the
-    // file the on-exit cleanup would otherwise delete, and the file the
-    // promote endpoint should keep.
+    // Run one turn so the CLI flushes its jsonl to disk — that's the file
+    // promote should keep off the temp on-exit archive path (jsonl kept but
+    // marked archived) by flipping temp to false first.
     inst.prompt('hi');
     await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
 
