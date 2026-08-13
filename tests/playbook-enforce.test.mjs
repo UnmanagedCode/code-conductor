@@ -690,8 +690,9 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
     assert.equal(foldProjection(await t.events()).bySession.get(planner.sessionId).stage, 'plan');
 
     // The handoff is a FORWARD, not a kill: the implementer spawns onto the
-    // planner's worktree while the planner is still live, so the plan can be
-    // forwarded out of it (`forward` resolves its source strict-live).
+    // planner's worktree and the plan is forwarded out of the planner. The
+    // planner happens to still be live here, but that is not what makes it
+    // work — `forward` serves a retired source from its transcript too.
     const handoff = {
       project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName,
       provenance: { plan: planner.sessionId },

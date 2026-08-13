@@ -157,7 +157,9 @@ export function buildTools(): Tool[] {
         'in-memory ring, and when fromSeq points into a range the ring has already evicted (below ' +
         'trimmedBefore) the dropped range is transparently served from the on-disk session transcript — ' +
         'ring eviction is invisible to you. A RETIRED session (no running process) is served wholly from ' +
-        'that transcript instead, reported as source:"disk" with status:"exited". Events carry _seq; poll ' +
+        'that transcript instead, reported as source:"disk" with status:"exited" — and since the CLI persists no ' +
+        'stream-only events, such a page contains NO turn_end (nor status/system events): never poll one for a ' +
+        'completion event that cannot arrive. Events carry _seq; poll ' +
         'incrementally by passing the returned `nextFrom` back as the next fromSeq (forward paging, ' +
         'oldest-first). Returns {status, sessionId, source, events, lastSeq, trimmedBefore, hasMore, ' +
         'nextFrom}. Event kinds: text_delta, tool_use, ' +

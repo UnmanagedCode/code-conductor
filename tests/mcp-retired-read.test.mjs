@@ -1,8 +1,9 @@
 // Read-only retrieval for a RETIRED session: get_recent_messages and
 // get_transcript resolve through getInstOrDisk (live-instance → disk-location →
 // soft refusal), so a killed temp worker's output stays readable from the
-// transcript _archiveTempSession retained. Every other worker-addressing tool
-// stays strict-live.
+// transcript _archiveTempSession retained. Every tool that ADDRESSES a worker
+// stays strict-live; tests/mcp-forward.test.mjs covers the third read call
+// site, send_prompt's forward source.
 //
 // The fake CLI writes no jsonl, so each fixture seeds the transcript the CLI
 // would have written (tests/helpers.mjs seedSessionJsonl) at the live worker's
@@ -303,10 +304,8 @@ test('a stage that denies get_recent_messages still denies it for a retired work
 // NON-temp worker survives in byId with no proc, so getInstOrDisk takes its
 // anyForSession branch instead — a completely different source for the
 // cwd/backingSessionId pair (the instance's own record, not a disk probe).
-// Nothing else reads that pair: forward is the only other caller and the
-// allowDisk guard refuses before it is ever used. So the content assertion
-// below is load-bearing — an empty-but-successful result would prove nothing,
-// since an unseeded read returns null at any cwd.
+// The content assertion below is load-bearing — an empty-but-successful result
+// would prove nothing, since an unseeded read returns null at any cwd.
 test('get_recent_messages / get_transcript: a dead-but-retained non-temp worker is served from disk, from its own transcript', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
   try {
@@ -343,5 +342,100 @@ test('get_recent_messages / get_transcript: a dead-but-retained non-temp worker 
     assert.equal(page.status, 'exited');
     assert.ok(page.events.some(e => e.kind === 'text_delta' && /retained non-temp findings/.test(e.text ?? '')),
       'get_transcript pages the same session\'s events, not an empty page');
+  } finally { await ctx.close(); }
+});
+
+// A batch that reaches all-done makes eventArchive splice a SYNTHETIC
+// `task_completion` event in after the completing TaskUpdate. Synthetic events
+// carry no `_seq` by design, so when one ENDS a page the cursor cannot be read
+// off the array's last element — `undefined + 1` is NaN, which serializes as
+// null and strands the poller with nothing to pass as the next fromSeq.
+const TASK_TURN = [
+  { type: 'user', uuid: 'u0', message: { role: 'user', content: 'do two things' } },
+  { type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [
+    { type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'first', description: 'the first', activeForm: 'doing first' } },
+  ] } },
+  { type: 'user', uuid: 'r0', message: { role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1 created' },
+  ] } },
+  { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+    { type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } },
+  ] } },
+  { type: 'user', uuid: 'r1', message: { role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'tu1', content: 'ok' },
+  ] } },
+  { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'both done' }] } },
+];
+
+test('get_transcript: a page ENDING on a synthetic task_completion still returns a usable nextFrom', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    const sid = await retiredTempWorker(ctx, 'retiredtasks', TASK_TURN);
+
+    // Locate the synthetic event and the real event it was spliced in after.
+    const whole = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 200 }));
+    const at = whole.events.findIndex(e => e.kind === 'task_completion');
+    assert.ok(at > 0, `fixture must produce a task_completion: ${JSON.stringify(whole.events.map(e => e.kind))}`);
+    assert.equal(whole.events[at]._seq, undefined, 'synthetic events carry no _seq');
+    const anchorSeq = whole.events[at - 1]._seq;
+    assert.equal(typeof anchorSeq, 'number');
+
+    // Disk seqs are dense from 0, so this limit makes the anchor the last REAL
+    // event of the page — and the synthetic one is appended after it, ending
+    // the page on an event with no _seq. That page shape is the whole point.
+    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', {
+      sessionId: sid, fromSeq: 0, limit: anchorSeq + 1,
+    }));
+    assert.equal(page.events[page.events.length - 1].kind, 'task_completion',
+      'the page must END on the synthetic event, or this test proves nothing');
+
+    assert.equal(page.nextFrom, anchorSeq + 1,
+      'the cursor comes from the last event that HAS a _seq, not from the array tail');
+    assert.equal(Number.isFinite(page.nextFrom), true, 'never NaN/null — that would strand the poller');
+
+    // ...and the cursor actually advances: polling with it yields the rest.
+    const rest = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: page.nextFrom, limit: 200 }));
+    assert.ok(rest.events.length > 0, 'paging continues past the synthetic event');
+    assert.equal(rest.events[0]._seq, anchorSeq + 1, 'no event is skipped and none is re-served');
+  } finally { await ctx.close(); }
+});
+
+// The liveness-text class: a retired session reaches messages that used to be
+// written for a worker that could still act. Each of these told the conductor
+// to wait for something that can never happen.
+test('a retired session is never described as active or waitable', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    // A transcript whose only assistant message is tool-call-only, so
+    // omittedToolOnly > 0 and messages[] comes back empty.
+    const sid = await retiredTempWorker(ctx, 'retiredtoolonly', [
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'go' } },
+      { type: 'assistant', uuid: 'a0', message: { id: 'm_t', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu_x', name: 'Read', input: { file_path: '/tmp/x' } },
+      ] } },
+    ]);
+
+    const read = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }));
+    assert.equal(read.meta.source, 'disk');
+    assert.equal(read.meta.messages.length, 0);
+    assert.ok(read.meta.omittedToolOnly > 0, 'the fixture must trip the omittedToolOnly hint');
+    assert.doesNotMatch(read.meta.hint, /the agent is active/,
+      'a retired session has no agent to be active');
+    assert.match(read.meta.hint, /retired/, 'the hint says what the session actually is');
+
+    // ...and the same session as a forward SOURCE must not be described as
+    // still working, nor the conductor told to wait for a turn_end.
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'tgt' });
+    const target = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', { project: 'tgt', mode: 'bypassPermissions' }));
+    await waitFor(() => instForSession(ctx.instances, target.sessionId)?.status === 'idle');
+
+    const refused = unwrap(await callTool(ctx.baseUrl, 'send_prompt', {
+      sessionId: target.sessionId, forward: { sessionId: sid }, text: 'go',
+    }));
+    assert.equal(refused.code, 'NOTHING_TO_FORWARD');
+    assert.doesNotMatch(refused.reason, /still working/, 'a retired source is not working');
+    assert.doesNotMatch(refused.reason, /Wait for its next turn_end/,
+      'a retired source will never produce another turn_end — waiting stalls the conductor forever');
+    assert.match(refused.reason, /retired/);
   } finally { await ctx.close(); }
 });

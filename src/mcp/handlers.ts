@@ -276,7 +276,7 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
   const orphan = await findOrphanedTranscript(sessionId).catch(() => null);
   if (orphan) {
     return { soft: { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
-      reason: `session ${sessionId} has a transcript on disk (${orphan}) but no registered project or worktree owns its directory, so its content cannot be read — re-register that worktree, then retry.` } };
+      reason: `session ${sessionId} has a transcript on disk (${orphan}) but no registered project or worktree owns its directory, so its content cannot be read. Re-register that worktree and retry — reads and forwards work off the transcript, so nothing has to be resurrected.` } };
   }
   return { soft: { ok: false, code: 'SESSION_UNKNOWN', sessionId,
     reason: `no session ${sessionId} is known to the orchestrator.` } };
@@ -786,7 +786,17 @@ export async function getTranscript({ sessionId, fromSeq, limit = 200 }: { sessi
       page: await pageInstanceEvents(r.inst, { limit, ...after }),
     };
   const events = page.events;
-  const nextFrom = events.length ? (events[events.length - 1]._seq as number) + 1 : page.lastSeq + 1;
+  // The cursor comes from the last event that HAS a `_seq`, not from the last
+  // event: a page can END on a SYNTHETIC one — `task_completion` is spliced in
+  // after the TaskUpdate that completed a batch, `history_gap` at the archive
+  // seam — and both carry no `_seq` by design (see eventArchive.ts SeqEvent).
+  // Reading the array's tail blindly yields `undefined + 1` → NaN, which
+  // serializes as null and strands the poller with no way to continue.
+  let nextFrom = page.lastSeq + 1;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const seq = events[i]._seq;
+    if (typeof seq === 'number') { nextFrom = seq + 1; break; }
+  }
   return {
     status,
     sessionId: resolvedSessionId,
@@ -991,7 +1001,7 @@ function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): Soft
   if (soft.code === 'SESSION_NOT_LIVE') {
     return {
       ok: false, code: 'FORWARD_SESSION_NOT_LIVE', forwardSessionId,
-      reason: `forward source session ${forwardSessionId} has no running process and its transcript could not be read: ${soft.reason} Call spawn_instance({resume:"${forwardSessionId}"}) to bring it back, then retry. No prompt was sent.`,
+      reason: `forward source session ${forwardSessionId} has no running process and its transcript could not be read: ${soft.reason} No prompt was sent.`,
     };
   }
   return {
@@ -1045,9 +1055,13 @@ export async function sendPrompt(
     const sel = await selectRecentMessages({ sessionId: forwardSessionId }, ctx);
     if ('soft' in sel) return forwardSourceRefusal(sel.soft, forwardSessionId);
     if (sel.messages.length === 0) {
-      const reason = sel.omittedToolOnly > 0
-        ? `session ${forwardSessionId} has no forwardable output — its ${sel.omittedToolOnly} most recent assistant message(s) carry only tool calls, so it is still working. Wait for its next turn_end and forward then. No prompt was sent.`
-        : `session ${forwardSessionId} has no forwardable output — no assistant text, plan or questions have arrived yet. No prompt was sent.`;
+      // A RETIRED source will never produce another turn_end, so it never gets
+      // the "wait for it" advice — that would stall the conductor forever.
+      const reason = !sel.live
+        ? `session ${forwardSessionId} has no forwardable output — it is retired (no running process) and its transcript holds no assistant text, plan or questions to forward. Waiting will not change that; resume it with spawn_instance({resume:"${forwardSessionId}"}) if it still has work to do. No prompt was sent.`
+        : sel.omittedToolOnly > 0
+          ? `session ${forwardSessionId} has no forwardable output — its ${sel.omittedToolOnly} most recent assistant message(s) carry only tool calls, so it is still working. Wait for its next turn_end and forward then. No prompt was sent.`
+          : `session ${forwardSessionId} has no forwardable output — no assistant text, plan or questions have arrived yet. No prompt was sent.`;
       return { ok: false, code: 'NOTHING_TO_FORWARD', forwardSessionId, reason };
     }
     composedText = renderForwardFrame(sel.messages, text);
@@ -1938,6 +1952,14 @@ async function selectRecentMessages(
   source: string;
   omittedToolOnly: number;
   requested: number;
+  // Is there a PROCESS behind this selection? Not the same question as
+  // `source`, which says where the bytes came from — a live worker whose ring
+  // evicted the range also reports source:'disk'. Callers that phrase a result
+  // in terms of what the worker will do next ("still working", "wait for its
+  // next turn_end", "the agent is active") must branch on THIS: a retired
+  // session will never act again, and telling a conductor to wait on one
+  // stalls it forever.
+  live: boolean;
 } | { soft: SoftRefusal }> {
   const r = await getInstOrDisk(instances, sessionId);
   if ('soft' in r) return r;
@@ -1960,6 +1982,7 @@ async function selectRecentMessages(
     return {
       sessionId: r.disk.sessionId, trimmedBefore: 0, ring: [], messages, source: 'disk',
       omittedToolOnly: includeToolCalls ? 0 : (all.length - filtered.length), requested: n,
+      live: false,
     };
   }
 
@@ -1987,7 +2010,7 @@ async function selectRecentMessages(
 
   return {
     sessionId: inst.sessionId as string, trimmedBefore: inst.ring.trimmedBefore,
-    ring, messages, source, omittedToolOnly, requested: n,
+    ring, messages, source, omittedToolOnly, requested: n, live: true,
   };
 }
 
@@ -2002,7 +2025,7 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 }, ctx: McpCtx): Promise<{ meta: Record<string, unknown>; bodies: string[] } | { soft: SoftRefusal }> {
   const sel = await selectRecentMessages({ sessionId, count, includeToolCalls, includeThinking }, ctx);
   if ('soft' in sel) return sel;
-  const { ring, messages, source, omittedToolOnly, requested: n } = sel;
+  const { ring, messages, source, omittedToolOnly, requested: n, live } = sel;
   const trimmedBefore = sel.trimmedBefore;
 
   // Multi-block: metadata block describes each message; one raw text block per
@@ -2050,13 +2073,21 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
     retained: { firstSeq: trimmedBefore, lastSeq, trimmed: trimmedBefore > 0 },
   };
   // Never a bare ambiguous result: when we couldn't fill the request, say why.
+  // Every branch here is phrased for the session's ACTUAL state: on a retired
+  // read there is no agent to be active and nothing more will arrive, so the
+  // live wordings ("the agent is active", "...yet") would send a conductor off
+  // to wait on a worker that cannot act again.
   if (messages.length < n) {
     if (omittedToolOnly > 0) {
-      meta.hint = `Showing ${messages.length} text message(s); ${omittedToolOnly} recent assistant message(s) had only tool calls — the agent is active. Pass includeToolCalls:true, or use get_transcript to inspect tool activity.`;
+      meta.hint = live
+        ? `Showing ${messages.length} text message(s); ${omittedToolOnly} recent assistant message(s) had only tool calls — the agent is active. Pass includeToolCalls:true, or use get_transcript to inspect tool activity.`
+        : `Showing ${messages.length} text message(s); this session is retired (no running process) and its last ${omittedToolOnly} assistant message(s) carry only tool calls — it stopped mid-work. Pass includeToolCalls:true, or use get_transcript to see what it had done.`;
     } else if (messages.length === 0) {
-      meta.hint = trimmedBefore > 0 && source !== 'disk'
-        ? 'No assistant messages retained in memory and the session transcript was unavailable on disk. Try get_transcript.'
-        : 'No assistant text messages have arrived yet.';
+      meta.hint = !live
+        ? 'This session is retired (no running process) and its transcript holds no assistant text messages. Nothing further will arrive.'
+        : trimmedBefore > 0 && source !== 'disk'
+          ? 'No assistant messages retained in memory and the session transcript was unavailable on disk. Try get_transcript.'
+          : 'No assistant text messages have arrived yet.';
     }
   }
   return { meta, bodies };

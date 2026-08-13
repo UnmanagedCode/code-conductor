@@ -357,7 +357,10 @@ test('forward: an unreachable (orphaned-transcript) source still soft-refuses FO
   assert.equal(res.code, 'FORWARD_SESSION_NOT_LIVE');
   assert.equal(res.forwardSessionId, orphanSid);
   assert.match(res.reason, /no registered project or worktree owns/, 'the refusal names why it is unreadable');
-  assert.match(res.reason, new RegExp(`spawn_instance\\(\\{resume:"${orphanSid}"\\}\\)`));
+  // The remedy is RE-REGISTERING the worktree, not resurrection: spawn_instance
+  // ({resume}) cannot locate a session under an unregistered directory either.
+  assert.match(res.reason, /[Rr]e-register that worktree/);
+  assert.doesNotMatch(res.reason, /spawn_instance/);
 });
 
 test('forward: a malformed forward:{} soft-refuses FORWARD_SESSION_UNKNOWN (validateArgs does no nested validation)', async () => {
