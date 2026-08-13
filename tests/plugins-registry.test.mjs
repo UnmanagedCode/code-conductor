@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginHost } from '../src/plugins/registry.ts';
 import { pidAlive } from '../src/plugins/ports.ts';
-import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir, createProject } from '../src/projects.ts';
+import { readProjectMeta, writeProjectMeta, listWorkspaces, projectStoreDir, selfProjectDir, createProject, orchStoreRoot } from '../src/projects.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
 import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
 import { makePluginRoot, readFixtureManifest, waitFor, FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
@@ -444,6 +444,41 @@ test('a transient init failure does not permanently poison the plugin host — t
   }
 });
 
+test('stopAll() still stops an already-recorded backend even when init fails', async () => {
+  const env = await makePluginRoot();
+  try {
+    // Seed runtime.json BEFORE the host ever inits — runtimeRecords is
+    // assigned from this file at the top of ensureInit's async body, before
+    // rescanInternal() (which we're about to force to throw) even runs. A
+    // fake pid/pgid is enough: supervisor.stop() never throws on a bogus or
+    // already-dead one (it wraps process.kill in try/catch), so this needs
+    // no real spawned child to observe the stop being attempted.
+    const runtimeDir = path.join(orchStoreRoot(), 'plugins');
+    await fs.mkdir(runtimeDir, { recursive: true });
+    await fs.writeFile(path.join(runtimeDir, 'runtime.json'), JSON.stringify({
+      fakeid: { pid: 999999, pgid: 999999, port: 1, startedAt: new Date(0).toISOString(), gitHead: null },
+    }));
+
+    // Same forced-rescan-failure fixture as the test above.
+    await env.addProject('plain');
+    const wtDir = path.join(projectStoreDir('plain'), 'worktrees');
+    await fs.mkdir(path.dirname(wtDir), { recursive: true });
+    await fs.writeFile(wtDir, '');
+
+    const host = createPluginHost();
+    await assert.rejects(host.list()); // init failed; initPromise is now null (see ensureInit)
+
+    // Must not early-return just because initPromise is null: runtimeRecords
+    // was already loaded with 'fakeid' before the failure, so stopAll() has
+    // to attempt stopping it — proven by the record being cleared from disk.
+    await host.stopAll();
+    const persisted = JSON.parse(await fs.readFile(path.join(runtimeDir, 'runtime.json'), 'utf8'));
+    assert.deepEqual(Object.keys(persisted), [], 'stopAll() must still stop (and clear) a backend recorded before the failed init');
+  } finally {
+    await env.restore();
+  }
+});
+
 // The one manifest shape whose cwd resolution can genuinely fail: an
 // activeVersion of type 'worktree' routes resolveCwd() through
 // getWorktree()->listWorktrees()->getProject(entry.project) — a REAL I/O
@@ -532,6 +567,44 @@ test('conventions(): a vanished fragment file does NOT degrade the catalog — t
     const res = await ensureProjectConventionsMd('referencer2');
     assert.equal(res.regenerated, true, 'a missing fragment FILE must leave the project regenerating, not frozen');
     assert.deepEqual(res.missing, ['ghostfrag/vis']);
+    const content = await fs.readFile(target, 'utf8');
+    assert.match(content, /## Design guidelines/);
+    assert.doesNotMatch(content, /STALE/);
+  } finally {
+    setPluginConventionsProvider(null);
+    await env.restore();
+  }
+});
+
+test('conventions(): a vanished SCAFFOLD file does NOT degrade the catalog either — the referencing project keeps regenerating', async () => {
+  const env = await makePluginRoot();
+  try {
+    // Twin of the vanished-fragment test, one facet over: the scaffold half
+    // of "a vanished fragment/scaffold file is skipped, not degraded" needs
+    // its own pin — reading the scaffold file is a separate catch from
+    // reading the fragment body, and only one of the two used to be tested.
+    const manifest = {
+      id: 'ghostscaffold', name: 'GhostScaffold', version: '1.0.0', pluginApi: 1,
+      conventions: [{ slug: 'vis', name: 'Vis', description: 'x', file: 'conventions/sample.md', scope: 'project', scaffold: { file: 'scaffolds/sample.md' } }],
+    };
+    const dir = await env.addPluginProject('cplug', { manifest });
+    const host = createPluginHost();
+    await host.enable('ghostscaffold'); // file exists right now; scaffold file exists right now
+
+    await fs.rm(path.join(dir, 'scaffolds', 'sample.md'));
+
+    const rows = await host.conventions();
+    assert.equal(rows.project.some(e => e.slug === 'ghostscaffold/vis'), false, 'a convention whose scaffold file 404s contributes nothing (fragment body included)');
+    assert.ok(!rows.project.degraded, 'a vanished scaffold FILE is the same already-accepted case as a vanished fragment — must not be treated as degraded');
+
+    setPluginConventionsProvider(async () => (await host.conventions()).project);
+    await createProject('referencer3');
+    const target = conventionsTargetPath(path.join(env.root, 'referencer3'));
+    await fs.writeFile(target, '<!-- cc:conventions ghostscaffold/vis,design-guidelines -->\n\nSTALE\n');
+
+    const res = await ensureProjectConventionsMd('referencer3');
+    assert.equal(res.regenerated, true, 'a missing scaffold FILE must leave the project regenerating, not frozen');
+    assert.deepEqual(res.missing, ['ghostscaffold/vis']);
     const content = await fs.readFile(target, 'utf8');
     assert.match(content, /## Design guidelines/);
     assert.doesNotMatch(content, /STALE/);
