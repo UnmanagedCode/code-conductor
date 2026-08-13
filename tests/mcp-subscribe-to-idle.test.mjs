@@ -217,6 +217,59 @@ test('a renewal defers the wake to the reseed turn — exactly one, naming the p
   assert.equal(instances._idleHub.hasSubscriber(targetInstanceId), false, 'one-shot consumed');
 });
 
+test('a REQUESTED renewal auto-subscribes the conductor: one wake, after the reseed', async () => {
+  // Phase 2 (card 2026-0127). The targeted renew_session form declares no
+  // `subscribe` parameter — a request whose acceptance-or-decline the conductor
+  // never hears is useless — so there is deliberately NO subscribe_to_idle call
+  // anywhere in this test. Everything else is the sibling test above: the one
+  // wake must still be held across arm → /clear → reseed.
+  const REQUEST = path.join(__dirname, 'fixtures', 'scenario-renew-request.json');
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', REQUEST);
+  const target = instForSession(instances, targetId);
+  const caller = instForSession(instances, callerId);
+  const targetInstanceId = target.id;
+
+  const req = unwrap(await callTool('renew_session',
+    { sessionId: targetId, directive: 'MARK-D: roster + sentinels' }, { caller: callerId }));
+  assert.equal(req.requested, true, JSON.stringify(req));
+  assert.equal(req.subscribed, true, 'the request subscribed the conductor with no explicit call');
+  assert.equal(instances._idleHub.hasSubscriber(targetInstanceId), true);
+
+  // The worker accepts: it writes its own summary inside the turn the request
+  // opened (the fixture's request turn emits nothing, so it is still open), then
+  // the turn ends and the managed /clear + reseed run.
+  unwrap(await callTool('renew_session', { summary: 'mid-assignment handoff' }, { caller: targetId }));
+  await callTool('send_prompt', { sessionId: targetId, text: 'go1' });
+
+  const NEW_SID = 'c0000000-0000-4000-8000-000000000001'; // the fixture's post-clear sid
+  let stateAtConsume = null;
+  await waitFor(() => {
+    if (instances._idleHub.hasSubscriber(targetInstanceId)) return false;
+    stateAtConsume = {
+      backing: target.backingSessionId,
+      seeded: target.ringSnapshot().some(ev => ev.kind === 'user_echo'
+        && typeof ev.text === 'string' && ev.text.includes('mid-assignment handoff')),
+    };
+    return true;
+  });
+  assert.equal(stateAtConsume.backing, NEW_SID,
+    'the wake was held past the rotation, not spent on the armed turn_end');
+  assert.equal(stateAtConsume.seeded, true,
+    'and held past the RESEED — the conductor wakes to post-clear state');
+
+  await waitFor(() => findStubFor(caller, targetId));
+  await waitFor(() => target.status === 'idle');
+  assert.equal(countUserEchoes(caller, ev => ev.text.includes('get_recent_messages')), 1,
+    'exactly one wake across request → self-call → clear → reseed');
+  const stub = findStubFor(caller, targetId);
+  assert.ok(!stub.text.includes('did NOT finish'), `the wake must not be the watchdog stub: ${stub.text}`);
+  assert.ok(!stub.text.includes('DECLINED'), `an accepted request must not report a decline: ${stub.text}`);
+  assert.ok(!stub.text.includes(target.backingSessionId),
+    `the internal backing id must not leak into the wake stub: ${stub.text}`);
+});
+
 test('subscribe_to_idle DEFERS the wake while the target has a live background Agent task', async () => {
   // The dispatch-and-wake contract: a wake means the worker AND all its
   // background subagents are done. This drives the target through a scenario

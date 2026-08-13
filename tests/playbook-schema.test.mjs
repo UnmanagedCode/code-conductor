@@ -181,14 +181,18 @@ test('every built-in `pin` value resolves against the real product', async () =>
 
 test('governable tools are derived from buildTools(): sessionId-taking tools plus spawn_instance', () => {
   const names = governableToolNames(index);
+  // `renew_session` is here because it now declares an OPTIONAL `sessionId` (the
+  // conductor-requested renewal). Membership follows the schema, with no
+  // carve-out for a tool that is only sometimes targeted.
   for (const t of ['send_prompt', 'set_mode', 'approve_plan', 'sync_worktree',
-                   'kill_instance', 'get_transcript', 'locate_session', 'spawn_instance']) {
+                   'kill_instance', 'get_transcript', 'locate_session', 'spawn_instance',
+                   'renew_session']) {
     assert.ok(names.includes(t), `${t} should be governable`);
   }
   // Ungoverned BY CONSTRUCTION (targeted-only scope): these declare no sessionId,
   // so nothing names a worker for policy to be read from. A sample of the class —
   // the authoritative membership is whatever governableToolNames() computes.
-  for (const t of ['renew_session', 'delete_worktree', 'merge_worktree', 'project_read',
+  for (const t of ['delete_worktree', 'merge_worktree', 'project_read',
                    'project_bash', 'list_projects', 'list_sessions', 'create_worktree']) {
     assert.ok(!names.includes(t), `${t} must NOT be governable`);
   }
@@ -333,13 +337,18 @@ test('a tool name outside the governable set is rejected', () => {
     /'project_read' is not a governable tool/);
   expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', delete_worktree: 'deny' } } } }),
     /'delete_worktree' is not a governable tool/);
-  expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', renew_session: 'deny' } } } }),
-    /'renew_session' is not a governable tool/);
+  expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', list_sessions: 'deny' } } } }),
+    /'list_sessions' is not a governable tool/);
   expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', merge_worktree: 'deny' } } } }),
     /'merge_worktree' is not a governable tool/);
   // Prefix globs are not a thing — only the bare '*' fallback entry.
   expectErr(base({ stages: { a: { tools: { spawn_instance: 'allow', 'code-kanban__*': 'deny' } } } }),
     /is not a governable tool/);
+  // …and the other direction of the same rule: a stage MAY deny the newly
+  // governable renew_session, so a lockdown stage can refuse a conductor's
+  // renewal REQUEST on a worker in it (the worker's own self-call is never
+  // governed — policy applies to conductor callers only).
+  expectOk(base({ stages: { a: { tools: { spawn_instance: 'allow', renew_session: 'deny' } } } }));
 });
 
 // Fail-closed beats the general lookup rule: spawnability requires an EXPLICIT

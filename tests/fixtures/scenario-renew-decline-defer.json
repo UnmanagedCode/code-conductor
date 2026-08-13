@@ -1,0 +1,37 @@
+{
+  "_comment": "A DECLINED renewal request whose wake is DEFERRED: the request turn (matched on the test's MARK-D directive) launches a backgrounded Agent task and ends while it is still live, so the idle hub defers the wake at that turn_end — the moment the request expires. The next turn completes the task (task_updated only, so no re-invocation is owed) and its turn_end delivers the deferred wake, which must still carry the decline note.",
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE", "tools": [ "Bash", "Agent" ] }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt", "text": "MARK-D" },
+      "emit": [
+        { "type": "system", "subtype": "task_started", "task_id": "bgdecline1", "tool_use_id": "tu_agent1", "description": "bg task", "subagent_type": "Explore", "task_type": "local_agent", "prompt": "look around" },
+        { "type": "user", "tool_use_result": { "isAsync": true, "status": "async_launched", "agentId": "bgdecline1" }, "message": { "role": "user", "content": [ { "type": "tool_result", "tool_use_id": "tu_agent1", "content": [ { "type": "text", "text": "agentId: bgdecline1\nThe agent is working in the background." } ], "is_error": false } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0001, "is_error": false }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "system", "subtype": "task_updated", "task_id": "bgdecline1", "patch": { "status": "completed", "end_time": 1 } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0002, "is_error": false }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_b", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0003, "is_error": false }
+      ]
+    },
+    {
+      "on": { "type": "prompt" },
+      "emit": [
+        { "type": "assistant", "message": { "id": "msg_c", "role": "assistant", "content": [ { "type": "text", "text": "ok" } ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 10, "total_cost_usd": 0.0004, "is_error": false }
+      ]
+    }
+  ]
+}

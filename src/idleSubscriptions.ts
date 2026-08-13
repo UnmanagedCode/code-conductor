@@ -74,28 +74,46 @@ interface PendingSettle {
   armSeq: number;
 }
 
+// The wording for a declined renewal request, prefixed into the wake stub's
+// summary. One sentence, true whether or not the conductor supplied a followUp.
+// Server-only — the client never builds it.
+function declineNote(targetSessionId: string): string {
+  return `Renewal request DECLINED by \`${targetSessionId}\` — it ended its turn without calling `
+    + 'renew_session, so nothing was cleared.';
+}
+
 export class IdleSubscriptionHub {
   manager: InstanceManagerLike;
   // One-shot idle subscriptions: when target hits turn_end, deliver
   // a stub user prompt to every registered caller and clear the set.
   // Keyed by targetInstanceId → Map<callerInstanceId, { timerId }>.
   subscribers: Map<string, Map<string, SubscriptionEntry>>;
-  // Short-lived set of targetInstanceIds populated in _onTurnEnd() BEFORE
-  // subscribers is cleared, so the synchronously-following wsHub
-  // turn_notification handler can read it. A queueMicrotask cleanup runs after
-  // both synchronous listeners complete. turn_end-ONLY by contract: the settle
-  // path never touches it (a settle fires while the worker is idle with a
-  // frozen stream, so no worker turn_notification exists to suppress).
-  _justConsumed: Set<string>;
+  // Short-lived map of targetInstanceId → the callerInstanceIds that were watching
+  // it, populated in _onTurnEnd() BEFORE subscribers is cleared, so the
+  // synchronously-following wsHub turn_notification handler can read it (via
+  // wasConsumed) and so a decline note can be attributed to a caller whose
+  // subscription has already been consumed in this dispatch (see
+  // noteRenewalDeclined). A queueMicrotask cleanup runs after both synchronous
+  // listeners complete. turn_end-ONLY by contract: the settle path never touches
+  // it (a settle fires while the worker is idle with a frozen stream, so no worker
+  // turn_notification exists to suppress).
+  _justConsumed: Map<string, Set<string>>;
   // Pending idle task-drain settles, keyed by targetInstanceId (see
   // PendingSettle).
   _pendingSettles: Map<string, PendingSettle>;
+  // Notes to prefix into the next wake stub, keyed targetInstanceId →
+  // callerInstanceId — currently only a declined renewal request. Keyed by BOTH
+  // ends because a note belongs to the conductor that asked, not to whoever this
+  // worker happens to wake next. Read-and-deleted by _takeDecline; see
+  // noteRenewalDeclined.
+  _pendingDeclines: Map<string, Map<string, string>>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
     this.subscribers = new Map();
-    this._justConsumed = new Set();
+    this._justConsumed = new Map();
     this._pendingSettles = new Map();
+    this._pendingDeclines = new Map();
   }
 
   // Driven by InstanceManager's `event` listener — EVERY instance event lands
@@ -166,7 +184,7 @@ export class IdleSubscriptionHub {
     // turn_end fired — on the deferred intermediate turn_end as well as the
     // final one, so the worker's turn_notification stays suppressed across the
     // whole deferral.
-    this._justConsumed.add(targetInstanceId);
+    this._justConsumed.set(targetInstanceId, new Set(subs.keys()));
     queueMicrotask(() => this._justConsumed.delete(targetInstanceId));
     // Defer while background subagents are still running OR an unconsumed
     // mid-turn task notification means a re-invocation turn is still owed —
@@ -293,6 +311,31 @@ export class IdleSubscriptionHub {
     }
   }
 
+  // A conductor's renewal request expired unconsumed on this target — the worker
+  // declined (see src/sessionRenew.ts). The note is filed against the conductor
+  // that ASKED (`requestedBy`), never against the target alone: two conductors may
+  // watch one worker, and telling the one that made no request is a report about
+  // something it never did, while the requester hears nothing.
+  //
+  // Recorded ONLY if that caller is actually waiting (_isWaitingOn), so a note can
+  // never linger for a wake that never comes; and consumed by whichever path ends
+  // the wait (_takeDecline), so it can never surface on a later, unrelated one.
+  //
+  // Called SYNCHRONOUSLY inside the same event dispatch as the expiry, which is
+  // what makes the ordering safe without depending on listener order: deliver()'s
+  // body runs as a microtask, so the note is always set before it reads.
+  noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void {
+    // sessionId in, instanceId thereafter — the same boundary translation
+    // subscribe() does. A requester that is gone has nothing to be told.
+    const callerInstanceId = requestedBy ? this.manager.liveForSession(requestedBy)?.id ?? null : null;
+    if (!callerInstanceId) return;
+    if (!this._isWaitingOn(targetInstanceId, callerInstanceId)) return;
+    const sid = this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
+    let notes = this._pendingDeclines.get(targetInstanceId);
+    if (!notes) { notes = new Map(); this._pendingDeclines.set(targetInstanceId, notes); }
+    notes.set(callerInstanceId, declineNote(sid));
+  }
+
   // Cancel the pending settle for a target instance, if any. Idempotent.
   _cancelSettle(targetInstanceId: string): void {
     const pending = this._pendingSettles.get(targetInstanceId);
@@ -386,6 +429,7 @@ export class IdleSubscriptionHub {
     if (!entry) return { removed: false };
     clearTimeout(entry.timerId);
     subs.delete(callerInstanceId);
+    this._takeDecline(targetInstanceId, callerInstanceId); // this wait is over
     if (subs.size === 0) {
       this.subscribers.delete(targetInstanceId);
       this._cancelSettle(targetInstanceId); // no watchers left
@@ -413,6 +457,10 @@ export class IdleSubscriptionHub {
   purge(instanceId: string): void {
     if (!instanceId) return;
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
+    this._pendingDeclines.delete(instanceId); // …and every note about it
+    // As CALLER: a note filed for this instance under some other target can no
+    // longer reach anyone either.
+    for (const [target] of this._pendingDeclines) this._takeDecline(target, instanceId);
     const asTarget = this.subscribers.get(instanceId);
     if (asTarget) {
       for (const [, { timerId }] of asTarget) clearTimeout(timerId);
@@ -434,7 +482,12 @@ export class IdleSubscriptionHub {
   deliver(callerInstanceId: string, targetInstanceId: string, opts?: { timedOut?: boolean; timeoutMs?: number }): void {
     // Resolve the live caller instance directly by instanceId.
     const caller = this.manager.byId.get(callerInstanceId);
-    if (!caller || !caller.proc) return; // caller gone — drop silently.
+    if (!caller || !caller.proc) {
+      // Caller gone — drop silently, but consume its note: this wake is the one
+      // that note was for, and nothing else will ever read it.
+      this._takeDecline(targetInstanceId, callerInstanceId);
+      return;
+    }
     // Boundary: the stub names the worker by sessionId and points at
     // get_recent_messages (sessionId-addressed), so translate the target's
     // CURRENT sessionId here (a /clear-rotated target resolves to its new id).
@@ -445,11 +498,15 @@ export class IdleSubscriptionHub {
     // synchronously, on the caller's status at delivery time.
     const fold = !opts?.timedOut && caller.status !== 'turn';
     const deliver = async (): Promise<void> => {
+      // Read-and-delete BEFORE any await: the expiry that recorded this note ran
+      // synchronously in the dispatch that queued this microtask, and the note
+      // belongs to exactly one wake.
+      const note = this._takeDecline(targetInstanceId, callerInstanceId);
       try {
         if (!caller.proc) return;
         const stub = fold
-          ? await this._buildFoldedStub(targetSessionId)
-          : this._plainStub(targetSessionId, opts);
+          ? await this._buildFoldedStub(targetSessionId, note)
+          : this._plainStub(targetSessionId, { ...opts, note });
         // `internal:true` — this is an orchestrator-injected wake, not a user
         // takeover, so it must NOT cancel a pending overage auto-resume armed on
         // the caller (an overage-stopped conductor still gets woken when its
@@ -475,7 +532,7 @@ export class IdleSubscriptionHub {
   // mid-turn steering path. Tells the caller to go call get_recent_messages.
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
-  _plainStub(targetSessionId: string, opts?: { timedOut?: boolean; timeoutMs?: number }): string {
+  _plainStub(targetSessionId: string, opts?: { timedOut?: boolean; timeoutMs?: number; note?: string | null }): string {
     const summary = opts?.timedOut
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
         `it may still be busy or stuck. ` +
@@ -485,17 +542,17 @@ export class IdleSubscriptionHub {
       : `Worker \`${targetSessionId}\` finished its turn. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to inspect the result.`;
-    return markPlainStub(summary);
+    return markPlainStub(opts?.note ? `${opts.note} ${summary}` : summary);
   }
 
   // The folded stub — reuses buildRecentMessages (the SAME selection/bonding a
   // default get_recent_messages call runs) and flattens it inline so the caller
   // doesn't need the follow-up MCP round-trip. Falls back to the plain stub on a
   // soft-refusal (e.g. the worker went away between turn_end and delivery).
-  async _buildFoldedStub(targetSessionId: string): Promise<string> {
+  async _buildFoldedStub(targetSessionId: string, note: string | null = null): Promise<string> {
     const r = await buildRecentMessages({ sessionId: targetSessionId }, { instances: this.manager });
-    if ('soft' in r) return this._plainStub(targetSessionId);
-    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies) });
+    if ('soft' in r) return this._plainStub(targetSessionId, { note });
+    return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies), note });
   }
 
   hasSubscriber(instanceId: string): boolean {
@@ -507,6 +564,36 @@ export class IdleSubscriptionHub {
   // this synchronous event-dispatch cycle (populated before subscribers clears).
   wasConsumed(instanceId: string): boolean {
     return this._justConsumed.has(instanceId);
+  }
+
+  // Is `callerInstanceId` waiting on `targetInstanceId` right now — either still
+  // subscribed, or subscribed at the turn_end being dispatched (this hub's listener
+  // runs FIRST, so by the time the renew controller expires a request the delivered
+  // subscription is already out of `subscribers`; `_justConsumed` is that record).
+  // On the only production trigger — a `turn_end`, where `_onTurnEnd` marks
+  // `_justConsumed` with the whole subscriber set before its defer check — the
+  // second disjunct subsumes the first. The first is what keeps a DIRECT call
+  // correct: `noteRenewalDeclined` is public on `InstanceManagerLike`, and called
+  // outside a turn_end dispatch (`_justConsumed` empty) only it is true. That path
+  // has no production caller today; it is exercised by
+  // tests/renew-session.test.mjs → "a decline note is recorded only for a conductor
+  // that is waiting, and dies with the wait", which is why both disjuncts stay.
+  _isWaitingOn(targetInstanceId: string, callerInstanceId: string): boolean {
+    return (this.subscribers.get(targetInstanceId)?.has(callerInstanceId) ?? false)
+      || (this._justConsumed.get(targetInstanceId)?.has(callerInstanceId) ?? false);
+  }
+
+  // Read AND delete the note for one caller/target pair — a note belongs to exactly
+  // ONE wake. Every path that ends a caller's wait calls this (delivery, a dead
+  // caller, unsubscribe, purge), so a recorded note can never linger and mis-report
+  // on a later, unrelated wake.
+  _takeDecline(targetInstanceId: string, callerInstanceId: string): string | null {
+    const notes = this._pendingDeclines.get(targetInstanceId);
+    if (!notes) return null;
+    const note = notes.get(callerInstanceId) ?? null;
+    notes.delete(callerInstanceId);
+    if (notes.size === 0) this._pendingDeclines.delete(targetInstanceId);
+    return note;
   }
 
   // Returns true when instanceId is the *caller* (conductor) in any pending

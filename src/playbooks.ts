@@ -18,11 +18,6 @@
 // and can never appear in a stage's `tools` map. That gap is accepted. The
 // membership of that class is not restated anywhere: governableToolNames()
 // computes it from buildTools(), and a hand-maintained copy would drift.
-//
-// `renew_session` is in that ungoverned class (it acts on the caller, so it
-// carries no sessionId). That is NOT the same fact as the renew_session
-// limitation in playbookLedger.ts, which is about a sessionId ROTATION orphaning
-// stage state in the projection — a different mechanism with a different fix.
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
@@ -141,9 +136,8 @@ export interface NeedsEntry {
   // "live" (default) — the worker is still running.
   // "retired"        — it is gone: an enforced handoff, not advice.
   // "any"            — no liveness check.
-  // Best-effort: `live` is a projection of the manager's status stream, and a
-  // renew_session rotation leaves the old sessionId STALE-LIVE, so "live" can
-  // pass for a worker that is gone by that id. See playbookLedger.ts.
+  // Best-effort: `live` is a projection of the manager's status stream, which a
+  // prune desynchronises in the safe direction. See playbookLedger.ts.
   liveness: 'live' | 'retired' | 'any';
 }
 
