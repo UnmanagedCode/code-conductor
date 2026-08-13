@@ -70,9 +70,9 @@ const ONE_TURN = [
   { type: 'assistant', uuid: 'a0', message: { id: 'm_done', role: 'assistant', content: [{ type: 'text', text: 'the work is done' }] } },
 ];
 
-// Turn A ends with a plan; turn B is a plan message followed by TWO pure-prose
-// messages. A default get_recent_messages must bond back across both prose
-// messages to turn B's plan and stop at the turn boundary.
+// Turn A ends with a plan; turn B is its OWN plan message followed by TWO
+// pure-prose messages. A default get_recent_messages must bond back across
+// both prose messages to turn B's plan.
 const TWO_PLANNED_TURNS = [
   { type: 'user', uuid: 'uA', message: { role: 'user', content: 'plan A' } },
   { type: 'assistant', uuid: 'aA0', message: { id: 'm_a_prose', role: 'assistant', content: [{ type: 'text', text: 'thinking about A' }] } },
@@ -83,6 +83,22 @@ const TWO_PLANNED_TURNS = [
   { type: 'assistant', uuid: 'aB0', message: { id: 'm_b_plan', role: 'assistant', content: [
     { type: 'tool_use', id: 'tu_b', name: 'ExitPlanMode', input: { plan: 'PLAN-B-BODY' } },
   ] } },
+  { type: 'assistant', uuid: 'aB1', message: { id: 'm_b_p1', role: 'assistant', content: [{ type: 'text', text: 'prose one' }] } },
+  { type: 'assistant', uuid: 'aB2', message: { id: 'm_b_p2', role: 'assistant', content: [{ type: 'text', text: 'prose two' }] } },
+];
+
+// The other direction: turn A ends with a plan and turn B carries NONE, so the
+// walk-back must stop at the turn boundary and return the last message alone.
+// Without disk-side boundaries the walk runs straight on into turn A and hands
+// over a stale plan — which is precisely the failure this fixture catches,
+// since the bonded fixture above breaks at turn B's own plan before it could.
+const PLAN_THEN_PLAINTURN = [
+  { type: 'user', uuid: 'uA', message: { role: 'user', content: 'plan A' } },
+  { type: 'assistant', uuid: 'aA0', message: { id: 'm_a_prose', role: 'assistant', content: [{ type: 'text', text: 'thinking about A' }] } },
+  { type: 'assistant', uuid: 'aA1', message: { id: 'm_a_plan', role: 'assistant', content: [
+    { type: 'tool_use', id: 'tu_a', name: 'ExitPlanMode', input: { plan: 'PLAN-A-BODY' } },
+  ] } },
+  { type: 'user', uuid: 'uB', message: { role: 'user', content: 'now just talk' } },
   { type: 'assistant', uuid: 'aB1', message: { id: 'm_b_p1', role: 'assistant', content: [{ type: 'text', text: 'prose one' }] } },
   { type: 'assistant', uuid: 'aB2', message: { id: 'm_b_p2', role: 'assistant', content: [{ type: 'text', text: 'prose two' }] } },
 ];
@@ -126,6 +142,17 @@ test('get_recent_messages: disk-side bonding surfaces the retired planner\'s pla
     assert.doesNotMatch(all, /PLAN-A-BODY/, 'the previous turn\'s plan is never pulled in');
     assert.match(all, /prose one/);
     assert.match(all, /prose two/);
+
+    // Same walk, opposite direction: this turn carries no plan of its own, so
+    // the boundary must stop the walk instead of reaching back into turn A.
+    const plainSid = await retiredTempWorker(ctx, 'retiredplain', PLAN_THEN_PLAINTURN);
+    const plain = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: plainSid }));
+    assert.equal(plain.meta.source, 'disk');
+    assert.equal(plain.meta.messages.length, 1,
+      `a plan-less turn bonds nothing, got ${JSON.stringify(plain.meta.messages.map(m => m.msgId))}`);
+    assert.equal(plain.meta.messages[0].msgId, 'm_b_p2');
+    assert.doesNotMatch(plain.bodies.join('\n'), /PLAN-A-BODY/,
+      'the previous turn\'s plan is never pulled across the turn boundary');
   } finally { await ctx.close(); }
 });
 
