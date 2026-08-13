@@ -193,6 +193,12 @@ export function createPluginHost(opts: {
   }
 
   // ── init / discovery ────────────────────────────────────────────────
+  // Memoized per projectsRoot() — but NOT on rejection: a caching a rejected
+  // promise here would mean one transient init failure (e.g. a boot-time
+  // EMFILE/EIO inside adoptRunning()) permanently poisons every subsequent
+  // plugin-host call for the life of the process, with no retry. The `.catch`
+  // clears `initPromise` before rethrowing so the NEXT call reinitializes;
+  // it does not swallow or alter the rejection itself.
   function ensureInit(): Promise<void> {
     if (initPromise && initedFor === projectsRoot()) return initPromise;
     initedFor = projectsRoot();
@@ -203,7 +209,7 @@ export function createPluginHost(opts: {
       runtimeRecords = (await loadJson(runtimeFile(), {})) as Record<string, RuntimeRecord>;
       await rescanInternal();
       await adoptRunning();
-    })();
+    })().catch(e => { initPromise = null; throw e; });
     return initPromise;
   }
 
@@ -758,11 +764,14 @@ export function createPluginHost(opts: {
   // worktree checkout not yet mounted) rather than "this plugin genuinely
   // contributes nothing here" — the entry is silently absent from every
   // scope's list unless a reader checks `.degraded` on the returned array
-  // (see fragmentCatalog.ts's CatalogList); every populated scope is flagged,
-  // since the failure isn't attributable to a single scope. A vanished
-  // fragment/scaffold FILE is a different, already-accepted case (the file is
-  // just gone, not transiently unreachable) and is not treated as degraded —
-  // it is skipped with a warning as before, same as it always has been.
+  // (see fragmentCatalog.ts's CatalogList). EVERY scope array is flagged,
+  // including ones left empty: the failure isn't attributable to a single
+  // scope, and an empty-and-unflagged array is exactly what "no plugin
+  // contributes to this scope" looks like — the failed plugin may have been
+  // the only would-be contributor. A vanished fragment/scaffold FILE is a
+  // different, already-accepted case (the file is just gone, not transiently
+  // unreachable) and is not treated as degraded — it is skipped with a
+  // warning as before, same as it always has been.
   async function conventions(): Promise<Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }> & { degraded?: boolean }>> {
     await ensureInit();
     const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>

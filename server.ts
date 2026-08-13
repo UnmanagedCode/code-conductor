@@ -167,8 +167,11 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // Regenerate each split-model project's in-tree CONVENTIONS.md from its own
   // marker so existing projects pick up improved convention text. Projects with
   // no marker are skipped; an unresolvable slug drops out of the body (named in
-  // a note) while the rest still refreshes; only a marker with no resolvable
-  // body at all is left as-is. Strictly non-fatal, same as the regens above.
+  // a note) while the rest still refreshes. Left as-is (never rewritten) when:
+  // no slug resolves to a body, the catalog is degraded and a slug is
+  // unresolvable (can't tell "gone" from "temporarily unreachable"), or every
+  // slug resolves but none carries a body. Strictly non-fatal, same as the
+  // regens above.
   try { await regenerateAllProjectConventions({ log: console }); }
   catch (e) { console.warn('project CONVENTIONS.md regenerate failed:', e); }
   // Seed the conductor's own project into CC-Dev, same placement plugins get

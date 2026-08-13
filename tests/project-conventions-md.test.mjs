@@ -216,7 +216,7 @@ test('unresolved-slug note has exact wording and sits above the resolvable bodie
   await ensureProjectConventionsMd('exact-note');
 
   const expected = '<!-- cc:conventions ghost-slug,design-guidelines -->\n\n'
-    + '> Unavailable: `ghost-slug`.\n'
+    + '> Convention unavailable: `ghost-slug`.\n'
     + await composeProjectConventionsBlock(['design-guidelines']);
   assert.equal(await fs.readFile(target, 'utf8'), expected);
 });
@@ -233,7 +233,7 @@ test('regeneration with an unresolvable slug is idempotent across repeated runs'
   const third = await fs.readFile(target, 'utf8');
 
   assert.equal(third, first, 'Nth regeneration is byte-identical to the 1st');
-  assert.equal(third.split('Unavailable:').length - 1, 1, 'the note never accumulates');
+  assert.equal(third.split('> Convention unavailable: `ghost-slug`.').length - 1, 1, 'the note never accumulates');
 });
 
 test('the note disappears and the real text returns byte-identically once the slug resolves again', async () => {
@@ -246,7 +246,7 @@ test('the note disappears and the real text returns byte-identically once the sl
   const res1 = await ensureProjectConventionsMd('recovers');
   assert.equal(res1.regenerated, true);
   const midway = await fs.readFile(target, 'utf8');
-  assert.match(midway, /> Unavailable:/);
+  assert.match(midway, /> Convention unavailable: `house-style`\./);
   assert.doesNotMatch(midway, /House style/);
 
   await addCustomConvention({ slug: 'house-style', name: 'House style', description: 'x', body: '## House style\n- v1 rule' });
@@ -255,16 +255,44 @@ test('the note disappears and the real text returns byte-identically once the sl
   assert.equal(await fs.readFile(target, 'utf8'), clean, 'restored file is byte-identical to the never-broken original');
 });
 
-test('a catalog degraded by a throwing plugin provider declines to write, even for a marker whose slugs would otherwise resolve fine', async () => {
-  await createProject('degraded-catalog', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
-  const target = conventionsPath('degraded-catalog');
-  const committed = await fs.readFile(target, 'utf8');
+test('a degraded catalog does NOT freeze a marker whose slugs all resolve — the failure is unrelated to this project', async () => {
+  await createProject('degraded-but-unaffected', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
+  const target = conventionsPath('degraded-but-unaffected');
+  await fs.writeFile(target, '<!-- cc:conventions design-guidelines -->\n\nSTALE\n');
 
   setPluginConventionsProvider(async () => { throw new Error('transient plugin host failure'); });
   try {
-    const res = await ensureProjectConventionsMd('degraded-catalog');
+    const res = await ensureProjectConventionsMd('degraded-but-unaffected');
+    assert.equal(res.regenerated, true, 'a plugin failure elsewhere in the catalog must not freeze a project with no plugin slug');
+    assert.match(await fs.readFile(target, 'utf8'), /## Design guidelines/);
+  } finally {
+    setPluginConventionsProvider(null);
+  }
+});
+
+test('a degraded catalog DOES freeze a marker that has an unresolvable slug — can\'t tell "gone" from "temporarily unreachable"', async () => {
+  setPluginConventionsProvider(async () => [
+    { slug: 'plug/foo', name: 'Foo', description: 'x', body: '## Foo\n- v1', plugin: 'plug' },
+  ]);
+  let target;
+  try {
+    const doc = await composeProjectConventionsDoc(['plug/foo', 'design-guidelines']);
+    await createProject('degraded-and-affected', { conventionsDoc: doc });
+    target = conventionsPath('degraded-and-affected');
+  } finally {
+    setPluginConventionsProvider(null);
+  }
+  const committed = await fs.readFile(target, 'utf8');
+
+  // Now the plugin provider throws outright — 'plug/foo' becomes unresolvable,
+  // but the catalog can't tell whether it's gone for good or just transiently
+  // unreachable, so the write must be declined rather than dropping its text.
+  setPluginConventionsProvider(async () => { throw new Error('transient plugin host failure'); });
+  try {
+    const res = await ensureProjectConventionsMd('degraded-and-affected');
     assert.equal(res.skipped, 'catalog-degraded');
-    assert.equal(await fs.readFile(target, 'utf8'), committed, 'never blank/rewrite over a transient catalog failure, even for unaffected slugs');
+    assert.deepEqual(res.missing, ['plug/foo']);
+    assert.equal(await fs.readFile(target, 'utf8'), committed, 'never blank/rewrite a slug the degraded catalog can\'t vouch for');
   } finally {
     setPluginConventionsProvider(null);
   }
@@ -315,7 +343,7 @@ test('a dropped slug does not reorder the surviving conventions; the note stays 
 
   await ensureProjectConventionsMd('order-check');
   const content = await fs.readFile(target, 'utf8');
-  const noteIdx = content.indexOf('Unavailable:');
+  const noteIdx = content.indexOf('Convention unavailable:');
   const docIdx = content.indexOf('## Documentation guidelines');
   const designIdx = content.indexOf('## Design guidelines');
   assert.ok(noteIdx >= 0 && noteIdx < docIdx && noteIdx < designIdx, 'note sits above both bodies');
@@ -344,7 +372,7 @@ test('deleting a custom convention through the HTTP fan-out leaves a note and ke
 
   const content = await fs.readFile(target, 'utf8');
   assert.equal(content.split('\n', 1)[0], '<!-- cc:conventions doomed2,design-guidelines -->');
-  assert.match(content, /> Unavailable: `doomed2`\./);
+  assert.match(content, /> Convention unavailable: `doomed2`\./);
   assert.match(content, /## Design guidelines/);
 
   // The fan-out path is idempotent, not just the direct call.
@@ -359,7 +387,7 @@ test('deleting a custom convention that leaves a project all-unresolvable logs t
 
   const lines = [];
   const originalLog = console.log;
-  console.log = (...args) => { lines.push(args.join(' ')); };
+  console.log = (...args) => { lines.push(args.join(' ')); originalLog(...args); };
   try {
     const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/project/doomed3');
     assert.equal(del.status, 200);

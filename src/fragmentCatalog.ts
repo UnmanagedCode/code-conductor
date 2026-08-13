@@ -76,11 +76,13 @@ export interface CatalogEntry {
 }
 
 // `degraded: true` means a plugin-contributed slug may be MISSING from this
-// list because reading it transiently failed (extraProvider threw, or a
-// plugin's own cwd/fragment resolution failed) — not because it is genuinely
-// absent/disabled. A caller that treats "not in the catalog" as "safe to drop"
-// (e.g. ensureProjectConventionsMd's never-blanks gate) must check this first:
-// a degraded catalog can't tell "gone" from "temporarily unreachable".
+// list because reading it transiently failed (extraProvider threw outright,
+// or a plugin's own cwd resolution failed — NOT a vanished fragment/scaffold
+// file, which is a different, already-accepted case that just contributes
+// nothing) — not because it is genuinely absent/disabled. A caller that
+// treats "not in the catalog" as "safe to drop" (e.g. ensureProjectConventionsMd's
+// never-blanks gate) must check this first: a degraded catalog can't tell
+// "gone" from "temporarily unreachable" for a slug about to be dropped.
 export type CatalogList = CatalogEntry[] & { degraded?: boolean };
 
 interface FragmentCatalogConfig {

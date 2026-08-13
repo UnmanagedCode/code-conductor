@@ -416,6 +416,32 @@ test('registry entry whose project vanished still lists as invalid', async () =>
   }
 });
 
+test('a transient init failure does not permanently poison the plugin host — the next call retries', async () => {
+  const env = await makePluginRoot();
+  try {
+    // No manifest at all -> rescanInternal() falls through to
+    // worktreeManifestFallback(), which fs.readdir()s <projectStoreDir>/worktrees
+    // and rethrows anything other than ENOENT. Put a FILE there instead of a
+    // directory: a real, deterministic ENOTDIR, not a mock.
+    await env.addProject('plain');
+    const wtDir = path.join(projectStoreDir('plain'), 'worktrees');
+    await fs.mkdir(path.dirname(wtDir), { recursive: true });
+    await fs.writeFile(wtDir, '');
+
+    const host = createPluginHost();
+    await assert.rejects(host.list());
+
+    // Clear the obstruction. If the rejected init promise were cached (as it
+    // used to be), every subsequent call would keep rethrowing the same
+    // stale failure forever; it must instead reinitialize and succeed.
+    await fs.rm(wtDir, { force: true });
+    const rows = await host.list();
+    assert.ok(Array.isArray(rows));
+  } finally {
+    await env.restore();
+  }
+});
+
 // A contributions-only manifest: no backend/frontend/mcp, only conventions.
 // Three shapes exercised: fragment+scaffold (scaffold via file, mirrors
 // code-playwright), scaffold-only (inline text, no fragment), and fragment-only.

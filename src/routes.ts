@@ -1727,8 +1727,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // convention's body fans out to regenerate every project that selected it —
   // a since-deleted slug becomes unresolvable: the project's other, resolvable
   // conventions still refresh, and the missing one is named in the file (see
-  // `src/projectClaudeMd.ts`); `{ log: console }` also surfaces the residual
-  // all-unresolvable skip in the server log (docs/architecture.md).
+  // `src/projectClaudeMd.ts`); `{ log: console }` also surfaces every declined-
+  // write case in the server log (docs/architecture.md).
   r.get('/settings/conventions/project', async (req, res, next) => {
     try { res.json({ conventions: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
   });

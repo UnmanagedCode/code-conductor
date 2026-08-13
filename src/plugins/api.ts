@@ -64,8 +64,10 @@ function streamLibraryAction(res: express.Response, next: express.NextFunction, 
 // rescan/enable/disable/restart/version/install/update response into an error.
 // A referencing project's other, resolvable conventions still refresh even
 // when this plugin's slug goes unresolvable; `{ log: console }` surfaces the
-// server log only for the residual case where nothing resolves at all — see
-// docs/plugins.md's known limitations.
+// server log for every case where a write is declined instead (nothing
+// resolves at all; every slug resolves but none carries a body; or — exactly
+// how e.g. a disable route can reach this — the catalog is degraded while a
+// slug is unresolvable) — see docs/plugins.md's known limitations.
 async function refreshProjectConventions(): Promise<void> {
   try { await regenerateAllProjectConventions({ log: console }); }
   catch (e) { console.warn('plugins: project CONVENTIONS.md regenerate failed:', e); }
