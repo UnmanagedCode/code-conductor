@@ -51,6 +51,7 @@ export interface TaskEvent {
   input?: unknown;
   content?: unknown;
   toolUseId?: string | null;
+  parentToolUseId?: string | null;
   _seq: number;
 }
 
@@ -124,6 +125,7 @@ export function reconstructTasks(events: TaskEvent[]): ReconstructResult {
 
   for (const ev of events) {
     if (!ev || typeof ev !== 'object') continue;
+    if (ev.parentToolUseId) continue; // a sub-agent's todo list is not the outer agent's
     if (ev.kind === 'tool_use') {
       if (ev.name === 'TaskCreate') {
         const input = taskInputOf(ev.input);

@@ -438,6 +438,26 @@ export class Parser {
         }
       }
     }
+    // Sub-agent turns arrive as finals-only envelopes: no stream_event frames
+    // ever carry a depth-2+ tool_use, so its head must be unpacked here or no
+    // event in the ring ever names it (see the module-level note on why the
+    // gate below is load-bearing).
+    if (obj.parent_tool_use_id) {
+      const msgId = msg.id ?? this.currentMsgId;
+      const content = Array.isArray(msg.content) ? msg.content : [];
+      for (let i = 0; i < content.length; i++) {
+        const raw = content[i];
+        if (!raw || typeof raw !== 'object') continue;
+        const b = raw as WireContentBlock;
+        if (b.type !== 'tool_use') continue;
+        events.push({
+          kind: 'tool_use', msgId, blockIdx: i,
+          toolUseId: typeof b.id === 'string' ? b.id : null,
+          name: typeof b.name === 'string' ? b.name : null,
+          input: b.input ?? {},
+        });
+      }
+    }
     events.push({
       kind: 'assistant_message',
       msgId: msg.id ?? this.currentMsgId,
@@ -1042,11 +1062,12 @@ export function firstQuiescentAtOrAfter(arr: UiEvent[], from: number, bound: num
 // Largest quiescent index at or below `at` (bounded, like every backward
 // quiescent search here, by `at`'s own reset origin), or `at` itself when its
 // turn holds none — the same "raw start stands" degradation quiesceStart
-// documents. eventArchive.ts uses this for an EMPTY backward page's cursor: a
-// page is only self-contained if BOTH its ends are quiescent cuts, and the ends
-// are clean only because every cursor the server hands out is a snap output.
-// An empty page has no snapped start to hand out, and its pre-snap window start
-// is under no obligation to be quiescent, so it has to be snapped here instead.
+// documents. eventArchive.ts's pageCombined uses this as the backstop when
+// snapStartToQuiescent rejects a whole backward window (its only content was
+// headless sub-agent children): the pre-snap window start is under no
+// obligation to be quiescent, so back off to the last quiescent cut instead
+// of serving nothing. Instance.snapshotTail uses it the same way for a
+// would-be-empty tail.
 export function lastQuiescentAtOrBefore(
   arr: UiEvent[], at: number, { resetIdx = -1 }: { resetIdx?: number } = {},
 ): number {

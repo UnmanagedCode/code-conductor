@@ -790,3 +790,60 @@ test('parser: the real captured live Skill turn folds (committed stdout scenario
   // The tool_result confirming the launch stays a plain tool_result.
   assert.ok(events.some(e => e.kind === 'tool_result'));
 });
+
+// ── A1: forwarded sub-agent envelopes emit tool_use heads ──────────────────
+// The CLI forwards a depth-2+ sub-agent's turn as a finals-only `assistant`
+// envelope tagged with `parent_tool_use_id` — no stream_event frames exist
+// for it, so unless _handleAssistant unpacks the envelope's own content
+// blocks, that sub-agent's tool_use never enters the ring at all.
+
+test('parser: forwarded sub-agent envelope emits a tool_use head for its own tool_use block', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'assistant',
+    parent_tool_use_id: 'tu_outer',
+    message: {
+      id: 'msg_sub', role: 'assistant', type: 'message', model: 'claude-opus-4-8',
+      content: [
+        { type: 'text', text: 'thinking about it' },
+        { type: 'tool_use', id: 'tu_inner', name: 'Agent', input: { description: 'deep' } },
+      ],
+    },
+  });
+  assert.deepEqual(out.map(e => e.kind), ['tool_use', 'assistant_message'],
+    'a head event precedes the reconciled assistant_message, and nothing else is emitted');
+  const head = out[0];
+  assert.equal(head.toolUseId, 'tu_inner');
+  assert.equal(head.name, 'Agent');
+  assert.equal(head.blockIdx, 1, 'the tool_use is the SECOND content block (index 1), not the first');
+  assert.deepEqual(head.input, { description: 'deep' });
+  assert.equal(head.parentToolUseId, 'tu_outer', 'handleObject stamps the envelope\'s own parent tag');
+});
+
+test('parser: a top-level envelope does not double-emit the tool_use head its own stream_event frames already produced', () => {
+  const p = new Parser();
+  const all = [];
+  const origHandle = p.handleObject.bind(p);
+  p.handleObject = (obj) => { const evs = origHandle(obj); all.push(...evs); return evs; };
+  emitSkillToolUse(p, { toolUseId: 'tu_top', name: 'Bash', skill: undefined });
+  const heads = all.filter(e => e.kind === 'tool_use' && e.toolUseId === 'tu_top');
+  assert.equal(heads.length, 1, 'exactly one tool_use head for the whole turn, not one per path');
+});
+
+test('parser: a forwarded sub-agent envelope emits one head per tool_use block it carries', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'assistant',
+    parent_tool_use_id: 'tu_outer2',
+    message: {
+      id: 'msg_sub2', role: 'assistant', type: 'message', model: 'claude-opus-4-8',
+      content: [
+        { type: 'tool_use', id: 'X', name: 'Bash', input: { command: 'ls' } },
+        { type: 'tool_use', id: 'Y', name: 'Read', input: { path: 'a.txt' } },
+      ],
+    },
+  });
+  const heads = out.filter(e => e.kind === 'tool_use');
+  assert.deepEqual(heads.map(e => e.toolUseId), ['X', 'Y']);
+  assert.deepEqual(heads.map(e => e.blockIdx), [0, 1]);
+});

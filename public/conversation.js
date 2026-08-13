@@ -191,7 +191,12 @@ export class Conversation {
   // recorded by apply().
   _routeChildEvent(ev) {
     const parent = this.toolBlocks.get(ev.parentToolUseId);
-    if (!parent || parent.name !== 'Agent') return false;
+    if (!parent || parent.name !== 'Agent') {
+      // Not this level's own child — it may be a depth-2+ grandchild whose
+      // head was materialized inside one of our already-nested sub-agents.
+      for (const sub of this.subConvs.values()) if (sub._routeChildEvent(ev)) return true;
+      return false;
+    }
     let sub = this.subConvs.get(ev.parentToolUseId);
     if (!sub) {
       sub = new Conversation(parent.subRoot, {

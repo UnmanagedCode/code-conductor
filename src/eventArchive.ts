@@ -238,8 +238,8 @@ export async function pageInstanceEvents(inst: InstanceLike, { before = null, af
 
 // The windowing core shared by the ring-backed (pageInstanceEvents) and
 // disk-only (pagePersistedEvents) entry points: quiescent page seams, the
-// empty-page cursor, the `history_gap` marker and `task_completion` injection
-// over an already-assembled, globally `_seq`-sorted `combined` list.
+// rejected-window backstop, the `history_gap` marker and `task_completion`
+// injection over an already-assembled, globally `_seq`-sorted `combined` list.
 //   seamIdx  — index of the first ring-side event in `combined`, doubling as
 //              the scan-opaque `resetIdx`; -1 means "no such boundary".
 //   optimisticMore — the caller knows older events exist that this call did
@@ -258,11 +258,8 @@ function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, 
   // snap rejects the whole window the page is empty, and this is the cursor
   // the next page resumes from — see `nextBefore` below.
   let rawStart = 0;
-  // The backward window's end, hoisted for the empty-page cursor's seam clamp.
-  let rawEnd = 0;
   if (before != null) {
     const end = firstIndexAtOrAbove(combined, before);
-    rawEnd = end;
     rawStart = Math.max(0, end - max);
     let start = rawStart;
     // Quiescent page seams: open the window where reconstruction has no open
@@ -279,6 +276,12 @@ function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, 
     // (`resetIdx`) is a scan-opaque boundary: state is never computed across
     // the possibly-missing events.
     start = snapStartToQuiescent(combined, start, end, { resetIdx: seamIdx });
+    // The snap can reject the whole window (its only content was sub-agent
+    // children with no reachable head inside [start, end)). Back off to the
+    // last quiescent cut at or below the window's own pre-snap start instead
+    // of serving nothing — the rejected content is still ahead of `end` on
+    // some earlier page and must eventually be served, not skipped.
+    if (start >= end) start = lastQuiescentAtOrBefore(combined, rawStart, { resetIdx: seamIdx });
     servedStart = start;
     events = combined.slice(start, end);
     hasMore = start > 0 || optimisticMore;
@@ -289,51 +292,11 @@ function pageCombined(combined: SeqEvent[], { before, after, max, seamIdx, gap, 
     hasMore = start + events.length < combined.length;
   }
 
-  // An empty backward page means the snap rejected this whole window (its only
-  // content was sub-agent children with no reachable head). Resume from the
-  // window's own pre-snap start, NOT from `trimmedBefore`: collapsing to the
-  // top of the archive would skip every seq in [trimmedBefore, before), most of
-  // which is ordinary servable content the resolver never rejected.
-  //
-  // The pre-snap start is snapped DOWN to a quiescent cut first, because every
-  // cursor is also the next page's `end`, and a page is self-contained only if
-  // both its ends are quiescent. On a served page that holds for free (the
-  // cursor is the snapped start); an empty page has no snapped start, and
-  // `rawStart` is under no such obligation — handing it out raw yields a next
-  // page ending mid-block or mid-tool-round-trip.
-  //
-  // `cursorIdx < end` whenever `end > 0` (it is at or below `rawStart`, except
-  // for the seam clamp below, which stays under `end` by its own guard), and
-  // `combined[end - 1]._seq < before`, so this is strictly below `before` — a
-  // client can never re-request the cursor it just sent. `end === 0` implies
-  // the archive was loaded (a ring-only window sits above `trimmedBefore` and
-  // so has `end > 0`), hence `hasMore` is false there and the cursor is
-  // terminal, not stalled.
-  //
-  // One clamp on top of that back-off: the cursor may not step past the
-  // archive/ring seam in a single jump. Backward pages TILE — the next page's
-  // `end` is this page's cursor — and the gap marker below is anchored to the
-  // seam's position, so it needs some page to end at the seam or straddle it.
-  // Served pages tile for free (their cursor is their own served start); an
-  // empty page is the one that can jump the seam, and when its cursor lands
-  // strictly below `seamIdx` the seam becomes neither a page boundary nor
-  // interior to any served slice, and the marker is dropped on every page of
-  // the walk (2026-0054 C1). Clamping to `seamIdx` re-establishes the tiling
-  // at exactly the index that matters: the next page then ENDS on the seam and
-  // carries the marker. The clamp only ever raises the cursor, so it shrinks
-  // the rejected window rather than widening it — the events between
-  // `rawStart` and the seam get served instead of skipped — and `seamIdx <
-  // rawEnd` keeps it strictly below `before`, so progress and termination are
-  // unaffected. It cannot re-fire on the next page: that page's `end` IS
-  // `seamIdx`, and the guard is strict.
-  let cursorIdx = 0;
-  if (before != null && !events.length) {
-    cursorIdx = lastQuiescentAtOrBefore(combined, rawStart, { resetIdx: seamIdx });
-    if (seamIdx > cursorIdx && seamIdx < rawEnd) cursorIdx = seamIdx;
-  }
-  const nextBefore = events.length
-    ? events[0]._seq as number
-    : (before != null ? (combined[cursorIdx]?._seq as number | undefined) ?? 0 : 0);
+  // A backward page is empty only when the window itself is empty (`end ===
+  // 0`), which is terminal: `end === 0` forces `needArchive` (or no
+  // `sessionId`), so `optimisticMore` is false and `hasMore` is false. The
+  // backstop above (`start >= end`) guarantees any non-empty window is served.
+  const nextBefore = events.length ? events[0]._seq as number : 0;
 
   // Mark the evicted-content seam with a `{kind:'history_gap'}` event (no
   // `_seq`, matching task_completion's synthesis), so the client renders an
