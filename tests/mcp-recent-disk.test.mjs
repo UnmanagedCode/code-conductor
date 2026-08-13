@@ -402,3 +402,122 @@ test('get_recent_messages: a disk-sourced plan message keeps its planPath', asyn
     else process.env.ORCH_EVENT_RING_CAP = prevCap;
   }
 });
+
+// ---------- `live` is not `source`: the LIVE-side mirror ----------
+//
+// `source` says where the BYTES came from; `live` says whether a process is
+// behind them. This fixture is the state where the two disagree — a live worker
+// whose ring evicted the range, so `source:'disk'` with `live:true` — and it is
+// the only state in which conflating them is detectable.
+//
+// tests/mcp-retired-read.test.mjs asserts the NEGATIVE half (a retired session
+// is never called active or waitable). These assertions are POSITIVE on purpose:
+// a negative-only pair still passes when `live` is hardcoded false, since both
+// wordings would then be the retired one.
+
+// A user prompt then N tool-only assistant turns and NO text anywhere, so the
+// disk merge still yields zero text messages while `omittedToolOnly` counts the
+// tool-only ones — the state that generates the active/waitable wording.
+function toolOnlyLines(toolCount) {
+  const lines = [{ type: 'user', uuid: 'u0', message: { role: 'user', content: 'do the work' } }];
+  for (let i = 0; i < toolCount; i++) {
+    lines.push({ type: 'assistant', uuid: `at${i}`, message: { id: `mt${i}`, role: 'assistant', content: [
+      { type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command: `echo ${i}` } },
+    ] } });
+    lines.push({ type: 'user', uuid: `ut${i}`, message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: `tu${i}`, content: 'ok\n', is_error: false },
+    ] } });
+  }
+  return lines;
+}
+
+test('a LIVE worker served from evicted disk history is still described as active and waitable', async () => {
+  const prevCap = process.env.ORCH_EVENT_RING_CAP;
+  process.env.ORCH_EVENT_RING_CAP = '10';
+  const ctx = await bootServer({ scenarioPath: SCENARIO_RESUME });
+  try {
+    const sid = 'cafe0001-1111-2222-3333-444444444444';
+    const id = await bootResumed({ ctx, projectName: 'liveevicted', sid, lines: toolOnlyLines(30) });
+    const inst = ctx.instances.get(id);
+
+    // The state under test, asserted rather than assumed.
+    assert.ok(inst.ring.trimmedBefore > 0, 'ring actually trimmed (precondition)');
+    assert.ok(inst.proc, 'the worker is LIVE — this is what `source` alone cannot tell you');
+
+    const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }));
+    assert.equal(res.meta.source, 'disk', 'bytes came from disk...');
+    assert.equal(res.meta.messages.length, 0, 'no text message anywhere in this transcript');
+    assert.ok(res.meta.omittedToolOnly > 0, 'but tool-only messages were omitted (precondition)');
+    assert.match(res.meta.hint, /the agent is active/,
+      '...and the worker is nevertheless active: reading `source` as liveness would deny it');
+    assert.doesNotMatch(res.meta.hint, /retired/);
+
+    // The same disagreement on the forward path: this live source is still
+    // working, so the conductor SHOULD be told to wait for its next turn_end.
+    const targetSid = 'cafe0002-1111-2222-3333-444444444444';
+    await bootResumed({ ctx, projectName: 'livetarget', sid: targetSid, lines: turnLines(2) });
+    const refused = unwrap(await callTool(ctx.baseUrl, 'send_prompt', {
+      sessionId: targetSid, forward: { sessionId: sid }, text: 'go', subscribe: false,
+    }));
+    assert.equal(refused.code, 'NOTHING_TO_FORWARD');
+    assert.match(refused.reason, /still working/);
+    assert.match(refused.reason, /Wait for its next turn_end/,
+      'a live source will produce one — withholding this advice loses a real forward');
+    assert.doesNotMatch(refused.reason, /retired/);
+  } finally {
+    await ctx.close();
+    if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
+    else process.env.ORCH_EVENT_RING_CAP = prevCap;
+  }
+});
+
+// The RING half of the synthetic-tail cursor. tests/mcp-retired-read.test.mjs
+// pins the disk pager; `pageCombined` splices `task_completion` for both, so the
+// ring path needs its own page ending on a seq-less event.
+test('get_transcript: a LIVE worker\'s page ending on a synthetic task_completion returns a usable nextFrom', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_RESUME });
+  try {
+    const sid = 'cafe0003-1111-2222-3333-444444444444';
+    const id = await bootResumed({ ctx, projectName: 'ringtasks', sid, lines: [
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'do two things' } },
+      { type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tc1', name: 'TaskCreate', input: { subject: 'first', description: 'the first', activeForm: 'doing first' } },
+      ] } },
+      { type: 'user', uuid: 'r0', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tc1', content: 'Task #1 created' },
+      ] } },
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+        { type: 'tool_use', id: 'tu1', name: 'TaskUpdate', input: { taskId: '1', status: 'completed' } },
+      ] } },
+      { type: 'user', uuid: 'r1', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'tu1', content: 'ok' },
+      ] } },
+      { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'both done' }] } },
+    ] });
+    const inst = ctx.instances.get(id);
+    assert.equal(inst.ring.trimmedBefore, 0, 'nothing evicted — this is the RING path (precondition)');
+
+    const whole = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 200 }));
+    assert.equal(whole.source, 'ring', 'served from the ring, not the disk pager');
+    const at = whole.events.findIndex(e => e.kind === 'task_completion');
+    assert.ok(at > 0, `fixture must produce a task_completion: ${JSON.stringify(whole.events.map(e => e.kind))}`);
+    assert.equal(whole.events[at]._seq, undefined, 'synthetic events carry no _seq');
+    const anchorSeq = whole.events[at - 1]._seq;
+    assert.equal(typeof anchorSeq, 'number');
+
+    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', {
+      sessionId: sid, fromSeq: 0, limit: anchorSeq + 1,
+    }));
+    assert.equal(page.source, 'ring');
+    assert.equal(page.events[page.events.length - 1].kind, 'task_completion',
+      'the page must END on the synthetic event, or this test proves nothing');
+
+    assert.equal(page.nextFrom, anchorSeq + 1,
+      'the cursor comes from the last event that HAS a _seq, not from the array tail');
+    assert.equal(Number.isFinite(page.nextFrom), true, 'never NaN/null — that would strand the poller');
+
+    const rest = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: page.nextFrom, limit: 200 }));
+    assert.ok(rest.events.length > 0, 'paging continues past the synthetic event');
+    assert.equal(rest.events[0]._seq, anchorSeq + 1, 'no event is skipped and none is re-served');
+  } finally { await ctx.close(); }
+});
