@@ -297,3 +297,51 @@ test('a stage that denies get_recent_messages still denies it for a retired work
     assert.match(served.messages[0].text, /the work is done/);
   } finally { await ctx.close(); }
 });
+
+// 8 — the OTHER disk branch. Every test above retires a TEMP worker, which is
+// dropped from byId on exit and so resolves through findSessionLocation. A
+// NON-temp worker survives in byId with no proc, so getInstOrDisk takes its
+// anyForSession branch instead — a completely different source for the
+// cwd/backingSessionId pair (the instance's own record, not a disk probe).
+// Nothing else reads that pair: forward is the only other caller and the
+// allowDisk guard refuses before it is ever used. So the content assertion
+// below is load-bearing — an empty-but-successful result would prove nothing,
+// since an unseeded read returns null at any cwd.
+test('get_recent_messages / get_transcript: a dead-but-retained non-temp worker is served from disk, from its own transcript', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO_WS });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'retainednontemp' });
+    const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
+      project: 'retainednontemp', mode: 'bypassPermissions', temp: false,
+    }));
+    const sid = spawn.sessionId;
+    await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
+
+    await seedSessionJsonl(ctx.claudeProjectsRoot, path.join(ctx.projectsRoot, 'retainednontemp'),
+      instForSession(ctx.instances, sid).backingSessionId, [
+        { type: 'user', uuid: 'u0', message: { role: 'user', content: 'audit it' } },
+        { type: 'assistant', uuid: 'a0', message: { id: 'm_nt', role: 'assistant', content: [
+          { type: 'text', text: 'retained non-temp findings' },
+        ] } },
+      ]);
+
+    // Kill the subprocess directly (NOT instances.remove): a non-temp instance
+    // stays known but loses its proc — the SESSION_NOT_LIVE recipe.
+    await instForSession(ctx.instances, sid).kill({ graceMs: 200 });
+    await waitFor(() => !instForSession(ctx.instances, sid)?.proc);
+    assert.ok(ctx.instances.idsForSession(sid).length > 0,
+      'precondition: still in byId, so the resolver takes its anyForSession branch, not the disk probe');
+
+    const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: sid }));
+    assert.equal(res.meta.ok, undefined, `expected a result, got a refusal: ${JSON.stringify(res.meta)}`);
+    assert.equal(res.meta.source, 'disk');
+    assert.match(res.messages[0].text, /retained non-temp findings/,
+      'the cwd/backingSessionId pair taken off the retained instance names THIS session\'s transcript');
+
+    const page = unwrap(await callTool(ctx.baseUrl, 'get_transcript', { sessionId: sid, fromSeq: 0, limit: 50 }));
+    assert.equal(page.source, 'disk');
+    assert.equal(page.status, 'exited');
+    assert.ok(page.events.some(e => e.kind === 'text_delta' && /retained non-temp findings/.test(e.text ?? '')),
+      'get_transcript pages the same session\'s events, not an empty page');
+  } finally { await ctx.close(); }
+});
