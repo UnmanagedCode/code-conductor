@@ -8,6 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -79,7 +80,7 @@ test('an isSynthetic message with no skillLoad tag renders as plain text, not a 
   // actually correlated with a Skill tool_use.
   conv.apply({ kind: 'user_echo', text: 'Stop hook feedback:\n[do the thing]', userIndex: 0 });
 
-  assert.equal(root.querySelector('details.block.skill'), null, 'no skill bubble rendered');
+  assertNull(root.querySelector('details.block.skill'), 'no skill bubble rendered');
   const wrap = root.querySelector('.msg.user');
   assert.ok(wrap.textContent.includes('Stop hook feedback'), 'plain text still rendered');
 });
@@ -92,7 +93,7 @@ test('a plain user_echo is unaffected (no skill bubble)', async () => {
 
   conv.apply({ kind: 'user_echo', text: 'hello there', userIndex: 0 });
 
-  assert.equal(root.querySelector('details.block.skill'), null, 'a normal prompt is not tagged as a skill load');
+  assertNull(root.querySelector('details.block.skill'), 'a normal prompt is not tagged as a skill load');
   const wrap = root.querySelector('.msg.user');
   assert.ok(wrap.textContent.includes('hello there'), 'plain text still rendered');
 });

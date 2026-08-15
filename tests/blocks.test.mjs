@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -197,14 +198,14 @@ test('ToolResultBlock: renders a base64 image content block as <img>', () => {
   assert.equal(img.getAttribute('loading'), 'lazy');
   // No anchor wrap — the lightbox handles tap-to-zoom in-page, since
   // Chrome on Android blocks top-level data:-URL navigation.
-  assert.equal(block.node.querySelector('a'), null);
+  assertNull(block.node.querySelector('a'), 'tool-result image is not wrapped in an <a> — the lightbox handles zoom');
   // Summary advertises the image count.
   assert.match(block.node.querySelector('summary').textContent, /1 image/);
   // Auto-open so the user sees the picture without clicking.
   assert.equal(block.node.hasAttribute('open'), true);
   // No empty <pre> when there's no text — it would render as a dark strip
   // above the image.
-  assert.equal(block.node.querySelector('pre'), null);
+  assertNull(block.node.querySelector('pre'), 'no empty <pre> in an image-only tool result');
 });
 
 test('ToolResultBlock: renders multiple images and mixed text', () => {
@@ -235,7 +236,7 @@ test('ToolResultBlock: refuses image/svg+xml to block script-bearing SVGs', () =
       { type: 'image', source: { type: 'base64', media_type: 'image/svg+xml', data: 'PHN2Zy8+' } },
     ],
   });
-  assert.equal(block.node.querySelector('img'), null);
+  assertNull(block.node.querySelector('img'), 'an svg+xml tool-result image renders no <img>');
 });
 
 test('ToolResultBlock: url-source image with http(s)/file:// passes through', () => {
@@ -298,7 +299,7 @@ test('TTS button: not created when TTS unavailable', () => {
   setupDOM();
   setTtsAvailable(false);
   const { btn } = makeSpeakingBlock();
-  assert.equal(btn, null, 'button should not exist when TTS is unavailable');
+  assertNull(btn, 'button should not exist when TTS is unavailable');
 });
 
 test('TTS button: created in idle state when TTS available', () => {

@@ -5,6 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -100,9 +101,9 @@ test('the warn class is scoped to playbook_warn, not every system block', async 
   new Conversation(root, {}).apply({ kind: 'system', subtype: 'stderr', data: { line: 'noise' } });
 
   assert.ok(root.querySelector('.block.system'), 'the control block renders');
-  // Compared as a boolean, not against null: assert.equal on a live DOM node
+  // assertNull, not assert.equal against null: assert.equal on a live DOM node
   // makes the reporter serialize the whole element tree on failure.
-  assert.equal(root.querySelector('.block.system.warn') === null, true,
+  assertNull(root.querySelector('.block.system.warn'),
     'an ordinary system block is not styled as a warning');
 });
 

@@ -8,6 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -186,7 +187,7 @@ test('review: a failed per-file fetch renders an error with a working retry', as
   await tick();
 
   assert.equal(calls.length, 3, 'summary + failed attempt + retry');
-  assert.equal(details.querySelector('.review-file-error'), null, 'error cleared after successful retry');
+  assertNull(details.querySelector('.review-file-error'), 'error cleared after successful retry');
   assert.ok(details.querySelectorAll('.diff-line').length > 0, 'hunks rendered after retry');
   window.happyDOM.abort();
 });

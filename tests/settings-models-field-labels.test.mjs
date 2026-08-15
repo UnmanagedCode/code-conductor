@@ -18,6 +18,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -219,14 +220,14 @@ test('model and effort share one .sm-field-pair, and only where both exist', asy
     assert.deepEqual(kinds, ['model', 'effort'], `${tier}: the pair holds model + effort, in that order`);
     // Backend stays on its own line — it is the widest select and pairing it too
     // would put three controls on one 232px line at 320px.
-    assert.equal(li.querySelector('.sm-field--backend').closest('.sm-field-pair'), null,
+    assertNull(li.querySelector('.sm-field--backend').closest('.sm-field-pair'),
       `${tier}: backend is not in the pair`);
   }
 
   const rows = [...window.document.querySelectorAll('#sm-role-list .sm-role-row')];
   const tierBound = rows.find(li => rowName(li) === 'Conductor');
   const custom = rows.find(li => rowName(li) === 'Mine-Own-Role');
-  assert.equal(tierBound.querySelector('.sm-field-pair'), null,
+  assertNull(tierBound.querySelector('.sm-field-pair'),
     'a tier-bound role has no model field, so effort takes the line alone — an empty half would be a dead column');
   assert.ok(tierBound.querySelector('.sm-field--effort'), 'effort is still rendered, just unpaired');
   assert.equal(custom.querySelectorAll('.sm-field-pair').length, 1,
@@ -245,6 +246,6 @@ test('a caption is omitted entirely rather than emitted empty', async () => {
     assert.ok(cap.textContent.trim(), 'no empty .sm-field-cap nodes');
   }
   const enable = window.document.querySelector('#sm-tier-list .sm-field--enable');
-  assert.equal(enable.querySelector('.sm-field-cap'), null,
+  assertNull(enable.querySelector('.sm-field-cap'),
     'the enable checkbox is named by the tier label beside it — no caption node');
 });

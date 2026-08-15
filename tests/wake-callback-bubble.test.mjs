@@ -5,6 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -90,7 +91,7 @@ test('a body-less (plain) marked stub renders the bubble with no collapsible bod
   assert.ok(wrap, 'plain stub still carries the wake-callback class');
 
   // No collapsible <details> — plain stubs have nothing to fold.
-  assert.equal(wrap.querySelector('details.block.wake'), null, 'no <details> for a body-less stub');
+  assertNull(wrap.querySelector('details.block.wake'), 'no <details> for a body-less stub');
 
   const plain = wrap.querySelector('.block.wake.plain');
   assert.ok(plain, 'renders a body-less .block.wake.plain summary line');
@@ -128,9 +129,9 @@ test('a plain user_echo is unaffected (no wake bubble)', async () => {
 
   conv.apply({ kind: 'user_echo', text: 'hello there', userIndex: 0 });
 
-  assert.equal(root.querySelector('.msg.user.wake-callback'), null,
+  assertNull(root.querySelector('.msg.user.wake-callback'),
     'a normal prompt is not tagged as a wake callback');
-  assert.equal(root.querySelector('details.block.wake'), null, 'no wake details block');
+  assertNull(root.querySelector('details.block.wake'), 'no wake details block');
   const wrap = root.querySelector('.msg.user');
   assert.ok(wrap.textContent.includes('hello there'), 'plain text still rendered');
 });
