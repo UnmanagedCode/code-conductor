@@ -2058,7 +2058,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // plan_request can be enriched with the file's path (and, when the tool
       // input carried no plan text, its contents). The rule lives in
       // planFile.ts — jsonl replay drives the same tracker.
-      if (ev.kind === 'tool_use') this._planFiles.noteToolUse(ev.name, ev.input);
+      if (ev.kind === 'tool_use' && !ev.parentToolUseId) this._planFiles.noteToolUse(ev.name, ev.input);
       // Must stay above the auto-approve block and the _emitUi below: both
       // read the event after enrichment.
       if (ev.kind === 'plan_request') this._planFiles.enrich(ev);

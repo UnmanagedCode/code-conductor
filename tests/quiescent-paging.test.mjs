@@ -471,3 +471,34 @@ test('snapshotTail backs off instead of returning empty when the tail is entirel
     else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
   }
 });
+
+// B-1: the empty-tail backstop must land on a QUIESCENT cut, not the raw
+// (buf.length - cap) index. tests/quiescent-paging.test.mjs's T10-equivalent
+// above happens to have buf.length - cap already quiescent (the headless
+// children never open an outer block), so it can't tell
+// lastQuiescentAtOrBefore(buf, buf.length - cap) apart from the plain index.
+// Here an OUTER open text block (never closed) starts exactly at the raw
+// window start, so the raw index itself is mid-block and the backstop must
+// walk back one further index to the true quiescent cut.
+test('snapshotTail backstop backs off to the quiescent cut, not the raw window start', async () => {
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  process.env.ORCH_SNAPSHOT_TAIL = '2';
+  try {
+    const inst = await bootIdle('tailbackstop2');
+    inst._emitUi({ kind: 'system', subtype: 'anchor' });
+    // Outer open text block — starts at the raw window start (seq 1) and
+    // never closes, so seq 1 itself is not a quiescent cut.
+    inst._emitUi({ kind: 'text_delta', msgId: 'm', blockIdx: 0, text: 'outer' });
+    // Headless children with no head anywhere — poisons the suffix through
+    // the ring's end, forcing the primary snap into the empty-tail backstop.
+    inst._emitUi({ kind: 'text_delta', msgId: 'mc', blockIdx: 0, text: 'g0', parentToolUseId: 'GONE4' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'mc', blockIdx: 1, text: 'g1', parentToolUseId: 'GONE4' });
+
+    const snap = inst.snapshotTail();
+    assert.equal(snap.length, 3, 'backstop lands on the quiescent cut (seq 1: right before the open block), not the raw window start (seq 2)');
+    assert.deepEqual(snap.map(e => e.text), ['outer', 'g0', 'g1']);
+  } finally {
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+  }
+});

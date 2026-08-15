@@ -158,6 +158,25 @@ test('tool_use events for unrelated tools are ignored', () => {
   assert.equal(t.list().length, 0);
 });
 
+// A5 mirror (server sibling: src/taskReconstruct.ts, "a sub-agent
+// TaskCreate/TaskUpdate ... never reaches the outer task panel"). After A1
+// (src/parser.ts), a forwarded sub-agent envelope's tool_use/tool_result
+// enters the same live event stream the outer session's WS feed uses, so
+// without this guard a sub-agent's own TaskCreate would populate — or, via
+// _applyCreate's tasks.clear(), silently wipe — the outer panel, and its
+// TaskUpdate would synthesize a completedBatches entry for the outer batch.
+test('a sub-agent TaskCreate/TaskUpdate (parentToolUseId set) never reaches the outer panel', () => {
+  const t = new TaskTracker();
+  feedCreate(t, { toolUseId: 'a', taskId: '1', subject: 'outer work' });
+  t.apply({ kind: 'tool_use', name: 'TaskCreate', toolUseId: 'b', parentToolUseId: 'A', input: { subject: 'sub work' } });
+  t.apply({ kind: 'tool_result', toolUseId: 'b', parentToolUseId: 'A', content: 'Task #2 created successfully: sub work', isError: false });
+  t.apply({ kind: 'tool_use', name: 'TaskUpdate', toolUseId: 'u1', parentToolUseId: 'A', input: { taskId: '1', status: 'completed' } });
+  assert.deepEqual(t.list().map(x => ({ id: x.id, subject: x.subject, status: x.status })),
+    [{ id: '1', subject: 'outer work', status: 'pending' }],
+    'the sub-agent create is invisible and its update on the outer task never applies');
+  assert.equal(t.completedBatches.length, 0, 'a child event must not synthesize an outer completedBatches entry');
+});
+
 // Replay-order tests — jsonl emits tool_result (type:"user" mid-turn) before
 // tool_use (type:"assistant" written at turn end), opposite of live order.
 test('replay: tool_result arriving before its tool_use still creates the task', () => {
