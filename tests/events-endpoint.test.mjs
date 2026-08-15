@@ -445,12 +445,23 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
 
     // The Agent head itself (archive-side, per the assertion above). Its own
     // children may legitimately ride orphaned ONLY on a page whose served
-    // slice starts strictly above the head's _seq (the head, and thus the
-    // whole group, is reachable on some OTHER page in the walk, pinned
-    // below) — A3 created this trade-off (pre-A3 that window was simply an
-    // empty page, so no orphan could appear). The page that actually carries
-    // the head must still satisfy full integrity: allowing agentToolUseId
-    // unconditionally on every page would make this check a tautology.
+    // slice starts strictly above the head's _seq — A3 created this
+    // trade-off (pre-A3 that window was simply an empty page, so no orphan
+    // could appear). Narrowing the allowance this way stops the unconditional
+    // `['GONE', agentToolUseId]` set from being a tautology on every page,
+    // but with THIS fixture at limits 3/5/7 the pageStartsAboveHead===false
+    // ("strict") branch is currently unreachable against an actual Agent
+    // child: the only pages that carry an Agent-group child all happen to
+    // start above headSeq, so the permissive branch applies to 100% of them,
+    // and the page(s) that DO satisfy pageStartsAboveHead===false carry zero
+    // Agent children to check. So this narrowing guards a future page shape
+    // (a fixture/limit combination where an Agent child rides alongside the
+    // head on the same page) rather than proving that shape correct today.
+    // The actual group-integrity invariant (a child's parentToolUseId must
+    // resolve to a head within the array, in either direction) is pinned at
+    // the resolver level by tests/quiescent-snap.test.mjs — mutating
+    // `left: state.head + 1` → `left: i` there, or `component.left - 1` →
+    // `component.left`, fails 16 tests between them.
     const headEv = arch.events.find(e => e.kind === 'tool_use' && e.toolUseId === agentToolUseId);
     assert.ok(headEv, 'sanity: the Agent head is present in the replayed archive');
     const headSeq = headEv._seq;
