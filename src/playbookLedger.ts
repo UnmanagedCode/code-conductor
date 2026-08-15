@@ -41,6 +41,14 @@
 // Both halves pinned by tests/playbook-enforce.test.mjs → "a stage binding
 // survives a renewal" and "… survives a PRUNE", the latter asserting the residual
 // `live:false` explicitly so it cannot drift unnoticed.
+//
+// A THIRD case neither mechanism covers: an UNOBSERVED death. A host reboot or
+// an orchestrator crash takes the process watching for the exit down with the
+// worker, so no retire is ever written and the row reads `live:true` forever —
+// on disk, across every future process, leaking a `workers:"one"` slot with no
+// worker left to free it. src/mcp/playbookGate.ts reconciles this away: on its
+// first fold per process it retires any `live:true` row the instance registry
+// no longer knows about, before any capacity decision can read it.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -235,15 +243,18 @@ export function sameRun(p: Projection, a: string, b: string): boolean {
   return ra !== null && ra === runRootOf(p, b);
 }
 
-// Live occupants of `stage` within the run `anchor` belongs to. Capacity counts
-// LIVE workers only, so a retire frees the slot for a replacement.
-export function liveInStage(p: Projection, anchor: string, stage: string): number {
-  let n = 0;
+// Live occupants of `stage` within the run `anchor` belongs to, as sessionIds
+// rather than a bare count — capacity reads this to name the blocking worker in
+// a STAGE_AT_CAPACITY refusal. Capacity counts LIVE workers only, so a retire
+// (including the boot-time orphan reconciliation in src/mcp/playbookGate.ts)
+// frees the slot for a replacement.
+export function liveSessionsInStage(p: Projection, anchor: string, stage: string): string[] {
+  const out: string[] = [];
   for (const sid of runMembers(p, anchor)) {
     const st = p.bySession.get(sid);
-    if (st?.live && st.stage === stage) n++;
+    if (st?.live && st.stage === stage) out.push(sid);
   }
-  return n;
+  return out;
 }
 
 export function hasEverBeen(p: Projection, sessionId: string, stage: string): boolean {

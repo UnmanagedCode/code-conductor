@@ -106,10 +106,39 @@ export function createPlaybookGate(
   // PROJECTS_ROOT at its temp store, so resolving the path eagerly would bind the
   // wrong store. The PROMISE is memoised, not a boolean — a tools/call
   // and a status event can both arrive first, and two concurrent load() calls
-  // would fold the same events into the projection twice.
+  // would fold the same events into the projection twice. Chaining
+  // reconcileOrphans onto that same promise means the repair also runs exactly
+  // once per process, before any caller can observe the projection.
   function ensureLoaded(): Promise<unknown> {
-    if (!loading) loading = ledger.load();
+    if (!loading) loading = ledger.load().then(reconcileOrphans);
     return loading;
+  }
+
+  // A host reboot (or an orchestrator crash) kills the orchestrator and every
+  // worker together, so no exit is ever observed and the manager's 'status'
+  // stream — the ONLY other retire writer — never fires. A `live:true` row from
+  // a previous process would then hold its stage's `workers:"one"` slot forever,
+  // with no recovery: kill_instance/respawn_instance/spawn_instance({resume}) all
+  // need a registry entry or a transcript, and a session that never got its first
+  // governed call has neither.
+  //
+  // `anyForSession`, not `liveForSession`: an exited-but-retained non-temp
+  // instance is still known to the registry, and its retire belongs to the status
+  // stream above, not here — this only repairs what that stream could never see.
+  // With no registry at all (`instances` null) there is no way to tell an orphan
+  // from a live worker, so it does nothing rather than guess.
+  async function reconcileOrphans(): Promise<void> {
+    if (!instances) return;
+    const orphaned = [...ledger.projection().bySession.values()]
+      .filter(st => st.live && !instances.anyForSession(st.sessionId))
+      .map(st => st.sessionId);
+    for (const sessionId of orphaned) {
+      await append({ kind: 'retire', sessionId, reason: 'orphaned — no instance after orchestrator start' });
+    }
+    if (orphaned.length > 0) {
+      console.warn(`playbookGate: reconciled ${orphaned.length} orphaned worker(s) — ` +
+        'retired (no instance after orchestrator start)');
+    }
   }
 
   // Definitions are read PER CALL, never memoised for the process lifetime.
@@ -156,10 +185,12 @@ export function createPlaybookGate(
   async function onStatus(summary: InstanceSummary): Promise<void> {
     const sessionId = typeof summary.sessionId === 'string' ? summary.sessionId : null;
     if (!sessionId) return;
-    // RETIRE — the ONE retire path, for both a deliberate kill_instance and an
-    // unexpected crash, since either way the subprocess exits and lands here.
-    // Capacity (`workers: "one"`) counts LIVE workers, so a worker that never
-    // retires holds its stage's slot forever.
+    // RETIRE — one of two writers, this one covering both a deliberate
+    // kill_instance and an unexpected crash, since either way the subprocess
+    // exits and lands here. The other is reconcileOrphans() above, for the case
+    // this stream can never observe: the orchestrator process itself is gone, so
+    // no exit event fires at all. Capacity (`workers: "one"`) counts LIVE
+    // workers, so a worker that never retires holds its stage's slot forever.
     if (summary.status === 'exited' || summary.status === 'crashed') {
       // The projection MUST be folded before probing it. It is otherwise loaded
       // lazily on the first governed call, so a worker that crashes after a
@@ -353,8 +384,9 @@ export function createPlaybookGate(
     // already emits the retire — and it emits it FIRST, because the kill resolves
     // through the same status transition the listener watches. A second writer
     // here would be dead code that only looked like a safety net. The status
-    // stream is therefore the single retire path, covering deliberate kills and
-    // unexpected crashes identically.
+    // stream covers deliberate kills and unexpected crashes identically; the
+    // other writer, reconcileOrphans() above, covers only the case neither of
+    // those is: the process that would have observed the exit is itself gone.
   }
 
   async function readProjection(): Promise<Projection> {

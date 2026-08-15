@@ -575,7 +575,9 @@ test('workers:"one" refuses a second live worker in the stage; "many" does not',
   ];
   const args = { stage: 'slot', provenance: { root: 'w-cap-root' } };
   const one = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('one')) });
-  assert.match(refusal(one, 'STAGE_AT_CAPACITY').reason, /declares workers:"one"/);
+  const oneReason = refusal(one, 'STAGE_AT_CAPACITY').reason;
+  assert.match(oneReason, /declares workers:"one"/);
+  assert.match(oneReason, /w-cap-a0/, 'the refusal names the blocking sessionId, not just the code');
   const many = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('many')) });
   allowed(many);
 });
@@ -624,6 +626,7 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
   const res = refusal(decide({ toolName: 'send_prompt', args: move, projection: proj(occupied), playbooks: P }),
     'STAGE_AT_CAPACITY');
   assert.match(res.reason, /stage 'hold' declares workers:"one"/);
+  assert.match(res.reason, /w-capt-w/, 'the refusal names the blocking sessionId, not just the code');
   // ...and freeing the slot lets it through again
   allowed(decide({
     toolName: 'send_prompt', args: move, playbooks: P,

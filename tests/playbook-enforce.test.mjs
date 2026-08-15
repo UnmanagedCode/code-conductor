@@ -53,10 +53,17 @@ let nextRpcId = 1;
 // Boot a server, a real git project, and a live conductor at `enforcement`.
 // `call(name, args)` issues a tools/call AS THE CONDUCTOR; `callAs(handle, …)`
 // issues one as somebody else (or nobody).
-async function setup({ enforcement, scenarioPath = SCENARIO } = {}) {
+// `seedLedger`, when supplied, writes to the ledger AFTER bootServer() but
+// BEFORE the conductor is spawned below — the only window that matters. The
+// conductor's first status tick reaches the gate's ensureLoaded() (its birth
+// event, at :194-ish) before setup() returns, and that promise is memoized —
+// so a seed written any later would fold against an already-materialized,
+// bare projection and never be reconciled at all.
+async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) {
   const ctx = await bootServer({ scenarioPath });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  if (seedLedger) await seedLedger(ctx);
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
     project: '.conduct', mode: 'bypassPermissions', temp: true,
     ...(enforcement ? { playbookEnforcement: enforcement } : {}),
@@ -660,6 +667,55 @@ test('a worker bound by a previous run still retires when it exits', async () =>
     assert.equal(folded.bySession.get(sessionId).live, false,
       'the slot is freed even though enforcement never decided a single call');
   } finally { await ctx.close(); }
+});
+
+// The reboot case, card 2026-0149: a host reboot (or an orchestrator crash)
+// kills the process watching for an exit ALONG WITH the worker, so — unlike
+// the test above — no retire is ever written and a `live:true` row from a
+// previous orchestrator process persists forever. Without reconciliation this
+// wedges every future `workers:"one"` spawn into that stage: `kill_instance`
+// is SESSION_UNKNOWN (no registry entry), `respawn_instance` is
+// SESSION_NOT_LIVE, and `spawn_instance({resume})` is SESSION_UNKNOWN too (the
+// seeded worker never got a first prompt, so it has no transcript to resume
+// from). The seeded sessionIds below never existed as real instances in this
+// process, which is exactly what "unknown to the instance registry" means.
+test('a reboot cannot wedge a workers:"one" stage: the orphaned slot is reconciled at boot', async () => {
+  const rootPlanId = 'reboot0000-0000-4000-8000-0000000000aa';
+  const implId = 'reboot0000-0000-4000-8000-0000000000bb';
+  const t = await setup({
+    enforcement: 'enforce',
+    seedLedger: async () => {
+      await fs.mkdir(path.dirname(ledgerFile()), { recursive: true });
+      const lines = [
+        { seq: 1, ts: '2026-08-15T00:00:00Z', kind: 'spawn', sessionId: rootPlanId, playbook: 'relay', stage: 'plan' },
+        {
+          seq: 2, ts: '2026-08-15T00:00:01Z', kind: 'spawn', sessionId: implId, playbook: 'relay', stage: 'implement',
+          provenance: { plan: rootPlanId },
+        },
+        // Deliberately NO `retire` — that absence is the whole bug.
+      ];
+      await fs.writeFile(ledgerFile(), lines.map(e => JSON.stringify(e)).join('\n') + '\n');
+    },
+  });
+  try {
+    // `implement` is workers:"one" (relay.json declares no `workers`, and "one"
+    // is the default). Before the fix this refuses STAGE_AT_CAPACITY, because
+    // the seeded row still reads live:true and nothing in THIS process ever
+    // observed the earlier one's exit.
+    const second = await t.spawnWorker({
+      project: 'demo', playbook: 'relay', stage: 'implement', provenance: { plan: rootPlanId },
+    });
+    assert.ok(second.sessionId,
+      `a reboot-orphaned slot must not wedge the run permanently: ${JSON.stringify(second)}`);
+    assert.notEqual(second.sessionId, implId, 'a genuinely new worker was spawned, not the dead one reused');
+
+    // And the repair left a trace: the orphaned occupant was actually retired,
+    // not silently ignored by some other loophole in the capacity check.
+    const evs = await t.events();
+    const retire = evs.find(e => e.kind === 'retire' && e.sessionId === implId);
+    assert.ok(retire, 'the orphaned seed row must be retired, with a trace in the ledger');
+    assert.match(retire.reason, /orphan/i);
+  } finally { await t.close(); }
 });
 
 // ── relay: the planner can never implement ─────────────────────────────────

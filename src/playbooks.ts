@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, validateSlug, type ExtraEntry } from './fragmentCatalog.ts';
 import {
-  type Projection, type WorkerState, hasEverBeen, liveInStage, runRootOf, sameRun,
+  type Projection, type WorkerState, hasEverBeen, liveSessionsInStage, runRootOf, sameRun,
 } from './playbookLedger.ts';
 
 const PLAYBOOKS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'playbooks');
@@ -869,10 +869,10 @@ function decideSpawn(
   // a non-root spawn joins an existing run, so a root spawn always has room.
   if (stage.workers === 'one' && ancestors.length > 0) {
     const anchor = ancestors[0];
-    if (liveInStage(projection, anchor, stageName) >= 1) {
+    const blockers = liveSessionsInStage(projection, anchor, stageName);
+    if (blockers.length > 0) {
       return refuse('STAGE_AT_CAPACITY',
-        `stage '${stageName}' declares workers:"one" and this run already has a live worker in it. ` +
-        'Retire that worker (kill_instance) to free the slot, or use a playbook whose stage declares workers:"many".',
+        capacityReason(stageName, blockers[0]),
         legalMovesFrom(playbook, stageName));
     }
   }
@@ -1029,10 +1029,13 @@ function decideTargeted(
     });
     if (needsRefusal) return needsRefusal;
 
-    if (resulting.workers === 'one' && liveInStage(projection, sessionId, resultingName) >= 1) {
-      return refuse('STAGE_AT_CAPACITY',
-        `stage '${resultingName}' declares workers:"one" and this run already has a live worker in it.`,
-        legalMovesFrom(playbook, subject.stage));
+    if (resulting.workers === 'one') {
+      const blockers = liveSessionsInStage(projection, sessionId, resultingName);
+      if (blockers.length > 0) {
+        return refuse('STAGE_AT_CAPACITY',
+          capacityReason(resultingName, blockers[0]),
+          legalMovesFrom(playbook, subject.stage));
+      }
     }
   }
 
@@ -1229,6 +1232,22 @@ function knownPlaybooksHint(playbooks: Map<string, Playbook>): string {
 
 function short(sessionId: string): string {
   return sessionId.slice(0, 8);
+}
+
+// The STAGE_AT_CAPACITY reason, shared by the spawn and transition sites: names
+// the blocking worker (both in the narrative and in the copy-pasteable call —
+// sessionId args are prefix-resolved at the MCP boundary, so the shortened id
+// works), offers the `workers:"many"` alternative, and says explicitly that a
+// slot held by a session the orchestrator no longer knows about (e.g. after a
+// host reboot) is released automatically at orchestrator start — kill_instance
+// is a recovery for a worker that is actually still running, not the only way
+// out of this refusal.
+function capacityReason(stageName: string, blockingSessionId: string): string {
+  return `stage '${stageName}' declares workers:"one" and this run already has a live worker in it: ` +
+    `${short(blockingSessionId)}. Retire it (kill_instance({sessionId: "${short(blockingSessionId)}"})) to free ` +
+    'the slot, or use a playbook whose stage declares workers:"many". A slot held by a session the ' +
+    'orchestrator no longer knows about (e.g. after a host reboot) is released automatically at orchestrator ' +
+    'start, so it cannot wedge a run permanently.';
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
