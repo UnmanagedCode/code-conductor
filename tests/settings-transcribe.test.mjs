@@ -10,12 +10,26 @@ import * as whisperInstall from '../src/whisperInstall.ts';
 
 // A bash stand-in for bin/install-whisper.sh: emits a couple of progress
 // lines and `touch`es the whisper-cli binary + the requested model under
-// INSTALL_ROOT, exactly where transcribe.ts expects them. FAKE_INSTALL_SLEEP
-// lets a test keep an install "running" long enough to probe concurrency.
+// INSTALL_ROOT, exactly where transcribe.ts expects them.
+//
+// When FAKE_INSTALL_RELEASE is set the install parks until the test creates
+// that file. The 409 window must NOT be bounded by a wall-clock `sleep`:
+// `isRunning()` goes false the moment the child exits, so a `sleep`-bounded
+// install makes that assertion a race between this process's scheduling and
+// real time — the one resource shared with every other test file and every
+// other process on the host. The installer blocks until this test releases it.
 const FAKE_INSTALL = `#!/usr/bin/env bash
 echo "==> fake install for $WHISPER_MODEL_NAME"
 mkdir -p "$INSTALL_ROOT/whisper.cpp/build/bin" "$INSTALL_ROOT/whisper.cpp/models"
-if [ -n "\${FAKE_INSTALL_SLEEP:-}" ]; then sleep "$FAKE_INSTALL_SLEEP"; fi
+if [ -n "\${FAKE_INSTALL_RELEASE:-}" ]; then
+  while [ ! -e "$FAKE_INSTALL_RELEASE" ]; do
+    # Bail the moment teardown removes the fixture dir, so a parked installer
+    # can never outlive its test — a failed assertion returns before the
+    # release and would otherwise hang the whole FILE, not just one test.
+    [ -d "$(dirname "$FAKE_INSTALL_RELEASE")" ] || exit 1
+    sleep 0.05
+  done
+fi
 : > "$INSTALL_ROOT/whisper.cpp/build/bin/whisper-cli"
 chmod +x "$INSTALL_ROOT/whisper.cpp/build/bin/whisper-cli"
 : > "$INSTALL_ROOT/whisper.cpp/models/ggml-\${WHISPER_MODEL_NAME}.bin"
@@ -158,10 +172,13 @@ test('install flow: a second install while one is running returns 409', async ()
   const scriptDir = await mkTmp();
   const script = path.join(scriptDir, 'fake-install.sh');
   await fs.writeFile(script, FAKE_INSTALL, { mode: 0o755 });
+  // Release gate, not a timer: the install parks until this test writes the
+  // file, so the 409 window stays open however starved this process gets.
+  const releasePath = path.join(scriptDir, 'release');
   try {
     await withEnv({
       INSTALL_ROOT: installRoot, WHISPER_INSTALL_SCRIPT: script,
-      FAKE_INSTALL_SLEEP: '1', ...CLEAR_OVERRIDES,
+      FAKE_INSTALL_RELEASE: releasePath, ...CLEAR_OVERRIDES,
     }, async () => {
       const { baseUrl, close } = await bootServer();
       try {
@@ -170,6 +187,9 @@ test('install flow: a second install while one is running returns 409', async ()
         const second = await api(baseUrl, 'POST', '/api/settings/transcribe/install', { model: 'tiny.en-q5_1' });
         assert.equal(second.status, 409);
         assert.equal(second.body.running, true);
+
+        // Let the install finish, so the real close → persist path still runs.
+        await fs.writeFile(releasePath, '');
 
         await waitFor(async () => {
           const s = await api(baseUrl, 'GET', '/api/settings/transcribe/install/status');
