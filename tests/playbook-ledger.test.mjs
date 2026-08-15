@@ -7,7 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   createPlaybookLedger, ledgerFile, foldProjection, readEvents,
-  runMembers, runRootOf, sameRun, liveInStage, hasEverBeen,
+  runMembers, runRootOf, sameRun, liveSessionsInStage, hasEverBeen,
 } from '../src/playbookLedger.ts';
 
 async function tmpLedger() {
@@ -121,14 +121,16 @@ test('stageHistory records every entry in order, including a re-entered stage', 
   assert.equal(p.bySession.get('s1').stage, 'a');
 });
 
-test('liveInStage counts only live members of the same run, so a retire frees the slot', () => {
+test('liveSessionsInStage returns only live members of the same run, so a retire frees the slot', () => {
   const events = [
     { kind: 'spawn', sessionId: 'root', playbook: 'x', stage: 'a' },
     { kind: 'spawn', sessionId: 'w1', playbook: 'x', stage: 'b', provenance: { a: 'root' } },
     { kind: 'spawn', sessionId: 'w2', playbook: 'x', stage: 'b', provenance: { a: 'root' } },
   ];
-  assert.equal(liveInStage(fold(events), 'root', 'b'), 2);
-  assert.equal(liveInStage(fold([...events, { kind: 'retire', sessionId: 'w1', reason: 'killed' }]), 'root', 'b'), 1);
+  assert.deepEqual(liveSessionsInStage(fold(events), 'root', 'b').sort(), ['w1', 'w2']);
+  assert.deepEqual(
+    liveSessionsInStage(fold([...events, { kind: 'retire', sessionId: 'w1', reason: 'killed' }]), 'root', 'b'),
+    ['w2']);
 });
 
 test('a `resume` un-retires a worker IN PLACE, resetting no history and no provenance', () => {
@@ -158,7 +160,7 @@ test('a `resume` un-retires a worker IN PLACE, resetting no history and no prove
   assert.equal(hasEverBeen(back, 'w1', 'plan'), true,
     'a downstream `needs` anchored on `plan` must still be satisfiable after a resume');
   // And the slot it holds is counted again, since capacity counts live workers.
-  assert.equal(liveInStage(back, 'root', 'implement'), 1);
+  assert.deepEqual(liveSessionsInStage(back, 'root', 'implement'), ['w1']);
 });
 
 test('a `resume` for an unknown worker is folded as a no-op rather than materialising one', () => {
