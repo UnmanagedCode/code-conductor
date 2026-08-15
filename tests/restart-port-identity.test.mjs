@@ -11,7 +11,11 @@
 //
 // This test reproduces the exact geometry — a decoy that answers the old
 // readiness probe while our child cannot bind — and asserts that the new
-// banner-based readiness refuses to call it ready and never sends the POST.
+// banner-based readiness refuses to call it ready.
+//
+// It exercises the SAME `waitForBanner` the restart tests import, not a private
+// copy: this guard only protects the destructive call sites if reverting the
+// readiness rule there is the same edit as reverting it here.
 // The decoy is a plain node:http recorder, not a code-conductor server, so a
 // stray restart POST would be recorded, not obeyed: nothing here is destructive.
 import { test } from 'node:test';
@@ -22,6 +26,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import { waitForBanner } from './serverBanner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -59,19 +64,6 @@ async function startDecoy() {
   state.port = server.address().port;
   state.close = () => new Promise(r => server.close(r));
   return state;
-}
-
-// The readiness rule under test, identical to the one the restart tests use:
-// only OUR child's own banner, printed from the address it actually bound,
-// counts as ready.
-async function waitForBanner(captured, port, { timeout = 2_000 } = {}) {
-  const needle = `code-conductor listening on http://127.0.0.1:${port}`;
-  const start = Date.now();
-  for (;;) {
-    if (captured.stdout.includes(needle)) return;
-    if (Date.now() - start > timeout) throw new Error(`child never printed listening banner for port ${port}`);
-    await new Promise(r => setTimeout(r, 50));
-  }
 }
 
 test('banner readiness never mistakes a foreign server on our port for our child', async (t) => {
@@ -113,13 +105,15 @@ test('banner readiness never mistakes a foreign server on our port for our child
   assert.equal(probe.status, 200, 'the decoy answers the old readiness probe');
   assert.ok(Array.isArray(await probe.json()));
 
-  // Banner readiness must REFUSE: the port answers, but not with our banner.
+  // THE live assertion. Banner readiness must REFUSE: the port answers, but
+  // not with our banner — so the caller never proceeds to its restart POST.
   await assert.rejects(
     () => waitForBanner(captured, decoy.port, { timeout: 2_000 }),
     /never printed listening banner/,
     'a foreign server on our port must not read as ready',
   );
 
-  // …and therefore the destructive POST is never sent to a stranger.
+  // Documents the consequence; this test issues no restart POST, so it is 0 by
+  // construction and pins nothing on its own. The rejection above is the proof.
   assert.equal(decoy.restartPosts, 0, 'no restart POST may reach a server we do not own');
 });

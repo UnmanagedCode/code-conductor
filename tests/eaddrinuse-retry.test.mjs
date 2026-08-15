@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import { waitForBanner } from './serverBanner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -35,18 +36,6 @@ function spawnServer(port, tmpHome) {
   });
 }
 
-// Readiness comes from OUR child's own banner, printed from its bound address —
-// never from an HTTP probe on the port, which any other test file's server could
-// answer if it were handed the same port. See tests/restart-port-identity.test.mjs.
-async function waitForBanner(captured, port, { timeout = 15_000 } = {}) {
-  const needle = `code-conductor listening on http://127.0.0.1:${port}`;
-  const start = Date.now();
-  for (;;) {
-    if (captured.stdout.includes(needle)) return;
-    if (Date.now() - start > timeout) throw new Error(`child never printed listening banner for port ${port}`);
-    await new Promise(r => setTimeout(r, 50));
-  }
-}
 
 test('EADDRINUSE: server retries and recovers when the blocking port is released', async (t) => {
   const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-eaddrinuse-'));

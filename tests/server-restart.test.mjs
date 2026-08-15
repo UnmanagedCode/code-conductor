@@ -17,10 +17,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import { waitForBanner } from './serverBanner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 
+// This file CANNOT hold its port: its assertion is same-port respawn, so
+// server.ts must bind the port itself. Binding-and-freeing is therefore
+// unavoidable here — what makes it safe is that readiness comes from the
+// child's own banner (./serverBanner.mjs) and every destructive POST is
+// preceded by the tryBind ownership check below.
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer();
@@ -47,31 +53,6 @@ function spawnServer(port, tmpHome) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   return child;
-}
-
-// Readiness must come from OUR child, never from the port. `getFreePort` frees
-// the socket before the child binds it, so an HTTP probe on that port can be
-// answered by any other test file's `bootServer()` that was handed the same
-// ephemeral port meanwhile — and this test then POSTs the *destructive*
-// /api/admin/restart at that stranger, killing another test process. The child
-// prints this banner from its own BOUND address, so it is proof of identity.
-// The post-restart replacement is spawned stdio:'inherit' (src/restart.ts), so
-// its banner lands in the same captured stdout — hence `nth`.
-const bannerFor = (port) => `code-conductor listening on http://127.0.0.1:${port}`;
-
-// Generous default deadline: this test boots the REAL server.ts (port bind +
-// migrations + sync reconcile + restart respawn). Under the concurrent suite
-// these boots are CPU-starved on Termux, so the poll must allow ample headroom.
-async function waitForBanner(captured, port, { nth = 1, timeout = 20_000 } = {}) {
-  const needle = bannerFor(port);
-  const start = Date.now();
-  for (;;) {
-    if (captured.stdout.split(needle).length - 1 >= nth) return;
-    if (Date.now() - start > timeout) {
-      throw new Error(`child never printed listening banner #${nth} for port ${port}`);
-    }
-    await new Promise(r => setTimeout(r, 50));
-  }
 }
 
 // 'EADDRINUSE' when someone still holds the port, 'OK' when it is free.
