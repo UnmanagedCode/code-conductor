@@ -443,6 +443,18 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
     const universe = arch.events.slice(0, arch.cut).concat(inst.ringSnapshot());
     const universeSeqs = new Set(universe.map(e => e._seq));
 
+    // The Agent head itself (archive-side, per the assertion above). Its own
+    // children may legitimately ride orphaned ONLY on a page whose served
+    // slice starts strictly above the head's _seq (the head, and thus the
+    // whole group, is reachable on some OTHER page in the walk, pinned
+    // below) — A3 created this trade-off (pre-A3 that window was simply an
+    // empty page, so no orphan could appear). The page that actually carries
+    // the head must still satisfy full integrity: allowing agentToolUseId
+    // unconditionally on every page would make this check a tautology.
+    const headEv = arch.events.find(e => e.kind === 'tool_use' && e.toolUseId === agentToolUseId);
+    assert.ok(headEv, 'sanity: the Agent head is present in the replayed archive');
+    const headSeq = headEv._seq;
+
     for (const limit of [3, 5, 7]) {
       const responses = await pageResponses(ctx, id, { limit });
       assert.ok(responses.length > 0, `limit=${limit}: at least one response`);
@@ -450,18 +462,14 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       let prevBefore = Infinity;
       for (let p = 0; p < responses.length; p++) {
         const body = responses[p];
-        // GONE is deliberately headless (the fixture's whole point). Its
-        // component starts at index 0 (every headless component does) and
-        // merges by adjacency with the Agent component, carrying the
-        // `headless` flag onto the merge — so the Agent's own children can
-        // also ride along on a page that doesn't carry the Agent head (the
-        // head is archive-side and reachable elsewhere in the walk, pinned
-        // below). Pre-A3 this whole merged window was simply an empty page;
-        // post-A3 it is served, and an unresolved child parks client-side
-        // (Conversation.orphanChildEvents) until a later page brings its head
-        // — see A3's note in src/eventArchive.ts. Both ids are the allowance.
-        assertGroupIntegrity(body.events, `limit=${limit} page[${p}] `,
-          { headlessIds: new Set(['GONE', agentToolUseId]) });
+        // GONE is deliberately headless (the fixture's whole point) on every
+        // page — its component starts at index 0 (every headless component
+        // does) and merges by adjacency with the Agent component, carrying
+        // the `headless` flag onto the merge.
+        const seqs = body.events.map(e => e._seq).filter(s => s != null);
+        const pageStartsAboveHead = seqs.length === 0 || Math.min(...seqs) > headSeq;
+        const headlessIds = pageStartsAboveHead ? new Set(['GONE', agentToolUseId]) : new Set(['GONE']);
+        assertGroupIntegrity(body.events, `limit=${limit} page[${p}] `, { headlessIds });
         assert.ok(!(body.hasMore && body.events.length === 0),
           `limit=${limit} page[${p}]: no page may be empty while hasMore is true`);
         if (body.hasMore) {
@@ -1189,6 +1197,16 @@ test('a batch spanning a page boundary still gets its bubble in the completing p
 // tool_use (tu_a1), forwarded as a finals-only envelope tagged
 // parent_tool_use_id, whose OWN content spawns a second Agent (tu_a2) —
 // exactly the depth-2 shape the card was filed against.
+//
+// Measured mutant coverage (correcting an earlier claim that this test also
+// fails on deletion of A3/A6): only deleting A1 fails T14 — assertion (i)
+// has no head to find. A3's mutant fails 6 OTHER tests but not this one, and
+// A6's fails exactly one other test but not this one: this fixture's ring
+// (depth-2, `ORCH_SNAPSHOT_TAIL=8`) is too short for either backstop to be
+// exercised — the tail never needs to reject a window, and paging at
+// limit=3 never produces a snap-rejected window either. No correctness
+// risk: A3 and A6 are independently pinned by their own tests (T6/T7/T8 and
+// T10 respectively) — this is a claim-accuracy note, not a coverage hole.
 test('a depth-2 sub-agent session renders its full history and pages to seq 0', async () => {
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
