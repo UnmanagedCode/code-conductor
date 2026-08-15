@@ -103,7 +103,14 @@ async function pageAllPages(ctx, id, { limit = 10 } = {}) {
 // it (unless a later in-page echo/turn_end force-reset — the interrupt case),
 // and no sub-agent child appears without its owning head. This is the client
 // renderer's whole-block contract.
-function assertPageIntegrity(events, label) {
+// `headlessIds` is an opt-in allowance for ids that a fixture DELIBERATELY
+// builds with no head anywhere (e.g. 'GONE') — after A3, such a child can
+// legitimately ride along in a served page (it parks client-side in
+// Conversation.orphanChildEvents rather than rendering) instead of being
+// dropped along with its whole component. Use it ONLY where the fixture
+// builds a headless group on purpose; a genuinely missing head for anything
+// else must still fail this check.
+function assertPageIntegrity(events, label, { headlessIds = new Set() } = {}) {
   const open = new Map();
   const pending = new Map();
   const heads = new Set();
@@ -119,6 +126,7 @@ function assertPageIntegrity(events, label) {
     // Do not "fix" this back to registering only outer heads.
     if ((ev.kind === 'tool_use_start' || ev.kind === 'tool_use') && ev.toolUseId) heads.add(ev.toolUseId);
     if (ev.parentToolUseId) {
+      if (headlessIds.has(ev.parentToolUseId)) continue;
       assert.ok(heads.has(ev.parentToolUseId),
         `${label}: child event #${i} (${ev.kind}) has no head ${ev.parentToolUseId} in-page`);
       continue;
@@ -283,14 +291,21 @@ test('backward paging over a headless/surviving overlap stays whole at every sma
     const pages = await pageAllPages(ctx, inst.id, { limit });
     assert.ok(pages.length > 0, `limit=${limit}: at least one page`);
     for (let p = 0; p < pages.length; p++) {
-      assertPageIntegrity(pages[p], `limit=${limit} page[${p}]`);
+      // GONE is a deliberately-headless id (turn 1's whole point) — the A3
+      // backstop now rides it along on some page instead of rejecting the
+      // window outright, so it parks client-side rather than vanishing.
+      assertPageIntegrity(pages[p], `limit=${limit} page[${p}]`, { headlessIds: new Set(['GONE']) });
     }
     const all = pages.flat();
-    // A headless group is unreachable by design, and because its children
-    // interleave with A1's, the merged constraint legitimately takes turn 1's
-    // group with it — the only cuts satisfying both lie past the whole span.
-    assert.equal(all.filter(e => e.parentToolUseId === 'GONE').length, 0,
-      `limit=${limit}: headless children are excluded, never orphaned`);
+    // Total coverage: A3's backstop means the previously-unservable region
+    // (turn 1's whole merged component, GONE included) now rides along on
+    // some page instead of falling into a hole no window ever serves. This
+    // is the inverse of the old assertion here (`GONE` count === 0) — A3
+    // deliberately serves it now, so pinning "never appears" would pin a
+    // regression, not a guarantee.
+    const covered = pages.slice().reverse().flat().filter(e => e._seq != null);
+    assert.deepEqual(covered.map(e => e._seq), inst.ringSnapshot().map(e => e._seq),
+      `limit=${limit}: every ring seq served exactly once, in order`);
     // Turn 2 is untouched by turn 1's damage: head + every child reachable.
     assert.ok(all.some(e => e.toolUseId === 'A' && e.kind === 'tool_use'),
       `limit=${limit}: surviving outer head A is reachable`);
@@ -415,4 +430,75 @@ test('real async round-trip (scenario-background-task): pages and tail stay self
     'async tool_result in the same page as its tool_use');
   const all = pages.slice().reverse().flat().filter(e => e._seq != null);
   assert.deepEqual(all.map(e => e._seq), inst.ringSnapshot().map(e => e._seq));
+});
+
+// ── A3: the backstop's start is a quiescent cut, and its overshoot is bounded ──
+test('a rejected window backs off to a quiescent cut, not the raw window start', async () => {
+  const inst = await bootIdle('backstopquiescent');
+
+  inst._emitUi({ kind: 'user_echo', text: 'e' }); // seq 0
+  // 6 open text_delta blocks (distinct blockIdx, no text_end) — seq 1-6.
+  for (let i = 0; i < 6; i++) {
+    inst._emitUi({ kind: 'text_delta', msgId: 'm', blockIdx: i, text: `t${i}` });
+  }
+  // 3 headless children (no head anywhere in the ring) — seq 7-9.
+  for (let i = 0; i < 3; i++) {
+    inst._emitUi({ kind: 'text_delta', msgId: 'mc', blockIdx: i, text: `c${i}`, parentToolUseId: 'GONE2' });
+  }
+
+  // Trailing window at limit=3 is seq [7,10) — entirely the headless
+  // component, so the snap rejects it outright and the backstop fires.
+  const page = await pageInstanceEvents(inst, { limit: 3 });
+  assert.equal(page.events[0]._seq, 1, 'backstop opens at the open-block-run start, not seq 7 (rawStart) or mid-run');
+  assert.equal(page.events.length, 9, 'the whole rejected span is served in one page, not just the raw window');
+});
+
+// ── A6: snapshotTail must never return an empty tail ───────────────────────
+test('snapshotTail backs off instead of returning empty when the tail is entirely headless children', async () => {
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  process.env.ORCH_SNAPSHOT_TAIL = '2';
+  try {
+    const inst = await bootIdle('tailbackstop');
+    inst._emitUi({ kind: 'system', subtype: 'anchor' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'mg', blockIdx: 0, text: 'g0', parentToolUseId: 'GONE3' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'mg', blockIdx: 1, text: 'g1', parentToolUseId: 'GONE3' });
+
+    const snap = inst.snapshotTail();
+    assert.equal(snap.length, 2, 'backs off to the anchor instead of returning an empty tail');
+    assert.deepEqual(snap.map(e => e.text), ['g0', 'g1']);
+  } finally {
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+  }
+});
+
+// B-1: the empty-tail backstop must land on a QUIESCENT cut, not the raw
+// (buf.length - cap) index. tests/quiescent-paging.test.mjs's T10-equivalent
+// above happens to have buf.length - cap already quiescent (the headless
+// children never open an outer block), so it can't tell
+// lastQuiescentAtOrBefore(buf, buf.length - cap) apart from the plain index.
+// Here an OUTER open text block (never closed) starts exactly at the raw
+// window start, so the raw index itself is mid-block and the backstop must
+// walk back one further index to the true quiescent cut.
+test('snapshotTail backstop backs off to the quiescent cut, not the raw window start', async () => {
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  process.env.ORCH_SNAPSHOT_TAIL = '2';
+  try {
+    const inst = await bootIdle('tailbackstop2');
+    inst._emitUi({ kind: 'system', subtype: 'anchor' });
+    // Outer open text block — starts at the raw window start (seq 1) and
+    // never closes, so seq 1 itself is not a quiescent cut.
+    inst._emitUi({ kind: 'text_delta', msgId: 'm', blockIdx: 0, text: 'outer' });
+    // Headless children with no head anywhere — poisons the suffix through
+    // the ring's end, forcing the primary snap into the empty-tail backstop.
+    inst._emitUi({ kind: 'text_delta', msgId: 'mc', blockIdx: 0, text: 'g0', parentToolUseId: 'GONE4' });
+    inst._emitUi({ kind: 'text_delta', msgId: 'mc', blockIdx: 1, text: 'g1', parentToolUseId: 'GONE4' });
+
+    const snap = inst.snapshotTail();
+    assert.equal(snap.length, 3, 'backstop lands on the quiescent cut (seq 1: right before the open block), not the raw window start (seq 2)');
+    assert.deepEqual(snap.map(e => e.text), ['outer', 'g0', 'g1']);
+  } finally {
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
+  }
 });

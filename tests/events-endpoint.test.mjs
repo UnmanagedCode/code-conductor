@@ -16,6 +16,7 @@ import { buildArchive, pageInstanceEvents } from '../src/eventArchive.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
+const SCENARIO_SUBAGENT_DEPTH2 = path.join(__dirname, 'fixtures', 'scenario-subagent-depth2.json');
 
 // One server shared across the file. Each test gets a fresh PROJECTS_ROOT;
 // rather than re-thread it through every helper, we mutate ctx.projectsRoot /
@@ -133,7 +134,13 @@ test('trimmed ring: archive fallback yields no overlap and no gap at prompt gran
   }
 });
 
-test('giant single turn: paging produces a gap, never duplication', async () => {
+// T20 — Phase B (2026-0146): a giant single turn is now FULLY reconstructed,
+// not collapsed to a gap. Same fixture the pre-Phase-B echo-ordinal anchor
+// used to fail on (ORCH_EVENT_RING_CAP=10, 1 prompt + 40 text blocks, no
+// snappable echo in the trimmed ring) — the content correlator stitches the
+// archive to the ring head's own (msgId, blockIdx) exactly, so nothing
+// between them is lost. Renamed: the old name asserted the defect.
+test('giant single turn: paging fully reconstructs the turn, no gap', async () => {
   const prevCap = process.env.ORCH_EVENT_RING_CAP;
   process.env.ORCH_EVENT_RING_CAP = '10';
   try {
@@ -156,22 +163,16 @@ test('giant single turn: paging produces a gap, never duplication', async () => 
     const { all } = await pageAll(ctx, id, { limit: 7 });
     // The prompt bubble is recovered from the archive, exactly once.
     assert.deepEqual(all.filter(e => e.kind === 'user_echo').map(e => e.text), ['prompt 0']);
-    // No block text duplicated; some blocks ARE missing (the gap).
+    // All 40 blocks served, each exactly once — the correlated cut means
+    // nothing between the archive and the ring head is dropped.
     const texts = all.filter(e => e.kind === 'text_delta').map(e => e.text);
     assert.equal(new Set(texts).size, texts.length, 'no duplicated assistant blocks');
-    assert.ok(texts.length < 40, 'gap exists (partial turn was evicted, not reconstructed)');
-    // The retained tail is intact through to the newest event.
-    assert.ok(texts.includes('block 39'));
-    // The evicted span is MARKED: exactly one history_gap, no _seq (matching
-    // task_completion's synthesis), sitting immediately before the ring head.
-    const gaps = all.filter(e => e.kind === 'history_gap');
-    assert.equal(gaps.length, 1, 'exactly one gap marker served');
-    assert.equal(gaps[0]._seq, undefined, 'marker carries no _seq');
-    const gi = all.findIndex(e => e.kind === 'history_gap');
-    assert.equal(all[gi + 1]._seq, inst.ring.trimmedBefore,
-      'marker sits right before the first ring-side event');
-    // Quiescent trim fallback: only WHOLE blocks are missing — every served
-    // text_delta has its text_end (no half block on either side of the gap).
+    assert.equal(texts.length, 40, 'every block reconstructed — no gap');
+    assert.ok(texts.includes('block 0') && texts.includes('block 39'));
+    // No eviction was left unreconstructed, so no marker at all.
+    assert.equal(all.filter(e => e.kind === 'history_gap').length, 0,
+      'a correlated cut means no history_gap — the turn is whole');
+    // Every served text_delta has its text_end (whole blocks throughout).
     for (const d of all.filter(e => e.kind === 'text_delta')) {
       assert.ok(all.some(e => e.kind === 'text_end'
         && e.msgId === d.msgId && e.blockIdx === d.blockIdx),
@@ -263,7 +264,13 @@ async function pageAllPages(ctx, id, { limit = 10 } = {}) {
 // with the same toolUseId). Order-aware: the renderer nests a child under an
 // already-built head, so a child ahead of its head is as broken as a missing
 // one.
-function assertGroupIntegrity(events, label = '') {
+// `headlessIds` is an opt-in allowance (same purpose as
+// quiescent-paging.test.mjs's assertPageIntegrity) for ids a fixture
+// deliberately builds with no head anywhere — after A3 such a child can
+// legitimately ride along on a served page instead of being dropped with its
+// whole component. Use ONLY where the fixture builds a headless group on
+// purpose.
+function assertGroupIntegrity(events, label = '', { headlessIds = new Set() } = {}) {
   const headIds = new Set();
   for (const ev of events) {
     // Registered BEFORE this event's own child check, and for child events
@@ -278,6 +285,7 @@ function assertGroupIntegrity(events, label = '') {
       headIds.add(ev.toolUseId);
     }
     if (ev.parentToolUseId) {
+      if (headlessIds.has(ev.parentToolUseId)) continue;
       assert.ok(headIds.has(ev.parentToolUseId),
         `${label}orphaned child: parentToolUseId=${ev.parentToolUseId} has no ` +
         `matching head at or before it; seqs=[${events.map(e => e._seq).join(',')}]`);
@@ -435,28 +443,47 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
     const universe = arch.events.slice(0, arch.cut).concat(inst.ringSnapshot());
     const universeSeqs = new Set(universe.map(e => e._seq));
 
+    // The Agent head itself (archive-side, per the assertion above). Its own
+    // children may legitimately ride orphaned ONLY on a page whose served
+    // slice starts strictly above the head's _seq — A3 created this
+    // trade-off (pre-A3 that window was simply an empty page, so no orphan
+    // could appear). Narrowing the allowance this way stops the unconditional
+    // `['GONE', agentToolUseId]` set from being a tautology on every page,
+    // but with THIS fixture at limits 3/5/7 the pageStartsAboveHead===false
+    // ("strict") branch is currently unreachable against an actual Agent
+    // child: the only pages that carry an Agent-group child all happen to
+    // start above headSeq, so the permissive branch applies to 100% of them,
+    // and the page(s) that DO satisfy pageStartsAboveHead===false carry zero
+    // Agent children to check. So this narrowing guards a future page shape
+    // (a fixture/limit combination where an Agent child rides alongside the
+    // head on the same page) rather than proving that shape correct today.
+    // The actual group-integrity invariant (a child's parentToolUseId must
+    // resolve to a head within the array, in either direction) is pinned at
+    // the resolver level by tests/quiescent-snap.test.mjs — mutating
+    // `left: state.head + 1` → `left: i` there, or `component.left - 1` →
+    // `component.left`, fails 16 tests between them.
+    const headEv = arch.events.find(e => e.kind === 'tool_use' && e.toolUseId === agentToolUseId);
+    assert.ok(headEv, 'sanity: the Agent head is present in the replayed archive');
+    const headSeq = headEv._seq;
+
     for (const limit of [3, 5, 7]) {
       const responses = await pageResponses(ctx, id, { limit });
       assert.ok(responses.length > 0, `limit=${limit}: at least one response`);
 
       let prevBefore = Infinity;
-      let empties = 0;
-      const rejected = new Set();
       for (let p = 0; p < responses.length; p++) {
         const body = responses[p];
-        assertGroupIntegrity(body.events, `limit=${limit} page[${p}] `);
+        // GONE is deliberately headless (the fixture's whole point) on every
+        // page — its component starts at index 0 (every headless component
+        // does) and merges by adjacency with the Agent component, carrying
+        // the `headless` flag onto the merge.
+        const seqs = body.events.map(e => e._seq).filter(s => s != null);
+        const pageStartsAboveHead = seqs.length === 0 || Math.min(...seqs) > headSeq;
+        const headlessIds = pageStartsAboveHead ? new Set(['GONE', agentToolUseId]) : new Set(['GONE']);
+        assertGroupIntegrity(body.events, `limit=${limit} page[${p}] `, { headlessIds });
+        assert.ok(!(body.hasMore && body.events.length === 0),
+          `limit=${limit} page[${p}]: no page may be empty while hasMore is true`);
         if (body.hasMore) {
-          // A window holding ONLY children of a headless group has no servable
-          // cut but `end`, so it legitimately serves an empty page. What must
-          // never happen is such a page stalling the cursor.
-          if (body.events.length === 0) {
-            empties++;
-            // The page's own statement of which window it rejected.
-            const from = body._requestedBefore ?? Infinity;
-            for (const e of universe) {
-              if (e._seq >= body.nextBefore && e._seq < from) rejected.add(e._seq);
-            }
-          }
           assert.ok(body.nextBefore < prevBefore,
             `limit=${limit} page[${p}]: nextBefore must strictly progress ` +
             `(${body.nextBefore} !< ${prevBefore})`);
@@ -465,111 +492,19 @@ test('archive/ring seam: overlapping groups page whole, cursor progresses, no or
       }
 
       const all = responses.flatMap(b => b.events);
-      const served = new Set(all.filter(e => e._seq != null).map(e => e._seq));
+      const served = all.filter(e => e._seq != null).map(e => e._seq).sort((a, b) => a - b);
 
-      // How many empty pages this fixture yields is an IMPLEMENTATION DETAIL of
-      // window alignment, not the invariant. It used to be asserted as
-      // `empties === 1`, and that 1 was an artifact of the 2026-0039 collapse:
-      // the single empty page's `nextBefore` fell all the way to
-      // `trimmedBefore`, hopping the entire GONE-poisoned region in one jump.
-      // Once the cursor descends honestly (skipping only the window it
-      // rejected), each poisoned window gets its own empty page — 3 at limit 3,
-      // 2 at limits 5 and 7. Do NOT "restore" the 1.
-      //
-      // What replaces it is the invariant the count was standing in for, and it
-      // is strictly stronger: the served seqs and the rejected windows PARTITION
-      // the seq space exactly. Nothing is served twice, and nothing goes missing
-      // except inside a window some page explicitly declared rejected.
-      const missing = [...universeSeqs].filter(s => !served.has(s) && !rejected.has(s)).sort((a, b) => a - b);
-      assert.deepEqual(missing, [],
-        `limit=${limit}: every seq is served or inside a declared-rejected window`);
-      const both = [...served].filter(s => rejected.has(s)).sort((a, b) => a - b);
-      assert.deepEqual(both, [],
-        `limit=${limit}: a seq inside a rejected window is never also served`);
+      // The empty-page / rejected-window partition this test used to assert
+      // is gone: A3's backstop means no window is ever rejected outright, so
+      // the invariant collapses to the strictly stronger statement it was
+      // always standing in for — every seq in the universe is served exactly
+      // once, GONE's children included (they ride along and park client-side
+      // rather than vanishing into an empty page).
+      assert.deepEqual(served, [...universeSeqs].sort((a, b) => a - b),
+        `limit=${limit}: served seqs equal the universe exactly — no empties, no rejections, no duplicates`);
 
-      // The partition above holds for a collapsing cursor too — a collapse just
-      // declares one HUGE rejected interval. This is the bound that makes the
-      // declaration honest, and it restates exactly what the implementation
-      // promises: an empty page's cursor is (a) at or below its own pre-snap
-      // window start `end - limit`, so it skips at most that one window, and
-      // (b) no further below it than the nearest quiescent cut, whose backward
-      // reach `quiesceStart` bounds to the SAME turn — so the back-off crosses
-      // no outer `user_echo`/`turn_end`. Pre-fix the empty page reported
-      // `before=40 → nextBefore=29` at every limit, crossing two turn heads.
-      //
-      // The bound is one-sided on purpose: it caps how FAR DOWN the cursor may
-      // go. The seam clamp (2026-0054 C1) moves it the other way — when the
-      // window straddles the archive/ring seam the cursor stops AT the seam
-      // (`arch.cut`), skipping less than the raw window so the next page ends
-      // on the seam and can carry the gap marker. So the cursor is either at or
-      // below the raw window start, or EXACTLY the seam — equality, not `<= the
-      // seam`, since a clamped cursor can only ever be `seamIdx` itself. That
-      // leaves no band between the two cases for a stray back-off to hide in.
-      for (let p = 0; p < responses.length; p++) {
-        const body = responses[p];
-        if (!body.hasMore || body.events.length > 0 || body._requestedBefore == null) continue;
-        const endIdx = universe.findIndex(e => e._seq >= body._requestedBefore);
-        const rawEndIdx = endIdx === -1 ? universe.length : endIdx;
-        const rawStartIdx = Math.max(0, rawEndIdx - limit);
-        const clampIdx = arch.cut > rawStartIdx && arch.cut < rawEndIdx ? arch.cut : rawStartIdx;
-        const cursorIdx = universe.findIndex(e => e._seq === body.nextBefore);
-        const label = `limit=${limit} page[${p}] (before=${body._requestedBefore} → ${body.nextBefore})`;
-        assert.ok(cursorIdx !== -1, `${label}: cursor must name a real event`);
-        assert.ok(cursorIdx <= rawStartIdx || cursorIdx === clampIdx,
-          `${label}: an empty page must skip at most its own window, not overshoot it`);
-        const crossed = universe.slice(cursorIdx, rawStartIdx)
-          .filter(e => e.parentToolUseId == null && (e.kind === 'user_echo' || e.kind === 'turn_end'));
-        assert.equal(crossed.length, 0,
-          `${label}: an empty page must skip ONE window plus a same-turn back-off, not a region ` +
-          `(crossed ${crossed.length} turn boundaries)`);
-      }
-
-      // Cheap upper bound, so a regression that empties every page can't hide
-      // behind the partition assertion (which an all-empty run would satisfy).
-      const nonEmpties = responses.filter(b => b.events.length > 0).length;
-      assert.ok(nonEmpties > empties,
-        `limit=${limit}: most pages must still serve content (${nonEmpties} non-empty vs ${empties} empty)`);
-      assert.ok(empties > 0,
-        `limit=${limit}: the all-excluded path must be REACHED, else this fixture proves nothing about it`);
-
-      assert.equal(all.filter(e => e.parentToolUseId === 'GONE').length, 0,
-        `limit=${limit}: the truly headless group is excluded, never orphaned`);
       assert.ok(all.some(e => e.toolUseId === agentToolUseId && e.kind === 'tool_use'),
         `limit=${limit}: the archive-side Agent head is reachable`);
-      // Whether ring-side children of the archived head are served at all is
-      // NOT pinned here, and the reason is subtler than "the archive never
-      // reaches them". It does reach them: the empty page's window covers two
-      // of the three, and `hasHeadlessChildIn` is true there BECAUSE of those
-      // children (GONE's own children sit below the window and do not satisfy
-      // the predicate), so `needArchive` fires and the archive IS loaded on
-      // that page. It still serves nothing because GONE's head is absent on
-      // BOTH sides, and GONE's component — which starts at index 0, as every
-      // headless component does — merges by adjacency with the Agent
-      // component and carries its `headless` flag onto the merge, so the snap
-      // pushes `start` all the way to `end`. So: GONE-poisoning first, cursor
-      // second.
-      // Post-2026-0039 (measured, no longer simulated): the window just below
-      // the empty one IS now re-requested, and the three agent children are
-      // still served by no page at any of the three limits. That is what the
-      // earlier simulation predicted and it held. Reaching them needs the
-      // poisoning addressed, not the cursor — GONE's component starts at 0 and
-      // so merges into EVERY window covering an agent child. The per-page
-      // assertGroupIntegrity above is what carries the invariant either way,
-      // so this test stays green across that change. That the children are
-      // reachable AT ALL is pinned by the archive-side-head reunion test
-      // below (2026-0037), on a fixture with no headless group to poison it.
-      //
-      // Known consequence of that same poisoning (card 2026-0063, NOT a cursor
-      // defect and not fixed here): which servable seqs get caught inside a
-      // rejected window depends on where the window boundaries land, so it
-      // moves when the cursor changes. Concretely, at limit 7 seqs 25/26/27
-      // (turn p7, ordinary archive content with no group involvement) were
-      // served before the cursor fix and are not after — pre-fix the collapse
-      // to `trimmedBefore` happened to land on a window that included them,
-      // post-fix they fall inside the honestly-rejected [25, 33). The
-      // partition assertion above is deliberately written to tolerate that:
-      // it demands every unserved seq be inside a DECLARED rejected window,
-      // which is the strongest statement true while 2026-0063 stands.
     }
   } finally {
     if (prevCap === undefined) delete process.env.ORCH_EVENT_RING_CAP;
@@ -776,7 +711,7 @@ test('a window whose sub-agent children all have ring-side heads triggers no arc
 // requested `before`. Deliberately decorrelated from the archive: `sessionId`
 // is null, so no jsonl exists and `needArchive` can never fire — the missing
 // events can only be recovered by the cursor arithmetic, never by a replay.
-test('empty page skips only the rejected window, not down to the ring head', async () => {
+test('a rejected window is served, and coverage is total', async () => {
   const ring = [];
   let s = 100;
   for (let t = 0; t < 5; t++) {
@@ -798,13 +733,18 @@ test('empty page skips only the rejected window, not down to the ring head', asy
   };
 
   const LIMIT = 5;
-  const served = new Set();
+  const servedSeqs = [];
   const pages = [];
   let before;
   for (let i = 0; i < 50; i++) {
     const page = await pageInstanceEvents(stubInst, { limit: LIMIT, before });
     pages.push({ before: before ?? null, page });
-    for (const ev of page.events) if (ev._seq != null) served.add(ev._seq);
+    // (i) no page is empty while claiming more history exists — the A3
+    // backstop guarantees any non-empty window is served, and the window
+    // here (end > 0) is never empty.
+    assert.ok(!(page.hasMore && page.events.length === 0),
+      `page must never be empty while hasMore is true — ${JSON.stringify(page)}`);
+    for (const ev of page.events) if (ev._seq != null) servedSeqs.push(ev._seq);
     if (page.hasMore && before != null) {
       assert.ok(page.nextBefore < before,
         `nextBefore must strictly progress (${page.nextBefore} !< ${before})`);
@@ -814,16 +754,12 @@ test('empty page skips only the rejected window, not down to the ring head', asy
     if (i === 49) throw new Error('cursor never terminated');
   }
 
-  // Precondition: the rejected-window path IS reached, so the assertion below
-  // is about the empty page's cursor and not about ordinary paging.
-  assert.ok(pages.some(p => p.page.hasMore && p.page.events.length === 0),
-    'the fixture must actually produce an empty page with hasMore');
-
-  const missing = [];
-  for (let q = 100; q < 115; q++) if (!served.has(q)) missing.push(q);
-  assert.deepEqual(missing, [],
-    'every servable seq below the rejected window is still served — the empty '
-    + 'page must not collapse the cursor to trimmedBefore: '
+  // (ii) + (iii): the union of served seqs is exactly [100,120) — no holes
+  // (the old cursor's collapse-past-the-rejected-window regression) and no
+  // duplicates (pages must still tile, not overlap).
+  const expected = Array.from({ length: 20 }, (_, i) => 100 + i);
+  assert.deepEqual(servedSeqs.slice().sort((a, b) => a - b), expected,
+    'every seq in [100,120) is served exactly once: '
     + JSON.stringify(pages.map(p => [p.before, p.page.events.map(e => e._seq ?? `<${e.kind}>`)])));
 });
 
@@ -834,7 +770,7 @@ test('empty page skips only the rejected window, not down to the ring head', asy
 // carrying the result line without the head replays to an ARCHIVE-side headless
 // component. With `before <= trimmedBefore` the old fallback returned `before`
 // itself, and a client echoing `nextBefore` re-requested it forever.
-test('an empty archive-side page never returns nextBefore === before', async () => {
+test('an archive-side headless component is served and the cursor strictly progresses', async () => {
   const sid = 'd0d0d0d0-1111-2222-3333-444444444444';
   const TU = 'tu_headless_agent';
   const plainTurn = (tag, i) => ([
@@ -891,28 +827,29 @@ test('an empty archive-side page never returns nextBefore === before', async () 
 
   for (const limit of [2, 3, 4, 5]) {
     let before;
-    let empties = 0;
     let terminated = false;
     const trace = [];
+    const servedSeqs = [];
     for (let i = 0; i < 40; i++) {
       const page = await pageInstanceEvents(stubInst, { limit, before });
       trace.push([before ?? null, page.events.map(e => e._seq ?? `<${e.kind}>`), page.hasMore, page.nextBefore]);
-      if (page.hasMore) {
-        if (page.events.length === 0) empties++;
-        if (before != null) {
-          assert.notEqual(page.nextBefore, before,
-            `limit=${limit} page[${i}]: cursor stalled at ${before} — ${JSON.stringify(trace)}`);
-          assert.ok(page.nextBefore < before,
-            `limit=${limit} page[${i}]: nextBefore must strictly progress — ${JSON.stringify(trace)}`);
-        }
+      for (const ev of page.events) if (ev._seq != null) servedSeqs.push(ev._seq);
+      if (page.hasMore && before != null) {
+        assert.notEqual(page.nextBefore, before,
+          `limit=${limit} page[${i}]: cursor stalled at ${before} — ${JSON.stringify(trace)}`);
+        assert.ok(page.nextBefore < before,
+          `limit=${limit} page[${i}]: nextBefore must strictly progress — ${JSON.stringify(trace)}`);
       }
       if (!page.hasMore) { terminated = true; break; }
       before = page.nextBefore;
     }
     assert.ok(terminated, `limit=${limit}: cursor never terminated — ${JSON.stringify(trace)}`);
-    // Non-vacuity: this fixture must actually reach the empty-page path, or it
-    // says nothing about the cursor that path produces.
-    assert.ok(empties > 0, `limit=${limit}: fixture must produce an empty page — ${JSON.stringify(trace)}`);
+    // Exact coverage: the headless component (archive seqs 4..9) is no longer
+    // dropped along with the empty-page cursor — every seq in the combined
+    // archive+ring space [0,17) is served exactly once.
+    const expected = Array.from({ length: 17 }, (_, i) => i);
+    assert.deepEqual(servedSeqs.slice().sort((a, b) => a - b), expected,
+      `limit=${limit}: every combined seq served exactly once, including the archive-side headless component — ${JSON.stringify(trace)}`);
   }
 });
 
@@ -923,6 +860,10 @@ test('an empty archive-side page never returns nextBefore === before', async () 
 // are different pages; a limit under the ring size forces the walk to reach the
 // seam on a page of its own rather than serving everything at once. Relax either
 // and the fixture stops distinguishing seam-anchored from head-anchored.
+// Phase B (2026-0146): the stub ring's `msgId` ('mG') is foreign to the
+// jsonl, so the content correlator abandons and this fixture keeps falling
+// back to the echo anchor — `gap === true` here is now deliberate, not
+// vacuous. Do not "fix" the fixture into a correlator hit.
 test('mid-turn ring head on a non-first turn: gap marker sits at the archive/ring seam', async () => {
   const sid = 'c0c0c0c0-1111-2222-3333-444444444444';
   const { projectPath } = await seedSession({ ctx, projectName: 'seammarker', sid, lines: turnLines(5) });
@@ -1011,7 +952,11 @@ test('mid-turn ring head on a non-first turn: gap marker sits at the archive/rin
 // behaviour. Every other gap fixture in this file has the back-off landing
 // exactly ON the seam (the `resetIdx` fiat cut), which is why they stay green
 // either way; this one is built so it lands below it.
-test('an empty page whose window straddles the seam still yields exactly one gap marker', async () => {
+// Phase B (2026-0146): the stub ring's `msgId` ('mG') is foreign to the
+// jsonl, so the content correlator abandons and this fixture keeps falling
+// back to the echo anchor — `gap === true` here is now deliberate, not
+// vacuous. Do not "fix" the fixture into a correlator hit.
+test('a window straddling the seam is served whole, with exactly one gap marker at the seam', async () => {
   const sid = 'c1c1c1c1-1111-2222-3333-444444444444';
   const { projectPath } = await seedSession({ ctx, projectName: 'straddle', sid, lines: turnLines(5) });
 
@@ -1065,114 +1010,25 @@ test('an empty page whose window straddles the seam still yields exactly one gap
   const trace = () => JSON.stringify(pages.map(p =>
     [p.before, p.page.events.map(e => e._seq ?? `<${e.kind}>`), p.page.nextBefore]));
 
-  // Non-vacuity: the empty-page path IS the one under test here.
-  const empty = pages.find(p => p.page.hasMore && p.page.events.length === 0);
-  assert.ok(empty, `the fixture must actually produce an empty page — ${trace()}`);
+  // The straddling window is now SERVED — A3's backstop means no window with
+  // end > 0 is ever rejected outright, so this is the inverse of the old
+  // "must produce an empty page" precondition.
+  assert.ok(!pages.some(p => p.page.hasMore && p.page.events.length === 0),
+    `no page may be empty while hasMore is true — ${trace()}`);
 
   // (1) The marker survives the walk. Zero here is the C1 defect.
   const all = pages.map(p => p.page.events).reverse().flat();
   assert.equal(all.filter(e => e.kind === 'history_gap').length, 1,
     `exactly one gap marker across all pages — ${trace()}`);
 
-  // (2) And it is still ON the seam: the last archive event, then the marker.
+  // (2) It sits exactly between the last archive event and the first ring
+  // event — interior to whichever page serves that span now, not necessarily
+  // that page's last event (the straddling window is served whole).
   const gi = all.findIndex(e => e.kind === 'history_gap');
   assert.equal(all[gi - 1]._seq, lastArchiveSeq,
     `marker follows the last archive event — ${trace()}`);
-  const marked = pages.find(p => p.page.events.some(e => e.kind === 'history_gap')).page.events;
-  assert.equal(marked[marked.length - 1].kind, 'history_gap',
-    `the marker is its page's last event, on the seam — ${trace()}`);
-
-  // (3) The mechanism that gets it there: an empty page whose window straddles
-  // the seam stops AT the seam instead of stepping past it, so the page below
-  // it ends exactly on the seam and has an offset to splice the marker at.
-  assert.equal(empty.page.nextBefore, tb,
-    `the empty page's cursor must stop at the seam, not jump past it — ${trace()}`);
-
-  // (4) The clamp skips LESS than the raw window, so the archive event at the
-  // seam's doorstep is served rather than swallowed by the rejected window.
-  assert.ok(all.some(e => e._seq === lastArchiveSeq),
-    `the event just below the seam is still served — ${trace()}`);
-});
-
-// The other side of that clamp's guard. It may only fire when the seam is
-// STRICTLY inside the window (`seamIdx < end`): a page whose window already
-// ENDS on the seam has nothing to clamp, and clamping it would hand back its
-// own `before` — the 2026-0039 stall, re-introduced. Reachable, not theoretical:
-// this fixture stalls at `before=7` for limits 2 and 3 with the guard relaxed
-// to `<=`. Same jsonl shape as the archive-side-headless test above (kept
-// separate rather than shared so that pinned fixture stays untouched), but with
-// `trimmedBefore` low enough that the cut lands INSIDE the headless component —
-// which is what puts a rejected window directly beneath the seam.
-test('the seam clamp never fires on a window that already ends on the seam', async () => {
-  const sid = 'e7e7e7e7-1111-2222-3333-444444444444';
-  const TU = 'tu_headless_agent';
-  const plainTurn = (tag, i) => ([
-    { type: 'user', uuid: `u_${tag}`, message: { role: 'user', content: `prompt ${i}` } },
-    { type: 'assistant', uuid: `a_${tag}`, message: { id: `m_${tag}`, role: 'assistant', content: [
-      { type: 'text', text: `reply ${i}` },
-    ] } },
-  ]);
-  const { projectPath, sessionDir } = await seedSession({ ctx, projectName: 'seamclamp', sid, lines: [
-    ...plainTurn('p0', 0),
-    { type: 'user', uuid: 'u_p1', message: { role: 'user', content: 'prompt 1' } },
-    { type: 'user', uuid: 'u_res', toolUseResult: { agentId: 'ag1' }, message: { role: 'user', content: [
-      { type: 'tool_result', tool_use_id: TU, content: 'done', is_error: false },
-    ] } },
-    ...plainTurn('p2', 2), ...plainTurn('p3', 3),
-  ] });
-  await fs.mkdir(path.join(sessionDir, sid, 'subagents'), { recursive: true });
-  await fs.writeFile(
-    path.join(sessionDir, sid, 'subagents', 'agent-ag1.jsonl'),
-    Array.from({ length: 3 }, (_, i) => JSON.stringify({
-      type: 'assistant', uuid: `s${i}`, isSidechain: true,
-      message: { id: `ms${i}`, role: 'assistant', content: [{ type: 'text', text: `sub ${i}` }] },
-    })).join('\n') + '\n',
-  );
-
-  // trimmedBefore 7 sits inside the headless component (archive indices 4..9),
-  // so the clamp drops real content: cut === 7 and gap is true.
-  const tb = 7;
-  const ring = [
-    { kind: 'user_echo', text: 'prompt 2', userIndex: 2, _seq: tb },
-    { kind: 'text_delta', msgId: 'm_p2', blockIdx: 0, text: 'reply 2', _seq: tb + 1 },
-    { kind: 'text_end', msgId: 'm_p2', blockIdx: 0, _seq: tb + 2 },
-    { kind: 'user_echo', text: 'prompt 3', userIndex: 3, _seq: tb + 3 },
-    { kind: 'text_delta', msgId: 'm_p3', blockIdx: 0, text: 'reply 3', _seq: tb + 4 },
-    { kind: 'text_end', msgId: 'm_p3', blockIdx: 0, _seq: tb + 5 },
-  ];
-  const stubInst = {
-    cwd: projectPath, backingSessionId: sid, _userEchoCount: 4,
-    ring: { get trimmedBefore() { return tb; } },
-    ringSnapshot: () => ring.slice(),
-  };
-  const arch = await buildArchive({
-    cwd: projectPath, sessionId: sid, ring, trimmedBefore: tb, userEchoCount: 4,
-  });
-  assert.equal(arch.cut, tb, 'the cut is the trimmedBefore clamp, mid-component');
-  assert.equal(arch.gap, true, 'the clamp discarded archive content — the fixture is not vacuous');
-
-  for (const limit of [2, 3]) {
-    let before;
-    let sawSeamEndedPage = false;
-    const trace = [];
-    let terminated = false;
-    for (let i = 0; i < 40; i++) {
-      const page = await pageInstanceEvents(stubInst, { limit, before });
-      trace.push([before ?? null, page.events.map(e => e._seq ?? `<${e.kind}>`), page.hasMore, page.nextBefore]);
-      // The page under test: its window ends exactly on the seam (`before` is
-      // the ring head's seq) and it serves no real event.
-      if (before === tb && !page.events.some(e => e._seq != null)) sawSeamEndedPage = true;
-      if (page.hasMore && before != null) {
-        assert.ok(page.nextBefore < before,
-          `limit=${limit}: cursor stalled at ${before} — ${JSON.stringify(trace)}`);
-      }
-      if (!page.hasMore) { terminated = true; break; }
-      before = page.nextBefore;
-    }
-    assert.ok(terminated, `limit=${limit}: cursor never terminated — ${JSON.stringify(trace)}`);
-    assert.ok(sawSeamEndedPage,
-      `limit=${limit}: fixture must reach a window that ends on the seam — ${JSON.stringify(trace)}`);
-  }
+  assert.equal(all[gi + 1]._seq, tb,
+    `marker precedes the first ring-side event — ${trace()}`);
 });
 
 test('limit is clamped; bad params 400; unknown instance 404', async () => {
@@ -1343,5 +1199,63 @@ test('a batch spanning a page boundary still gets its bubble in the completing p
     assert.equal(completions.length, 1, 'no dup / no drop across page seams');
     const after = findCompletionAfterUpdate(all);
     assert.ok(after && after.kind === 'task_completion');
+  }
+});
+
+// T14 — acceptance #1, end-to-end: a depth-2 sub-agent session renders its
+// full history and pages to seq 0. Real subprocess path (not a stub ring),
+// so this exercises the LIVE parser's A1 fix directly: a top-level Agent
+// tool_use (tu_a1), forwarded as a finals-only envelope tagged
+// parent_tool_use_id, whose OWN content spawns a second Agent (tu_a2) —
+// exactly the depth-2 shape the card was filed against.
+//
+// Measured mutant coverage (correcting an earlier claim that this test also
+// fails on deletion of A3/A6): only deleting A1 fails T14 — assertion (i)
+// has no head to find. A3's mutant fails 6 OTHER tests but not this one, and
+// A6's fails exactly one other test but not this one: this fixture's ring
+// (depth-2, `ORCH_SNAPSHOT_TAIL=8`) is too short for either backstop to be
+// exercised — the tail never needs to reject a window, and paging at
+// limit=3 never produces a snap-rejected window either. No correctness
+// risk: A3 and A6 are independently pinned by their own tests (T6/T7/T8 and
+// T10 respectively) — this is a claim-accuracy note, not a coverage hole.
+test('a depth-2 sub-agent session renders its full history and pages to seq 0', async () => {
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_SUBAGENT_DEPTH2;
+  process.env.ORCH_SNAPSHOT_TAIL = '8';
+  let inst;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'subagentdepth2' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'subagentdepth2', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201);
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    inst = ctx.instances.get(id);
+
+    inst.prompt('go explore deeply');
+    await waitFor(() => inst.status === 'idle' && inst.ringSnapshot().some(e => e.kind === 'turn_end'));
+
+    // (i) The depth-2 head exists in the ring at all — the whole point of A1.
+    const ring = inst.ringSnapshot();
+    assert.ok(ring.some(e => e.kind === 'tool_use' && e.toolUseId === 'tu_a2'),
+      'the forwarded sub-agent envelope produced a head event for its own tool_use');
+
+    // (ii) snapshotTail (the WS subscribe path) is not the pre-fix "one
+    // rendered bubble, no prompt" tail.
+    const snap = inst.snapshotTail();
+    assert.ok(snap.some(e => e.kind === 'user_echo' && !e.parentToolUseId),
+      'the tail contains the outer prompt echo, not just a mid-turn fragment');
+
+    // (iii) Backward paging reaches seq 0 with no empty page and no holes.
+    const pages = await pageAllPages(ctx, id, { limit: 3 });
+    for (let p = 0; p < pages.length; p++) assertGroupIntegrity(pages[p], `page[${p}] `);
+    const all = pages.slice().reverse().flat();
+    assert.deepEqual(all.map(e => e._seq), ring.map(e => e._seq),
+      'pageAll reaches seq 0 with full coverage, no empty page, no holes');
+  } finally {
+    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+    if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
+    else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
   }
 });

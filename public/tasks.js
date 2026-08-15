@@ -119,6 +119,7 @@ export class TaskTracker {
 
   apply(ev) {
     if (!ev || typeof ev !== 'object') return;
+    if (ev.parentToolUseId) return; // a sub-agent's todo list is not the outer agent's
     if (ev.kind === 'tool_use') {
       if (ev.name === 'TaskCreate') {
         const input = ev.input ?? {};

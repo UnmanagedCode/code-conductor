@@ -9,6 +9,7 @@ import { bootServer, api, waitFor } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plan.json');
+const SUBAGENT_WRITE_SCENARIO = path.join(__dirname, 'fixtures', 'scenario-subagent-plan-write.json');
 
 function wsClient(url) {
   return new Promise((resolve) => {
@@ -36,6 +37,7 @@ test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file c
 
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   const fsp = fs;
+  let c;
   try {
     const transcriptPath = `${ctx.tmpHome}/transcript.log`;
     process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
@@ -46,7 +48,7 @@ test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file c
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
 
-    const c = await wsClient(ctx.wsUrl);
+    c = await wsClient(ctx.wsUrl);
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
     c.send({ t: 'prompt', id, text: 'plan something' });
@@ -69,10 +71,65 @@ test('plan mode: ExitPlanMode emits a plan_request enriched with the plan file c
     const lines = (await fsp.readFile(transcriptPath, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
     const interrupt = lines.find(l => l.type === 'control_request' && l.request?.subtype === 'interrupt');
     assert.equal(interrupt, undefined, `no interrupt should have been sent; transcript: ${JSON.stringify(lines)}`);
-
-    await c.close();
   } finally {
+    // Close the WS connection before the server, regardless of whether an
+    // assertion above threw — server.close() waits for open connections to
+    // end, so a live socket here would hang ctx.close() forever on failure
+    // (R2-2: this is exactly what made a broken plan-file enrichment hang
+    // the whole file instead of failing this test by assertion).
+    if (c) await c.close().catch(() => {});
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    delete process.env.FAKE_PLAN_FILE;
+    await ctx.close();
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// A2 regression: a sub-agent's Write to a plan file (forwarded envelope,
+// parentToolUseId set) must not latch PlanFileTracker for the OUTER agent.
+// Without the src/instances.ts:2061 guard, the outer ExitPlanMode's
+// plan_request (no planFilePath, no inline plan) would fall into branch 3
+// and present the sub-agent's scratch file's contents as the plan being
+// approved.
+test('plan mode: a sub-agent Write to a plan file does not enrich the outer ExitPlanMode', async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'plan-sub-'));
+  const planDir = path.join(tmpDir, '.claude', 'plans');
+  await fs.mkdir(planDir, { recursive: true });
+  const planFile = path.join(planDir, 'sub-plan.md');
+  // R2-3: the scenario's Write tool_use is a scripted wire event — it never
+  // touches disk on its own. Without a REAL file here, branch 3's
+  // `readFileSync` always throws and is swallowed regardless of whether the
+  // guard leaked the sub-agent's path into PlanFileTracker, so `ev.plan`
+  // would read `null` either way and the second assertion below could never
+  // fail. Seed the file (as the sibling test at :34-35 does) so a leaked
+  // path actually surfaces this text as the (wrongly) enriched plan.
+  const subPlanText = "# Sub-agent scratch plan\n- Not the outer task's plan\n";
+  await fs.writeFile(planFile, subPlanText);
+  process.env.FAKE_PLAN_FILE = planFile;
+
+  const ctx = await bootServer({ scenarioPath: SUBAGENT_WRITE_SCENARIO });
+  let c;
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
+    const id = r.body.id;
+    const inst = ctx.instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+
+    c = await wsClient(ctx.wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'prompt', id, text: 'do something' });
+
+    const planEv = await c.wait(m => m.t === 'event' && m.ev.kind === 'plan_request');
+    assert.equal(planEv.ev.toolUseId, 'tu_exit');
+    assert.equal(planEv.ev.planPath, null, 'the sub-agent write must not bind a path to the outer plan_request');
+    assert.equal(planEv.ev.plan, null, 'the outer plan_request must not present the sub-agent scratch file as the plan');
+  } finally {
+    // Close the WS connection before the server, regardless of whether the
+    // assertions above threw — server.close() waits for open connections to
+    // end, so a live socket here would hang ctx.close() forever on failure.
+    if (c) await c.close().catch(() => {});
     delete process.env.FAKE_PLAN_FILE;
     await ctx.close();
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

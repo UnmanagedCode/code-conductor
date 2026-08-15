@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter } from './parser.ts';
+import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId } from './projects.ts';
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
@@ -1062,6 +1062,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     const buf = this.ring.buf;
     if (buf.length <= cap) return buf.slice();
     const start = snapStartToQuiescent(buf, buf.length - cap, buf.length);
+    // The snap can push all the way to the ring's end (its only tail content
+    // was sub-agent children with no reachable head) — an empty tail is worse
+    // than the pre-fix no-echo tail, so back off to the last quiescent cut
+    // instead of returning nothing.
+    if (start >= buf.length) return buf.slice(lastQuiescentAtOrBefore(buf, buf.length - cap));
     return buf.slice(start);
   }
 
@@ -2053,7 +2058,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // plan_request can be enriched with the file's path (and, when the tool
       // input carried no plan text, its contents). The rule lives in
       // planFile.ts — jsonl replay drives the same tracker.
-      if (ev.kind === 'tool_use') this._planFiles.noteToolUse(ev.name, ev.input);
+      if (ev.kind === 'tool_use' && !ev.parentToolUseId) this._planFiles.noteToolUse(ev.name, ev.input);
       // Must stay above the auto-approve block and the _emitUi below: both
       // read the event after enrichment.
       if (ev.kind === 'plan_request') this._planFiles.enrich(ev);

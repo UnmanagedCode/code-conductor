@@ -1,0 +1,23 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE", "tools": ["Bash", "Agent"], "uuid": "init-1" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt" },
+      "delay_ms": 5,
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_p1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_a1", "name": "Agent", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_stop", "index": 0 } },
+        { "type": "assistant", "parent_tool_use_id": "tu_a1", "message": { "id": "msg_sub1", "role": "assistant", "content": [
+          { "type": "tool_use", "id": "tu_a2", "name": "Agent", "input": { "description": "depth2 task", "subagent_type": "Explore", "prompt": "go deeper" } }
+        ] } },
+        { "type": "assistant", "parent_tool_use_id": "tu_a2", "message": { "id": "msg_deep1", "role": "assistant", "content": [
+          { "type": "text", "text": "exploring deeply" }
+        ] } },
+        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 5, "total_cost_usd": 0.0001, "is_error": false }
+      ]
+    }
+  ]
+}

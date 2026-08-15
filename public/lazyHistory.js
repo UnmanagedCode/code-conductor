@@ -10,6 +10,11 @@
 
 import { Conversation } from './conversation.js';
 
+// A correct server never hands back an empty backward page while `hasMore`
+// is true (src/eventArchive.ts's pager backstop guarantees it), but a
+// pathological one must not be able to hot-loop this client forever.
+const MAX_EMPTY_PAGES = 3;
+
 // Render `events` (oldest-first) into a detached container. Returns
 // { holder, leadingWrap, trailingOpenWrap, toolBlocks }:
 //   holder          — the detached node whose children get spliced in
@@ -139,7 +144,7 @@ export function installLazyHistoryController({
   getActiveId,
   getInstances,
 }) {
-  const lazy = { epoch: 0, hasMore: false, nextBefore: 0, loading: false };
+  const lazy = { epoch: 0, hasMore: false, nextBefore: 0, loading: false, emptyStreak: 0 };
   let lazySentinel = null;
   // The current OLDEST chunk's leading assistant wrap (it begins mid-turn) —
   // the merge target for the next prepended page's trailing open bubble.
@@ -151,6 +156,7 @@ export function installLazyHistoryController({
     lazy.hasMore = false;
     lazy.nextBefore = 0;
     lazy.loading = false;
+    lazy.emptyStreak = 0;
     lazySentinel = null; // the conversation DOM is cleared wholesale alongside
     oldestLeadingWrap = null;
   }
@@ -190,6 +196,7 @@ export function installLazyHistoryController({
     if (!lazy.hasMore || lazy.loading || !getActiveId()) return;
     const id = getActiveId();
     const epoch = lazy.epoch;
+    const prevBefore = lazy.nextBefore;
     lazy.loading = true;
     ensureSentinel();
     try {
@@ -214,7 +221,10 @@ export function installLazyHistoryController({
         conversation.setUserActionsEnabled(inst?.status === 'idle');
       }
       lazy.nextBefore = page.nextBefore;
-      lazy.hasMore = !!page.hasMore && page.events.length > 0; // empty page always terminates
+      lazy.emptyStreak = page.events.length ? 0 : lazy.emptyStreak + 1;
+      lazy.hasMore = !!page.hasMore
+        && page.nextBefore < prevBefore // cursor must strictly decrease
+        && lazy.emptyStreak < MAX_EMPTY_PAGES; // a pathological server cannot hot-loop
     } catch (e) {
       console.warn('load earlier failed:', e);
       // keep hasMore — the sentinel stays tappable for a retry

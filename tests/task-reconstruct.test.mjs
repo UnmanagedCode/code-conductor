@@ -106,6 +106,25 @@ test('hadOrphanUpdate is false for a deleted-id update with no create', () => {
   assert.equal(hadOrphanUpdate, false);
 });
 
+// A5: a sub-agent's own TaskCreate/TaskUpdate must never reach the outer
+// task panel. After A1 (src/parser.ts), a forwarded sub-agent envelope's
+// tool_use/tool_result enters the SAME event stream the outer session uses,
+// so without this guard a sub-agent's own todo list would populate — or,
+// via applyCreate's tasks.clear(), silently wipe — the outer panel.
+test('a sub-agent TaskCreate/TaskUpdate (parentToolUseId set) never reaches the outer task panel', () => {
+  const events = seq([
+    create('a', 'outer work'), created('a', '1', 'outer work'),
+    { ...create('b', 'sub work'), parentToolUseId: 'A' },
+    { ...created('b', '2', 'sub work'), parentToolUseId: 'A' },
+    { ...update('u1', '1', { status: 'completed' }), parentToolUseId: 'A' },
+  ]);
+  const { completions, activeAtEnd } = reconstructTasks(events);
+  assert.deepEqual(activeAtEnd.map(t => ({ id: t.id, subject: t.subject, status: t.status })),
+    [{ id: '1', subject: 'outer work', status: 'pending' }],
+    'the sub-agent create is invisible and its update on the outer task never applies');
+  assert.equal(completions.length, 0, 'a child event must not synthesize an outer task_completion');
+});
+
 test('non-task tool events are ignored', () => {
   const events = seq([
     { kind: 'tool_use', name: 'Bash', toolUseId: 'x', input: { command: 'ls' } },
