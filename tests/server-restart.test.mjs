@@ -22,11 +22,12 @@ import { waitForBanner } from './serverBanner.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 
-// This file CANNOT hold its port: its assertion is same-port respawn, so
-// server.ts must bind the port itself. Binding-and-freeing is therefore
-// unavoidable here — what makes it safe is that readiness comes from the
-// child's own banner (./serverBanner.mjs) and every destructive POST is
-// preceded by the tryBind ownership check below.
+// Bind-then-free, which leaves a window in which another test file's
+// `bootServer()` can be handed this port. An accepted tradeoff, not a
+// necessity — holding and releasing (as tests/eaddrinuse-retry.test.mjs does)
+// would narrow it, and card 2026-0157 tracks that. What makes the window safe
+// meanwhile: readiness comes from the child's own banner (./serverBanner.mjs),
+// and every destructive POST is preceded by the alive + tryBind checks below.
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer();
@@ -106,8 +107,10 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.ok(healthBefore?.bootId, 'GET /api/health returns a bootId');
 
   // Never POST a destructive endpoint at a port whose owner we have not
-  // established. The banner above came from OUR child; this proves the
-  // socket is still held (by it, not by a stranger that took it over).
+  // established. The banner above came from OUR child; these two together say
+  // the socket is still held AND still held by that child — occupancy alone
+  // would also be satisfied by a stranger that grabbed the port after it died.
+  assert.equal(child.exitCode, null, 'our child must still be alive');
   assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
   // Trigger the restart. The server may exit before the fetch resolves
@@ -218,7 +221,8 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
     entries: [{ cwd: fakeCwd, sessionId: sid }],
   }));
 
-  // Ownership check before the destructive POST — see waitForBanner above.
+  // Ownership check before the destructive POST — alive AND holding, see above.
+  assert.equal(child.exitCode, null, 'our child must still be alive');
   assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
   await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' }).catch(() => {});

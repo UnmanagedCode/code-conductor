@@ -26,7 +26,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
-import { waitForBanner } from './serverBanner.mjs';
+import { bannerFor, waitForBanner } from './serverBanner.mjs';
+
+// The port must actually discriminate. Nothing else pins this: `captured.stdout`
+// is a private pipe today, so no foreign banner can enter the buffer — the bug
+// goes live the moment any test shares one `captured` across two children, and
+// a matcher that ignored the port (or left the needle un-terminated, making it
+// a prefix of every longer port's banner) would look identical until then.
+test('a banner for a different port never satisfies the wait', async () => {
+  // 3000 is a strict prefix of 30001 — the un-terminated needle's failure case.
+  await assert.rejects(
+    () => waitForBanner({ stdout: bannerFor(30001) }, 3000, { timeout: 100 }),
+    /never printed listening banner/,
+    "another child's banner must not read as ours",
+  );
+  // Control: the matching port does satisfy it, so the rejection above is
+  // discrimination and not a matcher that never fires.
+  await waitForBanner({ stdout: bannerFor(3000) }, 3000, { timeout: 100 });
+});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
@@ -35,7 +52,7 @@ const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 // destructive POST it would have led to. The socket is held for the whole
 // test — never bound-then-freed — so there is no TOCTOU window here either.
 async function startDecoy() {
-  const state = { restartPosts: 0, projectsGets: 0 };
+  const state = { restartPosts: 0 };
   const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/api/admin/restart') {
       state.restartPosts++;
@@ -49,7 +66,6 @@ async function startDecoy() {
       return;
     }
     if (req.url === '/api/projects') {
-      state.projectsGets++;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('[]');
       return;

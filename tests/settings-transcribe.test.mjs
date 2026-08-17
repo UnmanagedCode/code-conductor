@@ -22,11 +22,18 @@ const FAKE_INSTALL = `#!/usr/bin/env bash
 echo "==> fake install for $WHISPER_MODEL_NAME"
 mkdir -p "$INSTALL_ROOT/whisper.cpp/build/bin" "$INSTALL_ROOT/whisper.cpp/models"
 if [ -n "\${FAKE_INSTALL_RELEASE:-}" ]; then
+  waited=0
   while [ ! -e "$FAKE_INSTALL_RELEASE" ]; do
-    # Bail the moment teardown removes the fixture dir, so a parked installer
-    # can never outlive its test — a failed assertion returns before the
+    # Fast path: bail the moment teardown removes the fixture dir, so a parked
+    # installer never outlives its test — a failed assertion returns before the
     # release and would otherwise hang the whole FILE, not just one test.
     [ -d "$(dirname "$FAKE_INSTALL_RELEASE")" ] || exit 1
+    # Backstop: if the spawning process is SIGKILLed, teardown never runs, the
+    # dir bail never fires, and this loop is reparented to init and spins
+    # forever. 1200 x 50ms = 60s, still 60x the old \`sleep 1\` bound, so it
+    # bounds nothing the assertion depends on.
+    waited=\$((waited + 1))
+    if [ "\$waited" -ge 1200 ]; then exit 1; fi
     sleep 0.05
   done
 fi

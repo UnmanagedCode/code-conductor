@@ -10,7 +10,11 @@
 // readiness probe just as happily — after which a `POST /api/admin/restart`
 // kills that other test process mid-run. The child prints this banner from the
 // address it actually BOUND (`server.ts`), so the banner is proof of identity.
-export const bannerFor = (port) => `code-conductor listening on http://127.0.0.1:${port}`;
+//
+// TERMINATED with the newline `server.ts:228`'s `console.log` always emits:
+// without it the needle is a prefix of every longer port's banner, so a wait
+// for port 3000 would be satisfied by a child that bound 30001.
+export const bannerFor = (port) => `code-conductor listening on http://127.0.0.1:${port}\n`;
 
 // Resolves once `captured.stdout` holds the `nth` banner for `port`.
 //
