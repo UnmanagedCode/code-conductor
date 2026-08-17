@@ -352,16 +352,35 @@ export async function writeProjectMeta(
   return next;
 }
 
-// Shared mkdir-parent → write tmp(.pid) → rename helper. The tmp file is
-// created and atomically renamed away, so its exact name is unobservable;
-// the .pid suffix just keeps concurrent same-process writers from colliding.
-// Homed here because projects.ts is the lowest module already imported by the
-// other call sites (appSettings.ts, rootClaudeMd.ts) — no import cycle.
+// Shared mkdir-parent → write tmp(.pid.seq) → rename helper. Homed here
+// because projects.ts is the lowest module already imported by the other
+// call sites (appSettings.ts, rootClaudeMd.ts) — no import cycle.
+//
+// The tmp name must be unique per call: pid separates processes, the counter
+// separates concurrent calls within one process. A shared name let the
+// winner's rename delete the loser's still-in-flight source file (board
+// 2026-0156: two same-process writers to one target — e.g. a plugin stop's
+// awaited write racing its own fire-and-forget child-exit write — collided
+// on `${filePath}.${pid}.tmp` and the loser threw ENOENT on a file it wrote
+// itself). The `unlink` below is required *because* the name became unique
+// (with a shared name it would delete a sibling writer's tmp file, so it
+// couldn't have existed before) and is only safe for that same reason.
+//
+// Concurrent writers to one target are last-write-wins, not merged or
+// locked: this fixes writers destroying each other's tmp file, not the
+// lost-update where a stale payload's rename overwrites a newer one.
+let atomicWriteSeq = 0;
+
 export async function writeFileAtomic(filePath: string, data: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.tmp`;
-  await fs.writeFile(tmp, data);
-  await fs.rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
+  try {
+    await fs.writeFile(tmp, data);
+    await fs.rename(tmp, filePath);
+  } catch (e) {
+    await fs.unlink(tmp).catch(() => {});
+    throw e;
+  }
 }
 
 // ── Workspace registry ────────────────────────────────────────────────

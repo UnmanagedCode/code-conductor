@@ -901,3 +901,106 @@ test('claudePluginDirs() is empty for a plugin without the field', async () => {
     await env.restore();
   }
 });
+
+// Board 2026-0156: stopInternal's awaited runtime.json write raced
+// handleChildExit's fire-and-forget one, and both raced each other across
+// plugins — all sharing one `${file}.${pid}.tmp` name meant the second
+// rename to land deleted the first writer's still-in-flight tmp file, and
+// the loser threw ENOENT on a file it wrote itself. This pins the production
+// path (two real `stop()` calls), not the helper in isolation.
+test("two concurrent stops both persist runtime.json — neither steals the other's tmp", async () => {
+  const env = await makePluginRoot();
+  const host = createPluginHost();
+  const origWriteFile = fs.writeFile;
+  const origRename = fs.rename;
+  let restored = false;
+  const restoreFsPatch = () => {
+    if (restored) return;
+    restored = true;
+    fs.writeFile = origWriteFile;
+    fs.rename = origRename;
+  };
+  try {
+    const fixture = await readFixtureManifest();
+    await env.addPluginProject('aplug', { manifest: { ...fixture, id: 'aplug' } });
+    await env.addPluginProject('bplug', { manifest: { ...fixture, id: 'bplug' } });
+    await host.enable('aplug');
+    await host.enable('bplug');
+    await host.ensureStarted('aplug');
+    await host.ensureStarted('bplug');
+    // Both must be structurally guaranteed to reach stopInternal — assert
+    // readiness (and a recorded pid) BEFORE the barrier goes up, so the pair
+    // held at it is by construction, not by an event landing in a window.
+    const rows = await host.list();
+    assert.equal(rows.find(r => r.id === 'aplug').state, 'ready');
+    assert.equal(rows.find(r => r.id === 'bplug').state, 'ready');
+    assert.ok((await host.status('aplug')).pid);
+    assert.ok((await host.status('bplug')).pid);
+
+    // Barrier scoped to runtime.json's own tmp files only, so the
+    // registry.json / project.json writes from enable()/auto-assign are
+    // never held.
+    const tmpPaths = [];
+    let arrived = 0;
+    let renamesBeforeRelease = 0;
+    let released = false;
+    let resolveGate;
+    const gate = new Promise((resolve) => { resolveGate = resolve; });
+    const N = 2;
+    const safety = setTimeout(() => { released = true; resolveGate(); }, 8000);
+    fs.writeFile = async function (file, data, ...rest) {
+      const f = String(file);
+      if (f.includes('runtime.json.')) {
+        tmpPaths.push(f);
+        arrived++;
+        const result = await origWriteFile.call(this, file, data, ...rest);
+        if (arrived >= N && !released) { released = true; clearTimeout(safety); resolveGate(); }
+        await gate;
+        return result;
+      }
+      return origWriteFile.call(this, file, data, ...rest);
+    };
+    fs.rename = async function (oldPath, newPath) {
+      if (String(oldPath).includes('runtime.json.') && !released) renamesBeforeRelease++;
+      return origRename.call(this, oldPath, newPath);
+    };
+
+    const [ra, rb] = await Promise.allSettled([host.stop('aplug'), host.stop('bplug')]);
+    restoreFsPatch();
+
+    // Forcing asserted first, on a snapshot taken at release: two writers
+    // reached the boundary and none renamed early.
+    const snapshot = tmpPaths.slice(0, N);
+    assert.equal(snapshot.length, N, 'two runtime.json writers must reach the write→rename boundary');
+    assert.equal(renamesBeforeRelease, 0, 'no writer may rename before both arrived');
+
+    assert.equal(ra.status, 'fulfilled', `stop('aplug') must not reject: ${ra.reason}`);
+    assert.equal(rb.status, 'fulfilled', `stop('bplug') must not reject: ${rb.reason}`);
+    // Measured (tmp name reverted to the shared `${file}.${pid}.tmp`, 8
+    // runs): 8/8 died on `stop(...) must not reject` above, not here — the
+    // losing stop's saveRuntimeRecords rename threw ENOENT on the stolen tmp
+    // before this line ever ran. That assertion is what actually fires in
+    // practice. This one remains the guaranteed backstop: killing 'aplug'
+    // also fires handleChildExit('aplug') (rejection swallowed to
+    // console.warn), so the pair held at the barrier may be {stop-a, exit-a}
+    // rather than {stop-a, stop-b} — but with a shared tmp name, whichever
+    // pair arrives, one writer's rename always steals the other's tmp, so
+    // Set.size === 1 is unconditional even on a run where `fulfilled`
+    // doesn't catch it first.
+    //
+    // Also measured: no production mutation kills this test on its own — the
+    // only one that does is the shared-tmp-name revert, which kills test 1
+    // too (making `stop`/`stopInternal` reject outright is too broad, since
+    // it fails every stop-calling test in this file; dropping stopInternal's
+    // saveRuntimeRecords() call survives, since handleChildExit still writes
+    // runtime.json for each killed child). So this test is a production-path
+    // symptom guard — it pins that a real stop() does not reject with ENOENT
+    // — not an independent pin on the tmp-uniqueness invariant; that
+    // invariant's only independent pin is test 1, above.
+    assert.equal(new Set(snapshot).size, N, 'the two concurrent writers must not share a tmp path');
+  } finally {
+    restoreFsPatch();
+    await host.stopAll();
+    await env.restore();
+  }
+});
