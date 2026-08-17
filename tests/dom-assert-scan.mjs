@@ -26,11 +26,30 @@
 // (`tests/notifications.test.mjs:200,208,213`). So: blank non-code, then walk
 // balanced brackets.
 //
-// Scan direction. The obvious direction — enumerate the ~437 legitimate
-// primitive-vs-null comparisons and allow-list them — is intractable: they span
-// ~194 arbitrary shapes with no shared primitive signal. This scanner runs the
-// INVERSE direction, keying on DOM-*producing* signals in tail position. That
-// needs no allow-list and measures 0 false positives across all of `tests/`.
+// Scan direction. The obvious direction — enumerate every legitimate
+// primitive-vs-null comparison in `tests/` and allow-list them — is
+// intractable: they take too many arbitrary shapes and share no primitive
+// signal. This scanner runs the INVERSE direction, keying on DOM-*producing*
+// signals in tail position. That needs no allow-list and measures zero false
+// positives across all of `tests/`.
+//
+// ---------------------------------------------------------------------------
+// MEASUREMENT RECORD — a fact about one moment, NOT a claim about the present
+// tree. Measured at sha 9bcbac9 on 2026-08-17:
+//
+//   442  positive-family primitive-vs-null comparisons in `tests/`, spanning
+//        ~194 distinct expression shapes
+//     4  `not*`-vs-null sites (excluded structurally by the family filter)
+//     0  false positives
+//    46  of the 50 sites converted by the 2026-0150 sweep are recovered
+//        (recall measured against `tests/` at 6de56a3^1)
+//
+// The COUNTS drift whenever any card adds a nullish assertion anywhere in
+// `tests/`; the CONCLUSIONS — zero false positives, and the recall figure,
+// which is anchored to a fixed sha — do not. Running prose below therefore
+// describes the set rather than counting it. To learn the present numbers,
+// re-derive them with `scanTestsDir('tests')`; do not trust these.
+// ---------------------------------------------------------------------------
 //
 // There is deliberately NO escape hatch. With 0 measured false positives there
 // is nothing to exempt (YAGNI), and an inline `// guard-ignore` comment is the
@@ -218,14 +237,16 @@ export function findNullishEqualityCalls(stripped) {
 //
 // KNOWN FALSE NEGATIVES — read this before "fixing" the recall number.
 // Measured against the real pre-sweep tree (`tests/` at 6de56a3^1): 46 of the
-// 50 converted sites are recovered, at 0 false positives over the 437
-// legitimate primitive-vs-null comparisons on the current tree.
+// 50 converted sites are recovered, at zero false positives over every
+// legitimate primitive-vs-null comparison in `tests/` (see the MEASUREMENT
+// RECORD in this file's header for the counts and the sha they were taken at).
 //
 // The 4 residual occurrences are 3 distinct expressions — `conv.emptyNode`,
 // `main.leadingAssistantWrap` (x2) and `batch.leadingWrap`. An equal-family
 // assertion whose subject is a plain property access, or a bare identifier with
-// no DOM-valued definition in the same file, is INDISTINGUISHABLE from those
-// 437 primitives: `main.leadingAssistantWrap` has exactly the shape of
+// no DOM-valued definition in the same file, is INDISTINGUISHABLE from the
+// legitimate primitive-vs-null comparisons in `tests/`:
+// `main.leadingAssistantWrap` has exactly the shape of
 // `inst.autoResumeAt`. Their DOM-ness lives in the RETURN VALUES of `public/`
 // code and is not present in the test's syntax at all, so no amount of scanner
 // work reaches them. They are covered by `tests/dom-assert-tripwire.mjs` at
@@ -283,7 +304,8 @@ function hasCollectionSignal(expr) {
 // is the dominant style in this tree (tests/costs-view.test.mjs:25,
 // tests/plugins-frontend.test.mjs:79, tests/default-playbook-frontend.test.mjs:48),
 // and `activeElement` genuinely can be null, so a latent-passing site is
-// realistic. Measured after widening: still 0 false positives over the 437.
+// realistic. Measured after widening: still zero false positives over every
+// legitimate primitive-vs-null comparison in `tests/`.
 function isDocumentReceiver(receiver) {
   const t = receiver.replace(/\s+/g, '');
   return t === 'document' || /(?:\?\.|\.)(?:document|ownerDocument)$/.test(t);
