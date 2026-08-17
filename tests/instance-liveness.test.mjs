@@ -15,10 +15,12 @@
 //
 // The final `describe` block below is the one exception: it boots a real
 // server (fake-claude launcher, no real subprocess) to prove rewind/respawn
-// actually SET `_relaunching` at the right moments, not just that the flag
-// mechanism works in isolation — a mutant deleting `_relaunching = true` from
-// one of those two methods specifically would still pass every unit test
-// above.
+// actually SET `_relaunching` at the right moments AND CLEAR it once the
+// relaunch lands — not just that the flag mechanism works in isolation. A
+// mutant deleting `_relaunching = true` from one of those two methods
+// specifically would still pass every unit test above; a mutant that leaves
+// it stuck `true` in the `finally` (the dangerous direction — a dead worker
+// with no relaunch pending would then read live forever) would too.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -144,6 +146,42 @@ describe('rewind/respawn relaunch windows read live end to end', () => {
     else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   });
 
+  // Spawn a `resume:`-backed worker against a freshly-seeded jsonl under its
+  // own project, so each test gets an isolated cwd/sessionId pair. Returns the
+  // live Instance once idle.
+  let projectCounter = 0;
+  async function spawnResumable(lines) {
+    const n = ++projectCounter;
+    const project = `relaunch-liveness-${n}`;
+    const sid = `${n.toString(16).padStart(8, '0')}-2222-3333-4444-555555555555`;
+    await api(baseUrl, 'POST', '/api/projects', { name: project });
+    const projectPath = path.join(ctx.projectsRoot, project);
+    const sessionDir = path.join(ctx.claudeProjectsRoot, encodeCwd(projectPath));
+    await fs.mkdir(sessionDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionDir, `${sid}.jsonl`),
+      lines.map(l => JSON.stringify(l)).join('\n') + '\n',
+    );
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project, mode: 'bypassPermissions', resume: sid,
+    });
+    assert.equal(r.status, 201, `spawn failed: ${JSON.stringify(r.body)}`);
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).status === 'idle');
+    return instances.get(id);
+  }
+
+  const TWO_TURN_LINES = [
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
+    { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'first reply' }] } },
+    { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second prompt' } },
+    { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'second reply' }] } },
+  ];
+  const ONE_TURN_LINES = [
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first prompt' } },
+    { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'first reply' }] } },
+  ];
+
   test('a rewindToUserMessage relaunch window reads live via isSessionLive', async () => {
     const sid = 'aaaa1111-2222-3333-4444-555555555555';
     await api(baseUrl, 'POST', '/api/projects', { name: 'rewind-liveness' });
@@ -224,5 +262,46 @@ describe('rewind/respawn relaunch windows read live end to end', () => {
       'isSessionLive must read live at the instant launch() is invoked — proc is still null there (confirmed dead above), only `_relaunching` says this worker is coming back');
     await waitFor(() => instances.get(id).status === 'idle');
     assert.equal(instances.isSessionLive(publicId), true, 'and live again once the respawn has actually landed');
+  });
+
+  // The dangerous direction: `_relaunching` must not outlive the relaunch it
+  // marks. A flag that gets set back to `true` in the `finally` (instead of
+  // `false`) would make a worker that dies with no further relaunch in flight
+  // read live FOREVER — holding a `workers:"one"` slot and satisfying
+  // `needs …@live` permanently for a worker that no longer exists. That is a
+  // worse failure than the gap this whole change closes, and nothing above
+  // exercises it: every prior test either checks WHILE relaunching or checks
+  // the ordinary post-relaunch live case, never a death with no relaunch
+  // pending afterward.
+  test('a completed rewindToUserMessage does not leave `_relaunching` stuck — a later death with no relaunch reads not-live', async () => {
+    const inst = await spawnResumable(TWO_TURN_LINES);
+    const publicId = inst.sessionId;
+    const id = inst.id;
+
+    await inst.rewindToUserMessage(1);
+    await waitFor(() => instances.get(id).status === 'idle');
+    assert.equal(instances.isSessionLive(publicId), true, 'premise: live once the rewind has landed');
+
+    await instances.get(id).kill({ graceMs: 50 });
+    await waitFor(() => ['exited', 'crashed'].includes(instances.get(id).status));
+    assert.equal(instances.isSessionLive(publicId), false,
+      '`_relaunching` must not outlive the rewind it marked — a worker killed afterward, with no further relaunch, must read not-live');
+  });
+
+  test('a completed InstanceManager.respawn does not leave `_relaunching` stuck — a later death with no relaunch reads not-live', async () => {
+    const inst = await spawnResumable(ONE_TURN_LINES);
+    const publicId = inst.sessionId;
+    const id = inst.id;
+
+    await inst.kill({ graceMs: 50 });
+    await waitFor(() => ['exited', 'crashed'].includes(instances.get(id).status));
+    await instances.respawn(id);
+    await waitFor(() => instances.get(id).status === 'idle');
+    assert.equal(instances.isSessionLive(publicId), true, 'premise: live once the respawn has landed');
+
+    await instances.get(id).kill({ graceMs: 50 });
+    await waitFor(() => ['exited', 'crashed'].includes(instances.get(id).status));
+    assert.equal(instances.isSessionLive(publicId), false,
+      '`_relaunching` must not outlive the respawn it marked — a worker killed afterward, with no further relaunch, must read not-live');
   });
 });

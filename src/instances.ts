@@ -3303,11 +3303,28 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // "is this worker coming back". The two deliberately DISAGREE during a
   // coming-up window (a resume in flight, a prune/rewind/respawn relaunch):
   // this reads null there, isSessionLive reads true. That is intended, not a
-  // bug to reconcile — the surfaces that still read this (or bare `.proc`)
-  // are advisory text (a forward/get_recent_messages hint, a NOTHING_TO_FORWARD
-  // reason), not governance, and governance (playbook policy) reads
-  // isSessionLive exclusively. Do not fold these into one function — that
-  // would reintroduce a second liveness authority on the governance side.
+  // bug to reconcile. Its readers fall into three groups, and only the third
+  // is what "governance reads isSessionLive exclusively" is actually about:
+  //   - STRICT-LIVE worker-addressing resolution (src/mcp/handlers.ts's
+  //     getInst/getInstOrDisk), which hard-refuses SESSION_NOT_LIVE for every
+  //     worker-addressing tool — CORRECTLY reads this one, not isSessionLive:
+  //     you cannot prompt/interrupt/kill a proc that is not attached yet, so
+  //     refusing during a coming-up window is the right answer, not a gap.
+  //   - Caller resolution and idle-wake dispatch (handlers.ts's caller
+  //     lookups, playbookGate.ts's conductor-caller check, and
+  //     src/idleSubscriptions.ts's delivery paths) — same "is there a proc to
+  //     act on" question, asked of the CALLER or the WATCHED target rather
+  //     than the addressed worker.
+  //   - Advisory text (a forward/get_recent_messages hint, a
+  //     NOTHING_TO_FORWARD reason) — merely describes state to a human/LLM
+  //     reader, refuses nothing.
+  // Playbook policy (decide()) is the one caller that must NOT read this —
+  // it takes `isLive` as a required parameter, always isSessionLive. Do not
+  // fold liveForSession and isSessionLive into one function: that would
+  // either make the strict-live resolver wrongly permissive during a
+  // coming-up window, or reintroduce a second liveness authority on the
+  // governance side — the two questions are different, not the same
+  // question answered two different ways.
   liveForSession(sessionId: string): Instance | null {
     return this.idsForSession(sessionId).map(id => this.byId.get(id))
       .find((i): i is Instance => i != null && i.proc != null) ?? null;
