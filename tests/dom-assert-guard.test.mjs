@@ -4,8 +4,12 @@
 //
 //   tests/dom-assert-scan.mjs      OWNS  "no equal-family assertion in tests/ is
 //                                        written against a DOM-valued expression"
-//   tests/dom-assert-tripwire.mjs  GUARDS "no DOM node ever reaches assert's
-//                                        serializer at runtime"
+//   tests/dom-assert-tripwire.mjs  GUARDS "a DOM node compared against
+//                                        null/undefined by a positive
+//                                        equal-family assertion never reaches
+//                                        assert's serializer" (one shape only;
+//                                        its header names what it does not
+//                                        cover — card 2026-0163)
 //
 // Every test below names the invariant it pins in its title.
 //
@@ -57,6 +61,46 @@ const CATCH_CASES = [
     name: 'pick off a spread NodeList',
     line: 1,
     src: "assert.equal([...root.querySelectorAll('.x')].find(function (n) { return n.id; }), null);",
+  },
+  // window.document.* is the dominant style in this tree; bare `document.x` was
+  // already caught, this shape was not (review FIX 1).
+  { name: 'window.document-scoped .activeElement', line: 1, src: 'assert.equal(window.document.activeElement, null);' },
+  // Destructuring binds a name with no `=` initializer to inspect, so these
+  // need their own arm in collectDomNames (review FIX 2).
+  {
+    name: 'renamed destructured NODE_PROPS binding',
+    line: 2,
+    src: ['const { firstElementChild: el } = root;', 'assert.equal(el, null);'].join('\n'),
+  },
+  {
+    name: 'shorthand destructured NODE_PROPS binding',
+    line: 2,
+    src: ['const { firstElementChild } = root;', 'assert.equal(firstElementChild, null);'].join('\n'),
+  },
+  // The object-literal arm of collectDomNames. Without this case its only
+  // coverage is T5's aggregate count, so "correcting" T5's 46 to 45 would
+  // silently delete the arm's coverage — this card's own failure mode, one
+  // layer down.
+  {
+    name: 'identifier bound through an object-literal property',
+    line: 2,
+    src: ["const parts = { btn: block.body.querySelector('.tts-speak') };", 'assert.equal(btn, null);'].join('\n'),
+  },
+  // Line numbers survive a preceding multi-line block comment. This pins
+  // NEWLINE PRESERVATION in stripNonCode, which is what actually keeps line
+  // numbers valid — the other cases all sit near the top of their fixture and
+  // would pass even if blanking collapsed lines.
+  {
+    name: 'violation following a multi-line block comment',
+    line: 6,
+    src: [
+      '/*',
+      ' * assert.equal(root.querySelector(x), null) is the shape we forbid.',
+      ' * This prose spans several lines on purpose.',
+      ' */',
+      'const wrap = mk();',
+      "assert.equal(wrap.querySelector('.x'), null);",
+    ].join('\n'),
   },
 ];
 

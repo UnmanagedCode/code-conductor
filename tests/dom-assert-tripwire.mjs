@@ -1,13 +1,23 @@
 // ============================================================================
 // OWNERSHIP — do not delete this guard as "redundant with the scanner".
 //
-// `tests/dom-assert-tripwire.mjs` GUARDS THE PATH: *no DOM node ever reaches
-// assert's serializer at runtime.* It bounds the damage from the shapes
+// `tests/dom-assert-tripwire.mjs` GUARDS THE PATH, for one shape only: *a DOM
+// node compared against null/undefined by a positive equal-family assertion
+// never reaches assert's serializer.* It bounds the damage from the shapes
 // `tests/dom-assert-scan.mjs` is structurally blind to (a subject whose
 // DOM-ness lives in a `public/` return value — `conv.emptyNode`,
 // `main.leadingAssistantWrap`, `batch.leadingWrap` — and any new shape the
 // scanner does not recognise), converting a 33-120 s stall into a named
 // AssertionError.
+//
+// NOT COVERED — two shapes still reach the serializer and still stall
+// 33-120 s, by design, tracked as card 2026-0163:
+//   1. a node compared against a non-nullish value — `assert.equal(node, 5)`,
+//      `assert.equal(el.parentElement, otherNode)`;
+//   2. a node nested inside a compared structure — `deepEqual({ el }, {…})`.
+// Do NOT widen this file to cover them. Intercepting any node operand would
+// break legitimate node-vs-node assertions that currently pass; that redesign
+// is 2026-0163's job.
 //
 // `tests/dom-assert-scan.mjs` OWNS the invariant (*no equal-family assertion in
 // `tests/` is written against a DOM-valued expression*) and cannot be replaced

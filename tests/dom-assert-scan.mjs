@@ -9,8 +9,10 @@
 // currently passes is invisible at runtime, which is exactly how the 51 sites
 // swept by card 2026-0150 accumulated under a green suite.
 //
-// The tripwire guards the PATH (*no DOM node ever reaches assert's serializer
-// at runtime*) and covers DOM-ness this scanner is structurally blind to.
+// The tripwire guards the PATH for one shape only (*a DOM node compared against
+// null/undefined by a positive equal-family assertion never reaches assert's
+// serializer*) and covers DOM-ness this scanner is structurally blind to. Its
+// header names the two shapes it does NOT cover (card 2026-0163).
 // Overlap on most sites is intentional. Neither is redundant.
 // ============================================================================
 //
@@ -43,9 +45,16 @@ import path from 'node:path';
 // Stage 1 — blank everything that is not code.
 // ---------------------------------------------------------------------------
 
-// Returns a string of the SAME LENGTH as `src` (so offsets, and therefore line
-// numbers, stay valid) with newlines preserved and the contents of comments,
-// string bodies, template-literal text and regex bodies replaced by spaces.
+// Replaces the contents of comments, string bodies, template-literal text and
+// regex bodies with spaces.
+//
+// LINE NUMBERS stay valid because NEWLINES ARE PRESERVED — `blank` refuses to
+// touch a '\n'. That is the load-bearing property, and it is independent of the
+// replacement being one character wide. (Same-length output is what keeps
+// `lineIndex`'s offsets aligned with the original source, which matters only if
+// a caller maps an offset back to the raw text; a mutant replacing ' ' with ''
+// survives the whole suite, so do not credit length for line-number validity.)
+//
 // Delimiters (quotes, backticks, slashes) are kept so the bracket walker still
 // sees well-formed call syntax. Template `${…}` expressions are left LIVE — a
 // real assertion can appear inside one.
@@ -222,6 +231,22 @@ export function findNullishEqualityCalls(stripped) {
 // work reaches them. They are covered by `tests/dom-assert-tripwire.mjs` at
 // runtime; do NOT close the gap with a hand-maintained name list, which rots
 // and would flag the primitives it collides with.
+//
+// The residual blind spot is NOT only that property-access shape. Two further
+// shapes are known misses and are WAIVED — reviewed decisions, not oversights,
+// so do not re-report them:
+//
+//   * Redundant parens around a whole call — `assert.equal((root.querySelector('a')), null)`.
+//     An unusual style, and a parenthesised SUB-expression such as
+//     `(a || b).querySelector('x')` is still caught, so the matcher complexity
+//     is not worth it.
+//   * Declare-empty-then-assign — `let el; el = wrap.querySelector('.x');`.
+//     The joined form `let el = wrap.querySelector('.x')` IS caught, so only
+//     the split form misses.
+//
+// Both are bounded by the tripwire at runtime. A third shape,
+// `window.document.<DOC_PROPS>`, WAS a miss and is now fixed — see
+// `isDocumentReceiver`.
 
 // `x.name(…)` yields a node.
 const NODE_CALLS = new Set([
@@ -254,9 +279,14 @@ function hasCollectionSignal(expr) {
   return COLLECTION_RE.test(expr);
 }
 
+// A `.document` tail is accepted as well as bare `document`: `window.document.x`
+// is the dominant style in this tree (tests/costs-view.test.mjs:25,
+// tests/plugins-frontend.test.mjs:79, tests/default-playbook-frontend.test.mjs:48),
+// and `activeElement` genuinely can be null, so a latent-passing site is
+// realistic. Measured after widening: still 0 false positives over the 437.
 function isDocumentReceiver(receiver) {
   const t = receiver.replace(/\s+/g, '');
-  return t === 'document' || /(?:\?\.|\.)ownerDocument$/.test(t);
+  return t === 'document' || /(?:\?\.|\.)(?:document|ownerDocument)$/.test(t);
 }
 
 // Walk back from a closing bracket to its match.
@@ -362,6 +392,16 @@ function initializerAt(src, from) {
   return src.slice(from);
 }
 
+// Destructuring binds a name with no `=` initializer to inspect, so the arms
+// above miss `const { firstElementChild: el } = root` and its shorthand. The
+// property name is the only signal available, so the arm is keyed on
+// NODE_PROPS and DELIBERATELY NOT on DOC_PROPS: `const { body } = await rpc(…)`
+// is scattered across `tests/` and must stay unindexed. Handles the shorthand
+// and the renamed form; an entry with a default value does not match, which is
+// the conservative direction.
+const DESTRUCTURE_RE = /(?<![\w$])(?:const|let|var)\s*\{([^{}]*)\}\s*=/g;
+const DESTRUCTURE_ENTRY_RE = /^\s*([A-Za-z_$][\w$]*)\s*(?::\s*([A-Za-z_$][\w$]*)\s*)?$/;
+
 export function collectDomNames(stripped) {
   const names = new Set();
   DECL_RE.lastIndex = 0;
@@ -369,6 +409,13 @@ export function collectDomNames(stripped) {
   while ((m = DECL_RE.exec(stripped)) !== null) {
     const init = initializerAt(stripped, m.index + m[0].length);
     if (domValuedTail(init, names)) names.add(m[1] || m[2]);
+  }
+  DESTRUCTURE_RE.lastIndex = 0;
+  while ((m = DESTRUCTURE_RE.exec(stripped)) !== null) {
+    for (const entry of m[1].split(',')) {
+      const e = DESTRUCTURE_ENTRY_RE.exec(entry);
+      if (e && NODE_PROPS.has(e[1])) names.add(e[2] || e[1]);
+    }
   }
   return names;
 }
