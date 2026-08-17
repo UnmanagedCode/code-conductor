@@ -32,7 +32,7 @@ test('list(): default code-share entry present with no library dir', async () =>
   const env = await makePluginRoot();
   try {
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows.length, 6);
     assert.equal(rows[0].id, 'code-share');
     assert.equal(rows[0].repo, 'https://github.com/UnmanagedCode/code-share');
@@ -47,7 +47,7 @@ test('list(): code-playwright is a built-in entry alongside code-share, with its
   const env = await makePluginRoot();
   try {
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     const ids = rows.map(r => r.id).sort();
     assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-karpathy-wiki', 'code-playwright', 'code-share']);
     const cp = rows.find(r => r.id === 'code-playwright');
@@ -71,10 +71,44 @@ test('list(): a dropped file adds an entry; malformed files are skipped, not fat
     await fs.writeFile(path.join(libraryDir(), 'not-a-manifest.txt'), 'ignored, wrong extension');
 
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows, skipped } = await lib.list();
     const ids = rows.map(r => r.id).sort();
     assert.deepEqual(ids, ['code-dialectic', 'code-hub', 'code-kanban', 'code-karpathy-wiki', 'code-playwright', 'code-share', 'extra-plugin']);
+
+    // A silently-dropped drop-in is indistinguishable from one never written, so
+    // both per-file skip reasons are reported by name.
+    assert.deepEqual(skipped.map(s => s.file).sort(), ['broken.json', 'incomplete.json']);
+    assert.ok(!skipped.some(s => s.file === 'not-a-manifest.txt'),
+      'a wrong-extension file is a deliberate ignore, NOT a skip');
+    assert.ok(skipped.every(s => s.reason && s.reason.length > 0), 'every skip carries a reason');
+    assert.match(skipped.find(s => s.file === 'incomplete.json').reason, /id\/name\/repo/);
   } finally {
+    await env.restore();
+  }
+});
+
+// The audit fenced off the JUSTIFIED logged degradations, and an unreadable
+// library DIRECTORY is one of them: it has no per-file identity to report, and
+// the built-in catalog still serves. This pins that it was NOT swept into the
+// notice channel along with the two per-file skips above.
+test('list(): an unreadable library directory stays a silent logged degradation', async () => {
+  const env = await makePluginRoot();
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    // A FILE where the library dir belongs ⇒ readdir fails ENOTDIR (non-ENOENT).
+    await fs.mkdir(path.dirname(libraryDir()), { recursive: true });
+    await fs.writeFile(libraryDir(), 'not a directory');
+
+    const lib = createPluginLibrary();
+    const { entries, skipped } = await lib.list();
+    assert.ok(entries.length > 0, 'the built-in entries still serve');
+    assert.deepEqual(skipped, [], 'a directory-level failure is NOT reported per-file');
+    assert.ok(warns.some(w => w.includes('failed to read library dir')),
+      'it stays a logged degradation, exactly as before');
+  } finally {
+    console.warn = origWarn;
     await env.restore();
   }
 });
@@ -84,7 +118,7 @@ test('list(): a dropped file whose id matches the built-in overrides it', async 
   try {
     await dropLibraryEntry('code-share.json', { id: 'code-share', name: 'Custom Code Share', repo: 'https://example.com/fork/code-share' });
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows.length, 6);
     assert.equal(rows[0].name, 'Custom Code Share');
     assert.equal(rows[0].repo, 'https://example.com/fork/code-share');
@@ -98,7 +132,7 @@ test('list(): installed flips true once the derived target dir exists', async ()
   try {
     await env.addProject('code-share');
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
     assert.equal(rows[0].installedAs, 'code-share');
   } finally {
@@ -111,7 +145,7 @@ test('list(): installed but not a git repo -> updateAvailable false, never throw
   try {
     await env.addProject('code-share'); // plain dir, not a git repo
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
     assert.equal(rows[0].updateAvailable, false);
     assert.equal(rows[0].behind, null);
@@ -132,7 +166,7 @@ test('list(): installed git repo with no remote configured -> updateAvailable fa
     await git(dir, 'commit', '-q', '-m', 'v1');
 
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
     assert.equal(rows[0].updateAvailable, false);
     assert.equal(rows[0].behind, null);
@@ -159,7 +193,7 @@ test('list(): installed + up to date with origin -> updateAvailable false, behin
     await git(env.root, 'clone', '-q', remoteDir, 'code-share');
 
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
     assert.equal(rows[0].updateAvailable, false);
     assert.equal(rows[0].behind, 0);
@@ -196,7 +230,7 @@ test('list(): installed + behind origin -> updateAvailable true, behind > 0 (fet
     await git(seedDir, 'push', '-q', 'origin', 'main');
 
     const lib = createPluginLibrary();
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
     assert.equal(rows[0].updateAvailable, true);
     assert.equal(rows[0].behind, 1);
@@ -270,7 +304,7 @@ test('install(): happy path clones (fake impl), rescans, and enables the discove
     assert.deepEqual(enabled, ['code-share'], 'the freshly discovered plugin is enabled by default');
     assert.equal(result.postClone, null, 'code-share has no postClone configured');
 
-    const rows = await lib.list();
+    const { entries: rows } = await lib.list();
     assert.equal(rows[0].installed, true);
   } finally {
     await env.restore();

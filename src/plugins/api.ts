@@ -20,6 +20,8 @@ export interface PluginHostApiLike {
   restart(id: string): Promise<unknown>;
   status(id: string): Promise<unknown>;
   setActiveVersion(id: string, input: unknown): Promise<unknown>;
+  // Non-ENOENT load failures from the last init pass — see registry.ts loadJson.
+  notices(): Array<{ file: string; reason: string; backup: string | null }>;
 }
 
 export interface PluginLibraryApiLike {
@@ -106,8 +108,14 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
     return result;
   }));
 
+  // `notices` carries any non-ENOENT registry.json/runtime.json load failure from
+  // the init this call triggers — read AFTER awaiting list(), which is what runs
+  // ensureInit and therefore what populates them.
   r.get('/', async (req, res, next) => {
-    try { res.json(await host.list()); } catch (e) { next(e); }
+    try {
+      const rows = await host.list();
+      res.json({ rows, notices: host.notices() });
+    } catch (e) { next(e); }
   });
 
   // Every mutating route below fans out to refreshProjectConventions() after
