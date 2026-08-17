@@ -44,11 +44,36 @@ export function createServer({ withInstances = true, claudeLauncher }: { withIns
   setLiveBackendsProvider(instances ? () => instances.liveBackendUsage() : null);
   const pluginHost = withInstances ? createPluginHost({ instances }) : null;
   const pluginLibrary = withInstances ? createPluginLibrary({ pluginHost }) : null;
+  // ── The provider wiring block ───────────────────────────────────────────
+  //
+  // FOUR module-global provider setters converge here, and this is the only src
+  // site that calls any of them: `setPluginConventionsProvider`
+  // (src/projectConventions.ts), `setPluginConductorConventionsProvider`
+  // (src/conductorConventions.ts), `setPluginRolesProvider` and
+  // `setLiveBackendsProvider` (both src/appSettings.ts). Measured, so a reader
+  // deciding to add a FIFTH doesn't have to re-derive it:
+  //
+  //  - The two pairs use divergent reset idioms — the conventions pair takes
+  //    `fn ?? default` with no runtime type guard; the appSettings pair takes
+  //    `typeof fn === 'function'` plus a try/Array.isArray wrapper at the read.
+  //  - They are process-wide ACROSS createServer() calls. A torn-down test
+  //    server leaves its dead closure installed for the next importer; nothing
+  //    resets them globally, only each test's own `finally`.
+  //  - `instances.setClaudePluginDirsResolver` below is the instance-scoped
+  //    shape and the target end state (card 2026-0167).
+  //
+  // Consolidating the four into one `setHostProviders({…})` object was
+  // considered and DECLINED: it is the same process-wide module-global state
+  // under a new name, at ~40 mechanical test call sites across 8 files, for no
+  // measurable win. The fix worth making is instance-scoping, not renaming.
+  //
   // Enabled plugins contribute project conventions (each optionally carrying a
   // one-time scaffold facet) and conductor conventions through these providers
   // (the host is a runtime singleton, wired after construction).
   // `conventions()` is grouped by scope; `project` and `conductor` are routed
-  // today (`workspace` isn't accepted yet — see manifest.ts).
+  // today (`workspace` isn't accepted yet — see manifest.ts). Both providers
+  // below now share ONE memoized scan (see registry.ts's `conventions()`), so
+  // keeping them as two providers costs nothing.
   // pluginHost and instances are set together (both derive from withInstances);
   // the && guard is what lets TS see that here.
   if (pluginHost && instances) {
@@ -143,13 +168,9 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
-  // The app-owned CLAUDE.md regen below must run AFTER createServer(), which
-  // wires the plugin convention providers (setPluginConventionsProvider /
-  // setPluginConductorConventionsProvider). Before wiring those providers are
-  // no-op stubs returning [], so composing a selection that includes a
-  // plugin-namespaced slug (e.g. `code-karpathy-wiki/orchestrator-wiki`) throws
-  // 'unknown convention slug' in fragmentCatalog.compose(). They don't need the
-  // bound port, so they run here rather than after listen.
+  // The three app-owned regenerations below all run here, before listen: none
+  // of them needs the bound port. (What DOES gate on ordering is called out at
+  // regenerateAllProjectConventions further down — it is not this one.)
   // Regenerate the app-owned <PROJECTS_ROOT>/CLAUDE.md (the file every project
   // imports via `@../CLAUDE.md`) from the composed workspace convention modules.
   // A one-time backup of a hand-edited copy fires on the first app-owned
@@ -164,6 +185,21 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // Strictly non-fatal — the Conduct-dialog-open path re-ensures anyway.
   try { await ensureConductProject(); }
   catch (e) { console.warn('.conduct project ensure failed:', e); }
+  // ORDERING CONSTRAINT — this call, and only this call, must run AFTER
+  // createServer(), which wires the plugin convention providers. It composes
+  // the PROJECT catalog, the one that carries an `extraProvider`
+  // (setPluginConventionsProvider). Unwired, that provider is a no-op stub
+  // returning [], and the failure is SILENT, not a throw: ensureProjectConventionsMd
+  // computes `missing` from the catalog and filters those slugs out BEFORE
+  // compose, so every plugin-namespaced slug is demoted to the
+  // "> Convention unavailable: `<slug>`." note and that demoted body is WRITTEN
+  // into each project's in-tree CONVENTIONS.md. Nothing errors; the corruption
+  // is only visible in the files. Pinned by tests/boot-plugin-conventions-order.test.mjs.
+  //
+  // ensureRootClaudeMd above is NOT what this protects: it composes the
+  // WORKSPACE catalog, which passes no extraProvider at all (see
+  // src/workspaceConventions.ts), so a plugin-namespaced slug can never enter it.
+  //
   // Regenerate each split-model project's in-tree CONVENTIONS.md from its own
   // marker so existing projects pick up improved convention text. Projects with
   // no marker are skipped; an unresolvable slug drops out of the body (named in

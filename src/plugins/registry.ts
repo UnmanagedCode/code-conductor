@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
@@ -60,6 +60,10 @@ async function autoAssignToCcDev(projectName: string): Promise<void> {
 }
 
 type ManifestSource = { type: 'main' } | { type: 'worktree'; name: string };
+
+// The shape `conventions()` returns: one array per SUPPORTED_CONVENTION_SCOPES
+// key, each optionally flagged `degraded` (see fragmentCatalog.ts's CatalogList).
+type ConventionGroups = Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }> & { degraded?: boolean }>;
 
 // A discovered plugin project: either usable (manifest + id) or broken
 // (invalid/conflicting/incompatible manifest). `id` is null only for an
@@ -197,7 +201,15 @@ export function createPluginHost(opts: {
     }
   }
 
+  // Bumped by every state change that could alter what conventions() computes;
+  // see the cache at the bottom of this module for what reads it.
+  let registryGeneration = 0;
+
   async function saveRegistry(): Promise<void> {
+    // Bumping HERE rather than at each caller is what makes the set provably
+    // complete: every mutation of `persisted.plugins` is immediately followed by
+    // a saveRegistry() (reconcileActiveVersion, enable, disable, setActiveVersion).
+    registryGeneration++;
     await writeFileAtomic(registryFile(), JSON.stringify(persisted, null, 2) + '\n');
   }
 
@@ -461,6 +473,10 @@ export function createPluginHost(opts: {
       if ('errors' in result) throw httpError(400, `manifest in active checkout is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in active checkout does not match plugin '${id}'`);
       entry.manifest = result.manifest;
+      // Not covered by the invalidateFragmentBodies() at the top of this body:
+      // the manifest is REASSIGNED here, ten lines later, and its `conventions`
+      // list is exactly what conventions() reads.
+      registryGeneration++;
       const backend = result.manifest.backend;
       if (!backend) throw httpError(400, `plugin '${id}' has no backend to start`);
 
@@ -761,7 +777,11 @@ export function createPluginHost(opts: {
   // rescanInternal, doStart, setActiveVersion, and enable (a fragment can be
   // edited while its plugin sits disabled — enable is the user's own
   // recovery gesture for exactly that).
-  function invalidateFragmentBodies(): void { fragmentBodyCache.clear(); }
+  // Bumps the generation too: a stale fragment body must never survive inside a
+  // cached conventions() result. This covers rescanInternal (and with it the
+  // `byId = nextById` swap and the projectsRoot() swap path), enable, doStart
+  // and setActiveVersion.
+  function invalidateFragmentBodies(): void { fragmentBodyCache.clear(); registryGeneration++; }
 
   function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {
     return [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest } =>
@@ -788,16 +808,70 @@ export function createPluginHost(opts: {
   // different, already-accepted case (the file is just gone, not transiently
   // unreachable) and is not treated as degraded — it is skipped with a
   // warning as before, same as it always has been.
-  async function conventions(): Promise<Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }> & { degraded?: boolean }>> {
+  //
+  // MEMOIZED, because this is not a cheap read: it walks contributingEntries()
+  // and calls resolveCwd() per contributing plugin, and resolveCwd →
+  // reconcileActiveVersion does a dynamic import of worktrees.ts plus a store
+  // read for any worktree-pinned plugin. server.ts wires TWO providers onto it
+  // (project + conductor), so a single GET /api/settings/conventions/conductor
+  // was two full scans, and a mutating plugin route fans out through
+  // regenerateAllProjectConventions at two scans per project.
+  //
+  // The invalidation signal has TWO parts, and both are load-bearing:
+  //
+  //   1. `registryGeneration` — every mutation of the host's own state (see the
+  //      bumps in saveRegistry, invalidateFragmentBodies, and doStart's manifest
+  //      reassignment).
+  //   2. A per-call liveness re-check of the checkout dirs the cached scan
+  //      actually read. A checkout deleted from under a running server mutates
+  //      NO registry state, so (1) alone cannot see it — and answering "still
+  //      here" on its behalf would silently disable the `.degraded` flag, whose
+  //      whole job is to say "I can't tell gone from temporarily unreachable"
+  //      (fragmentCatalog.ts's CatalogList; the never-blanks decline in
+  //      projectClaudeMd.ts's ensureProjectConventionsMd depends on it). One
+  //      existsSync per contributing plugin is negligible against the dynamic
+  //      import + store read it guards, and a vanished dir just falls through to
+  //      the real scan, which degrades exactly as it does uncached.
+  //
+  // The re-check is deliberately on the DIRS, not on the store metadata that
+  // resolves them: a worktree pin going stale in the store is registry state,
+  // self-healed by reconcileActiveVersion on the next recomputation, and is
+  // covered by (1).
+  //
+  // The RETURNED OBJECT IS SHARED BY REFERENCE — callers must treat it as
+  // read-only. Both consumers do: fragmentCatalog.ts reads `.degraded` and then
+  // `raw.map(r => ({...r, builtin:false}))` (copying every entry), and
+  // server.ts's two providers only index `.project` / `.conductor`. A defensive
+  // shallow copy is deliberately NOT made: the entry objects would still be
+  // shared, so it would buy the appearance of safety rather than safety.
+  let conventionsCache: { gen: number; dirs: string[]; value: ConventionGroups } | null = null;
+  async function conventions(): Promise<ConventionGroups> {
     await ensureInit();
+    // Snapshotted BEFORE the loop on purpose: resolveCwd → reconcileActiveVersion
+    // can call saveRegistry() mid-computation when it self-heals a vanished
+    // worktree, bumping the generation. Tagging the result with the pre-loop
+    // value marks it stale, so the next call recomputes once — and that second
+    // run finds the self-heal already applied, so it does not bump again.
+    // Self-limiting.
+    const gen = registryGeneration;
+    if (conventionsCache && conventionsCache.gen === gen && conventionsCache.dirs.every(d => existsSync(d))) {
+      return conventionsCache.value;
+    }
     const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>
       = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
+    // Every checkout dir this scan read, for the liveness re-check above. Both
+    // the discovered project dir AND the resolved cwd: for a worktree-pinned
+    // plugin they differ, and losing EITHER changes what a fresh scan would
+    // produce (the project dir is what resolveCwd's getProject() lookup needs).
+    const dirs = new Set<string>();
     let degraded = false;
     for (const entry of contributingEntries()) {
       const list = entry.manifest.conventions ?? [];
       if (list.length === 0) continue;
+      if (entry.dir) dirs.add(entry.dir);
       let cwd: string;
       try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${errMsg(e)}`); degraded = true; continue; }
+      dirs.add(cwd);
       for (const g of list) {
         let body = '';
         if (g.file) {
@@ -816,6 +890,7 @@ export function createPluginHost(opts: {
       }
     }
     if (degraded) for (const arr of Object.values(byScope)) Object.assign(arr, { degraded: true });
+    conventionsCache = { gen, dirs: [...dirs], value: byScope };
     return byScope;
   }
 
