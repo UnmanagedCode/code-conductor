@@ -799,7 +799,6 @@ export function createPluginHost(opts: {
       let cwd: string;
       try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${errMsg(e)}`); degraded = true; continue; }
       for (const g of list) {
-        if (!byScope[g.scope]) continue; // scope not routed yet — skip defensively
         let body = '';
         if (g.file) {
           try { body = await readFragment(path.join(cwd, g.file)); }
