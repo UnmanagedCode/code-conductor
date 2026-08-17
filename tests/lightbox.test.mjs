@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -137,5 +138,5 @@ test('lightbox: ignores clicks on unrelated images', async () => {
   img.setAttribute('src', '/icon.png');
   document.body.appendChild(img); // not inside .md, no special class
   click(img);
-  assert.equal(document.querySelector('.lightbox-backdrop'), null);
+  assertNull(document.querySelector('.lightbox-backdrop'), 'clicking a plain <img> outside .md opens no lightbox backdrop');
 });

@@ -8,6 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -49,7 +50,7 @@ test('renderEventBatch renders standard blocks and strips the empty placeholder'
   const { renderEventBatch } = await setupDOM();
   const batch = renderEventBatch(archivePage());
 
-  assert.equal(batch.holder.querySelector('.empty'), null, 'no placeholder transplanted');
+  assertNull(batch.holder.querySelector('.empty'), 'no placeholder transplanted');
   const userMsg = batch.holder.querySelector('.msg.user');
   assert.ok(userMsg, 'user bubble rendered');
   assert.ok(userMsg.textContent.includes('old prompt'));
@@ -60,7 +61,7 @@ test('renderEventBatch renders standard blocks and strips the empty placeholder'
   assert.ok(assistant.textContent.includes('archived reply'));
   // Merge metadata: this page begins on a turn boundary (leadingWrap null)
   // and ends with an open assistant segment (trailingOpenWrap set).
-  assert.equal(batch.leadingWrap, null, 'page starting at an echo has no leading wrap');
+  assertNull(batch.leadingWrap, 'page starting at an echo has no leading wrap');
   assert.ok(batch.trailingOpenWrap, 'page ending mid-segment exposes its open wrap');
   assert.ok(batch.toolBlocks.has('tuOld'), 'batch tool blocks exposed for adoption');
 });
@@ -88,7 +89,7 @@ test('an echo without userIndex renders, but offers no rewind/fork buttons', asy
   const bubble = batch.holder.querySelector('.msg.user');
   assert.ok(bubble, 'bubble still renders');
   assert.equal(bubble.getAttribute('data-user-index'), null);
-  assert.equal(bubble.querySelector('.user-msg-actions'), null, 'no unanchored rewind buttons');
+  assertNull(bubble.querySelector('.user-msg-actions'), 'no unanchored rewind buttons');
 });
 
 test('onAssistantText is force-nulled — archive replay never triggers TTS', async () => {
@@ -255,7 +256,7 @@ test('no merge across a turn boundary — adjacent turns keep separate bubbles',
   // Live chunk starts at an echo → no leading wrap → no merge target.
   main.apply({ kind: 'user_echo', text: 'turn B', userIndex: 1, _seq: 10, parentToolUseId: null });
   main.apply({ kind: 'text_delta', msgId: 'mB', blockIdx: 0, text: 'reply B', _seq: 11, parentToolUseId: null });
-  assert.equal(main.leadingAssistantWrap, null);
+  assertNull(main.leadingAssistantWrap, 'a live chunk starting at an echo exposes no leading assistant wrap to merge into');
 
   // The page above ends with an open assistant segment (turn_end does not
   // close it) — still must NOT merge across the boundary.
@@ -284,7 +285,7 @@ test('history_gap renders a divider and blocks merging across the gap', async ()
   const divider = root.querySelector('.history-divider.history-gap');
   assert.ok(divider, 'gap divider rendered');
   assert.ok(divider.textContent.includes('earlier messages unavailable'));
-  assert.equal(main.leadingAssistantWrap, null, 'gap is a merge barrier');
+  assertNull(main.leadingAssistantWrap, 'gap is a merge barrier');
 
   // The chunk above (the same turn's surviving head, ending mid-turn) must
   // NOT glue onto content across genuinely missing events.

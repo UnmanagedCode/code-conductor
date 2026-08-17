@@ -2,6 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull, assertUndefined } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -480,7 +481,7 @@ test('Temp instances render inside the unified Sessions subnode below a dim sepa
   await new Promise(r => setTimeout(r, 0));
   // No separate temp subnode anymore — everything lives in the one
   // Sessions <details>.
-  assert.equal(root.querySelector('details.temp-sessions-group'), null,
+  assertNull(root.querySelector('details.temp-sessions-group'),
     'separate Temp Sessions subnode has been removed');
   const group = root.querySelector('details.sessions-group');
   assert.ok(group, 'unified Sessions subnode rendered');
@@ -593,7 +594,7 @@ test('Sessions subnode renders no separator when there are zero temp instances',
       status: 'idle', mode: 'plan', worktree: null, temp: false },
   ]);
   await new Promise(r => setTimeout(r, 0));
-  assert.equal(root.querySelector('.sessions-separator'), null,
+  assertNull(root.querySelector('.sessions-separator'),
     'no separator when there are no temp instances');
 });
 
@@ -633,7 +634,7 @@ test('Regular (non-temp) session rows do NOT show the promote button', async () 
   ]);
   await new Promise(r => setTimeout(r, 0));
   const promoteBtn = root.querySelector('.session-promote');
-  assert.equal(promoteBtn, null, 'no promote button on non-temp rows');
+  assertNull(promoteBtn, 'no promote button on non-temp rows');
 });
 
 // Regression: after a host crash + restart, sessions are re-discovered from
@@ -697,7 +698,7 @@ test('A just-promoted live session (inst.temp=false) overrides a stale on-disk t
   await new Promise(r => setTimeout(r, 0));
 
   const tempSep = [...root.querySelectorAll('.sessions-separator')].find(n => n.textContent === '— temp —');
-  assert.equal(tempSep, undefined, 'no — temp — separator: the live temp:false overrides the stale on-disk temp:true');
+  assertUndefined(tempSep, 'no — temp — separator: the live temp:false overrides the stale on-disk temp:true');
   const row = root.querySelector('.session-row');
   assert.ok(row && !row.classList.contains('temp'), 'the promoted row is not styled as temp');
 });

@@ -4,6 +4,7 @@
 // dropdown. Modules are cache-bust-imported fresh per test.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -977,8 +978,8 @@ test('new-project dialog groups core conventions + per-plugin conventions as pla
   const labels = [...dom.npContributions.querySelectorAll('.np-rules-label')].map(e => e.textContent);
   assert.ok(labels.some(t => /Project conventions/.test(t)), 'core conventions section rendered');
   assert.ok(labels.some(t => /playwright-harness/.test(t)), 'per-plugin heading rendered for provenance');
-  assert.equal(dom.npContributions.querySelector('.np-group-master'), null, 'no master toggle checkbox');
-  assert.equal(dom.npContributions.querySelector('.np-group-head'), null, 'no master toggle heading');
+  assertNull(dom.npContributions.querySelector('.np-group-master'), 'no master toggle checkbox');
+  assertNull(dom.npContributions.querySelector('.np-group-head'), 'no master toggle heading');
 
   // Core convention checkbox present.
   const core = dom.npContributions.querySelector('input[data-kind="convention"][value="design-guidelines"]');
@@ -988,10 +989,10 @@ test('new-project dialog groups core conventions + per-plugin conventions as pla
   const plainConv = dom.npContributions.querySelector('input[data-kind="convention"][value="playwright-harness/plain"]');
   assert.ok(pluginConv, 'plugin convention checkbox rendered');
   assert.ok(plainConv, 'plain plugin convention checkbox rendered');
-  assert.equal(dom.npContributions.querySelector('input[data-kind="scaffold"]'), null, 'no separate scaffold checkboxes');
+  assertNull(dom.npContributions.querySelector('input[data-kind="scaffold"]'), 'no separate scaffold checkboxes');
 
   // No "sets up" tag anywhere — the scaffold facet rides along invisibly.
-  assert.equal(dom.npContributions.querySelector('.np-rule-tag'), null, 'no "sets up" tag rendered');
+  assertNull(dom.npContributions.querySelector('.np-rule-tag'), 'no "sets up" tag rendered');
   assert.ok(![...dom.npContributions.querySelectorAll('.np-rule-name')].some(e => /sets up/.test(e.textContent)), 'no "sets up" text anywhere');
 
   // Each checkbox is independently selectable — no all-or-nothing coupling.

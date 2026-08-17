@@ -6,6 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -117,7 +118,7 @@ test('DOM: Edit tool call still renders as a diff (no tool_input wrapper for spe
   assert.ok(tool, 'Edit tool block must be present');
   // Specialty renderer wins — diff is rendered flush in the body.
   assert.ok(tool.querySelector('.diff'), 'Edit should render as a .diff');
-  assert.equal(tool.querySelector('.block.tool-input'), null,
+  assertNull(tool.querySelector('.block.tool-input'),
     'specialty diff renderer must NOT be wrapped in tool_input');
 });
 
@@ -755,9 +756,9 @@ test('DOM: ExitPlanMode auto-approve — when the event arrives with autoApprove
   const card = root.querySelector('.block.plan-request');
   assert.ok(card, 'plan card still renders so the user can see what was auto-approved');
   assert.ok(card.classList.contains('approved'), 'auto-approved card carries the .approved class');
-  assert.equal(card.querySelector('.pr-approve'), null, 'no Approve button');
-  assert.equal(card.querySelector('.pr-reject'), null, 'no Reject button');
-  assert.equal(card.querySelector('.pr-feedback'), null, 'no feedback textarea');
+  assertNull(card.querySelector('.pr-approve'), 'no Approve button');
+  assertNull(card.querySelector('.pr-reject'), 'no Reject button');
+  assertNull(card.querySelector('.pr-feedback'), 'no feedback textarea');
   assert.match(card.querySelector('.pr-status').textContent, /auto-approved/i);
   assert.match(card.querySelector('.pr-body').textContent, /auto plan/);
   assert.equal(decisions.length, 0,
@@ -1352,7 +1353,7 @@ test('DOM: redacted thinking renders as a non-expandable "thinking (redacted)" l
   assert.equal(thinkings.length, 1, 'exactly one thinking block in the DOM');
   const node = thinkings[0];
   assert.equal(node.tagName, 'DIV', 'redacted thinking must NOT be a <details> — no expansion affordance');
-  assert.equal(node.querySelector('summary'), null, 'redacted thinking must have no <summary>');
+  assertNull(node.querySelector('summary'), 'redacted thinking must have no <summary>');
   assert.equal(node.textContent.trim(), 'thinking (redacted)', `label must be "thinking (redacted)" (got: ${node.textContent})`);
   assert.ok(node.classList.contains('redacted'), 'redacted thinking carries .redacted class for styling hooks');
   assert.doesNotMatch(root.textContent, /\d+ chars/, 'no "(NN chars)" leak from finalize() onto the redacted block');
@@ -1384,7 +1385,7 @@ test('DOM: empty thinking_delta stream renders as "thinking (redacted)", not "th
   assert.equal(thinkings.length, 1, 'exactly one thinking block in the DOM');
   const node = thinkings[0];
   assert.equal(node.tagName, 'DIV', 'must NOT be a <details> — no expansion affordance');
-  assert.equal(node.querySelector('summary'), null, 'must have no <summary>');
+  assertNull(node.querySelector('summary'), 'must have no <summary>');
   assert.equal(node.textContent.trim(), 'thinking (redacted)', `label must be "thinking (redacted)" (got: ${node.textContent})`);
   assert.ok(node.classList.contains('redacted'), 'carries .redacted class');
   assert.doesNotMatch(root.textContent, /\d+ chars/, 'no "thinking (0 chars)" / "(NN chars)" leak');
@@ -1493,8 +1494,8 @@ test('DOM: assistant text re-renders as Markdown + autolinks on text_end', async
   // Mid-stream: text is plain (no markdown re-render yet).
   const textBlock = root.querySelector('.block.text');
   assert.ok(textBlock, 'a .block.text must exist while streaming');
-  assert.equal(textBlock.querySelector('a'), null, 'no anchor before text_end');
-  assert.equal(textBlock.querySelector('strong'), null, 'no <strong> before text_end');
+  assertNull(textBlock.querySelector('a'), 'no anchor before text_end');
+  assertNull(textBlock.querySelector('strong'), 'no <strong> before text_end');
   assert.match(textBlock.textContent, /See \*\*bold\*\* and https:\/\/example\.com here\./);
 
   // Close the block — finalize() should re-render as Markdown with the URL autolinked.
@@ -1539,7 +1540,7 @@ test('DOM: plain (non-transcribed) user message has no mic badge', async () => {
 
   const userMsg = root.querySelector('.msg.user');
   assert.ok(userMsg, 'user bubble rendered');
-  assert.equal(userMsg.querySelector('.transcribed-badge'), null, 'no badge on plain message');
+  assertNull(userMsg.querySelector('.transcribed-badge'), 'no badge on plain message');
   assert.equal(userMsg.querySelector('.block.text').textContent, 'hello');
 });
 

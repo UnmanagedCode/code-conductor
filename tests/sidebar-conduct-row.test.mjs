@@ -6,6 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -87,9 +88,9 @@ test('synthetic Conduct row hides destructive / spawn buttons', async () => {
 
   const conductLi = root.querySelector('.project-conduct');
   assert.ok(conductLi, 'conduct row container exists');
-  assert.equal(conductLi.querySelector('.delete-project'), null, 'no delete button');
-  assert.equal(conductLi.querySelector('.quick-spawn'), null, 'no quick-spawn button');
-  assert.equal(conductLi.querySelector('.add-instance'), null, 'no add-instance button');
+  assertNull(conductLi.querySelector('.delete-project'), 'no delete button');
+  assertNull(conductLi.querySelector('.quick-spawn'), 'no quick-spawn button');
+  assertNull(conductLi.querySelector('.add-instance'), 'no add-instance button');
 });
 
 test('Sessions subnode under the Conduct row exposes the live instance and clicking selects it', async () => {

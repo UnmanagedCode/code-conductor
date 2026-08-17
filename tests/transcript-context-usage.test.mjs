@@ -17,6 +17,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -198,7 +199,7 @@ test('the replayed message_start leaves a subscribed client conversation complet
   assert.equal(conv.messageWraps.size, before.wraps, 'no new assistant wrap opened');
   assert.equal(conv.reconcileCounts.size, before.reconcile, 'reconcile cursor untouched');
   assert.equal(conv.seenSeq.size, before.seenSeq, 'seq-less, so it consumes no dedup slot');
-  assert.equal(conv.emptyNode, before.empty, 'empty-state placeholder state unchanged');
+  assertNull(conv.emptyNode, 'empty-state placeholder state unchanged');
   assert.equal(conv.root.querySelectorAll('.msg.assistant').length, 1,
     'still exactly one assistant bubble — no empty/spurious block');
 });
@@ -212,5 +213,5 @@ test('the empty-state placeholder survives: the event is never the first thing a
   const conv = freshConversation();
   assert.ok(conv.emptyNode, 'fresh conversation shows the placeholder');
   conv.apply({ kind: 'user_echo', text: 'go', userIndex: 0, parentToolUseId: null });
-  assert.equal(conv.emptyNode, null, 'real replayed content clears it first');
+  assertNull(conv.emptyNode, 'real replayed content clears it first');
 });

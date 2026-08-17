@@ -11,6 +11,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -105,12 +106,12 @@ test('short total history terminates without infinite fetching', async () => {
   await flush();
 
   assert.equal(calls.length, 1, 'one page, then hasMore:false ends the loop');
-  // Compare a boolean, not the raw element: on failure, assert's diff-message
+  // assertNull, not assert.equal(el, null): on failure, assert's diff-message
   // formatting calls util.inspect on `actual`, and a live happy-dom Element
   // carries a circular ownerDocument -> Window reference (a huge object) that
   // makes that formatting pathologically slow — see B-4 below for the case
   // where this turns an assertion failure into an effective test hang.
-  assert.equal(ctx.conversationEl.querySelector('.history-sentinel') === null, true,
+  assertNull(ctx.conversationEl.querySelector('.history-sentinel'),
     'sentinel removed once history is exhausted');
 });
 
@@ -188,19 +189,20 @@ test('a cursor that fails to progress ends history even though the server claims
   await flush(); await flush(); await flush();
 
   assert.equal(calls.length, 1, 'a stalled cursor makes no second attempt');
-  // B-4: compare a boolean, not the raw element. With the strict-decrease
+  // B-4: assertNull, never assert.equal against `null`. With the strict-decrease
   // check (page.nextBefore < prevBefore) broken, hasMore stays true after
   // this call and the sentinel is never removed — asserting THAT element
-  // against `null` directly makes assert's on-failure diff formatting call
+  // against `null` via assert.equal makes its on-failure diff formatting call
   // util.inspect on a live happy-dom Element, whose ownerDocument/defaultView
   // reference the whole (huge) Window object; inspecting that is so slow it
   // reads as a hang (observed: the whole file aborts ~68s later) instead of a
   // clean assertion failure, and T13 below never even runs. Confirmed this
   // is the actual mechanism (not an unbounded await anywhere in this test):
-  // reverting the strict-decrease check with THIS assertion form still made
-  // every flush() resolve and every debug log print through the assignment
+  // reverting the strict-decrease check with the old assert.equal form still
+  // made every flush() resolve and every debug log print through the assignment
   // right before this comparison, then hung inside the comparison itself.
-  assert.equal(ctx.conversationEl.querySelector('.history-sentinel') === null, true,
+  // assertNull hands nothing cyclic to assert, so the failure is instant.
+  assertNull(ctx.conversationEl.querySelector('.history-sentinel'),
     'sentinel is removed once the cursor stalls (call count alone cannot distinguish this from the strict-decrease check being absent)');
 });
 
@@ -223,8 +225,8 @@ test('MAX_EMPTY_PAGES caps consecutive empty pages so a pathological server cann
   for (let i = 0; i < 8; i++) await flush();
 
   assert.equal(calls.length, 3, 'stops after MAX_EMPTY_PAGES consecutive empty pages');
-  // Same node-vs-null hang risk as T12 above (B-4) — compare a boolean.
-  assert.equal(ctx.conversationEl.querySelector('.history-sentinel') === null, true, 'sentinel removed once capped');
+  // Same node-vs-null hang risk as T12 above (B-4) — use assertNull.
+  assertNull(ctx.conversationEl.querySelector('.history-sentinel'), 'sentinel removed once capped');
 });
 
 test('a served page in the middle of a run resets the empty-page streak', async () => {

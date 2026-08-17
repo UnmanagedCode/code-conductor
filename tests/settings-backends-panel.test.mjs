@@ -15,6 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -156,10 +157,10 @@ test('renders one card per registry row; managed rows are read-only + non-remova
   assert.equal(claudeRow.querySelector('.sb-row-template').textContent, 'claude');
   assert.equal(ollamaRow.querySelector('.sb-row-template').textContent, MANAGED[1].template);
   // Managed env is code-authoritative (empty) — no env line rendered for ollama.
-  assert.equal(ollamaRow.querySelector('.sb-row-env'), null);
+  assertNull(ollamaRow.querySelector('.sb-row-env'), 'managed ollama row renders no env line');
 
   // User row: no badge, both Edit and Remove.
-  assert.equal(userRow.querySelector('.sb-managed-badge'), null);
+  assertNull(userRow.querySelector('.sb-managed-badge'), 'a user backend row carries no managed badge');
   assert.deepEqual([...userRow.querySelectorAll('.sb-row-actions button')].map(b => b.textContent), ['Edit', 'Remove']);
 
   assert.match(window.document.getElementById('sb-status').textContent, /3 backends — 2 built in/);

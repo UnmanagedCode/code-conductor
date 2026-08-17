@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertNull } from './dom-assert.mjs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
@@ -93,7 +94,7 @@ test('markdown: fenced code block gets a sibling Copy button inside a wrapper', 
   assert.equal(btn.textContent, 'Copy');
   // Button must NOT live inside <pre> — otherwise pre.textContent would
   // include "Copy" and break copy semantics.
-  assert.equal(pre.querySelector('.md-code-copy'), null);
+  assertNull(pre.querySelector('.md-code-copy'), 'copy button must not be inside <pre>');
   assert.equal(pre.textContent, 'hello world');
 });
 
@@ -126,7 +127,7 @@ test('markdown: unsafe link schemes render as literal text', async () => {
   setupDOM();
   const md = await loadMarkdown();
   const root = render(md, 'click [here](javascript:alert(1)) please');
-  assert.equal(root.querySelector('a'), null, 'no anchor for javascript: url');
+  assertNull(root.querySelector('a'), 'no anchor for javascript: url');
   assert.match(root.textContent, /\[here\]\(javascript:alert\(1\)\)/);
 });
 
@@ -136,7 +137,7 @@ test('markdown: never injects raw HTML', async () => {
   const root = render(md, '<script>alert(1)</script>\n\n**bold**');
   // The literal angle brackets should be present as text, not as a real
   // <script> tag.
-  assert.equal(root.querySelector('script'), null);
+  assertNull(root.querySelector('script'), 'sanitized markdown emits no <script>');
   assert.match(root.textContent, /<script>alert\(1\)<\/script>/);
   // Bold should still render after.
   assert.ok(root.querySelector('strong'));
@@ -228,7 +229,7 @@ test('markdown: non-http schemes are not autolinked', async () => {
   const md = await loadMarkdown();
   // The bare-URL alternative only matches http(s); other schemes stay literal.
   const root = render(md, 'try javascript:alert(1) or ftp://files.example.com');
-  assert.equal(root.querySelector('a'), null);
+  assertNull(root.querySelector('a'), 'a non-http scheme is left literal — no autolinked <a>');
   assert.match(root.textContent, /javascript:alert\(1\)/);
   assert.match(root.textContent, /ftp:\/\/files\.example\.com/);
 });
@@ -338,7 +339,7 @@ test('markdown: pipe row without a separator row stays a paragraph', async () =>
   setupDOM();
   const md = await loadMarkdown();
   const root = render(md, 'this | has | pipes\nbut no separator\n');
-  assert.equal(root.querySelector('table'), null);
+  assertNull(root.querySelector('table'), 'a pipe row with no separator row must not become a <table>');
   assert.ok(root.querySelector('p'));
   assert.match(root.textContent, /this \| has \| pipes/);
 });
@@ -426,7 +427,7 @@ test('markdown: image with javascript: src renders as literal text', async () =>
   setupDOM();
   const md = await loadMarkdown();
   const root = render(md, 'see ![x](javascript:alert(1)) here');
-  assert.equal(root.querySelector('img'), null);
+  assertNull(root.querySelector('img'), 'a javascript: image src must not render an <img>');
   assert.match(root.textContent, /!\[x\]\(javascript:alert\(1\)\)/);
 });
 
@@ -434,8 +435,8 @@ test('markdown: image with data: src renders as literal text', async () => {
   setupDOM();
   const md = await loadMarkdown();
   const root = render(md, '![x](data:image/svg+xml,<script>alert(1)</script>)');
-  assert.equal(root.querySelector('img'), null);
-  assert.equal(root.querySelector('script'), null);
+  assertNull(root.querySelector('img'), 'a data: image src must not render an <img>');
+  assertNull(root.querySelector('script'), 'the data: payload must not become a real <script>');
   assert.match(root.textContent, /data:image\/svg\+xml/);
 });
 
