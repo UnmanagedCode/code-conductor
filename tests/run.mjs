@@ -6,7 +6,7 @@ import { spec } from 'node:test/reporters';
 import { promises as fs, readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSafeRoot, assertStoreIsolated, removeSafeRoot } from './safeStoreRoot.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -104,7 +104,13 @@ const concurrency = resolveConcurrency();
 // 60s per-file ceiling: proportionate headroom for heavy subprocess files that
 // chain several 10s `waitFor`s (see helpers.mjs) when co-scheduled under
 // concurrency on a slow Termux box — only fires on a genuine hang.
-const stream = run({ files, concurrency, timeout: 60_000 });
+// Preload the DOM-vs-null tripwire into every per-file child: a node compared
+// against null/undefined by an equal-family assertion throws a short
+// AssertionError instead of stalling the file for 33-120s in assert's
+// serializer (tests/dom-assert-tripwire.mjs). `run()` spawns process.execPath
+// directly, so this does not go through the node wrapper noted at line 1.
+const tripwireUrl = pathToFileURL(path.join(__dirname, 'dom-assert-tripwire.mjs')).href;
+const stream = run({ files, concurrency, timeout: 60_000, execArgv: ['--import', tripwireUrl] });
 let failed = 0;
 stream.on('test:fail', (data) => {
   // Skip the implicit top-level pass/fail summary entries; only count real failures.

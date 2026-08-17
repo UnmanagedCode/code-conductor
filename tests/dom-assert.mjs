@@ -6,19 +6,12 @@
 // OS kills the process. See docs/architecture.md for the measurements.
 // These helpers compare without handing the node to assert, and summarize it
 // into a short string for the message instead.
+// The node predicate and the `<tag#id.class>` formatter are shared with
+// `tests/dom-assert-tripwire.mjs` via `tests/domNode.mjs` — see that file for
+// why they cannot live here (this module imports node:assert/strict, and the
+// tripwire preload must not instantiate assert's ESM namespace).
 import { AssertionError } from 'node:assert/strict';
-
-function describeFound(value) {
-  if (value && typeof value === 'object' && typeof value.nodeType === 'number') {
-    const tag = String(value.tagName || value.nodeName).toLowerCase();
-    const id = value.id ? `#${value.id}` : '';
-    const cls = value.className
-      ? `.${String(value.className).trim().split(/\s+/).join('.')}`
-      : '';
-    return `<${tag}${id}${cls}>`;
-  }
-  return typeof value === 'object' ? Object.prototype.toString.call(value) : String(value);
-}
+import { describeFound } from './domNode.mjs';
 
 export function assertNull(value, label) {
   if (value === null) return;
