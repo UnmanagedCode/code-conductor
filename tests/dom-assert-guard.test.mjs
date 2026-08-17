@@ -113,6 +113,19 @@ for (const c of CATCH_CASES) {
 }
 
 // ---------------------------------------------------------------------------
+// T2 — pins: the destructure arm indexes NODE_PROPS names ONLY, never
+// DOC_PROPS names. `const { body } = await rpc(…)` is widespread in tests/, so
+// widening the arm to DOC_PROPS would make T1 report a phantom DOM violation
+// for an HTTP response body — a false positive of exactly the kind this card
+// exists to prevent, one layer down. No such assertion exists in the tree
+// today, so T1 cannot catch the widening; this case is its only pin.
+// ---------------------------------------------------------------------------
+test('T2 pins: a destructured DOC_PROPS name is not indexed as DOM', () => {
+  const src = ['const { body } = await rpc();', 'assert.equal(body, null);'].join('\n');
+  assert.deepStrictEqual(scanSource(src, 'fixture.mjs'), []);
+});
+
+// ---------------------------------------------------------------------------
 // T3 — pins: comments and strings are immune (a line regex over-matches prose).
 // ---------------------------------------------------------------------------
 const IMMUNE_CASES = [

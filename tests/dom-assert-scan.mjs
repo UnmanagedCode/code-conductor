@@ -394,11 +394,24 @@ function initializerAt(src, from) {
 
 // Destructuring binds a name with no `=` initializer to inspect, so the arms
 // above miss `const { firstElementChild: el } = root` and its shorthand. The
-// property name is the only signal available, so the arm is keyed on
-// NODE_PROPS and DELIBERATELY NOT on DOC_PROPS: `const { body } = await rpc(…)`
-// is scattered across `tests/` and must stay unindexed. Handles the shorthand
-// and the renamed form; an entry with a default value does not match, which is
-// the conservative direction.
+// property name is the only signal available. Handles the shorthand and the
+// renamed form; an entry with a default value does not match, which is the
+// conservative direction.
+//
+// Keyed on NODE_PROPS and DELIBERATELY NOT on DOC_PROPS: `const { body } =
+// await rpc(…)` is scattered across `tests/`, and indexing it would make T1
+// report a phantom DOM violation for an HTTP response body. That narrowing is
+// pinned by the destructured-`body` immunity case in
+// `tests/dom-assert-guard.test.mjs`; widening it there fails that case.
+//
+// KNOWN GAP, in the other direction: the arm keys on the property NAME ALONE,
+// regardless of what it is destructured from — `const { firstChild } = astNode`,
+// `const { nextSibling } = linkedListNode` and `const { parentNode } = treeNode`
+// all index. Nothing in this tree destructures a NODE_PROPS name off a non-DOM
+// source, so this is a named gap and not a defect. Unlike the waived false
+// NEGATIVES above, the tripwire does NOT bound this one — a false POSITIVE
+// surfaces as a failing T1, not as a stall. If it ever fires, narrow this arm;
+// never annotate the call site.
 const DESTRUCTURE_RE = /(?<![\w$])(?:const|let|var)\s*\{([^{}]*)\}\s*=/g;
 const DESTRUCTURE_ENTRY_RE = /^\s*([A-Za-z_$][\w$]*)\s*(?::\s*([A-Za-z_$][\w$]*)\s*)?$/;
 
