@@ -135,6 +135,52 @@ const CASES = [
       assert.equal(m.blocks, undefined, 'neither hoisted block is duplicated in blocks[]');
     },
   },
+  // --- set-once: every *Seq is stamped at its segment's FIRST occurrence and
+  // never re-stamped by a later same-kind segment in the same pass. Nothing
+  // else in the suite puts two same-kind segments in one message, so without
+  // these three cases the `=== null` guards in buildMessageFromRing /
+  // hoistPlanAndQuestions are free to be dropped.
+  {
+    // The one that matters in practice: two text blocks in one assistant
+    // message is an ordinary shape, and a re-stamp would sort the prose after
+    // the plan in the rendered body.
+    name: 'set-once textSeq — a second text segment does not re-stamp',
+    segments: [{ t: 'text', text: 'first half ' }, { t: 'text', text: 'second half' }, PLAN],
+    expect: m => {
+      assert.equal(m.text, 'first half second half', 'both text segments are still concatenated');
+      assert.equal(m.textSeq, 0, 'textSeq holds the FIRST text segment\'s position');
+      assert.equal(m.planSeq, 1, 'so the plan is still position 1, not 2');
+      assert.ok(m.textSeq < m.planSeq, 'prose still sorts before the plan');
+    },
+  },
+  {
+    name: 'set-once planSeq — a second ExitPlanMode does not re-stamp',
+    segments: [
+      { t: 'tool', name: 'ExitPlanMode', input: { plan: 'first plan' }, id: 'tu-plan-1' },
+      { t: 'text', text: 'between the two plans' },
+      { t: 'tool', name: 'ExitPlanMode', input: { plan: 'second plan' }, id: 'tu-plan-2' },
+    ],
+    expect: m => {
+      assert.equal(m.planSeq, 0, 'planSeq holds the FIRST ExitPlanMode\'s position');
+      assert.equal(m.textSeq, 1, 'so the prose is still position 1, not 2');
+      assert.equal(m.plan, 'second plan', 'the plan BODY is still last-write-wins — only the seq is set-once');
+      assert.equal(m.blocks, undefined, 'both hoisted plans stay out of blocks[]');
+    },
+  },
+  {
+    name: 'set-once questionsSeq — a second AskUserQuestion does not re-stamp',
+    segments: [
+      { t: 'tool', name: 'AskUserQuestion', input: { questions: [{ question: 'first?' }] }, id: 'tu-ask-1' },
+      { t: 'text', text: 'between the two asks' },
+      { t: 'tool', name: 'AskUserQuestion', input: { questions: [{ question: 'second?' }] }, id: 'tu-ask-2' },
+    ],
+    expect: m => {
+      assert.equal(m.questionsSeq, 0, 'questionsSeq holds the FIRST AskUserQuestion\'s position');
+      assert.equal(m.textSeq, 1, 'so the prose is still position 1, not 2');
+      assert.deepEqual(m.questions, [{ question: 'second?' }], 'the questions PAYLOAD is still last-write-wins');
+      assert.equal(m.blocks, undefined, 'both hoisted asks stay out of blocks[]');
+    },
+  },
 ];
 
 for (const c of CASES) {
