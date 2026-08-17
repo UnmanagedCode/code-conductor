@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { sessionFilePath } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import { extractAttachedMarkers, type WireContentBlock } from './parser.ts';
+import { httpError } from './httpError.ts';
 
 // Parse one trimmed jsonl line, swallowing parse errors (mirrors the
 // tolerant behavior of loadPersistedTranscript).
@@ -243,8 +244,3 @@ function errCode(e: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-// Throw an Error carrying an HTTP statusCode for the REST layer, using the
-// same Object.assign pattern the routes consume (`err.statusCode`).
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

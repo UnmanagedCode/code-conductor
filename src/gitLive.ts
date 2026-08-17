@@ -1,4 +1,5 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { runGroupedCommand } from './groupedCommand.ts';
 
 // Shared git-subprocess helpers used wherever the app pulls/fetches a git
 // checkout it manages (the Plugin Library — src/plugins/library.ts — and the
@@ -42,33 +43,9 @@ export function runGitLive(
   cwd: string,
   { timeoutMs = GIT_LIVE_TIMEOUT_MS, onChunk }: { timeoutMs?: number; onChunk?: (s: string) => void } = {},
 ): Promise<GitLiveResult> {
-  return new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
-    const proc = spawn('git', args, { cwd, detached: true });
-    const onOut = (d: Buffer) => { const s = d.toString(); stdout += s; onChunk?.(s); };
-    const onErr = (d: Buffer) => { const s = d.toString(); stderr += s; onChunk?.(s); };
-    proc.stdout?.on('data', onOut);
-    proc.stderr?.on('data', onErr);
-
-    let timedOut = false;
-    const killGroup = () => {
-      try { process.kill(-proc.pid!, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
-      setTimeout(() => {
-        try { process.kill(-proc.pid!, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-      }, 100).unref();
-    };
-    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: timedOut ? 124 : (code ?? 1), stdout, stderr });
-    });
-    proc.on('error', (e) => {
-      clearTimeout(timer);
-      resolve({ code: 1, stdout, stderr: stderr || e.message });
-    });
-  });
+  // No `cap`: git porcelain output is small and callers parse it whole.
+  return runGroupedCommand({ argv: ['git', ...args] }, { cwd, timeoutMs, onChunk })
+    .then(({ code, stdout, stderr }) => ({ code, stdout, stderr }));
 }
 
 // Best-effort, timeout-bounded `git fetch` so a subsequent cached-ref

@@ -1,6 +1,7 @@
 import { spawn, execFile } from 'node:child_process';
 import http from 'node:http';
-import { allocatePort, waitForPort, pidAlive } from './ports.ts';
+import { allocatePort, waitForPort } from './ports.ts';
+import { killProcessGroup, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import type { PluginBackend } from './manifest.ts';
 
 // Plugin child-process supervisor — a port of code-hub's src/runner.js.
@@ -12,7 +13,7 @@ import type { PluginBackend } from './manifest.ts';
 
 const GRACE_MS = 3000;        // SIGTERM → SIGKILL grace period
 const READY_TIMEOUT_MS = 30000;
-const OUTPUT_CAP = 16 * 1024; // per-plugin crash-tail
+const OUTPUT_CAP = GROUP_OUTPUT_CAP; // per-plugin crash-tail
 const EADDRINUSE_RETRIES = 3;
 const SPAWN_SETTLE_MS = 400;  // window to catch a fast EADDRINUSE crash before committing to this attempt's port
 
@@ -183,16 +184,13 @@ export function createSupervisor({
     });
   }
 
-  // Kill the process group: SIGTERM, then SIGKILL after a grace period if
-  // the leader is still alive. Only needs the pgid, so it also works for
-  // adopted children with no `children` entry.
+  // Kill the process group: SIGTERM, then SIGKILL after a grace period. Only
+  // needs the pgid, so it also works for adopted children with no `children`
+  // entry. The grace is far longer than the one-shot default — a plugin backend
+  // is an HTTP server that deserves time to drain, not a script to cut off.
   function stop({ id, pgid }: { id: string; pgid: number }): void {
     children.delete(id);
-    try { process.kill(-pgid, 'SIGTERM'); } catch { /* already gone */ }
-    const t = setTimeout(() => {
-      if (pidAlive(pgid)) { try { process.kill(-pgid, 'SIGKILL'); } catch { /* gone */ } }
-    }, GRACE_MS);
-    t.unref();
+    killProcessGroup(pgid, { graceMs: GRACE_MS });
   }
 
   return { start, stop, runtime };

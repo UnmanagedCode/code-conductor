@@ -17,28 +17,17 @@
 // mark with no model); resume falls back to the jsonl for those. Sessions on the
 // identity `claude` backend store nothing (absence = 'claude'). Single global
 // file `<store>/session-backends.json`, map-shaped
-// (`{sessions:{sid:{backend,model,contextWindowTokens?}}}`); atomic writes +
-// cross-process lock, mirroring `conductedSessions.ts`.
+// (`{sessions:{sid:{backend,model,contextWindowTokens?}}}`). Read/write
+// machinery comes from `jsonStore.ts`.
 
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.ts';
-import { withLock } from './storeLock.ts';
+import { createJsonStore } from './jsonStore.ts';
 
 export interface SessionBackendRecord {
   backend: string;
   model: string | null;
   contextWindowTokens: number | null;
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple two stores for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
 }
 
 function backendsFile(): string {
@@ -69,17 +58,25 @@ function parseMap(obj: unknown): Map<string, SessionBackendRecord> {
   return out;
 }
 
+const store = createJsonStore<Map<string, SessionBackendRecord>>({
+  file: backendsFile,
+  noun: 'sessionBackends',
+  empty: () => new Map(),
+  parse: parseMap,
+  toDoc: (map) => {
+    const sessions: Record<string, SessionBackendRecord> = {};
+    for (const [sid, rec] of [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))) sessions[sid] = rec;
+    return { sessions };
+  },
+  isEmpty: (map) => map.size === 0,
+});
+
 export async function loadAll(): Promise<Map<string, SessionBackendRecord>> {
-  try {
-    const raw = await fs.readFile(backendsFile(), 'utf8');
-    return parseMap(JSON.parse(raw));
-  } catch (e) {
-    if (errCode(e) === 'ENOENT') return new Map();
-    console.warn(`sessionBackends: failed to read ${backendsFile()}: ${e instanceof Error ? e.message : String(e)}`);
-    return new Map();
-  }
+  return store.load();
 }
 
+// Test-only export: no production caller. Kept (rather than deleted with its
+// tests) because it is the natural presence probe for this store's shape.
 export async function hasSessionBackend(sessionId: string | undefined): Promise<boolean> {
   if (typeof sessionId !== 'string' || !sessionId) return false;
   const map = await loadAll();
@@ -96,40 +93,6 @@ export async function getSessionBackend(sessionId: string | undefined): Promise<
   return map.get(sessionId) ?? null;
 }
 
-// Strict re-read inside a mutation (under the lock): throws on I/O / corrupt
-// JSON rather than returning empty, so a failed read never overwrites the store.
-async function loadStrict(): Promise<Map<string, SessionBackendRecord>> {
-  try {
-    const raw = await fs.readFile(backendsFile(), 'utf8');
-    return parseMap(JSON.parse(raw));
-  } catch (e) {
-    if (errCode(e) === 'ENOENT') return new Map();
-    throw e;
-  }
-}
-
-let writeChain: Promise<unknown> = Promise.resolve();
-function serialize<T>(fn: () => Promise<T>): Promise<T> {
-  const next = writeChain.then(fn, fn);
-  writeChain = next.catch(() => {});
-  return next;
-}
-
-async function writeMap(map: Map<string, SessionBackendRecord>): Promise<void> {
-  const file = backendsFile();
-  if (map.size === 0) {
-    try { await fs.unlink(file); } catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
-    return;
-  }
-  await fs.mkdir(orchStoreRoot(), { recursive: true });
-  const sessions: Record<string, SessionBackendRecord> = {};
-  for (const [sid, rec] of [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))) sessions[sid] = rec;
-  const obj = { sessions };
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, JSON.stringify(obj, null, 2) + '\n');
-  await fs.rename(tmp, file);
-}
-
 // Upsert the session's backend id + exact launch model + last known capacity.
 // Called on every spawn/resume, so a legacy null-model entry self-heals the
 // first time the session relaunches with a real model. Idempotent: skips the
@@ -140,37 +103,31 @@ export function markSessionBackend(
   model: string | null = null,
   contextWindowTokens: number | null = null,
 ): Promise<boolean> {
-  return serialize(async () => {
-    if (typeof sessionId !== 'string' || !sessionId) return false;
-    if (typeof backend !== 'string' || !backend) return false;
-    const value: SessionBackendRecord = {
-      backend,
-      model: typeof model === 'string' && model ? model : null,
-      contextWindowTokens: typeof contextWindowTokens === 'number' && Number.isFinite(contextWindowTokens)
-        ? contextWindowTokens
-        : null,
-    };
-    return withLock(backendsFile(), async () => {
-      const map = await loadStrict();
-      const cur = map.get(sessionId);
-      if (cur && cur.backend === value.backend && cur.model === value.model
-          && cur.contextWindowTokens === value.contextWindowTokens) return true;
-      map.set(sessionId, value);
-      await writeMap(map);
-      return true;
-    });
+  if (typeof sessionId !== 'string' || !sessionId) return Promise.resolve(false);
+  if (typeof backend !== 'string' || !backend) return Promise.resolve(false);
+  const value: SessionBackendRecord = {
+    backend,
+    model: typeof model === 'string' && model ? model : null,
+    contextWindowTokens: typeof contextWindowTokens === 'number' && Number.isFinite(contextWindowTokens)
+      ? contextWindowTokens
+      : null,
+  };
+  return store.mutate(async (map, write) => {
+    const cur = map.get(sessionId);
+    if (cur && cur.backend === value.backend && cur.model === value.model
+        && cur.contextWindowTokens === value.contextWindowTokens) return true;
+    map.set(sessionId, value);
+    await write(map);
+    return true;
   });
 }
 
 export function unmarkSessionBackend(sessionId: string | undefined): Promise<boolean> {
-  return serialize(async () => {
-    if (typeof sessionId !== 'string' || !sessionId) return false;
-    return withLock(backendsFile(), async () => {
-      const map = await loadStrict();
-      if (!map.has(sessionId)) return false;
-      map.delete(sessionId);
-      await writeMap(map);
-      return true;
-    });
+  if (typeof sessionId !== 'string' || !sessionId) return Promise.resolve(false);
+  return store.mutate(async (map, write) => {
+    if (!map.has(sessionId)) return false;
+    map.delete(sessionId);
+    await write(map);
+    return true;
   });
 }

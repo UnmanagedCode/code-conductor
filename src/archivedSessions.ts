@@ -25,7 +25,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from './projects.ts';
-import { withLock } from './storeLock.ts';
+import { createJsonStore, errCode, errMsg } from './jsonStore.ts';
 
 function archivedFile(): string {
   return path.join(orchStoreRoot(), 'archived-sessions.json');
@@ -68,6 +68,10 @@ async function loadBackupSet(): Promise<Set<string>> {
 }
 
 export async function loadAllArchived(): Promise<Set<string>> {
+  return store.load();
+}
+
+async function loadArchivedLenient(): Promise<Set<string>> {
   let raw: string;
   try {
     raw = await fs.readFile(archivedFile(), 'utf8');
@@ -137,44 +141,6 @@ async function loadArchivedStrict(): Promise<Set<string>> {
   }
 }
 
-// Serialise concurrent writers behind a per-process promise chain. We
-// load → mutate → write the whole set, so without this two concurrent
-// writers could race on the read-modify-write and lose an entry.
-let writeChain: Promise<unknown> = Promise.resolve();
-function serialize<T>(fn: () => Promise<T>): Promise<T> {
-  const next = writeChain.then(fn, fn);
-  writeChain = next.catch(() => {});
-  return next;
-}
-
-async function writeSet(set: Set<string>): Promise<void> {
-  const file = archivedFile();
-  await fs.mkdir(orchStoreRoot(), { recursive: true });
-  const obj = { sessions: [...set].sort((a, b) => a.localeCompare(b)) };
-  const json = JSON.stringify(obj, null, 2) + '\n';
-  // Always write an explicit document (even `{"sessions":[]}`) — never unlink.
-  // An absent primary then unambiguously means external loss, and loads recover
-  // it from the backup.
-  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, json);
-  await fs.rename(tmp, file);
-  // Refresh the rolling backup only from a non-empty write that is a SUPERSET of
-  // the current backup — never a shrink. This blocks two failure modes: an
-  // intentional drain-to-empty (size 0) keeps the last non-empty snapshot, and a
-  // write from a wrongly-empty/tiny base (a leaked write, an OOM read blip that
-  // surfaced an empty primary) can't canonize a small set over the last-good
-  // backup. Tradeoff (conscious): a legitimate un-archive is not a superset, so
-  // `.bak` stops refreshing and may lag behind un-archives — the safe direction,
-  // since a recovery from a stale `.bak` only ever re-archives a few since-
-  // unarchived ids, never loses data. Runs under the same lock as the primary
-  // write (callers wrap in withLock), so the `.bak` read below can't race.
-  if (set.size > 0 && await backupIsSubsetOf(set)) {
-    const btmp = `${file}.bak.tmp-${process.pid}-${Date.now()}`;
-    await fs.writeFile(btmp, json);
-    await fs.rename(btmp, backupFile());
-  }
-}
-
 // True if refreshing `.bak` to `set` would not drop any entry it currently
 // holds (i.e. the on-disk `.bak` is a subset of `set`). Read-error handling
 // mirrors the recovery helpers: absent `.bak` → empty (any non-empty set is a
@@ -197,42 +163,61 @@ async function backupIsSubsetOf(set: Set<string>): Promise<boolean> {
   return true;
 }
 
+// This store is the one that needs all three of the factory's escape hatches,
+// and each is load-bearing:
+//   loadLenient/loadStrict — the `.bak` recovery + corrupt-primary quarantine
+//     above, which no other store has.
+//   unlinkWhenEmpty:false  — a drain-to-empty writes an explicit
+//     `{"sessions":[]}`; an ABSENT primary must therefore mean external loss,
+//     which is what makes the `.bak` recovery on read unambiguous.
+//   afterWrite             — the rolling backup refresh, which must run inside
+//     the same lock as the primary write so its read can't race a writer.
+const store = createJsonStore<Set<string>>({
+  file: archivedFile,
+  noun: 'archivedSessions',
+  empty: () => new Set(),
+  parse: parseSet,
+  toDoc: (set) => ({ sessions: [...set].sort((a, b) => a.localeCompare(b)) }),
+  isEmpty: (set) => set.size === 0,
+  unlinkWhenEmpty: false,
+  loadLenient: loadArchivedLenient,
+  loadStrict: loadArchivedStrict,
+  afterWrite: refreshBackup,
+});
+
+// Refresh the rolling backup only from a non-empty write that is a SUPERSET of
+// the current backup — never a shrink. This blocks two failure modes: an
+// intentional drain-to-empty (size 0) keeps the last non-empty snapshot, and a
+// write from a wrongly-empty/tiny base (a leaked write, an OOM read blip that
+// surfaced an empty primary) can't canonize a small set over the last-good
+// backup. Tradeoff (conscious): a legitimate un-archive is not a superset, so
+// `.bak` stops refreshing and may lag behind un-archives — the safe direction,
+// since a recovery from a stale `.bak` only ever re-archives a few since-
+// unarchived ids, never loses data. Runs under the primary write's lock (the
+// factory calls it inside `mutate`), so the `.bak` read below can't race.
+async function refreshBackup(set: Set<string>, json: string): Promise<void> {
+  if (set.size === 0 || !(await backupIsSubsetOf(set))) return;
+  const btmp = `${backupFile()}.tmp-${process.pid}-${Date.now()}`;
+  await fs.writeFile(btmp, json);
+  await fs.rename(btmp, backupFile());
+}
+
 export function markArchived(sessionId: string): Promise<boolean> {
-  return serialize(async () => {
-    if (typeof sessionId !== 'string' || !sessionId) return false;
-    return withLock(archivedFile(), async () => {
-      const set = await loadArchivedStrict(); // canonical re-read under lock
-      if (set.has(sessionId)) return true;
-      set.add(sessionId);
-      await writeSet(set);
-      return true;
-    });
+  if (typeof sessionId !== 'string' || !sessionId) return Promise.resolve(false);
+  return store.mutate(async (set, write) => {
+    if (set.has(sessionId)) return true;
+    set.add(sessionId);
+    await write(set);
+    return true;
   });
 }
 
 export function unmarkArchived(sessionId: string): Promise<boolean> {
-  return serialize(async () => {
-    if (typeof sessionId !== 'string' || !sessionId) return false;
-    return withLock(archivedFile(), async () => {
-      const set = await loadArchivedStrict(); // canonical re-read under lock
-      if (!set.has(sessionId)) return false;
-      set.delete(sessionId);
-      await writeSet(set);
-      return true;
-    });
+  if (typeof sessionId !== 'string' || !sessionId) return Promise.resolve(false);
+  return store.mutate(async (set, write) => {
+    if (!set.has(sessionId)) return false;
+    set.delete(sessionId);
+    await write(set);
+    return true;
   });
-}
-
-// The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
-// narrowing point for error-code checks (catch variables are `unknown` under
-// strict). Duplicated from storeLock.ts: it's four lines, and importing it
-// across modules would couple every store to storeLock for one helper.
-function errCode(e: unknown): string | undefined {
-  if (typeof e !== 'object' || e === null) return undefined;
-  const code = (e as { code?: unknown }).code;
-  return typeof code === 'string' ? code : undefined;
-}
-
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

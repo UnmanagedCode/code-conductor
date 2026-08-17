@@ -8,6 +8,7 @@ import {
   readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths,
   type PluginManifest, type PluginMcp, type ReadManifestResult,
 } from './manifest.ts';
+import { httpError } from '../httpError.ts';
 import { createSupervisor, httpOk, headSha, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { pidAlive, waitForPort } from './ports.ts';
@@ -56,13 +57,6 @@ async function autoAssignToCcDev(projectName: string): Promise<void> {
   } catch (e) {
     console.warn(`plugins: workspace auto-assign for '${projectName}' failed: ${errMsg(e)}`);
   }
-}
-
-// Exported for reuse by sibling collaborators (e.g. library.ts) that need
-// the same statusCode-bearing Error shape without duplicating it.
-export function httpError(status: number, message: string, extra: Record<string, unknown> = {}): Error & { statusCode: number } {
-  const e = Object.assign(new Error(message), { statusCode: status }, extra);
-  return e;
 }
 
 type ManifestSource = { type: 'main' } | { type: 'worktree'; name: string };

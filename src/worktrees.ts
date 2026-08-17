@@ -9,6 +9,8 @@ import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { httpError } from './httpError.ts';
+import { runGroupedCommand } from './groupedCommand.ts';
 import {
   projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects,
   type ProjectInfo,
@@ -246,85 +248,37 @@ async function runPostWorktreeHook(meta: WorktreeMeta): Promise<PostWorktreeHook
     CC_PARENT_PATH: meta.parentPath,
   };
 
-  return new Promise((resolve) => {
-    const start = Date.now();
-    let timedOut = false;
-    const chunks: Buffer[] = [];
-
-    // detached=true puts bash + all its children in their own process group so
-    // we can kill the whole group (including long-running child processes like
-    // `npm ci`) with a single process.kill(-pid, signal) on timeout.
-    const proc = spawn('bash', [scriptPath], {
-      cwd: meta.worktreePath,
-      env,
-      detached: true,
-    });
-
-    const onData = (chunk: Buffer) => chunks.push(chunk);
-    proc.stdout?.on('data', onData);
-    proc.stderr?.on('data', onData);
-
-    const killGroup = (): void => {
-      if (proc.pid != null) {
-        try { process.kill(-proc.pid, 'SIGTERM'); } catch { proc.kill('SIGTERM'); }
-      } else {
-        try { proc.kill('SIGTERM'); } catch { /* ignore */ }
-      }
-      // SIGKILL backstop: sends SIGKILL if the process group doesn't die
-      // from SIGTERM within the SIGKILL-backoff delay set in the setTimeout below (e.g. `sleep` ignoring SIGTERM on some
-      // platforms). Unref'd so it can't keep the process alive.
-      setTimeout(() => {
-        if (proc.pid != null) {
-          try { process.kill(-proc.pid, 'SIGKILL'); } catch { proc.kill('SIGKILL'); }
-        } else {
-          try { proc.kill('SIGKILL'); } catch { /* ignore */ }
-        }
-      }, 100).unref();
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killGroup();
-    }, timeoutMs);
-
-    proc.on('close', (code: number | null) => {
-      clearTimeout(timer);
-      const durationMs = Date.now() - start;
-      const raw = Buffer.concat(chunks).toString('utf8');
-      const truncated = raw.length > HOOK_OUTPUT_CAP;
-      let output: string;
-      if (truncated) {
-        const tail = raw.slice(raw.length - HOOK_OUTPUT_CAP);
-        // Start at the next newline so output begins on a clean line.
-        const nl = tail.indexOf('\n');
-        output = '… [truncated]\n' + (nl >= 0 ? tail.slice(nl + 1) : tail);
-      } else {
-        output = raw;
-      }
-      const result: PostWorktreeHookResult = {
-        ran: true,
-        source,
-        exitCode: timedOut ? null : (code ?? null),
-        durationMs,
-        output: output.trimEnd(),
-      };
-      if (truncated) result.truncated = true;
-      if (timedOut) result.timedOut = true;
-      resolve(result);
-    });
-
-    proc.on('error', (err: Error) => {
-      clearTimeout(timer);
-      resolve({
-        ran: true,
-        source,
-        exitCode: null,
-        durationMs: Date.now() - start,
-        output: err.message,
-        error: true,
-      });
-    });
+  // detached=true (inside runGroupedCommand) puts bash + all its children in
+  // their own process group, so a timeout kills the whole tree — a hook running
+  // `npm ci` would otherwise leave grandchildren orphaned. This hook keeps its
+  // OWN result shaping rather than the shared one: it reports `timedOut` as a
+  // flag with a null exitCode instead of the runner's 124 convention, and it
+  // prefixes a truncation marker at a clean line boundary.
+  const r = await runGroupedCommand({ argv: ['bash', scriptPath] }, {
+    cwd: meta.worktreePath, env, timeoutMs, cap: HOOK_OUTPUT_CAP,
   });
+
+  if (r.spawnError) {
+    return { ran: true, source, exitCode: null, durationMs: r.durationMs, output: r.spawnError, error: true };
+  }
+
+  // Start the retained tail at the next newline so output begins on a clean line.
+  let output = r.output;
+  if (r.truncated) {
+    const nl = output.indexOf('\n');
+    output = '… [truncated]\n' + (nl >= 0 ? output.slice(nl + 1) : output);
+  }
+
+  const result: PostWorktreeHookResult = {
+    ran: true,
+    source,
+    exitCode: r.timedOut ? null : r.code,
+    durationMs: r.durationMs,
+    output: output.trimEnd(),
+  };
+  if (r.truncated) result.truncated = true;
+  if (r.timedOut) result.timedOut = true;
+  return result;
 }
 
 interface CreateWorktreeResult extends WorktreeMeta {
@@ -1057,10 +1011,3 @@ function errCode(e: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-// Throw an Error carrying an HTTP statusCode for the REST layer, using the
-// same Object.assign pattern the routes consume (`err.statusCode`). Typed as
-// `Error & { statusCode: number }` so callers can rely on the code without a
-// cast.
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}

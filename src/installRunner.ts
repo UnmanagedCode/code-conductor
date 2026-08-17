@@ -11,6 +11,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { orchStoreRoot } from './projects.ts';
+import { httpError } from './httpError.ts';
 
 const LOG_CAP = 64 * 1024; // bytes of tail kept in memory
 
@@ -85,7 +86,7 @@ export function makeInstallRunner(config: InstallRunnerConfig): InstallRunner {
   // if one is already in flight. Throws (statusCode 400) on an unknown item.
   function start(name: string): { started: boolean; running: boolean } {
     if (!validate(name)) {
-      throw Object.assign(new Error(`unknown ${unknownNoun}: ${name}`), { statusCode: 400 });
+      throw httpError(400, `unknown ${unknownNoun}: ${name}`);
     }
     if (isRunning()) return { started: false, running: true };
 

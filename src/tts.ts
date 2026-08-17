@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { getTtsVoice, getTtsRate } from './appSettings.ts';
 import { voiceFileName, DEFAULT_VOICE } from './ttsModels.ts';
 import { orchStoreRoot } from './projects.ts';
+import { httpError } from './httpError.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SYNTH_SCRIPT = path.resolve(__dirname, '..', 'bin', 'piper-synth.py');
@@ -88,7 +89,7 @@ export async function isAvailable(): Promise<boolean> {
 // scale. Throws { statusCode: 400 } on empty text.
 export function synthesize(text: unknown, { voice, rate }: { voice?: string; rate?: number } = {}): ChildProcessWithoutNullStreams {
   if (typeof text !== 'string' || !text.trim()) {
-    throw Object.assign(new Error('empty text body'), { statusCode: 400 });
+    throw httpError(400, 'empty text body');
   }
   const { python, synthScript } = ttsPaths();
   // An explicit voice arg overrides the configured/default one (e.g. a future

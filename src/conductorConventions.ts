@@ -29,6 +29,7 @@ import {
   PLAYBOOK_ENFORCEMENT_MODES, normalizePlaybookEnforcement, type PlaybookEnforcement,
 } from './playbooks.ts';
 import { renderPlaybookConvention } from './playbookConvention.ts';
+import { httpError } from './httpError.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'conductor');
 const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
@@ -347,9 +348,3 @@ export async function composeCurrentConduct(): Promise<string> {
   return composeConduct(await getSelection());
 }
 
-// The `code`-style HTTP error the REST/MCP surfaces consume (`err.statusCode`),
-// built with the same Object.assign pattern the routes use. Typed so callers
-// can rely on the code without a cast.
-function httpError(statusCode: number, message: string): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode });
-}
