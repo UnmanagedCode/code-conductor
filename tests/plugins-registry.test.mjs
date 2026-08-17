@@ -976,11 +976,27 @@ test("two concurrent stops both persist runtime.json — neither steals the othe
 
     assert.equal(ra.status, 'fulfilled', `stop('aplug') must not reject: ${ra.reason}`);
     assert.equal(rb.status, 'fulfilled', `stop('bplug') must not reject: ${rb.reason}`);
-    // The negative control: killing 'aplug' also fires handleChildExit('aplug')
-    // (rejection swallowed to console.warn), so the pair held at the barrier
-    // may be {stop-a, exit-a} rather than {stop-a, stop-b} — "both stops
-    // fulfilled" can pass vacuously pre-fix. Distinct tmp names is the
-    // assertion that actually catches a reverted fix.
+    // Measured (tmp name reverted to the shared `${file}.${pid}.tmp`, 8
+    // runs): 8/8 died on `stop(...) must not reject` above, not here — the
+    // losing stop's saveRuntimeRecords rename threw ENOENT on the stolen tmp
+    // before this line ever ran. That assertion is what actually fires in
+    // practice. This one remains the guaranteed backstop: killing 'aplug'
+    // also fires handleChildExit('aplug') (rejection swallowed to
+    // console.warn), so the pair held at the barrier may be {stop-a, exit-a}
+    // rather than {stop-a, stop-b} — but with a shared tmp name, whichever
+    // pair arrives, one writer's rename always steals the other's tmp, so
+    // Set.size === 1 is unconditional even on a run where `fulfilled`
+    // doesn't catch it first.
+    //
+    // Also measured: no production mutation kills this test on its own — the
+    // only one that does is the shared-tmp-name revert, which kills test 1
+    // too (making `stop`/`stopInternal` reject outright is too broad, since
+    // it fails every stop-calling test in this file; dropping stopInternal's
+    // saveRuntimeRecords() call survives, since handleChildExit still writes
+    // runtime.json for each killed child). So this test is a production-path
+    // symptom guard — it pins that a real stop() does not reject with ENOENT
+    // — not an independent pin on the tmp-uniqueness invariant; that
+    // invariant's only independent pin is test 1, above.
     assert.equal(new Set(snapshot).size, N, 'the two concurrent writers must not share a tmp path');
   } finally {
     restoreFsPatch();
