@@ -274,21 +274,80 @@ export function bondTrailingTurn(filtered: ReconMessage[], ringTurn: TurnIndex):
   return filtered.slice(startIdx);
 }
 
+// Message-level fields hoisted OUT of a tool_use block. Shared by both passes
+// of buildMessageFromRing: the delta pass writes them first, and if reconciled
+// envelopes exist that pass may overwrite them with the same values.
+interface HoistTarget {
+  plan: string | null;
+  planPath: string | null;
+  questions: unknown;
+}
+
+// One pass's arrival-order counter plus the position stamped on each segment.
+// PER PASS, never shared: the delta pass and the reconciled pass number their
+// segments on independent counters.
+interface SegmentSeqs {
+  next: number;
+  textSeq: number | null;
+  planSeq: number | null;
+  questionsSeq: number | null;
+}
+
+// Hoist an ExitPlanMode / AskUserQuestion tool_use out of a message's blocks[]
+// into the message-level plan / planPath / questions fields, stamping the
+// segment's arrival position on this pass's counter. `name`/`id` are `unknown`
+// because the delta path supplies `ev.name`/`ev.toolUseId` and the reconciled
+// path supplies `block.name`/`block.id`; both are guarded by the same
+// `typeof … === 'string'` / literal comparisons.
+//
+// Returns true when the block WAS hoisted — the caller must then NOT also push
+// it into blocks[] ("not duplicated in blocks[]", the contract in mcp/tools.ts).
+// The flag is per CALL, never derived from `out`: a second pass seeing an
+// unhoistable ExitPlanMode still pushes it even though the first pass already
+// filled `out.plan`.
+//
+// A path with no text still hoists: bonding survives either way (planPath is
+// set outside `hoisted`), but without it the ExitPlanMode block ALSO lands in
+// blocks[], contradicting that contract, and planSeq is never assigned so the
+// plan segment sorts last instead of in arrival order.
+function hoistPlanAndQuestions(
+  name: unknown,
+  input: Record<string, unknown> | null | undefined,
+  id: unknown,
+  planPaths: Map<string, { planPath: string; plan?: string }>,
+  out: HoistTarget,
+  seqs: SegmentSeqs,
+): boolean {
+  let hoisted = false;
+  if (name === 'ExitPlanMode') {
+    const p = input?.plan;
+    const pathFromEvent = typeof id === 'string' ? planPaths.get(id) : undefined;
+    if (typeof p === 'string' && p.length > 0) { out.plan = p; hoisted = true; }
+    else if (pathFromEvent?.plan) { out.plan = pathFromEvent.plan; hoisted = true; }
+    if (pathFromEvent) { out.planPath = pathFromEvent.planPath; hoisted = true; }
+    if (hoisted && seqs.planSeq === null) seqs.planSeq = seqs.next++;
+  } else if (name === 'AskUserQuestion') {
+    const q = input?.questions;
+    if (Array.isArray(q) && q.length > 0) { out.questions = q; hoisted = true; }
+    if (hoisted && seqs.questionsSeq === null) seqs.questionsSeq = seqs.next++;
+  }
+  return hoisted;
+}
+
 function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeThinking = false, planPaths: Map<string, { planPath: string; plan?: string }> = new Map()): ReconMessage {
   const byBlock = new Map<number, string>();
   const blockOrder: number[] = [];
   const otherBlocks: ReconBlockOut[] = []; // tool_use blocks etc, for context
   let hasToolUse = false;
   let assistantContent: ReconBlock[] | null = null; // content blocks merged across all assistant_message envelopes for this msgId
-  let plan: string | null = null;
-  let planPath: string | null = null;
-  let questions: unknown = null;
-  // seq/*Seq: arrival-order position of each segment within the message, so
+  // SHARED across both passes below — the delta pass writes these first and the
+  // reconciled pass, if it runs, writes into the same object.
+  const hoist: HoistTarget = { plan: null, planPath: null, questions: null };
+  // next/*Seq: arrival-order position of each segment within the message, so
   // the body renderer (handlers.ts) can interleave prose/plan/questions in the
   // order the underlying blocks actually occurred instead of hardcoding
   // "prose then plan" — set once, at each segment's first occurrence.
-  let seq = 0;
-  let textSeq: number | null = null, planSeq: number | null = null, questionsSeq: number | null = null;
+  const d: SegmentSeqs = { next: 0, textSeq: null, planSeq: null, questionsSeq: null };
   for (const ev of ring) {
     if (ev.parentToolUseId) continue;
     if (ev.msgId !== targetMsgId) continue;
@@ -297,31 +356,12 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
       if (!byBlock.has(idx)) {
         byBlock.set(idx, '');
         blockOrder.push(idx);
-        if (textSeq === null) textSeq = seq++;
+        if (d.textSeq === null) d.textSeq = d.next++;
       }
       byBlock.set(idx, (byBlock.get(idx) ?? '') + (ev.text ?? ''));
     } else if (ev.kind === 'tool_use') {
       hasToolUse = true;
-      let hoisted = false;
-      if (ev.name === 'ExitPlanMode') {
-        const p = ev.input?.plan;
-        const pathFromEvent = typeof ev.toolUseId === 'string' ? planPaths.get(ev.toolUseId) : undefined;
-        if (typeof p === 'string' && p.length > 0) { plan = p; hoisted = true; }
-        else if (pathFromEvent?.plan) { plan = pathFromEvent.plan; hoisted = true; }
-        // A path with no text still hoists — bonding survives either way
-        // (planPath is set outside `hoisted`), but without this the
-        // ExitPlanMode block ALSO lands in blocks[], contradicting the
-        // "not duplicated in blocks[]" contract in mcp/tools.ts, and planSeq
-        // is never assigned so the plan segment sorts last instead of in
-        // arrival order.
-        if (pathFromEvent) { planPath = pathFromEvent.planPath; hoisted = true; }
-        if (hoisted && planSeq === null) planSeq = seq++;
-      } else if (ev.name === 'AskUserQuestion') {
-        const q = ev.input?.questions;
-        if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
-        if (hoisted && questionsSeq === null) questionsSeq = seq++;
-      }
-      if (!hoisted) {
+      if (!hoistPlanAndQuestions(ev.name, ev.input, ev.toolUseId, planPaths, hoist, d)) {
         otherBlocks.push({ type: 'tool_use', name: ev.name, input: ev.input, toolUseId: ev.toolUseId });
       }
     } else if (ev.kind === 'assistant_message') {
@@ -339,28 +379,16 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
   if (assistantContent) {
     const textParts: string[] = [];
     const blocks: ReconBlockOut[] = [];
-    let seq2 = 0;
-    let textSeq2: number | null = null, planSeq2: number | null = null, questionsSeq2: number | null = null;
+    // A FRESH counter — the delta pass's positions live on `d` and are never
+    // comparable by value against these.
+    const r: SegmentSeqs = { next: 0, textSeq: null, planSeq: null, questionsSeq: null };
     for (const block of assistantContent) {
       if (block?.type === 'text' && typeof block.text === 'string') {
         textParts.push(block.text);
-        if (textSeq2 === null) textSeq2 = seq2++;
+        if (r.textSeq === null) r.textSeq = r.next++;
       } else if (block?.type === 'tool_use') {
         hasToolUse = true;
-        let hoisted = false;
-        if (block.name === 'ExitPlanMode') {
-          const p = block.input?.plan;
-          const pathFromEvent = typeof block.id === 'string' ? planPaths.get(block.id) : undefined;
-          if (typeof p === 'string' && p.length > 0) { plan = p; hoisted = true; }
-          else if (pathFromEvent?.plan) { plan = pathFromEvent.plan; hoisted = true; }
-          if (pathFromEvent) { planPath = pathFromEvent.planPath; hoisted = true; }
-          if (hoisted && planSeq2 === null) planSeq2 = seq2++;
-        } else if (block.name === 'AskUserQuestion') {
-          const q = block.input?.questions;
-          if (Array.isArray(q) && q.length > 0) { questions = q; hoisted = true; }
-          if (hoisted && questionsSeq2 === null) questionsSeq2 = seq2++;
-        }
-        if (!hoisted) {
+        if (!hoistPlanAndQuestions(block.name, block.input, block.id, planPaths, hoist, r)) {
           blocks.push({ type: 'tool_use', name: block.name, input: block.input, toolUseId: block.id });
         }
       } else if (block?.type === 'thinking' && includeThinking) {
@@ -370,24 +398,28 @@ function buildMessageFromRing(ring: ReconEvent[], targetMsgId: string, includeTh
     let text = textParts.join('');
     // Never regress below what the deltas captured: if the envelopes carried
     // no text block but deltas streamed one, prefer the delta accumulation.
-    // Its seq lives on a DIFFERENT counter (seq, not seq2) than the rest of
-    // this reconciled pass, so it can't be compared against planSeq2/
-    // questionsSeq2 by value — instead pin it to -1 (guaranteed to sort
-    // before any seq2, which starts at 0). This is also semantically right:
+    // Its seq lives on a DIFFERENT counter (`d`, not `r`) than the rest of
+    // this reconciled pass, so it can't be compared against r.planSeq/
+    // r.questionsSeq by value — instead pin it to -1 (guaranteed to sort
+    // before any r.next, which starts at 0). This is also semantically right:
     // an envelope-less text block can only be the delta stream's own block,
     // which — per the arrival-order comment above — always finalizes before
     // any block a reconciled envelope in THIS pass reports on.
-    if (!text) { text = blockOrder.map(idx => byBlock.get(idx) ?? '').join(''); if (text) textSeq2 = -1; }
+    if (!text) { text = blockOrder.map(idx => byBlock.get(idx) ?? '').join(''); if (text) r.textSeq = -1; }
     return { msgId: targetMsgId, text, ...(blocks.length ? { blocks } : {}), hasToolUse,
-      ...(plan ? { plan } : {}), ...(planPath ? { planPath } : {}), ...(questions ? { questions } : {}),
-      ...(textSeq2 !== null ? { textSeq: textSeq2 } : {}),
-      ...(planSeq2 !== null ? { planSeq: planSeq2 } : {}),
-      ...(questionsSeq2 !== null ? { questionsSeq: questionsSeq2 } : {}) };
+      ...(hoist.plan ? { plan: hoist.plan } : {}),
+      ...(hoist.planPath ? { planPath: hoist.planPath } : {}),
+      ...(hoist.questions ? { questions: hoist.questions } : {}),
+      ...(r.textSeq !== null ? { textSeq: r.textSeq } : {}),
+      ...(r.planSeq !== null ? { planSeq: r.planSeq } : {}),
+      ...(r.questionsSeq !== null ? { questionsSeq: r.questionsSeq } : {}) };
   }
   const text = blockOrder.map(idx => byBlock.get(idx) ?? '').join('');
   return { msgId: targetMsgId, text, ...(otherBlocks.length ? { blocks: otherBlocks } : {}), hasToolUse,
-    ...(plan ? { plan } : {}), ...(planPath ? { planPath } : {}), ...(questions ? { questions } : {}),
-    ...(textSeq !== null ? { textSeq } : {}),
-    ...(planSeq !== null ? { planSeq } : {}),
-    ...(questionsSeq !== null ? { questionsSeq } : {}) };
+    ...(hoist.plan ? { plan: hoist.plan } : {}),
+    ...(hoist.planPath ? { planPath: hoist.planPath } : {}),
+    ...(hoist.questions ? { questions: hoist.questions } : {}),
+    ...(d.textSeq !== null ? { textSeq: d.textSeq } : {}),
+    ...(d.planSeq !== null ? { planSeq: d.planSeq } : {}),
+    ...(d.questionsSeq !== null ? { questionsSeq: d.questionsSeq } : {}) };
 }

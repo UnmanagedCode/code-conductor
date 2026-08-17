@@ -7,6 +7,9 @@
 // The MCP project_diff handler (src/mcp/handlers.ts) shares DIFF_BYTE_CAP,
 // assertValidBaseRef, parseNumstat and parseNameStatus with this module —
 // that sharing is import-path only; project_diff's own behavior is untouched.
+// src/mcp/diffPaging.ts parses the same `diff --git ` / `@@ ` headers
+// independently; the two stay separate deliberately — the overlap is two
+// header tests, and diffPaging.ts is dependency-free by design.
 
 import { runGit, getWorktree } from './worktrees.ts';
 import { getProject } from './projects.ts';

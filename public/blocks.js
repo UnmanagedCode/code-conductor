@@ -556,8 +556,6 @@ function renderNotebookEdit(input) {
   return buildDiffTable(label, `+${adds} −${dels}`, lines);
 }
 
-export const _internalRenderers = { renderEditDiff, renderWritePreview, renderNotebookEdit };
-
 // Renders one or more questions as tabbed panes, each with its options +
 // an always-present "Other / custom typed answer" input. The user fills in
 // every question first, then taps a single Submit button that hands the

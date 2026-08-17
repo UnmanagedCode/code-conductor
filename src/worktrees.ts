@@ -530,6 +530,22 @@ export interface MergeStatus {
   behind: number | null;
 }
 
+// Read `git rev-list --left-right --count <left>...<right>` from `cwd` and
+// parse the pair. LEFT is BEHIND (commits on <left> missing from <right>),
+// RIGHT is AHEAD. Returns { ahead: null, behind: null } on a non-zero exit or
+// unparseable output — the shared "unknown" shape both callers render as
+// "no indicator".
+async function parseAheadBehind(cwd: string, left: string, right: string): Promise<MergeStatus> {
+  const r = await runGit(cwd, ['rev-list', '--left-right', '--count', `${left}...${right}`]);
+  if (r.code !== 0) return { ahead: null, behind: null };
+  const parts = r.stdout.trim().split(/\s+/);
+  if (parts.length !== 2) return { ahead: null, behind: null };
+  const behind = Number.parseInt(parts[0], 10);
+  const ahead = Number.parseInt(parts[1], 10);
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return { ahead: null, behind: null };
+  return { ahead, behind };
+}
+
 // Compare the worktree branch to its captured base branch from inside
 // the parent repo (worktrees share the same gitdir, so the branch is
 // visible from there). Returns:
@@ -544,19 +560,7 @@ export async function getWorktreeMergeStatus(meta: WorktreeMeta): Promise<MergeS
   if (!meta?.parentPath || !meta?.baseBranch || !meta?.branch) {
     return { ahead: null, behind: null };
   }
-  const r = await runGit(meta.parentPath, [
-    'rev-list', '--left-right', '--count',
-    `${meta.baseBranch}...${meta.branch}`,
-  ]);
-  if (r.code !== 0) return { ahead: null, behind: null };
-  const parts = r.stdout.trim().split(/\s+/);
-  if (parts.length !== 2) return { ahead: null, behind: null };
-  const behind = Number.parseInt(parts[0], 10);
-  const ahead = Number.parseInt(parts[1], 10);
-  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
-    return { ahead: null, behind: null };
-  }
-  return { ahead, behind };
+  return parseAheadBehind(meta.parentPath, meta.baseBranch, meta.branch);
 }
 
 export interface UpstreamStatus extends MergeStatus {
@@ -584,19 +588,11 @@ export async function getProjectUpstreamStatus(projectPath: string): Promise<Ups
   if (upRef.code !== 0) return { ahead: null, behind: null, upstream: null };
   const upstream = upRef.stdout.trim();
   if (!upstream) return { ahead: null, behind: null, upstream: null };
-  const r = await runGit(projectPath, [
-    'rev-list', '--left-right', '--count',
-    `${upstream}...${branch}`,
-  ]);
-  if (r.code !== 0) return { ahead: null, behind: null, upstream: null };
-  const parts = r.stdout.trim().split(/\s+/);
-  if (parts.length !== 2) return { ahead: null, behind: null, upstream: null };
-  const behind = Number.parseInt(parts[0], 10);
-  const ahead = Number.parseInt(parts[1], 10);
-  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
-    return { ahead: null, behind: null, upstream: null };
-  }
-  return { ahead, behind, upstream };
+  const st = await parseAheadBehind(projectPath, upstream, branch);
+  // ahead and behind are always set or nulled together, so one test covers both.
+  // On a parse failure the resolved upstream ref is DISCARDED, not reported.
+  if (st.ahead === null) return { ahead: null, behind: null, upstream: null };
+  return { ...st, upstream };
 }
 
 interface MergeFailure {
