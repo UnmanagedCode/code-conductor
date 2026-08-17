@@ -7,7 +7,7 @@
 // in sync with what we count in the jsonl. See `isPureUserPromptLine`
 // in transcript.ts for the predicate definition.
 //
-// File rewrites are atomic: write a sibling tmp file, fsync, rename over
+// File rewrites are atomic: write a sibling tmp file, rename over
 // the target. The companion sub-agent directory (sibling to the jsonl,
 // at `<encoded-cwd>/<sid>/`) is left in place — sub-agent runs are
 // uniquely-named per Agent tool_use_id, so stale entries are harmless
@@ -15,9 +15,8 @@
 // deleting the session).
 
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { sessionFilePath } from './projects.ts';
+import { sessionFilePath, writeFileAtomic } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import { extractAttachedMarkers, type WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
@@ -133,14 +132,6 @@ async function readAndSplit({ cwd, sessionId, userMessageIndex }: {
   };
 }
 
-async function writeAtomic(file: string, content: string): Promise<void> {
-  const dir = path.dirname(file);
-  await fs.mkdir(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${randomUUID()}-${path.basename(file)}`);
-  await fs.writeFile(tmp, content);
-  await fs.rename(tmp, file);
-}
-
 function joinLines(entries: Array<{ raw: string }>): string {
   if (entries.length === 0) return '';
   // Each line gets a trailing `\n` — preserves the canonical jsonl shape.
@@ -165,7 +156,7 @@ export async function truncateSessionAtUserMessage({ cwd, sessionId, userMessage
     await readAndSplit({ cwd, sessionId, userMessageIndex });
 
   const file = sessionFilePath(cwd, sessionId);
-  await writeAtomic(file, joinLines(prefix));
+  await writeFileAtomic(file, joinLines(prefix));
 
   // Append fresh resume-picker metadata for the new tail. Best-effort —
   // skipped when there's no surviving leaf (truncate to empty) since the
@@ -214,7 +205,7 @@ export async function forkSessionAtUserMessage({ cwd, sessionId, userMessageInde
     return { raw: JSON.stringify(copy) };
   });
 
-  await writeAtomic(newFile, joinLines(rewritten));
+  await writeFileAtomic(newFile, joinLines(rewritten));
 
   // Anchor the new session in the resume picker. Skipped when prefix is
   // empty (forking from N=0 — no surviving leaf, equivalent to a fresh

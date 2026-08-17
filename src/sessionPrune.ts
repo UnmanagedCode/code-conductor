@@ -45,9 +45,8 @@
 //      answering it are copied verbatim in every mode. See isPruneExemptTool.
 
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { sessionFilePath, subAgentDirPath } from './projects.ts';
+import { sessionFilePath, subAgentDirPath, writeFileAtomic } from './projects.ts';
 import { isPureUserPromptLine, writeSessionMetadata, type PersistedLine } from './transcript.ts';
 import type { WireContentBlock } from './parser.ts';
 import { httpError } from './httpError.ts';
@@ -501,14 +500,6 @@ export async function analyzeSessionForPrune({ cwd, sessionId }: { cwd: string; 
 
 // ── the transform ───────────────────────────────────────────────────────────
 
-async function writeAtomic(file: string, content: string): Promise<void> {
-  const dir = path.dirname(file);
-  await fs.mkdir(dir, { recursive: true });
-  const tmp = path.join(dir, `.tmp-${randomUUID()}-${path.basename(file)}`);
-  await fs.writeFile(tmp, content);
-  await fs.rename(tmp, file);
-}
-
 // The CLI persists sub-agent transcripts in a sibling directory keyed by SESSION
 // ID (`<encoded-cwd>/<sid>/subagents/agent-<agentId>.jsonl`, see
 // transcript.ts:loadSubAgentTranscript). Minting a new sessionId would therefore
@@ -593,7 +584,7 @@ export async function pruneSessionToNewId({
     }));
   }
 
-  await writeAtomic(sessionFilePath(cwd, newSid), out.join('\n') + '\n');
+  await writeFileAtomic(sessionFilePath(cwd, newSid), out.join('\n') + '\n');
   await copySubAgentDir({ cwd, sessionId, newSessionId: newSid });
 
   if (lastSurvivingUuid) {

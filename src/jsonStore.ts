@@ -35,8 +35,8 @@
 //                  and then written back as truth.
 
 import { promises as fs } from 'node:fs';
-import path from 'node:path';
 import { withLock } from './storeLock.ts';
+import { writeFileAtomic } from './projects.ts';
 
 export interface JsonStoreConfig<T> {
   // Absolute path of the store file. Lazy so PROJECTS_ROOT overrides in tests
@@ -109,11 +109,11 @@ export function createJsonStore<T>(config: JsonStoreConfig<T>): JsonStore<T> {
       try { await fs.unlink(target); } catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
       return;
     }
-    await fs.mkdir(path.dirname(target), { recursive: true });
     const json = JSON.stringify(toDoc(value), null, 2) + '\n';
-    const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-    await fs.writeFile(tmp, json);
-    await fs.rename(tmp, target);
+    // archivedSessions and conductedSessions are 2026-0164 departures from
+    // this primitive; this call is the atomic-write recipe, not a
+    // representation choice.
+    await writeFileAtomic(target, json);
     if (config.afterWrite) await config.afterWrite(value, json);
   }
 

@@ -80,6 +80,12 @@ test('concurrent same-process writes to one target never share a tmp path', asyn
     assert.equal(barrier.renamesBeforeRelease, 0, 'no writer may rename before every writer arrived');
 
     assert.equal(new Set(barrier.tmpPaths).size, 3, 'each call must use a distinct tmp path');
+    // The tmp name must not end in `.jsonl`: the session-dir scanners
+    // (projects.ts:678 listSessionsForCwdWithCounts, :980 summarizeSessions) select
+    // entries by `name.endsWith('.jsonl')`, so a tmp carrying that suffix is
+    // transiently listable as a bogus session row. 2026-0159 moved
+    // sessionPrune/sessionEdit onto this helper off exactly such a name.
+    assert.ok(barrier.tmpPaths.every((p) => p.endsWith('.tmp')), 'every tmp path must carry the .tmp suffix');
     assert.equal(results.filter((r) => r.status === 'fulfilled').length, 3, 'all three writers must succeed');
     const finalContent = await fsp.readFile(target, 'utf8');
     assert.ok(payloads.includes(finalContent), 'the surviving content must be one of the three payloads');
