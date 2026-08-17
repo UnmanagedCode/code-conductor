@@ -1091,7 +1091,7 @@ test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker'
     assert.deepEqual(evs.filter(e => e.kind === 'refusal' && e.code === 'PLAYBOOK_UNKNOWN'), [],
       'the bug\'s fingerprint: a bare resume must record no PLAYBOOK_UNKNOWN refusal');
 
-    // The projection has it live again, so its stage slot is counted and its
+    // The oracle has it live again, so its stage slot is counted and its
     // eventual exit will retire it.
     const st = foldProjection(evs).bySession.get(w.sessionId);
     assert.deepEqual({ stage: st.stage, history: st.stageHistory },

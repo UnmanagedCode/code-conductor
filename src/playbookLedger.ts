@@ -57,7 +57,9 @@ export type LedgerEvent =
   // A resumed worker coming back to life. NOT a second `spawn`: the spawn arm
   // below REPLACES the worker's state (stageHistory reset to the entered stage,
   // provenance emptied), which for a mid-run worker would erase the history
-  // every downstream `needs` is answered from. A resume un-retires in place.
+  // every downstream `needs` is answered from. Audit-only, like `retire` — it
+  // folds to no state; liveness itself is answered from
+  // InstanceManager.isSessionLive, never from this event.
   | { seq: number; ts: string; kind: 'resume'; sessionId: string }
   // `forwardSessionId` is send_prompt's SECOND subject (the forward source),
   // recorded whenever the call named a resolvable one — the audit trail records
