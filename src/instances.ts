@@ -45,7 +45,7 @@ import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
 import { usageDomainOfBackend, isMonitoredDomain } from './usageWindowDomains.ts';
 import { defaultClaudeLauncher, resolveClaudeBin, resolveBackendLaunch } from './claudeLauncher.ts';
-import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
+import type { CreateInstanceInput, InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
@@ -127,39 +127,6 @@ interface InstanceConstructorInput {
   claudePluginDirs?: string[];
   launcher?: LauncherLike;
   appendSystemPromptFileProvider?: (() => Promise<string>) | null;
-}
-
-// InstanceManager.create()/_doCreate() input — the REST/MCP spawn surface.
-// `tier`/`role` resolve the default effort only (never stored); `backend` is
-// the registry id (explicit wins; a resume without one recovers the sidecar's).
-interface CreateInstanceInput {
-  // Optional on the type only so `create(opts = {})` compiles; _doCreate
-  // validates it (throws 400 'project required') and the contract's create
-  // input requires it of callers.
-  project?: string;
-  resume?: string;
-  mode?: string | null;
-  effort?: string | null;
-  tier?: string;
-  role?: string;
-  thinking?: string | null;
-  model?: string | null;
-  contextWindowTokens?: number | null;
-  backend?: string | null;
-  worktree?: string | boolean | null;
-  // Both apply only to `worktree: true` (creating a fresh worktree) and are
-  // refused otherwise — see _doCreate. baseWorktree bases the new worktree on
-  // another worktree of the project instead of its root; name is slugified into
-  // the new worktree's branch + directory name.
-  baseWorktree?: string;
-  name?: string;
-  temp?: boolean;
-  conducted?: boolean;
-  debug?: boolean;
-  autoApprovePlan?: boolean;
-  playbookEnforcement?: PlaybookEnforcement;
-  callerInstanceId?: string | null;
-  prefill?: string;
 }
 
 // The mode vocabulary and both defaults live in sessionModes.ts, next to the
@@ -2856,6 +2823,88 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
   }
 
+  // Fork this session at the Nth user prompt (0-indexed): copy the prefix into a
+  // fresh sessionId, leaving THIS session untouched. Returns the new sessionId, the
+  // dropped prompt text, and the create() argument list the caller must spawn the
+  // fork with — every one of those fields is read off THIS instance, so deriving
+  // them belongs here and not in the route. The spawn itself stays with the caller:
+  // an Instance holds no manager reference.
+  async forkAtUserMessage(userMessageIndex: number): Promise<{
+    newSessionId: string; droppedText: string; createArgs: CreateInstanceInput;
+  }> {
+    if (this.temp) throw httpError(400, 'temp sessions cannot be forked');
+    // A rewind/prune on the SAME instance rewrites (or truncates) the very
+    // jsonl this fork is about to read. Refuse rather than read a file
+    // mid-rewrite — the mirror of the `_mutating` check those two already do.
+    //
+    // Claim the flag SYNCHRONOUSLY with the check: no await may sit between
+    // them, or two concurrent forks both pass the check, both set the flag,
+    // and the first one's `finally` clears it while the second is still
+    // reading — reintroducing exactly the unprotected read this guards.
+    // Narrower exposure than rewind/prune — fork never kills the source and
+    // holds `_mutating` only for its READ — but a reseed landing inside that
+    // read still 409s in prompt() and loses the handoff summary, so it takes
+    // the same interlock. Via the SHARED method, not a local re-check of the
+    // same two flags: that method exists so these guards cannot drift, and a
+    // third condition added to it must reach fork too. Synchronous, and ahead
+    // of the claim below.
+    this._assertNoRotationInFlight();
+    if (this._mutating) {
+      throw httpError(409, 'another rewind/fork/prune is in progress');
+    }
+    const backingId = this.backingSessionId;
+    if (!backingId) {
+      throw httpError(400, 'no sessionId — instance has not yet received a turn');
+    }
+    this._mutating = true;
+    // Unlike rewind/prune, fork never kills the source subprocess, so
+    // `!this.proc` doesn't cover it: a prompt landing here would be written
+    // to stdin, the CLI would persist its tail, and that tail could be
+    // folded into the prefix being copied. `_mutating` makes prompt() refuse
+    // for the duration. Scoped to the READ only — once the copy is on disk,
+    // a prompt to the source can no longer affect the fork, so the create()
+    // the caller makes (which spawns a whole new instance) stays outside the window.
+    let forked: { newSessionId: string; droppedText: string };
+    try {
+      // Deferred import — keeps this module's eager import graph off
+      // sessionEdit for callers that never fork. Inside the try so the flag is
+      // released if it throws.
+      const { forkSessionAtUserMessage } = await import('./sessionEdit.ts');
+      forked = await forkSessionAtUserMessage({
+        cwd: this.cwd,
+        sessionId: backingId,
+        userMessageIndex,
+        mode: this.mode,
+      });
+    } finally {
+      this._mutating = false;
+    }
+    return {
+      newSessionId: forked.newSessionId,
+      droppedText: forked.droppedText,
+      // `backend` is REQUIRED here, not optional: forkSessionAtUserMessage
+      // copies the jsonl but writes no backend sidecar for the new sessionId,
+      // so create()'s sidecar recovery finds nothing. Omitting it silently
+      // falls back to the identity `claude` backend while this.model keeps the
+      // substitution backend's foreign model id — and because that model is
+      // non-null, the BACKEND_MODEL_MISSING guard never fires, so the fork
+      // launches a real `claude --model <foreign-id>` against the Anthropic
+      // account. contextWindowTokens rides along as the last-known fallback.
+      createArgs: {
+        project: this.project,
+        resume: forked.newSessionId,
+        mode: this.mode,
+        effort: this.effort,
+        thinking: this.thinking,
+        backend: this.backend,
+        model: this.model,
+        contextWindowTokens: this.contextWindowTokens,
+        worktree: this.worktree?.worktreeName ?? null,
+        prefill: forked.droppedText,
+      },
+    };
+  }
+
   // Prune this session's context: write a stubbed COPY of the jsonl under a
   // fresh BACKING id, then respawn this SAME instance against it. Mechanically a
   // cousin of rewindToUserMessage (kill → rewrite → wipe → relaunch), but it
@@ -3922,6 +3971,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       this._overageResume.fireNow(id);
     }
   }
+
+  // Force the usage poller to tick NOW rather than at its next ~60s beat — the
+  // stop-direction half of a Settings → Models Apply, whose release-direction half
+  // is reevaluateOverageResumes above. Delegates into the composed
+  // UsageOverageMonitor so callers never reach through to it.
+  forceUsageTick(): Promise<unknown> { return this._usageMonitor.forceTick(); }
 
   // ---- Usage-window domain resolution (overage exemption seam) -------------
   // The set of backend IDS used across an instance's AGENT TREE: its own backend

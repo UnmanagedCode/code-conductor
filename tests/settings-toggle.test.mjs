@@ -267,13 +267,13 @@ function stubCatalogChangeFetch() {
     const method = opts.method || 'GET';
     if (method === 'GET') bump(url);
     if (url === '/api/plugins') {
-      return ok([{
+      return ok({ rows: [{
         id: 'demo', name: 'Demo', project: 'demoproj', state: 'disabled',
         enabled: false, hasBackend: false, conventions: [],
-      }]);
+      }], notices: [] });
     }
     if (url === '/api/projects') return ok([]);
-    if (url === '/api/plugins/library') return ok([]);
+    if (url === '/api/plugins/library') return ok({ entries: [], skipped: [] });
     if (url === '/api/plugins/demo/enable' && method === 'POST') return ok({});
     if (url === '/api/settings/conventions/conductor') return ok({});
     if (url === '/api/settings/conventions/workspace') return ok({});

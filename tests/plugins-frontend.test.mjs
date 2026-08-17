@@ -107,6 +107,12 @@ function stubPluginViewApi({ state = 'ready', startResult } = {}) {
       if (startResult instanceof Promise) return startResult;
       return Promise.resolve({ ok: true, json: async () => ({ state: 'ready' }) });
     }
+    // appSwitcher's own install-time refresh() lands here in the combined
+    // appSwitcher+pluginView tests, so this has to be the real /api/plugins
+    // envelope (src/plugins/api.ts), not a bare array.
+    if (String(url).startsWith('/api/plugins')) {
+      return Promise.resolve({ ok: true, json: async () => ({ rows: [], notices: [] }) });
+    }
     return Promise.resolve({ ok: true, json: async () => ([]) });
   };
   return calls;
@@ -271,14 +277,14 @@ function stubPluginManagerFetch({
   globalThis.fetch = (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push(`${method} ${url}`);
-    if (url === '/api/plugins') return Promise.resolve({ ok: true, json: async () => [] });
+    if (url === '/api/plugins') return Promise.resolve({ ok: true, json: async () => ({ rows: [], notices: [] }) });
     if (url === '/api/projects') return Promise.resolve({ ok: true, json: async () => [] });
     if (url === '/api/plugins/library') {
-      return Promise.resolve({ ok: true, json: async () => ([{
+      return Promise.resolve({ ok: true, json: async () => ({ entries: [{
         id: 'code-share', name: 'Code Share', description: 'Share code snippets.',
         repo: 'https://github.com/UnmanagedCode/code-share', installed, installedAs: installed ? 'code-share' : null,
         updateAvailable: installed && updateAvailable, behind: installed && updateAvailable ? 1 : 0,
-      }]) });
+      }], skipped: [] }) });
     }
     if (url === '/api/plugins/library/code-share/install') {
       if (installResult === 'fail') {
@@ -310,6 +316,56 @@ function stubPluginManagerFetch({
   };
   return calls;
 }
+
+// ── the load-failure notices actually reach the user ─────────────────────────
+// These two are the acceptance bar for the F17 (b)/(c) surfacing: the difference
+// between "the server recorded it" and "the user was told". A server that
+// reports notices nobody renders is the same silent swallow in new clothes.
+
+test('pluginManager: a corrupt-registry notice is surfaced in the plugins status line', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  globalThis.fetch = (url) => {
+    if (url === '/api/plugins') {
+      return Promise.resolve({ ok: true, json: async () => ({
+        rows: [],
+        notices: [{ file: 'registry.json', reason: 'bad json', backup: '/x/registry.json.corrupt' }],
+      }) });
+    }
+    if (url === '/api/plugins/library') {
+      return Promise.resolve({ ok: true, json: async () => ({ entries: [], skipped: [] }) });
+    }
+    return Promise.resolve({ ok: true, json: async () => [] });
+  };
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  assert.match(dom.status.textContent, /registry\.json/, 'the offending file is named');
+  assert.match(dom.status.textContent, /bad json/, 'the reason is shown');
+  assert.match(dom.status.textContent, /registry\.json\.corrupt/, 'where the old file went');
+  assert.match(dom.status.textContent, /reset/, 'that enable/version state was lost');
+});
+
+test('pluginManager: a skipped library drop-in is surfaced in the library status line', async () => {
+  const window = makeWindow();
+  const dom = buildPluginManagerDom(window.document);
+  globalThis.fetch = (url) => {
+    if (url === '/api/plugins') {
+      return Promise.resolve({ ok: true, json: async () => ({ rows: [], notices: [] }) });
+    }
+    if (url === '/api/plugins/library') {
+      return Promise.resolve({ ok: true, json: async () => ({
+        entries: [], skipped: [{ file: 'broken.json', reason: 'unexpected token' }],
+      }) });
+    }
+    return Promise.resolve({ ok: true, json: async () => [] });
+  };
+  const { installPluginManager } = await freshImport('pluginManager.js');
+  await installPluginManager().load();
+
+  assert.match(dom.libStatus.textContent, /broken\.json/, 'the offending drop-in is named');
+  assert.match(dom.libStatus.textContent, /unexpected token/, 'the reason is shown');
+});
 
 test('pluginManager: renders a library entry with an Install button when not installed', async () => {
   const window = makeWindow();
@@ -554,7 +610,8 @@ test('pluginManager: empty library renders the empty-state message', async () =>
   const window = makeWindow();
   const dom = buildPluginManagerDom(window.document);
   globalThis.fetch = (url) => {
-    if (url === '/api/plugins/library') return Promise.resolve({ ok: true, json: async () => [] });
+    if (url === '/api/plugins/library') return Promise.resolve({ ok: true, json: async () => ({ entries: [], skipped: [] }) });
+    if (url === '/api/plugins') return Promise.resolve({ ok: true, json: async () => ({ rows: [], notices: [] }) });
     return Promise.resolve({ ok: true, json: async () => [] });
   };
   const { installPluginManager } = await freshImport('pluginManager.js');
@@ -644,7 +701,8 @@ function buildSwitcherDom(document) {
 }
 
 function stubPluginsFetch(rows) {
-  globalThis.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(rows) });
+  // GET /api/plugins returns the {rows, notices} envelope (src/plugins/api.ts).
+  globalThis.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ rows, notices: [] }) });
 }
 
 test('appSwitcher: zero frontend plugins keeps the plain <h1>', async () => {

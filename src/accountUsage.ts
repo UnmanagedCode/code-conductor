@@ -182,10 +182,14 @@ export async function getAccountUsage({
     console.warn(`${new Date().toISOString()} [accountUsage] Anthropic OAuth usage API returned ${status} — chip will be hidden until this resolves. Next retry in ${Math.round(delay / 1000)}s (failure #${_retryState.failureCount})`);
     return allowStale ? maybeServeStale(now, maxStaleMs) : null;
 
-  } catch {
-    // Network error / timeout — apply backoff silently (no status to report).
+  } catch (e) {
+    // Network error / timeout. Same surfacing as the non-OK branch above — the
+    // only difference is there is no HTTP status to name, so the thrown message
+    // stands in for it. Silently swallowing this made a persistently-hidden
+    // usage chip indistinguishable from "no overage to report".
     const delay = computeBackoff(_retryState.failureCount, _random());
     _retryState = { failureCount: _retryState.failureCount + 1, nextAllowedAt: now + delay };
+    console.warn(`${new Date().toISOString()} [accountUsage] Anthropic OAuth usage API fetch failed (${e instanceof Error ? e.message : String(e)}) — chip will be hidden until this resolves. Next retry in ${Math.round(delay / 1000)}s (failure #${_retryState.failureCount})`);
     return allowStale ? maybeServeStale(now, maxStaleMs) : null;
   }
 }

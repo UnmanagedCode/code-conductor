@@ -65,7 +65,7 @@ export function installAppSwitcher({ onExitToConductor } = {}) {
     try {
       const r = await fetch('/api/plugins', { cache: 'no-store' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      plugins = await r.json();
+      plugins = (await r.json()).rows;
     } catch {
       plugins = [];
     }

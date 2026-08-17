@@ -203,7 +203,7 @@ test('fork guards its jsonl read with the same flag', async () => {
   } finally { await ctx.close(); }
 });
 
-test('the fork route claims _mutating with no await after the check', async () => {
+test('Instance.forkAtUserMessage claims _mutating with no await after the check', async () => {
   // The guard is only worth anything if the check and the claim are atomic. An
   // await between them lets two requests both pass the check, both set the flag,
   // and the first one's `finally` clear it while the second is still reading —
@@ -216,15 +216,24 @@ test('the fork route claims _mutating with no await after the check', async () =
   // within the first's microtask-scale import window. So a behavioural test
   // cannot distinguish the two, and the only guard against reintroducing it is
   // to pin the shape.
-  const src = await fs.readFile(new URL('../src/routes.ts', import.meta.url), 'utf8');
-  const route = src.slice(src.indexOf("r.post('/instances/:id/fork'"));
-  const check = route.indexOf('another rewind/fork/prune is in progress');
-  const claim = route.indexOf('inst._mutating = true');
-  assert.ok(check > 0 && claim > check, 'fork route must check _mutating before claiming it');
+  // Scoped to the METHOD, which owns the whole guard→claim→read→release
+  // sequence (the route only parses the index and spawns what it hands back).
+  const src = await fs.readFile(new URL('../src/instances.ts', import.meta.url), 'utf8');
+  const method = src.slice(src.indexOf('async forkAtUserMessage('));
+  assert.ok(method, 'Instance.forkAtUserMessage must exist — the guard sequence lives there');
+  const check = method.indexOf('another rewind/fork/prune is in progress');
+  const claim = method.indexOf('this._mutating = true');
+  assert.ok(check > 0 && claim > check, 'forkAtUserMessage must check _mutating before claiming it');
   assert.doesNotMatch(
-    route.slice(check, claim), /\bawait\b/,
+    method.slice(check, claim), /\bawait\b/,
     'no await may sit between the _mutating check and the claim — see this test\'s comment',
   );
+  // And the route must NOT have kept a copy of the guard.
+  const routes = await fs.readFile(new URL('../src/routes.ts', import.meta.url), 'utf8');
+  const route = routes.slice(routes.indexOf("r.post('/instances/:id/fork'"),
+                             routes.indexOf("r.post('/instances/:id/fork'") + 1200);
+  assert.doesNotMatch(route, /_mutating/,
+    'the route must delegate the flag to the instance, not re-check it');
 });
 
 test('two concurrent forks cannot both claim the flag', async () => {

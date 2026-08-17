@@ -48,6 +48,7 @@ import {
   renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
   renderPlaybook,
 } from './readRenderers.ts';
+import { waitFor } from '../waitFor.ts';
 import { pageInstanceEvents, pagePersistedEvents } from '../eventArchive.ts';
 import { indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
@@ -295,58 +296,39 @@ function notLiveRefusal(sessionId: string): SoftRefusal {
 // Resolve when `inst.status` first satisfies predicate, or reject on timeout.
 // Resolves immediately if the predicate is already true.
 function waitForStatus(inst: InstanceLike, predicate: (status: string) => boolean, timeoutMs: number): Promise<{ status: string; summary: InstanceSummary }> {
-  return new Promise((resolve, reject) => {
-    if (predicate(inst.status)) {
-      resolve({ status: inst.status, summary: inst.summary() });
-      return;
-    }
-    let timer: NodeJS.Timeout | null = null;
-    function cleanup(): void {
-      if (timer) clearTimeout(timer);
-      inst.off('status', onStatus);
-    }
-    function onStatus(s: InstanceSummary): void {
-      if (predicate(s.status)) {
-        cleanup();
-        resolve({ status: s.status, summary: s });
+  return waitFor<{ status: string; summary: InstanceSummary }>({
+    initial: () => predicate(inst.status) ? { value: { status: inst.status, summary: inst.summary() } } : null,
+    subscribe: (settle) => {
+      function onStatus(s: InstanceSummary): void {
+        if (predicate(s.status)) settle({ status: s.status, summary: s });
       }
-    }
-    timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`wait_for_idle timed out after ${timeoutMs} ms (status=${inst.status})`));
-    }, timeoutMs);
-    inst.on('status', onStatus);
+      inst.on('status', onStatus);
+      return () => inst.off('status', onStatus);
+    },
+    timeoutMs,
+    onTimeout: () => new Error(`wait_for_idle timed out after ${timeoutMs} ms (status=${inst.status})`),
   });
 }
 
 // Resolve when the next event matching `predicate` arrives. Rejects on
 // timeout or if the instance exits/crashes mid-wait.
 function waitForEvent(inst: InstanceLike, predicate: (ev: UiEvent | null) => boolean, timeoutMs: number): Promise<UiEvent | null> {
-  return new Promise((resolve, reject) => {
-    let timer: NodeJS.Timeout | null = null;
-    function cleanup(): void {
-      if (timer) clearTimeout(timer);
-      inst.off('event', onEvent);
-      inst.off('status', onStatus);
-    }
-    function onEvent(ev: UiEvent | null): void {
-      if (predicate(ev)) {
-        cleanup();
-        resolve(ev);
+  return waitFor<UiEvent | null>({
+    subscribe: (settle, fail) => {
+      function onEvent(ev: UiEvent | null): void {
+        if (predicate(ev)) settle(ev);
       }
-    }
-    function onStatus(s: InstanceSummary): void {
-      if (s.status === 'exited' || s.status === 'crashed') {
-        cleanup();
-        reject(new Error(`instance ${s.status} before event arrived`));
+      function onStatus(s: InstanceSummary): void {
+        if (s.status === 'exited' || s.status === 'crashed') {
+          fail(new Error(`instance ${s.status} before event arrived`));
+        }
       }
-    }
-    timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`wait timed out after ${timeoutMs} ms`));
-    }, timeoutMs);
-    inst.on('event', onEvent);
-    inst.on('status', onStatus);
+      inst.on('event', onEvent);
+      inst.on('status', onStatus);
+      return () => { inst.off('event', onEvent); inst.off('status', onStatus); };
+    },
+    timeoutMs,
+    onTimeout: () => new Error(`wait timed out after ${timeoutMs} ms`),
   });
 }
 

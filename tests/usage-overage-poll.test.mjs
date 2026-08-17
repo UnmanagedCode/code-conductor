@@ -121,6 +121,32 @@ function collect(inst) {
 }
 const sub = (evs, subtype) => evs.filter(e => e.kind === 'system' && e.subtype === subtype);
 
+// ── Settings → Models Apply forces a poll tick (the stop direction) ──────────
+// The prefs route drives this through the manager's `forceUsageTick()` delegate
+// rather than reaching into the composed monitor. Pins BOTH halves: that the
+// route calls the delegate at all, and that it stays conditional on the save
+// actually having touched the overage action or threshold.
+
+test('a prefs save that changes the overage settings forces a usage tick', async () => {
+  await boot('stop', { enabled: true, value: 50 });
+  let calls = 0;
+  ctx.instances.forceUsageTick = async () => { calls++; };
+
+  const r = await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs', {
+    overageThreshold: { enabled: true, value: 25 },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(calls, 1, 'a threshold change ticks the poller now, not in ~60s');
+
+  // A save touching NEITHER onOverage nor overageThreshold must not tick.
+  calls = 0;
+  const r2 = await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs', {
+    tierEffort: { tier: 'fast', effort: 'low' },
+  });
+  assert.equal(r2.status, 200);
+  assert.equal(calls, 0, 'an unrelated prefs save leaves the poller alone');
+});
+
 // ── Core: poll trips at a LOW threshold the stream would never report ─────────
 
 test('poll trips at low threshold (25%): five_hour util 30 ⇒ stop', async () => {

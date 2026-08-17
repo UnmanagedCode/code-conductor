@@ -367,6 +367,95 @@ test('worktree-only plugin bootstraps: discovered via fallback, enable defaults 
   }
 });
 
+// registry.json is the ONLY copy of every plugin's enabled state and pinned
+// version. The old behaviour was to warn and fall back to `{plugins:{}}` — which
+// silently forgot all of it and left the bad file in place for the next
+// saveRegistry() to overwrite. Now the file is moved aside and the failure is
+// reported through notices() so the Settings page can say where it went.
+test('a corrupt registry.json is preserved as .corrupt and reported as a notice', async () => {
+  const env = await makePluginRoot();
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    await env.addPluginProject('aplug');
+    const registryFile = path.join(orchStoreRoot(), 'plugins', 'registry.json');
+    await fs.mkdir(path.dirname(registryFile), { recursive: true });
+    const BAD = '{ not json';
+    await fs.writeFile(registryFile, BAD);
+
+    const host = createPluginHost();
+    await host.init();
+
+    // (1) The bad bytes are preserved verbatim, under the fixed .corrupt name.
+    const backupFile = `${registryFile}.corrupt`;
+    assert.equal(await fs.readFile(backupFile, 'utf8'), BAD,
+      'the unreadable file is preserved byte-for-byte, not deleted or truncated');
+
+    // (2) MOVED, not copied — else the next saveRegistry() overwrites the only copy.
+    assert.equal(await fs.access(registryFile).then(() => true, () => false), false,
+      'the corrupt file is renamed away, not left in place');
+
+    // (3) The notice payload names the file, the reason, and the backup path.
+    const notices = host.notices();
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].file, 'registry.json');
+    assert.ok(notices[0].reason && notices[0].reason.length > 0, 'a non-empty reason');
+    assert.match(notices[0].backup, /registry\.json\.corrupt$/);
+
+    // (4) Never fatal: init completed and the host still lists.
+    assert.ok(Array.isArray(await host.list()));
+  } finally {
+    console.warn = origWarn;
+    await env.restore();
+  }
+});
+
+// The preservation is best-effort, and its FAILURE path is the one that must not
+// take init down with it: an unreadable registry.json is already a degraded boot,
+// so a rename that also fails has to degrade further (no backup) rather than
+// escalate into a rejected init that poisons every plugin-host call. Pins the
+// inner catch around fs.rename — without it, a rethrow makes ensureInit reject.
+test('a corrupt registry.json whose rename FAILS still reports a notice and does not break init', async () => {
+  const env = await makePluginRoot();
+  const warns = [];
+  const origWarn = console.warn;
+  console.warn = (m) => warns.push(String(m));
+  try {
+    await env.addPluginProject('aplug');
+    const registryFile = path.join(orchStoreRoot(), 'plugins', 'registry.json');
+    await fs.mkdir(path.dirname(registryFile), { recursive: true });
+    await fs.writeFile(registryFile, '{ not json');
+
+    // Force the rename to reject, without stubbing fs: a DIRECTORY sitting on the
+    // exact backup path makes rename(file, backup) fail EISDIR, deterministically
+    // and on every platform this runs on. The read still succeeds, so the corrupt
+    // branch is entered normally and only the preservation fails.
+    await fs.mkdir(`${registryFile}.corrupt`, { recursive: true });
+
+    const host = createPluginHost();
+    // (1) Init completes — a failed preservation is not fatal.
+    await host.init();
+    assert.ok(Array.isArray(await host.list()),
+      'init survived the failed rename and the host still lists');
+
+    // (2) The failure is still SURFACED, just with no backup path to offer.
+    const notices = host.notices();
+    assert.equal(notices.length, 1);
+    assert.equal(notices[0].file, 'registry.json');
+    assert.ok(notices[0].reason && notices[0].reason.length > 0, 'a non-empty reason');
+    assert.equal(notices[0].backup, null,
+      'backup is null when the file could not be moved aside — not a bogus path');
+
+    // (3) And the rename failure itself is logged, not swallowed in silence.
+    assert.ok(warns.some(w => w.includes('could not preserve') && w.includes('registry.json')),
+      'the failed preservation is logged with the file it could not move');
+  } finally {
+    console.warn = origWarn;
+    await env.restore();
+  }
+});
+
 test('a main-checkout manifest always wins over worktree manifests', async () => {
   const env = await makePluginRoot();
   try {

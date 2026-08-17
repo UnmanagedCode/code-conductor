@@ -131,16 +131,42 @@ test('returns null on 401 response', async () => {
   }
 });
 
-test('returns null on network error', async () => {
+// A network failure used to apply its backoff SILENTLY, so a persistently
+// unreachable usage API was indistinguishable from "no overage to report" — the
+// chip just stayed hidden with nothing anywhere saying why. Now it warns on the
+// same channel as the sibling non-OK-HTTP branch, and this pins both halves: the
+// warn itself, and that the backoff it reports is really applied.
+test('a network error warns with its backoff, and still returns null', async () => {
   await makeTmpHome({ claudeAiOauth: { accessToken: 'sk-ant-oat01-test' } });
   _resetCache();
-  const original = globalThis.fetch;
+  const originalFetch = globalThis.fetch;
+  const originalWarn = console.warn;
+  const warns = [];
+  console.warn = (...a) => { warns.push(a.join(' ')); };
   globalThis.fetch = async () => { throw new Error('network error'); };
   try {
-    const result = await getAccountUsage({ home: tmpHome });
+    // Fixed clock + fixed jitter: the backoff delay is then deterministic, so
+    // this asserts on the reported number without a sleep or a wall-clock read.
+    const opts = { home: tmpHome, _now: () => 1_000_000, _random: () => 0 };
+    const result = await getAccountUsage(opts);
     assert.equal(result, null);
+
+    assert.equal(warns.length, 1, 'exactly one warn for one failure');
+    assert.match(warns[0], /\[accountUsage\]/);
+    assert.match(warns[0], /network error/, 'the thrown message is named, not swallowed');
+    assert.match(warns[0], /Next retry in \d+s \(failure #1\)/, 'the backoff is reported');
+
+    // The backoff must really be armed: a second call inside the window must
+    // not even reach fetch, and must not emit a second warn.
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; throw new Error('network error'); };
+    const second = await getAccountUsage(opts);
+    assert.equal(second, null);
+    assert.equal(calls, 0, 'the second call short-circuits on nextAllowedAt');
+    assert.equal(warns.length, 1, 'a suppressed retry does not re-warn');
   } finally {
-    globalThis.fetch = original;
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
     await cleanTmpHome();
   }
 });

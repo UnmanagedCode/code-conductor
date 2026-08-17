@@ -149,6 +149,10 @@ export function createPluginHost(opts: {
   let persisted: { plugins: Record<string, PersistedPluginRecord> } = { plugins: {} };
   let runtimeRecords: Record<string, RuntimeRecord> = {};
 
+  // Non-ENOENT load failures from THIS init pass — surfaced on GET /api/plugins so
+  // a user whose plugins came back disabled learns why, and where the old file went.
+  let loadNotices: Array<{ file: string; reason: string; backup: string | null }> = [];
+
   // In-memory runtime per id: status stopped|starting|ready|crashed|failed,
   // crash bookkeeping for backoff, the in-flight start dedupe promise, and
   // the last crash tail for 503 bodies.
@@ -170,10 +174,25 @@ export function createPluginHost(opts: {
   const registryFile = (): string => path.join(orchStoreRoot(), 'plugins', 'registry.json');
   const runtimeFile = (): string => path.join(orchStoreRoot(), 'plugins', 'runtime.json');
 
+  // Backs BOTH registry.json and runtime.json, deliberately: carving out a
+  // registry-only variant would need an extra parameter for no benefit, and each
+  // notice names its own file.
   async function loadJson(file: string, fallback: unknown): Promise<unknown> {
     try { return JSON.parse(await fs.readFile(file, 'utf8')); }
     catch (e) {
-      if (errCode(e) !== 'ENOENT') console.warn(`plugins: failed to read ${file}: ${errMsg(e)}`);
+      if (errCode(e) === 'ENOENT') return fallback;
+      // The fallback below silently forgets every plugin's enabled state and pinned
+      // version, and this file is the only copy of it — so move the bad file aside
+      // rather than letting the next save overwrite it, and record a notice the
+      // Settings page shows. A log line alone leaves the user guessing why their
+      // plugins came back disabled. A previous `.corrupt` IS overwritten: it was
+      // already unusable, and a timestamped chain would accumulate forever.
+      const backup = `${file}.corrupt`;
+      let saved: string | null = null;
+      try { await fs.rename(file, backup); saved = backup; }
+      catch (re) { console.warn(`plugins: could not preserve ${file} as ${backup}: ${errMsg(re)}`); }
+      console.warn(`plugins: failed to read ${file}: ${errMsg(e)}`);
+      loadNotices.push({ file: path.basename(file), reason: errMsg(e), backup: saved });
       return fallback;
     }
   }
@@ -198,6 +217,9 @@ export function createPluginHost(opts: {
     initedFor = projectsRoot();
     rt.clear();
     initPromise = (async () => {
+      // Reset first: a projectsRoot() swap or a retry after a failed init must
+      // start clean, not inherit the previous pass's notices.
+      loadNotices = [];
       persisted = (await loadJson(registryFile(), { plugins: {} })) as { plugins: Record<string, PersistedPluginRecord> };
       if (typeof persisted?.plugins !== 'object' || persisted.plugins === null) persisted = { plugins: {} };
       runtimeRecords = (await loadJson(runtimeFile(), {})) as Record<string, RuntimeRecord>;
@@ -868,6 +890,7 @@ export function createPluginHost(opts: {
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
     conventions, roles, claudePluginDirs,
     reportUpstreamFailure, setServerPort, stopAll,
+    notices: () => [...loadNotices],
   };
 }
 

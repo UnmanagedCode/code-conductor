@@ -451,11 +451,22 @@ export function installPluginManager({ onCatalogChange } = {}) {
 
   async function load() {
     try {
-      const [rows, worktrees, libraryRows] = await Promise.all([
+      const [pluginsData, worktrees, libraryData] = await Promise.all([
         api('GET', '/api/plugins'), fetchWorktrees(), api('GET', '/api/plugins/library'),
       ]);
-      render(rows, worktrees);
-      renderLibrary(libraryRows);
+      render(pluginsData.rows, worktrees);
+      renderLibrary(libraryData.entries);
+      // Both status lines are written AFTER their render, which sets a count —
+      // a load failure is the more important thing to be looking at.
+      if (pluginsData.notices?.length) {
+        setStatus(pluginsData.notices.map(n => `${n.file} was unreadable (${n.reason})`
+          + (n.backup ? ` — moved aside to ${n.backup}; plugin enable/version state was reset` : '')).join(' · '), true);
+      }
+      if (libraryData.skipped?.length) {
+        setStatusEl(libraryStatusEl,
+          `Skipped ${libraryData.skipped.length} library drop-in file(s): `
+          + libraryData.skipped.map(s => `${s.file} (${s.reason})`).join(', '), true);
+      }
     } catch (e) {
       setStatus(`Failed to load plugins: ${e.message || e}`, true);
     }

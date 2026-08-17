@@ -148,20 +148,32 @@ function libraryDir(): string {
   return path.join(orchStoreRoot(), 'plugins', 'library');
 }
 
-async function readLibraryEntries(): Promise<LibraryEntry[]> {
+// `skipped` names the per-file drop-ins that were REJECTED — a malformed one, or
+// one missing a required field. Reported on GET /api/plugins/library and shown in
+// the Settings → Plugins Library status line, because a drop-in that silently
+// never appears is indistinguishable from one that was never written. A
+// wrong-extension file is a deliberate ignore, NOT a skip, and is never listed.
+async function readLibraryEntries(): Promise<{ entries: LibraryEntry[]; skipped: Array<{ file: string; reason: string }> }> {
   const byId = new Map(DEFAULT_ENTRIES.map(e => [e.id, e]));
+  const skipped: Array<{ file: string; reason: string }> = [];
   let names: string[];
   try { names = await fs.readdir(libraryDir()); }
   catch (e) {
+    // An unreadable library DIRECTORY stays a logged degradation: it has no
+    // per-file identity to report, and the built-in entries still serve.
     if (errCode(e) !== 'ENOENT') console.warn(`pluginLibrary: failed to read library dir: ${errMsg(e)}`);
-    return [...byId.values()];
+    return { entries: [...byId.values()], skipped };
   }
   for (const name of names) {
     if (!name.endsWith('.json')) continue;
     const file = path.join(libraryDir(), name);
     let entry: unknown;
     try { entry = JSON.parse(await fs.readFile(file, 'utf8')); }
-    catch (e) { console.warn(`pluginLibrary: skipping malformed ${file}: ${errMsg(e)}`); continue; }
+    catch (e) {
+      console.warn(`pluginLibrary: skipping malformed ${file}: ${errMsg(e)}`);
+      skipped.push({ file: name, reason: errMsg(e) });
+      continue;
+    }
     const rec = (entry && typeof entry === 'object' && !Array.isArray(entry))
       ? entry as { id?: unknown; name?: unknown; description?: unknown; repo?: unknown; postClone?: unknown; postPull?: unknown }
       : null;
@@ -169,6 +181,7 @@ async function readLibraryEntries(): Promise<LibraryEntry[]> {
       || typeof rec.name !== 'string' || !rec.name
       || typeof rec.repo !== 'string' || !rec.repo) {
       console.warn(`pluginLibrary: skipping ${file}: missing required id/name/repo`);
+      skipped.push({ file: name, reason: 'missing required id/name/repo' });
       continue;
     }
     byId.set(rec.id, {
@@ -179,7 +192,7 @@ async function readLibraryEntries(): Promise<LibraryEntry[]> {
       ...(typeof rec.postPull === 'string' ? { postPull: rec.postPull } : {}),
     });
   }
-  return [...byId.values()];
+  return { entries: [...byId.values()], skipped };
 }
 
 // Last non-empty path segment of the repo URL, `.git` suffix stripped —
@@ -226,7 +239,10 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
   _pullImpl?: PullImpl | null;
   _runHookImpl?: RunHookImpl | null;
 } = {}): {
-  list(): Promise<Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>>;
+  list(): Promise<{
+    entries: Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>;
+    skipped: Array<{ file: string; reason: string }>;
+  }>;
   install(id: string, opts?: { onChunk?: (phase: 'clone' | 'hook', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postClone: { ran: boolean; ok: boolean; code: number; tail: string } | null }>;
   update(id: string, opts?: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void }): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: RestartOutcome | null }>;
 } {
@@ -243,9 +259,12 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     return { ran: true, ok: r.code === 0, code: r.code, tail: (r.output ?? '').slice(-4000) };
   }
 
-  async function list(): Promise<Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>> {
-    const entries = await readLibraryEntries();
-    return Promise.all(entries.map(async (entry) => {
+  async function list(): Promise<{
+    entries: Array<LibraryEntry & { installed: boolean; installedAs: string | null; updateAvailable: boolean; behind: number | null }>;
+    skipped: Array<{ file: string; reason: string }>;
+  }> {
+    const { entries, skipped } = await readLibraryEntries();
+    const enriched = await Promise.all(entries.map(async (entry) => {
       const name = deriveProjectName(entry.repo);
       let installed = false;
       if (name) {
@@ -266,10 +285,11 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
       }
       return { ...entry, installed, installedAs: installed ? name : null, updateAvailable, behind };
     }));
+    return { entries: enriched, skipped };
   }
 
   async function install(id: string, { onChunk, onValidated }: { onChunk?: (phase: 'clone' | 'hook', text: string) => void; onValidated?: () => void } = {}): Promise<{ id: string; name: string; project: string; path: string; postClone: { ran: boolean; ok: boolean; code: number; tail: string } | null }> {
-    const entries = await readLibraryEntries();
+    const { entries } = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
     validateRepoUrl(entry.repo);
@@ -320,7 +340,7 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
   }
 
   async function update(id: string, { onChunk, onValidated }: { onChunk?: (phase: 'pull' | 'hook' | 'restart', text: string) => void; onValidated?: () => void } = {}): Promise<{ id: string; name: string; project: string; path: string; postPull: { ran: boolean; ok: boolean; code: number; tail: string } | null; restarted: RestartOutcome | null }> {
-    const entries = await readLibraryEntries();
+    const { entries } = await readLibraryEntries();
     const entry = entries.find(e => e.id === id);
     if (!entry) throw httpError(404, `unknown library plugin '${id}'`);
     const name = deriveProjectName(entry.repo);

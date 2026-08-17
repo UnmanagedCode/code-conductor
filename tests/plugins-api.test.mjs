@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.ts';
+import { orchStoreRoot } from '../src/projects.ts';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
@@ -24,7 +25,7 @@ test('GET /api/plugins lists the discovered catalog', async () => {
   try {
     const r = await api(boot.baseUrl, 'GET', '/api/plugins');
     assert.equal(r.status, 200);
-    const row = r.body.find(p => p.id === 'fake-plugin');
+    const row = r.body.rows.find(p => p.id === 'fake-plugin');
     assert.ok(row, 'fixture plugin discovered');
     assert.equal(row.state, 'discovered');
     assert.equal(row.enabled, false);
@@ -89,7 +90,7 @@ test('restart: 409 while not running; picks up a new commit and clears stale', a
     await git(dir, 'add', '-A');
     await git(dir, 'commit', '-q', '-m', 'second');
 
-    const staleRow = (await api(boot.baseUrl, 'GET', '/api/plugins')).body.find(p => p.id === 'fake-plugin');
+    const staleRow = (await api(boot.baseUrl, 'GET', '/api/plugins')).body.rows.find(p => p.id === 'fake-plugin');
     assert.equal(staleRow.stale, true);
 
     const restarted = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/restart');
@@ -147,7 +148,44 @@ test('error shapes: unknown 404, invalid manifest 409, disabled start 409', asyn
     const notEnabled = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/start');
     assert.equal(notEnabled.status, 409);
     const listed = await api(boot.baseUrl, 'GET', '/api/plugins');
-    assert.equal(listed.body.find(p => p.project === 'badplug')?.state, 'invalid');
+    assert.equal(listed.body.rows.find(p => p.project === 'badplug')?.state, 'invalid');
+  } finally { await boot.close(); }
+});
+
+// The wire half of the corrupt-registry surfacing: a notices() accessor nobody
+// wires into the route would leave the user just as uninformed as the old
+// console.warn did.
+test('GET /api/plugins reports a corrupt registry as a notice', async () => {
+  const boot = await setup();
+  try {
+    // Seeded before the first request, which is what triggers ensureInit.
+    const registryFile = path.join(orchStoreRoot(), 'plugins', 'registry.json');
+    await fs.mkdir(path.dirname(registryFile), { recursive: true });
+    await fs.writeFile(registryFile, '{ not json');
+
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins');
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.body.rows), 'the catalog still serves — never fatal');
+    assert.equal(r.body.notices.length, 1);
+    assert.equal(r.body.notices[0].file, 'registry.json');
+    assert.match(r.body.notices[0].backup, /registry\.json\.corrupt$/);
+  } finally { await boot.close(); }
+});
+
+// The wire half of the library-skip surfacing.
+test('GET /api/plugins/library reports a malformed drop-in in skipped', async () => {
+  const boot = await bootServer();
+  try {
+    const libDir = path.join(orchStoreRoot(), 'plugins', 'library');
+    await fs.mkdir(libDir, { recursive: true });
+    await fs.writeFile(path.join(libDir, 'broken.json'), '{ not json');
+
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
+    assert.equal(r.status, 200);
+    assert.ok(r.body.entries.length > 0, 'the built-in entries still serve');
+    assert.equal(r.body.skipped.length, 1);
+    assert.equal(r.body.skipped[0].file, 'broken.json');
+    assert.ok(r.body.skipped[0].reason.length > 0);
   } finally { await boot.close(); }
 });
 
@@ -156,7 +194,7 @@ test('GET /api/plugins/library lists the default code-share entry, unmarked inst
   try {
     const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
     assert.equal(r.status, 200);
-    const row = r.body.find(e => e.id === 'code-share');
+    const row = r.body.entries.find(e => e.id === 'code-share');
     assert.ok(row, 'default entry present');
     assert.equal(row.repo, 'https://github.com/UnmanagedCode/code-share');
     assert.equal(row.installed, false);
@@ -167,7 +205,7 @@ test('GET /api/plugins/library also lists the code-playwright default entry with
   const boot = await bootServer();
   try {
     const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
-    const row = r.body.find(e => e.id === 'code-playwright');
+    const row = r.body.entries.find(e => e.id === 'code-playwright');
     assert.ok(row, 'default entry present');
     assert.equal(row.repo, 'https://github.com/UnmanagedCode/code-playwright');
     assert.equal(row.postClone, 'bash install.sh');
@@ -192,7 +230,7 @@ test('GET /api/plugins/library marks an entry installed once its target dir exis
   try {
     await fs.mkdir(path.join(boot.projectsRoot, 'code-share'), { recursive: true });
     const r = await api(boot.baseUrl, 'GET', '/api/plugins/library');
-    const row = r.body.find(e => e.id === 'code-share');
+    const row = r.body.entries.find(e => e.id === 'code-share');
     assert.equal(row.installed, true);
     assert.equal(row.installedAs, 'code-share');
   } finally { await boot.close(); }
@@ -325,7 +363,7 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     await boot.pluginHost.enable('conv-plugin');
     // Row: backendless, contribution metadata present with hasScaffold; no
     // separate scaffolds array.
-    const row = (await api(boot.baseUrl, 'GET', '/api/plugins')).body.find(p => p.id === 'conv-plugin');
+    const row = (await api(boot.baseUrl, 'GET', '/api/plugins')).body.rows.find(p => p.id === 'conv-plugin');
     assert.equal(row.hasBackend, false);
     assert.equal(row.state, 'enabled');
     assert.deepEqual(row.conventions, [{ slug: 'conv-plugin/vis-check', name: 'Visual check', description: 'verify UX', hasScaffold: true }]);
