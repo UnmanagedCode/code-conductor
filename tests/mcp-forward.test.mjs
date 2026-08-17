@@ -475,6 +475,32 @@ test('forward: wait:true still returns turnEnd/subscribeSkipped, and carries for
   assert.equal(res.forwarded, 1);
 });
 
+// The abort branch of the turn_end waiter: an instance that dies mid-turn must
+// end the wait with a diagnosis, not hang until waitTimeoutMs. Pins the 'status'
+// listener inside waitForEvent's subscribe (src/mcp/handlers.ts → src/waitFor.ts)
+// — without it the wait would sit out the full timeout and report the wrong cause.
+test('wait:true reports the instance dying mid-turn, rather than waiting out the timeout', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const targetSid = await spawnReadyWithScenario('p', SCENARIO_SLOW);
+  const inst = instForSession(instances, targetSid);
+
+  // The slow scenario holds the turn open for 1500ms; kill the target inside
+  // that window so the status listener, not the timer, ends the wait.
+  const pending = rpc('tools/call', {
+    name: 'send_prompt',
+    // Long enough that the timer can never be what ends this wait on the happy
+    // path, short enough that losing the status listener fails fast.
+    arguments: { sessionId: targetSid, text: 'go', wait: true, waitTimeoutMs: 8000 },
+  });
+  await waitFor(() => inst.status === 'turn');
+  await inst.kill({ graceMs: 50 });
+
+  const { body } = await pending;
+  const rendered = JSON.stringify(body);
+  assert.match(rendered, /before event arrived/,
+    'the wait ends with the exited/crashed diagnosis');
+});
+
 test('forward: subscribe still defaults on for a successful forward', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');

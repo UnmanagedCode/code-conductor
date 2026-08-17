@@ -16,6 +16,7 @@
 import type { Server } from 'node:http';
 import type { WebSocketServer } from 'ws';
 import { spawnReplacementAndExit } from './restart.ts';
+import { waitFor } from './waitFor.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import {
   writeResumeManifest,
@@ -97,31 +98,25 @@ function groupOf(inst: InstanceLike): 'worker' | 'conductor' | 'other' {
 function waitAllIdle(instances: InstanceManagerLike, graceMs: number): Promise<{ timedOut: boolean; stragglers: InstanceLike[] }> {
   const live = [...instances.byId.values()].filter((i) => i.proc);
   const pending = new Set(live.filter((i) => i.status === 'turn'));
-  if (pending.size === 0) return Promise.resolve({ timedOut: false, stragglers: [] });
-
-  return new Promise((resolve) => {
-    const listeners = new Map<InstanceLike, (s: InstanceSummary) => void>();
-    let timer: NodeJS.Timeout | null = null;
-    function cleanup(): void {
-      if (timer) clearTimeout(timer);
-      for (const [inst, fn] of listeners) inst.off('status', fn);
-    }
-    for (const inst of pending) {
-      function fn(s: InstanceSummary): void {
-        if (s.status === 'turn' || s.status === 'spawning') return;
-        pending.delete(inst);
-        if (pending.size === 0) {
-          cleanup();
-          resolve({ timedOut: false, stragglers: [] });
+  return waitFor<{ timedOut: boolean; stragglers: InstanceLike[] }>({
+    initial: () => pending.size === 0 ? { value: { timedOut: false, stragglers: [] } } : null,
+    // The N-listener case is exactly why subscribe() returns an opaque teardown
+    // rather than naming one event: the helper never has to know how many.
+    subscribe: (settle) => {
+      const listeners: Array<[InstanceLike, (s: InstanceSummary) => void]> = [];
+      for (const inst of pending) {
+        function fn(s: InstanceSummary): void {
+          if (s.status === 'turn' || s.status === 'spawning') return;
+          pending.delete(inst);
+          if (pending.size === 0) settle({ timedOut: false, stragglers: [] });
         }
+        listeners.push([inst, fn]);
+        inst.on('status', fn);
       }
-      listeners.set(inst, fn);
-      inst.on('status', fn);
-    }
-    timer = setTimeout(() => {
-      cleanup();
-      resolve({ timedOut: true, stragglers: [...pending] });
-    }, graceMs);
+      return () => { for (const [inst, fn] of listeners) inst.off('status', fn); };
+    },
+    timeoutMs: graceMs,
+    onTimeout: () => ({ timedOut: true, stragglers: [...pending] }),
   });
 }
 
@@ -271,20 +266,22 @@ export async function drainAndScheduleRestart({ server, wss, instances, log = co
 
 // Resolve once the instance reaches idle (loadHistory done) or exited/crashed.
 function waitForIdleOnce(inst: InstanceLike, { timeoutMs = 60000 }: { timeoutMs?: number } = {}): Promise<string> {
-  if (inst.status === 'idle') return Promise.resolve('idle');
-  if (inst.status === 'exited' || inst.status === 'crashed') return Promise.resolve(inst.status);
-  return new Promise((resolve) => {
-    let timer: NodeJS.Timeout | null = null;
-    function done(st: string): void {
-      if (timer) clearTimeout(timer);
-      inst.off('status', fn);
-      resolve(st);
-    }
-    function fn(s: InstanceSummary): void {
-      if (s.status === 'idle' || s.status === 'exited' || s.status === 'crashed') done(s.status);
-    }
-    inst.on('status', fn);
-    timer = setTimeout(() => done('timeout'), timeoutMs);
+  return waitFor<string>({
+    initial: () => {
+      if (inst.status === 'idle') return { value: 'idle' };
+      if (inst.status === 'exited' || inst.status === 'crashed') return { value: inst.status };
+      return null;
+    },
+    subscribe: (settle) => {
+      function fn(s: InstanceSummary): void {
+        if (s.status === 'idle' || s.status === 'exited' || s.status === 'crashed') settle(s.status);
+      }
+      inst.on('status', fn);
+      return () => inst.off('status', fn);
+    },
+    timeoutMs,
+    // This one RESOLVES on timeout — the caller treats 'timeout' as a status.
+    onTimeout: () => 'timeout',
   });
 }
 
