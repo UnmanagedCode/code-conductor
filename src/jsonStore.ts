@@ -65,10 +65,13 @@ export interface JsonStoreConfig<T> {
   afterWrite?: (value: T, json: string) => Promise<void>;
 }
 
+// Deliberately NARROW: `load` (lenient, for the query surface) and `mutate`.
+// `loadStrict` and `write` stay INTERNAL — `mutate` is the only way to reach
+// them. Exposing a bare `write()` would be a public UNLOCKED write on the very
+// primitive that exists to guarantee the lock, i.e. a one-call reintroduction
+// of the lost update this module was written to close.
 export interface JsonStore<T> {
   load(): Promise<T>;
-  loadStrict(): Promise<T>;
-  write(value: T): Promise<void>;
   // serialize + lock + strict re-read. `fn` receives the canonical value and
   // calls `write` itself when it actually changed something (so a no-op
   // mutation costs no write).
@@ -129,7 +132,7 @@ export function createJsonStore<T>(config: JsonStoreConfig<T>): JsonStore<T> {
     return serialize(() => withLock(file(), async () => fn(await loadStrict(), write)));
   }
 
-  return { load, loadStrict, write, mutate };
+  return { load, mutate };
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the
