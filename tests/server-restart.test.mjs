@@ -17,10 +17,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import { waitForBanner } from './serverBanner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 
+// Bind-then-free, which leaves a window in which another test file's
+// `bootServer()` can be handed this port. An accepted tradeoff, not a
+// necessity — holding and releasing (as tests/eaddrinuse-retry.test.mjs does)
+// would narrow it, and card 2026-0157 tracks that. What makes the window safe
+// meanwhile: readiness comes from the child's own banner (./serverBanner.mjs),
+// and every destructive POST is preceded by the alive + tryBind checks below.
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer();
@@ -49,21 +56,13 @@ function spawnServer(port, tmpHome) {
   return child;
 }
 
-// Generous default deadline: this test boots the REAL server.ts (port bind +
-// migrations + sync reconcile + restart respawn). Under the concurrent suite
-// these boots are CPU-starved on Termux, so the poll must allow ample headroom.
-// It returns the instant /api/projects responds, so a wide deadline is free on
-// the happy path and only widens the failure-detection window.
-async function waitForListening(port, { timeout = 20_000 } = {}) {
-  const start = Date.now();
-  for (;;) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/projects`);
-      if (r.ok) { await r.text(); return; }
-    } catch { /* not up yet */ }
-    if (Date.now() - start > timeout) throw new Error(`port ${port} never opened`);
-    await new Promise(r => setTimeout(r, 50));
-  }
+// 'EADDRINUSE' when someone still holds the port, 'OK' when it is free.
+function tryBind(port) {
+  return new Promise((resolve) => {
+    const s = net.createServer();
+    s.once('error', (e) => resolve(e.code));
+    s.listen(port, '127.0.0.1', () => s.close(() => resolve('OK')));
+  });
 }
 
 test('POST /api/admin/restart respawns the server on the same port with a new pid', async (t) => {
@@ -97,7 +96,7 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   });
 
   try {
-    await waitForListening(port);
+    await waitForBanner(captured, port);
   } catch (e) {
     throw new Error(`initial start failed: ${e.message}\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
   }
@@ -106,6 +105,13 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   // /api/health for a CHANGED bootId to detect the replacement process).
   const healthBefore = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
   assert.ok(healthBefore?.bootId, 'GET /api/health returns a bootId');
+
+  // Never POST a destructive endpoint at a port whose owner we have not
+  // established. The banner above came from OUR child; these two together say
+  // the socket is still held AND still held by that child — occupancy alone
+  // would also be satisfied by a stranger that grabbed the port after it died.
+  assert.equal(child.exitCode, null, 'our child must still be alive');
+  assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
   // Trigger the restart. The server may exit before the fetch resolves
   // (response is sent immediately, then process.exit kicks in ~50ms
@@ -132,8 +138,9 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.notEqual(grandchildPid, originalPid, 'grandchild pid must differ from original');
 
   // The grandchild rebinds the same port — with the listen-with-retry
-  // loop it may take a moment after the parent releases the socket.
-  await waitForListening(port, { timeout: 20_000 });
+  // loop it may take a moment after the parent releases the socket. It
+  // inherited the same stdout, so its banner is occurrence #2.
+  await waitForBanner(captured, port, { nth: 2, timeout: 20_000 });
 
   // Verify the new process is actually serving (and is the one we
   // think it is — sanity check via PID).
@@ -201,7 +208,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
     await fs.rm(tmpHome, { recursive: true, force: true });
   });
 
-  await waitForListening(port);
+  await waitForBanner(captured, port);
 
   // The initial boot already swept the planted manifest. Re-plant before
   // restart so the restarted process is the one we're asserting against.
@@ -213,6 +220,10 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
     writtenAt: new Date().toISOString(),
     entries: [{ cwd: fakeCwd, sessionId: sid }],
   }));
+
+  // Ownership check before the destructive POST — alive AND holding, see above.
+  assert.equal(child.exitCode, null, 'our child must still be alive');
+  assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
   await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' }).catch(() => {});
 
@@ -226,7 +237,7 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
   assert.ok(m, `no restart pid log\nstdout=${captured.stdout}`);
   grandchildPid = Number(m[1]);
 
-  await waitForListening(port, { timeout: 20_000 });
+  await waitForBanner(captured, port, { nth: 2, timeout: 20_000 });
 
   // Grandchild boot should have swept the manifest + subagent dir, but
   // KEPT the transcript jsonl (always-archive: never delete from disk).

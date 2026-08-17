@@ -17,21 +17,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import { waitForBanner } from './serverBanner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
-
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const s = net.createServer();
-    s.unref();
-    s.on('error', reject);
-    s.listen(0, '127.0.0.1', () => {
-      const { port } = s.address();
-      s.close(() => resolve(port));
-    });
-  });
-}
 
 function spawnServer(port, tmpHome) {
   return spawn(process.execPath, [SERVER_TS], {
@@ -47,30 +36,23 @@ function spawnServer(port, tmpHome) {
   });
 }
 
-async function waitForListening(port, { timeout = 15_000 } = {}) {
-  const start = Date.now();
-  for (;;) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/api/projects`);
-      if (r.ok) { await r.text(); return; }
-    } catch { /* not yet */ }
-    if (Date.now() - start > timeout) throw new Error(`port ${port} never opened`);
-    await new Promise(r => setTimeout(r, 50));
-  }
-}
 
 test('EADDRINUSE: server retries and recovers when the blocking port is released', async (t) => {
-  const port = await getFreePort();
   const tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'orch-eaddrinuse-'));
   await fs.mkdir(path.join(tmpHome, 'project'), { recursive: true });
   await fs.mkdir(path.join(tmpHome, '.claude', 'projects'), { recursive: true });
 
-  // Hold the port so the child gets EADDRINUSE on its first bind attempt.
+  // The blocker picks the port by binding it and NEVER freeing it — a
+  // bind-then-free "free port" would leave a window in which another test
+  // file's server takes it, which both breaks the EADDRINUSE we need and
+  // aims this test's traffic at a stranger. It also makes the collision
+  // deterministic: the port is in use by construction, not by luck.
   const blocker = net.createServer();
   await new Promise((res, rej) => {
     blocker.on('error', rej);
-    blocker.listen(port, '127.0.0.1', res);
+    blocker.listen(0, '127.0.0.1', res);
   });
+  const port = blocker.address().port;
 
   const captured = { stdout: '', stderr: '' };
   const child = spawnServer(port, tmpHome);
@@ -119,7 +101,7 @@ test('EADDRINUSE: server retries and recovers when the blocking port is released
 
   // Primary assertion: server recovers, retries, and serves on the same port.
   try {
-    await waitForListening(port, { timeout: 10_000 });
+    await waitForBanner(captured, port, { timeout: 10_000 });
   } catch (e) {
     throw new Error(
       `server did not recover after blocker release: ${e.message}\n` +
