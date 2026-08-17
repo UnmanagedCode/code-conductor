@@ -3330,7 +3330,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       .find((i): i is Instance => i != null && i.proc != null) ?? null;
   }
   // THE liveness authority for a public sessionId (governance reads this, and
-  // only this — see liveForSession above for the advisory-text counterpart).
+  // only this — see liveForSession above for the "is there a proc I can
+  // address right now" counterpart).
   // Three states collapse to one boolean: proc-attached, a resume in flight
   // (no registry entry exists yet), and a relaunch window — the instance is
   // registered with proc null, covering a prune's kill→relaunch (rotationPending)
