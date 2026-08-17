@@ -235,6 +235,93 @@ test('fork on a temp session is refused 400', async () => {
   } finally { await ctx.close(); }
 });
 
+// ── the `_mutating` interlock, now owned by Instance.forkAtUserMessage ────
+// Fork reads a jsonl a concurrent rewind/prune may be rewriting, so it claims
+// the same flag those two do. These three pin the guard sequence surviving on
+// the instance rather than the route: refuse while the flag is held, release it
+// on the way out, and refuse a session that has no jsonl to read yet.
+
+test('fork refuses 409 while another rewrite holds the _mutating flag', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffff8-2222-3333-4444-555555555555';
+    await seedSession({
+      ctx, projectName: 'forkbusy', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+          { type: 'text', text: 'first reply' },
+        ] } },
+      ],
+    });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkbusy', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle' && ctx.instances.get(id).backingSessionId);
+
+    // Stand in for a rewind/prune mid-flight on the same instance.
+    ctx.instances.get(id)._mutating = true;
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0 });
+    assert.equal(fk.status, 409);
+    assert.match(fk.body.error, /another rewind\/fork\/prune is in progress/);
+  } finally { await ctx.close(); }
+});
+
+test('a successful fork releases the _mutating flag', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    const sid = 'fffffff9-2222-3333-4444-555555555555';
+    await seedSession({
+      ctx, projectName: 'forkrelease', sid,
+      lines: [
+        { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+        { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+          { type: 'text', text: 'first reply' },
+        ] } },
+        { type: 'user', uuid: 'u2', message: { role: 'user', content: 'second' } },
+        { type: 'assistant', uuid: 'a2', message: { id: 'm2', role: 'assistant', content: [
+          { type: 'text', text: 'second reply' },
+        ] } },
+      ],
+    });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkrelease', mode: 'bypassPermissions', resume: sid,
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(fk.status, 201);
+    assert.equal(ctx.instances.get(id)._mutating, false,
+      'the finally released the flag, so a second fork is not locked out');
+
+    // Proof the release is real and not just observably-false: fork again.
+    const again = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 1 });
+    assert.equal(again.status, 201);
+  } finally { await ctx.close(); }
+});
+
+test('fork on an instance that never took a turn is refused 400', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'forkvirgin' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', {
+      project: 'forkvirgin', mode: 'bypassPermissions',
+    });
+    const id = r.body.id;
+    await waitFor(() => ctx.instances.get(id).status === 'idle');
+    // launch() mints a backing id eagerly, so the "no jsonl to read yet" state
+    // has to be staged directly — it is what an instance looks like before its
+    // first turn has produced a transcript.
+    ctx.instances.get(id).backingSessionId = null;
+
+    const fk = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/fork`, { userMessageIndex: 0 });
+    assert.equal(fk.status, 400);
+    assert.match(fk.body.error, /has not yet received a turn/);
+  } finally { await ctx.close(); }
+});
+
 
 // ── the fork must carry the BACKEND ──────────────────────────────────────
 // forkSessionAtUserMessage copies the jsonl but writes no backend sidecar for

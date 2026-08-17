@@ -1048,79 +1048,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
-        if (inst.temp) throw httpError(400, 'temp sessions cannot be forked');
-        if (!inst.backingSessionId) {
-          throw httpError(400, 'no sessionId — instance has not yet received a turn');
-        }
         const idx = Number(jsonBody(req).userMessageIndex);
         if (!Number.isInteger(idx) || idx < 0) {
           throw httpError(400, 'userMessageIndex must be a non-negative integer');
         }
-        // A rewind/prune on the SAME instance rewrites (or truncates) the very
-        // jsonl this fork is about to read. Refuse rather than read a file
-        // mid-rewrite — the mirror of the `_mutating` check those two already do.
-        //
-        // Claim the flag SYNCHRONOUSLY with the check: no await may sit between
-        // them, or two concurrent forks both pass the check, both set the flag,
-        // and the first one's `finally` clears it while the second is still
-        // reading — reintroducing exactly the unprotected read this guards.
-        // Narrower exposure than rewind/prune — fork never kills the source and
-        // holds `_mutating` only for its READ — but a reseed landing inside that
-        // read still 409s in prompt() and loses the handoff summary, so it takes
-        // the same interlock. Via the SHARED method, not a local re-check of the
-        // same two flags: that method exists so these guards cannot drift, and a
-        // third condition added to it must reach fork too. Synchronous, and ahead
-        // of the claim below.
-        inst._assertNoRotationInFlight();
-        if (inst._mutating) {
-          throw httpError(409, 'another rewind/fork/prune is in progress');
-        }
-        inst._mutating = true;
-        // Unlike rewind/prune, fork never kills the source subprocess, so
-        // `!this.proc` doesn't cover it: a prompt landing here would be written
-        // to stdin, the CLI would persist its tail, and that tail could be
-        // folded into the prefix being copied. `_mutating` makes prompt() refuse
-        // for the duration. Scoped to the READ only — once the copy is on disk,
-        // a prompt to the source can no longer affect the fork, so the create()
-        // below (which spawns a whole new instance) stays outside the window.
-        let forked: { newSessionId: string; droppedText: string };
-        try {
-          // Deferred import — keeps the routes module light and avoids pulling
-          // sessionEdit into test paths that never exercise it. Inside the try
-          // so the flag is released if it throws.
-          const { forkSessionAtUserMessage } = await import('./sessionEdit.ts');
-          forked = await forkSessionAtUserMessage({
-            cwd: inst.cwd,
-            sessionId: inst.backingSessionId,
-            userMessageIndex: idx,
-            mode: inst.mode,
-          });
-        } finally {
-          inst._mutating = false;
-        }
-        const { newSessionId, droppedText } = forked;
-        // Spawn the fork as a new instance against the same cwd / worktree.
-        //
-        // `backend` is REQUIRED here, not optional: forkSessionAtUserMessage
-        // copies the jsonl but writes no backend sidecar for the new sessionId,
-        // so create()'s sidecar recovery finds nothing. Omitting it silently
-        // falls back to the identity `claude` backend while inst.model keeps the
-        // substitution backend's foreign model id — and because that model is
-        // non-null, the BACKEND_MODEL_MISSING guard never fires, so the fork
-        // launches a real `claude --model <foreign-id>` against the Anthropic
-        // account. contextWindowTokens rides along as the last-known fallback.
-        const newInst = await instances.create({
-          project: inst.project,
-          resume: newSessionId,
-          mode: inst.mode,
-          effort: inst.effort,
-          thinking: inst.thinking,
-          backend: inst.backend,
-          model: inst.model,
-          contextWindowTokens: inst.contextWindowTokens,
-          worktree: inst.worktree?.worktreeName ?? null,
-          prefill: droppedText,
-        });
+        // Every guard, the rewrite-interlock flag's claim/release and the
+        // derivation of the respawn arguments live on the instance alongside its
+        // rewind/prune siblings; the route only spawns what it hands back.
+        const { newSessionId, droppedText, createArgs } = await inst.forkAtUserMessage(idx);
+        const newInst = await instances.create(createArgs);
         res.status(201).json({
           ok: true,
           newSessionId,
@@ -1503,7 +1439,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // itself is already persisted above regardless of outcome here.
       try {
         if (instances && (onOverage !== undefined || overageThreshold !== undefined)) {
-          await instances._usageMonitor.forceTick(); // stop direction: lower threshold trips now
+          await instances.forceUsageTick();          // stop direction: lower threshold trips now
           instances.reevaluateOverageResumes();      // release direction: raised/disabled threshold resumes now
         }
       } catch { /* best-effort re-evaluation */ }

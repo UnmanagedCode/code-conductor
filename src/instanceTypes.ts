@@ -32,6 +32,39 @@ export interface InstanceSummary {
   [key: string]: unknown;
 }
 
+// InstanceManager.create()/_doCreate() input — the REST/MCP spawn surface, and
+// the argument list Instance.forkAtUserMessage() hands back for its respawn.
+// `tier`/`role` resolve the default effort only (never stored); `backend` is
+// the registry id (explicit wins; a resume without one recovers the sidecar's).
+export interface CreateInstanceInput {
+  // Optional on the type only so `create(opts = {})` compiles; _doCreate
+  // validates it (throws 400 'project required') and every caller passes it.
+  project?: string;
+  resume?: string;
+  mode?: string | null;
+  effort?: string | null;
+  tier?: string;
+  role?: string;
+  thinking?: string | null;
+  model?: string | null;
+  contextWindowTokens?: number | null;
+  backend?: string | null;
+  worktree?: string | boolean | null;
+  // Both apply only to `worktree: true` (creating a fresh worktree) and are
+  // refused otherwise — see _doCreate. baseWorktree bases the new worktree on
+  // another worktree of the project instead of its root; name is slugified into
+  // the new worktree's branch + directory name.
+  baseWorktree?: string;
+  name?: string;
+  temp?: boolean;
+  conducted?: boolean;
+  debug?: boolean;
+  autoApprovePlan?: boolean;
+  playbookEnforcement?: PlaybookEnforcement;
+  callerInstanceId?: string | null;
+  prefill?: string;
+}
+
 export interface InstanceLike {
   readonly id: string;
   // The PERMANENT public id (what summary() emits and every surface reports).
@@ -89,10 +122,6 @@ export interface InstanceLike {
   endRotation(opts: { ok: boolean; comesUpIdle: boolean }): void;
   beginRenewal(): void;
   endRenewal(): void;
-  // Throws 409 SESSION_ROTATING when a rotation is in flight, reading the UNION of
-  // both windows. The fork route calls it so the three destructive rewrites cannot
-  // drift — see src/instances.ts.
-  _assertNoRotationInFlight(): void;
   signalRotationTurnLost(reason: 'renew' | 'prune'): void;
   carryMarkersAcrossRenewal(oldSid: string | null): Promise<void>;
   // Await this instance's durable session-lineage writes, rethrowing the first
@@ -125,16 +154,22 @@ export interface InstanceLike {
   // `setSessionTitle(...)`'s result, which is null when the title is cleared.
   setTitle(title: string | null): void;
   windDown(text: string): void;
-  // Route surface (src/routes.ts): spawn/fork inputs read back off the
-  // instance, prune/rewind/debug mutation, the hook-callback envelope, and the
-  // mutable `_mutating` guard fork/rewind/prune claim synchronously.
-  readonly effort: string | null;
-  readonly thinking: string | null;
-  readonly contextWindowTokens: number | null;
+  // Route surface (src/routes.ts): the three destructive session rewrites,
+  // debug mutation and the hook-callback envelope. `_mutating` is the guard
+  // fork/rewind/prune claim synchronously; it stays on the contract for the
+  // MCP-side interlock, which reads it directly (src/mcp/handlers.ts).
   readonly debug: boolean;
   readonly debugDir: string | null;
   _mutating: boolean;
   rewindToUserMessage(userMessageIndex: number): Promise<{ droppedText: string }>;
+  // Fork at the Nth user prompt, leaving THIS session intact. Owns the whole
+  // guard→claim→read→release sequence plus the derivation of its respawn
+  // argument list; the caller only makes the create() call — see src/instances.ts.
+  forkAtUserMessage(userMessageIndex: number): Promise<{
+    newSessionId: string;
+    droppedText: string;
+    createArgs: CreateInstanceInput;
+  }>;
   pruneSession(input?: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown }): Promise<Record<string, unknown>>;
   enableDebug(): { ok: boolean; alreadyOn?: boolean; debugDir?: string | null; reason?: string };
   handleHookCallback(envelope: unknown, res: Response): void;
@@ -179,26 +214,7 @@ export interface InstanceManagerLike {
   conductedWorkersOf(conductorId: string): Array<{ project: string; sessionId: string; worktreeName: string | null }>;
   isIdleCaller(instanceId: string): boolean;
   shutdownForResumeSync(): void;
-  create(input: {
-    project: string;
-    resume?: string;
-    mode?: string | null;
-    effort?: string | null;
-    tier?: string;
-    role?: string;
-    thinking?: string | null;
-    model?: string | null;
-    contextWindowTokens?: number | null;
-    backend?: string | null;
-    worktree?: string | boolean | null;
-    temp?: boolean;
-    conducted?: boolean;
-    debug?: boolean;
-    autoApprovePlan?: boolean;
-    playbookEnforcement?: PlaybookEnforcement;
-    callerInstanceId?: string | null;
-    prefill?: string;
-  }): Promise<InstanceLike>;
+  create(input: CreateInstanceInput): Promise<InstanceLike>;
   _inUsageWindowFlow(inst: InstanceLike): boolean;
   _armRestoredAutoResume(inst: InstanceLike, fireAtMs: number): void;
   // MCP handler surface (src/mcp/handlers.ts).
@@ -227,7 +243,7 @@ export interface InstanceManagerLike {
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
   removeAllForProject(projectName: string): Promise<number>;
   reevaluateOverageResumes(): void;
-  _usageMonitor: { forceTick(): Promise<unknown> };
+  forceUsageTick(): Promise<unknown>;
   // Restart surface (src/restart.ts / resumeRestart.ts) — the restart routes
   // pass the manager to scheduleRestart/drainAndScheduleRestart as the
   // RestartManagerLike subset.
