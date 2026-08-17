@@ -23,7 +23,10 @@ test('the fixture manifest validates', async () => {
   const r = validateManifest(await readFixtureManifest());
   assert.equal(r.errors, undefined);
   assert.equal(r.manifest.id, 'fake-plugin');
-  assert.equal(r.manifest.mcp.scope, 'project');
+  // The fixture declares "scope": "project" the way code-hub's shipped manifest
+  // does, so this whole file's plugin fixtures exercise the tolerate-and-drop
+  // path end to end rather than a scope-less manifest.
+  assert.equal(r.manifest.mcp.scope, undefined, 'mcp.scope is tolerated on input and dropped at normalization');
   assert.equal(r.manifest.mcp.timeoutMs, 30000);
   assert.equal(r.manifest.frontend.navLabel, 'Fake');
 });
@@ -48,11 +51,11 @@ test('unsupported pluginApi is flagged incompatible, not merely invalid', () => 
   assert.ok(r.errors[0].includes('unsupported pluginApi 2'));
 });
 
-test('unknown top-level keys rejected; settings still inert-allowed', () => {
+test("unknown top-level keys rejected, including the retired 'settings'", () => {
   assert.ok(validateManifest(base({ bogus: 1 })).errors.some(e => e.includes("unknown key 'bogus'")));
-  const r = validateManifest(base({ settings: {} }));
-  assert.equal(r.errors, undefined);
-  assert.equal(r.manifest.settings, undefined); // inert: validated-but-not-normalized
+  // `settings` was never validated and never read — same treatment as the
+  // retired 'scaffolds' key below.
+  assert.ok(validateManifest(base({ settings: {} })).errors.some(e => e === "unknown key 'settings'"));
 });
 
 test('conventions: contributions-only manifest (no backend) validates and normalizes', () => {
@@ -187,12 +190,20 @@ test('frontend defaults: path=/ and navLabel=name', () => {
   assert.deepEqual(r.manifest.frontend, { path: '/', navLabel: 'My Plugin' });
 });
 
-test('mcp normalization: scope default, timeoutMs cap at 120000', () => {
+test('mcp normalization: timeoutMs cap at 120000; scope accepted but dropped', () => {
   const mcp = { endpoint: '/api/mcp', timeoutMs: 999999, tools: [{ name: 't', description: 'd', inputSchema: { type: 'object' } }] };
   const r = validateManifest(base({ backend: { start: 'x' }, mcp }));
   assert.equal(r.errors, undefined);
-  assert.equal(r.manifest.mcp.scope, 'project');
+  assert.equal(r.manifest.mcp.scope, undefined, 'never normalized onto PluginMcp — nothing reads it');
   assert.equal(r.manifest.mcp.timeoutMs, 120000);
+
+  // Shipped manifests declare mcp.scope (code-hub) — it must still validate
+  // clean. THIS is the assertion that fails if someone later drops 'scope'
+  // from the mcp accepted-key list.
+  assert.equal(validateManifest(base({ backend: { start: 'x' }, mcp: { ...mcp, scope: 'project' } })).errors, undefined);
+  // And an unrecognised value is tolerated too, precisely because the value is
+  // read nowhere — validating it would imply it means something.
+  assert.equal(validateManifest(base({ backend: { start: 'x' }, mcp: { ...mcp, scope: 'porject' } })).errors, undefined);
 });
 
 test('mcp tools: name shape, duplicates, empty list', () => {

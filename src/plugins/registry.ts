@@ -747,7 +747,7 @@ export function createPluginHost(opts: {
     portFor: (id: string) => runtimeRecords[id]?.port ?? null,
     reportUpstreamFailure,
   });
-  const toolsFor = (callerId: string) => mcpBridge.toolsFor(callerId);
+  const toolsFor = () => mcpBridge.toolsFor();
 
   function runtimeInfo(id: string): { status: string; port: number | null } {
     const rec = runtimeRecords[id];

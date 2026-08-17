@@ -40,10 +40,9 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
   // Every enabled plugin's tools are visible to EVERY caller — the
   // conductor/UI and workers in any project. (v1 shipped per-project
   // scoping; live validation showed plugin tools are wanted everywhere, so
-  // the manifest `scope` field is accepted but inert.) The callerId param
-  // stays in the signature — it's the registry's stable surface and keeps
-  // the per-request composition site in mcp/server.ts unchanged.
-  function toolsFor(_callerId: string) {
+  // the manifest `mcp.scope` field is tolerated and dropped — see manifest.ts.)
+  // Hence no caller parameter: there is nothing to scope by.
+  function toolsFor() {
     const out: Array<{ name: string; description: string; inputSchema: unknown; handler: (args: unknown, ctx: { callerId: string | null }) => Promise<unknown> }> = [];
     for (const entry of listMcpPlugins()) {
       const mcp = entry.manifest.mcp;

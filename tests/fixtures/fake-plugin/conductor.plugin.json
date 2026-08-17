@@ -10,6 +10,7 @@
   "frontend": { "path": "/", "navLabel": "Fake" },
   "mcp": {
     "endpoint": "/api/mcp",
+    "scope": "project",
     "timeoutMs": 30000,
     "tools": [
       {
