@@ -189,7 +189,15 @@ describe('a sidecar write that lands after the spawn response', () => {
       await fs.unlink(lockPath); released = true;
       // NEGATIVE CONTROL — to re-verify this test still bites, change
       // `settledSessionBackend(sid)` below to `getSessionBackend(sid)` and re-run
-      // this file alone: it must fail with `AssertionError: null !== { … }`.
+      // this file alone: it should fail with `AssertionError: null !== { … }` on
+      // the overwhelming majority of runs. This is NOT fully deterministic like
+      // the forcing assertion above: once the lock is unlinked, the pending
+      // `markSessionBackend` write is still racing its own retry backoff timer
+      // (storeLock.ts) against this immediate read, with nothing synchronizing
+      // the two — on rare adverse scheduling the retry could win and the swap
+      // would pass. A pass on this recipe means "re-run it", not "this test no
+      // longer detects the bug" — the committed assertion below waits
+      // deterministically and is unaffected either way.
       assert.deepEqual(await settledSessionBackend(sid),
         { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
     } finally {
