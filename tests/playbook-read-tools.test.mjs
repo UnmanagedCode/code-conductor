@@ -563,6 +563,19 @@ test('playbook_state derives the run graph and its history, keeping concurrent r
   } finally { await t.close(); }
 });
 
+test('playbook_state\'s `live` flips to false once the worker is actually killed', async () => {
+  // The other direction of the assertion above: `live` is read from the
+  // instance manager, not a ledger fold, so it must track a REAL kill —
+  // not merely start true and never move.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    assert.equal((await t.call('playbook_state', { sessionId: w.sessionId })).worker.live, true);
+    await t.call('kill_instance', { sessionId: w.sessionId });
+    await waitFor(async () => (await t.call('playbook_state', { sessionId: w.sessionId })).worker.live === false);
+  } finally { await t.close(); }
+});
+
 test('playbook_state reports no enforcement block for a non-conductor caller', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {

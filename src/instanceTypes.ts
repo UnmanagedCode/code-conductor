@@ -80,6 +80,11 @@ export interface InstanceLike {
   // Wider than rotationPending: covers the reseed window the rotation flag
   // deliberately leaves open. Any destructive rewrite must check the union.
   readonly renewalPending: boolean;
+  // A rewindToUserMessage/InstanceManager.respawn relaunch in flight — the
+  // liveness-only sibling of rotationPending, deliberately outside the
+  // renew/prune `_rotation` machinery (see src/instances.ts). Read by
+  // InstanceManager.isSessionLive only.
+  readonly relaunching: boolean;
   beginRotation(reason: 'renew' | 'prune'): void;
   endRotation(opts: { ok: boolean; comesUpIdle: boolean }): void;
   beginRenewal(): void;
@@ -203,6 +208,10 @@ export interface InstanceManagerLike {
   resolveSessionRef(input: string): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
   list(): Array<InstanceSummary & { hasIdleSubscriber: boolean }>;
   liveForSession(sessionId: string): InstanceLike | null;
+  // THE liveness authority for a public sessionId — see src/instances.ts. Every
+  // consumer of worker liveness (playbook policy, MCP read surfaces) reads this,
+  // never a ledger-side mirror.
+  isSessionLive(sessionId: string): boolean;
   remove(id: string): Promise<unknown>;
   respawn(id: string): Promise<InstanceLike>;
   subscribeIdle(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean };

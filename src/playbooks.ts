@@ -136,8 +136,8 @@ export interface NeedsEntry {
   // "live" (default) — the worker is still running.
   // "retired"        — it is gone: an enforced handoff, not advice.
   // "any"            — no liveness check.
-  // Best-effort: `live` is a projection of the manager's status stream, which a
-  // prune desynchronises in the safe direction. See playbookLedger.ts.
+  // Answered from InstanceManager.isSessionLive (the `isLive` DecideInput
+  // parameter) — THE liveness authority, never a ledger-side projection.
   liveness: 'live' | 'retired' | 'any';
 }
 
@@ -670,6 +670,10 @@ export interface DecideInput {
   args: Record<string, unknown>;
   projection: Projection;
   playbooks: Map<string, Playbook>;
+  // THE liveness oracle (InstanceManager.isSessionLive) — REQUIRED, not
+  // defaulted: a default reading the projection would be the second liveness
+  // authority this module exists to eliminate. Every call site must supply one.
+  isLive: (sessionId: string) => boolean;
 }
 
 export function legalMovesFrom(playbook: Playbook | null, stage: string | null): LegalMoves {
@@ -754,19 +758,20 @@ export function resolveMove(
   return { currentStage, resultingStage: currentStage, kind: 'none' };
 }
 
-export function decide({ toolName: rawToolName, args, projection, playbooks }: DecideInput): Decision {
+export function decide({ toolName: rawToolName, args, projection, playbooks, isLive }: DecideInput): Decision {
   const toolName = normalizeToolName(rawToolName);
   return toolName === 'spawn_instance'
-    ? decideSpawn({ args, projection, playbooks })
-    : decideTargeted({ toolName, args, projection, playbooks });
+    ? decideSpawn({ args, projection, playbooks, isLive })
+    : decideTargeted({ toolName, args, projection, playbooks, isLive });
 }
 
 // spawn_instance is governed by the stage being ENTERED: there is no "current"
 // worker (the conductor itself is in no stage), so that one stage supplies both
 // the permission (is it spawnable?) and the entry conditions (needs, pin).
 function decideSpawn(
-  { args, projection, playbooks }:
-  { args: Record<string, unknown>; projection: Projection; playbooks: Map<string, Playbook> },
+  { args, projection, playbooks, isLive }:
+  { args: Record<string, unknown>; projection: Projection; playbooks: Map<string, Playbook>;
+    isLive: (sessionId: string) => boolean },
 ): Decision {
   const provenanceArg = isRecord(args.provenance) ? args.provenance : {};
   const suppliedProvenance: Record<string, string> = {};
@@ -862,14 +867,14 @@ function decideSpawn(
   // `needs` before capacity: the run whose slots are being counted is the one the
   // `needs` targets belong to, so there is nothing meaningful to count until
   // those targets are known-good. (decideTargeted checks them in the same order.)
-  const needsRefusal = checkNeeds({ playbook, stage, stageName, suppliedProvenance, projection, subject: null });
+  const needsRefusal = checkNeeds({ playbook, stage, stageName, suppliedProvenance, projection, subject: null, isLive });
   if (needsRefusal) return needsRefusal;
 
   // Capacity is scoped to the RUN (the connected component), not globally. Only
   // a non-root spawn joins an existing run, so a root spawn always has room.
   if (stage.workers === 'one' && ancestors.length > 0) {
     const anchor = ancestors[0];
-    const blockers = liveSessionsInStage(projection, anchor, stageName);
+    const blockers = liveSessionsInStage(projection, anchor, stageName, isLive);
     if (blockers.length > 0) {
       return refuse('STAGE_AT_CAPACITY',
         capacityReason(stageName, blockers[0]),
@@ -950,8 +955,9 @@ function decideResume(
 }
 
 function decideTargeted(
-  { toolName, args, projection, playbooks }:
-  { toolName: string; args: Record<string, unknown>; projection: Projection; playbooks: Map<string, Playbook> },
+  { toolName, args, projection, playbooks, isLive }:
+  { toolName: string; args: Record<string, unknown>; projection: Projection; playbooks: Map<string, Playbook>;
+    isLive: (sessionId: string) => boolean },
 ): Decision {
   const sessionId = typeof args.sessionId === 'string' ? args.sessionId : '';
   const subject = sessionId ? projection.bySession.get(sessionId) : undefined;
@@ -1025,12 +1031,12 @@ function decideTargeted(
       for (const [s, sid] of Object.entries(args.provenance)) if (typeof sid === 'string') suppliedProvenance[s] = sid;
     }
     const needsRefusal = checkNeeds({
-      playbook, stage: resulting, stageName: resultingName, suppliedProvenance, projection, subject: sessionId,
+      playbook, stage: resulting, stageName: resultingName, suppliedProvenance, projection, subject: sessionId, isLive,
     });
     if (needsRefusal) return needsRefusal;
 
     if (resulting.workers === 'one') {
-      const blockers = liveSessionsInStage(projection, sessionId, resultingName);
+      const blockers = liveSessionsInStage(projection, sessionId, resultingName, isLive);
       if (blockers.length > 0) {
         return refuse('STAGE_AT_CAPACITY',
           capacityReason(resultingName, blockers[0]),
@@ -1064,9 +1070,9 @@ function describeNeed(need: NeedsEntry): string {
 }
 
 function checkNeeds(
-  { playbook, stage, stageName, suppliedProvenance, projection, subject }:
+  { playbook, stage, stageName, suppliedProvenance, projection, subject, isLive }:
   { playbook: Playbook; stage: Stage; stageName: string; suppliedProvenance: Record<string, string>;
-    projection: Projection; subject: string | null },
+    projection: Projection; subject: string | null; isLive: (sessionId: string) => boolean },
 ): Decision | null {
   const moves = legalMovesFrom(playbook, stageName);
   for (const need of stage.needs) {
@@ -1093,14 +1099,14 @@ function checkNeeds(
         `history is: ${target.stageHistory.join(' -> ')}.`, moves);
     }
     // LIVENESS — before position (see the header).
-    if (need.liveness === 'live' && !target.live) {
+    if (need.liveness === 'live' && !isLive(sid)) {
       return refuse('NEEDS_WORKER_GONE',
-        `needs.${need.stage} requires worker ${short(sid)} to still be running, but it has retired (last in ` +
-        `'${target.stage}'). This is not a wiring mistake: the worker you named is gone. Spawn a replacement ` +
-        `and name that one, or use a stage whose needs declare liveness:"any".`,
+        `needs.${need.stage} requires worker ${short(sid)} to still be running, but it has no running process ` +
+        `(last known stage '${target.stage}'). This is not a wiring mistake: the worker you named is gone. Spawn ` +
+        `a replacement and name that one, or use a stage whose needs declare liveness:"any".`,
         moves);
     }
-    if (need.liveness === 'retired' && target.live) {
+    if (need.liveness === 'retired' && isLive(sid)) {
       return refuse('NEEDS_UNSATISFIED',
         `needs.${need.stage} requires worker ${short(sid)} to be RETIRED before this stage is entered, but it is ` +
         `still running (in '${target.stage}'). Retire it first: kill_instance({sessionId: "${short(sid)}"}).`,
@@ -1237,17 +1243,14 @@ function short(sessionId: string): string {
 // The STAGE_AT_CAPACITY reason, shared by the spawn and transition sites: names
 // the blocking worker (both in the narrative and in the copy-pasteable call —
 // sessionId args are prefix-resolved at the MCP boundary, so the shortened id
-// works), offers the `workers:"many"` alternative, and says explicitly that a
-// slot held by a session the orchestrator no longer knows about (e.g. after a
-// host reboot) is released automatically at orchestrator start — kill_instance
-// is a recovery for a worker that is actually still running, not the only way
-// out of this refusal.
+// works) and offers the `workers:"many"` alternative. Capacity counts LIVE
+// processes (InstanceManager.isSessionLive), so a session the orchestrator no
+// longer knows about (e.g. after a host reboot) holds no slot at all — there is
+// nothing to reconcile and no wedge to recover from.
 function capacityReason(stageName: string, blockingSessionId: string): string {
   return `stage '${stageName}' declares workers:"one" and this run already has a live worker in it: ` +
     `${short(blockingSessionId)}. Retire it (kill_instance({sessionId: "${short(blockingSessionId)}"})) to free ` +
-    'the slot, or use a playbook whose stage declares workers:"many". A slot held by a session the ' +
-    'orchestrator no longer knows about (e.g. after a host reboot) is released automatically at orchestrator ' +
-    'start, so it cannot wedge a run permanently.';
+    'the slot, or use a playbook whose stage declares workers:"many".';
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

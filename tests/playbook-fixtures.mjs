@@ -25,6 +25,20 @@ export function proj(events) {
   return foldProjection(events.map((e, i) => ({ seq: i + 1, ts: `2026-08-05T00:00:0${i % 10}Z`, ...e })));
 }
 
+// decide()'s isLive oracle now comes from InstanceManager, not the ledger — so
+// a pure policy test that wants "liveness follows this event list" (spawn/resume
+// -> live, retire -> not live) builds its own tiny oracle from the same fixture
+// events, rather than reading a fold that no longer carries the bit. This is
+// ONLY a test fixture: production wires isLive to InstanceManager.isSessionLive.
+export function isLiveFromEvents(events) {
+  const live = new Set();
+  for (const ev of events) {
+    if (ev.kind === 'spawn' || ev.kind === 'resume') live.add(ev.sessionId);
+    else if (ev.kind === 'retire') live.delete(ev.sessionId);
+  }
+  return sid => live.has(sid);
+}
+
 export async function builtins() {
   const { playbooks, errors } = await loadPlaybooks();
   assert.deepEqual(errors, [], 'built-in playbooks must validate');

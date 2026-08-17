@@ -507,6 +507,19 @@ export class Instance extends EventEmitter implements InstanceLike {
   //   cleared, handoff summary lost, conductor silent until the watchdog. Which is
   //   exactly the outcome the interlock exists to prevent.
   _renewing: boolean;
+  // TRUE while this instance is between an old proc (killed, or already dead)
+  // and the launch() that replaces it, for the two relaunch paths that are
+  // NOT `_rotation`: rewindToUserMessage and InstanceManager.respawn. Read
+  // ONLY by isSessionLive — deliberately NOT folded into `_rotation`/
+  // `rotationPending`, which carries a `reason: RotationMechanism` ('renew' |
+  // 'prune') that _assertNoRotationInFlight's error text and the
+  // rotation_complete/idle-wake path both key off; widening that union would
+  // make a rewind/respawn collision misreport as "a context renewal is in
+  // progress" and would wire an unrelated wake path these operations were
+  // never meant to arm. This flag has none of that: no reason string, no UI
+  // event, no interaction with any other guard — it exists solely so a
+  // worker mid-relaunch here reads live the same way prune's window does.
+  _relaunching: boolean;
   // The last COMPLETED rotation. Pinning the public id removes the only tell a
   // conductor had that a rotation happened at all, so these replace it. Set here;
   // surfaced on summary() / CONDUCTOR_VIEW_KEYS in stage 8.
@@ -646,6 +659,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._lineageError = null;
     this._rotation = null;
     this._renewing = false;
+    this._relaunching = false;
     this.lastRotatedAt = null;
     this.rotationReason = null;
     this.pid = null;
@@ -2378,6 +2392,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // and by the two refusal sites that keep renew and prune mutually exclusive.
   get rotationPending(): boolean { return this._rotation !== null; }
 
+  // True while a rewindToUserMessage/InstanceManager.respawn relaunch is in
+  // flight — see the `_relaunching` field comment. Read ONLY by isSessionLive.
+  get relaunching(): boolean { return this._relaunching; }
+
   // Which mechanism holds the window, or null. The refusal sites need the reason,
   // not just the boolean: a renewal re-arming over its own window is idempotent,
   // while a renewal arming over a PRUNE is the interleaving that must be refused.
@@ -2788,6 +2806,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw Object.assign(new Error('cannot rewind during a running turn — interrupt first'), { statusCode: 409 });
     }
     this._mutating = true;
+    // Marks the kill→relaunch window for isSessionLive — see the
+    // `_relaunching` field comment. Deliberately NOT beginRotation: this is
+    // not a `renew`/`prune` rotation (no reason string, no rotation_complete
+    // event, no interaction with _assertNoRotationInFlight's messaging).
+    this._relaunching = true;
     try {
       // Kill the subprocess first so the CLI can't flush a stale tail
       // into the jsonl mid-truncate. Suppress the temp-archive-on-exit
@@ -2828,6 +2851,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       return { droppedText: result.droppedText };
     } finally {
       this._mutating = false;
+      this._relaunching = false;
     }
   }
 
@@ -3273,9 +3297,58 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // The single live (proc-attached) instance for a sessionId, or null. Folds
   // the `idsForSession(sid).map(get).find(i => i && i.proc)` idiom scattered
   // across the MCP handlers + idle-callback delivery.
+  //
+  // Answers a DIFFERENT question from isSessionLive below: "is there a proc I
+  // can address right now" (can I prompt/interrupt/kill it this instant), not
+  // "is this worker coming back". The two deliberately DISAGREE during a
+  // coming-up window (a resume in flight, a prune/rewind/respawn relaunch):
+  // this reads null there, isSessionLive reads true. That is intended, not a
+  // bug to reconcile. Its readers fall into three groups, and only the third
+  // is what "governance reads isSessionLive exclusively" is actually about:
+  //   - STRICT-LIVE worker-addressing resolution (src/mcp/handlers.ts's
+  //     getInst/getInstOrDisk), which hard-refuses SESSION_NOT_LIVE for every
+  //     worker-addressing tool — CORRECTLY reads this one, not isSessionLive:
+  //     you cannot prompt/interrupt/kill a proc that is not attached yet, so
+  //     refusing during a coming-up window is the right answer, not a gap.
+  //   - Caller resolution and idle-wake dispatch (handlers.ts's caller
+  //     lookups, playbookGate.ts's conductor-caller check, and
+  //     src/idleSubscriptions.ts's delivery paths) — same "is there a proc to
+  //     act on" question, asked of the CALLER or the WATCHED target rather
+  //     than the addressed worker.
+  //   - Advisory text (a forward/get_recent_messages hint, a
+  //     NOTHING_TO_FORWARD reason) — merely describes state to a human/LLM
+  //     reader, refuses nothing.
+  // Playbook policy (decide()) is the one caller that must NOT read this —
+  // it takes `isLive` as a required parameter, always isSessionLive. Do not
+  // fold liveForSession and isSessionLive into one function: that would
+  // either make the strict-live resolver wrongly permissive during a
+  // coming-up window, or reintroduce a second liveness authority on the
+  // governance side — the two questions are different, not the same
+  // question answered two different ways.
   liveForSession(sessionId: string): Instance | null {
     return this.idsForSession(sessionId).map(id => this.byId.get(id))
       .find((i): i is Instance => i != null && i.proc != null) ?? null;
+  }
+  // THE liveness authority for a public sessionId (governance reads this, and
+  // only this — see liveForSession above for the "is there a proc I can
+  // address right now" counterpart).
+  // Three states collapse to one boolean: proc-attached, a resume in flight
+  // (no registry entry exists yet), and a relaunch window — the instance is
+  // registered with proc null, covering a prune's kill→relaunch (rotationPending)
+  // and rewindToUserMessage's/InstanceManager.respawn's (_relaunching), which
+  // are structurally the same window but outside the renew/prune `_rotation`
+  // machinery. A caller that used liveForSession alone would read a
+  // genuinely-coming-up worker as gone in any of these.
+  //
+  // `_resumingPublicIds` covers from THIS check onward — not the whole
+  // create({resume}) call. `publicIdFor`/`resolveBacking` are awaited BEFORE
+  // the `.add` (`_doCreate`, below), so a short prefix is not covered; that
+  // prefix is unfixable by construction, since the public sessionId is not yet
+  // known until `publicIdFor` resolves it.
+  isSessionLive(sessionId: string): boolean {
+    if (this._resumingPublicIds.has(sessionId)) return true;
+    const inst = this.anyForSession(sessionId);
+    return !!inst && (inst.proc != null || inst.rotationPending || inst.relaunching);
   }
   // Any instance (live or exited) for a sessionId, or null — the `.find(Boolean)`
   // counterpart used where a non-running instance is still a valid target.
@@ -4093,7 +4166,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // transcript into the ring — otherwise the replay piles up on top of the
     // existing conversation and every message renders twice.
     inst._wipeForResume();
-    await inst.launch({ resume: sessionId });
+    // Marks the relaunch window for isSessionLive (see the `_relaunching`
+    // field comment) — `inst.proc` is already null on entry here (checked
+    // above), so this whole call IS the coming-up window, not just a kill
+    // prefix of it.
+    inst._relaunching = true;
+    try {
+      await inst.launch({ resume: sessionId });
+    } finally {
+      inst._relaunching = false;
+    }
     this.emit('list_changed');
     return inst;
   }

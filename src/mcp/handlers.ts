@@ -638,7 +638,7 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
     for (const sid of proj.bySession.keys()) roots.add(runRootFor(proj, sid));
     return {
       tracked: false,
-      runs: [...roots].sort().map(root => ({ root, members: membersOf(proj, root) })),
+      runs: [...roots].sort().map(root => ({ root, members: membersOf(proj, root, gate.isLive) })),
       enforcement,
     };
   }
@@ -656,7 +656,7 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
 
   const { playbooks } = await loadPlaybooks();
   const pb = playbooks.get(worker.playbook);
-  const members = membersOf(proj, worker.runRoot);
+  const members = membersOf(proj, worker.runRoot, gate.isLive);
   const memberIds = new Set(members.map(m => m.sessionId));
 
   const all = await gate.readHistory();
@@ -676,13 +676,13 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
       stage: worker.stage,
       stageHistory: worker.stageHistory,
       provenance: worker.provenance,
-      live: worker.live,
+      live: gate.isLive(worker.sessionId),
       runRoot: worker.runRoot,
       ...(worker.project !== undefined ? { project: worker.project } : {}),
       ...(worker.worktree !== undefined ? { worktree: worker.worktree } : {}),
     },
     run: { root: worker.runRoot, members },
-    nextMoves: pb ? nextMovesFor({ pb, worker: worker.sessionId, stage: worker.stage, proj }) : [],
+    nextMoves: pb ? nextMovesFor({ pb, worker: worker.sessionId, stage: worker.stage, proj, isLive: gate.isLive }) : [],
     // Definitions are not pinned to a live run (settled), so a worker can outlive
     // its playbook. Say so rather than returning a bare empty graph.
     ...(pb ? {} : { playbookMissing: worker.playbook }),
@@ -697,8 +697,8 @@ export async function playbookState({ sessionId }: { sessionId?: string }, ctx: 
 // would be refused comes back with the gate's own code and reason, which is
 // exactly what the caller needs in order to satisfy it.
 function nextMovesFor(
-  { pb, worker, stage, proj }:
-  { pb: Playbook; worker: string; stage: string; proj: Projection },
+  { pb, worker, stage, proj, isLive }:
+  { pb: Playbook; worker: string; stage: string; proj: Projection; isLive: (sessionId: string) => boolean },
 ): Array<{ to: string; via: string; ok: boolean; code?: string; reason?: string }> {
   const playbooks = new Map([[pb.id, pb]]);
   return legalMovesFrom(pb, stage).transitions.map(({ to, via }) => {
@@ -707,7 +707,7 @@ function nextMovesFor(
     const args: Record<string, unknown> = via === 'send_prompt'
       ? { sessionId: worker, text: '', stage: to }
       : { sessionId: worker };
-    const d = decide({ toolName: via, args, projection: proj, playbooks });
+    const d = decide({ toolName: via, args, projection: proj, playbooks, isLive });
     return d.ok
       ? { to, via, ok: true }
       : { to, via, ok: false, code: d.code, reason: d.reason };
@@ -718,11 +718,11 @@ function runRootFor(proj: Projection, sessionId: string): string {
   return proj.bySession.get(sessionId)?.runRoot ?? sessionId;
 }
 
-function membersOf(proj: Projection, anchor: string) {
+function membersOf(proj: Projection, anchor: string, isLive: (sessionId: string) => boolean) {
   return runMembers(proj, anchor)
     .map(sid => proj.bySession.get(sid))
     .filter((s): s is NonNullable<typeof s> => !!s)
-    .map(s => ({ sessionId: s.sessionId, playbook: s.playbook, stage: s.stage, live: s.live }));
+    .map(s => ({ sessionId: s.sessionId, playbook: s.playbook, stage: s.stage, live: isLive(s.sessionId) }));
 }
 
 // Map the shared worktree-metadata shape (whose property is `worktreeName`)
