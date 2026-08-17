@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.ts';
 import { encodeCwd } from '../src/projects.ts';
+import { getSessionBackend } from '../src/sessionBackends.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { ensureSafeStoreEnv } from './safeStoreRoot.mjs';
@@ -189,6 +190,15 @@ export async function waitFor(predicate, { timeout = 10000, interval = 20 } = {}
     if (Date.now() - start > timeout) throw new Error('waitFor: timeout');
     await new Promise(r => setTimeout(r, interval));
   }
+}
+
+// The sidecar backend record for a session, once spawn()'s write has landed.
+// spawn() is synchronous and fires markSessionBackend without awaiting it (see
+// src/instances.ts spawn()), so a 201 / `idle` / argv-dump wait can beat the
+// write by a handful of filesystem ops. Every post-spawn read of this store
+// waits here rather than sampling; returns the record.
+export function settledSessionBackend(sessionId, opts) {
+  return waitFor(async () => await getSessionBackend(sessionId), opts);
 }
 
 // Every `type:"user"` line the orchestrator wrote to the fake CLI's stdin, in

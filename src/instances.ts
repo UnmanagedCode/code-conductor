@@ -1594,7 +1594,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     // lossily) so every resume path re-acquires them. The capacity rides along
     // as a last-known fallback for a resume after the custom-model row is
     // deleted. Runs on every spawn/resume, so a legacy model-unknown entry
-    // self-heals once this.model holds a real id.
+    // self-heals once this.model holds a real id. Fire-and-forget for the same
+    // reason as the temp marker above — spawn() is synchronous and nothing
+    // downstream of this call reads the write (the only reader is
+    // _doCreate's resume branch, `catch { best-effort }`), so a post-spawn
+    // TEST must wait for the write (settledSessionBackend in helpers.mjs),
+    // not sample it.
     if (this.backend !== CLAUDE_BACKEND_ID) {
       markSessionBackend(backingId, this.backend, this.model, this.contextWindowTokens).catch(() => {});
     }
