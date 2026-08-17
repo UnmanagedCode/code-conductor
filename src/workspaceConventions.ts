@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog } from './fragmentCatalog.ts';
-import { httpError } from './httpError.ts';
+import { createSelectionStore } from './conventionSelection.ts';
 
 const CONVENTIONS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'conventions', 'workspace');
 const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
@@ -66,44 +66,18 @@ export const addCustomConvention = catalog.addCustom;
 export const updateCustomConvention = catalog.updateCustom;
 export const validateSlug = catalog.validateSlug;
 
-// Deleting a custom convention also drops it from the enabled selection.
-export async function deleteCustomConvention(slug: string) {
-  const result = await catalog.deleteCustom(slug);
-  const enabled = await getSelectionRaw();
-  if (enabled?.includes(slug)) {
-    await catalog.patchState({ enabled: enabled.filter(s => s !== slug) });
-  }
-  return result;
-}
+// ── Global selection (the shared collaborator, no overrides) ────────────────
+//
+// Plain selection: the persisted `enabled` array is the whole story, and its
+// absence defaults to all built-ins so a fresh install renders the projects-root
+// CLAUDE.md equivalent to the pre-carve bundled canonical. Deleting a custom
+// convention also drops it from that array.
 
-// ── Global selection ─────────────────────────────────────────────────────────
+const selection = createSelectionStore({ catalog, seeds: SEED_CONVENTIONS, noun: 'convention' });
 
-// Raw enabled array from the store (undefined when unset).
-async function getSelectionRaw(): Promise<string[] | undefined> {
-  const state = await catalog.readState();
-  return Array.isArray(state.enabled) ? state.enabled as string[] : undefined;
-}
-
-// Enabled convention slugs. Default (store absent/unset) = all built-ins, so a
-// fresh install renders the projects-root CLAUDE.md equivalent to the
-// pre-carve bundled canonical.
-export async function getSelection(): Promise<string[]> {
-  return (await getSelectionRaw()) ?? SEED_CONVENTIONS.map(m => m.slug);
-}
-
-export async function setSelection(enabled: string[]): Promise<string[]> {
-  if (!Array.isArray(enabled)) {
-    throw httpError(400, 'enabled must be an array of slug strings');
-  }
-  const known = new Set((await getCatalog()).map(m => m.slug));
-  for (const slug of enabled) {
-    if (!known.has(slug)) {
-      throw httpError(400, `unknown convention slug '${slug}'`);
-    }
-  }
-  await catalog.patchState({ enabled });
-  return enabled;
-}
+export const getSelection = selection.getSelection;
+export const setSelection = selection.setSelection;
+export const deleteCustomConvention = selection.deleteCustom;
 
 // ── Compose ───────────────────────────────────────────────────────────────────
 
