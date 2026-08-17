@@ -107,6 +107,76 @@ test('a released lock can be acquired again', async () => {
   }
 });
 
+// ── release ordering ──────────────────────────────────────────────────────────
+
+// Returns true if `lockPath` disappears within `budgetMs`, false if it is still
+// there when the budget runs out. Polls rather than sleeping a fixed span so the
+// FAILING direction is fast; only the passing direction pays the full budget.
+async function lockVanishesWithin(lockPath, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    try { await fs.stat(lockPath); } catch { return true; }
+    if (Date.now() >= deadline) return false;
+    await sleep(10);
+  }
+}
+
+// The lock must stay held until fn's BODY settles — not merely until fn returns
+// a promise. `withLock` does `return await fn()` inside try/finally: that `await`
+// is what suspends inside the `try`, so `finally`'s releaseLock runs only once
+// the body is done. Weakening it to `return fn()` makes `finally` run at the
+// return statement itself, unlinking the lockfile while the body is still in
+// flight — every sidecar store's read-modify-write would then complete UNLOCKED,
+// silently reopening the cross-process lost-update window createJsonStore exists
+// to close, across all six stores at once.
+//
+// The test above ('runs fn under the lock and releases it after') cannot catch
+// that: its body never parks, so its own `fs.stat` races the erroneous release.
+// Nor is a timing-interleaved extra writer the answer — that buys flakiness.
+// Here the body parks on a gate only this test can open, so "the body is in
+// flight" is a fact rather than a timing guess. A correct implementation can
+// NEVER release during that window, so this cannot fail spuriously; the mutant
+// releases within a few ms of the return.
+test("withLock holds the lock until fn's body settles, not just until fn returns", async () => {
+  const dir = await tmpDir();
+  try {
+    const dataFile = path.join(dir, 'store.json');
+    const lockPath = dataFile + '.lock';
+
+    let openGate;
+    const gate = new Promise(r => { openGate = r; });
+    let markEntered;
+    const entered = new Promise(r => { markEntered = r; });
+
+    const call = withLock(dataFile, async () => {
+      markEntered();
+      await gate; // parked: the body is unambiguously mid-flight from here
+      return 'done';
+    });
+
+    try {
+      await entered;
+
+      // Forcing assertion: without a lockfile actually on disk the check below
+      // would "pass" for the wrong reason (nothing to observe vanishing).
+      await fs.stat(lockPath);
+
+      const releasedEarly = await lockVanishesWithin(lockPath, 750);
+      assert.equal(releasedEarly, false, 'lock was released while fn body was still in flight');
+    } finally {
+      // Always un-park, so a failed assertion above ends the test instead of
+      // leaving `call` pending forever.
+      openGate();
+      await call.catch(() => {});
+    }
+
+    assert.equal(await call, 'done');
+    await assert.rejects(fs.stat(lockPath), { code: 'ENOENT' }, 'lock must be released once the body settles');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ── fail-closed guard ─────────────────────────────────────────────────────────
 
 // The acquire loop's tail (src/storeLock.ts:129) is reachable in production
