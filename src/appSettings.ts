@@ -68,10 +68,6 @@ function loadSync(): StoredSettings {
   return cache;
 }
 
-export function readSettings(): StoredSettings {
-  return loadSync();
-}
-
 async function writeSettings(next: StoredSettings): Promise<void> {
   const p = settingsPath();
   await writeFileAtomic(p, JSON.stringify(next, null, 2));
@@ -306,6 +302,9 @@ export function isKnownBackend(id: unknown): boolean {
   return typeof id === 'string' && getBackends().some(b => b.id === id);
 }
 
+// Test-only export: no production caller. Kept (rather than deleted with its
+// tests) because deleting it would move the `claude`-backend exclusion rule
+// into a test file.
 // Backends a custom model (and therefore a non-Claude binding) can name: every
 // SUBSTITUTION backend. The identity `claude` backend is excluded — its models
 // are the MODEL_FAMILIES catalog, not user rows.

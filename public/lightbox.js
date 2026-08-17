@@ -84,5 +84,3 @@ export function installLightbox({ doc = document } = {}) {
   }, true); // capture phase — beats the anchor-wrap default and the
             // external-link opener's bubble-phase handler.
 }
-
-export const _internal = { open, close };

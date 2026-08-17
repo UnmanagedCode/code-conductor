@@ -82,7 +82,6 @@ export function getActiveRoleBinding(role) { return activeRoleBinding[role] || D
 export function setActiveRoleBindings(map) { activeRoleBinding = { ...activeRoleBinding, ...(map || {}) }; }
 export function setBackends(list) { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
 export function getBackendLabel(id) { return backends.find(b => b.id === id)?.label || id; }
-export function getCustomModels() { return customModels; }
 export function setCustomModels(list) { customModels = Array.isArray(list) ? list : []; return customModels; }
 export function setOllamaCloudModels(list) { ollamaCloudModels = Array.isArray(list) ? list : []; return ollamaCloudModels; }
 

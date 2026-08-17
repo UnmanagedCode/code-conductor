@@ -206,6 +206,9 @@ export function isKnownRole(role: unknown): boolean {
   return ROLES.some(r => r.role === role);
 }
 
+// Test-only export: no production caller. Kept (rather than deleted with its
+// tests) because it is the per-family half of the catalog allow-list whose
+// other members (isKnownFamily / isKnownClaudeModel / defaultVersion) are live.
 export function isKnownVersion(family: unknown, id: unknown): id is string {
   const f = MODEL_FAMILIES.find(x => x.family === family);
   return !!f && f.versions.some(v => v.id === id);

@@ -858,6 +858,7 @@ export function hasHeadlessChildIn(arr: UiEvent[], start: number, end: number): 
   return groupBoundaryComponents(arr, end).some(c => c.headless && c.right >= start);
 }
 
+// Test-only export: no production caller.
 // Snap a window-start index so no sub-agent child event in [start, end) is
 // orphaned: a child whose head is available pulls the start back to that head,
 // a child with no head at or before it pushes the start past THAT CHILD (and
