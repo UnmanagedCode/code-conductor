@@ -22,12 +22,18 @@ import { waitForBanner } from './serverBanner.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 
-// Bind-then-free, which leaves a window in which another test file's
-// `bootServer()` can be handed this port. An accepted tradeoff, not a
-// necessity — holding and releasing (as tests/eaddrinuse-retry.test.mjs does)
-// would narrow it, and card 2026-0157 tracks that. What makes the window safe
-// meanwhile: readiness comes from the child's own banner (./serverBanner.mjs),
-// and every destructive POST is preceded by the alive + tryBind checks below.
+// Bind-then-free: this port is free from here until the child binds it, a
+// window measured at 241–278 ms. Converting to hold-then-release (card
+// 2026-0157) was measured and DECLINED, not deferred: gating on the child's
+// first EADDRINUSE line lands at the start of listenWithRetry's 100 ms sleep,
+// so it leaves 111–114 ms — while a second window nearly as large (254 ms vs
+// this one's 268 median: src/restart.ts's server.close() before the
+// replacement spawns) is production, not test-side, and survives untouched.
+// ~0.022%/run collision risk; no failure has ever been observed. What keeps it
+// safe: readiness comes from the child's own banner (./serverBanner.mjs), and
+// every destructive POST is preceded by the alive + tryBind checks below — a
+// collision costs this file a timeout and never reaches the stranger.
+// Full measurement: docs/architecture.md → "Port ownership".
 function getFreePort() {
   return new Promise((resolve, reject) => {
     const s = net.createServer();
@@ -107,10 +113,18 @@ test('POST /api/admin/restart respawns the server on the same port with a new pi
   assert.ok(healthBefore?.bootId, 'GET /api/health returns a bootId');
 
   // Never POST a destructive endpoint at a port whose owner we have not
-  // established. The banner above came from OUR child; these two together say
-  // the socket is still held AND still held by that child — occupancy alone
-  // would also be satisfied by a stranger that grabbed the port after it died.
+  // established. The banner above came from OUR child; these together say the
+  // socket is still held AND still held by that child — occupancy alone would
+  // also be satisfied by a stranger that grabbed the port after it died.
+  // Liveness is read off the process, and process death includes signal death:
+  // a SIGKILLed child reports exitCode === null, so the exitCode line alone is
+  // satisfied by a corpse. NOTE for mutation review: the signalCode assertion
+  // is UNREACHABLE by any test in this suite (nothing signals the child before
+  // this point — t.after is the only signaller and it runs after), so deleting
+  // it kills nothing. It is hardening against a future edit and against an
+  // external SIGKILL (OOM killer), not a fix for an observed bug.
   assert.equal(child.exitCode, null, 'our child must still be alive');
+  assert.equal(child.signalCode, null, 'our child must not have been signal-killed');
   assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
   // Trigger the restart. The server may exit before the fetch resolves
@@ -221,17 +235,41 @@ test('restart sweeps a pending-temp-cleanup manifest on the next boot (archives 
     entries: [{ cwd: fakeCwd, sessionId: sid }],
   }));
 
-  // Ownership check before the destructive POST — alive AND holding, see above.
+  // Ownership check before the destructive POST — alive AND holding, see above
+  // (including why the signalCode line is unreachable-by-design).
   assert.equal(child.exitCode, null, 'our child must still be alive');
+  assert.equal(child.signalCode, null, 'our child must not have been signal-killed');
   assert.equal(await tryBind(port), 'EADDRINUSE', 'our child must still hold the port');
 
   await fetch(`http://127.0.0.1:${port}/api/admin/restart`, { method: 'POST' }).catch(() => {});
 
-  await new Promise((resolve) => {
-    if (child.exitCode != null || child.signalCode != null) return resolve();
-    child.once('exit', resolve);
-    setTimeout(resolve, 8_000);
+  // Assert the wait actually saw the exit, as test 1 does. What this and test
+  // 1's matching assertion pin (measured, not assumed): a SYNCHRONOUS HANG in
+  // the pre-exit path — a `while (true) {}` in runTempCleanup is killed by
+  // both, since scheduleRestart calls it unconditionally on every restart.
+  // They do NOT pin `setTimeout(() => process.exit(0), 50)` in src/restart.ts:
+  // commenting it out SURVIVES both tests, because after server.close() +
+  // wss.close() + the detached spawn the parent's loop drains and it exits 0
+  // on its own, well inside 8 s. That call is pinned by no test in the suite —
+  // gap tracked as card 2026-0162; do not "fix" it from here.
+  // NOTE for mutation review: this assertion has NO INDEPENDENT KILL. The
+  // parent's exit path is identical in both tests, so every production mutant
+  // it catches is also caught by test 1's exit-wait assertion. It is a symptom
+  // guard, not a pin — kept for diagnosis: without it a parent that never
+  // exits sails past a silent timeout and dies ~20 s later at waitForBanner #2
+  // blaming the replacement, instead of failing here at 8 s with the captured
+  // output. Seeing it die to the same mutant as test 1 is expected; that is
+  // not grounds to delete it as redundant. (Test 2's genuinely unique coverage
+  // is the GRANDCHILD's sweepPendingTempCleanup on boot — the assertions below
+  // this one, not this one: the parent writes pending-temp-cleanup.json and
+  // never reads it, so the planted manifest is invisible to the parent.)
+  const exited = await new Promise((resolve) => {
+    if (child.exitCode != null || child.signalCode != null) return resolve('exited');
+    child.once('exit', () => resolve('exited'));
+    setTimeout(() => resolve('timeout'), 8_000);
   });
+  assert.notEqual(exited, 'timeout',
+    `original server did not exit after restart\nstdout=${captured.stdout}\nstderr=${captured.stderr}`);
 
   const m = captured.stdout.match(/restart: spawned replacement pid=(\d+)/);
   assert.ok(m, `no restart pid log\nstdout=${captured.stdout}`);
