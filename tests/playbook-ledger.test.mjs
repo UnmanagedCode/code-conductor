@@ -90,8 +90,9 @@ test('fold builds the projection across all five event kinds', () => {
   assert.deepEqual(s1.stageHistory, ['plan', 'implement']);
   assert.equal(s1.project, 'demo');
   assert.equal(s1.worktree, 'demo_wt');
-  assert.equal(s1.live, true);
-  assert.equal(p.bySession.get('s2').live, false, 'retire clears live');
+  // `retire` is audit-only — it must not touch s2's stage or provenance. Liveness
+  // is answered from InstanceManager.isSessionLive, never folded here.
+  assert.equal(p.bySession.get('s2').stage, 'review', 'retire must not touch stage');
   assert.deepEqual(p.bySession.get('s2').provenance, { implement: 's1' });
   assert.equal(p.enforcement.get('c1'), 'enforce', 'enforcement events fold into the projection');
   assert.equal(p.seq, 6);
@@ -105,7 +106,7 @@ test('retire preserves stageHistory, so a retired worker still answers a need\'s
     { kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' },
     { kind: 'retire', sessionId: 's1', reason: 'killed' },
   ]);
-  assert.equal(p.bySession.get('s1').live, false);
+  assert.equal(p.bySession.get('s1').stage, 'implement', 'retire must not touch stage');
   assert.equal(hasEverBeen(p, 's1', 'plan'), true);
   assert.equal(hasEverBeen(p, 's1', 'implement'), true);
   assert.equal(hasEverBeen(p, 's1', 'review'), false);
@@ -121,25 +122,28 @@ test('stageHistory records every entry in order, including a re-entered stage', 
   assert.equal(p.bySession.get('s1').stage, 'a');
 });
 
-test('liveSessionsInStage returns only live members of the same run, so a retire frees the slot', () => {
+test('liveSessionsInStage filters by the SUPPLIED isLive oracle, not by anything folded from the ledger', () => {
   const events = [
     { kind: 'spawn', sessionId: 'root', playbook: 'x', stage: 'a' },
     { kind: 'spawn', sessionId: 'w1', playbook: 'x', stage: 'b', provenance: { a: 'root' } },
     { kind: 'spawn', sessionId: 'w2', playbook: 'x', stage: 'b', provenance: { a: 'root' } },
   ];
-  assert.deepEqual(liveSessionsInStage(fold(events), 'root', 'b').sort(), ['w1', 'w2']);
-  assert.deepEqual(
-    liveSessionsInStage(fold([...events, { kind: 'retire', sessionId: 'w1', reason: 'killed' }]), 'root', 'b'),
-    ['w2']);
+  const p = fold(events);
+  assert.deepEqual(liveSessionsInStage(p, 'root', 'b', () => true).sort(), ['w1', 'w2']);
+  // The SAME projection — no retire event anywhere in it — reads w1 as gone the
+  // moment the oracle says so. Pins that liveness is an external input, not a
+  // ledger-side fold: a mutant reading a projection-derived bit instead of
+  // calling isLive would return ['w1', 'w2'] here regardless of the oracle.
+  assert.deepEqual(liveSessionsInStage(p, 'root', 'b', sid => sid !== 'w1'), ['w2']);
 });
 
-test('a `resume` un-retires a worker IN PLACE, resetting no history and no provenance', () => {
-  // A resumed worker re-attaches where it already is, so `live` is the only field
-  // the event may touch. Implementing the resume as a second `spawn` instead — the
-  // obvious shortcut, since a resume comes in through spawn_instance — would fold
-  // through the spawn arm and REPLACE this state: stageHistory collapses to
-  // ['implement'] and provenance empties, which silently breaks hasEverBeen for
-  // every downstream `needs`.
+test('`retire` and `resume` are audit-only: neither touches stage, stageHistory, provenance or run membership', () => {
+  // Implementing the resume as a second `spawn` instead — the obvious shortcut,
+  // since a resume comes in through spawn_instance — would fold through the spawn
+  // arm and REPLACE this state: stageHistory collapses to ['implement'] and
+  // provenance empties, which silently breaks hasEverBeen for every downstream
+  // `needs`. Neither event carries a liveness bit any more — that question is
+  // answered from InstanceManager.isSessionLive, never from this projection.
   const events = [
     { kind: 'spawn', sessionId: 'root', playbook: 'solo', stage: 'plan' },
     { kind: 'spawn', sessionId: 'w1', playbook: 'solo', stage: 'plan' },
@@ -148,19 +152,22 @@ test('a `resume` un-retires a worker IN PLACE, resetting no history and no prove
     { kind: 'retire', sessionId: 'w1', reason: 'subprocess exited' },
   ];
   const dead = fold(events).bySession.get('w1');
-  assert.equal(dead.live, false, 'premise: the worker is retired before the resume');
+  assert.equal(dead.stage, 'implement', 'retire must not touch stage');
+  assert.deepEqual(dead.stageHistory, ['plan', 'implement'], 'retire must not touch stageHistory');
+  assert.deepEqual(dead.provenance, { plan: 'root' }, 'retire must not touch provenance');
+  assert.equal(dead.runRoot, 'root', 'retire must not touch run membership');
 
   const back = fold([...events, { kind: 'resume', sessionId: 'w1' }]);
   const st = back.bySession.get('w1');
-  assert.equal(st.live, true, 'a resume must bring the worker back to live');
   assert.equal(st.stage, 'implement');
   assert.deepEqual(st.stageHistory, ['plan', 'implement'], 'stageHistory must survive the resume');
   assert.deepEqual(st.provenance, { plan: 'root' }, 'the run-graph edges must survive the resume');
   assert.equal(st.runRoot, 'root', 'run membership must survive the resume');
   assert.equal(hasEverBeen(back, 'w1', 'plan'), true,
     'a downstream `needs` anchored on `plan` must still be satisfiable after a resume');
-  // And the slot it holds is counted again, since capacity counts live workers.
-  assert.deepEqual(liveSessionsInStage(back, 'root', 'implement'), ['w1']);
+  // The slot it holds is counted whenever the oracle says so — the fold itself
+  // carries no opinion.
+  assert.deepEqual(liveSessionsInStage(back, 'root', 'implement', () => true), ['w1']);
 });
 
 test('a `resume` for an unknown worker is folded as a no-op rather than materialising one', () => {
@@ -224,8 +231,8 @@ test('state survives a restart: a fresh ledger folds the same projection from di
     assert.equal(p.seq, 4);
     // seq continues from the folded high-water mark rather than restarting at 1
     assert.equal((await second.append({ kind: 'retire', sessionId: 's2', reason: 'killed' })).seq, 5);
-    assert.equal(second.projection().bySession.get('s2').live, false,
-      'the live projection is updated through the same applyEvent path as the fold');
+    assert.equal(second.projection().bySession.get('s2').stage, 'review',
+      'the live projection is updated through the same applyEvent path as the fold, and retire leaves stage untouched');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 

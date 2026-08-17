@@ -8,12 +8,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide, resolveMove } from '../src/playbooks.ts';
-import { pb, pbs, proj, builtins, SOLO_RUN } from './playbook-fixtures.mjs';
+import { pb, pbs, proj, builtins, SOLO_RUN, isLiveFromEvents } from './playbook-fixtures.mjs';
 
 const PB = await builtins();
 
 function d(toolName, args, events) {
-  return decide({ toolName, args, projection: proj(events), playbooks: PB });
+  return decide({ toolName, args, projection: proj(events), playbooks: PB, isLive: isLiveFromEvents(events) });
 }
 
 test('a self-edge is allowed even though no self-transition is declared', () => {
@@ -94,17 +94,18 @@ test('a DECLARED self-loop still skips needs and capacity', () => {
   ];
   const res = decide({
     toolName: 'send_prompt', args: { sessionId: 'w-loop-hold', text: 'again', stage: 'hold' },
-    projection: proj(events), playbooks: pbs(loop),
+    projection: proj(events), playbooks: pbs(loop), isLive: isLiveFromEvents(events),
   });
   assert.equal(res.ok, true, `a declared self-loop must not be gated; got ${res.code}: ${res.reason}`);
   assert.equal(res.move.recorded, true);
   // Proof the need really is unsatisfiable — otherwise the case above is vacuous.
+  const enteringEvents = [...events,
+    { kind: 'spawn', sessionId: 'w-loop-2nd', playbook: 'loop', stage: 'root', provenance: { root: 'w-loop-root' } }];
   const entering = decide({
     toolName: 'send_prompt',
     args: { sessionId: 'w-loop-2nd', text: 'in', stage: 'hold', provenance: { root: 'w-loop-root' } },
-    projection: proj([...events,
-      { kind: 'spawn', sessionId: 'w-loop-2nd', playbook: 'loop', stage: 'root', provenance: { root: 'w-loop-root' } }]),
-    playbooks: pbs(loop),
+    projection: proj(enteringEvents),
+    playbooks: pbs(loop), isLive: isLiveFromEvents(enteringEvents),
   });
   assert.equal(entering.ok, false, 'premise: entering `hold` fresh IS refused');
   assert.equal(entering.code, 'NEEDS_WORKER_GONE');
@@ -143,10 +144,11 @@ test('a self-edge still honours the current stage\'s tools deny', () => {
     stages: { a: { tools: { spawn_instance: 'allow', send_prompt: 'deny' } } },
     transitions: [],
   });
+  const lockedEvents = [{ kind: 'spawn', sessionId: 'w-locked-1', playbook: 'locked', stage: 'a' }];
   const res = decide({
     toolName: 'send_prompt', args: { sessionId: 'w-locked-1', text: 'hi', stage: 'a' },
-    projection: proj([{ kind: 'spawn', sessionId: 'w-locked-1', playbook: 'locked', stage: 'a' }]),
-    playbooks: pbs(locked),
+    projection: proj(lockedEvents),
+    playbooks: pbs(locked), isLive: isLiveFromEvents(lockedEvents),
   });
   assert.equal(res.ok, false);
   assert.equal(res.code, 'TOOL_DENIED_IN_STAGE');
@@ -158,11 +160,13 @@ test('a self-edge still honours the current stage\'s `require` (resulting stage 
     stages: { a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { wait: false } } } } },
     transitions: [],
   });
-  const projection = proj([{ kind: 'spawn', sessionId: 'w-pinned-1', playbook: 'pinned', stage: 'a' }]);
+  const pinnedEvents = [{ kind: 'spawn', sessionId: 'w-pinned-1', playbook: 'pinned', stage: 'a' }];
+  const projection = proj(pinnedEvents);
+  const isLive = isLiveFromEvents(pinnedEvents);
   // omitted -> filled in
   const filled = decide({
     toolName: 'send_prompt', args: { sessionId: 'w-pinned-1', text: 'hi', stage: 'a' },
-    projection, playbooks: pbs(pinned),
+    projection, playbooks: pbs(pinned), isLive,
   });
   assert.equal(filled.ok, true);
   assert.equal(filled.patchedArgs.wait, false);
@@ -170,7 +174,7 @@ test('a self-edge still honours the current stage\'s `require` (resulting stage 
   // contradicted -> refused, even on a self-edge
   const conflict = decide({
     toolName: 'send_prompt', args: { sessionId: 'w-pinned-1', text: 'hi', stage: 'a', wait: true },
-    projection, playbooks: pbs(pinned),
+    projection, playbooks: pbs(pinned), isLive,
   });
   assert.equal(conflict.ok, false);
   assert.equal(conflict.code, 'ARG_PIN_CONFLICT');

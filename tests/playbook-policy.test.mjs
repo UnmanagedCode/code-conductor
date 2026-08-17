@@ -5,12 +5,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide } from '../src/playbooks.ts';
-import { pb, pbs, proj, builtins, SOLO_RUN } from './playbook-fixtures.mjs';
+import { pb, pbs, proj, builtins, SOLO_RUN, isLiveFromEvents } from './playbook-fixtures.mjs';
 
 const PB = await builtins();
 
 function d(toolName, args, events = []) {
-  return decide({ toolName, args, projection: proj(events), playbooks: PB });
+  return decide({ toolName, args, projection: proj(events), playbooks: PB, isLive: isLiveFromEvents(events) });
 }
 
 function refusal(res, code) {
@@ -76,14 +76,15 @@ test('`require` is enforced per tool, not once per stage — a second tool has i
   const P = pbs(two);
   const events = [{ kind: 'spawn', sessionId: 'w-two-0001', playbook: 'two', stage: 'a' }];
   const projection = proj(events);
+  const isLive = isLiveFromEvents(events);
   // tool 1: filled on the spawn
-  const spawned = decide({ toolName: 'spawn_instance', args: { playbook: 'two', stage: 'a' }, projection, playbooks: P });
+  const spawned = decide({ toolName: 'spawn_instance', args: { playbook: 'two', stage: 'a' }, projection, playbooks: P, isLive });
   assert.equal(allowed(spawned).patchedArgs.createWorktree, false);
   // tool 2: filled on a targeted call
-  const filled = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001' }, projection, playbooks: P });
+  const filled = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001' }, projection, playbooks: P, isLive });
   assert.equal(allowed(filled).patchedArgs.mode, 'plan');
   // tool 2: refused on conflict, and the message names the right tool+arg
-  const conflict = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001', mode: 'ask' }, projection, playbooks: P });
+  const conflict = decide({ toolName: 'set_mode', args: { sessionId: 'w-two-0001', mode: 'ask' }, projection, playbooks: P, isLive });
   assert.match(refusal(conflict, 'ARG_PIN_CONFLICT').reason, /set_mode to be called with mode="plan"/);
 });
 
@@ -107,15 +108,16 @@ test('a "*": "allow" wildcard does NOT make a stage spawnable — spawn_instance
   });
   const res = refusal(decide({
     toolName: 'spawn_instance', args: { playbook: 'wild', stage: 'b' },
-    projection: proj([]), playbooks: pbs(wild),
+    projection: proj([]), playbooks: pbs(wild), isLive: isLiveFromEvents([]),
   }), 'STAGE_NOT_SPAWNABLE');
   assert.match(res.reason, /does not declare spawn_instance/);
   assert.match(res.reason, /Spawnable stages: a\./);
   // The wildcard still governs every OTHER tool in that stage as usual.
+  const wildEvents = [{ kind: 'spawn', sessionId: 'w-wild-001', playbook: 'wild', stage: 'b' }];
   allowed(decide({
     toolName: 'set_mode', args: { sessionId: 'w-wild-001', mode: 'ask' },
-    projection: proj([{ kind: 'spawn', sessionId: 'w-wild-001', playbook: 'wild', stage: 'b' }]),
-    playbooks: pbs(wild),
+    projection: proj(wildEvents),
+    playbooks: pbs(wild), isLive: isLiveFromEvents(wildEvents),
   }));
 });
 
@@ -394,7 +396,7 @@ const MOVED_OFF = [
 const mv = (stage, events = MOVED_OFF) => decide({
   toolName: 'spawn_instance',
   args: { playbook: 'mover', stage, provenance: { root: 'w-mover-001' } },
-  projection: proj(events), playbooks: pbs(MOVER),
+  projection: proj(events), playbooks: pbs(MOVER), isLive: isLiveFromEvents(events),
 });
 
 test('a position list refuses a stage it does not name, and says which stages it accepts', () => {
@@ -421,8 +423,30 @@ test('liveness:"live" refuses a RETIRED worker with NEEDS_WORKER_GONE, not NEEDS
   ];
   const res = refusal(d('spawn_instance',
     { playbook: 'solo', stage: 'review', provenance: { implement: 'w-cl-imp-1' } }, cur), 'NEEDS_WORKER_GONE');
-  assert.match(res.reason, /to still be running, but it has retired \(last in 'implement'\)/);
+  assert.match(res.reason, /to still be running, but it has no running process \(last known stage 'implement'\)/);
   assert.match(res.reason, /not a wiring mistake/);
+});
+
+// The oracle is CONSULTED, not read off the projection's own retire/spawn
+// fold: a projection containing a `retire` event for the target is exactly
+// the fixture the OLD live:boolean field would have answered from, so an
+// isLive stub that disagrees with it is what proves decide() no longer reads
+// that fold at all (mutant: falling back to a projection-derived liveness bit
+// instead of calling isLive would flip one or both of these two assertions).
+test('needs.liveness:"live" is answered from isLive(), not from the projection\'s retire event', () => {
+  const cur = [
+    { kind: 'spawn', sessionId: 'w-cl-imp-1', playbook: 'solo', stage: 'plan' },
+    { kind: 'transition', sessionId: 'w-cl-imp-1', from: 'plan', to: 'implement', via: 'approve_plan' },
+    { kind: 'retire', sessionId: 'w-cl-imp-1', reason: 'killed' },
+  ];
+  const args = { playbook: 'solo', stage: 'review', provenance: { implement: 'w-cl-imp-1' } };
+  const projection = proj(cur);
+  // The ledger recorded a retire, but the oracle says the worker IS live —
+  // this must be ALLOWED, which a projection-derived `live` bit could never do.
+  allowed(decide({ toolName: 'spawn_instance', args, projection, playbooks: PB, isLive: () => true }));
+  // And the mirror, on the identical projection: the oracle says NOT live.
+  refusal(decide({ toolName: 'spawn_instance', args, projection, playbooks: PB, isLive: () => false }),
+    'NEEDS_WORKER_GONE');
 });
 
 test('liveness is checked BEFORE position: a worker both gone and moved on reports gone', () => {
@@ -435,7 +459,7 @@ test('liveness is checked BEFORE position: a worker both gone and moved on repor
   // this ordering exists to prevent.
   const gone = [...MOVED_OFF, { kind: 'retire', sessionId: 'w-mover-001', reason: 'killed' }];
   const res = refusal(mv('strict', gone), 'NEEDS_WORKER_GONE');
-  assert.match(res.reason, /to still be running, but it has retired/);
+  assert.match(res.reason, /to still be running, but it has no running process/);
 });
 
 test('liveness:"retired" refuses a live worker and names kill_instance; a retired one satisfies it', () => {
@@ -460,7 +484,7 @@ test('liveness:"retired" refuses a live worker and names kill_instance; a retire
   const at = (events) => decide({
     toolName: 'spawn_instance',
     args: { playbook: 'gone', stage: 'after', provenance: { root: 'w-root-r001' } },
-    projection: proj(events), playbooks: pbsGone,
+    projection: proj(events), playbooks: pbsGone, isLive: isLiveFromEvents(events),
   });
 
   const res = refusal(at(live), 'NEEDS_UNSATISFIED');
@@ -468,6 +492,22 @@ test('liveness:"retired" refuses a live worker and names kill_instance; a retire
   assert.match(res.reason, /kill_instance/);
   // …and the other half, so a mutant that refuses unconditionally also fails.
   allowed(at([...live, { kind: 'retire', sessionId: 'w-root-r001', reason: 'work done' }]));
+
+  // Same fixture PROJECTION both times (no retire event either way) — only the
+  // oracle differs. Proves needs.liveness:"retired" reads isLive(), not a
+  // projection-derived bit: a mutant reading the fold instead would answer both
+  // of these identically (both "spawned, never retired" -> still running).
+  const projection = proj(live);
+  refusal(decide({
+    toolName: 'spawn_instance',
+    args: { playbook: 'gone', stage: 'after', provenance: { root: 'w-root-r001' } },
+    projection, playbooks: pbsGone, isLive: () => true,
+  }), 'NEEDS_UNSATISFIED');
+  allowed(decide({
+    toolName: 'spawn_instance',
+    args: { playbook: 'gone', stage: 'after', provenance: { root: 'w-root-r001' } },
+    projection, playbooks: pbsGone, isLive: () => false,
+  }));
 });
 
 test('the loose values — liveness:"any" and position:["*"] — each drop exactly one check', () => {
@@ -496,7 +536,7 @@ test('the loose values — liveness:"any" and position:["*"] — each drop exact
   const at = (events) => decide({
     toolName: 'spawn_instance',
     args: { playbook: 'loose', stage: 'sink', provenance: { root: 'w-root-0001' } },
-    projection: proj(events), playbooks: pbs2,
+    projection: proj(events), playbooks: pbs2, isLive: isLiveFromEvents(events),
   });
   allowed(at(run));
   // liveness:"any" — and still fine once it is gone.
@@ -574,11 +614,12 @@ test('workers:"one" refuses a second live worker in the stage; "many" does not',
     { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-root' } },
   ];
   const args = { stage: 'slot', provenance: { root: 'w-cap-root' } };
-  const one = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('one')) });
+  const isLive = isLiveFromEvents(events);
+  const one = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('one')), isLive });
   const oneReason = refusal(one, 'STAGE_AT_CAPACITY').reason;
   assert.match(oneReason, /declares workers:"one"/);
   assert.match(oneReason, /w-cap-a0/, 'the refusal names the blocking sessionId, not just the code');
-  const many = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('many')) });
+  const many = decide({ toolName: 'spawn_instance', args, projection: proj(events), playbooks: pbs(capacityPlaybook('many')), isLive });
   allowed(many);
 });
 
@@ -591,8 +632,38 @@ test('capacity counts LIVE workers, so a retire frees the slot', () => {
   allowed(decide({
     toolName: 'spawn_instance',
     args: { stage: 'slot', provenance: { root: 'w-cap-root' } },
-    projection: proj(events), playbooks: pbs(capacityPlaybook('one')),
+    projection: proj(events), playbooks: pbs(capacityPlaybook('one')), isLive: isLiveFromEvents(events),
   }));
+});
+
+// The oracle is CONSULTED, not merely folded from the ledger's own events: a
+// stub isLive independent of the projection's retire/spawn history is what
+// tells apart "capacity reads isLive()" from "capacity still reads a ledger
+// bit that happens to agree with it here".
+test('workers:"one" capacity is answered from isLive(), not from ledger retire/spawn history', () => {
+  const events = [
+    { kind: 'spawn', sessionId: 'w-cap-root', playbook: 'cap', stage: 'root' },
+    { kind: 'spawn', sessionId: 'w-cap-a001', playbook: 'cap', stage: 'slot', provenance: { root: 'w-cap-root' } },
+  ];
+  const args = { stage: 'slot', provenance: { root: 'w-cap-root' } };
+  const projection = proj(events);
+  // The ledger never retired w-cap-a001, but the oracle says it is not live —
+  // capacity must free the slot anyway (mutant: reading a ledger-derived flag
+  // instead of calling isLive would refuse this as STAGE_AT_CAPACITY). `root`
+  // must stay live so this exercises capacity, not the ancestor's own `needs`
+  // liveness check.
+  allowed(decide({
+    toolName: 'spawn_instance', args, projection, playbooks: pbs(capacityPlaybook('one')),
+    isLive: sid => sid === 'w-cap-root',
+  }));
+  // And the mirror: the oracle says everyone is live, so the slot is held
+  // (mutant: ignoring isLive and always allowing would pass the first half
+  // too, so the sessionId-naming assertion below is what catches that).
+  const res = refusal(decide({
+    toolName: 'spawn_instance', args, projection, playbooks: pbs(capacityPlaybook('one')),
+    isLive: () => true,
+  }), 'STAGE_AT_CAPACITY');
+  assert.match(res.reason, /w-cap-a0/);
 });
 
 // decideSpawn and decideTargeted each carry their OWN capacity guard. The three
@@ -617,20 +688,26 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
   ];
   const move = { sessionId: 'w-capt-w2', text: 'take the slot', stage: 'hold' };
   // `hold` empty -> the transition is allowed
-  allowed(decide({ toolName: 'send_prompt', args: move, projection: proj(twoInWorker), playbooks: P }));
+  allowed(decide({
+    toolName: 'send_prompt', args: move, projection: proj(twoInWorker), playbooks: P,
+    isLive: isLiveFromEvents(twoInWorker),
+  }));
   // w1 has since transitioned into `hold` -> w2's identical transition is refused
   const occupied = [
     ...twoInWorker,
     { kind: 'transition', sessionId: 'w-capt-w1', from: 'worker', to: 'hold', via: 'send_prompt' },
   ];
-  const res = refusal(decide({ toolName: 'send_prompt', args: move, projection: proj(occupied), playbooks: P }),
-    'STAGE_AT_CAPACITY');
+  const res = refusal(decide({
+    toolName: 'send_prompt', args: move, projection: proj(occupied), playbooks: P,
+    isLive: isLiveFromEvents(occupied),
+  }), 'STAGE_AT_CAPACITY');
   assert.match(res.reason, /stage 'hold' declares workers:"one"/);
   assert.match(res.reason, /w-capt-w/, 'the refusal names the blocking sessionId, not just the code');
   // ...and freeing the slot lets it through again
+  const freed = [...occupied, { kind: 'retire', sessionId: 'w-capt-w1', reason: 'killed' }];
   allowed(decide({
     toolName: 'send_prompt', args: move, playbooks: P,
-    projection: proj([...occupied, { kind: 'retire', sessionId: 'w-capt-w1', reason: 'killed' }]),
+    projection: proj(freed), isLive: isLiveFromEvents(freed),
   }));
 });
 
@@ -657,7 +734,7 @@ test('capacity is scoped to the RUN, not globally — a second run gets its own 
   allowed(decide({
     toolName: 'spawn_instance',
     args: { stage: 'slot', provenance: { root: 'w-cap-rtB0' } },
-    projection: proj(events), playbooks: pbs(capacityPlaybook('one')),
+    projection: proj(events), playbooks: pbs(capacityPlaybook('one')), isLive: isLiveFromEvents(events),
   }));
 });
 
@@ -677,14 +754,16 @@ test('"*": "deny" reads as an allowlist, and an exact name beats the wildcard', 
     transitions: [],
   });
   const P = pbs(locked);
-  const projection = proj([{ kind: 'spawn', sessionId: 'w-locked-1', playbook: 'locked', stage: 'a' }]);
+  const lockedEvents = [{ kind: 'spawn', sessionId: 'w-locked-1', playbook: 'locked', stage: 'a' }];
+  const projection = proj(lockedEvents);
+  const isLive = isLiveFromEvents(lockedEvents);
   // not in the allowlist -> denied via '*'
-  refusal(decide({ toolName: 'set_mode', args: { sessionId: 'w-locked-1', mode: 'ask' }, projection, playbooks: P }),
+  refusal(decide({ toolName: 'set_mode', args: { sessionId: 'w-locked-1', mode: 'ask' }, projection, playbooks: P, isLive }),
     'TOOL_DENIED_IN_STAGE');
   // exact 'allow' beats the '*' deny
-  allowed(decide({ toolName: 'kill_instance', args: { sessionId: 'w-locked-1' }, projection, playbooks: P }));
+  allowed(decide({ toolName: 'kill_instance', args: { sessionId: 'w-locked-1' }, projection, playbooks: P, isLive }));
   // ...including for spawn_instance, whose default would also be deny
-  allowed(decide({ toolName: 'spawn_instance', args: { playbook: 'locked', stage: 'a' }, projection, playbooks: P }));
+  allowed(decide({ toolName: 'spawn_instance', args: { playbook: 'locked', stage: 'a' }, projection, playbooks: P, isLive }));
 });
 
 test('the mcp__code-conductor__ prefix is normalized before policy lookup', () => {
@@ -716,15 +795,17 @@ test('SCOPE RULE 1: permission is read from the CURRENT stage, not the destinati
     },
     transitions: [{ from: 'a', to: 'b', on: 'approve_plan' }],
   });
-  const projection = proj([{ kind: 'spawn', sessionId: 'w-scope-01', playbook: 'scope', stage: 'a' }]);
+  const scopeEvents = [{ kind: 'spawn', sessionId: 'w-scope-01', playbook: 'scope', stage: 'a' }];
+  const projection = proj(scopeEvents);
+  const isLive = isLiveFromEvents(scopeEvents);
   const args = { sessionId: 'w-scope-01' };
 
   // current ALLOWS, destination DENIES -> allowed (reading the destination would refuse)
-  const res = allowed(decide({ toolName: 'approve_plan', args, projection, playbooks: pbs(shape('allow', 'deny')) }));
+  const res = allowed(decide({ toolName: 'approve_plan', args, projection, playbooks: pbs(shape('allow', 'deny')), isLive }));
   assert.deepEqual(res.move, { kind: 'transition', from: 'a', to: 'b', via: 'approve_plan' });
 
   // current DENIES, destination ALLOWS -> refused (reading the destination would allow)
-  refusal(decide({ toolName: 'approve_plan', args, projection, playbooks: pbs(shape('deny', 'allow')) }),
+  refusal(decide({ toolName: 'approve_plan', args, projection, playbooks: pbs(shape('deny', 'allow')), isLive }),
     'TOOL_DENIED_IN_STAGE');
 });
 
@@ -737,16 +818,18 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
     },
     transitions: [{ from: 'a', to: 'b' }],
   });
-  const projection = proj([{ kind: 'spawn', sessionId: 'w-scopeq-1', playbook: 'scopereq', stage: 'a' }]);
+  const scopereqEvents = [{ kind: 'spawn', sessionId: 'w-scopeq-1', playbook: 'scopereq', stage: 'a' }];
+  const projection = proj(scopereqEvents);
+  const isLive = isLiveFromEvents(scopereqEvents);
   // Transitioning a -> b: the constraint that applies is b's (wait:true), not a's.
   const res = allowed(decide({
-    toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b' }, projection, playbooks: pbs(scope),
+    toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b' }, projection, playbooks: pbs(scope), isLive,
   }));
   assert.equal(res.patchedArgs.wait, true, "`require` must come from the RESULTING stage 'b'");
   // And supplying a's value explicitly now conflicts with b's constraint.
   refusal(decide({
     toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b', wait: false },
-    projection, playbooks: pbs(scope),
+    projection, playbooks: pbs(scope), isLive,
   }), 'ARG_PIN_CONFLICT');
 });
 
@@ -826,6 +909,7 @@ function fwd(target, source, events = GUARD_RUN) {
     args: { sessionId: target, text: 'go', stage: 'sink', ...(source !== undefined && { forward: source }) },
     projection: proj(events),
     playbooks: pbs(GUARD),
+    isLive: isLiveFromEvents(events),
   });
 }
 

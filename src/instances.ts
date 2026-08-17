@@ -3277,6 +3277,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this.idsForSession(sessionId).map(id => this.byId.get(id))
       .find((i): i is Instance => i != null && i.proc != null) ?? null;
   }
+  // THE liveness authority for a public sessionId. Three states collapse to one
+  // boolean: proc-attached, a resume in flight (no registry entry exists yet —
+  // _doCreateResolved's prefix is a dozen awaits long), and a prune's
+  // kill→relaunch window (the instance is registered with proc null). A caller
+  // that used liveForSession alone would read a genuinely-coming-up worker as gone.
+  isSessionLive(sessionId: string): boolean {
+    if (this._resumingPublicIds.has(sessionId)) return true;
+    const inst = this.anyForSession(sessionId);
+    return !!inst && (inst.proc != null || inst.rotationPending);
+  }
   // Any instance (live or exited) for a sessionId, or null — the `.find(Boolean)`
   // counterpart used where a non-running instance is still a valid target.
   anyForSession(sessionId: string): Instance | null {

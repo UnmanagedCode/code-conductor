@@ -78,6 +78,10 @@ export interface PlaybookGate {
   // recorded without materialising the file.
   readProjection(): Promise<Projection>;
   readHistory(): Promise<LedgerEvent[]>;
+  // THE liveness oracle this gate's decide() calls use — exposed so a read
+  // surface (playbook_state, describe_playbook's dry-run) answers from the same
+  // source as enforcement, rather than re-deriving its own.
+  isLive(sessionId: string): boolean;
   // Test seam: the ledger this gate appends to.
   ledger(): PlaybookLedger;
 }
@@ -106,39 +110,18 @@ export function createPlaybookGate(
   // PROJECTS_ROOT at its temp store, so resolving the path eagerly would bind the
   // wrong store. The PROMISE is memoised, not a boolean — a tools/call
   // and a status event can both arrive first, and two concurrent load() calls
-  // would fold the same events into the projection twice. Chaining
-  // reconcileOrphans onto that same promise means the repair also runs exactly
-  // once per process, before any caller can observe the projection.
+  // would fold the same events into the projection twice.
   function ensureLoaded(): Promise<unknown> {
-    if (!loading) loading = ledger.load().then(reconcileOrphans);
+    if (!loading) loading = ledger.load();
     return loading;
   }
 
-  // A host reboot (or an orchestrator crash) kills the orchestrator and every
-  // worker together, so no exit is ever observed and the manager's 'status'
-  // stream — the ONLY other retire writer — never fires. A `live:true` row from
-  // a previous process would then hold its stage's `workers:"one"` slot forever,
-  // with no recovery: kill_instance/respawn_instance/spawn_instance({resume}) all
-  // need a registry entry or a transcript, and a session that never got its first
-  // governed call has neither.
-  //
-  // `anyForSession`, not `liveForSession`: an exited-but-retained non-temp
-  // instance is still known to the registry, and its retire belongs to the status
-  // stream above, not here — this only repairs what that stream could never see.
-  // With no registry at all (`instances` null) there is no way to tell an orphan
-  // from a live worker, so it does nothing rather than guess.
-  async function reconcileOrphans(): Promise<void> {
-    if (!instances) return;
-    const orphaned = [...ledger.projection().bySession.values()]
-      .filter(st => st.live && !instances.anyForSession(st.sessionId))
-      .map(st => st.sessionId);
-    for (const sessionId of orphaned) {
-      await append({ kind: 'retire', sessionId, reason: 'orphaned — no instance after orchestrator start' });
-    }
-    if (orphaned.length > 0) {
-      console.warn(`playbookGate: reconciled ${orphaned.length} orphaned worker(s) — ` +
-        'retired (no instance after orchestrator start)');
-    }
+  // THE liveness oracle every decide() call and read surface goes through.
+  // `instances` can be null (a gate built with no registry, e.g. a read-only
+  // tool context) — every session reads as not-live in that case: with no
+  // registry to ask, "not live" is the only answer that cannot mis-govern.
+  function isLive(sessionId: string): boolean {
+    return !!instances?.isSessionLive(sessionId);
   }
 
   // Definitions are read PER CALL, never memoised for the process lifetime.
@@ -185,18 +168,18 @@ export function createPlaybookGate(
   async function onStatus(summary: InstanceSummary): Promise<void> {
     const sessionId = typeof summary.sessionId === 'string' ? summary.sessionId : null;
     if (!sessionId) return;
-    // RETIRE — one of two writers, this one covering both a deliberate
+    // RETIRE — an audit record of an observed exit, covering both a deliberate
     // kill_instance and an unexpected crash, since either way the subprocess
-    // exits and lands here. The other is reconcileOrphans() above, for the case
-    // this stream can never observe: the orchestrator process itself is gone, so
-    // no exit event fires at all. Capacity (`workers: "one"`) counts LIVE
-    // workers, so a worker that never retires holds its stage's slot forever.
+    // exits and lands here. Capacity no longer reads this event at all
+    // (`workers:"one"` counts LIVE processes via InstanceManager.isSessionLive),
+    // so unlike before there is no second case this stream needs to cover: a
+    // session whose exit this process never observed (a host reboot) already
+    // reads not-live from the manager, with nothing to reconcile.
     if (summary.status === 'exited' || summary.status === 'crashed') {
       // The projection MUST be folded before probing it. It is otherwise loaded
       // lazily on the first governed call, so a worker that crashes after a
-      // restart but before that call would be read against an empty projection,
-      // never retire, and stay `live` in the on-disk ledger forever — leaking its
-      // workers:"one" slot with no way to recover.
+      // restart but before that call would be read against an empty projection
+      // and never get its retire recorded in the audit trail.
       //
       // load() is READ-ONLY (a missing file folds to an empty projection and
       // creates nothing), and the append below is guarded on the worker already
@@ -205,7 +188,7 @@ export function createPlaybookGate(
       // enforcing run must still retire correctly after a flip to `warn`.
       await ensureLoaded();
       const st = ledger.projection().bySession.get(sessionId);
-      if (st?.live) await append({ kind: 'retire', sessionId, reason: `subprocess ${summary.status}` });
+      if (st) await append({ kind: 'retire', sessionId, reason: `subprocess ${summary.status}` });
     }
     // ENFORCEMENT. Without this, backtracking cannot explain why an
     // illegal-looking move was allowed.
@@ -256,7 +239,7 @@ export function createPlaybookGate(
 
     await ensureLoaded();
     const playbooks = await definitions();
-    const decision = decide({ toolName: name, args, projection: ledger.projection(), playbooks });
+    const decision = decide({ toolName: name, args, projection: ledger.projection(), playbooks, isLive });
 
     if (!decision.ok) {
       // Recorded under BOTH warn and enforce — under warn the call proceeds
@@ -384,9 +367,9 @@ export function createPlaybookGate(
     // already emits the retire — and it emits it FIRST, because the kill resolves
     // through the same status transition the listener watches. A second writer
     // here would be dead code that only looked like a safety net. The status
-    // stream covers deliberate kills and unexpected crashes identically; the
-    // other writer, reconcileOrphans() above, covers only the case neither of
-    // those is: the process that would have observed the exit is itself gone.
+    // stream covers deliberate kills and unexpected crashes identically; a
+    // process whose exit this one never observed (a host reboot) needs no
+    // `retire` at all — isSessionLive already reads it as gone.
   }
 
   async function readProjection(): Promise<Projection> {
@@ -402,7 +385,7 @@ export function createPlaybookGate(
     return readEvents(ledger.file());
   }
 
-  return { check, readProjection, readHistory, ledger: () => ledger };
+  return { check, readProjection, readHistory, isLive, ledger: () => ledger };
 }
 
 // The caller's `provenance` map, narrowed to the {stage: sessionId} string pairs the

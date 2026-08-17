@@ -369,7 +369,7 @@ test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate
     const state = projection.bySession.get(impl.sessionId);
     assert.deepEqual(state.stageHistory, ['plan', 'implement', 'refine', 'refine']);
     assert.equal(state.playbook, 'solo');
-    assert.equal(projection.bySession.get(rev.sessionId).live, false);
+    assert.equal(t.instances.isSessionLive(rev.sessionId), false);
     assert.equal(projection.bySession.get(rev2.sessionId).runRoot, state.runRoot,
       'the reviewer joined the implementer\'s run via its needs edge');
   } finally { await t.close(); }
@@ -472,8 +472,9 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
 
     // Bound and live before the rotation.
     const before = foldProjection(await t.events()).bySession.get(publicId);
-    assert.deepEqual({ live: before.live, stage: before.stage, playbook: before.playbook },
-      { live: true, stage: 'freeform', playbook: 'freeform' });
+    assert.deepEqual({ stage: before.stage, playbook: before.playbook },
+      { stage: 'freeform', playbook: 'freeform' });
+    assert.equal(t.instances.isSessionLive(publicId), true);
 
     // The worker renews ITSELF — the real shape, since MCP tools are
     // auto-registered into every worker.
@@ -487,8 +488,9 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
     const proj = foldProjection(evs);
     // (1) The binding survived, under the SAME key, with its history intact.
     const after = proj.bySession.get(publicId);
-    assert.deepEqual({ live: after.live, stage: after.stage, history: after.stageHistory },
-      { live: true, stage: 'freeform', history: ['freeform'] });
+    assert.deepEqual({ stage: after.stage, history: after.stageHistory },
+      { stage: 'freeform', history: ['freeform'] });
+    assert.equal(t.instances.isSessionLive(publicId), true);
     // (2) No second declaration and no orphan row under either backing id.
     assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === publicId).length, 1,
       'exactly one spawn event — a rotation must not re-declare the binding');
@@ -504,7 +506,8 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
     const retires = (await t.events()).filter(e => e.kind === 'retire');
     assert.equal(retires.length, 1, 'exactly one retire');
     assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
-    assert.equal(finalProj.bySession.get(publicId).live, false, 'the slot is free again');
+    assert.ok(finalProj.bySession.get(publicId), 'the row itself must still exist — retire is audit-only');
+    assert.equal(t.instances.isSessionLive(publicId), false, 'the slot is free again');
   } finally { await t.close(); }
 });
 
@@ -545,7 +548,8 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     ]);
 
     const before = foldProjection(await t.events()).bySession.get(publicId);
-    assert.deepEqual({ live: before.live, stage: before.stage }, { live: true, stage: 'plan' });
+    assert.equal(before.stage, 'plan');
+    assert.equal(t.instances.isSessionLive(publicId), true);
 
     await inst.pruneSession({ cutTurnIndex: 1 });
     await waitFor(() => inst.status === 'idle');
@@ -577,14 +581,31 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     assert.equal(retires.length, 1, 'exactly one retire');
     assert.equal(retires[0].sessionId, publicId, 'and it names the pinned id');
 
-    // KNOWN RESIDUAL, pinned so it cannot drift silently: `live` is false here even
-    // though the worker is alive again. The prune's kill retires it and the internal
-    // relaunch does not pass through the gate, so nothing un-retires it — a slot
-    // released EARLY, which is the safe direction and the opposite of the renewal
-    // leak. Pinning fixes the binding, not this; a governed spawn_instance({resume})
-    // re-declares and un-retires (see the resume tests below).
-    assert.equal(after.live, false,
-      'documented: a prune leaves the worker tracked-with-stage but not live');
+    // THE acceptance criterion (2026-0130): the prune's retire is audit-only —
+    // liveness is answered from the manager (isSessionLive), never from this
+    // `retire` row — so a pruned-and-relaunched worker is governable again
+    // immediately, with no kill + spawn_instance({resume}) revival dance. This
+    // replaces the old "documented residual" (`live:false` after a prune),
+    // which this change closes rather than merely re-pins.
+    const state = await t.call('playbook_state', { sessionId: publicId });
+    assert.equal(state.worker.live, true, 'the worker is running again, and the read surface must say so');
+
+    // (2) A governed call still drives the worker's OWN transition normally —
+    // no kill, no spawn_instance({resume}). solo's plan->implement edge is
+    // driven by approve_plan (send_prompt cannot drive it — TRANSITION_ILLEGAL —
+    // so this is the call that actually advances a solo/plan worker).
+    assert.equal((await t.call('approve_plan', { sessionId: publicId, subscribe: false })).ok, undefined,
+      'approve_plan must succeed on the pruned-and-relaunched worker with no revival step');
+    assert.equal(foldProjection(await t.events()).bySession.get(publicId).stage, 'implement');
+
+    // (3) A sibling spawn whose stage declares `needs` on the pruned worker with
+    // the default liveness:"live" succeeds — capacity/needs read real liveness,
+    // not a ledger bit the prune could desynchronise.
+    const rev = await t.spawnWorker({
+      project: 'demo', playbook: 'solo', stage: 'review', worktree: w.worktree.worktreeName,
+      provenance: { implement: publicId },
+    });
+    assert.ok(rev.sessionId, `needs.implement@live must be satisfied by the pruned worker: ${JSON.stringify(rev)}`);
   } finally { await t.close(); }
 });
 
@@ -600,7 +621,7 @@ test('enforce: a worker whose subprocess exits is retired without a kill_instanc
     const retire = (await t.events()).find(e => e.kind === 'retire');
     assert.equal(retire.sessionId, impl.sessionId);
     assert.match(retire.reason, /subprocess (exited|crashed)/);
-    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).live, false);
+    assert.equal(t.instances.isSessionLive(impl.sessionId), false);
   } finally { await t.close(); }
 });
 
@@ -663,8 +684,7 @@ test('a worker bound by a previous run still retires when it exits', async () =>
 
     await ctx.instances.get(worker.body.id).kill();
     await waitFor(async () => (await readEvents(ledgerFile())).some(e => e.kind === 'retire'));
-    const folded = foldProjection(await readEvents(ledgerFile()));
-    assert.equal(folded.bySession.get(sessionId).live, false,
+    assert.equal(ctx.instances.isSessionLive(sessionId), false,
       'the slot is freed even though enforcement never decided a single call');
   } finally { await ctx.close(); }
 });
@@ -679,7 +699,7 @@ test('a worker bound by a previous run still retires when it exits', async () =>
 // seeded worker never got a first prompt, so it has no transcript to resume
 // from). The seeded sessionIds below never existed as real instances in this
 // process, which is exactly what "unknown to the instance registry" means.
-test('a reboot cannot wedge a workers:"one" stage: the orphaned slot is reconciled at boot', async () => {
+test('a reboot cannot wedge a workers:"one" stage: capacity counts live processes, so the slot is free by construction', async () => {
   const rootPlanId = 'reboot0000-0000-4000-8000-0000000000aa';
   const implId = 'reboot0000-0000-4000-8000-0000000000bb';
   const t = await setup({
@@ -692,16 +712,20 @@ test('a reboot cannot wedge a workers:"one" stage: the orphaned slot is reconcil
           seq: 2, ts: '2026-08-15T00:00:01Z', kind: 'spawn', sessionId: implId, playbook: 'relay', stage: 'implement',
           provenance: { plan: rootPlanId },
         },
-        // Deliberately NO `retire` — that absence is the whole bug.
+        // Deliberately NO `retire` — this process's registry never heard of
+        // either sessionId, which is what "unobserved death" means.
       ];
       await fs.writeFile(ledgerFile(), lines.map(e => JSON.stringify(e)).join('\n') + '\n');
     },
   });
   try {
+    assert.equal(t.instances.isSessionLive(implId), false,
+      'premise: this process\'s registry never heard of the seeded worker');
+    const before = await t.events();
+
     // `implement` is workers:"one" (relay.json declares no `workers`, and "one"
-    // is the default). Before the fix this refuses STAGE_AT_CAPACITY, because
-    // the seeded row still reads live:true and nothing in THIS process ever
-    // observed the earlier one's exit.
+    // is the default). Capacity counts LIVE processes directly, so a row this
+    // registry has no instance for holds no slot — no boot-time repair needed.
     const second = await t.spawnWorker({
       project: 'demo', playbook: 'relay', stage: 'implement', provenance: { plan: rootPlanId },
     });
@@ -709,12 +733,15 @@ test('a reboot cannot wedge a workers:"one" stage: the orphaned slot is reconcil
       `a reboot-orphaned slot must not wedge the run permanently: ${JSON.stringify(second)}`);
     assert.notEqual(second.sessionId, implId, 'a genuinely new worker was spawned, not the dead one reused');
 
-    // And the repair left a trace: the orphaned occupant was actually retired,
-    // not silently ignored by some other loophole in the capacity check.
+    // No repair was written to free it: the only new event is the fresh spawn's
+    // own `spawn` (plus its birth/enforcement bookkeeping) — no `retire` for
+    // `implId` anywhere. This is 2026-0149's guarantee preserved BY CONSTRUCTION
+    // rather than by a boot-time writer: a mutant reviving reconcileOrphans()
+    // would still pass the assertions above but fails this one.
     const evs = await t.events();
-    const retire = evs.find(e => e.kind === 'retire' && e.sessionId === implId);
-    assert.ok(retire, 'the orphaned seed row must be retired, with a trace in the ledger');
-    assert.match(retire.reason, /orphan/i);
+    assert.equal(evs.filter(e => e.kind === 'retire').length, 0,
+      'no retire may be written for a session this process never observed exiting');
+    assert.deepEqual(evs.slice(0, before.length), before, 'every pre-existing event is untouched');
   } finally { await t.close(); }
 });
 
@@ -756,7 +783,7 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
     const dev = await t.spawnWorker(handoff);
     assert.ok(dev.sessionId);
     let folded = foldProjection(await t.events());
-    assert.equal(folded.bySession.get(planner.sessionId).live, true,
+    assert.equal(t.instances.isSessionLive(planner.sessionId), true,
       'the planner is still live at the handoff — that is the point of liveness:"any"');
     assert.equal(folded.bySession.get(dev.sessionId).playbook, 'relay', 'playbook inherited via needs');
     assert.notEqual(dev.sessionId, planner.sessionId);
@@ -773,7 +800,7 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
     assert.ok(dev2.sessionId);
     assert.notEqual(dev2.sessionId, dev.sessionId);
     folded = foldProjection(await t.events());
-    assert.equal(folded.bySession.get(planner.sessionId).live, false);
+    assert.equal(t.instances.isSessionLive(planner.sessionId), false);
     assert.equal(folded.bySession.get(dev2.sessionId).playbook, 'relay');
 
     // The provenance floor: `any` dropped the LIVENESS check and nothing else.
@@ -1067,8 +1094,9 @@ test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker'
     // The projection has it live again, so its stage slot is counted and its
     // eventual exit will retire it.
     const st = foldProjection(evs).bySession.get(w.sessionId);
-    assert.deepEqual({ live: st.live, stage: st.stage, history: st.stageHistory },
-      { live: true, stage: 'freeform', history: ['freeform'] });
+    assert.deepEqual({ stage: st.stage, history: st.stageHistory },
+      { stage: 'freeform', history: ['freeform'] });
+    assert.equal(t.instances.isSessionLive(w.sessionId), true);
 
     // And the binding is what the conductor's own read tool reports — the surface
     // the incident used (list_sessions showing freeform/freeform) reads the same

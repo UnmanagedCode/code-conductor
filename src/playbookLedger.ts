@@ -27,28 +27,17 @@
 // stage, the playbook and the stage history stay filed under the id the worker
 // still answers to, and no orphan row appears under a rotated backing id.
 //
-// The `live` flag survives a RENEWAL but not a PRUNE, and the difference is the
-// subprocess. A renewal clears in place — no exit, so no retire, so the row stays
-// live. A prune kills and relaunches: the retire fires (correctly, on the pinned
-// id) and the internal relaunch does not pass through the gate, so nothing
-// un-retires it. A pruned worker therefore reads tracked-with-stage but NOT live,
-// releasing its `workers:"one"` slot early. That is the safe direction — the
-// opposite of a leak. Recovery is a KILL followed by a governed
-// spawn_instance({resume}), which re-declares the binding and un-retires; a bare
-// resume while the worker is still running is refused, because one public id may
-// own at most one live session (InstanceManager's liveForSession guard).
-//
-// Both halves pinned by tests/playbook-enforce.test.mjs → "a stage binding
-// survives a renewal" and "… survives a PRUNE", the latter asserting the residual
-// `live:false` explicitly so it cannot drift unnoticed.
-//
-// A THIRD case neither mechanism covers: an UNOBSERVED death. A host reboot or
-// an orchestrator crash takes the process watching for the exit down with the
-// worker, so no retire is ever written and the row reads `live:true` forever —
-// on disk, across every future process, leaking a `workers:"one"` slot with no
-// worker left to free it. src/mcp/playbookGate.ts reconciles this away: on its
-// first fold per process it retires any `live:true` row the instance registry
-// no longer knows about, before any capacity decision can read it.
+// This module owns STAGE STATE and HISTORY only. Liveness is answered from
+// InstanceManager.isSessionLive (src/instances.ts) — THE single liveness
+// authority — never from this projection: `retire` and `resume` are audit
+// EVENTS (the ledger's history of what the manager observed and what a
+// governed call did), and they fold to no state beyond appearing in
+// `stageHistory`'s implicit ordering. There is no `live` field for a second
+// reader to consult, so a host reboot (an unobserved death — no retire is ever
+// written for it) costs nothing: capacity and `needs.liveness` both read
+// `isSessionLive` directly, and a session this process's registry never heard
+// of simply holds no slot. See docs/protocol.md → Playbooks for the wire
+// contract and docs/architecture.md → Playbooks for the full shape.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -103,7 +92,6 @@ export interface WorkerState {
   provenance: Record<string, string>;
   // sessionId of this worker's run root (the connected component's spawn root).
   runRoot: string;
-  live: boolean;
   project?: string;
   worktree?: string;
 }
@@ -164,7 +152,6 @@ export function applyEvent(p: Projection, ev: LedgerEvent): void {
         stageHistory: [ev.stage],
         provenance,
         runRoot: ev.sessionId, // recomputed below
-        live: true,
         ...(ev.project !== undefined ? { project: ev.project } : {}),
         ...(ev.worktree !== undefined ? { worktree: ev.worktree } : {}),
       });
@@ -185,23 +172,17 @@ export function applyEvent(p: Projection, ev: LedgerEvent): void {
       }
       break;
     }
-    case 'retire': {
-      const st = p.bySession.get(ev.sessionId);
-      // `live:false` frees the stage's capacity slot but preserves stageHistory,
-      // so a retired worker still answers a need's provenance half (history is
-      // history) and never its liveness:"live" half.
-      if (st) st.live = false;
+    case 'retire':
+      // Audit-only, like `refusal` — liveness is answered from
+      // InstanceManager.isSessionLive, never from this projection. A retire's
+      // sessionId is not required to already have a row (same tolerance as
+      // `resume`), so there is nothing to fold into `bySession` here.
       break;
-    }
-    case 'resume': {
-      const st = p.bySession.get(ev.sessionId);
-      // `live` is the ONLY field a resume touches — a resume re-attaches a worker
-      // where it already is, so its stage, stageHistory, provenance and run
-      // membership are all unchanged. An unknown sessionId folds to nothing
-      // rather than materialising a worker with no binding, like `transition`.
-      if (st) st.live = true;
+    case 'resume':
+      // Audit-only. A resume re-attaches a worker where it already is, so its
+      // stage, stageHistory, provenance and run membership are all unchanged —
+      // and it carries no liveness bit to fold any more.
       break;
-    }
     case 'refusal':
       break; // audit-only; no state change
     case 'enforcement':
@@ -245,14 +226,16 @@ export function sameRun(p: Projection, a: string, b: string): boolean {
 
 // Live occupants of `stage` within the run `anchor` belongs to, as sessionIds
 // rather than a bare count — capacity reads this to name the blocking worker in
-// a STAGE_AT_CAPACITY refusal. Capacity counts LIVE workers only, so a retire
-// (including the boot-time orphan reconciliation in src/mcp/playbookGate.ts)
-// frees the slot for a replacement.
-export function liveSessionsInStage(p: Projection, anchor: string, stage: string): string[] {
+// a STAGE_AT_CAPACITY refusal. `isLive` is the caller's liveness oracle
+// (InstanceManager.isSessionLive) — a REQUIRED parameter, not a fold read off
+// `p`, so a session the manager no longer knows about never holds a slot.
+export function liveSessionsInStage(
+  p: Projection, anchor: string, stage: string, isLive: (sessionId: string) => boolean,
+): string[] {
   const out: string[] = [];
   for (const sid of runMembers(p, anchor)) {
     const st = p.bySession.get(sid);
-    if (st?.live && st.stage === stage) out.push(sid);
+    if (st && st.stage === stage && isLive(sid)) out.push(sid);
   }
   return out;
 }

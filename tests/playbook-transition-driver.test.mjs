@@ -13,13 +13,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide, resolveMove } from '../src/playbooks.ts';
-import { proj, builtins, SOLO_RUN } from './playbook-fixtures.mjs';
+import { proj, builtins, SOLO_RUN, isLiveFromEvents } from './playbook-fixtures.mjs';
 
 const PB = await builtins();
 const solo = PB.get('solo');
 
 function d(toolName, args, events) {
-  return decide({ toolName, args, projection: proj(events), playbooks: PB });
+  return decide({ toolName, args, projection: proj(events), playbooks: PB, isLive: isLiveFromEvents(events) });
 }
 
 const PLANNER = [{ kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan' }];
