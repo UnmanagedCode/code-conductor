@@ -18,12 +18,12 @@ import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
-import { hasSessionBackend, getSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
-import { claudeProjectsRoot, encodeCwd } from '../src/projects.ts';
+import { hasSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
+import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -86,12 +86,12 @@ describe('substitution-backend spawn command/args', () => {
   });
 
   test('the backend id + tagged model is written to the sidecar at spawn', async () => {
-    const { inst, summary } = await spawnOnBackend({ model: 'gemma4:cloud' });
+    const { inst } = await spawnOnBackend({ model: 'gemma4:cloud' });
+    const rec = await settledSessionBackend(inst.backingSessionId);
     assert.equal(await hasSessionBackend(inst.backingSessionId), true);
     // `gemma4:cloud` is neither a curated preset nor a custom-model row here, so
     // its capacity is genuinely unknown — recorded as null, never a 200k guess.
-    assert.deepEqual(await getSessionBackend(inst.backingSessionId),
-      { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
+    assert.deepEqual(rec, { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
   });
 
   // The generalization under test: a USER-DEFINED row drives the launch from its
@@ -114,7 +114,7 @@ describe('substitution-backend spawn command/args', () => {
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '300000');
     assert.equal(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
     assert.equal(summary.contextWindowTokens, 300_000);
-    assert.deepEqual(await getSessionBackend(inst.backingSessionId),
+    assert.deepEqual(await settledSessionBackend(inst.backingSessionId),
       { backend: 'my-proxy', model: 'mine:v2', contextWindowTokens: 300_000 });
   });
 
@@ -160,6 +160,41 @@ describe('substitution-backend spawn command/args', () => {
     await addCustomModel({ label: 'S', model: 's:v1', backend: 'shadow', contextWindow: 128_000 });
     const { env } = await spawnOnBackend({ model: 's:v1', backend: 'shadow' });
     assert.equal(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, '128000', 'cc-managed value wins over the user env pair');
+  });
+});
+
+// The write at src/instances.ts spawn() is fire-and-forget, so the 201 + idle can
+// beat it by a handful of filesystem ops (1 failure in 26 full-suite runs before
+// this test existed). Forced deterministically here by holding the store's own
+// advisory lock across the spawn: storeLock.ts reclaims a held lock ONLY when the
+// owner PID is dead, so while this test's live PID owns it, withLock inside
+// markSessionBackend cannot enter and the write CANNOT have landed. That is a hard
+// mutual-exclusion barrier, not a delay — no sleeps, no wall-clock thresholds, and
+// the guarantee does not weaken under host load.
+describe('a sidecar write that lands after the spawn response', () => {
+  test('is waited for, not sampled', async () => {
+    const lockPath = path.join(orchStoreRoot(), 'session-backends.json.lock');
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
+    let released = false;
+    try {
+      const { inst } = await spawnOnBackend({ model: 'gemma4:cloud' });
+      const sid = inst.backingSessionId;
+      // THE FORCING ASSERTION. With the lock held the write cannot have landed, so
+      // an un-waited read must miss. If this ever passes, the forcing silently
+      // stopped working (store path/filename moved, or the write stopped being
+      // lock-guarded) and everything below it would prove nothing.
+      assert.equal(await hasSessionBackend(sid), false,
+        'forcing engaged: the sidecar write is blocked on the held lock');
+      await fs.unlink(lockPath); released = true;
+      // NEGATIVE CONTROL — to re-verify this test still bites, change
+      // `settledSessionBackend(sid)` below to `getSessionBackend(sid)` and re-run
+      // this file alone: it must fail with `AssertionError: null !== { … }`.
+      assert.deepEqual(await settledSessionBackend(sid),
+        { backend: 'ollama', model: 'gemma4:cloud', contextWindowTokens: null });
+    } finally {
+      if (!released) await fs.unlink(lockPath).catch(() => {});
+    }
   });
 });
 

@@ -11,10 +11,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { bootServer, api, waitFor } from './helpers.mjs';
+import { bootServer, api, waitFor, settledSessionBackend } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { addBackend, addCustomModel, resolveContextWindowTokens } from '../src/appSettings.ts';
-import { getSessionBackend } from '../src/sessionBackends.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -324,8 +323,7 @@ test('the forked sessionId is recorded in the backend sidecar, so a later cold r
 
     // Written by spawn(), which is what makes the fork resumable on its own
     // later — without it the fork resolves to `claude` on the next cold resume.
-    await waitFor(async () => !!(await getSessionBackend(newSid)));
-    assert.deepEqual(await getSessionBackend(newSid), {
+    assert.deepEqual(await settledSessionBackend(newSid), {
       backend: 'codex2', model: 'gpt-5.6-sol[1m]', contextWindowTokens: 1_000_000,
     });
   } finally { await ctx.close(); }
