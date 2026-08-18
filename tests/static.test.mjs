@@ -25,7 +25,7 @@ test('serves each public asset', async () => {
   const { baseUrl, close } = await bootServer();
   try {
     for (const asset of ['/app.js', '/ws.js', '/sidebar.js', '/conversation.js', '/blocks.js', '/composer.js', '/styles.css', '/sw.js', '/notifications.js', '/diff.js',
-      '/appSwitcher.js', '/pluginView.js', '/pluginBridge.js', '/pluginManager.js', '/unread.js']) {
+      '/appSwitcher.js', '/pluginView.js', '/pluginBridge.js', '/pluginManager.js', '/unread.js', '/accountUsage.js']) {
       const r = await fetch(baseUrl + asset);
       assert.equal(r.status, 200, `expected 200 for ${asset}`);
       const len = Number(r.headers.get('content-length') ?? 0);
@@ -130,7 +130,7 @@ test('DOM-free public modules import cleanly in Node', async () => {
   const url = await import('node:url');
   const here = path.dirname(url.fileURLToPath(import.meta.url));
   const pub = path.resolve(here, '..', 'public');
-  for (const asset of ['blocks.js', 'sidebar.js', 'conversation.js', 'composer.js', 'unread.js']) {
+  for (const asset of ['blocks.js', 'sidebar.js', 'conversation.js', 'composer.js', 'unread.js', 'accountUsage.js']) {
     const mod = await import(url.pathToFileURL(path.join(pub, asset)).href);
     assert.ok(mod, `${asset} imported`);
   }
