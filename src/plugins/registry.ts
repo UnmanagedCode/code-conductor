@@ -12,21 +12,20 @@ import { httpError } from '../httpError.ts';
 import { createSupervisor, httpOk, headSha, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { createContributions } from './contributions.ts';
+import { createPluginStore, type PersistedPluginRecord, type RuntimeRecord } from './store.ts';
 import { pidAlive, waitForPort } from './ports.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
 
 // Plugin registry — the single service layer behind the REST api
 // (src/plugins/api.ts), the reverse proxy (src/plugins/proxy.ts) and MCP
-// forwarding (src/plugins/mcpBridge.ts). Owns discovery, the persisted
-// registry/runtime files, lifecycle state and lazy starts. Convention/role/
-// claudePlugin contributions live in the composed collaborator
-// src/plugins/contributions.ts, which the three matching public members point
-// straight at.
-//
-// On-disk state (all under `<orchStoreRoot()>/plugins/`):
-//   registry.json  {plugins: {<id>: {project, enabled, activeVersion}}}
-//   runtime.json   {<id>: {pid, pgid, port, startedAt, gitHead}}
+// forwarding (src/plugins/mcpBridge.ts). Owns discovery, active-version
+// resolution, lifecycle state and lazy starts. Two more composed collaborators
+// own the rest:
+// src/plugins/contributions.ts (conventions/roles/claudePlugin roots, and the
+// caches behind them) and src/plugins/store.ts (the persisted registry.json /
+// runtime.json, their load-notice policy, and the adopt pass) — the matching
+// public members point straight at them.
 //
 // activeVersion = {type:'main'} | {type:'worktree', name} — drives the
 // supervisor cwd; the manifest is re-read from the active checkout on
@@ -83,20 +82,6 @@ interface PluginEntry {
 // own narrow entry shapes) stay assignable without importing PluginEntry.
 type VersionedEntry = { id: string | null; project: string; dir: string };
 
-interface PersistedPluginRecord {
-  project: string;
-  enabled: boolean;
-  activeVersion?: ManifestSource;
-}
-
-interface RuntimeRecord {
-  pid: number;
-  pgid: number;
-  port: number;
-  startedAt: string;
-  gitHead: string | null;
-}
-
 type PluginRuntimeStatus = 'stopped' | 'starting' | 'ready' | 'crashed' | 'failed';
 
 interface RuntimeState {
@@ -151,14 +136,6 @@ export function createPluginHost(opts: {
   let entries: PluginEntry[] = [];
   let byId = new Map<string, PluginEntry>();
 
-  // Persisted state, loaded by init().
-  let persisted: { plugins: Record<string, PersistedPluginRecord> } = { plugins: {} };
-  let runtimeRecords: Record<string, RuntimeRecord> = {};
-
-  // Non-ENOENT load failures from THIS init pass — surfaced on GET /api/plugins so
-  // a user whose plugins came back disabled learns why, and where the old file went.
-  let loadNotices: Array<{ file: string; reason: string; backup: string | null }> = [];
-
   // In-memory runtime per id: status stopped|starting|ready|crashed|failed,
   // crash bookkeeping for backoff, the in-flight start dedupe promise, and
   // the last crash tail for 503 bodies.
@@ -174,6 +151,9 @@ export function createPluginHost(opts: {
   // accessors are hoisted `function` declarations, and nothing runs during
   // construction.
   const contributions = createContributions({ ensureInit, contributingEntries, resolveCwd });
+  // Persisted state, loaded by init(). Every registry.json write signals the
+  // contributions cache from the store's single save path.
+  const store = createPluginStore({ onRegistryChange: () => contributions.noteRegistryChange() });
 
   const supervisor = createSupervisor({ onExit: handleChildExit, ..._supervisorOpts });
 
@@ -181,45 +161,6 @@ export function createPluginHost(opts: {
     let s = rt.get(id);
     if (!s) { s = { status: 'stopped', crashTimes: [], backoffUntil: 0, startPromise: null, tail: null, adopted: false }; rt.set(id, s); }
     return s;
-  }
-
-  // ── persistence ─────────────────────────────────────────────────────
-  const registryFile = (): string => path.join(orchStoreRoot(), 'plugins', 'registry.json');
-  const runtimeFile = (): string => path.join(orchStoreRoot(), 'plugins', 'runtime.json');
-
-  // Backs BOTH registry.json and runtime.json, deliberately: carving out a
-  // registry-only variant would need an extra parameter for no benefit, and each
-  // notice names its own file.
-  async function loadJson(file: string, fallback: unknown): Promise<unknown> {
-    try { return JSON.parse(await fs.readFile(file, 'utf8')); }
-    catch (e) {
-      if (errCode(e) === 'ENOENT') return fallback;
-      // The fallback below silently forgets every plugin's enabled state and pinned
-      // version, and this file is the only copy of it — so move the bad file aside
-      // rather than letting the next save overwrite it, and record a notice the
-      // Settings page shows. A log line alone leaves the user guessing why their
-      // plugins came back disabled. A previous `.corrupt` IS overwritten: it was
-      // already unusable, and a timestamped chain would accumulate forever.
-      const backup = `${file}.corrupt`;
-      let saved: string | null = null;
-      try { await fs.rename(file, backup); saved = backup; }
-      catch (re) { console.warn(`plugins: could not preserve ${file} as ${backup}: ${errMsg(re)}`); }
-      console.warn(`plugins: failed to read ${file}: ${errMsg(e)}`);
-      loadNotices.push({ file: path.basename(file), reason: errMsg(e), backup: saved });
-      return fallback;
-    }
-  }
-
-  async function saveRegistry(): Promise<void> {
-    // Signalling HERE rather than at each caller is what makes the set provably
-    // complete: every mutation of `persisted.plugins` is immediately followed by
-    // a saveRegistry() (reconcileActiveVersion, enable, disable, setActiveVersion).
-    contributions.noteRegistryChange();
-    await writeFileAtomic(registryFile(), JSON.stringify(persisted, null, 2) + '\n');
-  }
-
-  async function saveRuntimeRecords(): Promise<void> {
-    await writeFileAtomic(runtimeFile(), JSON.stringify(runtimeRecords, null, 2) + '\n');
   }
 
   // ── init / discovery ────────────────────────────────────────────────
@@ -234,12 +175,7 @@ export function createPluginHost(opts: {
     initedFor = projectsRoot();
     rt.clear();
     initPromise = (async () => {
-      // Reset first: a projectsRoot() swap or a retry after a failed init must
-      // start clean, not inherit the previous pass's notices.
-      loadNotices = [];
-      persisted = (await loadJson(registryFile(), { plugins: {} })) as { plugins: Record<string, PersistedPluginRecord> };
-      if (typeof persisted?.plugins !== 'object' || persisted.plugins === null) persisted = { plugins: {} };
-      runtimeRecords = (await loadJson(runtimeFile(), {})) as Record<string, RuntimeRecord>;
+      await store.load();
       await rescanInternal();
       await adoptRunning();
     })().catch(e => { initPromise = null; throw e; });
@@ -323,22 +259,22 @@ export function createPluginHost(opts: {
 
   // Adopt-don't-drain: a recorded child whose pid is alive and answering on
   // its recorded port is adopted as ready; anything else is cleared.
+  // The store owns the record pruning + its single write; the liveness test and
+  // the lifecycle mutation stay here, where the discovery catalog and the
+  // runtime state live. The predicate's && order is load-bearing: probeAnswers
+  // does real I/O with a 1 s timeout, so it must stay last.
   async function adoptRunning(): Promise<void> {
-    let dirty = false;
-    for (const [id, rec] of Object.entries(runtimeRecords)) {
-      const entry = byId.get(id);
-      const enabled = persisted.plugins[id]?.enabled === true;
-      const alive = enabled && entry && pidAlive(rec.pid) && await probeAnswers(rec.port, entry.manifest);
-      if (alive) {
-        const s = runtimeState(id);
-        s.status = 'ready';
-        s.adopted = true;
-      } else {
-        delete runtimeRecords[id];
-        dirty = true;
-      }
+    const adopted = await store.adopt({
+      isAdoptable: async (id, rec) => {
+        const entry = byId.get(id);
+        return store.isEnabled(id) && !!entry && pidAlive(rec.pid) && await probeAnswers(rec.port, entry.manifest);
+      },
+    });
+    for (const id of adopted) {
+      const s = runtimeState(id);
+      s.status = 'ready';
+      s.adopted = true;
     }
-    if (dirty) await saveRuntimeRecords();
   }
 
   async function probeAnswers(port: number, manifest: PluginManifest | null | undefined): Promise<boolean> {
@@ -368,15 +304,13 @@ export function createPluginHost(opts: {
   // Post-ready exits ('exited') have no watcher, so this is where they land.
   function handleChildExit(id: string, info: ChildRuntime): void {
     if (info.status !== 'exited') return;
-    delete runtimeRecords[id];
-    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
+    store.clearRuntimeDetached(id);
     recordCrash(id, `${info.error}\n${(info.output ?? '').slice(-2000)}`);
   }
 
   // A dead child discovered passively (status probe, proxy upstream error).
   function markDead(id: string, reason: string): void {
-    delete runtimeRecords[id];
-    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
+    store.clearRuntimeDetached(id);
     recordCrash(id, reason);
   }
 
@@ -393,7 +327,7 @@ export function createPluginHost(opts: {
 
   function requireEnabled(id: string): PluginEntry {
     const entry = requireEntry(id);
-    if (persisted.plugins[id]?.enabled !== true) throw httpError(409, `plugin '${id}' is not enabled`);
+    if (!store.isEnabled(id)) throw httpError(409, `plugin '${id}' is not enabled`);
     return entry;
   }
 
@@ -405,15 +339,15 @@ export function createPluginHost(opts: {
   // without hand-editing registry.json.
   async function reconcileActiveVersion(entry: VersionedEntry): Promise<{ activeVersion: ManifestSource; worktreeMeta: WorktreeMeta | null }> {
     const id = entry.id;
-    const reg = id ? persisted.plugins[id] : null;
+    const reg = id ? store.get(id) : undefined;
     const av = reg?.activeVersion ?? { type: 'main' };
     if (av.type !== 'worktree') return { activeVersion: av, worktreeMeta: null };
     // Never string-assemble worktree paths — resolve via the store metadata.
     const { getWorktree } = await import('../worktrees.ts');
     const meta = await getWorktree(entry.project, av.name);
     if (meta?.worktreePath) return { activeVersion: av, worktreeMeta: meta };
-    if (reg) reg.activeVersion = { type: 'main' };
-    await saveRegistry();
+    // Reaching here means `av` came from a record, so `id` is non-null.
+    if (id) await store.setActiveVersion(id, { type: 'main' });
     return { activeVersion: { type: 'main' }, worktreeMeta: null };
   }
 
@@ -428,19 +362,18 @@ export function createPluginHost(opts: {
   async function enable(id: string): Promise<PluginRow | null> {
     await ensureInit();
     const entry = requireEntry(id);
-    const prev = persisted.plugins[id];
+    const prev = store.get(id);
     // A worktree-sourced plugin (manifest only in an unmerged worktree)
     // must default its active version to that worktree — the main checkout
     // has nothing to start.
     const defaultVersion: ManifestSource = entry.manifestSource?.type === 'worktree'
       ? { type: 'worktree', name: entry.manifestSource.name }
       : { type: 'main' };
-    persisted.plugins[id] = {
+    await store.upsert(id, {
       project: entry.project,
       enabled: true,
       activeVersion: prev?.activeVersion ?? defaultVersion,
-    };
-    await saveRegistry();
+    });
     // A fragment edited while this plugin was disabled must not keep serving
     // its pre-edit body now that enable makes it contribute again.
     contributions.invalidate();
@@ -453,10 +386,9 @@ export function createPluginHost(opts: {
 
   async function disable(id: string): Promise<PluginRow | null> {
     await ensureInit();
-    if (!persisted.plugins[id]) throw httpError(404, `plugin '${id}' has no registry entry`);
+    if (!store.has(id)) throw httpError(404, `plugin '${id}' has no registry entry`);
     await stopInternal(id);
-    persisted.plugins[id].enabled = false;
-    await saveRegistry();
+    await store.setEnabled(id, false);
     return describe(id);
   }
 
@@ -498,13 +430,11 @@ export function createPluginHost(opts: {
         ...(serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {}),
       };
       const rec = await supervisor.start({ id, manifest: { backend }, cwd, env });
-      runtimeRecords[id] = rec;
-      await saveRuntimeRecords();
+      await store.recordStart(id, rec);
 
       const settled = await waitSettled(id);
       if (settled.status !== 'ready') {
-        delete runtimeRecords[id];
-        await saveRuntimeRecords();
+        await store.clearRuntime(id);
         const tail = settled.error ?? settled.output?.slice(-2000) ?? '';
         recordCrash(id, tail);
         throw httpError(502, `plugin '${id}' failed to start`, { tail });
@@ -541,19 +471,18 @@ export function createPluginHost(opts: {
   }
 
   async function stopInternal(id: string): Promise<void> {
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     const s = runtimeState(id);
     if (rec) {
       supervisor.stop({ id, pgid: rec.pgid });
-      delete runtimeRecords[id];
-      await saveRuntimeRecords();
+      await store.clearRuntime(id);
     }
     if (s.status !== 'failed') s.status = 'stopped';
   }
 
   async function stop(id: string): Promise<PluginRow | null> {
     await ensureInit();
-    if (!byId.get(id) && !persisted.plugins[id]) throw httpError(404, `unknown plugin '${id}'`);
+    if (!byId.get(id) && !store.has(id)) throw httpError(404, `unknown plugin '${id}'`);
     await stopInternal(id);
     return describe(id);
   }
@@ -564,7 +493,7 @@ export function createPluginHost(opts: {
   async function ensureStarted(id: string): Promise<void> {
     await ensureInit();
     const entry = byId.get(id);
-    if (!entry || persisted.plugins[id]?.enabled !== true) throw httpError(404, `unknown or disabled plugin '${id}'`);
+    if (!entry || !store.isEnabled(id)) throw httpError(404, `unknown or disabled plugin '${id}'`);
     const s = runtimeState(id);
     if (s.status === 'ready') return;
     if (s.status === 'failed') {
@@ -580,16 +509,17 @@ export function createPluginHost(opts: {
   // ── views ───────────────────────────────────────────────────────────
   function describe(id: string): Promise<PluginRow> | null {
     const entry = byId.get(id) ?? entries.find(e => e.id === id) ?? null;
-    const reg = persisted.plugins[id];
-    if (!entry && !reg) return null;
-    return describeRow(entry ?? { id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
+    if (entry) return describeRow(entry);
+    const reg = store.get(id);
+    if (!reg) return null;
+    return describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
   }
 
   async function describeRow(entry: PluginEntry): Promise<PluginRow> {
     const id = entry.id;
-    const reg = id ? persisted.plugins[id] : null;
+    const reg = id ? store.get(id) : null;
     const s = id ? runtimeState(id) : null;
-    const rec = id ? runtimeRecords[id] : null;
+    const rec = id ? store.runtimeRecord(id) : null;
     const hasBackend = !!entry.manifest?.backend;
     let state: string;
     if (entry.discoveryState !== 'ok') state = entry.discoveryState;
@@ -643,7 +573,7 @@ export function createPluginHost(opts: {
     const rowPromises: Array<Promise<PluginRow>> = entries.map(describeRow);
     // Registry entries whose project/manifest vanished still deserve a row
     // (they hold state the user may want to disable).
-    for (const [id, reg] of Object.entries(persisted.plugins)) {
+    for (const [id, reg] of store.entries()) {
       if (!entries.some(e => e.id === id)) {
         rowPromises.push(describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
       }
@@ -661,9 +591,9 @@ export function createPluginHost(opts: {
   // OOM-kill) since the last event we saw.
   async function status(id: string): Promise<PluginRow | null> {
     await ensureInit();
-    if (!byId.get(id) && !persisted.plugins[id]) throw httpError(404, `unknown plugin '${id}'`);
+    if (!byId.get(id) && !store.has(id)) throw httpError(404, `unknown plugin '${id}'`);
     const s = runtimeState(id);
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     if (s.status === 'ready' && rec) {
       const entry = byId.get(id);
       const answers = await probeAnswers(rec.port, entry?.manifest);
@@ -676,7 +606,7 @@ export function createPluginHost(opts: {
 
   // Proxy hook: an upstream connection error may mean the child is gone.
   function reportUpstreamFailure(id: string): void {
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     const s = rt.get(id);
     if (!rec || !s || s.status !== 'ready') return;
     if (!pidAlive(rec.pid)) markDead(id, s.tail ?? `process ${rec.pid} died (upstream connection failed)`);
@@ -689,7 +619,7 @@ export function createPluginHost(opts: {
   async function setActiveVersion(id: string, v: unknown): Promise<PluginRow | null> {
     await ensureInit();
     const entry = requireEntry(id);
-    if (!persisted.plugins[id]) throw httpError(409, `plugin '${id}' has no registry entry — enable it first`);
+    if (!store.has(id)) throw httpError(409, `plugin '${id}' has no registry entry — enable it first`);
     const ver = v as { type?: unknown; name?: unknown } | null | undefined;
     let next: ManifestSource;
     if (ver?.type === 'main') {
@@ -714,8 +644,7 @@ export function createPluginHost(opts: {
     } else {
       throw httpError(400, "version must be {type:'main'} or {type:'worktree', name}");
     }
-    persisted.plugins[id].activeVersion = next;
-    await saveRegistry();
+    await store.setActiveVersion(id, next);
     contributions.invalidate();
     const s = runtimeState(id);
     if (s.status === 'ready' || s.status === 'starting') {
@@ -747,15 +676,15 @@ export function createPluginHost(opts: {
     instances,
     listMcpPlugins: () => [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest & { mcp: PluginMcp } } =>
       e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && e.manifest.mcp != null
-        && persisted.plugins[e.id]?.enabled === true),
+        && store.isEnabled(e.id)),
     ensureStarted,
-    portFor: (id: string) => runtimeRecords[id]?.port ?? null,
+    portFor: (id: string) => store.runtimeRecord(id)?.port ?? null,
     reportUpstreamFailure,
   });
   const toolsFor = () => mcpBridge.toolsFor();
 
   function runtimeInfo(id: string): { status: string; port: number | null } {
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     const s = rt.get(id);
     return { status: s?.status ?? 'stopped', port: rec?.port ?? null };
   }
@@ -768,21 +697,21 @@ export function createPluginHost(opts: {
   // records, neither of which the collaborator owns.
   function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {
     return [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest } =>
-      e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && persisted.plugins[e.id]?.enabled === true);
+      e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && store.isEnabled(e.id));
   }
 
   function setServerPort(p: number | null): void { serverPort = p; }
 
   // Test/shutdown teardown: kill every child this host started or adopted.
   // No `!initPromise` early return: a FAILED init still clears `initPromise`
-  // to null (see ensureInit) but can leave `runtimeRecords` already loaded
-  // with live backends from a previous process (it's assigned before
-  // rescanInternal()/adoptRunning() run) — "never initialized" is no longer
-  // the only reason `initPromise` can be null. `runtimeRecords` starts `{}`,
-  // so skipping the await when init never ran is just as correct as awaiting it.
+  // to null (see ensureInit) but can leave the store's runtime records already
+  // loaded with live backends from a previous process (store.load() runs before
+  // rescanInternal()/adoptRunning()) — "never initialized" is no longer the only
+  // reason `initPromise` can be null. The record set starts empty, so skipping
+  // the await when init never ran is just as correct as awaiting it.
   async function stopAll(): Promise<void> {
     try { if (initPromise) await initPromise; } catch { /* init failed; stop whatever was already recorded */ }
-    for (const id of Object.keys(runtimeRecords)) {
+    for (const id of store.runtimeIds()) {
       try { await stopInternal(id); } catch { /* best-effort */ }
     }
   }
@@ -795,7 +724,7 @@ export function createPluginHost(opts: {
     roles: contributions.roles,
     claudePluginDirs: contributions.claudePluginDirs,
     reportUpstreamFailure, setServerPort, stopAll,
-    notices: () => [...loadNotices],
+    notices: store.notices,
   };
 }
 
