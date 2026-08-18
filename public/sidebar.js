@@ -190,7 +190,7 @@ export class Sidebar {
     // stale (firstPrompt may have just appeared, lastActivity advanced, etc.).
     this._prevStatusById = new Map();
     // Per-sessionId count of turn_notifications that landed while the
-    // user wasn't viewing this session. Driven from app.js; cleared on
+    // user wasn't viewing this session. Driven from unread.js; cleared on
     // selectInstance. Keyed by sessionId so it survives crash + resume
     // (a new instance id for the same session).
     this.unreadBySessionId = new Map();

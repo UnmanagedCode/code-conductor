@@ -13,7 +13,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RateLimitTracker } from '../public/usage.js';
+import { RateLimitTracker, RL_BUCKET_KEYS } from '../public/usage.js';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -28,8 +28,7 @@ function makeRLEvent(fields) {
 // Mirrors the normalisation that refreshAccountUsage() does in app.js:
 // take the tightest non-null bucket and build a synthetic event for apply().
 function makeFetchEvent(accountUsage) {
-  const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
-  const key = BUCKET_PRIORITY.find(k => accountUsage[k]);
+  const key = RL_BUCKET_KEYS.find(k => accountUsage[k]);
   if (!key) return null;
   const b = accountUsage[key];
   return {

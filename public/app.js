@@ -4,16 +4,12 @@
 import { bus, connect, send } from './ws.js';
 import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
-import { attachComposer } from './composer.js';
+import { attachComposer, probeMicAvailability } from './composer.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
-import { UsageTracker, RateLimitTracker, RL_BUCKET_KEYS } from './usage.js';
-import {
-  NotificationState, ensurePermission, setGlobalEnabled,
-  isNotificationAPIAvailable, registerServiceWorker,
-  closeAllOnFocus, muteSession, isSessionMuted, restoreMutedSessions,
-} from './notifications.js';
+import { UsageTracker, RateLimitTracker } from './usage.js';
+import { restoreMutedSessions, installNotifyToggle } from './notifications.js';
 import {
   writeSessionAnchor, pushSessionAnchor, stashCurrentAnchorForRelaunch,
 } from './anchor.js';
@@ -40,8 +36,10 @@ import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setBackends } from './models.js';
-import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
-import { apiFetch } from './http.js';
+import { setTtsAvailable, setTtsEnabled, setTtsRate, probeTtsStatus } from './tts.js';
+import { createUnreadStore } from './unread.js';
+import { installAccountUsage } from './accountUsage.js';
+import { installSidebarChrome } from './sidebarChrome.js';
 
 const state = {
   projects: [],
@@ -50,43 +48,6 @@ const state = {
   activeStatus: null,
   activeMode: null,
 };
-
-// Account-level usage fetched from /api/usage (OAuth endpoint, 180 s server cache).
-// null until the first successful fetch. A failed/null refresh keeps the last-good
-// value instead of blanking it — the server already retains last-good data on
-// failure (allowStale), so a transient miss here shouldn't clobber a good render.
-let accountUsage = null;
-let accountUsageStale = false;
-
-async function refreshAccountUsage() {
-  try {
-    const r = await fetch('/api/usage', { cache: 'no-store' });
-    if (!r.ok) return;
-    const j = await r.json();
-    if (j.usage == null) return; // keep last-good accountUsage, don't blank it
-    accountUsage = j.usage;
-    accountUsageStale = !!j.stale;
-    // Merge the tightest bucket from the fetch into globalRLTracker so the
-    // combined chip shows real data even before a rate_limit_event arrives.
-    // fetch = richer base; messages are sparse patches on top. Both use the
-    // same apply() null-guard so neither clobbers the other's unique fields
-    // (isUsingOverage is message-only and survives re-fetches because it is
-    // intentionally absent from this synthetic event).
-    const key = RL_BUCKET_KEYS.find(k => accountUsage[k]);
-    if (key) {
-      const b = accountUsage[key];
-      globalRLTracker.apply({
-        kind: 'system', subtype: 'rate_limit_event',
-        data: { rate_limit_info: {
-          rateLimitType: key,
-          utilization: typeof b.utilization === 'number' ? b.utilization / 100 : undefined,
-          resetsAt: b.resets_at ? new Date(b.resets_at).getTime() / 1000 : undefined,
-        }},
-      });
-    }
-    if (state.activeId) headerHandle.update();
-  } catch { /* ignore — keep last-good accountUsage */ }
-}
 
 const dom = {
   projectList: document.getElementById('project-list'),
@@ -177,6 +138,15 @@ const dom = {
   restartBlurb: document.getElementById('rd-blurb'),
 };
 
+// Sidebar chrome: the mobile drawer (toggle + scrim), the desktop column's
+// drag-resize handle and persisted width, and the ≡ overflow menu (see
+// public/sidebarChrome.js). Installed here, immediately after the dom map,
+// because closeSidebarOverflow is passed BY VALUE into installNewProjectDialog
+// and installSpawnDialog below — as a handle method it has to already exist.
+// Only the two navigation helpers are forwarded: every setSidebarOpen call
+// site moved into the module with the toggle and scrim listeners.
+const { closeSidebarOnMobile, closeSidebarOverflow } = installSidebarChrome({ dom });
+
 // Per-instance task trackers — one TaskTracker is kept alive per
 // observed instance so switching tabs and back doesn't lose the
 // running list. The panel mounts the tracker for whichever instance
@@ -212,6 +182,15 @@ function getUsage(instanceId) {
 // fields win; absent/undefined fields never clobber existing values.
 const globalRLTracker = new RateLimitTracker();
 
+// The periodic /api/usage poll and its merge of the tightest rate-limit bucket
+// into globalRLTracker live in public/accountUsage.js. headerUpdate is a lazy
+// arrow because headerHandle is assigned further down.
+const accountUsage = installAccountUsage({
+  globalRLTracker,
+  getActiveId: () => state.activeId,
+  headerUpdate: () => headerHandle.update(),
+});
+
 // Auto-approve-plan toggle now lives on the server (per Instance) and
 // the flag is mirrored down through `snapshot` / `status` frames into
 // each entry of `state.instances`. The client just renders the synced
@@ -220,47 +199,12 @@ const globalRLTracker = new RateLimitTracker();
 // toggle work even when the tab isn't focused on the affected session
 // or is backgrounded entirely.
 
-// Per-sessionId unread count. Incremented when a turn_notification lands
-// for a session the user isn't currently viewing; cleared on
-// selectInstance. Keyed by sessionId (not instance id) so the count
-// survives a crash + resume cycle that mints a new instance id for the
-// same session. Persisted to localStorage so it also survives page
-// refreshes — turn_notifications keep firing for live background
-// instances even when no tab is connected (the server-side ring buffer
-// can't replay missed ones, but new ones after reload are counted).
-const UNREAD_STORAGE_KEY = 'code-conductor:unread';
-function loadUnreadFromStorage() {
-  try {
-    const raw = localStorage.getItem(UNREAD_STORAGE_KEY);
-    if (!raw) return new Map();
-    const obj = JSON.parse(raw);
-    if (!obj || typeof obj !== 'object') return new Map();
-    return new Map(Object.entries(obj).filter(([, v]) => Number.isInteger(v) && v > 0));
-  } catch {
-    return new Map();
-  }
-}
-function saveUnreadToStorage() {
-  try {
-    if (unreadBySessionId.size === 0) localStorage.removeItem(UNREAD_STORAGE_KEY);
-    else localStorage.setItem(UNREAD_STORAGE_KEY, JSON.stringify(Object.fromEntries(unreadBySessionId)));
-  } catch {
-    // localStorage can throw (private mode, quota) — unread is best-effort.
-  }
-}
-const unreadBySessionId = loadUnreadFromStorage();
-function bumpUnread(sessionId) {
-  if (!sessionId) return;
-  unreadBySessionId.set(sessionId, (unreadBySessionId.get(sessionId) ?? 0) + 1);
-  saveUnreadToStorage();
-  sidebar.setUnread(unreadBySessionId);
-}
-function clearUnread(sessionId) {
-  if (!sessionId) return;
-  if (!unreadBySessionId.delete(sessionId)) return;
-  saveUnreadToStorage();
-  sidebar.setUnread(unreadBySessionId);
-}
+// Per-sessionId unread counts + their localStorage persistence live in
+// public/unread.js. Constructed before the Sidebar because the Sidebar seed
+// below reads `unread.counts`; onChange is a lazy arrow for the same reason
+// the other holders are (it only fires after init, so the `const sidebar` TDZ
+// is never reached).
+const unread = createUnreadStore({ onChange: (m) => sidebar.setUnread(m) });
 
 // Deliver a card answer (AskUserQuestion / plan Approve-Reject) as a normal
 // user turn — the same ungated send the composer uses. Mid-turn is the NORMAL
@@ -413,8 +357,8 @@ const sidebar = new Sidebar({
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
 // this, sidebar starts with an empty Map and the badges only reappear
-// after the next bumpUnread fires.
-sidebar.setUnread(unreadBySessionId);
+// after the next unread.bump fires.
+sidebar.setUnread(unread.counts);
 // Rehydrate per-session notification mutes so the header's Mute/Unmute
 // item reflects the right state on the first render after a page reload.
 restoreMutedSessions();
@@ -435,25 +379,54 @@ const composer = attachComposer({
   onResize: () => conversation._maybeScroll(),
 });
 
+// Per-session / per-project action helpers (promote / resume / load-sessions /
+// rewind / fork / delete-project / delete-session / remove-worktree, plus the
+// session-title PUT and the worktree sync/merge/respawn ops) live in
+// public/sessionActions.js. Returned handles are held in `sessionActions`
+// (declared above) so the Sidebar callbacks, conversationOptions onRewind/onFork,
+// and the boot-time auto-resume all forward to it. Fork/rewind composer prefill
+// rides `droppedText` inline on the WS snapshot/reset_snapshot frame (handled in
+// wsRouter.js) — no client-side prefill state lives in sessionActions.
+//
+// Installed BEFORE installHeader because the header's control handlers call
+// into it. It is a pure closure factory with no install-time side effects, and
+// its own deps are either already constructed (sidebar) or hoisted declarations
+// / lazy arrows, so moving it up is safe.
+sessionActions = installSessionActions({
+  getActiveId: () => state.activeId,
+  setActiveId: (v) => { state.activeId = v; },
+  getInstances: () => state.instances,
+  refreshProjects,
+  refreshInstances,
+  selectInstance,
+  sidebar,
+  clearUnread: unread.clear,
+  headerUpdate: () => headerHandle.update(),
+});
+
 // Active-instance header / chips / combined-usage popover (see public/header.js).
-// Wired here once composer + conversation exist; closeOverflow is a hoisted
-// function declaration (defined further down) so the reference is valid now.
-// getAccountUsage is a getter because `accountUsage` is reassigned by the
-// periodic /api/usage fetch. setActiveStatus/setActiveMode mirror onto the same
-// live `state` object the killBtn handler reads.
+// Wired here once composer + conversation exist.
+// getAccountUsage is a getter so the chip always renders whatever the periodic
+// /api/usage poll last stored. setActiveStatus/setActiveMode/getActiveStatus
+// mirror onto and read back from the same live `state` object.
 headerHandle = installHeader({
   dom,
   getActiveId: () => state.activeId,
   getInstances: () => state.instances,
   setActiveStatus: (v) => { state.activeStatus = v; },
   setActiveMode: (v) => { state.activeMode = v; },
+  getActiveStatus: () => state.activeStatus,
   getUsage,
   globalRLTracker,
-  getAccountUsage: () => accountUsage,
-  getAccountUsageStale: () => accountUsageStale,
+  getAccountUsage: () => accountUsage.get(),
+  getAccountUsageStale: () => accountUsage.isStale(),
   composer,
   conversation,
-  closeOverflow,
+  sessionActions,
+  // The three dialog handles are built after this install, so they arrive lazily.
+  openSummary: () => summaryHandle.open(),
+  openStats: () => statsHandle.open(),
+  openPrune: () => pruneHandle.open(),
 });
 
 // Enable the Send button's hold-to-record mic affordance only when the
@@ -463,31 +436,8 @@ headerHandle = installHeader({
 function setMicAvailable(available) {
   composer.setMicAvailable(available);
 }
-(async () => {
-  try {
-    const r = await fetch('/api/transcribe/status', { cache: 'no-store' });
-    if (!r.ok) return;
-    const { available } = await r.json();
-    setMicAvailable(available);
-  } catch { /* leave mic disabled */ }
-})();
-
-// Probe Piper TTS availability (gates the 🔊 speak buttons) and seed the
-// auto-speak/rate prefs. Mirrors the transcribe-status probe above.
-(async () => {
-  try {
-    const r = await fetch('/api/tts/status', { cache: 'no-store' });
-    if (r.ok) setTtsAvailable((await r.json()).available);
-  } catch { /* leave TTS disabled */ }
-  try {
-    const r = await fetch('/api/settings/tts', { cache: 'no-store' });
-    if (r.ok) {
-      const d = await r.json();
-      setTtsEnabled(d.enabled);
-      setTtsRate(d.rate);
-    }
-  } catch { /* prefs default off */ }
-})();
+probeMicAvailability(setMicAvailable);
+probeTtsStatus();
 
 // Settings page (full-page view at #settings). The burger-menu button routes
 // here; closing restores the previously-active session anchor.
@@ -628,171 +578,6 @@ const costs = installCosts({ onClose: () => {
   writeSessionAnchor(inst?.sessionId || null);
 } });
 
-dom.modeSelect.addEventListener('change', async () => {
-  if (!state.activeId) return;
-  const mode = dom.modeSelect.value;
-  try { await send('mode', { id: state.activeId, mode }, { ack: true }); }
-  catch (e) { alert(`mode change failed: ${e.message}`); }
-});
-
-dom.killBtn.addEventListener('click', () => {
-  if (!state.activeId) return;
-  closeOverflow();
-  if (state.activeStatus === 'turn') {
-    // Default interrupt is SOFT — arms an abort that fires at the next output
-    // boundary. Escalate to an immediate one via the "Interrupt now" button.
-    send('interrupt', { id: state.activeId });
-  } else if (confirm('Terminate this instance?')) {
-    send('kill', { id: state.activeId });
-  }
-});
-
-dom.muteBtn.addEventListener('click', () => {
-  if (!state.activeId) return;
-  const inst = state.instances.find(i => i.id === state.activeId);
-  if (!inst?.sessionId) return;
-  closeOverflow();
-  muteSession(inst.sessionId, !isSessionMuted(inst.sessionId));
-  headerHandle.update();
-});
-
-// Turn-indicator escalate button: force-stop the in-flight turn (hard
-// control_request abort) once a soft interrupt is underway.
-dom.tiInterruptNow.addEventListener('click', () => {
-  if (!state.activeId) return;
-  send('interrupt', { id: state.activeId, force: true });
-});
-
-dom.autoApprovePlanBtn.addEventListener('click', () => {
-  if (!state.activeId) return;
-  const inst = state.instances.find(i => i.id === state.activeId);
-  const next = !(inst && inst.autoApprovePlan);
-  // Optimistic: flip the local mirror immediately so the button's
-  // pressed-state updates without waiting for the status round-trip.
-  // The next `status` frame will reassert the authoritative value.
-  if (inst) inst.autoApprovePlan = next;
-  headerHandle.update();
-  send('auto_approve_plan', { id: state.activeId, enabled: next });
-});
-
-// PUT a session title and mirror it locally. Shared by ⋮ Rename and the
-// summary dialog's "Use as session title" button.
-async function applySessionTitle(sessionId, title) {
-  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: title.trim().slice(0, 100) }),
-  });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.error ?? `HTTP ${r.status}`);
-  }
-  const result = await r.json();
-  // Optimistic local mirror — the broadcast `status` frame will reassert.
-  const inst = state.instances.find(i => i.sessionId === sessionId);
-  if (inst) inst.title = result.title ?? null;
-  headerHandle.update();
-  await refreshProjects();
-  return result.title ?? null;
-}
-
-dom.renameSessionBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  const inst = state.instances.find(i => i.id === state.activeId);
-  if (!inst?.sessionId) return;
-  closeOverflow();
-  const cur = inst.title ?? '';
-  const next = prompt('Session title (empty to clear):', cur);
-  if (next === null) return; // cancelled
-  const trimmed = next.trim().slice(0, 100);
-  if (trimmed === (cur ?? '').trim()) return; // no change
-  try {
-    await applySessionTitle(inst.sessionId, trimmed);
-  } catch (e) {
-    alert('Rename failed: ' + e.message);
-  }
-});
-
-dom.summarizeSessionBtn.addEventListener('click', () => {
-  closeOverflow();
-  summaryHandle.open();
-});
-
-dom.sessionStatsBtn.addEventListener('click', () => {
-  closeOverflow();
-  statsHandle.open();
-});
-
-dom.pruneSessionBtn.addEventListener('click', () => {
-  closeOverflow();
-  pruneHandle.open();
-});
-
-dom.debugBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  closeOverflow();
-  dom.debugBtn.disabled = true;
-  dom.debugBtn.textContent = '🐛 starting…';
-  try {
-    const r = await fetch(`/api/instances/${state.activeId}/debug`, { method: 'POST' });
-    const result = await r.json();
-    if (!r.ok || !result.ok) {
-      throw new Error(result.error ?? result.reason ?? 'failed to enable debug');
-    }
-    // Reflect the new state locally so headerHandle.update() can flip the
-    // button label immediately. A status event will follow anyway and
-    // overwrite this with the authoritative summary.
-    const inst = state.instances.find(i => i.id === state.activeId);
-    if (inst) { inst.debug = true; inst.debugDir = result.debugDir; }
-    headerHandle.update();
-    alert(`Debug capture started. Writing to:\n${result.debugDir}`);
-  } catch (e) {
-    alert('Failed to enable debug: ' + e.message);
-    dom.debugBtn.disabled = false;
-    dom.debugBtn.textContent = '🐛 Debug';
-  }
-});
-
-dom.syncBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  try {
-    const result = await apiFetch(`/api/instances/${state.activeId}/sync`, { method: 'POST' });
-    if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return; }
-    if (result.action === 'already-in-sync') {
-      alert('Worktree is already up to date with its parent branch.');
-    } else if (result.action === 'fast-forwarded') {
-      alert(`Synced worktree → ${result.newSha?.slice(0, 12) ?? '?'}`);
-    } else if (result.action === 'rebased') {
-      alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — click Merge when ready.`);
-    } else if (result.action === 'rebase-prompt-sent') {
-      alert('Rebase prompt sent to the agent — watch the conversation for REBASE_DONE, then click Merge.');
-    }
-    await refreshProjects();
-  } catch (e) { alert(`sync failed: ${e.message}`); }
-});
-dom.mergeBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return;
-  try {
-    const result = await apiFetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
-    if (result.ok) {
-      alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
-      await refreshProjects();
-    } else {
-      alert(`Cannot merge:\n${result.reason}`);
-    }
-  } catch (e) { alert(`merge failed: ${e.message}`); }
-});
-
-dom.resumeBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  try {
-    await apiFetch(`/api/instances/${state.activeId}/respawn`, { method: 'POST' });
-    await refreshInstances();
-    if (state.activeId) send('subscribe', { id: state.activeId });
-  } catch (e) { alert(`resume failed: ${e.message}`); }
-});
-
 installNewProjectDialog({
   dom: {
     newProjectBtn: dom.newProjectBtn,
@@ -863,112 +648,9 @@ spawnHandles = installSpawnDialog({
   closeSidebarOverflow,
 });
 
-function setSidebarOpen(open) {
-  dom.sidebar.classList.toggle('open', open);
-  dom.sidebarScrim.classList.toggle('open', open);
-  dom.sidebarToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-}
-dom.sidebarToggle.addEventListener('click', () => {
-  setSidebarOpen(!dom.sidebar.classList.contains('open'));
-});
-// The sidebar is a slide-over drawer only below the 720px breakpoint (see
-// styles.css); above it, '.open' has no visual effect. Navigating to another
-// view (settings/review/commits/a session) should dismiss that mobile drawer
-// so the destination is visible, but must never collapse the always-visible
-// desktop column. Every navigation call site routes through this instead of
-// calling setSidebarOpen(false) directly, so the guard lives in one place.
-function closeSidebarOnMobile() {
-  if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
-}
-
-// Sidebar resize (desktop grid layout only — the mobile drawer has a fixed
-// width and hides the handle via the @media breakpoint in styles.css).
-const SIDEBAR_WIDTH_STORAGE_KEY = 'code-conductor:sidebar-width';
-const SIDEBAR_MIN_WIDTH = 220;
-const SIDEBAR_MAX_WIDTH = 560;
-
-function loadSidebarWidth() {
-  try {
-    const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
-    const n = raw ? Number(raw) : NaN;
-    return Number.isFinite(n) ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, n)) : null;
-  } catch {
-    return null;
-  }
-}
-function saveSidebarWidth(px) {
-  try { localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(px)); } catch { /* private mode / quota — best-effort */ }
-}
-const savedSidebarWidth = loadSidebarWidth();
-if (savedSidebarWidth) document.documentElement.style.setProperty('--sidebar-width', `${savedSidebarWidth}px`);
-
-if (dom.sidebarResizeHandle) {
-  dom.sidebarResizeHandle.addEventListener('pointerdown', (e) => {
-    if (window.matchMedia('(max-width: 720px)').matches) return; // mobile drawer — handle is hidden/inert anyway
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = dom.sidebar.getBoundingClientRect().width;
-    dom.sidebarResizeHandle.setPointerCapture(e.pointerId);
-    dom.sidebarResizeHandle.classList.add('active');
-    document.body.style.userSelect = 'none';
-    const onMove = (moveEvent) => {
-      const width = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, startWidth + (moveEvent.clientX - startX)));
-      document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
-    };
-    const onUp = () => {
-      dom.sidebarResizeHandle.removeEventListener('pointermove', onMove);
-      dom.sidebarResizeHandle.removeEventListener('pointerup', onUp);
-      dom.sidebarResizeHandle.classList.remove('active');
-      document.body.style.userSelect = '';
-      const width = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
-      if (Number.isFinite(width)) saveSidebarWidth(width);
-    };
-    dom.sidebarResizeHandle.addEventListener('pointermove', onMove);
-    dom.sidebarResizeHandle.addEventListener('pointerup', onUp);
-  });
-}
-
-function renderNotifyToggle() {
-  const on = NotificationState.globalEnabled && NotificationState.permission === 'granted';
-  dom.notifyToggle.textContent = on ? '🔔' : '🔕';
-  dom.notifyToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
-  dom.notifyToggle.title = !isNotificationAPIAvailable()
-    ? 'Notifications unsupported in this browser'
-    : NotificationState.permission === 'denied'
-      ? 'Notifications blocked — change in browser site settings'
-      : on
-        ? 'Notifications on — tap to mute'
-        : 'Notifications off — tap to enable';
-}
-dom.notifyToggle.addEventListener('click', async () => {
-  if (!isNotificationAPIAvailable()) { renderNotifyToggle(); return; }
-  if (NotificationState.globalEnabled) {
-    setGlobalEnabled(false);
-    renderNotifyToggle();
-    return;
-  }
-  const perm = await ensurePermission();
-  if (perm === 'granted') setGlobalEnabled(true);
-  renderNotifyToggle();
-});
-NotificationState.permission = isNotificationAPIAvailable() ? Notification.permission : 'unsupported';
-if (NotificationState.permission === 'granted') {
-  // User previously granted permission. Auto-enable + register the SW so
-  // notifications actually fire on mobile (which requires SW transport).
-  setGlobalEnabled(true);
-  ensurePermission().catch(() => {});
-} else {
-  // Eagerly register the Service Worker even without notification permission.
-  // Chrome only surfaces the "Install app" PWA entry once an active SW is
-  // present; without this, the menu shows the weaker "Add to home screen"
-  // (bookmark shortcut) instead.
-  registerServiceWorker().catch(() => {});
-}
-renderNotifyToggle();
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) closeAllOnFocus();
-});
-dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
+// The 🔔/🔕 toggle, its boot permission/SW bootstrap and the focus-dismiss
+// listener live in public/notifications.js.
+installNotifyToggle({ dom });
 
 // setSidebarStatus stays here — it also drives the anchor/auto-resume path
 // (see the first-connect 'open' handler below) — and is injected into the
@@ -990,32 +672,14 @@ restartHandle = installRestart({
   setSidebarStatus,
 });
 
-// Per-session / per-project action helpers (promote / resume / load-sessions /
-// rewind / fork / delete-project / delete-session / remove-worktree) live in
-// public/sessionActions.js. Returned handles are held in `sessionActions`
-// (declared above) so the Sidebar callbacks, conversationOptions onRewind/onFork,
-// and the boot-time auto-resume all forward to it. Fork/rewind composer prefill
-// rides `droppedText` inline on the WS snapshot/reset_snapshot frame (handled in
-// wsRouter.js) — no client-side prefill state lives in sessionActions.
 const getActiveSid = () => {
   const inst = state.instances.find(i => i.id === state.activeId);
   return inst?.sessionId ?? null;
 };
-const summaryHandle = installSessionSummary({ dom, getActiveSid, applySessionTitle });
+const summaryHandle = installSessionSummary({ dom, getActiveSid, applySessionTitle: sessionActions.applySessionTitle });
 const statsHandle = installSessionStats({ dom, getActiveSid });
 const pruneHandle = installPruneDialog({
   dom, getActiveId: () => state.activeId, refreshInstances,
-});
-
-sessionActions = installSessionActions({
-  getActiveId: () => state.activeId,
-  setActiveId: (v) => { state.activeId = v; },
-  getInstances: () => state.instances,
-  refreshProjects,
-  refreshInstances,
-  selectInstance,
-  sidebar,
-  clearUnread,
 });
 
 async function refreshProjects() {
@@ -1073,7 +737,7 @@ function selectInstance(id, opts = {}) {
   }
   // Now that the user is viewing this session, any backlog of unread
   // turn-end pings for it is by definition read.
-  clearUnread(inst?.sessionId);
+  unread.clear(inst?.sessionId);
   // If the user tapped a session from within the Settings or Commits page, close
   // that overlay so the conversation view is visible. writeSessionAnchor already
   // replaced the hash, so we check flags captured before that call.
@@ -1082,48 +746,6 @@ function selectInstance(id, opts = {}) {
   if (leavingPlugin)   pluginView.close();
   closeSidebarOnMobile();
 }
-
-// Header ⋮ overflow menu — currently hosts the Debug button so it doesn't
-// occupy primary-control real estate. Mirrors the usage popover's dismiss
-// behavior (click outside / Escape).
-const overflowCtl = makeDismissable({
-  isInside: (t) => dom.overflowPanel.contains(t) || dom.overflowToggle.contains(t),
-  onDismiss: () => closeOverflow(),
-});
-function closeOverflow() {
-  if (!overflowCtl.armed) return;
-  dom.overflowPanel.hidden = true;
-  dom.overflowToggle.setAttribute('aria-expanded', 'false');
-  overflowCtl.disarm();
-}
-function toggleOverflow() {
-  if (overflowCtl.armed) { closeOverflow(); return; }
-  dom.overflowPanel.hidden = false;
-  dom.overflowToggle.setAttribute('aria-expanded', 'true');
-  overflowCtl.arm();
-}
-dom.overflowToggle.addEventListener('click', toggleOverflow);
-
-// Sidebar ≡ hamburger — mirrors the header overflow pattern. Hosts
-// secondary project actions (currently just "+ Group") so the primary
-// "+ New project" button gets the full action-row width.
-const sidebarOverflowCtl = makeDismissable({
-  isInside: (t) => dom.sidebarOverflowPanel.contains(t) || dom.sidebarOverflowToggle.contains(t),
-  onDismiss: () => closeSidebarOverflow(),
-});
-function closeSidebarOverflow() {
-  if (!sidebarOverflowCtl.armed) return;
-  dom.sidebarOverflowPanel.hidden = true;
-  dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'false');
-  sidebarOverflowCtl.disarm();
-}
-function toggleSidebarOverflow() {
-  if (sidebarOverflowCtl.armed) { closeSidebarOverflow(); return; }
-  dom.sidebarOverflowPanel.hidden = false;
-  dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'true');
-  sidebarOverflowCtl.arm();
-}
-dom.sidebarOverflowToggle.addEventListener('click', toggleSidebarOverflow);
 
 installExternalLinkOpener({
   beforeNavigate: () => stashCurrentAnchorForRelaunch(),
@@ -1138,7 +760,8 @@ installLightbox();
 // constructed — so it injects resolved objects (no holder/forward-ref) and is a
 // pure leaf consumer. Installed AFTER installRestart() so restart's 'open'
 // listener stays registered before this router's 'open' listener (original
-// dispatch order). `accountUsage` is NOT routed here — it stays in app.js.
+// dispatch order). `accountUsage` is NOT routed here — it polls over REST
+// (public/accountUsage.js).
 installWsRouter({
   state,
   getTracker,
@@ -1151,7 +774,7 @@ installWsRouter({
   composer,
   sidebar,
   subagentPanel,
-  bumpUnread,
+  bumpUnread: unread.bump,
   refreshProjects,
   refreshInstances,
   selectInstance,
@@ -1160,8 +783,8 @@ installWsRouter({
 
 connect();
 
-refreshAccountUsage();
-setInterval(refreshAccountUsage, 180_000);
+accountUsage.refresh();
+setInterval(() => accountUsage.refresh(), 180_000);
 
 // Keep the turn-indicator's idle "last response Xm ago" label ticking
 // without a network round-trip or a full header rebuild (tickIdleAgo is a

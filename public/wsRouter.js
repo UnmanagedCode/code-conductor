@@ -17,10 +17,10 @@
 // app.js stays the orchestrator: it constructs `state`, the trackers
 // (getTracker/getUsage/globalRLTracker), conversation, headerHandle,
 // lazyController, sessionActions, composer, sidebar, subagentPanel, the
-// unread helper (bumpUnread — kept there because it shares module state with
-// clearUnread), the REST refreshers, selectInstance, and setSidebarStatus —
-// all injected here.
-// `accountUsage` is NOT touched by any handler, so it stays wholly in app.js.
+// unread helper (unread.js's bump), the REST refreshers, selectInstance, and
+// setSidebarStatus — all injected here.
+// `accountUsage` is NOT touched by any handler — it polls over REST from
+// public/accountUsage.js.
 
 import { bus, send } from './ws.js';
 import { maybeNotifyTurnEnd, resolveNotificationInstance } from './notifications.js';
@@ -73,7 +73,7 @@ export function installWsRouter({
     // rate_limit_event (e.g. from a long-idle session) would clobber a fresher
     // account-wide value already set by a live event or the periodic
     // /api/usage fetch. globalRLTracker is fed ONLY by the live 'event'
-    // handler below and by refreshAccountUsage() in app.js.
+    // handler below and by accountUsage.js's periodic refresh.
     const isActive = m.id === state.activeId;
     if (isActive) conversation.clear();
     if (isActive) conversation._replayMode = true;

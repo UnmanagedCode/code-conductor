@@ -12,7 +12,7 @@ export const NotificationState = {
   // Per-session mute, keyed by sessionId rather than the per-process
   // instance id: a crash + resume mints a new instance id for the same
   // session, which would silently un-mute it. Mirrors the unread counter's
-  // keying in app.js for the same reason.
+  // keying in unread.js for the same reason.
   mutedSessions: new Set(),
   swRegistration: null,           // ServiceWorkerRegistration, once registered
 };
@@ -239,4 +239,50 @@ export function resolveNotificationInstance({ instanceId, sessionId } = {}, inst
     if (bySession) return bySession;
   }
   return null;
+}
+
+// The 🔔/🔕 header toggle, the boot-time permission/Service-Worker bootstrap,
+// and the focus listener that dismisses lingering OS notifications. Extracted
+// from app.js — every symbol it touches already lives in this module.
+//
+// The SW is registered eagerly even WITHOUT notification permission: Chrome
+// only surfaces the "Install app" PWA entry once an active SW is present, and
+// without it the menu offers the weaker "Add to home screen" bookmark instead.
+export function installNotifyToggle({ dom }) {
+  function renderNotifyToggle() {
+    const on = NotificationState.globalEnabled && NotificationState.permission === 'granted';
+    dom.notifyToggle.textContent = on ? '🔔' : '🔕';
+    dom.notifyToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+    dom.notifyToggle.title = !isNotificationAPIAvailable()
+      ? 'Notifications unsupported in this browser'
+      : NotificationState.permission === 'denied'
+        ? 'Notifications blocked — change in browser site settings'
+        : on
+          ? 'Notifications on — tap to mute'
+          : 'Notifications off — tap to enable';
+  }
+  dom.notifyToggle.addEventListener('click', async () => {
+    if (!isNotificationAPIAvailable()) { renderNotifyToggle(); return; }
+    if (NotificationState.globalEnabled) {
+      setGlobalEnabled(false);
+      renderNotifyToggle();
+      return;
+    }
+    const perm = await ensurePermission();
+    if (perm === 'granted') setGlobalEnabled(true);
+    renderNotifyToggle();
+  });
+  NotificationState.permission = isNotificationAPIAvailable() ? Notification.permission : 'unsupported';
+  if (NotificationState.permission === 'granted') {
+    // User previously granted permission. Auto-enable + register the SW so
+    // notifications actually fire on mobile (which requires SW transport).
+    setGlobalEnabled(true);
+    ensurePermission().catch(() => {});
+  } else {
+    registerServiceWorker().catch(() => {});
+  }
+  renderNotifyToggle();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) closeAllOnFocus();
+  });
 }
