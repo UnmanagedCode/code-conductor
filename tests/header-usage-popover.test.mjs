@@ -234,3 +234,49 @@ test('usage popover still shows the accumulated cost for a claude-backed session
   assert.ok(costRow, 'Cost row should be rendered once turns > 0');
   assert.equal(costRow.value, '$0.0500', 'claude session cost rendering is unchanged');
 });
+
+// ── usage-limits bucket-row pin ─────────────────────────────────────────────
+// Characterization pin ahead of collapsing the three copies of the rate-limit
+// bucket key list (app.js, header.js, usage.js) onto one exported list, and
+// header.js's private OAUTH_BUCKET_LABELS onto usage.js's RL_WINDOW_LABEL.
+//
+// Pins what must survive that: one row per KNOWN bucket actually present in
+// the payload, in tightest-window-first order, each labelled from the
+// long-form map. Committed with the parenthesised labels header.js uses
+// today — the rewording lands in the same commit as the label-map merge, so
+// the intended text change shows up in that diff rather than silently.
+
+test('usage limits: one row per present bucket, tightest window first', async () => {
+  const { dom, document, header, setInstances, setActiveId, setAccountUsage } = await setup();
+  setInstances([LIVE_INSTANCE]);
+  setActiveId('inst-1');
+  setAccountUsage({
+    five_hour:        { utilization: 10, resets_at: '2026-07-23T08:49:59+00:00' },
+    seven_day:        { utilization: 40, resets_at: '2026-07-26T00:59:59+00:00' },
+    seven_day_sonnet: { utilization: 55, resets_at: '2026-07-26T00:59:59+00:00' },
+    seven_day_opus:   { utilization: 70, resets_at: '2026-07-26T00:59:59+00:00' },
+  });
+  header.update();
+
+  const rows = openPopoverRows(dom, document);
+  assert.deepEqual(rows.map(r => r.key),
+    ['5-hour', '7-day', '7-day (Sonnet)', '7-day (Opus)'],
+    'every known bucket renders once, tightest window first');
+  assert.deepEqual(rows.map(r => r.value.replace(/resets .*/, 'resets …')),
+    ['10% · resets …', '40% · resets …', '55% · resets …', '70% · resets …']);
+});
+
+test('usage limits: an absent bucket gets no placeholder row', async () => {
+  const { dom, document, header, setInstances, setActiveId, setAccountUsage } = await setup();
+  setInstances([LIVE_INSTANCE]);
+  setActiveId('inst-1');
+  setAccountUsage({
+    seven_day_opus: { utilization: 70, resets_at: '2026-07-26T00:59:59+00:00' },
+  });
+  header.update();
+
+  const rows = openPopoverRows(dom, document);
+  assert.equal(rows.length, 1, 'exactly one row for the one bucket present');
+  assert.equal(rows[0].key, '7-day (Opus)');
+  assert.match(rows[0].value, /^70% · resets /);
+});
