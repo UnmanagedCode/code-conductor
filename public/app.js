@@ -385,8 +385,7 @@ const composer = attachComposer({
 });
 
 // Active-instance header / chips / combined-usage popover (see public/header.js).
-// Wired here once composer + conversation exist; closeOverflow is a hoisted
-// function declaration (defined further down) so the reference is valid now.
+// Wired here once composer + conversation exist.
 // getAccountUsage is a getter so the chip always renders whatever the periodic
 // /api/usage poll last stored. setActiveStatus/setActiveMode mirror onto the same
 // live `state` object the killBtn handler reads.
@@ -402,7 +401,6 @@ headerHandle = installHeader({
   getAccountUsageStale: () => accountUsage.isStale(),
   composer,
   conversation,
-  closeOverflow,
 });
 
 // Enable the Send button's hold-to-record mic affordance only when the
@@ -586,7 +584,7 @@ dom.modeSelect.addEventListener('change', async () => {
 
 dom.killBtn.addEventListener('click', () => {
   if (!state.activeId) return;
-  closeOverflow();
+  headerHandle.closeOverflow();
   if (state.activeStatus === 'turn') {
     // Default interrupt is SOFT — arms an abort that fires at the next output
     // boundary. Escalate to an immediate one via the "Interrupt now" button.
@@ -600,7 +598,7 @@ dom.muteBtn.addEventListener('click', () => {
   if (!state.activeId) return;
   const inst = state.instances.find(i => i.id === state.activeId);
   if (!inst?.sessionId) return;
-  closeOverflow();
+  headerHandle.closeOverflow();
   muteSession(inst.sessionId, !isSessionMuted(inst.sessionId));
   headerHandle.update();
 });
@@ -649,7 +647,7 @@ dom.renameSessionBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   const inst = state.instances.find(i => i.id === state.activeId);
   if (!inst?.sessionId) return;
-  closeOverflow();
+  headerHandle.closeOverflow();
   const cur = inst.title ?? '';
   const next = prompt('Session title (empty to clear):', cur);
   if (next === null) return; // cancelled
@@ -663,23 +661,23 @@ dom.renameSessionBtn.addEventListener('click', async () => {
 });
 
 dom.summarizeSessionBtn.addEventListener('click', () => {
-  closeOverflow();
+  headerHandle.closeOverflow();
   summaryHandle.open();
 });
 
 dom.sessionStatsBtn.addEventListener('click', () => {
-  closeOverflow();
+  headerHandle.closeOverflow();
   statsHandle.open();
 });
 
 dom.pruneSessionBtn.addEventListener('click', () => {
-  closeOverflow();
+  headerHandle.closeOverflow();
   pruneHandle.open();
 });
 
 dom.debugBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
-  closeOverflow();
+  headerHandle.closeOverflow();
   dom.debugBtn.disabled = true;
   dom.debugBtn.textContent = '🐛 starting…';
   try {
@@ -965,27 +963,6 @@ function selectInstance(id, opts = {}) {
   if (leavingPlugin)   pluginView.close();
   closeSidebarOnMobile();
 }
-
-// Header ⋮ overflow menu — currently hosts the Debug button so it doesn't
-// occupy primary-control real estate. Mirrors the usage popover's dismiss
-// behavior (click outside / Escape).
-const overflowCtl = makeDismissable({
-  isInside: (t) => dom.overflowPanel.contains(t) || dom.overflowToggle.contains(t),
-  onDismiss: () => closeOverflow(),
-});
-function closeOverflow() {
-  if (!overflowCtl.armed) return;
-  dom.overflowPanel.hidden = true;
-  dom.overflowToggle.setAttribute('aria-expanded', 'false');
-  overflowCtl.disarm();
-}
-function toggleOverflow() {
-  if (overflowCtl.armed) { closeOverflow(); return; }
-  dom.overflowPanel.hidden = false;
-  dom.overflowToggle.setAttribute('aria-expanded', 'true');
-  overflowCtl.arm();
-}
-dom.overflowToggle.addEventListener('click', toggleOverflow);
 
 installExternalLinkOpener({
   beforeNavigate: () => stashCurrentAnchorForRelaunch(),

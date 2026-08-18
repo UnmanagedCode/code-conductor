@@ -5,8 +5,7 @@
 //
 // Extracted from app.js (slice 8). app.js stays the orchestrator: it owns
 // `state`, the dom singleton, the per-instance usage trackers (`getUsage`), the
-// account-wide `globalRLTracker`, the overflow menu
-// (`closeOverflow`), and the WS router + control handlers. It holds the handle
+// account-wide `globalRLTracker`, and the WS router. It holds the handle
 // returned here in a `headerHandle` holder and forwards every `updateActiveHeader`
 // call site through `headerHandle.update()`.
 //
@@ -34,7 +33,6 @@
 //                        stale by the server (backoff/failure window) rather than
 //                        freshly fetched — drives the popover's "(stale)" suffix.
 //   - composer/conversation: enablement toggles.
-//   - closeOverflow():   the header ⋮ menu close (overflow controller STAYS in app.js).
 
 import {
   formatTokens, formatPct, formatDuration,
@@ -74,11 +72,32 @@ export function installHeader({
   getAccountUsageStale,
   composer,
   conversation,
-  closeOverflow,
 }) {
   let openCombinedPopover = null;
   let openModelPopover = null;
   let currentInst = null;
+
+  // Header ⋮ overflow menu — hosts the secondary actions (Interrupt/Kill, Mute,
+  // Debug, Rename, Change model, Summarize, Session stats, Prune) so they don't
+  // occupy primary-control real estate. Mirrors the usage popover's dismiss
+  // behavior (click outside / Escape).
+  const overflowCtl = makeDismissable({
+    isInside: (t) => dom.overflowPanel.contains(t) || dom.overflowToggle.contains(t),
+    onDismiss: () => closeOverflow(),
+  });
+  function closeOverflow() {
+    if (!overflowCtl.armed) return;
+    dom.overflowPanel.hidden = true;
+    dom.overflowToggle.setAttribute('aria-expanded', 'false');
+    overflowCtl.disarm();
+  }
+  function toggleOverflow() {
+    if (overflowCtl.armed) { closeOverflow(); return; }
+    dom.overflowPanel.hidden = false;
+    dom.overflowToggle.setAttribute('aria-expanded', 'true');
+    overflowCtl.arm();
+  }
+  dom.overflowToggle.addEventListener('click', toggleOverflow);
 
   function closeCombinedPopover() {
     if (!openCombinedPopover) return;
@@ -632,5 +651,7 @@ export function installHeader({
           : 'Send a message — Enter to send, Shift+Enter for newline';
   }
 
-  return { update, tickIdleAgo };
+  // closeOverflow is exposed only because app.js's header-bar click handlers
+  // still call it; they move here in the next commits and it becomes private.
+  return { update, tickIdleAgo, closeOverflow };
 }

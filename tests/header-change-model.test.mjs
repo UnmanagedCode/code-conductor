@@ -59,6 +59,7 @@ async function setup() {
     playbookEnforcementBtn: document.getElementById('playbook-enforcement-btn'),
     overflowMenu: document.getElementById('overflow-menu'),
     overflowToggle: document.getElementById('overflow-toggle'),
+    overflowPanel: document.getElementById('overflow-panel'),
   };
   for (const [k, v] of Object.entries(dom)) {
     assert.ok(v, `dom.${k} must resolve to a real element from index.html`);
@@ -88,7 +89,6 @@ async function setup() {
     getAccountUsageStale: () => false,
     composer,
     conversation,
-    closeOverflow: () => {},
   });
 
   return {
