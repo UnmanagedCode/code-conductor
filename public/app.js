@@ -44,6 +44,7 @@ import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 import { apiFetch } from './http.js';
 import { createUnreadStore } from './unread.js';
 import { installAccountUsage } from './accountUsage.js';
+import { installSidebarChrome } from './sidebarChrome.js';
 
 const state = {
   projects: [],
@@ -141,6 +142,15 @@ const dom = {
   restartDialog: document.getElementById('restart-dialog'),
   restartBlurb: document.getElementById('rd-blurb'),
 };
+
+// Sidebar chrome: the mobile drawer (toggle + scrim), the desktop column's
+// drag-resize handle and persisted width, and the ≡ overflow menu (see
+// public/sidebarChrome.js). Installed here, immediately after the dom map,
+// because closeSidebarOverflow is passed BY VALUE into installNewProjectDialog
+// and installSpawnDialog below — as a handle method it has to already exist.
+// Only the two navigation helpers are forwarded: every setSidebarOpen call
+// site moved into the module with the toggle and scrim listeners.
+const { closeSidebarOnMobile, closeSidebarOverflow } = installSidebarChrome({ dom });
 
 // Per-instance task trackers — one TaskTracker is kept alive per
 // observed instance so switching tabs and back doesn't lose the
@@ -802,71 +812,6 @@ spawnHandles = installSpawnDialog({
   closeSidebarOverflow,
 });
 
-function setSidebarOpen(open) {
-  dom.sidebar.classList.toggle('open', open);
-  dom.sidebarScrim.classList.toggle('open', open);
-  dom.sidebarToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-}
-dom.sidebarToggle.addEventListener('click', () => {
-  setSidebarOpen(!dom.sidebar.classList.contains('open'));
-});
-// The sidebar is a slide-over drawer only below the 720px breakpoint (see
-// styles.css); above it, '.open' has no visual effect. Navigating to another
-// view (settings/review/commits/a session) should dismiss that mobile drawer
-// so the destination is visible, but must never collapse the always-visible
-// desktop column. Every navigation call site routes through this instead of
-// calling setSidebarOpen(false) directly, so the guard lives in one place.
-function closeSidebarOnMobile() {
-  if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
-}
-
-// Sidebar resize (desktop grid layout only — the mobile drawer has a fixed
-// width and hides the handle via the @media breakpoint in styles.css).
-const SIDEBAR_WIDTH_STORAGE_KEY = 'code-conductor:sidebar-width';
-const SIDEBAR_MIN_WIDTH = 220;
-const SIDEBAR_MAX_WIDTH = 560;
-
-function loadSidebarWidth() {
-  try {
-    const raw = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
-    const n = raw ? Number(raw) : NaN;
-    return Number.isFinite(n) ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, n)) : null;
-  } catch {
-    return null;
-  }
-}
-function saveSidebarWidth(px) {
-  try { localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(px)); } catch { /* private mode / quota — best-effort */ }
-}
-const savedSidebarWidth = loadSidebarWidth();
-if (savedSidebarWidth) document.documentElement.style.setProperty('--sidebar-width', `${savedSidebarWidth}px`);
-
-if (dom.sidebarResizeHandle) {
-  dom.sidebarResizeHandle.addEventListener('pointerdown', (e) => {
-    if (window.matchMedia('(max-width: 720px)').matches) return; // mobile drawer — handle is hidden/inert anyway
-    e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = dom.sidebar.getBoundingClientRect().width;
-    dom.sidebarResizeHandle.setPointerCapture(e.pointerId);
-    dom.sidebarResizeHandle.classList.add('active');
-    document.body.style.userSelect = 'none';
-    const onMove = (moveEvent) => {
-      const width = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, startWidth + (moveEvent.clientX - startX)));
-      document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
-    };
-    const onUp = () => {
-      dom.sidebarResizeHandle.removeEventListener('pointermove', onMove);
-      dom.sidebarResizeHandle.removeEventListener('pointerup', onUp);
-      dom.sidebarResizeHandle.classList.remove('active');
-      document.body.style.userSelect = '';
-      const width = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
-      if (Number.isFinite(width)) saveSidebarWidth(width);
-    };
-    dom.sidebarResizeHandle.addEventListener('pointermove', onMove);
-    dom.sidebarResizeHandle.addEventListener('pointerup', onUp);
-  });
-}
-
 function renderNotifyToggle() {
   const on = NotificationState.globalEnabled && NotificationState.permission === 'granted';
   dom.notifyToggle.textContent = on ? '🔔' : '🔕';
@@ -907,7 +852,6 @@ renderNotifyToggle();
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) closeAllOnFocus();
 });
-dom.sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
 
 // setSidebarStatus stays here — it also drives the anchor/auto-resume path
 // (see the first-connect 'open' handler below) — and is injected into the
@@ -1042,27 +986,6 @@ function toggleOverflow() {
   overflowCtl.arm();
 }
 dom.overflowToggle.addEventListener('click', toggleOverflow);
-
-// Sidebar ≡ hamburger — mirrors the header overflow pattern. Hosts
-// secondary project actions (currently just "+ Group") so the primary
-// "+ New project" button gets the full action-row width.
-const sidebarOverflowCtl = makeDismissable({
-  isInside: (t) => dom.sidebarOverflowPanel.contains(t) || dom.sidebarOverflowToggle.contains(t),
-  onDismiss: () => closeSidebarOverflow(),
-});
-function closeSidebarOverflow() {
-  if (!sidebarOverflowCtl.armed) return;
-  dom.sidebarOverflowPanel.hidden = true;
-  dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'false');
-  sidebarOverflowCtl.disarm();
-}
-function toggleSidebarOverflow() {
-  if (sidebarOverflowCtl.armed) { closeSidebarOverflow(); return; }
-  dom.sidebarOverflowPanel.hidden = false;
-  dom.sidebarOverflowToggle.setAttribute('aria-expanded', 'true');
-  sidebarOverflowCtl.arm();
-}
-dom.sidebarOverflowToggle.addEventListener('click', toggleSidebarOverflow);
 
 installExternalLinkOpener({
   beforeNavigate: () => stashCurrentAnchorForRelaunch(),
