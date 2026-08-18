@@ -4,3 +4,4 @@ node_modules/
 server.log
 .mutation/
 harness/playwright/screenshots/
+__pycache__/
