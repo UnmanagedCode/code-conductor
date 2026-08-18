@@ -897,8 +897,7 @@ export function buildTools(): Tool[] {
         '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
         '(`TOOL_ARG_VALUE_CAP`) rides verbatim, so pointers like `file_path`, a command or a pattern ' +
         'survive, while a larger one is replaced by an `[omitted: …]` marker and the block carries ' +
-        '`inputTruncated:true`. To read an omitted argument: `includeToolCalls:true`, or `project_read` on ' +
-        'the path the descriptor names. Default count and max per the `count` schema. ' +
+        '`inputTruncated:true`. To read an omitted argument: `includeToolCalls:true`. Default count and max per the `count` schema. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
         'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +
         'of that turn — so a turn whose trailing prose spans several messages still surfaces the plan/questions ' +
