@@ -20,9 +20,10 @@
 // Injected interface:
 //   - dom:               the live dom singleton (header reads ~16 elements off it).
 //   - getActiveId()/getInstances(): read state.activeId / state.instances.
-//   - setActiveStatus(v)/setActiveMode(v): mirror status/mode back onto the SAME
-//                        live `state` object (activeStatus is read by app.js's
-//                        killBtn handler, so it must hit the shared object).
+//   - setActiveStatus(v)/setActiveMode(v)/getActiveStatus(): mirror status/mode
+//                        back onto the SAME live `state` object and read it back
+//                        (the killBtn handler branches on activeStatus, so the
+//                        write and the read must hit the shared object).
 //   - getUsage(id):      the per-instance UsageTracker (STAYS in app.js — the WS
 //                        snapshot/event handlers use it too).
 //   - globalRLTracker:   the account-wide RateLimitTracker singleton.
@@ -33,6 +34,9 @@
 //                        stale by the server (backoff/failure window) rather than
 //                        freshly fetched — drives the popover's "(stale)" suffix.
 //   - composer/conversation: enablement toggles.
+//   - sessionActions:    the REST action handles (rename / sync / merge / respawn).
+//   - openSummary()/openStats()/openPrune(): lazy dialog openers — those handles
+//                        are built after this install, so they arrive as arrows.
 
 import {
   formatTokens, formatPct, formatDuration,
@@ -43,7 +47,7 @@ import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
 import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, CLAUDE_BACKEND } from './models.js';
-import { isSessionMuted } from './notifications.js';
+import { isSessionMuted, muteSession } from './notifications.js';
 
 // The reserved project every conductor session lives in — mirrors
 // CONDUCT_PROJECT_NAME (src/conduct.ts), which is the source of truth. Named
@@ -66,12 +70,17 @@ export function installHeader({
   getInstances,
   setActiveStatus,
   setActiveMode,
+  getActiveStatus,
   getUsage,
   globalRLTracker,
   getAccountUsage,
   getAccountUsageStale,
   composer,
   conversation,
+  sessionActions,
+  openSummary,
+  openStats,
+  openPrune,
 }) {
   let openCombinedPopover = null;
   let openModelPopover = null;
@@ -358,6 +367,124 @@ export function installHeader({
     try { await send('playbook_enforcement', { id: currentInst.id, mode }, { ack: true }); }
     catch (e) { alert(`playbook enforcement change failed: ${e.message}`); }
   });
+
+
+  // ── control handlers ──────────────────────────────────────────────────────
+  // The controls row, the ⋮ items and the turn-indicator escalate button. This
+  // module already renders and enable/disables every one of them; only their
+  // click handlers used to sit in app.js.
+
+  dom.modeSelect.addEventListener('change', async () => {
+    if (!getActiveId()) return;
+    const mode = dom.modeSelect.value;
+    try { await send('mode', { id: getActiveId(), mode }, { ack: true }); }
+    catch (e) { alert(`mode change failed: ${e.message}`); }
+  });
+
+  dom.killBtn.addEventListener('click', () => {
+    if (!getActiveId()) return;
+    closeOverflow();
+    if (getActiveStatus() === 'turn') {
+      // Default interrupt is SOFT — arms an abort that fires at the next output
+      // boundary. Escalate to an immediate one via the "Interrupt now" button.
+      send('interrupt', { id: getActiveId() });
+    } else if (confirm('Terminate this instance?')) {
+      send('kill', { id: getActiveId() });
+    }
+  });
+
+  dom.muteBtn.addEventListener('click', () => {
+    if (!getActiveId()) return;
+    const inst = getInstances().find(i => i.id === getActiveId());
+    if (!inst?.sessionId) return;
+    closeOverflow();
+    muteSession(inst.sessionId, !isSessionMuted(inst.sessionId));
+    update();
+  });
+
+  // Turn-indicator escalate button: force-stop the in-flight turn (hard
+  // control_request abort) once a soft interrupt is underway.
+  dom.tiInterruptNow.addEventListener('click', () => {
+    if (!getActiveId()) return;
+    send('interrupt', { id: getActiveId(), force: true });
+  });
+
+  dom.autoApprovePlanBtn.addEventListener('click', () => {
+    if (!getActiveId()) return;
+    const inst = getInstances().find(i => i.id === getActiveId());
+    const next = !(inst && inst.autoApprovePlan);
+    // Optimistic: flip the local mirror immediately so the button's
+    // pressed-state updates without waiting for the status round-trip.
+    // The next `status` frame will reassert the authoritative value.
+    if (inst) inst.autoApprovePlan = next;
+    update();
+    send('auto_approve_plan', { id: getActiveId(), enabled: next });
+  });
+
+  dom.renameSessionBtn.addEventListener('click', async () => {
+    if (!getActiveId()) return;
+    const inst = getInstances().find(i => i.id === getActiveId());
+    if (!inst?.sessionId) return;
+    closeOverflow();
+    const cur = inst.title ?? '';
+    const next = prompt('Session title (empty to clear):', cur);
+    if (next === null) return; // cancelled
+    const trimmed = next.trim().slice(0, 100);
+    if (trimmed === (cur ?? '').trim()) return; // no change
+    try {
+      await sessionActions.applySessionTitle(inst.sessionId, trimmed);
+    } catch (e) {
+      alert('Rename failed: ' + e.message);
+    }
+  });
+
+  dom.summarizeSessionBtn.addEventListener('click', () => {
+    closeOverflow();
+    openSummary();
+  });
+
+  dom.sessionStatsBtn.addEventListener('click', () => {
+    closeOverflow();
+    openStats();
+  });
+
+  dom.pruneSessionBtn.addEventListener('click', () => {
+    closeOverflow();
+    openPrune();
+  });
+
+  // Stays whole here rather than splitting into sessionActions: the bare fetch
+  // reads `error`/`reason` off a NON-ok body (2026-0170 territory) and the
+  // success path drives this module's own button label/disabled dance, so a
+  // split try/catch across two modules would be strictly worse.
+  dom.debugBtn.addEventListener('click', async () => {
+    if (!getActiveId()) return;
+    closeOverflow();
+    dom.debugBtn.disabled = true;
+    dom.debugBtn.textContent = '🐛 starting…';
+    try {
+      const r = await fetch(`/api/instances/${getActiveId()}/debug`, { method: 'POST' });
+      const result = await r.json();
+      if (!r.ok || !result.ok) {
+        throw new Error(result.error ?? result.reason ?? 'failed to enable debug');
+      }
+      // Reflect the new state locally so update() can flip the button label
+      // immediately. A status event will follow anyway and overwrite this with
+      // the authoritative summary.
+      const inst = getInstances().find(i => i.id === getActiveId());
+      if (inst) { inst.debug = true; inst.debugDir = result.debugDir; }
+      update();
+      alert(`Debug capture started. Writing to:\n${result.debugDir}`);
+    } catch (e) {
+      alert('Failed to enable debug: ' + e.message);
+      dom.debugBtn.disabled = false;
+      dom.debugBtn.textContent = '🐛 Debug';
+    }
+  });
+
+  dom.syncBtn.addEventListener('click', () => sessionActions.syncWorktree());
+  dom.mergeBtn.addEventListener('click', () => sessionActions.mergeWorktree());
+  dom.resumeBtn.addEventListener('click', () => sessionActions.respawnActive());
 
   // Combined ctx + rl chip. ctx half is per-session; rl half reads from
   // globalRLTracker (account-wide) with accountUsage as a fallback source.
@@ -651,7 +778,5 @@ export function installHeader({
           : 'Send a message — Enter to send, Shift+Enter for newline';
   }
 
-  // closeOverflow is exposed only because app.js's header-bar click handlers
-  // still call it; they move here in the next commits and it becomes private.
-  return { update, tickIdleAgo, closeOverflow };
+  return { update, tickIdleAgo };
 }

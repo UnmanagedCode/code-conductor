@@ -55,6 +55,7 @@ async function setup() {
     syncBtn: document.getElementById('sync-btn'),
     mergeBtn: document.getElementById('merge-btn'),
     debugBtn: document.getElementById('debug-btn'),
+    summarizeSessionBtn: document.getElementById('summarize-session-btn'),
     renameSessionBtn: document.getElementById('rename-session-btn'),
     changeModelBtn: document.getElementById('change-model-btn'),
     sessionStatsBtn: document.getElementById('session-stats-btn'),

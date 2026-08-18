@@ -12,7 +12,7 @@ import { UsageTracker, RateLimitTracker } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   isNotificationAPIAvailable, registerServiceWorker,
-  closeAllOnFocus, muteSession, isSessionMuted, restoreMutedSessions,
+  closeAllOnFocus, restoreMutedSessions,
 } from './notifications.js';
 import {
   writeSessionAnchor, pushSessionAnchor, stashCurrentAnchorForRelaunch,
@@ -411,20 +411,26 @@ sessionActions = installSessionActions({
 // Active-instance header / chips / combined-usage popover (see public/header.js).
 // Wired here once composer + conversation exist.
 // getAccountUsage is a getter so the chip always renders whatever the periodic
-// /api/usage poll last stored. setActiveStatus/setActiveMode mirror onto the same
-// live `state` object the killBtn handler reads.
+// /api/usage poll last stored. setActiveStatus/setActiveMode/getActiveStatus
+// mirror onto and read back from the same live `state` object.
 headerHandle = installHeader({
   dom,
   getActiveId: () => state.activeId,
   getInstances: () => state.instances,
   setActiveStatus: (v) => { state.activeStatus = v; },
   setActiveMode: (v) => { state.activeMode = v; },
+  getActiveStatus: () => state.activeStatus,
   getUsage,
   globalRLTracker,
   getAccountUsage: () => accountUsage.get(),
   getAccountUsageStale: () => accountUsage.isStale(),
   composer,
   conversation,
+  sessionActions,
+  // The three dialog handles are built after this install, so they arrive lazily.
+  openSummary: () => summaryHandle.open(),
+  openStats: () => statsHandle.open(),
+  openPrune: () => pruneHandle.open(),
 });
 
 // Enable the Send button's hold-to-record mic affordance only when the
@@ -598,114 +604,6 @@ const costs = installCosts({ onClose: () => {
   const inst = state.instances.find(i => i.id === state.activeId);
   writeSessionAnchor(inst?.sessionId || null);
 } });
-
-dom.modeSelect.addEventListener('change', async () => {
-  if (!state.activeId) return;
-  const mode = dom.modeSelect.value;
-  try { await send('mode', { id: state.activeId, mode }, { ack: true }); }
-  catch (e) { alert(`mode change failed: ${e.message}`); }
-});
-
-dom.killBtn.addEventListener('click', () => {
-  if (!state.activeId) return;
-  headerHandle.closeOverflow();
-  if (state.activeStatus === 'turn') {
-    // Default interrupt is SOFT — arms an abort that fires at the next output
-    // boundary. Escalate to an immediate one via the "Interrupt now" button.
-    send('interrupt', { id: state.activeId });
-  } else if (confirm('Terminate this instance?')) {
-    send('kill', { id: state.activeId });
-  }
-});
-
-dom.muteBtn.addEventListener('click', () => {
-  if (!state.activeId) return;
-  const inst = state.instances.find(i => i.id === state.activeId);
-  if (!inst?.sessionId) return;
-  headerHandle.closeOverflow();
-  muteSession(inst.sessionId, !isSessionMuted(inst.sessionId));
-  headerHandle.update();
-});
-
-// Turn-indicator escalate button: force-stop the in-flight turn (hard
-// control_request abort) once a soft interrupt is underway.
-dom.tiInterruptNow.addEventListener('click', () => {
-  if (!state.activeId) return;
-  send('interrupt', { id: state.activeId, force: true });
-});
-
-dom.autoApprovePlanBtn.addEventListener('click', () => {
-  if (!state.activeId) return;
-  const inst = state.instances.find(i => i.id === state.activeId);
-  const next = !(inst && inst.autoApprovePlan);
-  // Optimistic: flip the local mirror immediately so the button's
-  // pressed-state updates without waiting for the status round-trip.
-  // The next `status` frame will reassert the authoritative value.
-  if (inst) inst.autoApprovePlan = next;
-  headerHandle.update();
-  send('auto_approve_plan', { id: state.activeId, enabled: next });
-});
-
-dom.renameSessionBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  const inst = state.instances.find(i => i.id === state.activeId);
-  if (!inst?.sessionId) return;
-  headerHandle.closeOverflow();
-  const cur = inst.title ?? '';
-  const next = prompt('Session title (empty to clear):', cur);
-  if (next === null) return; // cancelled
-  const trimmed = next.trim().slice(0, 100);
-  if (trimmed === (cur ?? '').trim()) return; // no change
-  try {
-    await sessionActions.applySessionTitle(inst.sessionId, trimmed);
-  } catch (e) {
-    alert('Rename failed: ' + e.message);
-  }
-});
-
-dom.summarizeSessionBtn.addEventListener('click', () => {
-  headerHandle.closeOverflow();
-  summaryHandle.open();
-});
-
-dom.sessionStatsBtn.addEventListener('click', () => {
-  headerHandle.closeOverflow();
-  statsHandle.open();
-});
-
-dom.pruneSessionBtn.addEventListener('click', () => {
-  headerHandle.closeOverflow();
-  pruneHandle.open();
-});
-
-dom.debugBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  headerHandle.closeOverflow();
-  dom.debugBtn.disabled = true;
-  dom.debugBtn.textContent = '🐛 starting…';
-  try {
-    const r = await fetch(`/api/instances/${state.activeId}/debug`, { method: 'POST' });
-    const result = await r.json();
-    if (!r.ok || !result.ok) {
-      throw new Error(result.error ?? result.reason ?? 'failed to enable debug');
-    }
-    // Reflect the new state locally so headerHandle.update() can flip the
-    // button label immediately. A status event will follow anyway and
-    // overwrite this with the authoritative summary.
-    const inst = state.instances.find(i => i.id === state.activeId);
-    if (inst) { inst.debug = true; inst.debugDir = result.debugDir; }
-    headerHandle.update();
-    alert(`Debug capture started. Writing to:\n${result.debugDir}`);
-  } catch (e) {
-    alert('Failed to enable debug: ' + e.message);
-    dom.debugBtn.disabled = false;
-    dom.debugBtn.textContent = '🐛 Debug';
-  }
-});
-
-dom.syncBtn.addEventListener('click', () => sessionActions.syncWorktree());
-dom.mergeBtn.addEventListener('click', () => sessionActions.mergeWorktree());
-dom.resumeBtn.addEventListener('click', () => sessionActions.respawnActive());
 
 installNewProjectDialog({
   dom: {
