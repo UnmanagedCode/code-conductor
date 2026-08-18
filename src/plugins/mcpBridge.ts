@@ -2,9 +2,9 @@
 // into entries shaped exactly like the core tools in src/mcp/tools.ts
 // (`{name, description, inputSchema, handler}`), namespaced
 // `<plugin-id>__<tool>`. The MCP server composes them per request via
-// pluginHost.toolsFor(callerId); tools of every enabled plugin are visible
-// to every caller (disabled plugins' tools are simply absent, so tools/call
-// refuses them as unknown with zero extra code).
+// pluginHost.toolsFor(); tools of every enabled plugin are visible to every
+// caller — hence no caller argument (disabled plugins' tools are simply
+// absent, so tools/call refuses them as unknown with zero extra code).
 //
 // Wire contract with the child (pinned): POST <endpoint> with
 // {tool, arguments, caller:{sessionId, project}} → HTTP 200 for EVERY
