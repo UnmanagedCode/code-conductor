@@ -878,7 +878,8 @@ export function buildTools(): Tool[] {
         'the actual plan text / question list (index-numbered, with options and multiSelect) is in the message body. ' +
         'By default, messages are returned when they have text, a plan, or questions — ' +
         'tool-call-only messages with none of those are excluded. Set `includeToolCalls` to true to ' +
-        'include every assistant message regardless. Thinking blocks are excluded by default; ' +
+        'include every assistant message regardless AND to emit tool inputs verbatim (see `blocks[].input` ' +
+        'below). Thinking blocks are excluded by default; ' +
         'set `includeThinking` to true to include them in `blocks[]`. `count` applies to the filtered set. ' +
         'DISK-BACKED & ring-first: served from the in-memory ring on the hot path; if the ring\'s retained ' +
         'tail can\'t satisfy the requested recent TEXT messages (tool-event volume evicted them) it transparently ' +
@@ -893,8 +894,11 @@ export function buildTools(): Tool[] {
         'which case each body is prefixed with "--- message i/N · msgId · textChars chars ---"). `omittedToolOnly` counts ' +
         'recent tool-call-only messages excluded by the default filter (on a LIVE session the agent is active even when ' +
         'messages[] is empty); `hint` explains a short/empty result. Large message text is capped (textTruncated); ' +
-        'blocks[].input is ' +
-        'capped inline (inputTruncated). Default count and max per the `count` schema. ' +
+        '`blocks[].input` is a per-ARGUMENT descriptor — each argument up to a few hundred bytes ' +
+        '(`TOOL_ARG_VALUE_CAP`) rides verbatim, so pointers like `file_path`, a command or a pattern ' +
+        'survive, while a larger one is replaced by an `[omitted: …]` marker and the block carries ' +
+        '`inputTruncated:true`. To read an omitted argument: `includeToolCalls:true`, or `project_read` on ' +
+        'the path the descriptor names. Default count and max per the `count` schema. ' +
         'DEFAULT-CALL BONDING: on the default call only (no `count` passed), if the last message is plain prose ' +
         'the selection is bonded back to the turn\'s plan/questions message and spans from it through the end ' +
         'of that turn — so a turn whose trailing prose spans several messages still surfaces the plan/questions ' +
@@ -906,7 +910,7 @@ export function buildTools(): Tool[] {
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           count: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: 'Number of recent messages to return (from the filtered set). clamped to the `count` schema\'s [minimum, maximum].' },
-          includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks) in the result. Default false.' },
+          includeToolCalls: { type: 'boolean', default: false, description: 'When true, include tool-call-only messages (no text blocks) AND emit tool inputs verbatim instead of as per-argument descriptors. Default false.' },
           includeThinking: { type: 'boolean', default: false, description: 'When true, include thinking blocks in blocks[]. Default false.' },
         },
         required: ['sessionId'],

@@ -2042,7 +2042,7 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
     if (m.plan || m.planPath) entry.hasPlan = true;
     if (m.planPath) entry.planPath = m.planPath;
     if (m.questions) entry.questionCount = (m.questions as Question[]).length;
-    if (m.blocks) entry.blocks = m.blocks.map(capBlockInput);
+    if (m.blocks) entry.blocks = m.blocks.map(b => capBlockInput(b, includeToolCalls));
     return entry;
   });
 
