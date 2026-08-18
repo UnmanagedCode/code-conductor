@@ -4,6 +4,8 @@
 // browser when bound to localhost). The decision logic is split out as
 // pure functions so it can be unit-tested without a real browser.
 
+import { fmtCost } from './usage.js';
+
 export const NotificationState = {
   permission: 'default',          // mirrors Notification.permission
   globalEnabled: false,           // user toggled the bell on
@@ -211,7 +213,7 @@ export function maybeNotifyTurnEnd({ instanceId, projectName, sessionId, turnEve
     isError: !!turnEvent.isError,
   });
   if (!decision) return null;
-  const cost = turnEvent.cost != null ? ` · $${turnEvent.cost.toFixed(4)}` : '';
+  const cost = turnEvent.cost != null ? ` · ${fmtCost(turnEvent.cost)}` : '';
   const title = turnEvent.isError ? `❌ ${projectName} — turn errored` : `✓ ${projectName} — turn complete`;
   const body = `${turnEvent.stopReason ?? 'end_turn'}${cost}`;
   const result = fire({ title, body, tag: `instance:${instanceId}`, data: { project: projectName, instanceId, sessionId } });

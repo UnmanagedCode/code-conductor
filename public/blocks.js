@@ -107,7 +107,7 @@ export class ThinkingBlock {
 }
 
 import { lineDiff, diffStats } from './diff.js';
-import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL } from './usage.js';
+import { formatResetTime, formatResetWhen, RL_WINDOW_LABEL, fmtCost } from './usage.js';
 import { renderMarkdownInto } from './markdown.js';
 import { isTtsAvailable, requestSpeak, getCurrentSpeakToken, onSpeakingChange, stop, maybeAutoSpeak } from './tts.js';
 
@@ -1187,7 +1187,7 @@ export class TurnEndBlock {
       isError ? '❌ turn ended' : '✓ turn ended',
       stopReason ? `(${stopReason})` : '',
       durationMs != null ? `${durationMs}ms` : '',
-      displayCost != null ? `$${displayCost.toFixed(4)}` : '',
+      displayCost != null ? fmtCost(displayCost) : '',
       usage ? `in=${usage.input_tokens ?? '?'} out=${usage.output_tokens ?? '?'}` : '',
     ].filter(Boolean);
     this.node = el('div', { class: 'block turn-end' }, parts.join(' · '));

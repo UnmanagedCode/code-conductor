@@ -3,15 +3,11 @@
 // installHashView scaffold: installCosts() returns { open(), close() }.
 
 import { installHashView } from './hashView.js';
-import { formatDuration } from './usage.js';
+import { formatDuration, fmtCost } from './usage.js';
 
 let _onClose = null;
 
 function getEl(id) { return document.getElementById(id); }
-
-function fmtExact(n) {
-  return `$${n.toFixed(4)}`;
-}
 
 function fmtNum(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -49,7 +45,7 @@ export function render(data) {
   totalEl.className = 'costs-total';
   totalEl.textContent = data.row_count === 0
     ? 'No cost data recorded yet — cost tracking begins with the next turn.'
-    : `Total spend: ${fmtExact(data.total_usd)} across ${data.row_count} turn${data.row_count === 1 ? '' : 's'}`;
+    : `Total spend: ${fmtCost(data.total_usd)} across ${data.row_count} turn${data.row_count === 1 ? '' : 's'}`;
   bodyEl.appendChild(totalEl);
 
   if (data.row_count === 0) return;
@@ -85,7 +81,7 @@ export function render(data) {
     projRow.appendChild(nameTd);
 
     const costTd = document.createElement('td');
-    costTd.textContent = fmtExact(p.cost_usd);
+    costTd.textContent = fmtCost(p.cost_usd);
     projRow.appendChild(costTd);
 
     const turnsTd = document.createElement('td');
@@ -117,7 +113,7 @@ export function render(data) {
       ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses', 'LLM time', 'Walltime'],
       (p.by_model ?? []).map(m => [
         m.model,
-        fmtExact(m.cost_usd),
+        fmtCost(m.cost_usd),
         tokenCell(m, 'input_tokens'),
         tokenCell(m, 'output_tokens'),
         tokenCell(m, 'cache_creation_tokens'),
@@ -153,7 +149,7 @@ export function render(data) {
     ['Model', 'Cost', 'Input', 'Output', 'Cache create', 'Cache read', 'Turns', 'Sessions', 'Cache misses', 'LLM time', 'Walltime'],
     data.by_model.map(m => [
       m.model,
-      fmtExact(m.cost_usd),
+      fmtCost(m.cost_usd),
       tokenCell(m, 'input_tokens'),
       tokenCell(m, 'output_tokens'),
       tokenCell(m, 'cache_creation_tokens'),
@@ -189,7 +185,7 @@ export function render(data) {
       bar.style.setProperty('--costs-bar-pct', `${pct}%`);
       const val = document.createElement('span');
       val.className = 'costs-bar-val';
-      val.textContent = fmtExact(day.cost_usd);
+      val.textContent = fmtCost(day.cost_usd);
       row.appendChild(label);
       row.appendChild(bar);
       row.appendChild(val);

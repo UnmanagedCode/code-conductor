@@ -1,4 +1,4 @@
-import { formatDuration } from './usage.js';
+import { formatDuration, fmtCost } from './usage.js';
 
 // installSessionStats — wires the #stats-dialog modal.
 // Returns { open } which the caller binds to the "Statistics" overflow item.
@@ -15,8 +15,6 @@ export function installSessionStats({ dom, getActiveSid }) {
     errorEl.textContent = msg;
     errorEl.hidden = !msg;
   }
-
-  const fmtCost = (n) => `$${(n ?? 0).toFixed(4)}`;
 
   function render(data) {
     showError('');

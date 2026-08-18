@@ -1,4 +1,5 @@
 import { renderMarkdownInto } from './markdown.js';
+import { fmtCost } from './usage.js';
 
 // installSessionSummary — wires the #summary-dialog modal.
 // Returns { open } which the caller binds to the "Summarize session" button.
@@ -35,7 +36,7 @@ export function installSessionSummary({ dom, getActiveSid, applySessionTitle }) 
   // never returned by GET, so it clears on open and on any tier switch.
   function setCost(usd) {
     const show = typeof usd === 'number';
-    costEl.textContent = show ? `Cost: $${usd.toFixed(4)}` : '';
+    costEl.textContent = show ? `Cost: ${fmtCost(usd)}` : '';
     costEl.hidden = !show;
   }
 

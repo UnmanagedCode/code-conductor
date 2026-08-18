@@ -159,6 +159,14 @@ export function formatDuration(ms) {
   return `${h}h ${m % 60}m`;
 }
 
+// USD to 4dp — the granularity a single turn's cost needs. `?? 0` renders a
+// missing figure as $0.0000 rather than throwing; only sessionStats reaches it
+// (its own/rolled rows may omit a cost), and it already behaved this way.
+// Callers that must show nothing at all for an unknown cost keep their own
+// `!= null` guard OUTSIDE this helper (blocks.js's turn-end line,
+// notifications.js's body, header.js's ollama row).
+export function fmtCost(n) { return `$${(n ?? 0).toFixed(4)}`; }
+
 export function fillClass(frac) {
   if (frac == null) return 'ih-usage-empty';
   if (frac < 0.5) return 'ih-usage-low';

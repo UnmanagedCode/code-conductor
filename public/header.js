@@ -39,7 +39,7 @@
 import {
   formatTokens, formatPct, formatDuration,
   fillClass, formatResetTime, formatAutoResumeTime, rlChipSegment,
-  RL_BUCKET_KEYS, RL_WINDOW_LABEL,
+  RL_BUCKET_KEYS, RL_WINDOW_LABEL, fmtCost,
 } from './usage.js';
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
@@ -162,7 +162,7 @@ export function installHeader({
       const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
       node.appendChild(row('Turns', String(c.turns)));
       node.appendChild(row('Duration', formatDuration(c.durationMs)));
-      node.appendChild(row('Cost', inst.backend && inst.backend !== CLAUDE_BACKEND ? '—' : `$${c.cost.toFixed(4)}`));
+      node.appendChild(row('Cost', inst.backend && inst.backend !== CLAUDE_BACKEND ? '—' : fmtCost(c.cost)));
       node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
       node.appendChild(row('Output', formatTokens(c.outputTokens)));
       node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
