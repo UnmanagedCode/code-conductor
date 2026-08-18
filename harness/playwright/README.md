@@ -13,7 +13,7 @@ cd code-playwright && npm install
 pkg install chromium                                            # Termux system browser
 ```
 
-That's it — nothing to install in `code-conductor/harness/playwright/` itself. Imports resolve via `../../../code-playwright/`.
+That's it — nothing to install in `code-conductor/harness/playwright/` itself. Imports resolve via `../../../code-playwright/`. `paths.mjs` holds this directory's depth-derived constants (ORCH_ROOT / ORCH_ENTRY / FAKE_CLAUDE); it stays node-builtins-only so `tests/harness-playwright-paths.test.mjs` can import it ungated.
 
 ## Quick smoke test
 
