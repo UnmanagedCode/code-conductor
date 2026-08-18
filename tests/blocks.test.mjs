@@ -22,7 +22,7 @@ globalThis.fetch = async () => ({
 
 // Import blocks.js (which also imports tts.js as a side-effect) and tts.js
 // directly so tests can drive speaking state.
-const { describeToolInput, ToolResultBlock, TextBlock, ToolUseBlock } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
+const { describeToolInput, ToolResultBlock, TextBlock, ToolUseBlock, TurnEndBlock } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'blocks.js')).href);
 const { setTtsAvailable, getCurrentSpeakToken, stop: ttsStop } = await import(pathToFileURL(path.resolve(__dirname, '..', 'public', 'tts.js')).href);
 
 function setupDOM() {
@@ -410,4 +410,29 @@ test('ToolUseBlock: unknown tool renders collapsed details.block.tool-args with 
   assert.ok(details, 'expected details.block.tool-args');
   assert.ok(!details.hasAttribute('open'), 'details should be collapsed for unknown tool');
   assert.ok(details.querySelector('pre').textContent.includes('"foo"'), 'should contain JSON');
+});
+
+// ── turn-end cost segment pin ───────────────────────────────────────────────
+// Characterization pin ahead of consolidating the six `toFixed(4)` cost sites
+// onto one exported `fmtCost` in usage.js. Pins both the 4dp granularity (with
+// rounding) and the `!= null` guard that keeps the `$` segment out entirely
+// when no cost is known — an ollama-backed turn must not read `$0.0000`.
+
+test('TurnEndBlock: cost segment renders at 4dp, and is absent when unknown', () => {
+  setupDOM();
+
+  const withCost = new TurnEndBlock({
+    subtype: 'success', durationMs: 1200, cost: 9, costDelta: 0.99999,
+    usage: null, isError: false, stopReason: 'end_turn',
+  });
+  const text = withCost.node.textContent;
+  assert.match(text, /\$1\.0000/, 'costDelta wins over cost and renders at 4dp');
+  assert.ok(!text.includes('$9'), 'the cumulative session cost must not be shown');
+
+  const noCost = new TurnEndBlock({
+    subtype: 'success', durationMs: 1200, cost: null, costDelta: null,
+    usage: null, isError: false, stopReason: 'end_turn',
+  });
+  assert.ok(!noCost.node.textContent.includes('$'),
+    'no cost figure at all when both cost and costDelta are null');
 });
