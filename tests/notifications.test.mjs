@@ -269,3 +269,29 @@ test('fire: page-level fallback onclick dispatches cc-notification-click and clo
   assert.deepEqual(dispatched[0].detail, data);
   assert.equal(n.closed, true, 'notification closed after click');
 });
+
+// ── turn-end notification cost segment pin ──────────────────────────────────
+// Characterization pin ahead of consolidating the six `toFixed(4)` cost sites
+// onto one exported `fmtCost` in usage.js. Pins the notification body's 4dp
+// figure and the `!= null` guard that omits the whole ` · ` segment when the
+// turn reports no cost.
+
+test('maybeNotifyTurnEnd: body carries a 4dp cost, and none when cost is null', async () => {
+  const { maybeNotifyTurnEnd, NotificationState } = await loadFresh();
+  installFakeNotificationGlobals();
+  NotificationState.globalEnabled = true;
+  NotificationState.permission = 'granted';
+
+  const withCost = maybeNotifyTurnEnd({
+    instanceId: 'inst-1', projectName: 'proj-a', sessionId: 'sess-1',
+    turnEvent: { isError: false, stopReason: 'end_turn', cost: 0.5 },
+  });
+  assert.equal(withCost.opts.body, 'end_turn · $0.5000');
+
+  const noCost = maybeNotifyTurnEnd({
+    instanceId: 'inst-1', projectName: 'proj-a', sessionId: 'sess-1',
+    turnEvent: { isError: false, stopReason: 'end_turn', cost: null },
+  });
+  assert.equal(noCost.opts.body, 'end_turn');
+  assert.ok(!noCost.opts.body.includes(' · '), 'no separator when there is no cost');
+});

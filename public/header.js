@@ -39,6 +39,7 @@
 import {
   formatTokens, formatPct, formatDuration,
   fillClass, formatResetTime, formatAutoResumeTime, rlChipSegment,
+  RL_BUCKET_KEYS, RL_WINDOW_LABEL, fmtCost,
 } from './usage.js';
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
@@ -60,15 +61,6 @@ const CONDUCT_PROJECT = '.conduct';
 // Two copies would let the label and the frame it sends disagree.
 export function isEnforcing(level) { return level !== 'warn'; }
 export function nextEnforcementLevel(level) { return isEnforcing(level) ? 'warn' : 'enforce'; }
-
-// Combined popover: "Session totals" section above, "Usage limits" section
-// below. ctx data is per-session; usage-limit data is account-wide.
-const OAUTH_BUCKET_LABELS = {
-  five_hour:        '5-hour',
-  seven_day:        '7-day',
-  seven_day_sonnet: '7-day (Sonnet)',
-  seven_day_opus:   '7-day (Opus)',
-};
 
 export function installHeader({
   dom,
@@ -170,7 +162,7 @@ export function installHeader({
       const cacheHit = totalIn > 0 ? c.cacheRead / totalIn : 0;
       node.appendChild(row('Turns', String(c.turns)));
       node.appendChild(row('Duration', formatDuration(c.durationMs)));
-      node.appendChild(row('Cost', inst.backend && inst.backend !== CLAUDE_BACKEND ? '—' : `$${c.cost.toFixed(4)}`));
+      node.appendChild(row('Cost', inst.backend && inst.backend !== CLAUDE_BACKEND ? '—' : fmtCost(c.cost)));
       node.appendChild(row('Input (uncached)', formatTokens(c.inputTokens)));
       node.appendChild(row('Output', formatTokens(c.outputTokens)));
       node.appendChild(row('Cache reads', `${formatTokens(c.cacheRead)} (${formatPct(cacheHit)} hit)`));
@@ -188,10 +180,10 @@ export function installHeader({
       empty.textContent = 'Usage data unavailable.';
       node.appendChild(empty);
     } else {
-      for (const key of ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus']) {
+      for (const key of RL_BUCKET_KEYS) {
         const bucket = accountUsage[key];
         if (!bucket) continue;
-        const label = OAUTH_BUCKET_LABELS[key] ?? key;
+        const label = RL_WINDOW_LABEL[key] ?? key;
         const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
         const reset = bucket.resets_at
           ? formatResetTime(new Date(bucket.resets_at).getTime() / 1000)
@@ -208,7 +200,7 @@ export function installHeader({
           : null;
         const utilStr = util != null ? `${Math.round(util * 100)}%` : '—';
         const resetStr = reset ? ` · ${reset}` : '';
-        node.appendChild(row('7-day (Fable)', utilStr + resetStr, fillClass(util)));
+        node.appendChild(row('7-day Fable', utilStr + resetStr, fillClass(util)));
       }
       const ex = accountUsage.extra_usage;
       if (ex?.is_enabled) {

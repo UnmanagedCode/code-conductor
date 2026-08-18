@@ -9,6 +9,7 @@
 // click handlers keep working because they close over app.js callbacks.
 
 import { Conversation } from './conversation.js';
+import { apiFetch } from './http.js';
 
 // A correct server never hands back an empty backward page while `hasMore`
 // is true (src/eventArchive.ts's pager backstop guarantees it), but a
@@ -200,10 +201,8 @@ export function installLazyHistoryController({
     lazy.loading = true;
     ensureSentinel();
     try {
-      const r = await fetch(
+      const page = await apiFetch(
         `/api/instances/${encodeURIComponent(id)}/events?before=${lazy.nextBefore}&limit=200`);
-      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
-      const page = await r.json();
       if (epoch !== lazy.epoch || id !== getActiveId()) return; // stale — view changed mid-fetch
       if (page.events.length) {
         // Render through the standard Conversation pipeline on a detached

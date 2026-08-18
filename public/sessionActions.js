@@ -26,6 +26,8 @@
 //
 // Returns the eight action handles.
 
+import { apiFetch } from './http.js';
+
 export function installSessionActions({
   getActiveId, setActiveId, getInstances,
   refreshProjects, refreshInstances, selectInstance,
@@ -44,10 +46,9 @@ export function installSessionActions({
     );
     if (!ok) return;
     try {
-      const r = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/promote`, {
+      await apiFetch(`/api/instances/${encodeURIComponent(instanceId)}/promote`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
       });
-      if (!r.ok) throw new Error((await r.json()).error);
       await refreshInstances();
     } catch (e) {
       alert(`Failed to promote: ${e.message}`);
@@ -60,9 +61,7 @@ export function installSessionActions({
     const url = worktreeName
       ? `/api/projects/${encodeURIComponent(projectName)}/worktrees/${encodeURIComponent(worktreeName)}/sessions`
       : `/api/projects/${encodeURIComponent(projectName)}/sessions`;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error((await r.json()).error);
-    return r.json();
+    return apiFetch(url);
   }
 
   // One-click resume from the sidebar. We POST with worktree carried
@@ -118,16 +117,15 @@ export function installSessionActions({
     if (!id) return;
     if (!confirm('Rewind to here? Everything after this message will be discarded; the composer will be prefilled with this prompt so you can edit and resend.')) return;
     try {
-      const r = await fetch(`/api/instances/${encodeURIComponent(id)}/rewind`, {
+      // Prefill rides on the `reset_snapshot` WS frame (carries droppedText
+      // directly) so there's no race between this HTTP response and the
+      // server-side emit, and the returned body is deliberately unused —
+      // apiFetch drains it, which is what releases the connection.
+      await apiFetch(`/api/instances/${encodeURIComponent(id)}/rewind`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ userMessageIndex }),
       });
-      if (!r.ok) throw new Error((await r.json()).error);
-      // Prefill rides on the `reset_snapshot` WS frame (carries droppedText
-      // directly) so there's no race between this HTTP response and the
-      // server-side emit. Just drain the body to release the connection.
-      await r.json();
     } catch (e) {
       alert(`rewind failed: ${e.message}`);
     }
@@ -143,13 +141,11 @@ export function installSessionActions({
     if (!id) return;
     if (!confirm('Fork from here? A new session is created from the prefix; the original session is left intact and the composer is prefilled with this prompt.')) return;
     try {
-      const r = await fetch(`/api/instances/${encodeURIComponent(id)}/fork`, {
+      const { instance: newInst } = await apiFetch(`/api/instances/${encodeURIComponent(id)}/fork`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ userMessageIndex }),
       });
-      if (!r.ok) throw new Error((await r.json()).error);
-      const { instance: newInst } = await r.json();
       await refreshProjects();
       await refreshInstances();
       selectInstance(newInst.id);
@@ -179,8 +175,7 @@ export function installSessionActions({
       return;
     }
     try {
-      const r = await fetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE' });
-      if (!r.ok) throw new Error((await r.json()).error);
+      await apiFetch(`/api/projects/${encodeURIComponent(project.name)}`, { method: 'DELETE' });
       if (getActiveId() && insts.some(i => i.id === getActiveId())) {
         setActiveId(null);
       }

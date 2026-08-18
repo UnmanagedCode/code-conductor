@@ -24,6 +24,7 @@
 import { resolveSpawnModel, resolveSpawnRole, getVersionLabel, backendIdOf, CLAUDE_BACKEND,
   getTierList, getActiveTierEnabled, getActiveDefaultSpawnTier, getActiveTierBackend,
   getActiveTierEffort } from './models.js';
+import { apiFetch } from './http.js';
 
 export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshInstances, selectInstance, closeSidebarOverflow }) {
   // ── Shared spawn-dialog helpers ───────────────────────────────────────
@@ -208,13 +209,11 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
     if (typeof pendingSpawnWorktreeIntent === 'string') worktree = pendingSpawnWorktreeIntent;
     else if (dom.sdWorktree.checked) worktree = true;
     try {
-      const r = await fetch('/api/instances', {
+      const inst = await apiFetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ project, mode, effort, tier: selectedSpawnTier, thinking, model, backend, worktree, temp, debug, autoApprovePlan }),
       });
-      if (!r.ok) throw new Error((await r.json()).error);
-      const inst = await r.json();
       await refreshProjects();
       await refreshInstances();
       selectInstance(inst.id);
@@ -259,7 +258,7 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
         alert('Conduct session failed to start: the Conductor role has no model configured. Set one in Settings → Models → Roles.');
         return;
       }
-      const res = await fetch('/api/instances', {
+      const inst = await apiFetch('/api/instances', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         // `role` carries the Conductor role so the server applies ITS default
@@ -267,8 +266,6 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
         // nothing to override it.
         body: JSON.stringify({ project: '.conduct', model, backend, role: 'conductor', temp: true, mode: 'bypassPermissions' }),
       });
-      if (!res.ok) throw new Error((await res.json()).error);
-      const inst = await res.json();
       await refreshProjects();
       await refreshInstances();
       selectInstance(inst.id);

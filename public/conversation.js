@@ -4,7 +4,8 @@
 
 import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, TurnEndBlock,
   TaskCompletionBlock, QueuedMessageBlock, UserQuestionBlock, PlanRequestBlock, PermissionRequestBlock, ImageBlock,
-  shouldRenderSystem, el, parseUserQuestionAnswers, isUserQuestionAnswerText } from './blocks.js';
+  shouldRenderSystem, parseUserQuestionAnswers, isUserQuestionAnswerText } from './blocks.js';
+import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
 
 function renderFileChip(a) {

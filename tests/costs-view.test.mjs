@@ -75,3 +75,51 @@ test('costs dashboard: ollama token cells render em-dash, claude renders numbers
   assert.equal(ollama[5], '—', 'ollama cache-read tokens unavailable');
   assert.equal(ollama[6], '3', 'turns still shown for ollama');
 });
+
+// ── cost-string pin ─────────────────────────────────────────────────────────
+// Characterization pin ahead of consolidating the six `toFixed(4)` cost sites
+// onto one exported `fmtCost` in usage.js. Pins the granularity (4dp, with
+// rounding) and the exact rendered string on all four dashboard surfaces —
+// total, per-project cell, per-model detail cell, and the daily-trend value.
+
+test('costs dashboard: every money figure renders as $N.NNNN', async () => {
+  const document = await setup();
+  const { render } = await import('../public/costs.js');
+
+  const model = {
+    model: 'claude-opus-4-8', cost_usd: 0.012345, input_tokens: 10, output_tokens: 5,
+    cache_creation_tokens: 0, cache_read_tokens: 0, turns: 1, sessions: 1,
+    cache_misses: 0, duration_ms: 100, duration_api_ms: 80, tokens_known: true,
+  };
+
+  render({
+    total_usd: 1.5,
+    row_count: 1,
+    by_project: [{
+      project: 'p', cost_usd: 0.9, duration_ms: 150, duration_api_ms: 120, turns: 1,
+      cache_misses: 0, sessions: 1, tokens_known: true, by_model: [model],
+    }],
+    by_model: [model],
+    daily_trend: [{ date: '2026-08-18', cost_usd: 0.25 }],
+  });
+
+  const money = /^\$\d+\.\d{4}$/;
+
+  const total = document.querySelector('.costs-total').textContent;
+  assert.match(total, /Total spend: \$1\.5000 across 1 turn$/);
+
+  // Project table is the first .costs-table; its second cell is the cost.
+  const projTable = document.querySelector('table.costs-table');
+  const projCost = projTable.querySelector('tbody tr td:nth-child(2)').textContent;
+  assert.equal(projCost, '$0.9000');
+  assert.match(projCost, money);
+
+  // Per-model detail cell — 4dp rounding of 0.012345.
+  const detailCost = projTable.querySelector('tr.costs-proj-detail td:nth-child(2)').textContent;
+  assert.equal(detailCost, '$0.0123');
+  assert.match(detailCost, money);
+
+  const dayVal = document.querySelector('.costs-bar-val').textContent;
+  assert.equal(dayVal, '$0.2500');
+  assert.match(dayVal, money);
+});

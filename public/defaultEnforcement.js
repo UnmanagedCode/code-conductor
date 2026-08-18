@@ -13,6 +13,8 @@
 //
 // Element ids: dpe-select, dpe-status.
 
+import { apiFetch } from './http.js';
+
 // Row text per mode. A mode with no entry still renders (by its bare id), so the
 // server list stays the authority on which rows exist.
 const LABELS = {
@@ -38,11 +40,10 @@ export function installDefaultEnforcement({ base }) {
 
   selectEl?.addEventListener('change', async () => {
     try {
-      const r = await fetch(`${base}/default-playbook-enforcement`, {
+      await apiFetch(`${base}/default-playbook-enforcement`, {
         method: 'PUT', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode: selectEl.value }),
       });
-      if (!r.ok) throw new Error((await r.json()).error);
       if (statusEl) statusEl.textContent = '';
     } catch (e) {
       if (statusEl) statusEl.textContent = `Save failed: ${e.message || e}`;

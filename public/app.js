@@ -8,7 +8,7 @@ import { attachComposer } from './composer.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
-import { UsageTracker, RateLimitTracker } from './usage.js';
+import { UsageTracker, RateLimitTracker, RL_BUCKET_KEYS } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   isNotificationAPIAvailable, registerServiceWorker,
@@ -39,8 +39,9 @@ import { installPruneDialog } from './pruneDialog.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
-  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setCustomModels, setBackends, setOllamaCloudModels } from './models.js';
+  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
+import { apiFetch } from './http.js';
 
 const state = {
   projects: [],
@@ -71,8 +72,7 @@ async function refreshAccountUsage() {
     // same apply() null-guard so neither clobbers the other's unique fields
     // (isUsingOverage is message-only and survives re-fetches because it is
     // intentionally absent from this synthetic event).
-    const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
-    const key = BUCKET_PRIORITY.find(k => accountUsage[k]);
+    const key = RL_BUCKET_KEYS.find(k => accountUsage[k]);
     if (key) {
       const b = accountUsage[key];
       globalRLTracker.apply({
@@ -541,8 +541,6 @@ const settings = installSettings({
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
     setActiveDefaultSpawnTier(data.defaultSpawnTier);
     setBackends(data.backends);
-    setCustomModels(data.customModels);
-    setOllamaCloudModels(data.ollamaCloudModels);
     spawnHandles.syncTierModelLabels();
     spawnHandles.syncTierVisibility();
   },
@@ -758,9 +756,7 @@ dom.debugBtn.addEventListener('click', async () => {
 dom.syncBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/sync`, { method: 'POST' });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const result = await r.json();
+    const result = await apiFetch(`/api/instances/${state.activeId}/sync`, { method: 'POST' });
     if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return; }
     if (result.action === 'already-in-sync') {
       alert('Worktree is already up to date with its parent branch.');
@@ -778,9 +774,7 @@ dom.mergeBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const result = await r.json();
+    const result = await apiFetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
     if (result.ok) {
       alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
       await refreshProjects();
@@ -793,8 +787,7 @@ dom.mergeBtn.addEventListener('click', async () => {
 dom.resumeBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/respawn`, { method: 'POST' });
-    if (!r.ok) throw new Error((await r.json()).error);
+    await apiFetch(`/api/instances/${state.activeId}/respawn`, { method: 'POST' });
     await refreshInstances();
     if (state.activeId) send('subscribe', { id: state.activeId });
   } catch (e) { alert(`resume failed: ${e.message}`); }

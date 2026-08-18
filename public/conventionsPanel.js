@@ -17,6 +17,8 @@
 // widget in the same block (the conductor scope's preferred-playbook picker) can
 // share this one fetch without this widget knowing what it is.
 
+import { apiFetch } from './http.js';
+
 export function installConventionsPanel({ prefix, base, hasToggle = false, hasCoreRow = false, noun = 'convention', onData = null }) {
   const $ = (suffix) => document.getElementById(`${prefix}-${suffix}`);
   const statusEl = $('status');
@@ -116,11 +118,10 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
   async function toggle(slug, on) {
     if (on) enabled.add(slug); else enabled.delete(slug);
     try {
-      const r = await fetch(`${base}/selection`, {
+      await apiFetch(`${base}/selection`, {
         method: 'PUT', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ enabled: [...enabled] }),
       });
-      if (!r.ok) throw new Error((await r.json()).error);
     } catch (e) {
       if (statusEl) statusEl.textContent = `Save failed: ${e.message || e}`;
       load(); // resync from server on failure
@@ -166,15 +167,15 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
     if (addError) addError.textContent = '';
     try {
       if (editingSlug) {
-        await fetch(`${base}/${encodeURIComponent(editingSlug)}`, {
+        await apiFetch(`${base}/${encodeURIComponent(editingSlug)}`, {
           method: 'PUT', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ name, description, body }),
-        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
+        });
       } else {
-        await fetch(base, {
+        await apiFetch(base, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ slug, name, description, body }),
-        }).then(async r => { if (!r.ok) throw new Error((await r.json()).error); });
+        });
       }
       closeAddForm();
       load();
@@ -186,8 +187,7 @@ export function installConventionsPanel({ prefix, base, hasToggle = false, hasCo
   async function remove(slug) {
     if (!confirm(`Delete ${noun} "${slug}"?`)) return;
     try {
-      const r = await fetch(`${base}/${encodeURIComponent(slug)}`, { method: 'DELETE' });
-      if (!r.ok) throw new Error((await r.json()).error);
+      await apiFetch(`${base}/${encodeURIComponent(slug)}`, { method: 'DELETE' });
       load();
     } catch (e) {
       if (statusEl) statusEl.textContent = `Delete failed: ${e.message || e}`;

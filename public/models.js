@@ -71,8 +71,6 @@ let activeRoleBinding = { ...DEFAULT_ROLE_BINDING };
 // fallback only; the server's registry (which also carries user rows) replaces it
 // on the boot fetch.
 let backends = [{ id: CLAUDE_BACKEND, label: 'Claude', managed: true }, { id: 'ollama', label: 'Ollama', managed: true }];
-let customModels = []; // [{label, model, backend, contextWindow}]
-let ollamaCloudModels = []; // curated catalog [{label, model, contextWindow}], scoped to the built-in `ollama` backend
 
 export function getTierList() { return tierList; }
 export function getTierLabel(tier) { return tierLabels[tier] || tier; }
@@ -82,8 +80,6 @@ export function getActiveRoleBinding(role) { return activeRoleBinding[role] || D
 export function setActiveRoleBindings(map) { activeRoleBinding = { ...activeRoleBinding, ...(map || {}) }; }
 export function setBackends(list) { backends = Array.isArray(list) && list.length ? list : backends; return backends; }
 export function getBackendLabel(id) { return backends.find(b => b.id === id)?.label || id; }
-export function setCustomModels(list) { customModels = Array.isArray(list) ? list : []; return customModels; }
-export function setOllamaCloudModels(list) { ollamaCloudModels = Array.isArray(list) ? list : []; return ollamaCloudModels; }
 
 // Infer the Claude family from a model id, by prefix. Mirrors familyOf() in
 // src/modelVersions.ts. A naming heuristic for grouping the Settings picker —
@@ -143,8 +139,6 @@ export async function loadModelVersions() {
       if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
       setActiveDefaultSpawnTier(data.defaultSpawnTier);
-      setCustomModels(data.customModels);
-      setOllamaCloudModels(data.ollamaCloudModels);
     }
   } catch { /* keep defaults */ }
   return activeTierBackend;
