@@ -42,6 +42,7 @@ import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 import { apiFetch } from './http.js';
+import { createUnreadStore } from './unread.js';
 
 const state = {
   projects: [],
@@ -220,47 +221,12 @@ const globalRLTracker = new RateLimitTracker();
 // toggle work even when the tab isn't focused on the affected session
 // or is backgrounded entirely.
 
-// Per-sessionId unread count. Incremented when a turn_notification lands
-// for a session the user isn't currently viewing; cleared on
-// selectInstance. Keyed by sessionId (not instance id) so the count
-// survives a crash + resume cycle that mints a new instance id for the
-// same session. Persisted to localStorage so it also survives page
-// refreshes — turn_notifications keep firing for live background
-// instances even when no tab is connected (the server-side ring buffer
-// can't replay missed ones, but new ones after reload are counted).
-const UNREAD_STORAGE_KEY = 'code-conductor:unread';
-function loadUnreadFromStorage() {
-  try {
-    const raw = localStorage.getItem(UNREAD_STORAGE_KEY);
-    if (!raw) return new Map();
-    const obj = JSON.parse(raw);
-    if (!obj || typeof obj !== 'object') return new Map();
-    return new Map(Object.entries(obj).filter(([, v]) => Number.isInteger(v) && v > 0));
-  } catch {
-    return new Map();
-  }
-}
-function saveUnreadToStorage() {
-  try {
-    if (unreadBySessionId.size === 0) localStorage.removeItem(UNREAD_STORAGE_KEY);
-    else localStorage.setItem(UNREAD_STORAGE_KEY, JSON.stringify(Object.fromEntries(unreadBySessionId)));
-  } catch {
-    // localStorage can throw (private mode, quota) — unread is best-effort.
-  }
-}
-const unreadBySessionId = loadUnreadFromStorage();
-function bumpUnread(sessionId) {
-  if (!sessionId) return;
-  unreadBySessionId.set(sessionId, (unreadBySessionId.get(sessionId) ?? 0) + 1);
-  saveUnreadToStorage();
-  sidebar.setUnread(unreadBySessionId);
-}
-function clearUnread(sessionId) {
-  if (!sessionId) return;
-  if (!unreadBySessionId.delete(sessionId)) return;
-  saveUnreadToStorage();
-  sidebar.setUnread(unreadBySessionId);
-}
+// Per-sessionId unread counts + their localStorage persistence live in
+// public/unread.js. Constructed before the Sidebar because the Sidebar seed
+// below reads `unread.counts`; onChange is a lazy arrow for the same reason
+// the other holders are (it only fires after init, so the `const sidebar` TDZ
+// is never reached).
+const unread = createUnreadStore({ onChange: (m) => sidebar.setUnread(m) });
 
 // Deliver a card answer (AskUserQuestion / plan Approve-Reject) as a normal
 // user turn — the same ungated send the composer uses. Mid-turn is the NORMAL
@@ -413,8 +379,8 @@ const sidebar = new Sidebar({
 // Seed the sidebar with any unread counts restored from localStorage so
 // the pills appear on the first render after a page reload — without
 // this, sidebar starts with an empty Map and the badges only reappear
-// after the next bumpUnread fires.
-sidebar.setUnread(unreadBySessionId);
+// after the next unread.bump fires.
+sidebar.setUnread(unread.counts);
 // Rehydrate per-session notification mutes so the header's Mute/Unmute
 // item reflects the right state on the first render after a page reload.
 restoreMutedSessions();
@@ -1015,7 +981,7 @@ sessionActions = installSessionActions({
   refreshInstances,
   selectInstance,
   sidebar,
-  clearUnread,
+  clearUnread: unread.clear,
 });
 
 async function refreshProjects() {
@@ -1073,7 +1039,7 @@ function selectInstance(id, opts = {}) {
   }
   // Now that the user is viewing this session, any backlog of unread
   // turn-end pings for it is by definition read.
-  clearUnread(inst?.sessionId);
+  unread.clear(inst?.sessionId);
   // If the user tapped a session from within the Settings or Commits page, close
   // that overlay so the conversation view is visible. writeSessionAnchor already
   // replaced the hash, so we check flags captured before that call.
@@ -1151,7 +1117,7 @@ installWsRouter({
   composer,
   sidebar,
   subagentPanel,
-  bumpUnread,
+  bumpUnread: unread.bump,
   refreshProjects,
   refreshInstances,
   selectInstance,
