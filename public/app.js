@@ -41,7 +41,6 @@ import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
-import { apiFetch } from './http.js';
 import { createUnreadStore } from './unread.js';
 import { installAccountUsage } from './accountUsage.js';
 import { installSidebarChrome } from './sidebarChrome.js';
@@ -384,6 +383,31 @@ const composer = attachComposer({
   onResize: () => conversation._maybeScroll(),
 });
 
+// Per-session / per-project action helpers (promote / resume / load-sessions /
+// rewind / fork / delete-project / delete-session / remove-worktree, plus the
+// session-title PUT and the worktree sync/merge/respawn ops) live in
+// public/sessionActions.js. Returned handles are held in `sessionActions`
+// (declared above) so the Sidebar callbacks, conversationOptions onRewind/onFork,
+// and the boot-time auto-resume all forward to it. Fork/rewind composer prefill
+// rides `droppedText` inline on the WS snapshot/reset_snapshot frame (handled in
+// wsRouter.js) — no client-side prefill state lives in sessionActions.
+//
+// Installed BEFORE installHeader because the header's control handlers call
+// into it. It is a pure closure factory with no install-time side effects, and
+// its own deps are either already constructed (sidebar) or hoisted declarations
+// / lazy arrows, so moving it up is safe.
+sessionActions = installSessionActions({
+  getActiveId: () => state.activeId,
+  setActiveId: (v) => { state.activeId = v; },
+  getInstances: () => state.instances,
+  refreshProjects,
+  refreshInstances,
+  selectInstance,
+  sidebar,
+  clearUnread: unread.clear,
+  headerUpdate: () => headerHandle.update(),
+});
+
 // Active-instance header / chips / combined-usage popover (see public/header.js).
 // Wired here once composer + conversation exist.
 // getAccountUsage is a getter so the chip always renders whatever the periodic
@@ -622,27 +646,6 @@ dom.autoApprovePlanBtn.addEventListener('click', () => {
   send('auto_approve_plan', { id: state.activeId, enabled: next });
 });
 
-// PUT a session title and mirror it locally. Shared by ⋮ Rename and the
-// summary dialog's "Use as session title" button.
-async function applySessionTitle(sessionId, title) {
-  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title: title.trim().slice(0, 100) }),
-  });
-  if (!r.ok) {
-    const body = await r.json().catch(() => ({}));
-    throw new Error(body.error ?? `HTTP ${r.status}`);
-  }
-  const result = await r.json();
-  // Optimistic local mirror — the broadcast `status` frame will reassert.
-  const inst = state.instances.find(i => i.sessionId === sessionId);
-  if (inst) inst.title = result.title ?? null;
-  headerHandle.update();
-  await refreshProjects();
-  return result.title ?? null;
-}
-
 dom.renameSessionBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   const inst = state.instances.find(i => i.id === state.activeId);
@@ -654,7 +657,7 @@ dom.renameSessionBtn.addEventListener('click', async () => {
   const trimmed = next.trim().slice(0, 100);
   if (trimmed === (cur ?? '').trim()) return; // no change
   try {
-    await applySessionTitle(inst.sessionId, trimmed);
+    await sessionActions.applySessionTitle(inst.sessionId, trimmed);
   } catch (e) {
     alert('Rename failed: ' + e.message);
   }
@@ -700,45 +703,9 @@ dom.debugBtn.addEventListener('click', async () => {
   }
 });
 
-dom.syncBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  try {
-    const result = await apiFetch(`/api/instances/${state.activeId}/sync`, { method: 'POST' });
-    if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return; }
-    if (result.action === 'already-in-sync') {
-      alert('Worktree is already up to date with its parent branch.');
-    } else if (result.action === 'fast-forwarded') {
-      alert(`Synced worktree → ${result.newSha?.slice(0, 12) ?? '?'}`);
-    } else if (result.action === 'rebased') {
-      alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — click Merge when ready.`);
-    } else if (result.action === 'rebase-prompt-sent') {
-      alert('Rebase prompt sent to the agent — watch the conversation for REBASE_DONE, then click Merge.');
-    }
-    await refreshProjects();
-  } catch (e) { alert(`sync failed: ${e.message}`); }
-});
-dom.mergeBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return;
-  try {
-    const result = await apiFetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
-    if (result.ok) {
-      alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
-      await refreshProjects();
-    } else {
-      alert(`Cannot merge:\n${result.reason}`);
-    }
-  } catch (e) { alert(`merge failed: ${e.message}`); }
-});
-
-dom.resumeBtn.addEventListener('click', async () => {
-  if (!state.activeId) return;
-  try {
-    await apiFetch(`/api/instances/${state.activeId}/respawn`, { method: 'POST' });
-    await refreshInstances();
-    if (state.activeId) send('subscribe', { id: state.activeId });
-  } catch (e) { alert(`resume failed: ${e.message}`); }
-});
+dom.syncBtn.addEventListener('click', () => sessionActions.syncWorktree());
+dom.mergeBtn.addEventListener('click', () => sessionActions.mergeWorktree());
+dom.resumeBtn.addEventListener('click', () => sessionActions.respawnActive());
 
 installNewProjectDialog({
   dom: {
@@ -871,32 +838,14 @@ restartHandle = installRestart({
   setSidebarStatus,
 });
 
-// Per-session / per-project action helpers (promote / resume / load-sessions /
-// rewind / fork / delete-project / delete-session / remove-worktree) live in
-// public/sessionActions.js. Returned handles are held in `sessionActions`
-// (declared above) so the Sidebar callbacks, conversationOptions onRewind/onFork,
-// and the boot-time auto-resume all forward to it. Fork/rewind composer prefill
-// rides `droppedText` inline on the WS snapshot/reset_snapshot frame (handled in
-// wsRouter.js) — no client-side prefill state lives in sessionActions.
 const getActiveSid = () => {
   const inst = state.instances.find(i => i.id === state.activeId);
   return inst?.sessionId ?? null;
 };
-const summaryHandle = installSessionSummary({ dom, getActiveSid, applySessionTitle });
+const summaryHandle = installSessionSummary({ dom, getActiveSid, applySessionTitle: sessionActions.applySessionTitle });
 const statsHandle = installSessionStats({ dom, getActiveSid });
 const pruneHandle = installPruneDialog({
   dom, getActiveId: () => state.activeId, refreshInstances,
-});
-
-sessionActions = installSessionActions({
-  getActiveId: () => state.activeId,
-  setActiveId: (v) => { state.activeId = v; },
-  getInstances: () => state.instances,
-  refreshProjects,
-  refreshInstances,
-  selectInstance,
-  sidebar,
-  clearUnread: unread.clear,
 });
 
 async function refreshProjects() {

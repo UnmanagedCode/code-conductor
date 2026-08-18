@@ -23,15 +23,19 @@
 //                                  refresh + selection (drive app.js state/sidebar).
 //   - sidebar:                     for sidebar.sessionsCache eviction in deleteSession.
 //   - clearUnread(sessionId):      drop the unread badge for an archived session.
+//   - headerUpdate():              repaint the header after an optimistic local
+//                                  mirror (applySessionTitle). Lazy — the header
+//                                  handle is assigned after this install runs.
 //
-// Returns the eight action handles.
+// Returns the action handles.
 
 import { apiFetch } from './http.js';
+import { send } from './ws.js';
 
 export function installSessionActions({
   getActiveId, setActiveId, getInstances,
   refreshProjects, refreshInstances, selectInstance,
-  sidebar, clearUnread,
+  sidebar, clearUnread, headerUpdate,
 }) {
   // Promote a live temp session into a regular one. The server flips the
   // temp flag, writes the resume-picker metadata, and broadcasts the
@@ -266,9 +270,83 @@ export function installSessionActions({
     }
   }
 
+  // PUT a session title and mirror it locally. Shared by ⋮ Rename and the
+  // summary dialog's "Use as session title" button.
+  //
+  // Bare fetch, not apiFetch: the error path reads `error` off a non-ok body,
+  // which apiFetch throws before exposing. Card 2026-0170 owns this family.
+  async function applySessionTitle(sessionId, title) {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/title`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title.trim().slice(0, 100) }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error ?? `HTTP ${r.status}`);
+    }
+    const result = await r.json();
+    // Optimistic local mirror — the broadcast `status` frame will reassert.
+    const inst = getInstances().find(i => i.sessionId === sessionId);
+    if (inst) inst.title = result.title ?? null;
+    headerUpdate();
+    await refreshProjects();
+    return result.title ?? null;
+  }
+
+  // Sync the active instance's worktree with its parent branch. The server
+  // picks the action (fast-forward / rebase / hand it to the agent) and this
+  // reports whichever one it took.
+  async function syncWorktree() {
+    const id = getActiveId();
+    if (!id) return;
+    try {
+      const result = await apiFetch(`/api/instances/${id}/sync`, { method: 'POST' });
+      if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return; }
+      if (result.action === 'already-in-sync') {
+        alert('Worktree is already up to date with its parent branch.');
+      } else if (result.action === 'fast-forwarded') {
+        alert(`Synced worktree → ${result.newSha?.slice(0, 12) ?? '?'}`);
+      } else if (result.action === 'rebased') {
+        alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — click Merge when ready.`);
+      } else if (result.action === 'rebase-prompt-sent') {
+        alert('Rebase prompt sent to the agent — watch the conversation for REBASE_DONE, then click Merge.');
+      }
+      await refreshProjects();
+    } catch (e) { alert(`sync failed: ${e.message}`); }
+  }
+
+  async function mergeWorktree() {
+    const id = getActiveId();
+    if (!id) return;
+    if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return;
+    try {
+      const result = await apiFetch(`/api/instances/${id}/merge`, { method: 'POST' });
+      if (result.ok) {
+        alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
+        await refreshProjects();
+      } else {
+        alert(`Cannot merge:\n${result.reason}`);
+      }
+    } catch (e) { alert(`merge failed: ${e.message}`); }
+  }
+
+  // Respawn a crashed/exited instance in place and re-subscribe to it. Reads
+  // the active id again after the refresh — the same guard the original had.
+  async function respawnActive() {
+    const id = getActiveId();
+    if (!id) return;
+    try {
+      await apiFetch(`/api/instances/${id}/respawn`, { method: 'POST' });
+      await refreshInstances();
+      if (getActiveId()) send('subscribe', { id: getActiveId() });
+    } catch (e) { alert(`resume failed: ${e.message}`); }
+  }
+
   return {
     promoteSession, loadSessions, resumeSession,
     rewindActiveSession, forkActiveSession,
     deleteProject, deleteSession, removeWorktree,
+    applySessionTitle, syncWorktree, mergeWorktree, respawnActive,
   };
 }
