@@ -9,11 +9,7 @@ import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
 import { UsageTracker, RateLimitTracker } from './usage.js';
-import {
-  NotificationState, ensurePermission, setGlobalEnabled,
-  isNotificationAPIAvailable, registerServiceWorker,
-  closeAllOnFocus, restoreMutedSessions,
-} from './notifications.js';
+import { restoreMutedSessions, installNotifyToggle } from './notifications.js';
 import {
   writeSessionAnchor, pushSessionAnchor, stashCurrentAnchorForRelaunch,
 } from './anchor.js';
@@ -675,46 +671,9 @@ spawnHandles = installSpawnDialog({
   closeSidebarOverflow,
 });
 
-function renderNotifyToggle() {
-  const on = NotificationState.globalEnabled && NotificationState.permission === 'granted';
-  dom.notifyToggle.textContent = on ? '🔔' : '🔕';
-  dom.notifyToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
-  dom.notifyToggle.title = !isNotificationAPIAvailable()
-    ? 'Notifications unsupported in this browser'
-    : NotificationState.permission === 'denied'
-      ? 'Notifications blocked — change in browser site settings'
-      : on
-        ? 'Notifications on — tap to mute'
-        : 'Notifications off — tap to enable';
-}
-dom.notifyToggle.addEventListener('click', async () => {
-  if (!isNotificationAPIAvailable()) { renderNotifyToggle(); return; }
-  if (NotificationState.globalEnabled) {
-    setGlobalEnabled(false);
-    renderNotifyToggle();
-    return;
-  }
-  const perm = await ensurePermission();
-  if (perm === 'granted') setGlobalEnabled(true);
-  renderNotifyToggle();
-});
-NotificationState.permission = isNotificationAPIAvailable() ? Notification.permission : 'unsupported';
-if (NotificationState.permission === 'granted') {
-  // User previously granted permission. Auto-enable + register the SW so
-  // notifications actually fire on mobile (which requires SW transport).
-  setGlobalEnabled(true);
-  ensurePermission().catch(() => {});
-} else {
-  // Eagerly register the Service Worker even without notification permission.
-  // Chrome only surfaces the "Install app" PWA entry once an active SW is
-  // present; without this, the menu shows the weaker "Add to home screen"
-  // (bookmark shortcut) instead.
-  registerServiceWorker().catch(() => {});
-}
-renderNotifyToggle();
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) closeAllOnFocus();
-});
+// The 🔔/🔕 toggle, its boot permission/SW bootstrap and the focus-dismiss
+// listener live in public/notifications.js.
+installNotifyToggle({ dom });
 
 // setSidebarStatus stays here — it also drives the anchor/auto-resume path
 // (see the first-connect 'open' handler below) — and is injected into the
