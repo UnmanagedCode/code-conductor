@@ -1,29 +1,32 @@
-import { existsSync, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.ts';
 import {
-  readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths,
-  type PluginManifest, type PluginMcp, type ReadManifestResult,
+  readManifest,
+  type PluginManifest, type PluginMcp, type ReadManifestResult, type ManifestSource,
 } from './manifest.ts';
 import { httpError } from '../httpError.ts';
-import { createSupervisor, httpOk, headSha, type ChildRuntime } from './supervisor.ts';
+import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
+import { createContributions } from './contributions.ts';
+import { createPluginStore } from './store.ts';
+import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
-import type { BackendBinding, TierBinding } from '../modelVersions.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
 
 // Plugin registry — the single service layer behind the REST api
 // (src/plugins/api.ts), the reverse proxy (src/plugins/proxy.ts) and MCP
-// forwarding (src/plugins/mcpBridge.ts). Owns discovery, the persisted
-// registry/runtime files, lifecycle state and lazy starts.
-//
-// On-disk state (all under `<orchStoreRoot()>/plugins/`):
-//   registry.json  {plugins: {<id>: {project, enabled, activeVersion}}}
-//   runtime.json   {<id>: {pid, pgid, port, startedAt, gitHead}}
+// forwarding (src/plugins/mcpBridge.ts). Owns discovery, active-version
+// resolution, lifecycle state and lazy starts. Two more composed collaborators
+// own the rest:
+// src/plugins/contributions.ts (conventions/roles/claudePlugin roots, and the
+// caches behind them) and src/plugins/store.ts (the persisted registry.json /
+// runtime.json, their load-notice policy, and the adopt pass) — the matching
+// public members point straight at them.
 //
 // activeVersion = {type:'main'} | {type:'worktree', name} — drives the
 // supervisor cwd; the manifest is re-read from the active checkout on
@@ -59,12 +62,6 @@ async function autoAssignToCcDev(projectName: string): Promise<void> {
   }
 }
 
-type ManifestSource = { type: 'main' } | { type: 'worktree'; name: string };
-
-// The shape `conventions()` returns: one array per SUPPORTED_CONVENTION_SCOPES
-// key, each optionally flagged `degraded` (see fragmentCatalog.ts's CatalogList).
-type ConventionGroups = Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }> & { degraded?: boolean }>;
-
 // A discovered plugin project: either usable (manifest + id) or broken
 // (invalid/conflicting/incompatible manifest). `id` is null only for an
 // invalid manifest that carried no id; `dir` stays '' for the synthetic rows
@@ -81,19 +78,10 @@ interface PluginEntry {
   errors: string[];
 }
 
-interface PersistedPluginRecord {
-  project: string;
-  enabled: boolean;
-  activeVersion?: ManifestSource;
-}
-
-interface RuntimeRecord {
-  pid: number;
-  pgid: number;
-  port: number;
-  startedAt: string;
-  gitHead: string | null;
-}
+// The slice of a PluginEntry that active-version resolution reads. Named
+// separately so the accessors injected into collaborators (which declare their
+// own narrow entry shapes) stay assignable without importing PluginEntry.
+type VersionedEntry = { id: string | null; project: string; dir: string };
 
 type PluginRuntimeStatus = 'stopped' | 'starting' | 'ready' | 'crashed' | 'failed';
 
@@ -104,31 +92,6 @@ interface RuntimeState {
   startPromise: Promise<PluginRow | null> | null;
   tail: string | null;
   adopted: boolean;
-}
-
-interface PluginRow {
-  id: string | null;
-  name: string;
-  project: string;
-  version: string | null;
-  state: string;
-  enabled: boolean;
-  activeVersion: ManifestSource;
-  manifestSource: ManifestSource;
-  hasBackend: boolean;
-  hasFrontend: boolean;
-  navLabel: string | null;
-  frontendPath: string | null;
-  hasMcp: boolean;
-  conventions: Array<{ slug: string; name: string; description: string; hasScaffold: boolean }>;
-  roles: Array<{ slug: string; name: string }>;
-  port: number | null;
-  pid: number | null;
-  startedAt: string | null;
-  gitHead: string | null;
-  stale: boolean;
-  errors: string[];
-  crashTail: string | null;
 }
 
 export function createPluginHost(opts: {
@@ -149,14 +112,6 @@ export function createPluginHost(opts: {
   let entries: PluginEntry[] = [];
   let byId = new Map<string, PluginEntry>();
 
-  // Persisted state, loaded by init().
-  let persisted: { plugins: Record<string, PersistedPluginRecord> } = { plugins: {} };
-  let runtimeRecords: Record<string, RuntimeRecord> = {};
-
-  // Non-ENOENT load failures from THIS init pass — surfaced on GET /api/plugins so
-  // a user whose plugins came back disabled learns why, and where the old file went.
-  let loadNotices: Array<{ file: string; reason: string; backup: string | null }> = [];
-
   // In-memory runtime per id: status stopped|starting|ready|crashed|failed,
   // crash bookkeeping for backoff, the in-flight start dedupe promise, and
   // the last crash tail for 503 bodies.
@@ -166,55 +121,22 @@ export function createPluginHost(opts: {
   let initPromise: Promise<void> | null = null;
   let initedFor: string | null = null; // projectsRoot() the current state was built for (test roots swap)
 
+  // Convention/role/claudePlugin contributions live in their own collaborator;
+  // the registry hands it narrow accessors over its discovery + persisted state
+  // and keeps no cache of its own. Declared before its first use — the injected
+  // accessors are hoisted `function` declarations, and nothing runs during
+  // construction.
+  const contributions = createContributions({ ensureInit, contributingEntries, resolveCwd });
+  // Persisted state, loaded by init(). Every registry.json write signals the
+  // contributions cache from the store's single save path.
+  const store = createPluginStore({ onRegistryChange: () => contributions.noteRegistryChange() });
+
   const supervisor = createSupervisor({ onExit: handleChildExit, ..._supervisorOpts });
 
   function runtimeState(id: string): RuntimeState {
     let s = rt.get(id);
     if (!s) { s = { status: 'stopped', crashTimes: [], backoffUntil: 0, startPromise: null, tail: null, adopted: false }; rt.set(id, s); }
     return s;
-  }
-
-  // ── persistence ─────────────────────────────────────────────────────
-  const registryFile = (): string => path.join(orchStoreRoot(), 'plugins', 'registry.json');
-  const runtimeFile = (): string => path.join(orchStoreRoot(), 'plugins', 'runtime.json');
-
-  // Backs BOTH registry.json and runtime.json, deliberately: carving out a
-  // registry-only variant would need an extra parameter for no benefit, and each
-  // notice names its own file.
-  async function loadJson(file: string, fallback: unknown): Promise<unknown> {
-    try { return JSON.parse(await fs.readFile(file, 'utf8')); }
-    catch (e) {
-      if (errCode(e) === 'ENOENT') return fallback;
-      // The fallback below silently forgets every plugin's enabled state and pinned
-      // version, and this file is the only copy of it — so move the bad file aside
-      // rather than letting the next save overwrite it, and record a notice the
-      // Settings page shows. A log line alone leaves the user guessing why their
-      // plugins came back disabled. A previous `.corrupt` IS overwritten: it was
-      // already unusable, and a timestamped chain would accumulate forever.
-      const backup = `${file}.corrupt`;
-      let saved: string | null = null;
-      try { await fs.rename(file, backup); saved = backup; }
-      catch (re) { console.warn(`plugins: could not preserve ${file} as ${backup}: ${errMsg(re)}`); }
-      console.warn(`plugins: failed to read ${file}: ${errMsg(e)}`);
-      loadNotices.push({ file: path.basename(file), reason: errMsg(e), backup: saved });
-      return fallback;
-    }
-  }
-
-  // Bumped by every state change that could alter what conventions() computes;
-  // see the cache at the bottom of this module for what reads it.
-  let registryGeneration = 0;
-
-  async function saveRegistry(): Promise<void> {
-    // Bumping HERE rather than at each caller is what makes the set provably
-    // complete: every mutation of `persisted.plugins` is immediately followed by
-    // a saveRegistry() (reconcileActiveVersion, enable, disable, setActiveVersion).
-    registryGeneration++;
-    await writeFileAtomic(registryFile(), JSON.stringify(persisted, null, 2) + '\n');
-  }
-
-  async function saveRuntimeRecords(): Promise<void> {
-    await writeFileAtomic(runtimeFile(), JSON.stringify(runtimeRecords, null, 2) + '\n');
   }
 
   // ── init / discovery ────────────────────────────────────────────────
@@ -229,12 +151,7 @@ export function createPluginHost(opts: {
     initedFor = projectsRoot();
     rt.clear();
     initPromise = (async () => {
-      // Reset first: a projectsRoot() swap or a retry after a failed init must
-      // start clean, not inherit the previous pass's notices.
-      loadNotices = [];
-      persisted = (await loadJson(registryFile(), { plugins: {} })) as { plugins: Record<string, PersistedPluginRecord> };
-      if (typeof persisted?.plugins !== 'object' || persisted.plugins === null) persisted = { plugins: {} };
-      runtimeRecords = (await loadJson(runtimeFile(), {})) as Record<string, RuntimeRecord>;
+      await store.load();
       await rescanInternal();
       await adoptRunning();
     })().catch(e => { initPromise = null; throw e; });
@@ -242,7 +159,7 @@ export function createPluginHost(opts: {
   }
 
   async function rescanInternal(): Promise<void> {
-    invalidateFragmentBodies();
+    contributions.invalidate();
     const projects = await listProjects();
     const found: Array<{ project: string; dir: string; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
     for (const p of projects) {
@@ -318,22 +235,22 @@ export function createPluginHost(opts: {
 
   // Adopt-don't-drain: a recorded child whose pid is alive and answering on
   // its recorded port is adopted as ready; anything else is cleared.
+  // The store owns the record pruning + its single write; the liveness test and
+  // the lifecycle mutation stay here, where the discovery catalog and the
+  // runtime state live. The predicate's && order is load-bearing: probeAnswers
+  // does real I/O with a 1 s timeout, so it must stay last.
   async function adoptRunning(): Promise<void> {
-    let dirty = false;
-    for (const [id, rec] of Object.entries(runtimeRecords)) {
-      const entry = byId.get(id);
-      const enabled = persisted.plugins[id]?.enabled === true;
-      const alive = enabled && entry && pidAlive(rec.pid) && await probeAnswers(rec.port, entry.manifest);
-      if (alive) {
-        const s = runtimeState(id);
-        s.status = 'ready';
-        s.adopted = true;
-      } else {
-        delete runtimeRecords[id];
-        dirty = true;
-      }
+    const adopted = await store.adopt({
+      isAdoptable: async (id, rec) => {
+        const entry = byId.get(id);
+        return store.isEnabled(id) && !!entry && pidAlive(rec.pid) && await probeAnswers(rec.port, entry.manifest);
+      },
+    });
+    for (const id of adopted) {
+      const s = runtimeState(id);
+      s.status = 'ready';
+      s.adopted = true;
     }
-    if (dirty) await saveRuntimeRecords();
   }
 
   async function probeAnswers(port: number, manifest: PluginManifest | null | undefined): Promise<boolean> {
@@ -363,15 +280,13 @@ export function createPluginHost(opts: {
   // Post-ready exits ('exited') have no watcher, so this is where they land.
   function handleChildExit(id: string, info: ChildRuntime): void {
     if (info.status !== 'exited') return;
-    delete runtimeRecords[id];
-    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
+    store.clearRuntimeDetached(id);
     recordCrash(id, `${info.error}\n${(info.output ?? '').slice(-2000)}`);
   }
 
   // A dead child discovered passively (status probe, proxy upstream error).
   function markDead(id: string, reason: string): void {
-    delete runtimeRecords[id];
-    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
+    store.clearRuntimeDetached(id);
     recordCrash(id, reason);
   }
 
@@ -388,7 +303,7 @@ export function createPluginHost(opts: {
 
   function requireEnabled(id: string): PluginEntry {
     const entry = requireEntry(id);
-    if (persisted.plugins[id]?.enabled !== true) throw httpError(409, `plugin '${id}' is not enabled`);
+    if (!store.isEnabled(id)) throw httpError(409, `plugin '${id}' is not enabled`);
     return entry;
   }
 
@@ -398,21 +313,21 @@ export function createPluginHost(opts: {
   // read activeVersion — and self-heal back to main so neither has to
   // special-case staleness, and a plugin stuck on a dead worktree recovers
   // without hand-editing registry.json.
-  async function reconcileActiveVersion(entry: PluginEntry): Promise<{ activeVersion: ManifestSource; worktreeMeta: WorktreeMeta | null }> {
+  async function reconcileActiveVersion(entry: VersionedEntry): Promise<{ activeVersion: ManifestSource; worktreeMeta: WorktreeMeta | null }> {
     const id = entry.id;
-    const reg = id ? persisted.plugins[id] : null;
+    const reg = id ? store.get(id) : undefined;
     const av = reg?.activeVersion ?? { type: 'main' };
     if (av.type !== 'worktree') return { activeVersion: av, worktreeMeta: null };
     // Never string-assemble worktree paths — resolve via the store metadata.
     const { getWorktree } = await import('../worktrees.ts');
     const meta = await getWorktree(entry.project, av.name);
     if (meta?.worktreePath) return { activeVersion: av, worktreeMeta: meta };
-    if (reg) reg.activeVersion = { type: 'main' };
-    await saveRegistry();
+    // Reaching here means `av` came from a record, so `id` is non-null.
+    if (id) await store.setActiveVersion(id, { type: 'main' });
     return { activeVersion: { type: 'main' }, worktreeMeta: null };
   }
 
-  async function resolveCwd(entry: PluginEntry): Promise<string> {
+  async function resolveCwd(entry: VersionedEntry): Promise<string> {
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
     return activeVersion.type === 'worktree' && worktreeMeta
       ? worktreeMeta.worktreePath
@@ -423,22 +338,21 @@ export function createPluginHost(opts: {
   async function enable(id: string): Promise<PluginRow | null> {
     await ensureInit();
     const entry = requireEntry(id);
-    const prev = persisted.plugins[id];
+    const prev = store.get(id);
     // A worktree-sourced plugin (manifest only in an unmerged worktree)
     // must default its active version to that worktree — the main checkout
     // has nothing to start.
     const defaultVersion: ManifestSource = entry.manifestSource?.type === 'worktree'
       ? { type: 'worktree', name: entry.manifestSource.name }
       : { type: 'main' };
-    persisted.plugins[id] = {
+    await store.upsert(id, {
       project: entry.project,
       enabled: true,
       activeVersion: prev?.activeVersion ?? defaultVersion,
-    };
-    await saveRegistry();
+    });
     // A fragment edited while this plugin was disabled must not keep serving
     // its pre-edit body now that enable makes it contribute again.
-    invalidateFragmentBodies();
+    contributions.invalidate();
     // Manual re-enable is the recovery path out of `failed`.
     const s = runtimeState(id);
     if (s.status === 'failed' || s.status === 'crashed') { s.status = 'stopped'; s.crashTimes = []; s.backoffUntil = 0; }
@@ -448,10 +362,9 @@ export function createPluginHost(opts: {
 
   async function disable(id: string): Promise<PluginRow | null> {
     await ensureInit();
-    if (!persisted.plugins[id]) throw httpError(404, `plugin '${id}' has no registry entry`);
+    if (!store.has(id)) throw httpError(404, `plugin '${id}' has no registry entry`);
     await stopInternal(id);
-    persisted.plugins[id].enabled = false;
-    await saveRegistry();
+    await store.setEnabled(id, false);
     return describe(id);
   }
 
@@ -462,7 +375,7 @@ export function createPluginHost(opts: {
     const s = runtimeState(id);
     if (s.startPromise) return s.startPromise;
     s.startPromise = (async () => {
-      invalidateFragmentBodies();
+      contributions.invalidate();
       const entry = requireEnabled(id);
       const cwd = await resolveCwd(entry);
       // Re-read the manifest from the active checkout — contributions follow
@@ -473,10 +386,10 @@ export function createPluginHost(opts: {
       if ('errors' in result) throw httpError(400, `manifest in active checkout is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in active checkout does not match plugin '${id}'`);
       entry.manifest = result.manifest;
-      // Not covered by the invalidateFragmentBodies() at the top of this body:
+      // Not covered by the contributions.invalidate() at the top of this body:
       // the manifest is REASSIGNED here, ten lines later, and its `conventions`
       // list is exactly what conventions() reads.
-      registryGeneration++;
+      contributions.noteRegistryChange();
       const backend = result.manifest.backend;
       if (!backend) throw httpError(400, `plugin '${id}' has no backend to start`);
 
@@ -493,13 +406,11 @@ export function createPluginHost(opts: {
         ...(serverPort ? { CONDUCTOR_URL: `http://127.0.0.1:${serverPort}` } : {}),
       };
       const rec = await supervisor.start({ id, manifest: { backend }, cwd, env });
-      runtimeRecords[id] = rec;
-      await saveRuntimeRecords();
+      await store.recordStart(id, rec);
 
       const settled = await waitSettled(id);
       if (settled.status !== 'ready') {
-        delete runtimeRecords[id];
-        await saveRuntimeRecords();
+        await store.clearRuntime(id);
         const tail = settled.error ?? settled.output?.slice(-2000) ?? '';
         recordCrash(id, tail);
         throw httpError(502, `plugin '${id}' failed to start`, { tail });
@@ -536,19 +447,18 @@ export function createPluginHost(opts: {
   }
 
   async function stopInternal(id: string): Promise<void> {
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     const s = runtimeState(id);
     if (rec) {
       supervisor.stop({ id, pgid: rec.pgid });
-      delete runtimeRecords[id];
-      await saveRuntimeRecords();
+      await store.clearRuntime(id);
     }
     if (s.status !== 'failed') s.status = 'stopped';
   }
 
   async function stop(id: string): Promise<PluginRow | null> {
     await ensureInit();
-    if (!byId.get(id) && !persisted.plugins[id]) throw httpError(404, `unknown plugin '${id}'`);
+    if (!byId.get(id) && !store.has(id)) throw httpError(404, `unknown plugin '${id}'`);
     await stopInternal(id);
     return describe(id);
   }
@@ -559,7 +469,7 @@ export function createPluginHost(opts: {
   async function ensureStarted(id: string): Promise<void> {
     await ensureInit();
     const entry = byId.get(id);
-    if (!entry || persisted.plugins[id]?.enabled !== true) throw httpError(404, `unknown or disabled plugin '${id}'`);
+    if (!entry || !store.isEnabled(id)) throw httpError(404, `unknown or disabled plugin '${id}'`);
     const s = runtimeState(id);
     if (s.status === 'ready') return;
     if (s.status === 'failed') {
@@ -575,62 +485,31 @@ export function createPluginHost(opts: {
   // ── views ───────────────────────────────────────────────────────────
   function describe(id: string): Promise<PluginRow> | null {
     const entry = byId.get(id) ?? entries.find(e => e.id === id) ?? null;
-    const reg = persisted.plugins[id];
-    if (!entry && !reg) return null;
-    return describeRow(entry ?? { id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
+    if (entry) return describeRow(entry);
+    const reg = store.get(id);
+    if (!reg) return null;
+    return describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
   }
 
+  // Gathers the five owners the projection reads (discovery entry, persisted
+  // record, runtime state, runtime record, resolved active version) and hands
+  // them to the pure view-model in row.ts.
   async function describeRow(entry: PluginEntry): Promise<PluginRow> {
     const id = entry.id;
-    const reg = id ? persisted.plugins[id] : null;
-    const s = id ? runtimeState(id) : null;
-    const rec = id ? runtimeRecords[id] : null;
-    const hasBackend = !!entry.manifest?.backend;
-    let state: string;
-    if (entry.discoveryState !== 'ok') state = entry.discoveryState;
-    else if (!reg?.enabled) state = reg ? 'disabled' : 'discovered';
-    // A backendless (conventions-only) plugin has no process lifecycle — it is
-    // simply 'enabled', never 'stopped', so the UI shows no (broken) Start button.
-    else if (!hasBackend) state = 'enabled';
-    else state = s?.status ?? 'stopped';
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
-    // Staleness: only worth a git spawn for a currently-running plugin — the
-    // running child's code may have moved past the sha it was started at.
-    let stale = false;
-    if (state === 'ready' && rec?.gitHead) {
-      const cwd = activeVersion.type === 'worktree' && worktreeMeta
-        ? worktreeMeta.worktreePath
-        : entry.dir;
-      const currentHead = await headSha(cwd);
-      stale = !!currentHead && currentHead !== rec.gitHead;
-    }
-    return {
-      id,
-      name: entry.manifest?.name ?? entry.project,
-      project: entry.project,
-      version: entry.manifest?.version ?? null,
-      state,
-      enabled: reg?.enabled === true,
+    // Pure, no I/O — hoisting it out of the staleness branch it used to sit in
+    // costs nothing; the git spawn itself stays behind that branch, in row.ts.
+    const cwd = activeVersion.type === 'worktree' && worktreeMeta
+      ? worktreeMeta.worktreePath
+      : entry.dir;
+    return buildPluginRow({
+      entry,
+      reg: id ? store.get(id) ?? null : null,
+      runtime: id ? runtimeState(id) : null,
+      record: id ? store.runtimeRecord(id) ?? null : null,
       activeVersion,
-      manifestSource: entry.manifestSource ?? { type: 'main' },
-      hasBackend,
-      hasFrontend: !!entry.manifest?.frontend,
-      navLabel: entry.manifest?.frontend?.navLabel ?? null,
-      frontendPath: entry.manifest?.frontend?.path ?? null,
-      hasMcp: !!entry.manifest?.mcp,
-      // Contribution metadata (slugs namespaced <plugin-id>/<slug>).
-      // `hasScaffold` flags a convention whose pick triggers a one-time setup
-      // directive (returned by create_project) in addition to any fragment.
-      conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description, hasScaffold: !!g.scaffold })),
-      roles: (entry.manifest?.roles ?? []).map(r => ({ slug: `${id}/${r.slug}`, name: r.name })),
-      port: rec?.port ?? null,
-      pid: rec?.pid ?? null,
-      startedAt: rec?.startedAt ?? null,
-      gitHead: rec?.gitHead ?? null,
-      stale,
-      errors: entry.errors ?? [],
-      crashTail: s?.tail ?? null,
-    };
+      cwd,
+    });
   }
 
   async function list(): Promise<PluginRow[]> {
@@ -638,7 +517,7 @@ export function createPluginHost(opts: {
     const rowPromises: Array<Promise<PluginRow>> = entries.map(describeRow);
     // Registry entries whose project/manifest vanished still deserve a row
     // (they hold state the user may want to disable).
-    for (const [id, reg] of Object.entries(persisted.plugins)) {
+    for (const [id, reg] of store.entries()) {
       if (!entries.some(e => e.id === id)) {
         rowPromises.push(describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
       }
@@ -656,9 +535,9 @@ export function createPluginHost(opts: {
   // OOM-kill) since the last event we saw.
   async function status(id: string): Promise<PluginRow | null> {
     await ensureInit();
-    if (!byId.get(id) && !persisted.plugins[id]) throw httpError(404, `unknown plugin '${id}'`);
+    if (!byId.get(id) && !store.has(id)) throw httpError(404, `unknown plugin '${id}'`);
     const s = runtimeState(id);
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     if (s.status === 'ready' && rec) {
       const entry = byId.get(id);
       const answers = await probeAnswers(rec.port, entry?.manifest);
@@ -671,7 +550,7 @@ export function createPluginHost(opts: {
 
   // Proxy hook: an upstream connection error may mean the child is gone.
   function reportUpstreamFailure(id: string): void {
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     const s = rt.get(id);
     if (!rec || !s || s.status !== 'ready') return;
     if (!pidAlive(rec.pid)) markDead(id, s.tail ?? `process ${rec.pid} died (upstream connection failed)`);
@@ -684,7 +563,7 @@ export function createPluginHost(opts: {
   async function setActiveVersion(id: string, v: unknown): Promise<PluginRow | null> {
     await ensureInit();
     const entry = requireEntry(id);
-    if (!persisted.plugins[id]) throw httpError(409, `plugin '${id}' has no registry entry — enable it first`);
+    if (!store.has(id)) throw httpError(409, `plugin '${id}' has no registry entry — enable it first`);
     const ver = v as { type?: unknown; name?: unknown } | null | undefined;
     let next: ManifestSource;
     if (ver?.type === 'main') {
@@ -709,9 +588,8 @@ export function createPluginHost(opts: {
     } else {
       throw httpError(400, "version must be {type:'main'} or {type:'worktree', name}");
     }
-    persisted.plugins[id].activeVersion = next;
-    await saveRegistry();
-    invalidateFragmentBodies();
+    await store.setActiveVersion(id, next);
+    contributions.invalidate();
     const s = runtimeState(id);
     if (s.status === 'ready' || s.status === 'starting') {
       if (s.startPromise) await s.startPromise.catch(() => {});
@@ -742,218 +620,42 @@ export function createPluginHost(opts: {
     instances,
     listMcpPlugins: () => [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest & { mcp: PluginMcp } } =>
       e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && e.manifest.mcp != null
-        && persisted.plugins[e.id]?.enabled === true),
+        && store.isEnabled(e.id)),
     ensureStarted,
-    portFor: (id: string) => runtimeRecords[id]?.port ?? null,
+    portFor: (id: string) => store.runtimeRecord(id)?.port ?? null,
     reportUpstreamFailure,
   });
   const toolsFor = () => mcpBridge.toolsFor();
 
   function runtimeInfo(id: string): { status: string; port: number | null } {
-    const rec = runtimeRecords[id];
+    const rec = store.runtimeRecord(id);
     const s = rt.get(id);
     return { status: s?.status ?? 'stopped', port: rec?.port ?? null };
   }
 
   // ── convention contributions ────────────────────────────────────────
-  // Only enabled + `ok` plugins contribute (a crashed/disabled/invalid plugin
-  // never surfaces its conventions). Bodies are resolved from the active
-  // checkout; a fragment path that vanished after load is skipped with a
-  // warning (manifest load already rejects missing files).
-  const fragmentBodyCache = new Map<string, string>(); // abs path -> body
-  async function readFragment(abs: string): Promise<string> {
-    const cached = fragmentBodyCache.get(abs);
-    if (cached !== undefined) return cached;
-    const body = (await fs.readFile(abs, 'utf8')).replace(/\s+$/, '');
-    fragmentBodyCache.set(abs, body);
-    return body;
-  }
-
-  // Bodies above are keyed by absolute path and otherwise live for the whole
-  // process — a `git pull` into the same checkout leaves the key unchanged.
-  // Every explicit "the checkout on disk moved, or a disabled plugin's
-  // fragments are about to matter again" event therefore drops the whole
-  // map (a handful of small .md files, repopulated on the next compose):
-  // rescanInternal, doStart, setActiveVersion, and enable (a fragment can be
-  // edited while its plugin sits disabled — enable is the user's own
-  // recovery gesture for exactly that).
-  // Bumps the generation too: a stale fragment body must never survive inside a
-  // cached conventions() result. This covers rescanInternal (and with it the
-  // `byId = nextById` swap and the projectsRoot() swap path), enable, doStart
-  // and setActiveVersion.
-  function invalidateFragmentBodies(): void { fragmentBodyCache.clear(); registryGeneration++; }
-
+  // The registry's half of the contributions collaborator: which plugins get to
+  // contribute at all. Only enabled + `ok` plugins do — a crashed/disabled/
+  // invalid plugin never surfaces its conventions, roles or claudePlugin roots.
+  // Stays here because it reads BOTH the discovery catalog and the persisted
+  // records, neither of which the collaborator owns.
   function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {
     return [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest } =>
-      e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && persisted.plugins[e.id]?.enabled === true);
-  }
-
-  // Convention entries contributed by enabled plugins, GROUPED BY SCOPE so
-  // each scope routes to its own catalog. `project` and `conductor` are both
-  // wired today (server.ts routes each into its own catalog); `workspace` is
-  // rejected at manifest load (manifest.ts's SUPPORTED_CONVENTION_SCOPES), so
-  // its group here stays empty. Each entry: { slug:'<plugin-id>/<slug>', name, description,
-  // body, scaffold?, plugin:id } — `body` is '' when the convention carries no
-  // fragment (scaffold-only); `scaffold` is the resolved directive text, present
-  // only when the entry carries a scaffold facet.
-  // If an entry's cwd fails to resolve, that is transient infra (e.g. a
-  // worktree checkout not yet mounted) rather than "this plugin genuinely
-  // contributes nothing here" — the entry is silently absent from every
-  // scope's list unless a reader checks `.degraded` on the returned array
-  // (see fragmentCatalog.ts's CatalogList). EVERY scope array is flagged,
-  // including ones left empty: the failure isn't attributable to a single
-  // scope, and an empty-and-unflagged array is exactly what "no plugin
-  // contributes to this scope" looks like — the failed plugin may have been
-  // the only would-be contributor. A vanished fragment/scaffold FILE is a
-  // different, already-accepted case (the file is just gone, not transiently
-  // unreachable) and is not treated as degraded — it is skipped with a
-  // warning as before, same as it always has been.
-  //
-  // MEMOIZED, because this is not a cheap read: it walks contributingEntries()
-  // and calls resolveCwd() per contributing plugin, and resolveCwd →
-  // reconcileActiveVersion does a dynamic import of worktrees.ts plus a store
-  // read for any worktree-pinned plugin. server.ts wires TWO providers onto it
-  // (project + conductor), so a single GET /api/settings/conventions/conductor
-  // was two full scans, and a mutating plugin route fans out through
-  // regenerateAllProjectConventions at two scans per project.
-  //
-  // The invalidation signal has TWO parts, and both are load-bearing:
-  //
-  //   1. `registryGeneration` — every mutation of the host's own state (see the
-  //      bumps in saveRegistry, invalidateFragmentBodies, and doStart's manifest
-  //      reassignment).
-  //   2. A per-call liveness re-check of the checkout dirs the cached scan
-  //      actually read. A checkout deleted from under a running server mutates
-  //      NO registry state, so (1) alone cannot see it — and answering "still
-  //      here" on its behalf would silently disable the `.degraded` flag, whose
-  //      whole job is to say "I can't tell gone from temporarily unreachable"
-  //      (fragmentCatalog.ts's CatalogList; the never-blanks decline in
-  //      projectClaudeMd.ts's ensureProjectConventionsMd depends on it). One
-  //      existsSync per contributing plugin is negligible against the dynamic
-  //      import + store read it guards, and a vanished dir just falls through to
-  //      the real scan, which degrades exactly as it does uncached.
-  //
-  // The re-check is deliberately on the DIRS, not on the store metadata that
-  // resolves them: a worktree pin going stale in the store is registry state,
-  // self-healed by reconcileActiveVersion on the next recomputation, and is
-  // covered by (1).
-  //
-  // The RETURNED OBJECT IS SHARED BY REFERENCE — callers must treat it as
-  // read-only. Both consumers do: fragmentCatalog.ts reads `.degraded` and then
-  // `raw.map(r => ({...r, builtin:false}))` (copying every entry), and
-  // server.ts's two providers only index `.project` / `.conductor`. A defensive
-  // shallow copy is deliberately NOT made: the entry objects would still be
-  // shared, so it would buy the appearance of safety rather than safety.
-  let conventionsCache: { gen: number; dirs: string[]; value: ConventionGroups } | null = null;
-  async function conventions(): Promise<ConventionGroups> {
-    await ensureInit();
-    // Snapshotted BEFORE the loop on purpose: resolveCwd → reconcileActiveVersion
-    // can call saveRegistry() mid-computation when it self-heals a vanished
-    // worktree, bumping the generation. Tagging the result with the pre-loop
-    // value marks it stale, so the next call recomputes once — and that second
-    // run finds the self-heal already applied, so it does not bump again.
-    // Self-limiting.
-    const gen = registryGeneration;
-    if (conventionsCache && conventionsCache.gen === gen && conventionsCache.dirs.every(d => existsSync(d))) {
-      return conventionsCache.value;
-    }
-    const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>
-      = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
-    // Every checkout dir this scan read, for the liveness re-check above. Both
-    // the discovered project dir AND the resolved cwd: for a worktree-pinned
-    // plugin they differ, and losing EITHER changes what a fresh scan would
-    // produce (the project dir is what resolveCwd's getProject() lookup needs).
-    const dirs = new Set<string>();
-    let degraded = false;
-    for (const entry of contributingEntries()) {
-      const list = entry.manifest.conventions ?? [];
-      if (list.length === 0) continue;
-      if (entry.dir) dirs.add(entry.dir);
-      let cwd: string;
-      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: conventions cwd for '${entry.id}' failed: ${errMsg(e)}`); degraded = true; continue; }
-      dirs.add(cwd);
-      for (const g of list) {
-        let body = '';
-        if (g.file) {
-          try { body = await readFragment(path.join(cwd, g.file)); }
-          catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${errMsg(e)}`); continue; }
-        }
-        let scaffold: string | undefined;
-        if (g.scaffold) {
-          if ('text' in g.scaffold) scaffold = g.scaffold.text;
-          else {
-            try { scaffold = await readFragment(path.join(cwd, g.scaffold.file)); }
-            catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${errMsg(e)}`); continue; }
-          }
-        }
-        byScope[g.scope].push({ slug: `${entry.id}/${g.slug}`, name: g.name, description: g.description, body, ...(scaffold !== undefined ? { scaffold } : {}), plugin: entry.id });
-      }
-    }
-    if (degraded) for (const arr of Object.values(byScope)) Object.assign(arr, { degraded: true });
-    conventionsCache = { gen, dirs: [...dirs], value: byScope };
-    return byScope;
-  }
-
-  // Roles contributed by enabled plugins. SYNCHRONOUS — unlike conventions(),
-  // a role binding is inline in the manifest (no fragment file to resolve), so
-  // spawn-time resolution (appSettings.resolveRoleBackend) stays synchronous.
-  // Each entry: { role:'<plugin-id>/<slug>', label, binding, plugin:id }. Only
-  // enabled+ok plugins contribute, so disabling/removing a plugin drops its
-  // roles automatically (no purge, mirroring conductor conventions).
-  function roles(): Array<{ role: string; label: string; binding: BackendBinding | TierBinding; plugin: string }> {
-    const out: Array<{ role: string; label: string; binding: BackendBinding | TierBinding; plugin: string }> = [];
-    for (const entry of contributingEntries()) {
-      for (const r of entry.manifest.roles ?? []) {
-        // A null binding means the manifest failed role validation, which
-        // excludes it from contributingEntries (discoveryState must be 'ok');
-        // skip defensively so the provider's binding type holds without a cast.
-        if (!r.binding) continue;
-        out.push({ role: `${entry.id}/${r.slug}`, label: r.name, binding: r.binding, plugin: entry.id });
-      }
-    }
-    return out;
-  }
-
-  // Claude Code plugin roots contributed by enabled + `ok` plugins whose manifest
-  // declares `claudePlugin`. Each resolved root is validated HERE (at launch/
-  // resolve time) — the target must directly contain `.claude-plugin/plugin.json`
-  // for Claude Code's `--plugin-dir` to load it. A missing/unreadable one is
-  // warned loudly and dropped (adding a broken --plugin-dir would make claude
-  // itself fail to start), never silently swallowed. Returns absolute dir paths;
-  // Instance.spawn() turns each into a repeated `--plugin-dir <root>` flag.
-  async function claudePluginDirs(): Promise<string[]> {
-    await ensureInit();
-    const out: string[] = [];
-    for (const entry of contributingEntries()) {
-      const rels = claudePluginPaths(entry.manifest);
-      if (rels.length === 0) continue;
-      let cwd: string;
-      try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: claudePlugin cwd for '${entry.id}' failed: ${errMsg(e)}`); continue; }
-      for (const rel of rels) {
-        const root = path.join(cwd, rel);
-        try {
-          await fs.access(path.join(root, '.claude-plugin', 'plugin.json'));
-          out.push(root);
-        } catch {
-          console.warn(`plugins: '${entry.id}' claudePlugin '${rel}' — no .claude-plugin/plugin.json at ${root}; skipping --plugin-dir`);
-        }
-      }
-    }
-    return out;
+      e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && store.isEnabled(e.id));
   }
 
   function setServerPort(p: number | null): void { serverPort = p; }
 
   // Test/shutdown teardown: kill every child this host started or adopted.
   // No `!initPromise` early return: a FAILED init still clears `initPromise`
-  // to null (see ensureInit) but can leave `runtimeRecords` already loaded
-  // with live backends from a previous process (it's assigned before
-  // rescanInternal()/adoptRunning() run) — "never initialized" is no longer
-  // the only reason `initPromise` can be null. `runtimeRecords` starts `{}`,
-  // so skipping the await when init never ran is just as correct as awaiting it.
+  // to null (see ensureInit) but can leave the store's runtime records already
+  // loaded with live backends from a previous process (store.load() runs before
+  // rescanInternal()/adoptRunning()) — "never initialized" is no longer the only
+  // reason `initPromise` can be null. The record set starts empty, so skipping
+  // the await when init never ran is just as correct as awaiting it.
   async function stopAll(): Promise<void> {
     try { if (initPromise) await initPromise; } catch { /* init failed; stop whatever was already recorded */ }
-    for (const id of Object.keys(runtimeRecords)) {
+    for (const id of store.runtimeIds()) {
       try { await stopInternal(id); } catch { /* best-effort */ }
     }
   }
@@ -962,9 +664,11 @@ export function createPluginHost(opts: {
     init: ensureInit,
     list, rescan, enable, disable, start, stop, restart, status,
     ensureStarted, setActiveVersion, toolsFor, runtimeInfo,
-    conventions, roles, claudePluginDirs,
+    conventions: contributions.conventions,
+    roles: contributions.roles,
+    claudePluginDirs: contributions.claudePluginDirs,
     reportUpstreamFailure, setServerPort, stopAll,
-    notices: () => [...loadNotices],
+    notices: store.notices,
   };
 }
 
