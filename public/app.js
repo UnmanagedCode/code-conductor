@@ -8,7 +8,7 @@ import { attachComposer } from './composer.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
-import { UsageTracker, RateLimitTracker } from './usage.js';
+import { UsageTracker, RateLimitTracker, RL_BUCKET_KEYS } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   isNotificationAPIAvailable, registerServiceWorker,
@@ -72,8 +72,7 @@ async function refreshAccountUsage() {
     // same apply() null-guard so neither clobbers the other's unique fields
     // (isUsingOverage is message-only and survives re-fetches because it is
     // intentionally absent from this synthetic event).
-    const BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
-    const key = BUCKET_PRIORITY.find(k => accountUsage[k]);
+    const key = RL_BUCKET_KEYS.find(k => accountUsage[k]);
     if (key) {
       const b = accountUsage[key];
       globalRLTracker.apply({

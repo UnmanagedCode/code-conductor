@@ -1,7 +1,7 @@
 // Tests for two independent things rendered inside the combined chip's usage
 // popover (buildCombinedPopover in header.js):
 //
-// 1. The conditional "7-day (Fable)" line — the account-wide /api/usage
+// 1. The conditional "7-day Fable" line — the account-wide /api/usage
 //    payload now carries a top-level `limits` array; a Fable-scoped entry
 //    looks like { kind: 'weekly_scoped', percent, resets_at, scope: { model:
 //    { display_name: 'Fable' } } }. The line must render ONLY when such an
@@ -149,8 +149,8 @@ test('Fable line renders when a Fable-scoped limit is present', async () => {
   header.update();
 
   const rows = openPopoverRows(dom, document);
-  const fableRow = rows.find(r => r.key === '7-day (Fable)');
-  assert.ok(fableRow, 'a "7-day (Fable)" row must be present');
+  const fableRow = rows.find(r => r.key === '7-day Fable');
+  assert.ok(fableRow, 'a "7-day Fable" row must be present');
   assert.match(fableRow.value, /^12% · resets /);
 });
 
@@ -242,9 +242,12 @@ test('usage popover still shows the accumulated cost for a claude-backed session
 //
 // Pins what must survive that: one row per KNOWN bucket actually present in
 // the payload, in tightest-window-first order, each labelled from the
-// long-form map. Committed with the parenthesised labels header.js uses
-// today — the rewording lands in the same commit as the label-map merge, so
-// the intended text change shows up in that diff rather than silently.
+// long-form map — usage.js's RL_WINDOW_LABEL, now the only one.
+//
+// Committed one commit earlier with header.js's parenthesised labels
+// ('7-day (Sonnet)'), and retargeted here in the same commit as the map
+// merge, so the intended user-visible rewording shows up in that diff rather
+// than as a silent fix.
 
 test('usage limits: one row per present bucket, tightest window first', async () => {
   const { dom, document, header, setInstances, setActiveId, setAccountUsage } = await setup();
@@ -260,7 +263,7 @@ test('usage limits: one row per present bucket, tightest window first', async ()
 
   const rows = openPopoverRows(dom, document);
   assert.deepEqual(rows.map(r => r.key),
-    ['5-hour', '7-day', '7-day (Sonnet)', '7-day (Opus)'],
+    ['5-hour', '7-day', '7-day Sonnet', '7-day Opus'],
     'every known bucket renders once, tightest window first');
   assert.deepEqual(rows.map(r => r.value.replace(/resets .*/, 'resets …')),
     ['10% · resets …', '40% · resets …', '55% · resets …', '70% · resets …']);
@@ -277,6 +280,6 @@ test('usage limits: an absent bucket gets no placeholder row', async () => {
 
   const rows = openPopoverRows(dom, document);
   assert.equal(rows.length, 1, 'exactly one row for the one bucket present');
-  assert.equal(rows[0].key, '7-day (Opus)');
+  assert.equal(rows[0].key, '7-day Opus');
   assert.match(rows[0].value, /^70% · resets /);
 });

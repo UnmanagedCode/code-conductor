@@ -207,8 +207,16 @@ export function formatAutoResumeTime(unixSecs) {
   return 'resumes at ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+// The rate-limit bucket keys, ordered tightest-window-first. That order serves
+// both uses: picking the single most immediate bucket for the chip
+// (rlChipSegment, and app.js's fetch merge) and the row order of the header
+// popover's Usage-limits block. A second list would let the chip and the
+// popover disagree about which window matters most.
+export const RL_BUCKET_KEYS = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
+
 // Long-form window label, for contexts where "5h"/"7d" (RL_BUCKET_LABEL) reads
-// too terse — e.g. a parsed rate_limit_event line in the conversation.
+// too terse — e.g. a parsed rate_limit_event line in the conversation, or the
+// header popover's Usage-limits rows.
 export const RL_WINDOW_LABEL = {
   five_hour:        '5-hour',
   seven_day:        '7-day',
@@ -234,7 +242,6 @@ export function formatResetWhen(unixSecs) {
 //   info        – globalRLTracker.info (from rate_limit_event; may be null)
 //   accountUsage – OAuth fetch result keyed by bucket (may be null)
 // Returns { text, frac, isOverage } where frac is 0–1 or null.
-const RL_BUCKET_PRIORITY = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];
 const RL_BUCKET_LABEL = {
   five_hour:        '5h',
   seven_day:        '7d',
@@ -251,7 +258,7 @@ export function rlChipSegment(info, accountUsage) {
     return { text, frac: util, isOverage: info.isUsingOverage === true };
   }
   // accountUsage fallback — tightest non-null bucket
-  const key = accountUsage && RL_BUCKET_PRIORITY.find(k => accountUsage[k]);
+  const key = accountUsage && RL_BUCKET_KEYS.find(k => accountUsage[k]);
   const bucket = key && accountUsage[key];
   if (!bucket) return { text: 'rl --', frac: null, isOverage: false };
   const util = typeof bucket.utilization === 'number' ? bucket.utilization / 100 : null;
