@@ -135,6 +135,33 @@ test('C4 conductor: a stale plugin slug in `enabled` is filtered out of the base
   );
 });
 
+// C4's sibling, and the only test that constructs the state the base filter
+// exists for. C4 itself passes with or without the filter: its provider always
+// returns p/one, so an unfiltered base slug is simply re-derived from the live
+// catalog and deduped away by the Set. The filter only changes behaviour when
+// the persisted plugin slug is ABSENT from the catalog — a plugin that was
+// disabled or removed, or a plugin update that dropped the convention.
+//
+// Two writers currently prevent that state reaching the store (`persist` strips
+// plugin slugs on write; migration 0021 strips legacy ones on read), which is
+// exactly the sort of double-guard that stops holding the day a third writer
+// appears. Unfiltered, the stale slug reaches compose with no catalog entry —
+// a 400 'unknown convention slug' on the conductor spawn path.
+test('C5 conductor: a persisted plugin slug ABSENT from the catalog is filtered out, not carried into compose', async () => {
+  // p/one is gone from the catalog; only p/two still contributes.
+  setPluginConductorConventionsProvider(async () => [PLUGIN_ENTRIES[1]]);
+  await writeStore('conductor', { enabled: ['canonical-workflow', 'p/one'] });
+
+  const sel = await cdGetSelection();
+  assert.ok(!sel.includes('p/one'), 'the stale plugin slug must not survive into the selection');
+  assert.deepEqual(sel, ['canonical-workflow', 'p/two']);
+  // ...and the composed prompt resolves rather than throwing 400.
+  assert.strictEqual(
+    await composeCurrentConduct(),
+    await composeConduct(['canonical-workflow', 'p/two']),
+  );
+});
+
 // ── Persisted state: the exact patch setSelection writes ─────────────────────
 
 test('S1 workspace setSelection persists `enabled` verbatim and writes no pluginOff key', async () => {
