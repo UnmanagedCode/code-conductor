@@ -39,7 +39,7 @@ import { installPruneDialog } from './pruneDialog.js';
 import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
-  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setCustomModels, setBackends, setOllamaCloudModels } from './models.js';
+  setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setBackends } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 import { apiFetch } from './http.js';
 
@@ -541,8 +541,6 @@ const settings = installSettings({
     if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);
     setActiveDefaultSpawnTier(data.defaultSpawnTier);
     setBackends(data.backends);
-    setCustomModels(data.customModels);
-    setOllamaCloudModels(data.ollamaCloudModels);
     spawnHandles.syncTierModelLabels();
     spawnHandles.syncTierVisibility();
   },
