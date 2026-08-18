@@ -8,7 +8,8 @@
 // sentence starts playing (~0.3s) while later sentences are still synthesizing.
 //
 // Module-level singleton state (availability / auto-speak enabled / rate) is
-// seeded by app.js from /api/tts/status + /api/settings/tts and flipped live by
+// seeded by probeTtsStatus() below from /api/tts/status + /api/settings/tts, and
+// flipped live by
 // the Settings page. Browsers block audio without a prior user gesture, so we
 // track whether the user has interacted: a 🔊 tap is itself a gesture (always
 // works), but auto-speak no-ops until the first interaction.
@@ -222,4 +223,26 @@ export function requestSpeak(text) {
 export function maybeAutoSpeak(text, { onStart } = {}) {
   if (!enabled || !available || !userHasInteracted) return;
   return speak(text, { onStart });
+}
+
+// Boot probe: does the server have Piper (gates the 🔊 speak buttons), and what
+// are the persisted auto-speak/rate prefs?
+//
+// Two SEPARATE try blocks on purpose — a single one would let a failing
+// /api/tts/status swallow the prefs fetch, leaving auto-speak and rate at their
+// defaults even though the server has them. Bare fetch + silent catch: off is
+// the safe default for both.
+export async function probeTtsStatus() {
+  try {
+    const r = await fetch('/api/tts/status', { cache: 'no-store' });
+    if (r.ok) setTtsAvailable((await r.json()).available);
+  } catch { /* leave TTS disabled */ }
+  try {
+    const r = await fetch('/api/settings/tts', { cache: 'no-store' });
+    if (r.ok) {
+      const d = await r.json();
+      setTtsEnabled(d.enabled);
+      setTtsRate(d.rate);
+    }
+  } catch { /* prefs default off */ }
 }

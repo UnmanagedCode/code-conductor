@@ -12,7 +12,7 @@ export const NotificationState = {
   // Per-session mute, keyed by sessionId rather than the per-process
   // instance id: a crash + resume mints a new instance id for the same
   // session, which would silently un-mute it. Mirrors the unread counter's
-  // keying in app.js for the same reason.
+  // keying in unread.js for the same reason.
   mutedSessions: new Set(),
   swRegistration: null,           // ServiceWorkerRegistration, once registered
 };

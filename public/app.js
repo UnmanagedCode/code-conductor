@@ -4,7 +4,7 @@
 import { bus, connect, send } from './ws.js';
 import { Sidebar } from './sidebar.js';
 import { Conversation } from './conversation.js';
-import { attachComposer } from './composer.js';
+import { attachComposer, probeMicAvailability } from './composer.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
@@ -36,7 +36,7 @@ import { installWsRouter } from './wsRouter.js';
 import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setBackends } from './models.js';
-import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
+import { setTtsAvailable, setTtsEnabled, setTtsRate, probeTtsStatus } from './tts.js';
 import { createUnreadStore } from './unread.js';
 import { installAccountUsage } from './accountUsage.js';
 import { installSidebarChrome } from './sidebarChrome.js';
@@ -436,31 +436,8 @@ headerHandle = installHeader({
 function setMicAvailable(available) {
   composer.setMicAvailable(available);
 }
-(async () => {
-  try {
-    const r = await fetch('/api/transcribe/status', { cache: 'no-store' });
-    if (!r.ok) return;
-    const { available } = await r.json();
-    setMicAvailable(available);
-  } catch { /* leave mic disabled */ }
-})();
-
-// Probe Piper TTS availability (gates the 🔊 speak buttons) and seed the
-// auto-speak/rate prefs. Mirrors the transcribe-status probe above.
-(async () => {
-  try {
-    const r = await fetch('/api/tts/status', { cache: 'no-store' });
-    if (r.ok) setTtsAvailable((await r.json()).available);
-  } catch { /* leave TTS disabled */ }
-  try {
-    const r = await fetch('/api/settings/tts', { cache: 'no-store' });
-    if (r.ok) {
-      const d = await r.json();
-      setTtsEnabled(d.enabled);
-      setTtsRate(d.rate);
-    }
-  } catch { /* prefs default off */ }
-})();
+probeMicAvailability(setMicAvailable);
+probeTtsStatus();
 
 // Settings page (full-page view at #settings). The burger-menu button routes
 // here; closing restores the previously-active session anchor.

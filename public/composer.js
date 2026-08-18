@@ -63,8 +63,9 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // The send button's text label span (index.html: <span class="cs-label">).
   const sendLabel = sendBtn.querySelector('.cs-label');
 
-  // Whether the server has whisper.cpp + the model on disk. Flipped by
-  // app.js via setMicAvailable() once /api/transcribe/status resolves. When
+  // Whether the server has whisper.cpp + the model on disk. Flipped via
+  // setMicAvailable() once /api/transcribe/status resolves (see
+  // probeMicAvailability below, and Settings' onAvailabilityChange). When
   // false, an empty composer just shows a disabled Send (no mic affordance).
   let micAvailable = false;
 
@@ -480,8 +481,8 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   return {
     set(state) { setState(state); },
     disable() { setState({ canType: false, canSend: false }); },
-    // app.js flips this on once /api/transcribe/status confirms whisper is
-    // installed; an empty composer then turns the Send button into a mic.
+    // Flipped on once /api/transcribe/status confirms whisper is installed;
+    // an empty composer then turns the Send button into a mic.
     setMicAvailable(v) { micAvailable = !!v; updateButton(); },
     // Drop any pending attachments + set the textarea to `text`, leaving
     // the cursor at the end so the user can edit immediately. Used after
@@ -501,4 +502,22 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
       refreshSendEnabled();
     },
   };
+}
+
+// Boot probe for the Send button's hold-to-record mic affordance: enable it
+// only when the server has whisper.cpp + the model on disk.
+//
+// Takes the applier rather than living inside attachComposer because Settings'
+// onAvailabilityChange drives the same setter at runtime — folding the probe
+// into attachComposer would change when it fires.
+//
+// Bare fetch with a silent catch: an unavailable mic is the safe default, so
+// there is nothing to report and nothing to retry.
+export async function probeMicAvailability(apply) {
+  try {
+    const r = await fetch('/api/transcribe/status', { cache: 'no-store' });
+    if (!r.ok) return;
+    const { available } = await r.json();
+    apply(available);
+  } catch { /* leave mic disabled */ }
 }
