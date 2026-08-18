@@ -187,3 +187,25 @@ test('onChange fires AFTER the save, with the live counts Map', async () => {
     'localStorage was already written by the time onChange ran');
   assert.equal(sawMap, store.counts, 'onChange receives the live Map, not a copy');
 });
+
+test('onChange fires AFTER the save on the CLEAR path too, including the removeItem branch', async () => {
+  // Same shape as the bump-path timing test above, for the other mutation path.
+  // The clear path is the one that can empty the map, and emptiness is what
+  // selects removeItem over setItem — so a consumer that reads persisted state
+  // from inside onChange must not see the key still present.
+  const fake = installFakeLocalStorage({ [KEY]: JSON.stringify({ a: 1, b: 2 }) });
+  const { createUnreadStore } = await import(UNREAD_JS);
+  const seenAtCallback = [];
+  const store = createUnreadStore({
+    onChange: () => { seenAtCallback.push(fake.map.has(KEY) ? fake.map.get(KEY) : null); },
+  });
+
+  store.clear('a');
+  assert.deepEqual(seenAtCallback, [JSON.stringify({ b: 2 })],
+    'clearing one of two: the survivor was already serialized when onChange ran');
+
+  store.clear('b');
+  assert.deepEqual(seenAtCallback, [JSON.stringify({ b: 2 }), null],
+    'clearing the LAST entry: removeItem had already run when onChange ran — '
+    + 'the key must be gone, not still holding the pre-save value');
+});
