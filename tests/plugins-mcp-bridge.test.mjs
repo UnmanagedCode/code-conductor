@@ -49,7 +49,7 @@ async function withChild(body, fn) {
     reportUpstreamFailure: () => {},
   });
 
-  const tools = bridge.toolsFor(null);
+  const tools = bridge.toolsFor();
   assert.equal(tools.length, 1);
   assert.equal(tools[0].name, `${PLUGIN_ID}__run`);
   const call = (args = {}) => tools[0].handler(args, { callerId: null });

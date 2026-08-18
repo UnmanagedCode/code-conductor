@@ -2,9 +2,9 @@
 // into entries shaped exactly like the core tools in src/mcp/tools.ts
 // (`{name, description, inputSchema, handler}`), namespaced
 // `<plugin-id>__<tool>`. The MCP server composes them per request via
-// pluginHost.toolsFor(callerId); tools of every enabled plugin are visible
-// to every caller (disabled plugins' tools are simply absent, so tools/call
-// refuses them as unknown with zero extra code).
+// pluginHost.toolsFor(); tools of every enabled plugin are visible to every
+// caller — hence no caller argument (disabled plugins' tools are simply
+// absent, so tools/call refuses them as unknown with zero extra code).
 //
 // Wire contract with the child (pinned): POST <endpoint> with
 // {tool, arguments, caller:{sessionId, project}} → HTTP 200 for EVERY
@@ -40,10 +40,9 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
   // Every enabled plugin's tools are visible to EVERY caller — the
   // conductor/UI and workers in any project. (v1 shipped per-project
   // scoping; live validation showed plugin tools are wanted everywhere, so
-  // the manifest `scope` field is accepted but inert.) The callerId param
-  // stays in the signature — it's the registry's stable surface and keeps
-  // the per-request composition site in mcp/server.ts unchanged.
-  function toolsFor(_callerId: string) {
+  // the manifest `mcp.scope` field is tolerated and dropped — see manifest.ts.)
+  // Hence no caller parameter: there is nothing to scope by.
+  function toolsFor() {
     const out: Array<{ name: string; description: string; inputSchema: unknown; handler: (args: unknown, ctx: { callerId: string | null }) => Promise<unknown> }> = [];
     for (const entry of listMcpPlugins()) {
       const mcp = entry.manifest.mcp;

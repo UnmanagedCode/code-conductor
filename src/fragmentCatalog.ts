@@ -105,7 +105,9 @@ interface FragmentCatalogConfig {
   extraProvider?: (() => Promise<ExtraEntry[]>) | null;
 }
 
-interface FragmentCatalog {
+// Exported so the selection collaborator (src/conventionSelection.ts) can type
+// the catalog it is built on.
+export interface FragmentCatalog {
   getCatalog(): Promise<CatalogList>;
   addCustom(input: { slug: string; name: string; description: string; body: string }): Promise<CatalogEntry>;
   updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown }): Promise<CatalogEntry>;

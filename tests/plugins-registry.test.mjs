@@ -850,6 +850,109 @@ test('setActiveVersion drops the cached fragment body even for a backendless (ne
   }
 });
 
+// conventions() is memoized on a registry generation counter (it walks
+// contributingEntries + resolveCwd per plugin, and resolveCwd →
+// reconcileActiveVersion does a dynamic import + a store read for any
+// worktree-pinned plugin). These two tests are the invalidation contract.
+const CACHE_MANIFEST = {
+  id: 'cacheplug', name: 'CachePlug', version: '1.0.0', pluginApi: 1,
+  conventions: [{ slug: 'vis', name: 'Vis', description: 'x', file: 'conventions/sample.md', scope: 'project' }],
+};
+
+test('conventions() invalidation matrix: every registry mutation and every fragment-cache drop changes the result', async () => {
+  const env = await makePluginRoot();
+  try {
+    const dir = await env.addPluginProject('cachep', { manifest: CACHE_MANIFEST });
+    const host = createPluginHost();
+    const slugs = async () => (await host.conventions()).project.map(e => e.slug);
+    const body = async () => (await host.conventions()).project.find(e => e.slug === 'cacheplug/vis')?.body;
+
+    // Populate the memo BEFORE each mutation — otherwise every assertion below
+    // would pass against a cache that never gets to be stale.
+    await host.list();
+    assert.deepEqual(await slugs(), [], 'discovered but disabled: contributes nothing');
+
+    await host.enable('cacheplug');
+    assert.deepEqual(await slugs(), ['cacheplug/vis'], 'enable()');
+
+    // THE critical case: invalidateFragmentBodies deliberately does NOT run on
+    // disable (a disabled plugin's bodies can stay cached), so this is caught
+    // only by the bump inside saveRegistry(). A cache hooked to the four
+    // fragment-cache sites alone keeps serving a disabled plugin's conventions.
+    await host.disable('cacheplug');
+    assert.deepEqual(await slugs(), [], 'disable()');
+
+    await host.enable('cacheplug');
+    assert.deepEqual(await slugs(), ['cacheplug/vis'], 're-enable()');
+
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V2 body\n- rescan');
+    await host.rescan();
+    assert.match(await body(), /V2 body/, 'rescan()');
+
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V3 body\n- enable');
+    await host.enable('cacheplug');
+    assert.match(await body(), /V3 body/, 'fragment edit + enable()');
+
+    await fs.writeFile(path.join(dir, 'conventions', 'sample.md'), '## V4 body\n- setActiveVersion');
+    await host.setActiveVersion('cacheplug', { type: 'main' });
+    assert.match(await body(), /V4 body/, 'fragment edit + setActiveVersion()');
+
+    // A manifest edit changes the ENTRY LIST, not just a body.
+    await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify({
+      ...CACHE_MANIFEST,
+      conventions: [
+        ...CACHE_MANIFEST.conventions,
+        { slug: 'extra', name: 'Extra', description: 'y', file: 'conventions/sample.md', scope: 'project' },
+      ],
+    }));
+    await host.rescan();
+    assert.deepEqual(await slugs(), ['cacheplug/vis', 'cacheplug/extra'], 'manifest edit + rescan()');
+  } finally {
+    await env.restore();
+  }
+});
+
+// The cache HIT is otherwise unobservable — every input to conventions() is
+// in-memory state reachable only through a mutation that bumps the generation.
+// So the hit needs an fs-visible divergence the recomputation WOULD notice:
+// a worktree-pinned plugin whose worktree metadata vanishes underneath it.
+test('conventions() serves a cache hit: an activeVersion gone stale on disk is not re-resolved until something bumps', async () => {
+  const env = await makePluginRoot();
+  try {
+    const mainDir = await env.addPluginProject('cachewt', { manifest: CACHE_MANIFEST });
+    // Sorts after 'cachewt', so the MAIN checkout wins discovery and the
+    // worktree copy is the (ignored) alphabetical loser.
+    const wtPath = await fabricateWorktree(env, 'cachewt', 'cachewt_worktree_a', { manifest: CACHE_MANIFEST });
+    await fs.writeFile(path.join(mainDir, 'conventions', 'sample.md'), '## MAIN-BODY');
+    await fs.writeFile(path.join(wtPath, 'conventions', 'sample.md'), '## WORKTREE-BODY');
+
+    const host = createPluginHost();
+    const body = async () => (await host.conventions()).project.find(e => e.slug === 'cacheplug/vis').body;
+
+    await host.enable('cacheplug');
+    await host.setActiveVersion('cacheplug', { type: 'worktree', name: 'cachewt_worktree_a' });
+    assert.match(await body(), /WORKTREE-BODY/, 'pinned to the worktree checkout');
+
+    // Delete the worktree's STORE METADATA only. Nothing here touches the
+    // registry, so the generation does not move — and BOTH checkout dirs
+    // survive, so the per-call liveness re-check finds nothing missing either.
+    // (That second half is load-bearing: a vanished checkout dir is exactly
+    // what the re-check exists to catch, and would recompute instead.)
+    await fs.rm(path.join(projectStoreDir('cachewt'), 'worktrees', 'cachewt_worktree_a'), { recursive: true, force: true });
+    assert.ok(await fs.access(mainDir).then(() => true, () => false), 'main checkout still on disk');
+    assert.ok(await fs.access(wtPath).then(() => true, () => false), 'worktree checkout still on disk');
+
+    assert.match(await body(), /WORKTREE-BODY/,
+      'served from the memo — recomputing would have let reconcileActiveVersion self-heal to main and return MAIN-BODY');
+
+    // ...and the memo is not permanent: the next bump exposes the self-heal.
+    await host.rescan();
+    assert.match(await body(), /MAIN-BODY/, 'a bump re-resolves and the stale pin heals back to main');
+  } finally {
+    await env.restore();
+  }
+});
+
 // A manifest mixing project- and conductor-scope conventions, to verify
 // conventions() partitions strictly by scope with no cross-leak.
 const MIXED_SCOPE = {

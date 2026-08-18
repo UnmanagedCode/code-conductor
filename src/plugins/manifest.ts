@@ -29,9 +29,8 @@ const quotedScopes = SUPPORTED_CONVENTION_SCOPES.map(s => `"${s}"`).join(', ');
 
 // `conventions` (project-convention fragments, optionally carrying a one-time
 // scaffold facet) is an active pluginApi:1 capability that requires no backend,
-// so a conventions-only plugin is valid. `settings` stays reserved
-// (validated-but-inert; accepted, never acted on).
-const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'settings', 'conventions', 'roles', 'claudePlugin']);
+// so a conventions-only plugin is valid.
+const KNOWN_TOP_KEYS = new Set(['id', 'name', 'version', 'pluginApi', 'backend', 'frontend', 'mcp', 'conventions', 'roles', 'claudePlugin']);
 
 // ── Normalized manifest shapes ─────────────────────────────────────────────
 
@@ -69,7 +68,6 @@ export interface PluginMcpTool {
 
 export interface PluginMcp {
   endpoint: string;
-  scope: string;
   timeoutMs: number;
   tools: PluginMcpTool[];
 }
@@ -503,11 +501,13 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
   if (typeof rec.endpoint !== 'string' || !rec.endpoint.startsWith('/')) {
     errors.push("'mcp.endpoint' is required and must be a path starting with '/'");
   }
-  // `scope` is accepted for manifest compatibility but INERT — plugin MCP
-  // tools are always visible to every caller (see mcpBridge.ts).
-  if (rec.scope !== undefined && !['project', 'global'].includes(rec.scope as string)) {
-    errors.push("'mcp.scope' must be 'project' or 'global'");
-  }
+  // `mcp.scope` is TOLERATED AND DROPPED. It stays in the accepted-key list
+  // above for one concrete reason: code-hub's conductor.plugin.json ships
+  // `"scope": "project"`, and rejecting the key would stop that plugin loading.
+  // Its VALUE is read nowhere — plugin MCP tools are visible to every caller
+  // (see mcpBridge.ts) — so it is not normalized onto PluginMcp and not
+  // enum-checked either: telling an author `"porject"` is invalid would imply
+  // the value means something.
   let timeoutMs = MCP_TIMEOUT_DEFAULT;
   if (rec.timeoutMs !== undefined) {
     if (!Number.isInteger(rec.timeoutMs) || (rec.timeoutMs as number) <= 0) {
@@ -540,7 +540,6 @@ function validateMcp(m: unknown, backend: PluginBackend | null, errors: string[]
   }
   return {
     endpoint: typeof rec.endpoint === 'string' ? rec.endpoint : '/',
-    scope: rec.scope === 'global' ? 'global' : 'project',
     timeoutMs,
     tools,
   };

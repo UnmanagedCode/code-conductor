@@ -57,7 +57,7 @@ interface McpTool {
 // the real createPluginHost return satisfies it.
 interface McpPluginHostLike {
   init(): Promise<void>;
-  toolsFor(callerId: string): Array<{
+  toolsFor(): Array<{
     name: string;
     description: string;
     inputSchema: unknown;
@@ -348,7 +348,7 @@ export function buildMcpRouter({ instances, pluginHost }: { instances?: Instance
     if (pluginHost) {
       try {
         await pluginHost.init();
-        tools = [...coreTools, ...pluginHost.toolsFor(callerId ?? '')];
+        tools = [...coreTools, ...pluginHost.toolsFor()];
       } catch (e) {
         console.warn('mcp: plugin tool composition failed:', errMessage(e) || e);
       }
