@@ -85,6 +85,12 @@ export interface PluginManifest {
   claudePlugin?: string;
 }
 
+// Which checkout of a plugin's project a manifest is read from — the main
+// clone or one of its worktrees. Lives here, the dependency leaf of
+// src/plugins/, because the registry, its persistence store and its row
+// view-model all need it and none of them may import each other's types.
+export type ManifestSource = { type: 'main' } | { type: 'worktree'; name: string };
+
 export type ReadManifestResult =
   | null
   | { manifest: PluginManifest }

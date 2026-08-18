@@ -6,7 +6,7 @@ import {
 } from '../projects.ts';
 import {
   readManifest, SUPPORTED_CONVENTION_SCOPES, claudePluginPaths,
-  type PluginManifest, type PluginMcp, type ReadManifestResult,
+  type PluginManifest, type PluginMcp, type ReadManifestResult, type ManifestSource,
 } from './manifest.ts';
 import { httpError } from '../httpError.ts';
 import { createSupervisor, httpOk, headSha, type ChildRuntime } from './supervisor.ts';
@@ -58,8 +58,6 @@ async function autoAssignToCcDev(projectName: string): Promise<void> {
     console.warn(`plugins: workspace auto-assign for '${projectName}' failed: ${errMsg(e)}`);
   }
 }
-
-type ManifestSource = { type: 'main' } | { type: 'worktree'; name: string };
 
 // The shape `conventions()` returns: one array per SUPPORTED_CONVENTION_SCOPES
 // key, each optionally flagged `degraded` (see fragmentCatalog.ts's CatalogList).
