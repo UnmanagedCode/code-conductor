@@ -18,14 +18,7 @@
 //   | GFM pipe tables (with optional :--- / :---: / ---: alignment)
 //   blank-line-separated paragraphs
 
-function el(tag, ...children) {
-  const e = document.createElement(tag);
-  for (const c of children) {
-    if (c == null || c === false) continue;
-    e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-  }
-  return e;
-}
+import { el } from './dom.js';
 
 const SAFE_URL = /^(https?:\/\/|\/|#|mailto:)/i;
 // Same as SAFE_URL plus file:// for local images. Kept separate so anchor
@@ -56,17 +49,17 @@ export function renderInline(text) {
   while ((m = re.exec(text)) !== null) {
     if (m.index > cursor) out.push(text.slice(cursor, m.index));
     if (m[1]) {
-      out.push(el('strong', ...renderInline(m[1].slice(2, -2))));
+      out.push(el('strong', {}, ...renderInline(m[1].slice(2, -2))));
     } else if (m[2]) {
-      out.push(el('em', ...renderInline(m[2].slice(1, -1))));
+      out.push(el('em', {}, ...renderInline(m[2].slice(1, -1))));
     } else if (m[3]) {
       // _italic_ — preserve any leading whitespace match group.
       const lead = m[3].startsWith('_') ? '' : m[3][0];
       const body = m[3].replace(/^\s?_/, '').replace(/_$/, '');
       if (lead) out.push(lead);
-      out.push(el('em', ...renderInline(body)));
+      out.push(el('em', {}, ...renderInline(body)));
     } else if (m[4]) {
-      out.push(el('code', m[4].slice(1, -1)));
+      out.push(el('code', {}, m[4].slice(1, -1)));
     } else if (m[5]) {
       const im = m[5].match(/^!\[(.*?)\]\((.+?)\)$/);
       if (im && SAFE_IMG_SRC.test(im[2])) {
@@ -81,7 +74,7 @@ export function renderInline(text) {
     } else if (m[6]) {
       const lm = m[6].match(/^\[(.+?)\]\((.+?)\)$/);
       if (lm && SAFE_URL.test(lm[2])) {
-        const a = el('a', ...renderInline(lm[1]));
+        const a = el('a', {}, ...renderInline(lm[1]));
         a.setAttribute('href', lm[2]);
         a.setAttribute('target', '_blank');
         a.setAttribute('rel', 'noopener noreferrer');
@@ -95,7 +88,7 @@ export function renderInline(text) {
       const tm = url.match(URL_TRAILING_PUNCT);
       if (tm) { trailing = tm[0]; url = url.slice(0, -trailing.length); }
       if (SAFE_URL.test(url)) {
-        const a = el('a', url);
+        const a = el('a', {}, url);
         a.setAttribute('href', url);
         a.setAttribute('target', '_blank');
         a.setAttribute('rel', 'noopener noreferrer');
@@ -240,14 +233,14 @@ function blockToNode(block) {
   switch (block.type) {
     case 'heading': {
       const tag = 'h' + Math.min(Math.max(block.level, 1), 6);
-      return el(tag, ...renderInline(block.text));
+      return el(tag, {}, ...renderInline(block.text));
     }
     case 'paragraph':
-      return el('p', ...renderInline(block.text));
+      return el('p', {}, ...renderInline(block.text));
     case 'code': {
-      const code = el('code', block.code);
+      const code = el('code', {}, block.code);
       if (block.lang) code.dataset.lang = block.lang;
-      const pre = el('pre', code);
+      const pre = el('pre', {}, code);
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'md-code-copy';
@@ -283,13 +276,13 @@ function blockToNode(block) {
     case 'ol': {
       const list = document.createElement(block.type);
       for (const item of block.items) {
-        const li = el('li', ...renderInline(item));
+        const li = el('li', {}, ...renderInline(item));
         list.appendChild(li);
       }
       return list;
     }
     case 'blockquote':
-      return el('blockquote', ...renderInline(block.text));
+      return el('blockquote', {}, ...renderInline(block.text));
     case 'hr':
       return document.createElement('hr');
     case 'table': {
@@ -297,7 +290,7 @@ function blockToNode(block) {
       const thead = document.createElement('thead');
       const trh = document.createElement('tr');
       block.header.forEach((cell, idx) => {
-        const th = el('th', ...renderInline(cell));
+        const th = el('th', {}, ...renderInline(cell));
         if (block.aligns[idx]) th.style.textAlign = block.aligns[idx];
         trh.appendChild(th);
       });
@@ -307,7 +300,7 @@ function blockToNode(block) {
       for (const row of block.rows) {
         const tr = document.createElement('tr');
         row.forEach((cell, idx) => {
-          const td = el('td', ...renderInline(cell));
+          const td = el('td', {}, ...renderInline(cell));
           if (block.aligns[idx]) td.style.textAlign = block.aligns[idx];
           tr.appendChild(td);
         });
@@ -317,7 +310,7 @@ function blockToNode(block) {
       return table;
     }
     default:
-      return el('p', String(block.text ?? ''));
+      return el('p', {}, String(block.text ?? ''));
   }
 }
 
@@ -332,6 +325,6 @@ export function renderMarkdownInto(rootEl, text) {
     // On any parse error, fall back to a single <pre> with the raw text
     // so the user never sees a blank card.
     rootEl.textContent = '';
-    rootEl.appendChild(el('pre', String(text ?? '')));
+    rootEl.appendChild(el('pre', {}, String(text ?? '')));
   }
 }

@@ -1,4 +1,4 @@
-import { el } from './blocks.js';
+import { el } from './dom.js';
 import { formatAutoResumeTime } from './usage.js';
 
 // Compact "X min/hr/days ago" formatter. Used by the Sessions subnode

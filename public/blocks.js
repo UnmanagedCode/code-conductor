@@ -2,21 +2,7 @@
 // and exposes appendDelta(text) / finalize() methods used by the conversation
 // merger when streaming deltas arrive.
 
-function el(tag, attrs = {}, ...children) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === 'class') e.className = v;
-    else if (k === 'dataset') Object.assign(e.dataset, v);
-    else if (k.startsWith('on') && typeof v === 'function') e.addEventListener(k.slice(2).toLowerCase(), v);
-    else if (v === true) e.setAttribute(k, '');
-    else if (v !== false && v != null) e.setAttribute(k, v);
-  }
-  for (const c of children) {
-    if (c == null || c === false) continue;
-    e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-  }
-  return e;
-}
+import { el } from './dom.js';
 
 export class TextBlock {
   constructor() {
@@ -1207,5 +1193,3 @@ export class TurnEndBlock {
     this.node = el('div', { class: 'block turn-end' }, parts.join(' · '));
   }
 }
-
-export { el };
