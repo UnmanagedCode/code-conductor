@@ -1,10 +1,11 @@
 // Message-reconstruction engine for get_recent_messages. Rebuilds ordered
 // assistant messages from a UI-event array (ring or disk-replayed), merges the
-// in-memory ring with the on-disk transcript tail, and caps oversized block
-// inputs. Lifted out of the handler shell in ./handlers.ts — the metadata
-// block shape, ring-vs-disk merge, omittedToolOnly counting, inputTruncated
-// capping, and oldest-first ordering are a documented MCP contract; keep them
-// identical.
+// in-memory ring with the on-disk transcript tail, and renders tool_use inputs
+// as a per-argument descriptor unless the caller asked for them verbatim.
+// Lifted out of the handler shell in ./handlers.ts — the metadata block shape,
+// ring-vs-disk merge, omittedToolOnly counting, inputTruncated / descriptor
+// rendering, and oldest-first ordering are a documented MCP contract; keep
+// them identical.
 
 import { loadPersistedTranscript } from '../transcript.ts';
 // One-directional edge into the archive stamper (eventArchive.ts imports
@@ -18,6 +19,14 @@ import { isOuterUserEcho, type UiEvent } from '../parser.ts';
 // project_read/project_diff's bounded-output pattern so no tool can emit an
 // unbounded body.
 export const MSG_TEXT_CAP = 32 * 1024;
+// Per-ARGUMENT cap for the default (descriptor) rendering of a tool_use input.
+// Deliberately three orders of magnitude below MSG_TEXT_CAP: the default read is
+// for orientation, and the actionable part of a tool call is its pointers — a
+// file_path, a command, a pattern — not its payload. 512 bytes holds every
+// realistic pointer whole (the longest observed plan path is ~90 bytes; a Bash
+// command or Grep pattern runs 100-300) while keeping a whole descriptor to a few
+// hundred bytes per key. Verbatim payloads are one includeToolCalls:true away.
+export const TOOL_ARG_VALUE_CAP = 512;
 // Upper bound on how many trailing on-disk events get_recent_messages
 // reconstructs in its (rare) disk-fallback path, so a multi-MB session jsonl
 // can't make the call pathological. We only need the last few messages the `count` cap allows, which
@@ -142,18 +151,72 @@ export async function mergeRecentWithDisk(inst: InstanceLike, ringMessages: Reco
   return [...byId.values()];
 }
 
-// Cap a block's large field for inline inclusion in the metadata block. A
-// tool_use input stays a structured object when small; when oversized it
-// becomes a truncated JSON string flagged with inputTruncated. A thinking
-// block's text is capped the same way.
-export function capBlockInput(b: ReconBlockOut) {
+// Describe ONE tool argument for the default rendering: keep it verbatim when
+// small, else replace it with a marker naming its type and size. The rule is
+// type-agnostic — a node is kept WHOLE or replaced WHOLE, never partially
+// recursed into — which is what bounds a huge array of individually-small
+// elements (its own JSON blows the cap, so the array collapses to one marker).
+// Strings gate on their raw utf8 bytes, so "an argument up to
+// TOOL_ARG_VALUE_CAP bytes rides verbatim" is literally true and the marker's
+// byte count is the number a reader can compare against a file on disk;
+// everything else gates on its JSON encoding, which the marker labels.
+function describeArg(v: unknown): { value: unknown; omitted: boolean } {
+  if (typeof v === 'string') {
+    const bytes = Buffer.byteLength(v, 'utf8');
+    if (bytes <= TOOL_ARG_VALUE_CAP) return { value: v, omitted: false };
+    return { value: `[omitted: string, ${bytes} bytes]`, omitted: true };
+  }
+  // `?? 'null'` because JSON.stringify(undefined) returns undefined, not a
+  // string — an explicitly-undefined argument would otherwise throw in
+  // Buffer.byteLength. Tool inputs come from JSON.parse of the CLI stream, so
+  // BigInt / circular values cannot occur here.
+  const json = JSON.stringify(v) ?? 'null';
+  const bytes = Buffer.byteLength(json, 'utf8');
+  if (bytes <= TOOL_ARG_VALUE_CAP) return { value: v, omitted: false };
+  if (Array.isArray(v)) return { value: `[omitted: array, ${v.length} items, ${bytes} bytes of JSON]`, omitted: true };
+  if (v && typeof v === 'object') {
+    return { value: `[omitted: object, ${Object.keys(v).length} keys, ${bytes} bytes of JSON]`, omitted: true };
+  }
+  return { value: `[omitted: ${bytes} bytes of JSON]`, omitted: true };
+}
+
+// Per-argument descriptor for a whole tool_use input, preserving key order.
+function describeToolInput(input: Record<string, unknown> | null | undefined): { input: unknown; omitted: boolean } {
+  if (!input || typeof input !== 'object') return { input: input ?? null, omitted: false };
+  const out: Record<string, unknown> = {};
+  let omitted = false;
+  for (const [k, v] of Object.entries(input)) {
+    const d = describeArg(v);
+    out[k] = d.value;
+    if (d.omitted) omitted = true;
+  }
+  return { input: out, omitted };
+}
+
+// Cap a block's large field for inline inclusion in the metadata block.
+//
+// `verbatim` is the caller's includeToolCalls. FALSE (the default read, and the
+// idle-subscription wake fold) emits a per-ARGUMENT descriptor: pointers ride
+// whole, oversized arguments become `[omitted: …]` markers, and the block
+// carries inputTruncated:true. TRUE emits the whole input, capped as one unit at
+// MSG_TEXT_CAP exactly as before.
+//
+// The MSG_TEXT_CAP cap stays on BOTH paths, so it remains a hard structural
+// ceiling: even a pathological input with dozens of keys can only ever grow the
+// descriptor to what today's single cap already allowed.
+//
+// A thinking block is unchanged on both paths — includeThinking already gates it,
+// and its text is prose through the same cap as message text, not JSON-escaped
+// tool arguments.
+export function capBlockInput(b: ReconBlockOut, verbatim: boolean) {
   if (b.type === 'tool_use') {
-    const json = JSON.stringify(b.input ?? null);
+    const described = verbatim ? { input: b.input ?? null, omitted: false } : describeToolInput(b.input as Record<string, unknown> | null | undefined);
+    const json = JSON.stringify(described.input ?? null);
     const { text, truncated } = capText(json, MSG_TEXT_CAP);
     return {
       type: 'tool_use', name: b.name, toolUseId: b.toolUseId,
-      input: truncated ? text : b.input,
-      inputTruncated: truncated,
+      input: truncated ? text : described.input,
+      inputTruncated: truncated || described.omitted,
     };
   }
   if (b.type === 'thinking') {
