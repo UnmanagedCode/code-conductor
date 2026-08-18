@@ -9,10 +9,11 @@ import {
   type PluginManifest, type PluginMcp, type ReadManifestResult, type ManifestSource,
 } from './manifest.ts';
 import { httpError } from '../httpError.ts';
-import { createSupervisor, httpOk, headSha, type ChildRuntime } from './supervisor.ts';
+import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { createContributions } from './contributions.ts';
-import { createPluginStore, type PersistedPluginRecord, type RuntimeRecord } from './store.ts';
+import { createPluginStore } from './store.ts';
+import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
@@ -91,31 +92,6 @@ interface RuntimeState {
   startPromise: Promise<PluginRow | null> | null;
   tail: string | null;
   adopted: boolean;
-}
-
-interface PluginRow {
-  id: string | null;
-  name: string;
-  project: string;
-  version: string | null;
-  state: string;
-  enabled: boolean;
-  activeVersion: ManifestSource;
-  manifestSource: ManifestSource;
-  hasBackend: boolean;
-  hasFrontend: boolean;
-  navLabel: string | null;
-  frontendPath: string | null;
-  hasMcp: boolean;
-  conventions: Array<{ slug: string; name: string; description: string; hasScaffold: boolean }>;
-  roles: Array<{ slug: string; name: string }>;
-  port: number | null;
-  pid: number | null;
-  startedAt: string | null;
-  gitHead: string | null;
-  stale: boolean;
-  errors: string[];
-  crashTail: string | null;
 }
 
 export function createPluginHost(opts: {
@@ -515,57 +491,25 @@ export function createPluginHost(opts: {
     return describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
   }
 
+  // Gathers the five owners the projection reads (discovery entry, persisted
+  // record, runtime state, runtime record, resolved active version) and hands
+  // them to the pure view-model in row.ts.
   async function describeRow(entry: PluginEntry): Promise<PluginRow> {
     const id = entry.id;
-    const reg = id ? store.get(id) : null;
-    const s = id ? runtimeState(id) : null;
-    const rec = id ? store.runtimeRecord(id) : null;
-    const hasBackend = !!entry.manifest?.backend;
-    let state: string;
-    if (entry.discoveryState !== 'ok') state = entry.discoveryState;
-    else if (!reg?.enabled) state = reg ? 'disabled' : 'discovered';
-    // A backendless (conventions-only) plugin has no process lifecycle — it is
-    // simply 'enabled', never 'stopped', so the UI shows no (broken) Start button.
-    else if (!hasBackend) state = 'enabled';
-    else state = s?.status ?? 'stopped';
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
-    // Staleness: only worth a git spawn for a currently-running plugin — the
-    // running child's code may have moved past the sha it was started at.
-    let stale = false;
-    if (state === 'ready' && rec?.gitHead) {
-      const cwd = activeVersion.type === 'worktree' && worktreeMeta
-        ? worktreeMeta.worktreePath
-        : entry.dir;
-      const currentHead = await headSha(cwd);
-      stale = !!currentHead && currentHead !== rec.gitHead;
-    }
-    return {
-      id,
-      name: entry.manifest?.name ?? entry.project,
-      project: entry.project,
-      version: entry.manifest?.version ?? null,
-      state,
-      enabled: reg?.enabled === true,
+    // Pure, no I/O — hoisting it out of the staleness branch it used to sit in
+    // costs nothing; the git spawn itself stays behind that branch, in row.ts.
+    const cwd = activeVersion.type === 'worktree' && worktreeMeta
+      ? worktreeMeta.worktreePath
+      : entry.dir;
+    return buildPluginRow({
+      entry,
+      reg: id ? store.get(id) ?? null : null,
+      runtime: id ? runtimeState(id) : null,
+      record: id ? store.runtimeRecord(id) ?? null : null,
       activeVersion,
-      manifestSource: entry.manifestSource ?? { type: 'main' },
-      hasBackend,
-      hasFrontend: !!entry.manifest?.frontend,
-      navLabel: entry.manifest?.frontend?.navLabel ?? null,
-      frontendPath: entry.manifest?.frontend?.path ?? null,
-      hasMcp: !!entry.manifest?.mcp,
-      // Contribution metadata (slugs namespaced <plugin-id>/<slug>).
-      // `hasScaffold` flags a convention whose pick triggers a one-time setup
-      // directive (returned by create_project) in addition to any fragment.
-      conventions: (entry.manifest?.conventions ?? []).map(g => ({ slug: `${id}/${g.slug}`, name: g.name, description: g.description, hasScaffold: !!g.scaffold })),
-      roles: (entry.manifest?.roles ?? []).map(r => ({ slug: `${id}/${r.slug}`, name: r.name })),
-      port: rec?.port ?? null,
-      pid: rec?.pid ?? null,
-      startedAt: rec?.startedAt ?? null,
-      gitHead: rec?.gitHead ?? null,
-      stale,
-      errors: entry.errors ?? [],
-      crashTail: s?.tail ?? null,
-    };
+      cwd,
+    });
   }
 
   async function list(): Promise<PluginRow[]> {
