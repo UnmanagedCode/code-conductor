@@ -46,9 +46,15 @@ const SEED_CONDUCTOR_SLUGS = [
 // provider seam server.ts wires to the plugin host. `plugin` is what marks an
 // entry plugin-contributed for the selection derivation; the '/' in the slug is
 // what marks it non-persistable in `enabled`.
+//
+// The plugin id is `z` and CONTAINS NO 'p' ON PURPOSE. `isPluginSlug` tests for
+// the generic namespace separator '/', and a fixture id of `p` made every slug
+// contain the substring 'p/' — so a predicate narrowed to `s.includes('p/')`
+// satisfied the whole file while silently ceasing to filter or strip every real
+// plugin namespace (code-hub, code-kanban, cond-plugin, …). Keep it p-free.
 const PLUGIN_ENTRIES = [
-  { slug: 'p/one', name: 'Plugin One', description: 'first', body: '## Plugin One\n- alpha', plugin: 'p' },
-  { slug: 'p/two', name: 'Plugin Two', description: 'second', body: '## Plugin Two\n- beta', plugin: 'p' },
+  { slug: 'z/one', name: 'Plugin One', description: 'first', body: '## Plugin One\n- alpha', plugin: 'z' },
+  { slug: 'z/two', name: 'Plugin Two', description: 'second', body: '## Plugin Two\n- beta', plugin: 'z' },
 ];
 
 let home, projectsRoot;
@@ -108,36 +114,36 @@ test('C1 conductor, no store, no plugin provider: derived compose === compose(al
 
 test('C2 conductor, plugin provider on, no store: seeds in seed order, plugin slugs appended in catalog order', async () => {
   withPlugins();
-  assert.deepEqual(await cdGetSelection(), [...SEED_CONDUCTOR_SLUGS, 'p/one', 'p/two']);
+  assert.deepEqual(await cdGetSelection(), [...SEED_CONDUCTOR_SLUGS, 'z/one', 'z/two']);
   assert.strictEqual(
     await composeCurrentConduct(),
-    await composeConduct([...SEED_CONDUCTOR_SLUGS, 'p/one', 'p/two']),
+    await composeConduct([...SEED_CONDUCTOR_SLUGS, 'z/one', 'z/two']),
   );
 });
 
 test('C3 conductor: a pluginOff entry drops exactly that plugin convention', async () => {
   withPlugins();
-  await writeStore('conductor', { pluginOff: ['p/one'] });
-  assert.deepEqual(await cdGetSelection(), [...SEED_CONDUCTOR_SLUGS, 'p/two']);
+  await writeStore('conductor', { pluginOff: ['z/one'] });
+  assert.deepEqual(await cdGetSelection(), [...SEED_CONDUCTOR_SLUGS, 'z/two']);
   assert.strictEqual(
     await composeCurrentConduct(),
-    await composeConduct([...SEED_CONDUCTOR_SLUGS, 'p/two']),
+    await composeConduct([...SEED_CONDUCTOR_SLUGS, 'z/two']),
   );
 });
 
 test('C4 conductor: a stale plugin slug in `enabled` is filtered out of the base and re-derived from the catalog', async () => {
   withPlugins();
-  await writeStore('conductor', { enabled: ['canonical-workflow', 'p/one'] });
-  assert.deepEqual(await cdGetSelection(), ['canonical-workflow', 'p/one', 'p/two']);
+  await writeStore('conductor', { enabled: ['canonical-workflow', 'z/one'] });
+  assert.deepEqual(await cdGetSelection(), ['canonical-workflow', 'z/one', 'z/two']);
   assert.strictEqual(
     await composeCurrentConduct(),
-    await composeConduct(['canonical-workflow', 'p/one', 'p/two']),
+    await composeConduct(['canonical-workflow', 'z/one', 'z/two']),
   );
 });
 
 // C4's sibling, and the only test that constructs the state the base filter
 // exists for. C4 itself passes with or without the filter: its provider always
-// returns p/one, so an unfiltered base slug is simply re-derived from the live
+// returns z/one, so an unfiltered base slug is simply re-derived from the live
 // catalog and deduped away by the Set. The filter only changes behaviour when
 // the persisted plugin slug is ABSENT from the catalog — a plugin that was
 // disabled or removed, or a plugin update that dropped the convention.
@@ -147,19 +153,19 @@ test('C4 conductor: a stale plugin slug in `enabled` is filtered out of the base
 // exactly the sort of double-guard that stops holding the day a third writer
 // appears. Unfiltered, the stale slug reaches compose with no catalog entry —
 // a 400 'unknown convention slug' on the conductor spawn path.
-test('C5 conductor: a persisted plugin slug ABSENT from the catalog is filtered out, not carried into compose', async () => {
-  // p/one is gone from the catalog; only p/two still contributes.
+//
+// No compose assertion here, deliberately: composeCurrentConduct() IS
+// composeConduct(await getSelection()), so once the deepEqual below pins the
+// argument, a compose equality would be composeConduct(X) === composeConduct(X)
+// — unfailable. The selection assertions are the whole pin.
+test('C5 conductor: a persisted plugin slug ABSENT from the catalog is filtered out of the derived selection', async () => {
+  // z/one is gone from the catalog; only z/two still contributes.
   setPluginConductorConventionsProvider(async () => [PLUGIN_ENTRIES[1]]);
-  await writeStore('conductor', { enabled: ['canonical-workflow', 'p/one'] });
+  await writeStore('conductor', { enabled: ['canonical-workflow', 'z/one'] });
 
   const sel = await cdGetSelection();
-  assert.ok(!sel.includes('p/one'), 'the stale plugin slug must not survive into the selection');
-  assert.deepEqual(sel, ['canonical-workflow', 'p/two']);
-  // ...and the composed prompt resolves rather than throwing 400.
-  assert.strictEqual(
-    await composeCurrentConduct(),
-    await composeConduct(['canonical-workflow', 'p/two']),
-  );
+  assert.ok(!sel.includes('z/one'), 'the stale plugin slug must not survive into the selection');
+  assert.deepEqual(sel, ['canonical-workflow', 'z/two']);
 });
 
 // ── Persisted state: the exact patch setSelection writes ─────────────────────
@@ -173,10 +179,10 @@ test('S1 workspace setSelection persists `enabled` verbatim and writes no plugin
 
 test('S2 conductor setSelection splits the submitted set into enabled (seeds) + pluginOff (unchecked plugin slugs)', async () => {
   withPlugins();
-  await cdSetSelection([...SEED_CONDUCTOR_SLUGS, 'p/two']);
+  await cdSetSelection([...SEED_CONDUCTOR_SLUGS, 'z/two']);
   const store = await readStore('conductor');
   assert.deepEqual(store.enabled, SEED_CONDUCTOR_SLUGS, 'plugin slugs never enter `enabled`');
-  assert.deepEqual(store.pluginOff, ['p/one'], 'the unchecked plugin convention is the only off-switch');
+  assert.deepEqual(store.pluginOff, ['z/one'], 'the unchecked plugin convention is the only off-switch');
 });
 
 test('S3 both scopes: deleting a custom convention drops it from the persisted `enabled`', async () => {
