@@ -13,6 +13,8 @@
 // rule. Because the cut can only land on a turn boundary, it is structurally
 // impossible for it to fall between an assistant's tool_use and its tool_result.
 
+import { apiFetch } from './http.js';
+
 export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
   const dialog = dom.pruneDialog;
   const cutEl = document.getElementById('pd-cut');
@@ -106,9 +108,7 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
     applyBtn.textContent = 'Prune';
     if (!dialog.open) dialog.showModal();
     try {
-      const r = await fetch(`/api/instances/${encodeURIComponent(id)}/prune/analysis`);
-      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
-      analysis = await r.json();
+      analysis = await apiFetch(`/api/instances/${encodeURIComponent(id)}/prune/analysis`);
     } catch (e) {
       savingsEl.textContent = '';
       showError(`Could not analyse this session: ${e.message}`);
@@ -139,7 +139,7 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
     applyBtn.textContent = 'Pruning…';
     showError('');
     try {
-      const r = await fetch(`/api/instances/${encodeURIComponent(id)}/prune`, {
+      await apiFetch(`/api/instances/${encodeURIComponent(id)}/prune`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -148,8 +148,6 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
           inputMode: minimalEl.checked ? 'minimal' : 'truncate',
         }),
       });
-      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
-      await r.json();
       // The instance keeps its id AND its sessionId (only the internal backing
       // id rotated), so focus is
       // already correct — the snapshot_reset from the respawn clears and replays

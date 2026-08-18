@@ -41,6 +41,7 @@ import { latestOnly } from './latestOnly.js';
 import { loadModelVersions,
   setActiveTierEnabled, setActiveDefaultSpawnTier, setActiveTierBackend, setActiveTierEffort, setDefaultEffort, setActiveRoleBindings, setCustomModels, setBackends, setOllamaCloudModels } from './models.js';
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
+import { apiFetch } from './http.js';
 
 const state = {
   projects: [],
@@ -758,9 +759,7 @@ dom.debugBtn.addEventListener('click', async () => {
 dom.syncBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/sync`, { method: 'POST' });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const result = await r.json();
+    const result = await apiFetch(`/api/instances/${state.activeId}/sync`, { method: 'POST' });
     if (!result.ok) { alert(`Cannot sync:\n${result.reason}`); return; }
     if (result.action === 'already-in-sync') {
       alert('Worktree is already up to date with its parent branch.');
@@ -778,9 +777,7 @@ dom.mergeBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   if (!confirm('Merge this worktree\'s branch into the parent? A merge commit will be created on the parent.')) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
-    if (!r.ok) throw new Error((await r.json()).error);
-    const result = await r.json();
+    const result = await apiFetch(`/api/instances/${state.activeId}/merge`, { method: 'POST' });
     if (result.ok) {
       alert(`Merged into parent → ${result.newSha?.slice(0, 12) ?? '?'}`);
       await refreshProjects();
@@ -793,8 +790,7 @@ dom.mergeBtn.addEventListener('click', async () => {
 dom.resumeBtn.addEventListener('click', async () => {
   if (!state.activeId) return;
   try {
-    const r = await fetch(`/api/instances/${state.activeId}/respawn`, { method: 'POST' });
-    if (!r.ok) throw new Error((await r.json()).error);
+    await apiFetch(`/api/instances/${state.activeId}/respawn`, { method: 'POST' });
     await refreshInstances();
     if (state.activeId) send('subscribe', { id: state.activeId });
   } catch (e) { alert(`resume failed: ${e.message}`); }

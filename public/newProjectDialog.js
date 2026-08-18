@@ -18,6 +18,9 @@
 //            npContributions, npForm, npConfirm, npScaffoldText } els.
 //   - refreshProjects():      reloads the sidebar project list after a create.
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu.
+
+import { apiFetch } from './http.js';
+
 export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOverflow }) {
   const pluginOf = (slug, explicit) => explicit ?? (slug.includes('/') ? slug.split('/')[0] : null);
 
@@ -114,9 +117,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     try {
       const body = { name };
       if (conventions.length) body.conventions = conventions;
-      const r = await fetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!r.ok) throw new Error((await r.json()).error);
-      const created = await r.json();
+      const created = await apiFetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       await refreshProjects();
       // A returned scaffold directive is shown read-only so it isn't lost.
       if (created.scaffold) {

@@ -15,6 +15,8 @@
 //
 // Element ids: dp-select, dp-status.
 
+import { apiFetch } from './http.js';
+
 export function installDefaultPlaybook({ base }) {
   const selectEl = document.getElementById('dp-select');
   const statusEl = document.getElementById('dp-status');
@@ -52,11 +54,10 @@ export function installDefaultPlaybook({ base }) {
       ? { mode: 'playbook', id: v.slice('playbook:'.length) }
       : { mode: v };
     try {
-      const r = await fetch(`${base}/default-playbook`, {
+      await apiFetch(`${base}/default-playbook`, {
         method: 'PUT', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ defaultPlaybook }),
       });
-      if (!r.ok) throw new Error((await r.json()).error);
       if (statusEl) statusEl.textContent = '';
     } catch (e) {
       if (statusEl) statusEl.textContent = `Save failed: ${e.message || e}`;
