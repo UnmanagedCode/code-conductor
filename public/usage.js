@@ -217,7 +217,7 @@ export function formatAutoResumeTime(unixSecs) {
 
 // The rate-limit bucket keys, ordered tightest-window-first. That order serves
 // both uses: picking the single most immediate bucket for the chip
-// (rlChipSegment, and app.js's fetch merge) and the row order of the header
+// (rlChipSegment, and accountUsage.js's fetch merge) and the row order of the header
 // popover's Usage-limits block. A second list would let the chip and the
 // popover disagree about which window matters most.
 export const RL_BUCKET_KEYS = ['five_hour', 'seven_day', 'seven_day_sonnet', 'seven_day_opus'];

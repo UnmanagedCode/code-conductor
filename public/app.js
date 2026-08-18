@@ -8,7 +8,7 @@ import { attachComposer } from './composer.js';
 import { formatUserQuestionAnswers, autoSpeakBlock } from './blocks.js';
 import { TaskTracker, TaskPanel } from './tasks.js';
 import { SubagentPanel } from './subagents.js';
-import { UsageTracker, RateLimitTracker, RL_BUCKET_KEYS } from './usage.js';
+import { UsageTracker, RateLimitTracker } from './usage.js';
 import {
   NotificationState, ensurePermission, setGlobalEnabled,
   isNotificationAPIAvailable, registerServiceWorker,
@@ -43,6 +43,7 @@ import { loadModelVersions,
 import { setTtsAvailable, setTtsEnabled, setTtsRate } from './tts.js';
 import { apiFetch } from './http.js';
 import { createUnreadStore } from './unread.js';
+import { installAccountUsage } from './accountUsage.js';
 
 const state = {
   projects: [],
@@ -51,43 +52,6 @@ const state = {
   activeStatus: null,
   activeMode: null,
 };
-
-// Account-level usage fetched from /api/usage (OAuth endpoint, 180 s server cache).
-// null until the first successful fetch. A failed/null refresh keeps the last-good
-// value instead of blanking it — the server already retains last-good data on
-// failure (allowStale), so a transient miss here shouldn't clobber a good render.
-let accountUsage = null;
-let accountUsageStale = false;
-
-async function refreshAccountUsage() {
-  try {
-    const r = await fetch('/api/usage', { cache: 'no-store' });
-    if (!r.ok) return;
-    const j = await r.json();
-    if (j.usage == null) return; // keep last-good accountUsage, don't blank it
-    accountUsage = j.usage;
-    accountUsageStale = !!j.stale;
-    // Merge the tightest bucket from the fetch into globalRLTracker so the
-    // combined chip shows real data even before a rate_limit_event arrives.
-    // fetch = richer base; messages are sparse patches on top. Both use the
-    // same apply() null-guard so neither clobbers the other's unique fields
-    // (isUsingOverage is message-only and survives re-fetches because it is
-    // intentionally absent from this synthetic event).
-    const key = RL_BUCKET_KEYS.find(k => accountUsage[k]);
-    if (key) {
-      const b = accountUsage[key];
-      globalRLTracker.apply({
-        kind: 'system', subtype: 'rate_limit_event',
-        data: { rate_limit_info: {
-          rateLimitType: key,
-          utilization: typeof b.utilization === 'number' ? b.utilization / 100 : undefined,
-          resetsAt: b.resets_at ? new Date(b.resets_at).getTime() / 1000 : undefined,
-        }},
-      });
-    }
-    if (state.activeId) headerHandle.update();
-  } catch { /* ignore — keep last-good accountUsage */ }
-}
 
 const dom = {
   projectList: document.getElementById('project-list'),
@@ -212,6 +176,15 @@ function getUsage(instanceId) {
 // RateLimitTracker.apply() with null-guard semantics: incoming non-null
 // fields win; absent/undefined fields never clobber existing values.
 const globalRLTracker = new RateLimitTracker();
+
+// The periodic /api/usage poll and its merge of the tightest rate-limit bucket
+// into globalRLTracker live in public/accountUsage.js. headerUpdate is a lazy
+// arrow because headerHandle is assigned further down.
+const accountUsage = installAccountUsage({
+  globalRLTracker,
+  getActiveId: () => state.activeId,
+  headerUpdate: () => headerHandle.update(),
+});
 
 // Auto-approve-plan toggle now lives on the server (per Instance) and
 // the flag is mirrored down through `snapshot` / `status` frames into
@@ -404,8 +377,8 @@ const composer = attachComposer({
 // Active-instance header / chips / combined-usage popover (see public/header.js).
 // Wired here once composer + conversation exist; closeOverflow is a hoisted
 // function declaration (defined further down) so the reference is valid now.
-// getAccountUsage is a getter because `accountUsage` is reassigned by the
-// periodic /api/usage fetch. setActiveStatus/setActiveMode mirror onto the same
+// getAccountUsage is a getter so the chip always renders whatever the periodic
+// /api/usage poll last stored. setActiveStatus/setActiveMode mirror onto the same
 // live `state` object the killBtn handler reads.
 headerHandle = installHeader({
   dom,
@@ -415,8 +388,8 @@ headerHandle = installHeader({
   setActiveMode: (v) => { state.activeMode = v; },
   getUsage,
   globalRLTracker,
-  getAccountUsage: () => accountUsage,
-  getAccountUsageStale: () => accountUsageStale,
+  getAccountUsage: () => accountUsage.get(),
+  getAccountUsageStale: () => accountUsage.isStale(),
   composer,
   conversation,
   closeOverflow,
@@ -1104,7 +1077,8 @@ installLightbox();
 // constructed — so it injects resolved objects (no holder/forward-ref) and is a
 // pure leaf consumer. Installed AFTER installRestart() so restart's 'open'
 // listener stays registered before this router's 'open' listener (original
-// dispatch order). `accountUsage` is NOT routed here — it stays in app.js.
+// dispatch order). `accountUsage` is NOT routed here — it polls over REST
+// (public/accountUsage.js).
 installWsRouter({
   state,
   getTracker,
@@ -1126,8 +1100,8 @@ installWsRouter({
 
 connect();
 
-refreshAccountUsage();
-setInterval(refreshAccountUsage, 180_000);
+accountUsage.refresh();
+setInterval(() => accountUsage.refresh(), 180_000);
 
 // Keep the turn-indicator's idle "last response Xm ago" label ticking
 // without a network round-trip or a full header rebuild (tickIdleAgo is a

@@ -5,7 +5,7 @@
 //
 // Extracted from app.js (slice 8). app.js stays the orchestrator: it owns
 // `state`, the dom singleton, the per-instance usage trackers (`getUsage`), the
-// account-wide `globalRLTracker`, the `accountUsage` fetch, the overflow menu
+// account-wide `globalRLTracker`, the overflow menu
 // (`closeOverflow`), and the WS router + control handlers. It holds the handle
 // returned here in a `headerHandle` holder and forwards every `updateActiveHeader`
 // call site through `headerHandle.update()`.
@@ -27,9 +27,9 @@
 //   - getUsage(id):      the per-instance UsageTracker (STAYS in app.js — the WS
 //                        snapshot/event handlers use it too).
 //   - globalRLTracker:   the account-wide RateLimitTracker singleton.
-//   - getAccountUsage(): reads the `accountUsage` let (reassigned by the periodic
-//                        /api/usage fetch) — a getter so the chip/popover always
-//                        render the current value, identical to the old closure.
+//   - getAccountUsage(): reads accountUsage.js's last-good /api/usage value — a
+//                        getter so the chip/popover always render the current
+//                        value, identical to the old closure.
 //   - getAccountUsageStale(): true when the current accountUsage value was served
 //                        stale by the server (backoff/failure window) rather than
 //                        freshly fetched — drives the popover's "(stale)" suffix.
