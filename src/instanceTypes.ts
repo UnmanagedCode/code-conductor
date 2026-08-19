@@ -142,7 +142,7 @@ export interface InstanceLike {
   readonly steerPending: boolean;
   readonly needsPostStopSteer: boolean;
   queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void; attachments?: unknown[] }): Promise<void>;
-  promptOrQueueSteer(text: string, attachments?: unknown[], opts?: Parameters<InstanceLike['prompt']>[2]): { deferred: boolean; sent: Promise<void> };
+  promptOrQueueSteer(text: string, attachments?: unknown[]): { deferred: boolean; sent: Promise<void> };
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
   interrupt(opts?: { force?: boolean }): Promise<unknown>;

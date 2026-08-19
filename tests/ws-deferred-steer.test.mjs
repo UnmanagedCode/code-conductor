@@ -44,7 +44,13 @@ beforeEach(async () => {
   transcriptPath = path.join(home, `ws-stdin-${++seq}.jsonl`);
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
 });
+// Registered by flaggedMidBlockOverWs and closed here, NOT on each test's success
+// path: a leaked WS client keeps handles open, so `after`'s ctx.close() never
+// completes and EVERY regression this file catches manifests as a process hang
+// instead of a failing assertion.
+const openClients = [];
 afterEach(async () => {
+  for (const c of openClients.splice(0)) { try { await c.close(); } catch { /* already gone */ } }
   await instances.shutdown();
   delete process.env.FAKE_CLAUDE_TRANSCRIPT;
   await rmrf(home);
@@ -93,6 +99,7 @@ async function flaggedMidBlockOverWs() {
   assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
 
   const c = await wsClient(wsUrl);
+  openClients.push(c);
   c.send({ t: 'subscribe', id: inst.id });
   await c.wait(m => m.t === 'snapshot');
   c.send({ t: 'prompt', id: inst.id, text: 'open text' });
@@ -128,7 +135,6 @@ test('E-T1 a WS prompt frame into a flagged mid-turn instance defers to a post-s
   assert.equal(interruptsIn(lines).length, 1, 'exactly one interrupt control_request');
   assert.deepEqual(textsOf(userLinesIn(lines)[1]), [POST_STOP_STEER_NOTE, TEXT],
     'the note rides as its OWN leading block, then the verbatim composer text');
-  await c.close();
 });
 
 test('E-T2 the frame ack resolves while the steer is still parked, not at the block edge', async () => {
@@ -146,7 +152,6 @@ test('E-T2 the frame ack resolves while the steer is still parked, not at the bl
   assert.equal(inst._interruptFired, false, 'acked before any block edge landed');
   assert.ok(!JSON.stringify(await stdinLines()).includes('ACK ME NOW'),
     'and before the text reached the CLI');
-  await c.close();
 });
 
 test('E-T4 attachments survive the deferred path', async () => {
@@ -169,5 +174,4 @@ test('E-T4 attachments survive the deferred path', async () => {
   assert.deepEqual(texts.slice(0, 2), [POST_STOP_STEER_NOTE, 'look at this']);
   assert.ok(texts.some(t => /^Attached file: `.*tiny\.png`$/m.test(t)),
     `the attachment rode along on the post-stop turn; got ${JSON.stringify(texts)}`);
-  await c.close();
 });

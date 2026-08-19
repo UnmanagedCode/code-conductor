@@ -721,6 +721,8 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   // controller compute the fire deadline (resetsAt + buffer) exactly as the
   // live idle-transition path does.
   inst.autoStoppedForOverage = true;
+  inst._overageWasStopped = true;
+  inst._overageStoppedWorkers = true;              // this stop also severed a callback
   inst._overageResetsAt = nowSec() + 100;          // 100s out, comfortably future
   inst._overageQueue = [{ text: 'hold this for me', attachments: [], ts: Date.now() }];
   instances._armAutoResume(inst);
@@ -734,8 +736,60 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   assert.equal(e.overageResumeAt, inst.autoResumeAt, 'fire deadline (epoch secs) persisted');
   assert.equal(e.overageResetsAt, inst._overageResetsAt, 'reset time persisted');
   assert.deepEqual(e.overageQueue, inst._overageQueue, 'queued messages persisted');
+  // Both preamble selectors, for the same reason: losing either delivers the wrong
+  // resume text after a restart. `overageStoppedWorkers` picks
+  // AUTO_RESUME_TEXT_CONDUCTOR — without it a conductor whose callbacks were
+  // severed and whose workers are un-armed gets the PLAIN text and waits forever
+  // for a wake nothing will send.
+  assert.equal(e.overageWasStopped, true, 'full-preamble selector persisted');
+  assert.equal(e.overageStoppedWorkers, true, 'conductor-variant selector persisted');
   await waitFor(() => inst.proc === null, { timeout: 20000 });
   clearResumeManifest();
+});
+
+// REGRESSION — the RESTORE half of the same field. drainToManifest writing it is
+// worthless if boot drops it, and the two live in different files.
+test('restoreFromResumeManifest restores overageStoppedWorkers onto the revived session', async () => {
+  const prevSweep = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+  process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-swk' });
+    const sid = randomUUID();
+    const cwd = path.join(projectsRoot, 'ovg-swk');
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+    writeResumeManifest([{
+      project: 'ovg-swk', sessionId: sid, cwd, mode: 'bypassPermissions',
+      effort: null, thinking: null, model: null, contextWindowTokens: null,
+      backend: 'claude', worktreeName: null, temp: false, conducted: false,
+      debug: false, title: null, firstPrompt: null, autoApprovePlan: false,
+      playbookEnforcement: getDefaultPlaybookEnforcement(), group: 'conductor',
+      wasBusy: true,
+      // Far-future deadline: this test is about the FLAG surviving the restore,
+      // not about the resume firing (which test 14 covers).
+      overageResumeAt: nowSec() + 3600,
+      overageStopped: true,
+      overageWasStopped: true,
+      overageStoppedWorkers: true,
+      overageResetsAt: nowSec() + 3600,
+      overageQueue: [],
+    }]);
+
+    await restoreFromResumeManifest({ instances, log: { warn() {}, log() {}, error() {} } });
+    const inst = await waitFor(() => [...instances.byId.values()].find(i => i.sessionId === sid));
+    // The re-arm is fire-and-forget after live+idle, and it is what reads the
+    // restored flags — so wait on the deadline, then read them.
+    await waitFor(() => instances._autoResumeTimers.has(inst.id), { timeout: 20000 });
+    assert.equal(inst._overageStoppedWorkers, true,
+      'the conductor-variant selector survived the restart');
+    assert.equal(inst._overageWasStopped, true, 'and so did the full-preamble selector');
+    clearResumeManifest();
+  } finally {
+    if (prevSweep === undefined) delete process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+    else process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = prevSweep;
+  }
 });
 
 // --- 14. CRITICAL: a PAST-DUE overage resume fires on the first boot tick ----

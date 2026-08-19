@@ -521,7 +521,7 @@ test('A-T3 routing: the mid-turn conductor stop is the SOFT tier', async () => {
 // conductor's re-drive land mid-turn on a worker that just self-resumed, which is
 // the mid-turn injection this whole card exists to close.
 test('A2-T1 routing: a conductor\'s own worker is stopped too, and left UN-ARMED', async () => {
-  const { conductor, worker, wEvs, wTranscript } = await tripMidTurnConductor(
+  const { conductor, worker, cEvs, wEvs, wTranscript } = await tripMidTurnConductor(
     { flagged: false, action: 'stop-resume', scenarioObj: resumeRoutingScenario() });
 
   await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
@@ -532,10 +532,65 @@ test('A2-T1 routing: a conductor\'s own worker is stopped too, and left UN-ARMED
   await waitFor(() => worker.status === 'idle', { timeout: 10000 });
   assert.equal(worker.autoStoppedForOverage, false, 'the worker is NOT armed for resume');
   assert.equal(instances._autoResumeTimers.has(worker.id), false, 'no worker resume timer');
-  // Paired positive: the CONDUCTOR is armed, so "un-armed" cannot pass by the
-  // whole stop-resume path being broken.
+  // …and the event says so. public/blocks.js renders `resume:true` as
+  // "auto-resuming at <time>", which for an un-armed worker names a resume that
+  // will never happen and contradicts its own null autoResumeAt badge. The event
+  // must carry the PER-SESSION arming decision, not the routing mode.
+  assert.equal(sub(wEvs, 'auto_stop_overage')[0].data.resume, false,
+    'the un-armed worker\'s stop notice does not promise a resume');
+  assert.equal(worker.autoResumeAt, null, 'and no badge contradicts it');
+  // Paired positive: the CONDUCTOR is armed and its own notice DOES promise the
+  // resume, so neither half above can pass by the whole stop-resume path being
+  // broken or by `resume` being hard-coded false.
   await waitFor(() => instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
   assert.equal(conductor.autoStoppedForOverage, true, 'the conductor IS armed');
+  assert.equal(sub(cEvs, 'auto_stop_overage')[0].data.resume, true,
+    'the armed conductor\'s stop notice does promise a resume');
+});
+
+// REGRESSION — Invariant: `_overageStoppedWorkers` is CLEARED when the resume
+// fires, so a conductor stopped once WITH workers and later stopped again with
+// none gets the plain resume text. Every set site was covered; no clear site was,
+// and a stale flag makes the conductor variant assert dropped callbacks and
+// un-armed workers that do not exist.
+test('the stopped-workers flag is cleared by the resume, so a later trip gets the plain text', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const conductor = await createInst({});
+  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const cEvs = collect(conductor);
+
+  // A real pending callback — the flag is set only when a stop actually severs one.
+  instances.subscribeIdle(conductor.sessionId, worker.sessionId);
+  conductor.prompt('STAY');
+  await waitFor(() => conductor.status === 'turn');
+  worker.prompt('TRIP go');
+
+  await waitFor(() => conductor._overageStoppedWorkers === true);
+  await waitFor(() => instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
+
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'pending resume fired');
+  // It gets the CONDUCTOR text here — the paired positive that makes the clear
+  // assertion below non-vacuous.
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT_CONDUCTOR),
+    { timeout: 10000 });
+  assert.equal(conductor._overageStoppedWorkers, false, 'the resume cleared the flag');
+
+  // A second trip, this time with nothing subscribed, must deliver the PLAIN text —
+  // asserting dropped callbacks and un-armed workers that do not exist would send
+  // the conductor chasing phantoms.
+  instances._clearOverage();
+  instances._overageResume.clearAll();
+  conductor._overageHandled = false;
+  conductor.prompt('TRIP again');
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 1, { timeout: 10000 });
+  assert.equal(conductor._overageStoppedWorkers, false,
+    'no callback was severed this time, so the flag stays false');
+  await waitFor(() => instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
+  setResumeUsage(UNDER);
+  assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'second resume fired');
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
+    { timeout: 10000 });
 });
 
 // A2 — Invariant: the conductor's OUTGOING idle subscriptions are dropped when its

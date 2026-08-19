@@ -223,6 +223,12 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       // queued-only (softened preamble)? Carried so the resume text is right
       // after a restart.
       overageWasStopped: !!inst._overageWasStopped,
+      // Conductor-only: did the stop also sever a pending idle callback of this
+      // session? Carried for the same reason as overageWasStopped — it selects the
+      // resume text. Losing it across a restart delivers the PLAIN resume to a
+      // conductor whose callbacks are gone and whose workers are un-armed, i.e. it
+      // waits forever for a wake nothing will send.
+      overageStoppedWorkers: !!inst._overageStoppedWorkers,
       overageResetsAt: inst._overageResetsAt ?? null,
       // Messages queued during the wait window — carried across the restart so
       // they still flush with the resume once the deadline fires.
@@ -344,6 +350,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       if (e.overageStopped && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
         inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
+        inst._overageStoppedWorkers = !!e.overageStoppedWorkers; // …and the conductor variant
         // Restore queued messages BEFORE re-arming so armRestored's status emit
         // carries the restored queuedCount (badge shows "· N queued").
         inst._overageQueue = Array.isArray(e.overageQueue) ? e.overageQueue : [];
@@ -392,6 +399,7 @@ interface ResumeEntry {
   overageResumeAt: number | null;
   overageStopped: boolean;
   overageWasStopped: boolean;
+  overageStoppedWorkers: boolean;
   overageResetsAt: number | null;
   overageQueue: unknown[];
   workers?: Array<{ project: string; sessionId: string; worktreeName: string | null }>;

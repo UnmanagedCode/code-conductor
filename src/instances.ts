@@ -2766,16 +2766,12 @@ export class Instance extends EventEmitter implements InstanceLike {
   // lands in. maybeSubscribeIdle is why — it registers a one-shot AFTER the send,
   // so even two extra microtasks let a fast turn_end land first and lose the wake
   // (tests/mcp-subscribe-to-idle.test.mjs catches exactly that).
-  promptOrQueueSteer(
-    text: string,
-    attachments: unknown[] = [],
-    opts?: Parameters<Instance['prompt']>[2],
-  ): { deferred: boolean; sent: Promise<void> } {
+  promptOrQueueSteer(text: string, attachments: unknown[] = []): { deferred: boolean; sent: Promise<void> } {
     if (this.needsPostStopSteer) {
       void this.queueSteerAfterStop(text, { attachments }).catch(() => {});
       return { deferred: true, sent: Promise.resolve() };
     }
-    return { deferred: false, sent: this.prompt(text, attachments, opts) };
+    return { deferred: false, sent: this.prompt(text, attachments) };
   }
 
   // Deliver `text` to a model that cannot take a mid-turn injection: stop the
@@ -4225,11 +4221,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Pass 3: stop every other mid-turn instance — plain sessions, conducted
     // workers (with or without an in-control conductor), and the Conduct
     // orchestrator when it has no in-control workers (it tripped itself, or its
-    // workers were momentarily idle). The orchestrator still routes through
-    // _steerConductor — it owns the idle branch, and hasWorkers is false here
-    // because any in-control workers would have routed it through Pass 2.
-    // Only Pass 2's conductors are skipped; their workers are NOT, because the
-    // steer that used to stop them can be dropped by the model.
+    // workers were momentarily idle). Only Pass 2's conductors are skipped; their
+    // workers are NOT, because the steer that used to stop them can be dropped by
+    // the model.
+    //
+    // This loop only runs for `status === 'turn'`, so its `_steerConductor` call
+    // reaches only that function's mid-turn delegation to `_directOverageStop` —
+    // the orchestrator gets the SAME soft interrupt as everything else, and the
+    // `hasWorkers:false` steer text is unreachable (deleting it is card 2026-0189).
+    // _steerConductor's idle branch is reachable from Pass 2 only.
     for (const inst of live) {
       if (steerConductors.has(inst.id)) continue;
       if (inst.status !== 'turn') continue;
@@ -4259,14 +4259,29 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // stop-resume, mark the instance so the status handler arms its per-session
   // resume timer on the resulting turn→idle transition. `armResume` defaults to
   // `resume` and splits off only for a conductor's own worker, which is stopped
-  // un-armed while the event still reports the mode honestly.
+  // un-armed.
+  //
+  // The event carries `armResume`, NOT the routing mode: `public/blocks.js` renders
+  // `resume:true` as "auto-resuming at ⟨time⟩", which for an un-armed worker names
+  // a resume that will never happen — and contradicts its own null `autoResumeAt`
+  // badge.
   _directOverageStop(inst: Instance, { resume, resetsAt, armResume = resume }: { resume: boolean; resetsAt: number | null; armResume?: boolean }): void {
     if (armResume) {
       inst.autoStoppedForOverage = true;
       inst._overageWasStopped = true; // genuinely stopped mid-work → full preamble
       inst._overageResetsAt = resetsAt;
     }
-    inst._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt } });
+    inst._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume: armResume, resetsAt } });
+    // Sever the subscription graph around a session being stopped, and tell every
+    // caller that loses a wait: its turn_end must wake nobody (the wake is
+    // `internal:true`, which the overage queue intercept deliberately does not
+    // hold, so it would start a fresh turn inside the lockout) and nothing may
+    // later wake it. Done here rather than per-conductor because THIS is the one
+    // place a session is stopped, and the hazard belongs to the stop.
+    for (const callerId of this._idleHub.severForOverageStop(inst.id)) {
+      const caller = this.byId.get(callerId);
+      if (caller) caller._overageStoppedWorkers = true;
+    }
     inst.interrupt().catch(() => {});
   }
 
@@ -4282,16 +4297,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // autoStoppedForOverage flag, which the status→idle handler turns into a
   // per-session timer.
   //
-  // When it owns workers, its OUTGOING idle subscriptions are dropped first: Pass
-  // 3 is about to interrupt those workers, and an interrupted worker's turn_end
-  // wakes its conductor with an `internal:true` prompt — which the overage queue
-  // intercept deliberately does not hold — restarting the burn this stop exists to
-  // prevent. conductorOverageResumeText tells it the callbacks are gone.
+  // Its pending idle callbacks are NOT dropped here: `_directOverageStop` severs
+  // the subscription graph around each session it stops and marks every caller that
+  // loses a wait, so a conductor waiting on a stopped session is covered whether or
+  // not it owns that session.
   _steerConductor(conductor: Instance, { resume, resetsAt, hasWorkers }: { resume: boolean; resetsAt: number | null; hasWorkers: boolean }): void {
-    if (hasWorkers) {
-      conductor._overageStoppedWorkers = true;
-      this._idleHub.dropOutgoing(conductor.id);
-    }
     if (conductor.status === 'turn') {
       this._directOverageStop(conductor, { resume, resetsAt });
       return;

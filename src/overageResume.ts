@@ -29,16 +29,17 @@ export const AUTO_RESUME_TEXT =
 const QUEUED_ONLY_RESUME_TEXT =
   'The rate-limit window has reset. Delivering the messages you queued while paused:';
 
-// Preamble for a CONDUCTOR whose workers the overage stop also interrupted
-// (`_overageStoppedWorkers`). Both facts are load-bearing: the dropped callbacks
-// mean waiting to be woken hangs forever, and the workers are stopped UN-ARMED so
-// nothing else will ever restart them.
+// Preamble for a CONDUCTOR that lost a pending idle callback to the overage stop
+// (`_overageStoppedWorkers`). Carries exactly the two facts it must ACT on: the
+// callback is gone, so waiting to be woken hangs forever; and the session it was
+// waiting on is un-armed, so nothing else will ever restart it. No description of
+// how those sessions were stopped — the conductor does nothing differently for it,
+// and it cannot be stated truthfully for a conductor whose workers were a mix.
 export const AUTO_RESUME_TEXT_CONDUCTOR =
   'The rate-limit window has reset. Continue where you left off.\n\n' +
-  'Your pending idle callbacks were dropped when you were stopped — re-check each ' +
-  'worker directly with `mcp__code-conductor__list_sessions` and ' +
-  '`mcp__code-conductor__get_recent_messages` instead of waiting to be woken. Your ' +
-  'workers were stopped mid-turn and are idle; they will NOT resume themselves, so ' +
+  'Your pending idle callbacks were dropped — re-check each worker directly with ' +
+  '`mcp__code-conductor__list_sessions` and `mcp__code-conductor__get_recent_messages` ' +
+  'instead of waiting to be woken. Those workers will NOT resume themselves, so ' +
   're-prompt each one you still need.';
 
 // A message the user queued while the session was paused — the shape

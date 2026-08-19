@@ -78,13 +78,14 @@ async function upToOpenQuestion(ctx, c) {
 
 test('the can_use_tool deny does NOT leave the instance idle when a message is queued behind it', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let client = null;
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const c = await wsClient(ctx.wsUrl);
+    const c = client = await wsClient(ctx.wsUrl);
     c.instanceId = id;
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
@@ -96,12 +97,15 @@ test('the can_use_tool deny does NOT leave the instance idle when a message is q
     assert.equal(ctx.instances.get(id).status, 'turn',
       'turn must still be running after the deny + injected wake callback');
 
-    await c.close();
-  } finally { await ctx.close(); }
+  } finally {
+    if (client) { try { await client.close(); } catch { /* already gone */ } }
+    await ctx.close();
+  }
 });
 
 test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let client = null;
   try {
     const transcriptPath = path.join(ctx.tmpHome, 'transcript.log');
     process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
@@ -111,7 +115,7 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const c = await wsClient(ctx.wsUrl);
+    const c = client = await wsClient(ctx.wsUrl);
     c.instanceId = id;
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
@@ -164,8 +168,11 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
     assert.equal(isUserQuestionAnswerText(QUESTIONS, echo.text), true,
       'the mid-turn answer still pairs back to its question card');
 
-    await c.close();
   } finally {
+    // Close the socket HERE, not on the success path: a leaked client keeps handles
+    // open, so ctx.close() never completes and a failed assertion reads as a
+    // 60s file-level hang instead of a failure.
+    if (client) { try { await client.close(); } catch { /* already gone */ } }
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     await ctx.close();
   }
@@ -181,6 +188,7 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
 // non-vacuity guarantee available in this suite.
 test('a card answer on a model that cannot take a mid-turn injection is deferred, delivered, and still ends the turn', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let client = null;
   try {
     const transcriptPath = path.join(ctx.tmpHome, 'flagged-card.log');
     process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
@@ -195,7 +203,7 @@ test('a card answer on a model that cannot take a mid-turn injection is deferred
     inst._refreshModelCapabilities();
     assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
 
-    const c = await wsClient(ctx.wsUrl);
+    const c = client = await wsClient(ctx.wsUrl);
     c.instanceId = id;
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
@@ -233,8 +241,11 @@ test('a card answer on a model that cannot take a mid-turn injection is deferred
       [POST_STOP_STEER_NOTE, ANSWER_TEXT],
       'delivered as a fresh turn carrying the post-stop note');
 
-    await c.close();
   } finally {
+    // Close the socket HERE, not on the success path: a leaked client keeps handles
+    // open, so ctx.close() never completes and a failed assertion reads as a
+    // 60s file-level hang instead of a failure.
+    if (client) { try { await client.close(); } catch { /* already gone */ } }
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     await ctx.close();
   }

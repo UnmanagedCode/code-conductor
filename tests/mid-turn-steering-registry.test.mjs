@@ -107,8 +107,9 @@ describe('resolveMidTurnSteering', () => {
 // Instance.needsPostStopSteer is the ONE place the {status, flag} pair is tested —
 // six injection sites read it instead of spelling it again — so its truth table is
 // pinned here directly rather than inferred from six integration tests. Kills
-// polarity inversion, a dropped status test, a dropped flag test, and `!== true`
-// vs `=== false` confusion, all in one place.
+// polarity inversion, a dropped status test and a dropped flag test in one place.
+// It does NOT distinguish `!== true` from `=== false`: on a typed boolean those
+// are equivalent, so no test can separate them.
 describe('needsPostStopSteer', () => {
   // The lightest way to an Instance with no server (tests/mid-turn-annotation.mjs
   // idiom): the getter reads only `status` and `acceptsMidTurnSteering`.
