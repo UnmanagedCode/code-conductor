@@ -722,7 +722,8 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   // live idle-transition path does.
   inst.autoStoppedForOverage = true;
   inst._overageWasStopped = true;
-  inst._overageStoppedWorkers = true;              // this stop also severed a callback
+  inst._overageDroppedCallbacks = true;              // this stop severed a callback
+  inst._overageUnarmedWorkers = true;                // …and left a worker un-armed
   inst._overageResetsAt = nowSec() + 100;          // 100s out, comfortably future
   inst._overageQueue = [{ text: 'hold this for me', attachments: [], ts: Date.now() }];
   instances._armAutoResume(inst);
@@ -736,13 +737,13 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   assert.equal(e.overageResumeAt, inst.autoResumeAt, 'fire deadline (epoch secs) persisted');
   assert.equal(e.overageResetsAt, inst._overageResetsAt, 'reset time persisted');
   assert.deepEqual(e.overageQueue, inst._overageQueue, 'queued messages persisted');
-  // Both preamble selectors, for the same reason: losing either delivers the wrong
-  // resume text after a restart. `overageStoppedWorkers` picks
-  // AUTO_RESUME_TEXT_CONDUCTOR — without it a conductor whose callbacks were
-  // severed and whose workers are un-armed gets the PLAIN text and waits forever
-  // for a wake nothing will send.
+  // Every preamble selector, for the same reason: losing any of them delivers a
+  // resume prompt missing a fact the conductor must act on, and it then waits
+  // forever for a wake nothing will send. `overageStoppedWorkers` is the
+  // pre-rename manifest key for `_overageDroppedCallbacks` (see the writer).
   assert.equal(e.overageWasStopped, true, 'full-preamble selector persisted');
-  assert.equal(e.overageStoppedWorkers, true, 'conductor-variant selector persisted');
+  assert.equal(e.overageStoppedWorkers, true, 'dropped-callbacks clause persisted');
+  assert.equal(e.overageUnarmedWorkers, true, 'un-armed-workers clause persisted');
   await waitFor(() => inst.proc === null, { timeout: 20000 });
   clearResumeManifest();
 });
@@ -773,6 +774,7 @@ test('restoreFromResumeManifest restores overageStoppedWorkers onto the revived 
       overageStopped: true,
       overageWasStopped: true,
       overageStoppedWorkers: true,
+      overageUnarmedWorkers: true,
       overageResetsAt: nowSec() + 3600,
       overageQueue: [],
     }]);
@@ -782,8 +784,10 @@ test('restoreFromResumeManifest restores overageStoppedWorkers onto the revived 
     // The re-arm is fire-and-forget after live+idle, and it is what reads the
     // restored flags — so wait on the deadline, then read them.
     await waitFor(() => instances._autoResumeTimers.has(inst.id), { timeout: 20000 });
-    assert.equal(inst._overageStoppedWorkers, true,
-      'the conductor-variant selector survived the restart');
+    assert.equal(inst._overageDroppedCallbacks, true,
+      'the dropped-callbacks clause survived the restart');
+    assert.equal(inst._overageUnarmedWorkers, true,
+      'and so did the un-armed-workers clause');
     assert.equal(inst._overageWasStopped, true, 'and so did the full-preamble selector');
     clearResumeManifest();
   } finally {

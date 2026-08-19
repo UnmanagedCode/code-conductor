@@ -45,7 +45,7 @@ function makeFake({ id, sessionId, status = 'idle', acceptsMidTurnSteering = tru
     async interrupt() { inst._interrupts++; },
     autoStoppedForOverage: false,
     _overageWasStopped: false,
-    _overageStoppedWorkers: false,
+    _overageDroppedCallbacks: false,
     _overageResetsAt: null,
   };
   inst._interrupts = 0;
@@ -240,7 +240,7 @@ test('stopping a session drops a subscription held by a caller that does not OWN
   instances._directOverageStop(other, { resume: true, resetsAt: null, armResume: false });
 
   assert.equal(instances._idleHub.hasSubscriber('o8'), false, 'the subscription is severed');
-  assert.equal(cond._overageStoppedWorkers, true, 'the caller is told its callback is gone');
+  assert.equal(cond._overageDroppedCallbacks, true, 'the caller is told its callback is gone');
   assert.equal(other._interrupts, 1, 'and the session was actually stopped');
 
   emitTurnEnd('o8');
@@ -286,7 +286,7 @@ test('an unrelated subscription is untouched by a stop elsewhere', async () => {
   instances._directOverageStop(stop, { resume: false, resetsAt: null });
 
   assert.equal(instances._idleHub.hasSubscriber('k10'), true, 'the unrelated wait survives');
-  assert.equal(cond._overageStoppedWorkers, false, 'and its caller is not falsely marked');
+  assert.equal(cond._overageDroppedCallbacks, false, 'and its caller is not falsely marked');
   emitTurnEnd('k10');
   await tick();
   assert.equal(cond._promptCalls.length, 1, 'it still delivers normally');

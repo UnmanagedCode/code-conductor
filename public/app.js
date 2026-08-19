@@ -211,16 +211,20 @@ const unread = createUnreadStore({ onChange: (m) => sidebar.setUnread(m) });
 // case, not an edge: the can_use_tool deny only ends the turn if the CLI has
 // nothing queued behind it, and in a conductor session a wake callback already
 // sitting in stdin keeps the same turn running while the human reads the card.
-// Instance.prompt() prepends MID_TURN_NOTE as its own content block when the
-// send lands mid-turn, so the answer text stays byte-identical either way.
+// The server routes it through Instance.promptOrQueueSteer (src/wsHub.ts), which
+// prepends a note as its own content block so the answer text stays byte-identical
+// either way: MID_TURN_NOTE on a live mid-turn send, or POST_STOP_STEER_NOTE when
+// the worker's model cannot take one and the answer is parked behind a block-edge
+// stop and delivered as a fresh turn.
 //
 // Sent with `ack` so a send that never reaches the CLI — socket reconnecting,
 // instance killed, session mid-rewind — can unlock the card instead of leaving
 // it asserting `sending…` forever. `onFail` re-opens the card; there is no
 // retry or persistence by design.
-// The ack's 10s timeout can't realistically unlock a card that DID send: the
-// server writes the ack and the user_echo to the same socket in the same tick,
-// so the only losing window is a drop between those two writes.
+// The ack's 10s timeout can't unlock a card that DID send: the ack is written in
+// the same tick as the send, BEFORE any wait on delivery. On the parked route the
+// user_echo arrives only when the steer flushes at the block edge — which is
+// exactly why the ack must not wait on the send.
 function sendCardAnswer(instanceId, text, onFail) {
   send('prompt', { id: instanceId, text }, { ack: true })
     .catch((e) => onFail(e?.message || 'send failed'));

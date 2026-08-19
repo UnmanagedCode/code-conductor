@@ -83,9 +83,14 @@ export interface InstanceLike {
   autoResumeAt: number | null;
   autoStoppedForOverage: boolean;
   _overageWasStopped: boolean;
-  // Conductor-only: the overage stop also interrupted this session's workers and
-  // dropped its outgoing idle subscriptions, so its resume prompt must say so.
-  _overageStoppedWorkers: boolean;
+  // Two independent facts a stopped conductor's resume prompt carries (see
+  // buildConductorResumePreamble): a pending idle callback was severed, and/or a
+  // worker of its was stopped un-armed.
+  _overageDroppedCallbacks: boolean;
+  _overageUnarmedWorkers: boolean;
+  // Set on a WORKER the stop left un-armed: it must not queue sends behind a resume
+  // it will never get, so prompt() refuses them.
+  _overageStoppedUnarmed: boolean;
   _overageHandled: boolean;
   _overageResetsAt: number | null;
   _overageQueue: unknown[];

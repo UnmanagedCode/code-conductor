@@ -63,7 +63,8 @@ export function isPureUserPromptLine(obj: unknown): boolean {
   if (line.isSidechain) return false;
   if (line.type === 'user') {
     const content = line.message?.content;
-    // A marked wind-down steer never produces a user_echo bubble (it renders as
+    // A marked wind-down steer (historical jsonls only — nothing writes them now)
+    // never produces a user_echo bubble (it renders as
     // a system/soft_interrupted annotation instead) — don't count it, or
     // fork/rewind indices would drift past the user_echo count.
     if (isSoftInterruptContent(content)) return false;

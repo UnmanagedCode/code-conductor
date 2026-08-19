@@ -29,18 +29,32 @@ export const AUTO_RESUME_TEXT =
 const QUEUED_ONLY_RESUME_TEXT =
   'The rate-limit window has reset. Delivering the messages you queued while paused:';
 
-// Preamble for a CONDUCTOR that lost a pending idle callback to the overage stop
-// (`_overageStoppedWorkers`). Carries exactly the two facts it must ACT on: the
-// callback is gone, so waiting to be woken hangs forever; and the session it was
-// waiting on is un-armed, so nothing else will ever restart it. No description of
-// how those sessions were stopped — the conductor does nothing differently for it,
-// and it cannot be stated truthfully for a conductor whose workers were a mix.
-export const AUTO_RESUME_TEXT_CONDUCTOR =
-  'The rate-limit window has reset. Continue where you left off.\n\n' +
-  'Your pending idle callbacks were dropped — re-check each worker directly with ' +
-  '`mcp__code-conductor__list_sessions` and `mcp__code-conductor__get_recent_messages` ' +
-  'instead of waiting to be woken. Those workers will NOT resume themselves, so ' +
-  're-prompt each one you still need.';
+// The two facts a stopped CONDUCTOR must ACT on, appended to AUTO_RESUME_TEXT.
+// Each is gated on its OWN flag because either can hold without the other — a
+// callback can be severed with no un-armed worker (the conductor was waiting on a
+// session it does not own), and a worker can be stopped un-armed while the
+// conductor holds no subscription at all — so a single selector would make the
+// other clause assert something that did not happen. Neither describes HOW
+// anything was stopped: the conductor does nothing differently for that, and it
+// cannot be stated truthfully for a mixed set.
+const DROPPED_CALLBACKS_CLAUSE =
+  'Your pending idle callbacks were dropped — re-check the sessions you were waiting ' +
+  'on directly with `mcp__code-conductor__list_sessions` and ' +
+  '`mcp__code-conductor__get_recent_messages` instead of waiting to be woken.';
+const UNARMED_WORKERS_CLAUSE =
+  'Your workers are idle and un-armed — they will NOT resume themselves, so re-prompt ' +
+  'each one you still need.';
+
+// AUTO_RESUME_TEXT plus whichever conductor clauses actually apply; the plain text
+// when neither does.
+export function buildConductorResumePreamble(
+  { droppedCallbacks = false, unarmedWorkers = false } = {},
+): string {
+  const clauses = [];
+  if (droppedCallbacks) clauses.push(DROPPED_CALLBACKS_CLAUSE);
+  if (unarmedWorkers) clauses.push(UNARMED_WORKERS_CLAUSE);
+  return clauses.length ? `${AUTO_RESUME_TEXT}\n\n${clauses.join(' ')}` : AUTO_RESUME_TEXT;
+}
 
 // A message the user queued while the session was paused — the shape
 // Instance.prompt() pushes onto `_overageQueue` (instances.ts), so all fields
@@ -57,11 +71,13 @@ interface OverageQueueItem {
 // short numbered, clock-stamped item so the model sees what the user typed
 // while the session was paused. `wasStopped` picks the preamble: a session
 // stopped mid-work resumes with "continue where you left off"; a queued-only
-// session gets the softened line. `stoppedWorkers` overrides it with the
-// conductor variant, which additionally names the dropped callbacks and the
-// un-armed workers.
-function buildCombinedResumeText(queue: OverageQueueItem[], wasStopped = true, stoppedWorkers = false): string {
-  const stopped = stoppedWorkers ? AUTO_RESUME_TEXT_CONDUCTOR : AUTO_RESUME_TEXT;
+// session gets the softened line. `conductor` adds whichever conductor clauses
+// apply (see buildConductorResumePreamble).
+function buildCombinedResumeText(
+  queue: OverageQueueItem[], wasStopped = true,
+  conductor: { droppedCallbacks?: boolean; unarmedWorkers?: boolean } = {},
+): string {
+  const stopped = buildConductorResumePreamble(conductor);
   if (!queue.length) return stopped;
   const preamble = wasStopped ? stopped : QUEUED_ONLY_RESUME_TEXT;
   const fmt = (ts: number): string => {
@@ -286,7 +302,10 @@ export class OverageResumeController {
       const queue = inst._overageQueue.slice() as OverageQueueItem[];
       inst._overageQueue = [];
       const attachments: unknown[] = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments as unknown[] : []);
-      const text = buildCombinedResumeText(queue, inst._overageWasStopped, inst._overageStoppedWorkers);
+      const text = buildCombinedResumeText(queue, inst._overageWasStopped, {
+        droppedCallbacks: inst._overageDroppedCallbacks,
+        unarmedWorkers: inst._overageUnarmedWorkers,
+      });
       this.cancel(id);
       if (queue.length) {
         inst._emitUi({ kind: 'system', subtype: 'auto_resume', data: { count: queue.length } });
@@ -345,7 +364,9 @@ export class OverageResumeController {
       inst.autoResumeAt = null;
       inst.autoStoppedForOverage = false;
       inst._overageWasStopped = false;
-      inst._overageStoppedWorkers = false;
+      inst._overageDroppedCallbacks = false;
+      inst._overageUnarmedWorkers = false;
+      inst._overageStoppedUnarmed = false;
       inst._overageHandled = false;
       // Drop any queued messages — the session is being torn down or resumed
       // (run() already snapshot-emptied the queue before this call, so this is

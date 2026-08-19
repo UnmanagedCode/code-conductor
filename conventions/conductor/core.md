@@ -58,7 +58,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 **Organise the sidebar** — when spawning several related workers, group them in a workspace so the human can collapse the chunk when done: `list_workspaces` · `create_workspace` · `delete_workspace` (clears members' `workspace` field; projects untouched) · `rename_workspace` · `set_project_workspace` (assign or clear; refuses `.conduct`).
 
 **Drive workers** — always dispatch-and-wake (see Core rule).
-- `send_prompt` — send a turn; auto-subscribes unless `subscribe:false`. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn; on a worker whose model can't take that it lands as a fresh turn instead, so your text may not be in the transcript yet. Your wake fires on the answering turn either way — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
+- `send_prompt` — send a turn; auto-subscribes unless `subscribe:false`. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. A send you can't yet see in the worker's transcript has not failed — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
 - `subscribe_to_idle` / `unsubscribe_from_idle` — re-arm / cancel a one-shot wake without sending a prompt.
 - `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
 - `interrupt_turn` · `kill_instance` · `respawn_instance` (resume a just-exited instance).
@@ -69,7 +69,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `approve_plan({sessionId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.
 - `reject_plan({sessionId, feedback})` — keeps the worker in `plan` mode, asks it to revise.
 
-**Question handling** — a worker's `AskUserQuestion` is denied at the tool layer, which *ends its turn* (same yield-and-wake shape as a plan). Answer it via `answer_question` (see its schema for the answer shape), not a free-text `send_prompt`.
+**Question handling** — a worker's `AskUserQuestion` is denied at the tool layer and yields for your answer (same yield-and-wake shape as a plan) — but seeing a pending question does **not** mean that worker is idle. Answer it via `answer_question` (see its schema for the answer shape), not a free-text `send_prompt`.
 
 **Inspect work**
 - `get_recent_messages({sessionId, count?})` — last N assistant messages; cheap, use for "what did the worker just say?". Disk-backed: a busy worker mid-long-turn never returns a false-empty; `omittedToolOnly`/`hint` distinguish "active but tool-only" from idle — on a RETIRED session neither means activity.

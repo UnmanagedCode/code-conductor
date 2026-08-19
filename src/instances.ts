@@ -551,7 +551,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   _overageResetsAt: number | null;
   _overageHandled: boolean;
   _overageWasStopped: boolean;
-  _overageStoppedWorkers: boolean;
+  _overageDroppedCallbacks: boolean;
+  _overageUnarmedWorkers: boolean;
+  _overageStoppedUnarmed: boolean;
   _overageQueue: OverageQueueItem[];
   // Steers waiting for a block-edge stop to complete before they are sent, on a
   // model that cannot take a mid-turn injection. See queueSteerAfterStop.
@@ -797,11 +799,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // buildCombinedResumeText drops "continue where you left off". Reset on
     // (re)spawn; persisted across a resume-restart.
     this._overageWasStopped = false;
-    // Conductor-only: the overage stop also interrupted this session's workers and
-    // dropped its outgoing idle subscriptions, so its resume prompt must say the
-    // callbacks are gone and the (un-armed) workers need re-driving. Picks
-    // conductorOverageResumeText over AUTO_RESUME_TEXT — see _steerConductor.
-    this._overageStoppedWorkers = false;
+    // Two INDEPENDENT facts a stopped conductor's resume prompt must carry, each
+    // gated on its own flag because either can hold without the other: a callback
+    // can be severed with no un-armed worker (it was waiting on a session it does
+    // not own), and a worker can be stopped un-armed with no callback pending. One
+    // flag for both would make the other clause assert something that did not
+    // happen. Read by buildConductorResumePreamble (src/overageResume.ts).
+    this._overageDroppedCallbacks = false;
+    this._overageUnarmedWorkers = false;
+    // Set on a WORKER the overage stop left un-armed: its conductor is the sole
+    // driver, so this session must neither self-resume nor queue sends behind a
+    // resume it will never get. prompt() refuses instead — see the overage intercept.
+    this._overageStoppedUnarmed = false;
     // Messages typed while auto-stopped-and-armed for overage resume are
     // QUEUED here (entries `{text, attachments, ts}`) instead of resuming the
     // still-throttled session; the auto-resume delivers them as one combined
@@ -988,6 +997,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       autoResumeAt: this.autoResumeAt,
       queuedCount: this._overageQueue.length,
       overageActive: !!gate.active,
+      // Stopped for overage and deliberately left UN-ARMED (its conductor is the
+      // sole driver). The composer must not offer to queue for it: prompt() refuses
+      // such a send rather than stranding it behind a resume that never fires.
+      overageStoppedUnarmed: !!this._overageStoppedUnarmed,
       overageResetsAt: gate.active ? gate.resetsAt : null,
     };
   }
@@ -1559,7 +1572,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._overageResetsAt = null;
     this._overageHandled = false;
     this._overageWasStopped = false;
-    this._overageStoppedWorkers = false;
+    this._overageDroppedCallbacks = false;
+    this._overageUnarmedWorkers = false;
+    this._overageStoppedUnarmed = false;
     this._overageQueue = [];
     // A fresh process starts with no in-flight Agent tasks — any entries
     // from a prior run's background subagents are gone with that process.
@@ -2323,6 +2338,24 @@ export class Instance extends EventEmitter implements InstanceLike {
     // stub, conductor steer, and the auto-resume's own send — which first clears
     // these flags via cancel) fall through and resume normally.
     const gate = this._overageGate ? this._overageGate() : { active: false, resetsAt: null };
+    // A worker the overage stop left UN-ARMED has no resume deadline and must never
+    // get one: its conductor is the sole driver, and arming it would have the
+    // conductor's re-drive land mid-turn on a worker that just self-resumed. So
+    // queueing here would strand the text forever — the queue is flushed only by a
+    // fired deadline, and cancel() discards it. Refuse loudly instead (CONVENTIONS:
+    // fail loudly, not silently). The composer stops offering to queue for such a
+    // session (`overageStoppedUnarmed` on the status frame), so this is the
+    // backstop, not the notice.
+    if (!internal && this._overageStoppedUnarmed && gate.active) {
+      throw Object.assign(
+        new Error(
+          'this worker was stopped for account overage and is waiting on its conductor, ' +
+          'not on the rate-limit window — messages cannot be queued for it. Send to the ' +
+          'conductor instead, or resume this worker once the window resets.',
+        ),
+        { statusCode: 409 },
+      );
+    }
     if (!internal && (gate.active || (this.autoStoppedForOverage && this.autoResumeAt))) {
       const entry = {
         text: typeof text === 'string' ? text : '',
@@ -4096,6 +4129,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Leaves `_overageWasStopped` false so the resume preamble stays softened.
   _armQueuedOnly(inst: Instance, resetsAt: number | null): void {
     if (inst.autoResumeAt || this._autoResumeTimers.has(inst.id)) return; // already armed
+    // A worker the stop left un-armed stays un-armed: its conductor is the sole
+    // driver. Backstop — prompt() refuses such a send before it can queue, so this
+    // guard only catches a future second queueing path.
+    if (inst._overageStoppedUnarmed) return;
     inst._overageResetsAt = Number.isFinite(Number(resetsAt)) ? resetsAt : this._overageResetsAt;
     inst.autoStoppedForOverage = true; // so cancel/flush treats it like an armed session
     this._armAutoResume(inst);         // arm() re-checks the future-resetsAt safety rail
@@ -4238,10 +4275,20 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       } else {
         // A worker owned by an in-control conductor is stopped but deliberately
         // left UN-ARMED: its conductor is the sole driver on resume (told so by
-        // conductorOverageResumeText). Arming it too would have the conductor's
-        // re-drive land mid-turn on a worker that just self-resumed — the very
-        // mid-turn injection this whole path exists to avoid.
-        this._directOverageStop(inst, { resume, resetsAt, armResume: resume && !protectedWorkers.has(inst.id) });
+        // AUTO_RESUME_UNARMED_WORKERS_CLAUSE). Arming it too would have the
+        // conductor's re-drive land mid-turn on a worker that just self-resumed —
+        // the very mid-turn injection this whole path exists to avoid.
+        const unarmed = protectedWorkers.has(inst.id);
+        this._directOverageStop(inst, { resume, resetsAt, armResume: resume && !unarmed });
+        if (!unarmed) continue;
+        // Mark BOTH ends. The worker: so its own sends are refused rather than
+        // queued behind a resume it will never get. Its conductor: so its resume
+        // prompt says the workers are un-armed — severForOverageStop only reports a
+        // severed CALLBACK, and a conductor can own workers while holding no
+        // subscription at all.
+        inst._overageStoppedUnarmed = true;
+        const owner = this._ownerConductor(inst);
+        if (owner) owner._overageUnarmedWorkers = true;
       }
     }
   }
@@ -4280,7 +4327,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // place a session is stopped, and the hazard belongs to the stop.
     for (const callerId of this._idleHub.severForOverageStop(inst.id)) {
       const caller = this.byId.get(callerId);
-      if (caller) caller._overageStoppedWorkers = true;
+      if (caller) caller._overageDroppedCallbacks = true;
     }
     inst.interrupt().catch(() => {});
   }

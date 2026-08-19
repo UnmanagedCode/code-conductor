@@ -352,8 +352,8 @@ alongside capacity by `_refreshModelCapabilities()` whenever the model changes.
 Never persisted in the sidecar or the resume manifest — a deleted row degrades to
 `true`, which is what "nothing declared" means.
 
-`false` changes two paths, both documented in `docs/protocol.md`: every mid-turn
-injection site becomes a block-edge stop + fresh turn
+`false` changes the injection route and the wake route, both documented in
+`docs/protocol.md`: every mid-turn injection site becomes a block-edge stop + fresh turn
 (`Instance.needsPostStopSteer` → `promptOrQueueSteer` → `queueSteerAfterStop`;
 protocol.md's `user` row lists which sites are routed and which are not), and an
 idle-subscription wake into that session is held until its own next `turn_end`

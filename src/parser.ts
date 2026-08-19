@@ -495,7 +495,8 @@ export class Parser {
   _handleUser(obj: WireEnvelope): UiEvent[] {
     const msg = obj.message ?? {};
     const content = msg.content;
-    // If the CLI echoes a marked wind-down steer back on stdout, surface it
+    // If the CLI echoes a marked wind-down steer back on stdout (historical jsonls
+    // only — nothing writes them now), surface it
     // as a system annotation so the user can see a stop was requested.
     if (isSoftInterruptContent(content)) return [{ kind: 'system', subtype: 'soft_interrupted' }];
     // The CLI's own post-abort marker line. Same annotation, same reason: a
