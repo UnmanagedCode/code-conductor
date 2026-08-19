@@ -163,6 +163,35 @@ describe('substitution-backend spawn command/args', () => {
     }
   });
 
+  // `model: ""` is the same request as omitting it — _doCreate trims it to null,
+  // so a gate testing `== null` would let it through to a bare `claude` on the
+  // ACCOUNT default. The rule admits no exceptions, so the REST gate tests the
+  // TRIMMED value, matching resolveSpawnModel's falsy check on the MCP side.
+  test('a fresh claude spawn with an EMPTY-STRING model still emits --model from the default tier', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-emptymodel-'));
+    const argvDump = path.join(tmp, 'argv.txt');
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+    try {
+      await setDefaultSpawnTier('fast');
+      await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      for (const model of ['', '   ']) {
+        const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', model });
+        assert.equal(r.status, 201, JSON.stringify(r.body));
+        await waitFor(() => instances.get(r.body.id)?.status === 'idle');
+        await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+        const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+        const i = argv.indexOf('--model');
+        assert.ok(i >= 0, `model:${JSON.stringify(model)} must still emit --model: ${argv.join(' ')}`);
+        assert.equal(argv[i + 1], 'claude-haiku-4-5');
+        assert.equal(r.body.model, 'claude-haiku-4-5');
+      }
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
   test('a cc-managed context var beats a same-named backend env pair', async () => {
     await addBackend({
       id: 'shadow', label: 'Shadow', template: 'shadowctl claude --model {model} --',

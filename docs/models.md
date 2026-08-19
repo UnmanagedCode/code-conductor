@@ -192,9 +192,16 @@ to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 default. A fresh spawn that names no model/tier/role resolves through
 `defaultSpawnBinding()` = `getTierBackend(getDefaultSpawnTier())` — so it also picks up that tier's
 **default effort** — on both fresh-spawn surfaces (MCP `spawn_instance`, and `POST /api/instances` when
-neither `model` nor `backend` is given). Total by construction: both halves revert on their own, so the
-result never has a null model and no spawn reaches the CLI without `--model`. A **resume** is excluded —
-it recovers the model it last ran.
+neither `model` nor `backend` is given; absence is judged on the **trimmed** value, so `model: ""` counts
+as absent). Total by construction: both halves revert on their own, so the result never has a null model.
+A **resume** is excluded — it recovers the model it last ran.
+
+On `POST /api/instances` a fresh model-less spawn that *does* name a row uses **that** row instead —
+`role` first (`resolveRoleBackend`), else a known `tier` (`getTierBackend`) — and the forwarded `tier` is
+overwritten to the row actually used, so the model and the default effort can never come from different
+rows. **Known gap:** `backend:"claude"` with no `model` is left alone (the gate never overwrites a
+caller's backend) and has nothing to refuse, so it still launches bare — the one remaining fresh-spawn
+path that reaches the account default.
 
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points

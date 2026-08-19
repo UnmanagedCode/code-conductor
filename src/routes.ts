@@ -58,7 +58,7 @@ import {
   getTierBackend, setTierBackend, defaultSpawnBinding,
   getTierEffort, setTierEffort,
   getRoleEffort, setRoleEffort, inheritedRoleEffort,
-  effectiveRoleBinding, setRoleBinding,
+  effectiveRoleBinding, setRoleBinding, resolveRoleBackend, isResolvableRole,
   getAllRoles, addCustomRole, removeCustomRole,
   getCustomModels, addCustomModel, removeCustomModel,
   getBackends, addBackend, updateBackend, removeBackend,
@@ -959,19 +959,45 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // `model`+`backend` from; they exist so create() can resolve THAT row's
         // default effort when `effort` is omitted (resolveSpawnEffort). The client
         // never resolves effort itself — see public/spawnDialog.js.
-        // A fresh spawn that names no model runs on the Settings default tier, not the
+        // A fresh spawn that names no model runs on a Settings → Models ROW, never the
         // account default — the same rule the MCP surface applies in resolveSpawnModel.
-        // Gated on BOTH being absent: a binding is an inseparable pair, so a caller that
-        // named a backend has made a choice this must not overwrite. The UI never reaches
-        // this (spawnDialog resolves the selected tier before POSTing); a raw API client does.
-        let spawnModel = model as string | null | undefined;
-        let spawnBackend = backend as string | null | undefined;
+        // The UI never reaches this (spawnDialog resolves the selected tier before
+        // POSTing); a raw API client does.
+        //
+        // "Names no model" is tested on the TRIMMED value, matching both
+        // resolveSpawnModel's falsy check and _doCreate's own `model.trim()`: `model:""`
+        // would otherwise slip through to a bare `claude` on the account default, which
+        // is the one outcome this whole path exists to make unreachable. `backend` gets
+        // the same treatment because _doCreate reads it by truthiness too, so `""` there
+        // already means "absent".
+        //
+        // Which row: the one the caller NAMED (`role`, else `tier`) when it is
+        // resolvable, else the default spawn tier. `spawnTier` is then overwritten
+        // rather than defaulted, because `tier`/`role` also select the row whose default
+        // effort applies (resolveSpawnEffort) — leaving a caller's `tier` next to another
+        // tier's binding would run one tier's model at another tier's effort. Spawning on
+        // a row means that row governs both of its axes. `role` is checked first, the
+        // same precedence resolveSpawnEffort uses.
+        const named = (v: unknown): string | null =>
+          typeof v === 'string' && v.trim() ? v.trim() : null;
+        let spawnModel = named(model);
+        let spawnBackend = named(backend);
         let spawnTier = tier as string | undefined;
         if (!resume && spawnModel == null && spawnBackend == null) {
-          const binding = defaultSpawnBinding();
+          const namedRole = named(role);
+          const namedTier = named(tier);
+          let binding;
+          if (namedRole && isResolvableRole(namedRole)) {
+            binding = resolveRoleBackend(namedRole);
+          } else if (namedTier && isKnownTier(namedTier)) {
+            binding = getTierBackend(namedTier);
+            spawnTier = namedTier;
+          } else {
+            binding = defaultSpawnBinding();
+            spawnTier = getDefaultSpawnTier();
+          }
           spawnModel = binding.model;
           spawnBackend = binding.backend;
-          spawnTier ??= getDefaultSpawnTier();
         }
         // Each field is asserted to create()'s input type — create() remains the
         // runtime validator (unknown project / bad effort → its own error), so

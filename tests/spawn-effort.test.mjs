@@ -18,7 +18,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf, instForSession } fro
 import {
   setTierEffort, getTierEffort, setRoleEffort, getRoleEffort,
   inheritedRoleEffort, resolveRoleEffort, resolveSpawnEffort,
-  setRoleBinding, addCustomRole, setDefaultSpawnTier, setPluginRolesProvider,
+  setRoleBinding, addCustomRole, setDefaultSpawnTier, setTierBackend, setPluginRolesProvider,
 } from '../src/appSettings.ts';
 import { DEFAULT_EFFORT, INHERIT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.ts';
 import { DEFAULT_VERSIONS } from '../src/modelVersions.ts';
@@ -317,6 +317,25 @@ describe('the resolved effort reaches the spawn', () => {
     });
     assert.equal(inst.effort, DEFAULT_EFFORT);
     assert.equal(effortArg(argv), DEFAULT_EFFORT);
+  });
+
+  // Both axes come from ONE row. A caller that names a tier but no model gets
+  // that tier's model AND that tier's effort — never one tier's model at another
+  // tier's effort, which is what leaving the caller's `tier` beside the DEFAULT
+  // tier's binding would produce.
+  test("a spawn naming a tier but no model takes model AND effort from THAT tier", async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    await setDefaultSpawnTier('powerful');
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setTierEffort('powerful', 'max');
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await setTierEffort('fast', 'low');
+    // `tier` named, model/backend omitted — the raw-API shape the UI never sends.
+    const { inst, argv } = await spawnAndCapture({ project: 'p', mode: 'bypassPermissions', tier: 'fast' });
+    assert.equal(inst.model, 'claude-haiku-4-5', "the named tier's binding supplies the model");
+    assert.equal(argv[argv.indexOf('--model') + 1], 'claude-haiku-4-5');
+    assert.equal(inst.effort, 'low', "…and the SAME tier's row supplies the effort");
+    assert.equal(effortArg(argv), 'low');
   });
 
   // Accepted consequence of routing a model-less fresh spawn through the default

@@ -1378,11 +1378,18 @@ export class Instance extends EventEmitter implements InstanceLike {
       // switch without waiting for an unrelated refetch.
       this.emit('status', this.summary());
     } else {
-      // No spawn-time model at all — reachable only on a RESUME whose model
-      // couldn't be recovered (no sidecar, no assistant model in the jsonl yet);
-      // both fresh-spawn surfaces now resolve the default spawn tier. So this is
-      // discovery of what the CLI picked, not a user-visible switch. Adopt
-      // silently: no model_changed event, since nothing changed from the user's view.
+      // No spawn-time model at all, so this is discovery of what the CLI picked
+      // rather than a user-visible switch. Adopt silently: no model_changed event,
+      // since nothing changed from the user's view.
+      //
+      // Two ways to get here. (a) A RESUME whose model couldn't be recovered — no
+      // sidecar, no assistant model in the jsonl yet. (b) A fresh `POST
+      // /api/instances` naming `backend` but no `model`: that gate deliberately
+      // leaves a caller who named a backend alone, and for a substitution backend
+      // _doCreate refuses BACKEND_MODEL_MISSING — but `backend:'claude'` with no
+      // model has nothing to refuse and still launches bare, i.e. on the account
+      // default. Everything else resolves a model up front (both fresh-spawn
+      // surfaces go through the default-spawn-tier binding).
       this.model = canonical;
       this._refreshModelCapabilities();
       // But DO push the summary, like the sibling branch. This is the first
