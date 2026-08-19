@@ -1090,9 +1090,22 @@ export async function sendPrompt(
       });
       return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
     }
+    // ONE waiter, created up-front and consumed on every path — the same shape
+    // the deferred branch above holds, for the same reason. `prompt()` rejecting
+    // (session being rewritten, process gone) used to throw out of this function
+    // before `await waiter` could attach, leaving the waiter's timer to reject
+    // into the process: Node's default --unhandled-rejections=throw then takes
+    // the ORCHESTRATOR down, orphaning every live worker.
     const waiter = waitForEvent(inst, (ev) => ev?.kind === 'turn_end', waitTimeoutMs);
-    await inst.prompt(composedText);
-    const ev = await waiter;
+    const delivered = inst.prompt(composedText);
+    // `.catch` only: a successful send must not settle the call — the waiter is
+    // the sole source of the value. A delivery that fails outright surfaces its
+    // own error instead of idling out the budget, and the waiter is still owned,
+    // so its later rejection is absorbed.
+    const ev = await new Promise<UiEvent | null>((resolve, reject) => {
+      waiter.then(resolve, reject);
+      delivered.catch(reject);
+    });
     return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
   }
   if (deferred) {
