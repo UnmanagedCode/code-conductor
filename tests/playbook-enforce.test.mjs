@@ -28,7 +28,7 @@ import { orchStoreRoot } from '../src/projects.ts';
 import {
   DEFAULT_PLAYBOOK_ENFORCEMENT, DEFAULT_PLAYBOOK_ID, loadPlaybooks, isSpawnable,
 } from '../src/playbooks.ts';
-import { pb } from './playbook-fixtures.mjs';
+import { GATELAB } from './playbook-fixtures.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -57,102 +57,6 @@ async function makeRealRepo(projectsRoot, name) {
   await git(repoPath, 'commit', '-q', '-m', 'initial');
   return repoPath;
 }
-
-// ── GATELAB: the enforcement-mechanics fixture every test below rides ───────
-//
-// A mechanics lab, not a plausible workflow: one shape per mechanism the wiring
-// has to get right, so each assertion has something to bite on that no hand edit
-// to a shipped playbook can move.
-//
-// `draft` and `sealed` pin `mode` DIFFERENTLY on purpose, because the two jobs
-// pull opposite ways and one stage cannot do both:
-//   - pin fill-in needs a NON-default value ('ask'), or "the pin filled the
-//     argument in" is true whether or not the pin was ever applied — MCP
-//     spawn_instance already defaults to 'plan'.
-//   - the approve_plan side-effect needs the flip to be REACHABLE, and
-//     approve_plan's handler flips the mode only for a worker already IN plan
-//     mode (src/mcp/handlers.ts). Pin anything else and "the mode did not move"
-//     is true no matter what the deny does.
-// So `draft` pins 'ask' and `sealed` pins no mode at all, spawning at the
-// default.
-//
-// Every value below is load-bearing: each one has been mutated in place and the
-// assertion that reads it observed to fail. Nothing is here for decoration. The
-// one exception is `audit.needs.position`: a NARROWED list reddens the test, but
-// a list widened to ["*"] cannot, because no stage a build-veteran can reach is
-// outside the list. Widening is pinned at the policy layer instead
-// (tests/playbook-policy.test.mjs).
-//
-//   draft   entry; `pin` FILLS IN mode+createWorktree; no declared draft->draft,
-//           so an ordinary follow-up prompt is an UNDECLARED self-edge (legal,
-//           never ledgered)
-//   build   omits spawn_instance ⇒ STAGE_NOT_SPAWNABLE; denies nothing that
-//           `audit` denies, which is the permitted half of the deny tests
-//   audit   `needs` on SPAWN-entry, workers:"many", and the stage-scoped denies
-//   amend   `needs` on TRANSITION-entry at the default liveness:"live"; the
-//           DECLARED amend->amend self-loop, so its rounds are ledgered
-//   sealed  a dead end with both write doors shut — no outgoing edge, set_mode
-//           and approve_plan denied. Pins no `mode`, so its worker spawns in
-//           plan mode and approve_plan's flip is reachable — which is what makes
-//           "the refused call changed nothing" an assertion rather than a
-//           restatement of the pin
-//   handoff `needs` sealed at liveness:"any", at the default workers:"one"
-//   loose   ungated, its own run root
-const GATELAB = {
-  id: 'gatelab',
-  name: 'Gatelab — enforcement-mechanics fixture',
-  description: 'Test-only graph: pins, drivers, needs, liveness, capacity, stage-scoped tool policy.',
-  entryStages: ['draft', 'sealed', 'loose'],
-  stages: {
-    draft: {
-      description: 'Entry: pins are filled in here.',
-      tools: { spawn_instance: { pin: { mode: 'ask', createWorktree: true } } },
-    },
-    build: {
-      description: 'Reached only by the approve_plan edge.',
-    },
-    audit: {
-      description: 'Read-only lens; many at once.',
-      needs: [{ stage: 'build', position: ['build', 'amend'] }],
-      workers: 'many',
-      tools: {
-        spawn_instance: { pin: { mode: 'bypassPermissions', model: 'reviewer' } },
-        sync_worktree: 'deny',
-        approve_plan: 'deny',
-      },
-    },
-    amend: {
-      description: 'Entered by transition; needs a live auditor.',
-      needs: [{ stage: 'audit' }],
-    },
-    sealed: {
-      description: 'No outgoing edge; cannot self-promote.',
-      tools: {
-        spawn_instance: { pin: { createWorktree: true } },
-        set_mode: 'deny',
-        approve_plan: 'deny',
-      },
-    },
-    handoff: {
-      description: 'Spawns against a sealed worker, alive or not.',
-      needs: [{ stage: 'sealed', liveness: 'any' }],
-      tools: { spawn_instance: 'allow' },
-    },
-    loose: {
-      description: 'Ungated worker, its own run root.',
-      tools: { spawn_instance: 'allow' },
-    },
-  },
-  transitions: [
-    { from: 'draft', to: 'build', on: 'approve_plan' }, // an `on` driver
-    { from: 'build', to: 'amend' },                     // no `on` ⇒ send_prompt
-    { from: 'amend', to: 'amend' },                     // DECLARED self-loop ⇒ ledgered
-  ],                                                    // no draft->draft ⇒ undeclared self-edge
-};
-
-// Validate at module load: a silently rejected fixture would leave every test
-// below green against a graph that was never installed.
-pb(GATELAB);
 
 let nextRpcId = 1;
 
