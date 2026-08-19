@@ -1229,6 +1229,53 @@ export async function renewSession(
   };
 }
 
+// Prune a worker's context (the MCP face of Instance.pruneSession). The defaults
+// live HERE, not on the schema — schema `default` is documentation only (see
+// src/mcp/argValidation.ts), the same split as get_transcript's `limit = 200`.
+export async function pruneSession(
+  { sessionId, keepLatestTurns = 1, pruneThinking = true, inputMode = 'truncate' }:
+  { sessionId: string; keepLatestTurns?: number; pruneThinking?: boolean; inputMode?: 'truncate' | 'minimal' },
+  { instances, callerId }: McpCtx,
+) {
+  const r = await getInst(instances, sessionId);
+  if ('soft' in r) return r.soft;
+  const inst = r.inst;
+  if (inst.sessionId === callerId) {
+    // Pruning yourself kills your own subprocess mid-call, so this can never be
+    // what was meant. Refused with the routing rather than left to the bare
+    // mid-turn guard below, which would report only "busy".
+    return { ok: false, code: 'INVALID_PRUNE_TARGET', sessionId: inst.sessionId,
+      reason: 'that sessionId is your own, and a prune respawns the worker it targets — it would kill '
+        + 'this process mid-call. To shed your OWN context, call renew_session({summary}).' };
+  }
+  // Pre-check the two states Instance.pruneSession throws on, so the conductor
+  // gets a soft refusal with a code instead of an isError — matching the
+  // renew_session guards above.
+  if (inst.rotationInFlight || inst._mutating) {
+    return { ok: false, code: 'SESSION_ROTATING', sessionId: inst.sessionId,
+      reason: 'a context rotation is already in progress on that worker — retry once it completes.' };
+  }
+  if (inst.status === 'turn') {
+    return { ok: false, code: 'SESSION_BUSY', sessionId: inst.sessionId, status: inst.status,
+      reason: 'a prune kills and respawns the worker, which would destroy a running turn — '
+        + 'interrupt_turn first, then prune once it is idle.' };
+  }
+  const res = await inst.pruneSession({ keepLatestTurns, pruneThinking, inputMode });
+  const turnCount = res.turnCount as number;
+  const cut = res.cutTurnIndex as number;
+  // `oldSessionId`/`newSessionId` are deliberately dropped: they are BACKING ids,
+  // and no conductor-facing payload emits an internal id. keptTurns/prunedTurns
+  // are the "what did it actually do" signal, and the only legible report of a
+  // clamped keepLatestTurns.
+  return {
+    ok: true,
+    sessionId: inst.sessionId,
+    keptTurns: turnCount - cut,
+    prunedTurns: cut,
+    saved: res.saved,
+  };
+}
+
 export async function interruptTurn({ sessionId, force }: { sessionId: string; force?: boolean }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;

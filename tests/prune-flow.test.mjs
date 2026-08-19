@@ -457,12 +457,13 @@ test('prune is refused mid-turn and on a session with nothing to cut', async () 
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    // cutTurnIndex == turnCount would prune the newest turn — the cap refuses it.
-    // This one throws AFTER the subprocess has been killed (the range check needs
-    // the turn count, so it can't be hoisted above the kill), which makes it the
-    // natural exercise of the fail-safe path: a mid-transform throw must not
-    // leave the instance wedged with no proc and no respawn.
-    const tooFar = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 2 });
+    // cutTurnIndex == turnCount is a legal FULL prune now; turnCount+1 names no
+    // turn at all and is what the cap refuses. This one throws AFTER the
+    // subprocess has been killed (the range check needs the turn count, so it
+    // can't be hoisted above the kill), which makes it the natural exercise of
+    // the fail-safe path: a mid-transform throw must not leave the instance
+    // wedged with no proc and no respawn.
+    const tooFar = await api(ctx.baseUrl, 'POST', `/api/instances/${id}/prune`, { cutTurnIndex: 3 });
     assert.equal(tooFar.status, 400);
     await waitFor(() => ctx.instances.get(id).status === 'idle');
     assert.ok(ctx.instances.get(id).proc, 'a failed prune must respawn the instance, not wedge it');

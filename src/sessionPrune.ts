@@ -514,33 +514,52 @@ async function copySubAgentDir({ cwd, sessionId, newSessionId }: { cwd: string; 
 // Copy <cwd>/<sessionId>.jsonl into a new sessionId, stubbing block content per
 // the options. The original file is untouched.
 //
-//   cutTurnIndex — prune turns [0, cutTurnIndex). Must leave at least the newest
-//                  turn verbatim, so the valid range is 0 … turnCount-1.
+//   cutTurnIndex — prune turns [0, cutTurnIndex). Valid range 0 … turnCount, so
+//                  a full cut (every turn, newest included) is expressible.
+//   keepLatestTurns — the relative spelling of the same cut: leave that many of
+//                  the newest turns verbatim, 0 for a full cut. Resolved HERE,
+//                  against the turn count read below, because that is the only
+//                  point past the subprocess kill — a caller that pre-read the
+//                  count could have a turn land in between and silently keep one
+//                  turn too many. Exactly one of the two must be supplied.
 //   pruneThinking — global, independent of the cut (thinking staleness is
 //                  categorical, not temporal), minus the unresolved-tool_use
 //                  exemption.
 //   inputMode    — 'truncate' | 'minimal', applied inside the pruned region only.
 //
-// Returns { newSessionId, saved:{thinking,toolInputs,toolOutputs}, lastSurvivingUuid }.
+// Returns { newSessionId, turnCount, cutTurnIndex, saved:{…}, lastSurvivingUuid }.
 export async function pruneSessionToNewId({
-  cwd, sessionId, cutTurnIndex, pruneThinking = false, inputMode = 'truncate',
+  cwd, sessionId, cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate',
   mode, newSessionId,
 }: {
-  cwd: string; sessionId: string; cutTurnIndex: number;
+  cwd: string; sessionId: string; cutTurnIndex?: number; keepLatestTurns?: number;
   pruneThinking?: boolean; inputMode?: InputMode;
   mode: string; newSessionId?: string;
-}): Promise<{ newSessionId: string; saved: { thinking: number; toolInputs: number; toolOutputs: number }; lastSurvivingUuid: string | null }> {
+}): Promise<{
+  newSessionId: string; turnCount: number; cutTurnIndex: number;
+  saved: { thinking: number; toolInputs: number; toolOutputs: number }; lastSurvivingUuid: string | null;
+}> {
   if (!cwd || !sessionId) throw new Error('cwd + sessionId required');
   if (!INPUT_MODES.has(inputMode)) {
     throw httpError(400, `inputMode must be one of ${[...INPUT_MODES].join('|')}`);
+  }
+  // XOR, not a precedence rule: two cut specifications that disagree is a caller
+  // bug, and silently honouring one of them prunes the wrong amount of context.
+  if ((cutTurnIndex === undefined) === (keepLatestTurns === undefined)) {
+    throw httpError(400, 'supply exactly one of cutTurnIndex or keepLatestTurns');
+  }
+  if (keepLatestTurns !== undefined && (!Number.isInteger(keepLatestTurns) || keepLatestTurns < 0)) {
+    throw httpError(400, 'keepLatestTurns must be a non-negative integer');
   }
   const { records, turnCount } = await readRecords({ cwd, sessionId });
   if (turnCount === 0) {
     throw httpError(400, 'session has no user turns to prune');
   }
-  if (!Number.isInteger(cutTurnIndex) || cutTurnIndex < 0 || cutTurnIndex > turnCount - 1) {
-    throw httpError(400,
-      `cutTurnIndex must be an integer in 0…${turnCount - 1} (the newest turn always stays verbatim)`);
+  // Clamping (rather than rejecting) an oversized keepLatestTurns is what makes
+  // "keep more turns than the session has" mean "prune nothing".
+  const cut = cutTurnIndex ?? Math.max(0, turnCount - (keepLatestTurns as number));
+  if (!Number.isInteger(cut) || cut < 0 || cut > turnCount) {
+    throw httpError(400, `cutTurnIndex must be an integer in 0…${turnCount}`);
   }
 
   const exemptThinking = unresolvedThinkingMessageIds(records.map(r => r.obj));
@@ -559,7 +578,7 @@ export async function pruneSessionToNewId({
     // copy is self-consistent (the filename is what `--resume` reads; this keeps
     // downstream tooling honest, same as forkSessionAtUserMessage).
     const content = obj.message?.content;
-    const inCut = rec.turn < cutTurnIndex;
+    const inCut = rec.turn < cut;
     const touchable = rec.prunable && Array.isArray(content) && (inCut || pruneThinking);
     if (!touchable) {
       out.push(typeof obj.sessionId === 'string'
@@ -595,7 +614,7 @@ export async function pruneSessionToNewId({
     });
   }
 
-  return { newSessionId: newSid, saved, lastSurvivingUuid };
+  return { newSessionId: newSid, turnCount, cutTurnIndex: cut, saved, lastSurvivingUuid };
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

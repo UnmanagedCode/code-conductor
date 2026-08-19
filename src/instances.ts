@@ -2922,7 +2922,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // id rotates), so the idle-subscription graph, overage timers, the renew
   // controller, every `?caller=<instanceId>` MCP handle and every id a conductor
   // holds stay valid with no migration.
-  async pruneSession({ cutTurnIndex, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
+  async pruneSession({ cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; keepLatestTurns?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
     // THE interlock (decision D6). A prune sets `_mutating`, which makes prompt()
     // 409 — and a renewal's reseed IS a prompt(). Interleaving them would clear the
     // context and then lose the summary. Refuse instead of auditing interleavings
@@ -2969,10 +2969,11 @@ export class Instance extends EventEmitter implements InstanceLike {
         finally { this._suppressTempDelete = false; }
       }
 
-      const { saved } = await pruneSessionToNewId({
+      const { saved, turnCount, cutTurnIndex: cut } = await pruneSessionToNewId({
         cwd: this.cwd,
         sessionId: oldSid,
-        cutTurnIndex: cutTurnIndex as number,
+        cutTurnIndex: cutTurnIndex as number | undefined,
+        keepLatestTurns: keepLatestTurns as number | undefined,
         pruneThinking: !!pruneThinking,
         inputMode: effInputMode as 'truncate' | 'minimal',
         mode: this.mode,
@@ -3001,7 +3002,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       await this.carryMarkersAcrossRenewal(oldSid).catch(() => {});
 
       rotationOk = true;
-      return { oldSessionId: oldSid, newSessionId: newSid, saved };
+      return { oldSessionId: oldSid, newSessionId: newSid, turnCount, cutTurnIndex: cut, saved };
     } catch (e) {
       // The subprocess is already dead by the time most of this can throw, and
       // the transform has real failure surface (writeAtomic, copySubAgentDir, a

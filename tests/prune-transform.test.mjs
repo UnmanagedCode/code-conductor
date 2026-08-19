@@ -332,7 +332,10 @@ test('the savings preview equals what the transform actually saves', async () =>
 
     for (const inputMode of ['truncate', 'minimal']) {
       for (const pruneThinking of [true, false]) {
-        for (let cut = 0; cut <= analysis.turnCount - 1; cut++) {
+        // Up to and INCLUDING turnCount: the dialog's client-side prefix sum has
+        // to equal the transform at the full cut too, which is the one cut where
+        // the prefix covers every turn.
+        for (let cut = 0; cut <= analysis.turnCount; cut++) {
           const { saved } = await pruneSessionToNewId({
             cwd: CWD, sessionId: sid, cutTurnIndex: cut, pruneThinking, inputMode, mode: 'bypassPermissions',
           });
@@ -369,18 +372,191 @@ test('the savings denominator counts attachments, which are in context', async (
   });
 });
 
-test('the cut is capped so the newest turn always survives', async () => {
+test('the cut is capped at turnCount — one past a full prune is refused', async () => {
+  // The cap is at turnCount, NOT turnCount-1: a full prune (newest turn included)
+  // is expressible. This pins that the bound moved by exactly one rather than
+  // being removed — turnCount+1 must still 400, and the message must name the
+  // real ceiling so a caller can correct itself.
   await withStore(async () => {
     const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { sid } = await seed(scenario());
     await assert.rejects(
-      () => pruneSessionToNewId({ cwd: CWD, sessionId: sid, cutTurnIndex: 2 }),
-      /cutTurnIndex must be an integer in 0…1/,
+      () => pruneSessionToNewId({ cwd: CWD, sessionId: sid, cutTurnIndex: 3 }),
+      /cutTurnIndex must be an integer in 0…2/,
     );
     await assert.rejects(
       () => pruneSessionToNewId({ cwd: CWD, sessionId: sid, cutTurnIndex: 1, inputMode: 'nope' }),
       /inputMode must be/,
     );
+  });
+});
+
+// ── the full cut (cutTurnIndex === turnCount) ───────────────────────────────
+
+// scenario(), plus a thinking block, a tool_use and its tool_result INSIDE the
+// newest turn — the only region a full cut reaches that the old cap could not.
+function newestTurnPayloadScenario() {
+  const lines = scenario();
+  const at = lines.findIndex(l => l.uuid === 'u4') + 1;
+  lines.splice(at, 0,
+    { type: 'assistant', uuid: 'a5', sessionId: 'old', message: { id: 'm4', role: 'assistant', content: [
+      { type: 'thinking', thinking: bigText, signature: 'sig-2' },
+    ] } },
+    { type: 'assistant', uuid: 'a6', sessionId: 'old', message: { id: 'm5', role: 'assistant', content: [
+      { type: 'tool_use', id: 't3', name: 'Bash', input: { command: `echo ${bigText}` } },
+    ] } },
+    { type: 'user', uuid: 'u5', sessionId: 'old', toolUseResult: 'ok', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 't3', content: bigText },
+    ] } },
+  );
+  return lines;
+}
+
+test('a full cut reaches the newest turn, which a capped cut leaves verbatim', async () => {
+  // A1. Kills both a reverted `> turnCount - 1` bound and a `<`→`<=` flip in
+  // `inCut`: the SAME fixture is pruned at turnCount-1 and at turnCount, and the
+  // newest turn's payloads must be verbatim in the first and stubbed in the second.
+  await withStore(async () => {
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const { dir, sid } = await seed(newestTurnPayloadScenario());
+
+    const capped = await pruneSessionToNewId({
+      cwd: CWD, sessionId: sid, cutTurnIndex: 1, pruneThinking: false, mode: 'bypassPermissions',
+    });
+    const cappedOut = Object.fromEntries((await readOut(dir, capped.newSessionId)).map(o => [o.uuid, o]));
+    assert.equal(cappedOut.a6.message.content[0].input.command, `echo ${bigText}`,
+      'the newest turn is untouched below the cap');
+    assert.equal(cappedOut.u5.message.content[0].content, bigText);
+
+    const full = await pruneSessionToNewId({
+      cwd: CWD, sessionId: sid, cutTurnIndex: 2, pruneThinking: false, mode: 'bypassPermissions',
+    });
+    assert.equal(full.turnCount, 2);
+    assert.equal(full.cutTurnIndex, 2, 'the resolved cut is reported back');
+    const fullOut = Object.fromEntries((await readOut(dir, full.newSessionId)).map(o => [o.uuid, o]));
+    assert.match(fullOut.a6.message.content[0].input.command, /chars pruned\]$/,
+      'a full cut squeezes the newest turn\'s tool input');
+    assert.match(fullOut.u5.message.content[0].content, /^\[pruned: 3\.9 KB\]$/,
+      'and stubs the newest turn\'s tool output');
+    // The full cut must save strictly more than the capped one — a bound that
+    // moved but an `inCut` that did not would leave these equal.
+    assert.ok(full.saved.toolOutputs > capped.saved.toolOutputs);
+    assert.ok(full.saved.toolInputs > capped.saved.toolInputs);
+  });
+});
+
+test('a full cut never eats the conversation\'s own prose', async () => {
+  // A3. User prompt text and assistant `text` blocks are byte-identical after a
+  // cut that covers every turn — the property the whole feature rests on.
+  await withStore(async () => {
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const lines = newestTurnPayloadScenario();
+    const { dir, sid } = await seed(lines);
+    const { newSessionId } = await pruneSessionToNewId({
+      cwd: CWD, sessionId: sid, cutTurnIndex: 2, pruneThinking: true,
+      inputMode: 'minimal', mode: 'bypassPermissions',
+    });
+    const out = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+    for (const line of lines) {
+      const content = line.message?.content;
+      if (!Array.isArray(content)) continue;
+      const before = content.filter(b => b.type === 'text');
+      if (!before.length) continue;
+      const after = out[line.uuid].message.content.filter(b => b.type === 'text');
+      assert.deepEqual(after, before, `${line.uuid}: text blocks must be byte-identical`);
+    }
+    // Named explicitly so the loop above can't pass by finding nothing.
+    assert.equal(out.u4.message.content[0].text, 'second');
+    assert.equal(out.a4.message.content[0].text, 'done');
+  });
+});
+
+test('a full cut keeps the thinking of an UNRESOLVED tool_use in the newest turn', async () => {
+  // A4. The exemption is message-keyed and cut-independent; making it cut-gated
+  // would ship a signature the API rejects on the very next request. An
+  // interrupted newest turn is exactly where that now becomes reachable.
+  await withStore(async () => {
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const lines = newestTurnPayloadScenario();
+    // Drop the tool_result answering t3: the newest turn now ends mid-tool-loop,
+    // and a5/a6 share no message.id, so the exemption must key off a6's own.
+    const answered = lines.findIndex(l => l.uuid === 'u5');
+    lines[answered].message.content[0].tool_use_id = 't-orphan';
+    lines.splice(lines.findIndex(l => l.uuid === 'a5'), 1);
+    lines.find(l => l.uuid === 'a6').message.content.unshift(
+      { type: 'thinking', thinking: bigText, signature: 'sig-2' });
+
+    const { dir, sid } = await seed(lines);
+    const { newSessionId } = await pruneSessionToNewId({
+      cwd: CWD, sessionId: sid, cutTurnIndex: 2, pruneThinking: true, mode: 'bypassPermissions',
+    });
+    const out = Object.fromEntries((await readOut(dir, newSessionId)).map(o => [o.uuid, o]));
+    assert.equal(out.a6.message.content[0].thinking, bigText,
+      'unresolved-tool_use thinking survives a full cut');
+    assert.equal(out.a6.message.content[0].signature, 'sig-2');
+    // Its INPUT is still squeezed — the exemption covers thinking only. Pins that
+    // the assertion above is not just "the whole line was skipped".
+    assert.match(out.a6.message.content[1].input.command, /chars pruned\]$/);
+    // …while a resolved turn-0 thinking block in the same run IS stubbed.
+    assert.equal(out.a1.message.content[0].thinking, '[pruned: thinking]');
+  });
+});
+
+// ── keepLatestTurns: the relative spelling of the same cut ──────────────────
+
+// Prune the same fixture twice and assert the two calls are indistinguishable —
+// same savings, same output lines (modulo the minted sessionId, which differs by
+// construction).
+async function assertSameCut(dir, sid, a, b, label) {
+  const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+  const ra = await pruneSessionToNewId({ cwd: CWD, sessionId: sid, mode: 'bypassPermissions', ...a });
+  const rb = await pruneSessionToNewId({ cwd: CWD, sessionId: sid, mode: 'bypassPermissions', ...b });
+  assert.deepEqual(rb.saved, ra.saved, `${label}: savings differ`);
+  assert.equal(rb.cutTurnIndex, ra.cutTurnIndex, `${label}: resolved cut differs`);
+  const strip = (lines, newSid) =>
+    lines.map(o => JSON.stringify(o).split(newSid).join('<SID>'));
+  assert.deepEqual(
+    strip(await readOut(dir, rb.newSessionId), rb.newSessionId),
+    strip(await readOut(dir, ra.newSessionId), ra.newSessionId),
+    `${label}: pruned transcripts differ`);
+  return ra.cutTurnIndex;
+}
+
+test('keepLatestTurns resolves to the equivalent absolute cut', async () => {
+  // B1/B2/B3. The mapping is turnCount - keepLatestTurns, clamped at 0 — pinned
+  // by equivalence to the absolute arg rather than by restating the arithmetic.
+  await withStore(async () => {
+    const { dir, sid } = await seed(newestTurnPayloadScenario());
+    assert.equal(
+      await assertSameCut(dir, sid, { cutTurnIndex: 1 }, { keepLatestTurns: 1 }, 'default'), 1);
+    assert.equal(
+      await assertSameCut(dir, sid, { cutTurnIndex: 2 }, { keepLatestTurns: 0 }, 'full cut'), 2);
+    // Keeping at least as many turns as exist SUCCEEDS with a resolved cut of 0.
+    // Asserting the resolved 0 (not merely "no throw") is what kills a dropped
+    // Math.max, which would otherwise surface as a negative-cut 400.
+    assert.equal(
+      await assertSameCut(dir, sid, { cutTurnIndex: 0 }, { keepLatestTurns: 2 }, 'exact'), 0);
+    assert.equal(
+      await assertSameCut(dir, sid, { cutTurnIndex: 0 }, { keepLatestTurns: 7 }, 'clamped'), 0);
+  });
+});
+
+test('cutTurnIndex and keepLatestTurns are exclusive, and one is required', async () => {
+  // B4. Two cut specifications that disagree is a caller bug; honouring either
+  // one silently prunes the wrong amount of context. Fail loudly, both ways.
+  await withStore(async () => {
+    const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
+    const { sid } = await seed(scenario());
+    const base = { cwd: CWD, sessionId: sid, mode: 'bypassPermissions' };
+    await assert.rejects(
+      () => pruneSessionToNewId({ ...base, cutTurnIndex: 1, keepLatestTurns: 1 }),
+      /exactly one of cutTurnIndex or keepLatestTurns/);
+    await assert.rejects(
+      () => pruneSessionToNewId({ ...base }),
+      /exactly one of cutTurnIndex or keepLatestTurns/);
+    await assert.rejects(
+      () => pruneSessionToNewId({ ...base, keepLatestTurns: -1 }),
+      /keepLatestTurns must be a non-negative integer/);
   });
 });
 
