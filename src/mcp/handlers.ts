@@ -315,20 +315,6 @@ function waitForEvent(inst: InstanceLike, predicate: (ev: UiEvent | null) => boo
   });
 }
 
-// Cap an otherwise-unbounded promise at the caller's wait budget, with the same
-// error text waitForEvent's own timeout produces. The underlying work is NOT
-// cancelled — a queued steer still delivers when its block edge arrives, exactly
-// as a live prompt keeps running past a timed-out wait.
-function withDeadline<T>(p: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`wait timed out after ${timeoutMs} ms`)), timeoutMs);
-    p.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
-
 // ---------- read-only ----------
 
 export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
@@ -1064,22 +1050,30 @@ export async function sendPrompt(
     // A one-shot subscription registered here would fire on the *next* turn
     // (this one is already being awaited inline), so skip it entirely.
     if (deferred) {
-      // The block-edge wait is unbounded (it ends when the model reaches a
-      // boundary), so the whole call — stop AND the steered turn — is capped at
-      // the SAME waitTimeoutMs a live send gets, or a busy worker could block a
-      // conductor well past the documented cap.
-      const deadline = Date.now() + waitTimeoutMs;
-      let waiter: Promise<UiEvent | null> | null = null;
-      await withDeadline(
-        inst.queueSteerAfterStop(composedText, {
-          beforeSend: () => {
-            waiter = waitForEvent(inst, (e) => e?.kind === 'turn_end', Math.max(1, deadline - Date.now()));
-          },
-        }),
-        waitTimeoutMs,
-      );
-      // beforeSend ran before queueSteerAfterStop resolved, so the waiter is set.
-      const ev = await (waiter as unknown as Promise<UiEvent | null>);
+      // ONE waiter, created up-front with the FULL budget and consumed on every
+      // path — structurally the same as the live branch below, and that is the
+      // point: the block-edge stop is unbounded, so anything that caps the call
+      // separately from the waiter can outlive the caller. `beforeSend` only
+      // flips a gate here; it creates nothing that could be orphaned.
+      //
+      // The gate is what the stop costs us: the aborted turn emits a `turn_end`
+      // of its own, and answering with THAT would report the stop as the steered
+      // turn's result. `steerSent` is set synchronously in the same tick as the
+      // delivering prompt() (see _flushPendingSteers), so every turn_end after it
+      // belongs to the steered turn and every one before it is the stop's.
+      let steerSent = false;
+      const waiter = waitForEvent(inst, (e) => steerSent && e?.kind === 'turn_end', waitTimeoutMs);
+      const delivered = inst.queueSteerAfterStop(composedText, { beforeSend: () => { steerSent = true; } });
+      // `waiter` is handled unconditionally, right here, before anything can
+      // return — so a timeout or an exit that lands after this call has already
+      // given up rejects into an owned handler, not into the process. A delivery
+      // that fails outright (process died, session being rewritten) surfaces its
+      // own error instead of idling out the rest of the budget; the waiter is
+      // still owned, so its later rejection is absorbed.
+      const ev = await new Promise<UiEvent | null>((resolve, reject) => {
+        waiter.then(resolve, reject);
+        delivered.catch(reject);
+      });
       return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
     }
     const waiter = waitForEvent(inst, (ev) => ev?.kind === 'turn_end', waitTimeoutMs);
