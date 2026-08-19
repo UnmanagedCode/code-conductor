@@ -376,14 +376,18 @@ describe('the resolved effort reaches the spawn', () => {
     assert.equal(effortArg(argv), 'max');
   });
 
-  // What the isResolvableRole guard buys, and the only place it is observable.
-  // resolveRoleBackend never throws — an unknown role falls through it to the
-  // default spawn tier's binding — so dropping the guard yields the SAME model
-  // either way. The difference is which row is forwarded: guarded, the gate takes
-  // its else branch and sets `tier` to the default tier, so that row's effort
-  // applies; unguarded, it forwards the unknown role instead, resolveSpawnEffort
-  // recognises neither name, and the spawn silently drops to DEFAULT_EFFORT.
-  test('a spawn naming an UNKNOWN role falls to the default tier for BOTH axes', async () => {
+  // The next two tests both pin the isResolvableRole guard, and WHICH AXIS
+  // discriminates flips between them — so neither assertion set is redundant and
+  // neither can be simplified to the other's.
+  //
+  // Unknown role named ALONE: resolveRoleBackend never throws (an unknown role
+  // falls through it to the default spawn tier's binding), and the gate's else
+  // branch resolves that same binding, so the MODEL is identical guarded or not.
+  // Only the forwarded ROW differs — guarded sets `tier` to the default tier, so
+  // that row's effort applies; unguarded forwards the unknown role, and
+  // resolveSpawnEffort recognises neither name and drops to DEFAULT_EFFORT.
+  // EFFORT is the discriminator here; do not rewrite this as a model assertion.
+  test('a spawn naming an UNKNOWN role alone falls to the default tier for BOTH axes', async () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     await setDefaultSpawnTier('powerful');
     await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
@@ -392,6 +396,30 @@ describe('the resolved effort reaches the spawn', () => {
     assert.equal(inst.model, 'claude-opus-4-8', 'an unknown role falls through to the default tier');
     assert.equal(inst.effort, 'max', "…and it is the default TIER's row that governs effort, not DEFAULT_EFFORT");
     assert.equal(effortArg(argv), 'max');
+  });
+
+  // Unknown role WITH a known tier: now the MODEL discriminates. Guarded, the
+  // bogus role is rejected and the gate falls to the tier branch, so the caller's
+  // named tier supplies the binding. Unguarded, the bogus role takes the role
+  // branch and resolveRoleBackend falls through to the DEFAULT tier's binding —
+  // silently shadowing the tier the caller actually named. (Effort does not
+  // discriminate here: the unguarded path leaves the caller's `tier` in place and
+  // resolveSpawnEffort can't resolve the role, so it lands on that tier's effort
+  // either way.) A bogus role must never outrank a valid named tier.
+  test('an UNKNOWN role alongside a known tier does not shadow that tier', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    await setDefaultSpawnTier('powerful');
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setTierEffort('powerful', 'max');
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await setTierEffort('fast', 'low');
+    const { inst, argv } = await spawnAndCapture({
+      project: 'p', mode: 'bypassPermissions', role: 'wat', tier: 'fast',
+    });
+    assert.equal(inst.model, 'claude-haiku-4-5', "the named tier's binding wins over a bogus role");
+    assert.equal(argv[argv.indexOf('--model') + 1], 'claude-haiku-4-5');
+    assert.equal(inst.effort, 'low', "…and the SAME tier's row supplies the effort");
+    assert.equal(effortArg(argv), 'low');
   });
 
   // Accepted consequence of routing a model-less fresh spawn through the default
