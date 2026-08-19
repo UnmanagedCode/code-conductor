@@ -78,25 +78,29 @@ function collect(inst) {
 const send = (inst, text, extra = {}) =>
   sendPrompt({ sessionId: inst.sessionId, text, subscribe: false, ...extra }, { instances });
 
-// Capture unhandled rejections for the duration of one test. Installing a
-// listener also suppresses the default crash, so the assertion is on the
-// captured list rather than on the runner surviving.
-function captureUnhandled() {
-  const seen = [];
-  const onUnhandled = (err) => seen.push(err);
-  process.on('unhandledRejection', onUnhandled);
-  cleanupListeners.push(() => process.off('unhandledRejection', onUnhandled));
-  return seen;
-}
-// Unhandled rejections are reported a tick after the microtask queue drains.
-const settleUnhandled = () => new Promise(r => setTimeout(r, 60));
+// HOW THE ORPHAN IS DETECTED — no assertion in the test body catches it.
+//
+// node:test installs its own process-level `unhandledRejection` listener and
+// attributes any leaked rejection to whichever test is running when it lands,
+// failing that test immediately. That runner-level interception IS the detector:
+// A1 fails because the runner attributes the orphan's `wait timed out after
+// 120 ms` to it, not because anything below asserts on a captured list. A local
+// `process.on('unhandledRejection', …)` cannot be used instead — the runner
+// aborts the test before any check of ours could run.
+//
+// So the load-bearing line is the SLEEP: it must stay LONGER than
+// `waitTimeoutMs` (260 > 120). That margin is the whole mechanism — it keeps the
+// leaked rejection landing while A1 is still the running test. Shorten it below
+// the budget and the rejection is attributed to A2 or to the file instead; A1
+// then goes green with the orphan fully back. The elapsed-time assertion after
+// the sleep guards that margin, so cutting the sleep hard fails loudly rather
+// than silently.
 
 test('live wait:true whose delivery FAILS: the error surfaces and no waiter is left behind', async () => {
   const inst = await setupWorker();
   const evs = collect(inst);
   assert.notEqual(inst.status, 'turn');
   assert.notEqual(inst.acceptsMidTurnSteering, false, 'this test must exercise the LIVE branch');
-  const unhandled = captureUnhandled();
 
   // A rewind is rewriting this session's jsonl, so prompt() refuses — the real
   // Instance guard, not a stub.
@@ -109,9 +113,9 @@ test('live wait:true whose delivery FAILS: the error surfaces and no waiter is l
   );
   inst._mutating = false;
 
-  // Wait past the abandoned waiter's whole budget so its timer really fires.
+  // Stay the running test past the abandoned waiter's whole budget, so an orphan's
+  // timer fires and is attributed HERE. See the note above the test.
   await new Promise(r => setTimeout(r, 260));
-  await settleUnhandled();
   assert.ok(Date.now() - t0 > 120, 'slept past waitTimeoutMs — the orphan had time to reject');
 
   // FORCING MECHANISM, asserted rather than assumed. Three things could settle
@@ -123,9 +127,6 @@ test('live wait:true whose delivery FAILS: the error surfaces and no waiter is l
     'no turn_end arrived — nothing resolved the waiter');
   assert.ok(inst.proc && inst.status !== 'exited' && inst.status !== 'crashed',
     'the instance stayed live — no exit/crash rejected the waiter into an owned handler');
-
-  assert.deepEqual(unhandled.map(e => e.message), [],
-    'the waiter was owned even though nobody awaited its value');
 });
 
 test('live wait:true that times out rejects with the documented error, not on the send resolving', async () => {

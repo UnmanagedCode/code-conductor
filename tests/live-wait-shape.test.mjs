@@ -42,14 +42,15 @@ function makeFake(overrides) {
 
 test('the turn_end waiter is subscribed before the send, so an in-flight turn_end is caught', async () => {
   // The fake emits its turn_end synchronously INSIDE prompt(), before resolving —
-  // the one ordering a real instance cannot reproduce.
-  let inFlight = false, emittedInFlight = false, calls = 0;
+  // the one ordering a real instance cannot reproduce. That the emit happens
+  // in-flight is guaranteed BY CONSTRUCTION here (a bare synchronous statement
+  // ahead of the function's only suspension point), so there is nothing to
+  // assert about it; the pin below is what has to hold.
+  let calls = 0;
   const inst = makeFake({
     async prompt(text) {
-      calls++; inFlight = true;
+      calls++;
       inst.emit('event', { kind: 'turn_end', isError: false, stopReason: 'end_turn', text });
-      emittedInFlight = inFlight;
-      inFlight = false;
     },
   });
 
@@ -58,9 +59,7 @@ test('the turn_end waiter is subscribed before the send, so an in-flight turn_en
     { instances },
   );
 
-  // FORCING MECHANISM, asserted.
-  assert.equal(calls, 1, 'prompt() was called exactly once');
-  assert.ok(emittedInFlight, 'the turn_end really was emitted while prompt() was still running');
+  assert.equal(calls, 1, 'prompt() was called exactly once — so exactly one turn_end was emitted');
   // The pin.
   assert.equal(res.turnEnd?.kind, 'turn_end', 'the in-flight turn_end was caught, not missed');
   assert.equal(res.turnEnd?.text, 'RACE', 'and the value came from the waiter, not from prompt() resolving');
