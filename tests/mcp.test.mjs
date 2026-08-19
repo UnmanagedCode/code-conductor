@@ -156,6 +156,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'locate_session',
     'merge_worktree',
     'playbook_state',
+    'prune_session',
     'project_bash', 'project_diff', 'project_read', 'project_status',
     'reject_plan', 'rename_workspace', 'renew_session', 'respawn_instance',
     'send_prompt', 'set_mode',

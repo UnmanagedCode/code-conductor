@@ -657,7 +657,8 @@
       </label>
       <label class="ni-temp-row">
         <input type="checkbox" id="pd-minimal" />
-        <span>Minimal tool inputs (squeeze long values to a marker instead of truncating)</span>
+        <span>Minimal tool inputs — squeeze any value over 80 chars to a size marker
+              (the default keeps the first 500 chars, so short inputs shrink not at all)</span>
       </label>
       <div id="pd-savings" class="prune-savings"></div>
       <p id="pd-error" class="error" hidden></p>

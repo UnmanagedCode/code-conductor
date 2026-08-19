@@ -171,7 +171,7 @@ export interface InstanceLike {
     droppedText: string;
     createArgs: CreateInstanceInput;
   }>;
-  pruneSession(input?: { cutTurnIndex?: unknown; pruneThinking?: unknown; inputMode?: unknown }): Promise<Record<string, unknown>>;
+  pruneSession(input?: { cutTurnIndex?: unknown; keepLatestTurns?: unknown; pruneThinking?: unknown; inputMode?: unknown }): Promise<Record<string, unknown>>;
   enableDebug(): { ok: boolean; alreadyOn?: boolean; debugDir?: string | null; reason?: string };
   handleHookCallback(envelope: unknown, res: Response): void;
   emit(event: 'status', summary: InstanceSummary): void;

@@ -9,9 +9,10 @@
 //
 // Slider semantics: the value is a `cutTurnIndex` in the SAME index space
 // fork/rewind use (pure user-prompt lines). Turns [0, cut) get pruned; the max is
-// turnCount-1, so the newest turn is always left verbatim — the "cap below 100%"
-// rule. Because the cut can only land on a turn boundary, it is structurally
-// impossible for it to fall between an assistant's tool_use and its tool_result.
+// turnCount, so a full prune (newest turn included) is reachable — but the
+// DEFAULT stays at turnCount-1, so shedding the newest turn is a deliberate drag
+// to the far right. Because the cut can only land on a turn boundary, it is
+// structurally impossible for it to fall between a tool_use and its tool_result.
 
 import { apiFetch } from './http.js';
 
@@ -114,16 +115,15 @@ export function installPruneDialog({ dom, getActiveId, refreshInstances }) {
       showError(`Could not analyse this session: ${e.message}`);
       return;
     }
-    if (analysis.turnCount < 2) {
+    if (analysis.turnCount < 1) {
       savingsEl.textContent = '';
-      showError('Nothing to prune yet — a session needs at least two turns '
-        + '(the newest turn is always left verbatim).');
+      showError('Nothing to prune yet — this session has no completed turns.');
       return;
     }
     cutEl.min = '0';
-    cutEl.max = String(analysis.turnCount - 1);
+    cutEl.max = String(analysis.turnCount);
     // Default to the brief's 90%, snapped to a turn boundary and capped so the
-    // newest turn survives.
+    // newest turn survives unless the user drags past it.
     cutEl.value = String(Math.min(
       analysis.turnCount - 1,
       Math.max(1, Math.round(analysis.turnCount * 0.9)),

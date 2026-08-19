@@ -499,6 +499,44 @@ export function buildTools(): Tool[] {
       handler: h.renewSession,
     },
     {
+      name: 'prune_session',
+      description:
+        'Shrink a worker\'s context deterministically and at zero token cost: rewrite its transcript with ' +
+        'old tool outputs, oversized tool inputs and thinking replaced by size stubs, then respawn that ' +
+        'worker against the pruned copy. No LLM pass and no summary — where `renew_session` asks the worker ' +
+        'to write its own handoff and starts a turn, this keeps the conversation itself and comes back IDLE ' +
+        'with nothing seeded, so you send the next prompt. ' +
+        'When to use: a worker that must keep its recent working state, where only its older payloads are ' +
+        'dead weight; renew instead at a job seam, where a summary is all that needs to survive. ' +
+        'The worker\'s own prompts and prose answers are never touched. ' +
+        'One cost to weigh: a pruned file read re-arms the CLI\'s read-before-edit guard, so the worker may ' +
+        'owe one re-Read before its next edit.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
+          keepLatestTurns: {
+            type: 'integer', minimum: 0, default: 1,
+            description: 'Newest turns left verbatim. 0 prunes every turn including the newest; '
+              + 'more than the session has prunes nothing.',
+          },
+          pruneThinking: {
+            type: 'boolean', default: true,
+            description: 'Stub thinking in EVERY turn, not just the pruned ones — thinking staleness is '
+              + 'categorical, not temporal.',
+          },
+          inputMode: {
+            type: 'string', enum: ['truncate', 'minimal'], default: 'truncate',
+            description: 'truncate: keep the first 500 chars of a long tool-input value. '
+              + 'minimal: replace any value over 80 chars with a size marker.',
+          },
+        },
+        required: ['sessionId'],
+      },
+      handler: h.pruneSession,
+      annotations: { destructiveHint: true },
+    },
+    {
       name: 'interrupt_turn',
       description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped; subscribe_to_idle to be woken when the turn actually ends. Pass force:true to abort immediately, discarding in-progress work.',
       inputSchema: {
