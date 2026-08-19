@@ -6,6 +6,13 @@
 // The caller here is a REAL conductor (a `.conduct` instance whose instanceId
 // rides `?caller=`), because "policy applies only to the conductor" is one of
 // the invariants under test — a stand-in project would prove nothing.
+//
+// The GRAPH these tests drive that wiring through is `GATELAB` below — a
+// test-only fixture injected into the per-test user overlay, never a shipped
+// playbook. The shipped `playbooks/*.json` are hand-editable by their owner, so
+// pinning their tool maps, stage names or `needs` here would make an ordinary
+// edit red the suite. Only one test names a built-in, and it derives every
+// expectation from the loaded definition rather than restating it.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +25,10 @@ import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './he
 import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 // (foldProjection is used by the resume tests below to assert the un-retire.)
-import { DEFAULT_PLAYBOOK_ENFORCEMENT } from '../src/playbooks.ts';
+import {
+  DEFAULT_PLAYBOOK_ENFORCEMENT, DEFAULT_PLAYBOOK_ID, loadPlaybooks, isSpawnable,
+} from '../src/playbooks.ts';
+import { pb } from './playbook-fixtures.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -48,6 +58,102 @@ async function makeRealRepo(projectsRoot, name) {
   return repoPath;
 }
 
+// ── GATELAB: the enforcement-mechanics fixture every test below rides ───────
+//
+// A mechanics lab, not a plausible workflow: one shape per mechanism the wiring
+// has to get right, so each assertion has something to bite on that no hand edit
+// to a shipped playbook can move.
+//
+// `draft` and `sealed` pin `mode` DIFFERENTLY on purpose, because the two jobs
+// pull opposite ways and one stage cannot do both:
+//   - pin fill-in needs a NON-default value ('ask'), or "the pin filled the
+//     argument in" is true whether or not the pin was ever applied — MCP
+//     spawn_instance already defaults to 'plan'.
+//   - the approve_plan side-effect needs the flip to be REACHABLE, and
+//     approve_plan's handler flips the mode only for a worker already IN plan
+//     mode (src/mcp/handlers.ts). Pin anything else and "the mode did not move"
+//     is true no matter what the deny does.
+// So `draft` pins 'ask' and `sealed` pins no mode at all, spawning at the
+// default.
+//
+// Every value below is load-bearing: each one has been mutated in place and the
+// assertion that reads it observed to fail. Nothing is here for decoration. The
+// one exception is `audit.needs.position`: a NARROWED list reddens the test, but
+// a list widened to ["*"] cannot, because no stage a build-veteran can reach is
+// outside the list. Widening is pinned at the policy layer instead
+// (tests/playbook-policy.test.mjs).
+//
+//   draft   entry; `pin` FILLS IN mode+createWorktree; no declared draft->draft,
+//           so an ordinary follow-up prompt is an UNDECLARED self-edge (legal,
+//           never ledgered)
+//   build   omits spawn_instance ⇒ STAGE_NOT_SPAWNABLE; denies nothing that
+//           `audit` denies, which is the permitted half of the deny tests
+//   audit   `needs` on SPAWN-entry, workers:"many", and the stage-scoped denies
+//   amend   `needs` on TRANSITION-entry at the default liveness:"live"; the
+//           DECLARED amend->amend self-loop, so its rounds are ledgered
+//   sealed  a dead end with both write doors shut — no outgoing edge, set_mode
+//           and approve_plan denied. Pins no `mode`, so its worker spawns in
+//           plan mode and approve_plan's flip is reachable — which is what makes
+//           "the refused call changed nothing" an assertion rather than a
+//           restatement of the pin
+//   handoff `needs` sealed at liveness:"any", at the default workers:"one"
+//   loose   ungated, its own run root
+const GATELAB = {
+  id: 'gatelab',
+  name: 'Gatelab — enforcement-mechanics fixture',
+  description: 'Test-only graph: pins, drivers, needs, liveness, capacity, stage-scoped tool policy.',
+  entryStages: ['draft', 'sealed', 'loose'],
+  stages: {
+    draft: {
+      description: 'Entry: pins are filled in here.',
+      tools: { spawn_instance: { pin: { mode: 'ask', createWorktree: true } } },
+    },
+    build: {
+      description: 'Reached only by the approve_plan edge.',
+    },
+    audit: {
+      description: 'Read-only lens; many at once.',
+      needs: [{ stage: 'build', position: ['build', 'amend'] }],
+      workers: 'many',
+      tools: {
+        spawn_instance: { pin: { mode: 'bypassPermissions', model: 'reviewer' } },
+        sync_worktree: 'deny',
+        approve_plan: 'deny',
+      },
+    },
+    amend: {
+      description: 'Entered by transition; needs a live auditor.',
+      needs: [{ stage: 'audit' }],
+    },
+    sealed: {
+      description: 'No outgoing edge; cannot self-promote.',
+      tools: {
+        spawn_instance: { pin: { createWorktree: true } },
+        set_mode: 'deny',
+        approve_plan: 'deny',
+      },
+    },
+    handoff: {
+      description: 'Spawns against a sealed worker, alive or not.',
+      needs: [{ stage: 'sealed', liveness: 'any' }],
+      tools: { spawn_instance: 'allow' },
+    },
+    loose: {
+      description: 'Ungated worker, its own run root.',
+      tools: { spawn_instance: 'allow' },
+    },
+  },
+  transitions: [
+    { from: 'draft', to: 'build', on: 'approve_plan' }, // an `on` driver
+    { from: 'build', to: 'amend' },                     // no `on` ⇒ send_prompt
+    { from: 'amend', to: 'amend' },                     // DECLARED self-loop ⇒ ledgered
+  ],                                                    // no draft->draft ⇒ undeclared self-edge
+};
+
+// Validate at module load: a silently rejected fixture would leave every test
+// below green against a graph that was never installed.
+pb(GATELAB);
+
 let nextRpcId = 1;
 
 // Boot a server, a real git project, and a live conductor at `enforcement`.
@@ -63,6 +169,12 @@ async function setup({ enforcement, scenarioPath = SCENARIO, seedLedger } = {}) 
   const ctx = await bootServer({ scenarioPath });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  // The fixture graph, in this test's own store only — bootServer points
+  // PROJECTS_ROOT at a per-test temp dir, so `gatelab` is invisible to
+  // production by construction and needs no cleanup.
+  const pbDir = path.join(orchStoreRoot(), 'playbooks');
+  await fs.mkdir(pbDir, { recursive: true });
+  await fs.writeFile(path.join(pbDir, 'gatelab.json'), JSON.stringify(GATELAB));
   if (seedLedger) await seedLedger(ctx);
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
     project: '.conduct', mode: 'bypassPermissions', temp: true,
@@ -225,7 +337,7 @@ test('warn: an illegal spawn PROCEEDS, is ledgered as a refusal, and stays untra
     assert.equal((await t.events()).filter(e => e.kind === 'spawn').length, 0,
       'an illegal spawn records no binding');
     assert.equal((await t.call('send_prompt', {
-      sessionId: w.sessionId, text: 'go', stage: 'refine', subscribe: false,
+      sessionId: w.sessionId, text: 'go', stage: 'amend', subscribe: false,
     })).ok, undefined, 'an untracked worker is ungoverned at either level');
   } finally { await t.close(); }
 });
@@ -233,89 +345,101 @@ test('warn: an illegal spawn PROCEEDS, is ledgered as a refusal, and stays untra
 test('warn: a LEGAL spawn is patched by `require` and recorded, exactly as under enforce', async () => {
   const t = await setup({ enforcement: 'warn' });
   try {
-    // Neither mode nor createWorktree is passed; the plan stage pins both. Proof
-    // that warn runs the full decide()+patch path rather than passing args through.
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
-    assert.equal(w.mode, 'plan', 'warn applies the stage\'s require');
+    // Neither mode nor createWorktree is passed; `draft` pins both. Proof that
+    // warn runs the full decide()+patch path rather than passing args through.
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
+    assert.equal(w.mode, 'ask', 'warn applies the stage\'s require');
     assert.ok(w.worktree?.worktreeName, 'require filled in createWorktree under warn');
 
     const spawn = await waitFor(async () =>
       (await t.events()).find(e => e.kind === 'spawn') ?? false);
     assert.deepEqual({ playbook: spawn.playbook, stage: spawn.stage },
-      { playbook: 'solo', stage: 'plan' }, 'the binding is written under warn');
+      { playbook: 'gatelab', stage: 'draft' }, 'the binding is written under warn');
   } finally { await t.close(); }
 });
 
-// ── a full solo run under `enforce` ──────────────────────────────────────
+// ── the enforcement mechanics, end to end, on one injected graph ──────────
 
-test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate, needs, capacity', async () => {
+test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs, capacity', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
     // `require` FILLS IN omitted arguments: neither mode nor createWorktree is
-    // passed, and both come back as the plan stage pins them.
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
-    assert.equal(impl.mode, 'plan', 'require filled in mode');
+    // passed, and both come back as `draft` pins them.
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
+    assert.equal(impl.mode, 'ask', 'require filled in mode');
     assert.ok(impl.worktree?.worktreeName, 'require filled in createWorktree');
     const wtName = impl.worktree.worktreeName;
 
     // A SELF-EDGE — every ordinary follow-up prompt is one. Always legal, and
-    // NOT ledgered here, because solo declares no plan->plan loop.
+    // NOT ledgered here, because gatelab declares no draft->draft loop.
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'plan it', stage: 'plan', subscribe: false,
+      sessionId: impl.sessionId, text: 'plan it', stage: 'draft', subscribe: false,
     })).ok, undefined);
     assert.equal((await t.events()).filter(e => e.kind === 'transition').length, 0,
       'an UNDECLARED self-edge must not be ledgered as a transition');
 
-    // plan -> implement fires on approve_plan ONLY; send_prompt cannot sneak
-    // a worker past plan approval.
+    // draft -> build fires on approve_plan ONLY; send_prompt cannot sneak a
+    // worker past the driver.
     const snuck = await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'just implement it', stage: 'implement', subscribe: false,
+      sessionId: impl.sessionId, text: 'just build it', stage: 'build', subscribe: false,
     });
     refused(snuck, 'TRANSITION_ILLEGAL');
     assert.match(snuck.reason, /approve_plan/, 'the refusal names the tool that does drive the edge');
-    assert.deepEqual(snuck.legalMoves.transitions, [{ to: 'implement', via: 'approve_plan' }]);
+    assert.deepEqual(snuck.legalMoves.transitions, [{ to: 'build', via: 'approve_plan' }]);
+
+    // Naming a worker in `provenance` is not on its own enough: the implementer
+    // is still in `draft`, which satisfies neither the anchor's history
+    // requirement nor audit's position list. Both refuse with the same
+    // NEEDS_UNSATISFIED, so this assertion pins the PAIR, not either one alone —
+    // the anchor's history check is isolated in tests/playbook-ledger.test.mjs
+    // ('retire preserves stageHistory…'), where the position check is out of the
+    // way.
+    refused(await t.call('spawn_instance', {
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
+      provenance: { build: impl.sessionId },
+    }), 'NEEDS_UNSATISFIED');
 
     // The declared `on` auto-fires the edge.
     await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false });
     const moved = (await t.events()).find(e => e.kind === 'transition');
     assert.deepEqual(
       { from: moved.from, to: moved.to, via: moved.via, sessionId: moved.sessionId },
-      { from: 'plan', to: 'implement', via: 'approve_plan', sessionId: impl.sessionId });
+      { from: 'draft', to: 'build', via: 'approve_plan', sessionId: impl.sessionId });
 
     // A spawn into a transition-only stage is refused without either stage
     // having to say so — spawn_instance fails closed.
-    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'solo', stage: 'implement' }),
+    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'gatelab', stage: 'build' }),
       'STAGE_NOT_SPAWNABLE');
-    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'solo', stage: 'refine' }),
+    refused(await t.call('spawn_instance', { project: 'demo', playbook: 'gatelab', stage: 'amend' }),
       'STAGE_NOT_SPAWNABLE');
 
-    // `needs` on SPAWN-entry: review requires a worker currently in implement.
+    // `needs` on SPAWN-entry: audit requires a worker currently in build.
     refused(await t.call('spawn_instance', {
-      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
     }), 'NEEDS_UNSATISFIED');
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      provenance: { implement: impl.sessionId },
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
+      provenance: { build: impl.sessionId },
     });
     assert.ok(rev.sessionId, 'satisfying needs admits the spawn');
     assert.equal(rev.model !== null, true, 'the reviewer role resolved to a model');
 
-    // Permission comes from the worker's CURRENT stage: review denies both.
+    // Permission comes from the worker's CURRENT stage: audit denies both.
     refused(await t.call('sync_worktree', { sessionId: rev.sessionId }), 'TOOL_DENIED_IN_STAGE');
     refused(await t.call('approve_plan', { sessionId: rev.sessionId, subscribe: false }),
       'TOOL_DENIED_IN_STAGE');
-    // ...and the same tool is permitted for the implementer, in `implement`.
+    // ...and the same tool is permitted for the implementer, in `build`. Both
+    // halves are required: a mutant that denied the tool everywhere would pass
+    // the two refusals above and fail here.
     assert.notEqual((await t.call('sync_worktree', { sessionId: impl.sessionId })).code,
       'TOOL_DENIED_IN_STAGE');
 
-    // `review` is workers:"many": a second lens runs ALONGSIDE the first rather
-    // than waiting for a slot. (The workers:"one" refusal itself is pinned on a
-    // synthetic playbook in playbook-policy.test.mjs — there is no built-in left
-    // that declares it, and inventing one here to keep the assertion would be
-    // testing a fixture rather than the shipped graph.)
+    // `audit` is workers:"many": a second lens runs ALONGSIDE the first rather
+    // than waiting for a slot. (The workers:"one" refusal itself is pinned in
+    // playbook-policy.test.mjs.)
     const secondReviewer = {
-      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      provenance: { implement: impl.sessionId },
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
+      provenance: { build: impl.sessionId },
     };
     const rev2 = await t.spawnWorker(secondReviewer);
     assert.ok(rev2.sessionId, 'a second reviewer runs on its own lens, concurrently');
@@ -328,50 +452,84 @@ test('enforce: a full solo run — require fill-in, self-edge, approve_plan gate
     const retire = (await t.events()).find(e => e.kind === 'retire');
     assert.equal(retire.sessionId, rev.sessionId);
 
-    // `needs` on TRANSITION-entry, not just spawn-entry: refine requires the
-    // reviewer, and the DESTINATION stage's conditions are what get checked.
+    // `needs` on TRANSITION-entry, not just spawn-entry: amend requires the
+    // auditor, and the DESTINATION stage's conditions are what get checked.
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
     }), 'NEEDS_UNSATISFIED');
-    // The retired reviewer cannot satisfy it either — liveness:"live" means now,
+    // The retired auditor cannot satisfy it either — liveness:"live" means now,
     // and the code says "gone" rather than blaming the call.
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
-      provenance: { review: rev.sessionId },
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      provenance: { audit: rev.sessionId },
     }), 'NEEDS_WORKER_GONE');
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
-      provenance: { review: rev2.sessionId },
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      provenance: { audit: rev2.sessionId },
     })).ok, undefined, 'supplying the destination stage\'s needs admits the transition');
 
-    // ROUND 2. The implementer is already in `refine`, so this is a self-edge —
-    // but solo DECLARES refine->refine, so unlike the plan-stage prompt above it
-    // lands in the ledger. This is what makes refine rounds countable, and it is
+    // ROUND 2. The implementer is already in `amend`, so this is a self-edge —
+    // but gatelab DECLARES amend->amend, so unlike the draft-stage prompt above
+    // it lands in the ledger. This is what makes rounds countable, and it is
     // asserted here rather than only against decide() because the recording
     // happens in commitMove: a change to resolveMove alone passes the unit test
     // and fails this one.
     const before = (await t.events()).filter(e => e.kind === 'transition').length;
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'round 2', stage: 'refine', subscribe: false,
+      sessionId: impl.sessionId, text: 'round 2', stage: 'amend', subscribe: false,
     })).ok, undefined, 'a declared self-loop is still ungated');
-    const loops = (await t.events()).filter(e => e.kind === 'transition' && e.from === 'refine' && e.to === 'refine');
+    const loops = (await t.events()).filter(e => e.kind === 'transition' && e.from === 'amend' && e.to === 'amend');
     assert.equal(loops.length, 1, 'the round was ledgered exactly once');
     assert.equal(loops[0].sessionId, impl.sessionId);
     assert.equal(loops[0].via, 'send_prompt');
     assert.equal((await t.events()).filter(e => e.kind === 'transition').length, before + 1);
     // …and it shows up where a reader counts rounds.
     assert.deepEqual(foldProjection(await t.events()).bySession.get(impl.sessionId).stageHistory,
-      ['plan', 'implement', 'refine', 'refine']);
+      ['draft', 'build', 'amend', 'amend']);
 
     // The projection folded from disk reproduces the run — state survives a
     // restart because the JSONL, not memory, is the source of truth.
     const projection = foldProjection(await t.events());
     const state = projection.bySession.get(impl.sessionId);
-    assert.deepEqual(state.stageHistory, ['plan', 'implement', 'refine', 'refine']);
-    assert.equal(state.playbook, 'solo');
+    assert.deepEqual(state.stageHistory, ['draft', 'build', 'amend', 'amend']);
+    assert.equal(state.playbook, 'gatelab');
     assert.equal(t.instances.isSessionLive(rev.sessionId), false);
     assert.equal(projection.bySession.get(rev2.sessionId).runRoot, state.runRoot,
       'the reviewer joined the implementer\'s run via its needs edge');
+
+    // `position` is what makes the ANCHOR's current stage negotiable: the
+    // implementer has moved on to `amend`, and audit's needs still admit a fresh
+    // lens because its position list names that stage too. Narrowing the list to
+    // the anchor alone refuses this spawn.
+    const rev3 = await t.spawnWorker(secondReviewer);
+    assert.ok(rev3.sessionId,
+      `position:["build","amend"] must admit a lens on a worker that has moved on: ${JSON.stringify(rev3)}`);
+  } finally { await t.close(); }
+});
+
+// Everything above rides GATELAB, which no shipped definition can move — so the
+// one thing left to prove about the built-ins is that a SHIPPED graph still
+// spawns end to end through the real MCP router. Every expectation here is READ
+// from the loaded definition, so a hand edit to playbooks/*.json follows this
+// test instead of failing it.
+test('enforce: the shipped default playbook spawns end to end, at whatever entry stage it declares', async () => {
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const { playbooks, errors } = await loadPlaybooks();
+    assert.deepEqual(errors, [], 'the shipped definitions must load clean');
+    const def = playbooks.get(DEFAULT_PLAYBOOK_ID);
+    assert.ok(def, `the default playbook '${DEFAULT_PLAYBOOK_ID}' must exist`);
+    // A run has to be able to START somewhere with nothing already in flight.
+    const entry = def.entryStages.find(s => isSpawnable(def.stages[s]) && def.stages[s].needs.length === 0);
+    assert.ok(entry, `'${DEFAULT_PLAYBOOK_ID}' must declare a spawnable entry stage with no needs`);
+
+    const w = await t.spawnWorker({ project: 'demo', playbook: DEFAULT_PLAYBOOK_ID, stage: entry });
+    assert.ok(w.sessionId, `the default playbook's entry spawn must succeed: ${JSON.stringify(w)}`);
+
+    const spawn = await waitFor(async () =>
+      (await t.events()).find(e => e.kind === 'spawn' && e.sessionId === w.sessionId) ?? false);
+    assert.deepEqual({ playbook: spawn.playbook, stage: spawn.stage },
+      { playbook: DEFAULT_PLAYBOOK_ID, stage: entry }, 'the binding names the graph it was spawned on');
   } finally { await t.close(); }
 });
 
@@ -384,29 +542,29 @@ test('enforce: a send_prompt whose transition would be legal is not ledgered whe
   // ever regressed, this is the one test that would catch it.
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const wtName = impl.worktree.worktreeName;
-    await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false }); // plan -> implement
+    await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false }); // draft -> build
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      provenance: { implement: impl.sessionId },
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
+      provenance: { build: impl.sessionId },
     });
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
-      provenance: { review: rev.sessionId },
-    })).ok, undefined, 'implement -> refine is legal once its needs are satisfied');
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      provenance: { audit: rev.sessionId },
+    })).ok, undefined, 'build -> amend is legal once its needs are satisfied');
 
     // A fresh, live, ungoverned-by-this-call source with no output: forward
     // from it refuses NOTHING_TO_FORWARD before send_prompt's handler ever
     // calls inst.prompt.
-    const source = await t.spawnWorker({ project: 'demo', playbook: 'freeform', stage: 'freeform' });
+    const source = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'loose' });
     const before = (await t.events()).filter(e => e.kind === 'transition').length;
 
-    // solo DECLARES refine->refine as a self-loop, so absent the forward
+    // gatelab DECLARES amend->amend as a self-loop, so absent the forward
     // refusal this exact call would ledger a transition (see the "ROUND 2"
     // case above) — the only difference here is the attached `forward`.
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'round 2', stage: 'refine', subscribe: false,
+      sessionId: impl.sessionId, text: 'round 2', stage: 'amend', subscribe: false,
       forward: { sessionId: source.sessionId },
     }), 'NOTHING_TO_FORWARD');
 
@@ -418,7 +576,7 @@ test('enforce: a send_prompt whose transition would be legal is not ledgered whe
 test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous one', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const wtName = impl.worktree.worktreeName;
     await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false });
 
@@ -427,8 +585,8 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
     // (exact always wins), which is not what this test is about.
     const prefix = impl.sessionId.slice(0, 5);
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      provenance: { implement: prefix },
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
+      provenance: { build: prefix },
     });
     assert.ok(rev.sessionId, 'a needs prefix resolved to the full sessionId');
 
@@ -440,11 +598,11 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
     t.instances.byId.set('fake-ambig', { id: 'fake-ambig', sessionId: fake, kill: async () => {} });
     try {
       const res = await t.call('spawn_instance', {
-        project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-        provenance: { implement: prefix },
+        project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
+        provenance: { build: prefix },
       });
       refused(res, 'SESSION_AMBIGUOUS');
-      assert.match(res.reason, /provenance\.implement/);
+      assert.match(res.reason, /provenance\.build/);
     } finally { t.instances.byId.delete('fake-ambig'); }
   } finally { await t.close(); }
 });
@@ -461,7 +619,7 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
   const t = await setup({ enforcement: 'enforce', scenarioPath: SCENARIO_RENEW });
   try {
     const w = await t.spawnWorker({
-      project: 'demo', playbook: 'freeform', stage: 'freeform', mode: 'bypassPermissions',
+      project: 'demo', playbook: 'gatelab', stage: 'loose', mode: 'bypassPermissions',
     });
     const publicId = w.sessionId;
     assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
@@ -473,7 +631,7 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
     // Bound and live before the rotation.
     const before = foldProjection(await t.events()).bySession.get(publicId);
     assert.deepEqual({ stage: before.stage, playbook: before.playbook },
-      { stage: 'freeform', playbook: 'freeform' });
+      { stage: 'loose', playbook: 'gatelab' });
     assert.equal(t.instances.isSessionLive(publicId), true);
 
     // The worker renews ITSELF — the real shape, since MCP tools are
@@ -489,7 +647,7 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
     // (1) The binding survived, under the SAME key, with its history intact.
     const after = proj.bySession.get(publicId);
     assert.deepEqual({ stage: after.stage, history: after.stageHistory },
-      { stage: 'freeform', history: ['freeform'] });
+      { stage: 'loose', history: ['loose'] });
     assert.equal(t.instances.isSessionLive(publicId), true);
     // (2) No second declaration and no orphan row under either backing id.
     assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === publicId).length, 1,
@@ -522,17 +680,17 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
   // that matters is on the id the worker holds AFTER the prune.
   const t = await setup({ enforcement: 'enforce' });
   try {
-    // solo/plan deliberately, not freeform/freeform: distinct playbook and stage
-    // names mean a mutant that confused the two fields could not pass this.
+    // gatelab/draft deliberately: its `createWorktree: true` pin is what puts the
+    // worker in a worktree, which is what the transcript seeding below depends on.
     //
-    // `mode` is omitted because playbooks/solo.json's `plan` stage PINS
-    // {mode:'plan', createWorktree:true} (ARG_PIN_CONFLICT if either is supplied).
-    // So this worker runs in plan mode AND in a real git worktree — its cwd is the
-    // worktree, not the project root, which is why the transcript below is seeded
-    // at inst.cwd rather than the project path. Neither matters to the prune; both
-    // are consequences of the fixture choice, recorded so a future reader is not
-    // left wondering where the worktree came from.
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    // `mode` is omitted because `draft` PINS {mode:'ask', createWorktree:true}
+    // (ARG_PIN_CONFLICT if either is supplied). So this worker runs in ask mode
+    // AND in a real git worktree — its cwd is the worktree, not the project root,
+    // which is why the transcript below is seeded at inst.cwd rather than the
+    // project path. Neither matters to the prune; both are consequences of the
+    // fixture choice, recorded so a future reader is not left wondering where the
+    // worktree came from.
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const publicId = w.sessionId;
     assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
     const inst = instForSession(t.instances, publicId);
@@ -548,7 +706,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     ]);
 
     const before = foldProjection(await t.events()).bySession.get(publicId);
-    assert.equal(before.stage, 'plan');
+    assert.equal(before.stage, 'draft');
     assert.equal(t.instances.isSessionLive(publicId), true);
 
     await inst.pruneSession({ cutTurnIndex: 1 });
@@ -565,7 +723,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     const after = proj.bySession.get(afterId);
     assert.ok(after, `the pruned worker must still be tracked under ${afterId} — this is the production break`);
     assert.deepEqual({ stage: after.stage, playbook: after.playbook, history: after.stageHistory },
-      { stage: 'plan', playbook: 'solo', history: ['plan'] }, 'binding intact');
+      { stage: 'draft', playbook: 'gatelab', history: ['draft'] }, 'binding intact');
 
     // One worker, one row: no orphan under either backing id, and no re-declaration.
     assert.equal([...proj.bySession.keys()].length, 1, 'one worker, one row');
@@ -591,28 +749,28 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     assert.equal(state.worker.live, true, 'the worker is running again, and the read surface must say so');
 
     // (2) A governed call still drives the worker's OWN transition normally —
-    // no kill, no spawn_instance({resume}). solo's plan->implement edge is
+    // no kill, no spawn_instance({resume}). gatelab's draft->build edge is
     // driven by approve_plan (send_prompt cannot drive it — TRANSITION_ILLEGAL —
-    // so this is the call that actually advances a solo/plan worker).
+    // so this is the call that actually advances a gatelab/draft worker).
     assert.equal((await t.call('approve_plan', { sessionId: publicId, subscribe: false })).ok, undefined,
       'approve_plan must succeed on the pruned-and-relaunched worker with no revival step');
-    assert.equal(foldProjection(await t.events()).bySession.get(publicId).stage, 'implement');
+    assert.equal(foldProjection(await t.events()).bySession.get(publicId).stage, 'build');
 
     // (3) A sibling spawn whose stage declares `needs` on the pruned worker with
     // the default liveness:"live" succeeds — capacity/needs read real liveness,
     // not a ledger bit the prune could desynchronise.
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'solo', stage: 'review', worktree: w.worktree.worktreeName,
-      provenance: { implement: publicId },
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: w.worktree.worktreeName,
+      provenance: { build: publicId },
     });
-    assert.ok(rev.sessionId, `needs.implement@live must be satisfied by the pruned worker: ${JSON.stringify(rev)}`);
+    assert.ok(rev.sessionId, `needs.build@live must be satisfied by the pruned worker: ${JSON.stringify(rev)}`);
   } finally { await t.close(); }
 });
 
 test('enforce: a worker whose subprocess exits is retired without a kill_instance', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     // Kill the subprocess out from under the orchestrator — no MCP call, so the
     // gate learns about it only from the manager's status stream. Without that
     // the worker would hold its stage's capacity slot forever.
@@ -661,6 +819,11 @@ test('a worker bound by a previous run still retires when it exits', async () =>
   try {
     await makeRealRepo(ctx.projectsRoot, 'demo');
     await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+    // This test builds its own fixture rather than using setup(), so it installs
+    // the graph its seeded binding names itself.
+    const pbDir = path.join(orchStoreRoot(), 'playbooks');
+    await fs.mkdir(pbDir, { recursive: true });
+    await fs.writeFile(path.join(pbDir, 'gatelab.json'), JSON.stringify(GATELAB));
 
     // A worker created directly, so no governed call is involved in its birth.
     const worker = await api(ctx.baseUrl, 'POST', '/api/instances',
@@ -673,7 +836,7 @@ test('a worker bound by a previous run still retires when it exits', async () =>
     await fs.mkdir(path.dirname(ledgerFile()), { recursive: true });
     await fs.writeFile(ledgerFile(), JSON.stringify({
       seq: 1, ts: '2026-08-05T00:00:00Z', kind: 'spawn',
-      sessionId, playbook: 'solo', stage: 'plan', project: 'demo',
+      sessionId, playbook: 'gatelab', stage: 'draft', project: 'demo',
     }) + '\n');
 
     // Only now does a conductor exist, and it makes no tools/call at all.
@@ -707,10 +870,10 @@ test('a reboot cannot wedge a workers:"one" stage: capacity counts live processe
     seedLedger: async () => {
       await fs.mkdir(path.dirname(ledgerFile()), { recursive: true });
       const lines = [
-        { seq: 1, ts: '2026-08-15T00:00:00Z', kind: 'spawn', sessionId: rootPlanId, playbook: 'relay', stage: 'plan' },
+        { seq: 1, ts: '2026-08-15T00:00:00Z', kind: 'spawn', sessionId: rootPlanId, playbook: 'gatelab', stage: 'sealed' },
         {
-          seq: 2, ts: '2026-08-15T00:00:01Z', kind: 'spawn', sessionId: implId, playbook: 'relay', stage: 'implement',
-          provenance: { plan: rootPlanId },
+          seq: 2, ts: '2026-08-15T00:00:01Z', kind: 'spawn', sessionId: implId, playbook: 'gatelab', stage: 'handoff',
+          provenance: { sealed: rootPlanId },
         },
         // Deliberately NO `retire` — this process's registry never heard of
         // either sessionId, which is what "unobserved death" means.
@@ -723,11 +886,11 @@ test('a reboot cannot wedge a workers:"one" stage: capacity counts live processe
       'premise: this process\'s registry never heard of the seeded worker');
     const before = await t.events();
 
-    // `implement` is workers:"one" (relay.json declares no `workers`, and "one"
-    // is the default). Capacity counts LIVE processes directly, so a row this
-    // registry has no instance for holds no slot — no boot-time repair needed.
+    // `handoff` is workers:"one" (it declares no `workers`, and "one" is the
+    // default). Capacity counts LIVE processes directly, so a row this registry
+    // has no instance for holds no slot — no boot-time repair needed.
     const second = await t.spawnWorker({
-      project: 'demo', playbook: 'relay', stage: 'implement', provenance: { plan: rootPlanId },
+      project: 'demo', playbook: 'gatelab', stage: 'handoff', provenance: { sealed: rootPlanId },
     });
     assert.ok(second.sessionId,
       `a reboot-orphaned slot must not wedge the run permanently: ${JSON.stringify(second)}`);
@@ -745,19 +908,24 @@ test('a reboot cannot wedge a workers:"one" stage: capacity counts live processe
   } finally { await t.close(); }
 });
 
-// ── relay: the planner can never implement ─────────────────────────────────
+// ── a dead-end stage: a deny stops the SIDE EFFECT, not just the reply ──────
 
-test('enforce: in relay the planner cannot reach implement by any route', async () => {
+test('enforce: a stage with no outgoing edge and both write doors shut cannot self-promote', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const planner = await t.spawnWorker({ project: 'demo', playbook: 'relay', stage: 'plan' });
-    assert.equal(planner.mode, 'plan');
+    const planner = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'sealed' });
+    // PRECONDITION for the side-effect assertion below, not a claim about the
+    // pin: approve_plan's handler flips the mode only for a worker that is IN
+    // plan mode, so the flip has to be reachable before "the mode did not move"
+    // can mean anything. `sealed` pins no mode, so this worker spawns at the
+    // default — plan — and the flip is live.
+    assert.equal(planner.mode, 'plan', 'the flip the deny has to prevent is reachable');
 
-    // No outgoing edge from `plan` at all — not merely the wrong driver.
+    // No outgoing edge from `sealed` at all — not merely the wrong driver.
     const res = refused(await t.call('send_prompt', {
-      sessionId: planner.sessionId, text: 'implement it', stage: 'implement', subscribe: false,
+      sessionId: planner.sessionId, text: 'implement it', stage: 'handoff', subscribe: false,
     }), 'TRANSITION_ILLEGAL');
-    assert.deepEqual(res.legalMoves.transitions, [], 'relay.plan is a dead end by construction');
+    assert.deepEqual(res.legalMoves.transitions, [], 'gatelab.sealed is a dead end by construction');
     // Nor by escalating its permissions.
     refused(await t.call('set_mode', { sessionId: planner.sessionId, mode: 'bypassPermissions' }),
       'TOOL_DENIED_IN_STAGE');
@@ -770,29 +938,36 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
       'TOOL_DENIED_IN_STAGE');
     assert.equal(instForSession(t.instances, planner.sessionId).mode, 'plan',
       'the planner must still be in plan mode — approve_plan never ran');
-    assert.equal(foldProjection(await t.events()).bySession.get(planner.sessionId).stage, 'plan');
+    assert.equal(foldProjection(await t.events()).bySession.get(planner.sessionId).stage, 'sealed');
 
-    // The handoff is a FORWARD, not a kill: the implementer spawns onto the
+    // The handoff is a FORWARD, not a kill: the successor spawns onto the
     // planner's worktree and the plan is forwarded out of the planner. The
     // planner happens to still be live here, but that is not what makes it
     // work — `forward` serves a retired source from its transcript too.
     const handoff = {
-      project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName,
-      provenance: { plan: planner.sessionId },
+      project: 'demo', stage: 'handoff', worktree: planner.worktree.worktreeName,
+      provenance: { sealed: planner.sessionId },
     };
     const dev = await t.spawnWorker(handoff);
     assert.ok(dev.sessionId);
+
+    // `handoff` declares no `workers`, so it is the default "one": with `dev`
+    // still running, a second identical spawn is refused on CAPACITY, not on
+    // needs — which is what makes the kill-then-respawn below meaningful rather
+    // than incidental.
+    refused(await t.call('spawn_instance', handoff), 'STAGE_AT_CAPACITY');
+
     let folded = foldProjection(await t.events());
     assert.equal(t.instances.isSessionLive(planner.sessionId), true,
       'the planner is still live at the handoff — that is the point of liveness:"any"');
-    assert.equal(folded.bySession.get(dev.sessionId).playbook, 'relay', 'playbook inherited via needs');
+    assert.equal(folded.bySession.get(dev.sessionId).playbook, 'gatelab', 'playbook inherited via needs');
     assert.notEqual(dev.sessionId, planner.sessionId);
 
     // …and the other direction, which is what rules `liveness:"live"` out: a
-    // planner that has since died does not brick the stage. A second implement
+    // planner that has since died does not brick the stage. A second handoff
     // spawn against the now-retired planner is still allowed. (The first
-    // implementer is retired too — `implement` is workers:"one", and capacity
-    // is a different refusal from the one under test.)
+    // successor is retired too — `handoff` is workers:"one", and capacity is a
+    // different refusal from the one under test.)
     await t.call('kill_instance', { sessionId: planner.sessionId });
     await t.call('kill_instance', { sessionId: dev.sessionId });
     await waitFor(async () => (await t.events()).filter(e => e.kind === 'retire').length >= 2);
@@ -801,14 +976,14 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
     assert.notEqual(dev2.sessionId, dev.sessionId);
     folded = foldProjection(await t.events());
     assert.equal(t.instances.isSessionLive(planner.sessionId), false);
-    assert.equal(folded.bySession.get(dev2.sessionId).playbook, 'relay');
+    assert.equal(folded.bySession.get(dev2.sessionId).playbook, 'gatelab');
 
     // The provenance floor: `any` dropped the LIVENESS check and nothing else.
     // Without a named planner the stage is still unenterable.
     const orphan = refused(await t.call('spawn_instance',
-      { project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName, playbook: 'relay' }),
+      { project: 'demo', stage: 'handoff', worktree: planner.worktree.worktreeName, playbook: 'gatelab' }),
       'NEEDS_UNSATISFIED');
-    assert.match(orphan.reason, /plan/);
+    assert.match(orphan.reason, /sealed/);
   } finally { await t.close(); }
 });
 
@@ -817,18 +992,18 @@ test('enforce: in relay the planner cannot reach implement by any route', async 
 test('warn: an illegal move proceeds but is recorded as a refusal', async () => {
   const t = await setup({ enforcement: 'warn' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     // The same call that `enforce` refuses TRANSITION_ILLEGAL goes through.
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build', subscribe: false,
     })).ok, undefined, 'warn allows the call');
     const refusals = (await t.events()).filter(e => e.kind === 'refusal');
     assert.equal(refusals.length, 1, 'warn still records what it let through');
     assert.equal(refusals[0].code, 'TRANSITION_ILLEGAL');
     assert.equal(refusals[0].tool, 'send_prompt');
     // Allowed-but-refused means the move did NOT happen — no transition event,
-    // so the worker is still in `plan`.
-    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'plan');
+    // so the worker is still in `draft`.
+    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'draft');
   } finally { await t.close(); }
 });
 
@@ -840,10 +1015,10 @@ test('warn: an illegal move pushes a playbook_warn event to the conductor\'s str
   const t = await setup({ enforcement: 'warn' });
   let c = null;
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     c = await watchConductor(t);
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build', subscribe: false,
     })).ok, undefined, 'warn still allows the call');
 
     const m = await c.waitForWarning();
@@ -866,7 +1041,7 @@ test('warn: an illegal move pushes a playbook_warn event to the conductor\'s str
     const refusals = (await t.events()).filter(e => e.kind === 'refusal');
     assert.equal(refusals.length, 1, 'the append is not replaced by the emit');
     assert.equal(refusals[0].code, 'TRANSITION_ILLEGAL');
-    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'plan');
+    assert.equal(foldProjection(await t.events()).bySession.get(impl.sessionId).stage, 'draft');
     assert.equal(c.warnings().length, 1, 'exactly one bubble per refusal');
   } finally { if (c) await c.close(); await t.close(); }
 });
@@ -897,10 +1072,10 @@ test('enforce: a refusal pushes no playbook_warn — the caller already got it',
   const t = await setup({ enforcement: 'enforce' });
   let c = null;
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     c = await watchConductor(t);
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'skip ahead', stage: 'implement', subscribe: false,
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build', subscribe: false,
     }), 'TRANSITION_ILLEGAL');
     // The refusal reached the ledger, so the gate ran — the emit is what's
     // absent, which pins it INSIDE the warn branch rather than above it.
@@ -917,7 +1092,7 @@ test('policy applies only to the conductor: the same calls from a worker or no c
 
     // A NON-conductor caller (an ordinary worker driving the MCP itself) is not
     // governed — worker-side calls keep their existing recursion rules.
-    const worker = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const worker = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const workerHandle = instForSession(t.instances, worker.sessionId).id;
     const asWorker = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
     assert.ok(asWorker.sessionId, 'a worker\'s own spawn is ungoverned');
@@ -1050,10 +1225,10 @@ test('a conductor spawned with no playbookEnforcement and nothing persisted defa
 // resumable, so the default MCP temp:true spawn works fine here.
 async function killedBoundWorker(t) {
   const w = await t.spawnWorker({
-    project: 'demo', playbook: 'freeform', stage: 'freeform', mode: 'bypassPermissions',
+    project: 'demo', playbook: 'gatelab', stage: 'loose', mode: 'bypassPermissions',
   });
   assert.ok(w.sessionId, `the bound spawn must succeed: ${JSON.stringify(w)}`);
-  // freeform pins nothing, so the worker sits in the project root with no worktree
+  // `loose` pins nothing, so the worker sits in the project root with no worktree
   // — which is also the cwd the resume's `project`/`worktree` recovery resolves to.
   // The transcript is named by the BACKING id; the resume below deliberately uses
   // the public id, which is the only handle a conductor ever had.
@@ -1095,17 +1270,17 @@ test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker'
     // eventual exit will retire it.
     const st = foldProjection(evs).bySession.get(w.sessionId);
     assert.deepEqual({ stage: st.stage, history: st.stageHistory },
-      { stage: 'freeform', history: ['freeform'] });
+      { stage: 'loose', history: ['loose'] });
     assert.equal(t.instances.isSessionLive(w.sessionId), true);
 
     // And the binding is what the conductor's own read tool reports — the surface
-    // the incident used (list_sessions showing freeform/freeform) reads the same
+    // the incident used (list_sessions showing the worker's playbook/stage) reads the same
     // projection, so a resumed worker is governable again rather than merely alive.
     const state = await t.call('playbook_state', { sessionId: w.sessionId });
     assert.equal(state.tracked, true);
     assert.deepEqual(
       { playbook: state.worker.playbook, stage: state.worker.stage, live: state.worker.live },
-      { playbook: 'freeform', stage: 'freeform', live: true });
+      { playbook: 'gatelab', stage: 'loose', live: true });
   } finally { await t.close(); }
 });
 
