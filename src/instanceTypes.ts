@@ -83,6 +83,9 @@ export interface InstanceLike {
   autoResumeAt: number | null;
   autoStoppedForOverage: boolean;
   _overageWasStopped: boolean;
+  // Conductor-only: the overage stop also interrupted this session's workers and
+  // dropped its outgoing idle subscriptions, so its resume prompt must say so.
+  _overageStoppedWorkers: boolean;
   _overageHandled: boolean;
   _overageResetsAt: number | null;
   _overageQueue: unknown[];
@@ -137,7 +140,9 @@ export interface InstanceLike {
   // IdleSubscriptionHub's defer gate. See src/instances.ts.
   readonly acceptsMidTurnSteering: boolean;
   readonly steerPending: boolean;
-  queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void }): Promise<void>;
+  readonly needsPostStopSteer: boolean;
+  queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void; attachments?: unknown[] }): Promise<void>;
+  promptOrQueueSteer(text: string, attachments?: unknown[], opts?: Parameters<InstanceLike['prompt']>[2]): { deferred: boolean; sent: Promise<void> };
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
   interrupt(opts?: { force?: boolean }): Promise<unknown>;
@@ -161,7 +166,6 @@ export interface InstanceLike {
   // Accepts null (clears the title) — the routes title endpoint stores
   // `setSessionTitle(...)`'s result, which is null when the title is cleared.
   setTitle(title: string | null): void;
-  windDown(text: string): void;
   // Route surface (src/routes.ts): the three destructive session rewrites,
   // debug mutation and the hook-callback envelope. `_mutating` is the guard
   // fork/rewind/prune claim synchronously; it stays on the contract for the

@@ -1054,10 +1054,9 @@ export async function sendPrompt(
   // by a different route: stop the running turn at a block edge, then send it as
   // a fresh turn (Instance.queueSteerAfterStop). Behaviourally identical from
   // here — the send still steers the worker in flight rather than waiting out its
-  // turn — so no schema or result-shape change.
-  // `=== false` is the opt-out polarity used everywhere this flag is read: only
-  // an explicit declaration diverts, anything unknown keeps the live send.
-  const deferred = inst.status === 'turn' && inst.acceptsMidTurnSteering === false;
+  // turn — so no schema or result-shape change. The {status, flag} test itself
+  // lives on the Instance (needsPostStopSteer), shared with every other site.
+  const deferred = inst.needsPostStopSteer;
 
   if (wait) {
     // Attach the listener *before* sending so we can't miss a fast turn_end.
@@ -1384,6 +1383,14 @@ export async function respawnInstance({ sessionId }: { sessionId: string }, { in
 
 // ---------- mutating: plan approval ----------
 
+// Surface promptOrQueueSteer's route on a tool result, and only when it says
+// something: `deferred:true` means the text is parked behind a block-edge stop and
+// lands as a fresh turn, so it is not in the worker's transcript yet. Absent =
+// delivered live.
+function deferredField({ deferred }: { deferred: boolean }): { deferred?: true } {
+  return deferred ? { deferred: true } : {};
+}
+
 // Approve a worker's plan: flip the instance to bypassPermissions so it
 // can actually act on what was just approved, then send the approval
 // prompt as a normal user turn. Mirrors the UI's Approve & Implement
@@ -1406,9 +1413,10 @@ export async function approvePlan(
     }
   }
   const text = buildApprovePrompt(feedback);
-  await inst.prompt(text);
+  const delivery = inst.promptOrQueueSteer(text);
+  await delivery.sent;
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...deferredField(delivery), ...sub };
 }
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
@@ -1424,9 +1432,10 @@ export async function rejectPlan(
   if ('soft' in r) return r.soft;
   const inst = r.inst;
   const text = buildRejectPrompt(feedback);
-  await inst.prompt(text);
+  const delivery = inst.promptOrQueueSteer(text);
+  await delivery.sent;
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...deferredField(delivery), ...sub };
 }
 
 interface AnswerEntry {
@@ -1442,7 +1451,9 @@ interface AnswerEntry {
 // answer because both call the same public/userQuestionAnswers.js formatter.
 // The worker is NOT necessarily idle here — the can_use_tool deny only ends the
 // turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
-// so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn.
+// so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn,
+// or is routed behind a block-edge stop on a model that cannot take one
+// (promptOrQueueSteer → `deferred:true`).
 //
 // `answers` is aligned BY INDEX (0-based) to the pending questions — the same
 // questions get_recent_messages renders 1-based in its "--- questions ---"
@@ -1518,9 +1529,10 @@ export async function answerQuestion(
   }
 
   const text = formatUserQuestionAnswers(questions, states);
-  await inst.prompt(text);
+  const delivery = inst.promptOrQueueSteer(text);
+  await delivery.sent;
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...deferredField(delivery), ...sub };
 }
 
 // ---------- read-only: worktree diff ----------

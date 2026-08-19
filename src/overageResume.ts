@@ -29,6 +29,18 @@ export const AUTO_RESUME_TEXT =
 const QUEUED_ONLY_RESUME_TEXT =
   'The rate-limit window has reset. Delivering the messages you queued while paused:';
 
+// Preamble for a CONDUCTOR whose workers the overage stop also interrupted
+// (`_overageStoppedWorkers`). Both facts are load-bearing: the dropped callbacks
+// mean waiting to be woken hangs forever, and the workers are stopped UN-ARMED so
+// nothing else will ever restart them.
+export const AUTO_RESUME_TEXT_CONDUCTOR =
+  'The rate-limit window has reset. Continue where you left off.\n\n' +
+  'Your pending idle callbacks were dropped when you were stopped — re-check each ' +
+  'worker directly with `mcp__code-conductor__list_sessions` and ' +
+  '`mcp__code-conductor__get_recent_messages` instead of waiting to be woken. Your ' +
+  'workers were stopped mid-turn and are idle; they will NOT resume themselves, so ' +
+  're-prompt each one you still need.';
+
 // A message the user queued while the session was paused — the shape
 // Instance.prompt() pushes onto `_overageQueue` (instances.ts), so all fields
 // are app-authored and well-typed.
@@ -44,10 +56,13 @@ interface OverageQueueItem {
 // short numbered, clock-stamped item so the model sees what the user typed
 // while the session was paused. `wasStopped` picks the preamble: a session
 // stopped mid-work resumes with "continue where you left off"; a queued-only
-// session gets the softened line.
-function buildCombinedResumeText(queue: OverageQueueItem[], wasStopped = true): string {
-  if (!queue.length) return AUTO_RESUME_TEXT;
-  const preamble = wasStopped ? AUTO_RESUME_TEXT : QUEUED_ONLY_RESUME_TEXT;
+// session gets the softened line. `stoppedWorkers` overrides it with the
+// conductor variant, which additionally names the dropped callbacks and the
+// un-armed workers.
+function buildCombinedResumeText(queue: OverageQueueItem[], wasStopped = true, stoppedWorkers = false): string {
+  const stopped = stoppedWorkers ? AUTO_RESUME_TEXT_CONDUCTOR : AUTO_RESUME_TEXT;
+  if (!queue.length) return stopped;
+  const preamble = wasStopped ? stopped : QUEUED_ONLY_RESUME_TEXT;
   const fmt = (ts: number): string => {
     try { return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
     catch { return ''; }
@@ -270,7 +285,7 @@ export class OverageResumeController {
       const queue = inst._overageQueue.slice() as OverageQueueItem[];
       inst._overageQueue = [];
       const attachments: unknown[] = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments as unknown[] : []);
-      const text = buildCombinedResumeText(queue, inst._overageWasStopped);
+      const text = buildCombinedResumeText(queue, inst._overageWasStopped, inst._overageStoppedWorkers);
       this.cancel(id);
       if (queue.length) {
         inst._emitUi({ kind: 'system', subtype: 'auto_resume', data: { count: queue.length } });
@@ -329,6 +344,7 @@ export class OverageResumeController {
       inst.autoResumeAt = null;
       inst.autoStoppedForOverage = false;
       inst._overageWasStopped = false;
+      inst._overageStoppedWorkers = false;
       inst._overageHandled = false;
       // Drop any queued messages — the session is being torn down or resumed
       // (run() already snapshot-emptied the queue before this call, so this is

@@ -524,6 +524,35 @@ export class IdleSubscriptionHub {
     }
   }
 
+  // Drop every subscription this instance holds AS CALLER, plus any wake held back
+  // for it. Narrower than purge(): incoming subscriptions (this instance as
+  // target) belong to OTHER callers and stay. Used by the overage stop, which
+  // interrupts a conductor's workers — each interrupted worker's turn_end would
+  // otherwise wake the conductor with an `internal:true` prompt the overage queue
+  // intercept does not hold, restarting the burn the stop exists to prevent.
+  // Returns how many were dropped.
+  dropOutgoing(callerInstanceId: string): number {
+    if (!callerInstanceId) return 0;
+    this._deferredWakes.delete(callerInstanceId);
+    // Notes filed for this caller under any target can no longer reach it.
+    for (const [target] of this._pendingDeclines) this._takeDecline(target, callerInstanceId);
+    let dropped = 0;
+    // Snapshot: the loop deletes from `subscribers` as it goes.
+    for (const [target, subs] of [...this.subscribers]) {
+      const entry = subs.get(callerInstanceId);
+      if (!entry) continue;
+      clearTimeout(entry.timerId);
+      subs.delete(callerInstanceId);
+      dropped++;
+      if (subs.size === 0) {
+        this.subscribers.delete(target);
+        this._cancelSettle(target); // that target lost its last watcher
+      }
+      this.manager.emit('subscription_changed', { targetId: target });
+    }
+    return dropped;
+  }
+
   // Deliver every wake held back for this recipient, now that it has reached a
   // boundary. Re-defers (returns, keeping the queue) while a steer is still parked
   // on it: that steer starts a turn in a microtask, and delivering here would race

@@ -1,17 +1,69 @@
 {
   "events": [
-    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "claude-sonnet-4-6", "permissionMode": "$MODE" }
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "$SID",
+      "cwd": "$CWD",
+      "model": "claude-sonnet-4-6",
+      "permissionMode": "$MODE"
+    }
   ],
   "turns": [
     {
-      "on": { "type": "prompt" },
+      "on": {
+        "type": "prompt"
+      },
       "emit": []
     },
     {
-      "on": { "type": "prompt" },
+      "on": {
+        "type": "control",
+        "subtype": "interrupt"
+      },
       "emit": [
-        { "type": "result", "subtype": "success", "stop_reason": "end_turn", "duration_ms": 1, "total_cost_usd": 0, "is_error": false, "usage": { "input_tokens": 1, "output_tokens": 1 } }
+        {
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "[Request interrupted by user]"
+              }
+            ]
+          },
+          "parent_tool_use_id": null
+        },
+        {
+          "type": "result",
+          "subtype": "error_during_execution",
+          "stop_reason": "interrupted",
+          "duration_ms": 20,
+          "total_cost_usd": 0.0001,
+          "is_error": true
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 1,
+          "total_cost_usd": 0,
+          "is_error": false,
+          "usage": {
+            "input_tokens": 1,
+            "output_tokens": 1
+          }
+        }
       ]
     }
-  ]
+  ],
+  "_comment": "Turn 1 emits nothing, holding the session mid-turn. The control:interrupt turn is what ends it: card 2026-0183 made the resume-restart drain soft-interrupt instead of injecting a wind-down user message, so nothing matches the generic prompt turn any more and without this the drain's unbounded wait-without-forcing loop never converges."
 }

@@ -558,9 +558,10 @@ export interface Attachment {
   name: string;
 }
 
-// Sentinel on the wind-down steer Instance.windDown() injects mid-turn (and on
-// the soft-interrupt steer of every session recorded before ⏸ became a deferred
-// abort — historical jsonls still carry it, so the VALUE must not change). The
+// Sentinel on the orchestrator wind-down steers of every session recorded before
+// the drain and the overage stop became plain aborts. READ-ONLY now — nothing
+// writes it any more, but historical jsonls still carry it, so the VALUE must not
+// change and every recognition site below stays live. The
 // CLI persists the injected prompt to the session jsonl — as a `type:"user"`
 // line live, or a `type:"attachment"` queued_command line when received
 // mid-turn — so this marker lets the live parser, the transcript replay, and the

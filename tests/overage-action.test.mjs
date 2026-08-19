@@ -16,6 +16,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
+import { AUTO_RESUME_TEXT_CONDUCTOR } from '../src/overageResume.ts';
 import { getAccountUsage } from '../src/accountUsage.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
@@ -30,6 +31,19 @@ const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',
   model: 'claude-sonnet-4-6', permissionMode: '$MODE', tools: ['Bash'], uuid: 'init-1' };
 const RESULT = { type: 'result', subtype: 'success', stop_reason: 'end_turn',
   duration_ms: 10, total_cost_usd: 0.0001, is_error: false };
+// An ABORTED turn's ending. Card 2026-0183: the overage stop now soft-interrupts a
+// mid-turn conductor instead of steering it, so nothing is written to that
+// session's stdin and the generic `{on:{type:'prompt'}}` turns can no longer
+// deliver its `result`. Without this turn the conductor never leaves 'turn' and
+// every routing test dies on the runner's per-file timeout, reading as a flake.
+const INTERRUPT_TURN = {
+  on: { type: 'control', subtype: 'interrupt' },
+  emit: [
+    { type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] }, parent_tool_use_id: null },
+    { type: 'result', subtype: 'error_during_execution', stop_reason: 'interrupted',
+      duration_ms: 20, total_cost_usd: 0.0001, is_error: true },
+  ],
+};
 
 function overageEvent({ resetsAt } = {}) {
   // Real overage trip: status:"rejected" + isUsingOverage:true, carrying the
@@ -384,6 +398,7 @@ function routingScenario() {
     turns: [
       { on: { type: 'prompt', text: 'TRIP' }, emit: [overageEvent({ resetsAt: nowSec() + 3600 }), RESULT] },
       { on: { type: 'prompt', text: 'STAY' }, emit: [] },
+      INTERRUPT_TURN,
       { on: { type: 'prompt' }, emit: [] },
       { on: { type: 'prompt' }, emit: [] },
       { on: { type: 'prompt' }, emit: [] },
@@ -392,34 +407,166 @@ function routingScenario() {
   };
 }
 
+// Each fake-claude process appends to whatever FAKE_CLAUDE_TRANSCRIPT names at ITS
+// spawn (Instance.spawn snapshots env per subprocess), so pointing the var at a
+// distinct file around each create gives one stdin capture per instance. Reading
+// the wire is the only direct proof an abort reached the CLI.
+async function createInstCapturing(opts, name) {
+  const transcript = path.join(home, `stdin-${name}.jsonl`);
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  try { return { inst: await createInst(opts), transcript }; }
+  finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
+}
+async function stdinOf(transcript) {
+  try {
+    return (await fs.readFile(transcript, 'utf8'))
+      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+  } catch { return []; }
+}
+const interruptsIn = (lines) => lines.filter(
+  l => l.type === 'control_request' && l.request?.subtype === 'interrupt');
+const userLinesIn = (lines) => lines.filter(l => l.type === 'user' && l.message?.role === 'user');
+
 async function createInst(opts) {
   const inst = await ctx.instances.create({ project: 'demo', mode: 'bypassPermissions', ...opts });
   await waitFor(() => inst.status === 'idle');
   return inst;
 }
 
-test('routing: conductor mid-turn → conductor is steered (windDown), worker untouched', async () => {
+// ── Card 2026-0183 Parts A / A2: the mid-turn conductor is STOPPED, not steered ──
+//
+// A steer telling a conductor to halt its own workers is silently dropped by a
+// model declaring midTurnSteering:false, so nothing may depend on the conductor
+// acting on it: the conductor is soft-interrupted like every other mid-turn
+// session, and Pass 3 stops the workers it owns directly. This changes behaviour
+// for ALL models by design — the one deliberate exception to card 2026-0182's
+// "unflagged stays byte-identical" pin.
+
+// Drive one overage trip against a mid-turn in-control conductor, capturing both
+// sessions' stdin. `flagged` binds the conductor to the curated preset that
+// declares midTurnSteering:false, through the real resolver.
+async function tripMidTurnConductor({ flagged, action = 'stop', scenarioObj }) {
+  await boot(scenarioObj ?? routingScenario(), action);
+  const c = await createInstCapturing({}, `cond-${flagged ? 'f' : 'u'}`);
+  const conductor = c.inst;
+  if (flagged) {
+    conductor.backend = 'ollama';
+    conductor.model = 'deepseek-v4-flash:0731-cloud';
+    conductor._refreshModelCapabilities();
+    assert.equal(conductor.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+  }
+  const w = await createInstCapturing(
+    { conducted: true, callerInstanceId: conductor.id }, `work-${flagged ? 'f' : 'u'}`);
+  const cEvs = collect(conductor);
+  const wEvs = collect(w.inst);
+  const cStatuses = [];
+  conductor.on('status', (sm) => cStatuses.push(sm));
+
+  conductor.prompt('STAY');
+  await waitFor(() => conductor.status === 'turn');
+  w.inst.prompt('TRIP go');
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0);
+  return { conductor, worker: w.inst, cEvs, wEvs, cStatuses,
+    cTranscript: c.transcript, wTranscript: w.transcript };
+}
+
+// A-T1 (REGRESSION) — one shared body, run for both model configurations.
+// Invariant: an overage trip against a mid-turn in-control conductor puts EXACTLY
+// ONE `control_request subtype:interrupt` and NO steer text on that conductor's
+// stdin, and the wire is IDENTICAL for a flagged and an unflagged model. Asserting
+// the two configurations agree is what kills a reintroduced flag test inside
+// _steerConductor.
+for (const flagged of [false, true]) {
+  test(`A-T1 routing: mid-turn conductor is soft-interrupted, not steered (flagged: ${flagged})`, async () => {
+    const { conductor, cTranscript } = await tripMidTurnConductor({ flagged });
+    await waitFor(async () => interruptsIn(await stdinOf(cTranscript)).length === 1);
+    const lines = await stdinOf(cTranscript);
+    assert.equal(interruptsIn(lines).length, 1, 'exactly one interrupt control_request');
+    assert.equal(userLinesIn(lines).length, 1, 'only the STAY prompt — no steer was written');
+    assert.ok(!/overage auto-stop just fired/.test(JSON.stringify(lines)),
+      'the conductor steer text never reached the CLI');
+    await waitFor(() => conductor.status === 'idle', { timeout: 10000 });
+  });
+}
+
+// A-T2 (REGRESSION, paired) — Invariant: a MID-TURN conductor's
+// `auto_stop_overage` no longer carries `steered:true`. The idle+subscribed
+// conductor's still does (asserted by the idle test below); that pairing is what
+// kills a mutant deleting `steered` from the idle branch's payload.
+test('A-T2 routing: the mid-turn conductor stop is NOT reported as a steer', async () => {
+  const { cEvs } = await tripMidTurnConductor({ flagged: false });
+  const notices = sub(cEvs, 'auto_stop_overage');
+  assert.equal(notices.length, 1, 'exactly one stop notice');
+  assert.notEqual(notices[0].data.steered, true, 'a stop is not a steer');
+});
+
+// A-T3 (PIN) — Invariant: the overage stop is the SOFT tier, never FORCED.
+// `interrupt({force:true})` returns before ever setting `this.interrupting`
+// (src/instances.ts), so latching that flag off the 'status' event is the ONLY
+// thing standing between a future force:true "optimisation" and an overage stop
+// that discards partial work. Passes on main by construction; its value is the
+// mutant.
+test('A-T3 routing: the mid-turn conductor stop is the SOFT tier', async () => {
+  const { cStatuses } = await tripMidTurnConductor({ flagged: false });
+  // Latched off the event stream: _setStatus clears `interrupting` on turn exit,
+  // so reading the live field after the abort lands would race.
+  assert.ok(cStatuses.some(sm => sm.interrupting === true),
+    'the conductor was ARMED (soft), not force-aborted');
+});
+
+// A2-T1 (REGRESSION) — Invariant: a worker protected by an in-control conductor is
+// itself soft-interrupted (one interrupt on its stdin, one auto_stop_overage
+// event) and is NOT armed for resume — its conductor is the sole driver on
+// resume, told so by AUTO_RESUME_TEXT_CONDUCTOR. Arming both would have the
+// conductor's re-drive land mid-turn on a worker that just self-resumed, which is
+// the mid-turn injection this whole card exists to close.
+test('A2-T1 routing: a conductor\'s own worker is stopped too, and left UN-ARMED', async () => {
+  const { conductor, worker, wEvs, wTranscript } = await tripMidTurnConductor(
+    { flagged: false, action: 'stop-resume', scenarioObj: resumeRoutingScenario() });
+
+  await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
+  await waitFor(async () => interruptsIn(await stdinOf(wTranscript)).length === 1);
+  assert.equal(interruptsIn(await stdinOf(wTranscript)).length, 1,
+    'the protected worker got its own interrupt');
+
+  await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+  assert.equal(worker.autoStoppedForOverage, false, 'the worker is NOT armed for resume');
+  assert.equal(instances._autoResumeTimers.has(worker.id), false, 'no worker resume timer');
+  // Paired positive: the CONDUCTOR is armed, so "un-armed" cannot pass by the
+  // whole stop-resume path being broken.
+  await waitFor(() => instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
+  assert.equal(conductor.autoStoppedForOverage, true, 'the conductor IS armed');
+});
+
+// A2 — Invariant: the conductor's OUTGOING idle subscriptions are dropped when its
+// workers are stopped. Without this, each interrupted worker's turn_end wakes the
+// conductor with an `internal:true` prompt — which the overage queue intercept
+// deliberately does NOT hold — restarting the burn the stop exists to prevent.
+test('A2 routing: stopping a conductor\'s workers drops its pending idle callbacks', async () => {
   await boot(routingScenario(), 'stop');
   const conductor = await createInst({});
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   const cEvs = collect(conductor);
-  const wEvs = collect(worker);
 
-  // Put the conductor mid-turn first.
+  instances.subscribeIdle(conductor.sessionId, worker.sessionId);
+  assert.equal(instances.isIdleCaller(conductor.id), true, 'precondition: subscribed');
+
   conductor.prompt('STAY');
   await waitFor(() => conductor.status === 'turn');
-
-  // Worker trips overage.
   worker.prompt('TRIP go');
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0);
 
-  // Conductor is steered; the steer notice carries steered:true.
-  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
-  // windDown surfaces a visible user_echo with the steer instructions.
-  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /interrupt_turn/.test(e.text || '')));
-  // Worker was NOT interrupted and got no stop notice.
-  await waitFor(() => worker.status === 'idle');
-  assert.equal(sub(wEvs, 'auto_stop_overage').length, 0, 'worker must not be stopped directly');
-  assert.equal(worker.interrupting, false, 'worker turn was not interrupted');
+  assert.equal(instances.isIdleCaller(conductor.id), false,
+    'the conductor no longer holds an outgoing subscription');
+  assert.equal(instances.hasIdleSubscriber(worker.id), false,
+    'and the worker has no watcher left to wake');
+  // The interrupted worker reaching idle must NOT produce a wake prompt.
+  await waitFor(() => worker.status === 'idle', { timeout: 10000 });
+  await waitFor(() => conductor.status === 'idle', { timeout: 10000 });
+  assert.equal(cEvs.some(e => e.kind === 'user_echo' && /finished its turn/.test(e.text || '')), false,
+    'no wake callback was delivered to the stopped conductor');
+  assert.equal(conductor._overageStoppedWorkers, true,
+    'and the conductor is marked so its resume prompt says the callbacks are gone');
 });
 
 test('routing: conductor idle+subscribed → conductor is steered via injected prompt, worker untouched', async () => {
@@ -436,9 +583,13 @@ test('routing: conductor idle+subscribed → conductor is steered via injected p
   worker.prompt('TRIP go');
 
   await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
-  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /interrupt_turn/.test(e.text || '')));
-  await waitFor(() => worker.status === 'idle');
-  assert.equal(sub(wEvs, 'auto_stop_overage').length, 0, 'worker must not be stopped directly');
+  // The idle branch alone still STEERS (there is no turn to interrupt), and its
+  // hasWorkers clause now reports that the orchestrator stopped the workers itself.
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo'
+    && /already been stopped for you/.test(e.text || '')));
+  // …and Pass 3 does stop them (card 2026-0183 A2 — they used to be skipped).
+  await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
+  await waitFor(() => worker.status === 'idle', { timeout: 10000 });
 });
 
 test('routing: conducted worker with NO in-control conductor → fallback direct interrupt', async () => {
@@ -728,7 +879,8 @@ function resumeRoutingScenario() {
     turns: [
       { on: { type: 'prompt', text: 'TRIP' }, emit: [overageEvent({ resetsAt: nowSec() + 3600 }), RESULT] },
       { on: { type: 'prompt', text: 'STAY' }, emit: [] },   // hold a conductor mid-turn
-      { on: { type: 'prompt' }, emit: [RESULT] },           // steer / windDown / resume → idle
+      INTERRUPT_TURN,                                       // an aborted turn's result
+      { on: { type: 'prompt' }, emit: [RESULT] },           // idle steer / resume → idle
       { on: { type: 'prompt' }, emit: [RESULT] },
       { on: { type: 'prompt' }, emit: [RESULT] },
       { on: { type: 'prompt' }, emit: [RESULT] },
@@ -762,15 +914,24 @@ test('routing stop-resume: idle+subscribed conductor is steered AND a resume tim
   assert.equal(conductor.autoResumeAt != null, true, 'conductor resume badge set');
 
   // Firing it delivers the resume prompt to the still-live conductor (verify clear).
+  // Its workers were stopped and its callbacks dropped, so the CONDUCTOR variant
+  // is delivered: without both of its facts the conductor would sit waiting on a
+  // callback that will never fire, in front of workers that will never self-resume.
   setResumeUsage(UNDER);
   assert.equal(ctx.instances._fireAutoResumeNow(conductor.id), true, 'pending resume fired');
-  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),
+  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT_CONDUCTOR),
     { timeout: 10000 });
+  assert.match(AUTO_RESUME_TEXT_CONDUCTOR, /idle callbacks were dropped/, 'names the dropped callbacks');
+  assert.match(AUTO_RESUME_TEXT_CONDUCTOR, /will NOT resume themselves/, 'and that workers are un-armed');
   assert.equal(conductor.proc != null, true, 'conductor never killed');
 });
 
-// Guard the mid-turn conductor branch under stop-resume (windDown arms resume).
-test('routing stop-resume: mid-turn conductor windDown arms a resume timer', async () => {
+// A-T4 (PIN) — Invariant: under stop-resume a mid-turn conductor stopped by the
+// bare soft interrupt STILL arms its per-session resume timer and keeps
+// autoStoppedForOverage / _overageWasStopped. Driving it false: dropping the
+// `autoStoppedForOverage = true` assignment leaves the status→idle handler nothing
+// to arm on. Passes on main; it is a guard, not a regression test.
+test('A-T4 routing stop-resume: the mid-turn conductor stop still arms a resume timer', async () => {
   await boot(resumeRoutingScenario(), 'stop-resume');
   const conductor = await createInst({});
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
@@ -782,11 +943,12 @@ test('routing stop-resume: mid-turn conductor windDown arms a resume timer', asy
 
   worker.prompt('TRIP go');
 
-  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true && e.data.resume === true));
-  // windDown injects a steer user-message; the fake answers it with a RESULT, so
-  // the conductor reaches idle and arms.
-  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.id));
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.resume === true));
+  // The armed abort lands at the block edge; the fake's INTERRUPT_TURN answers it
+  // with a result, so the conductor reaches idle and arms.
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
   assert.equal(conductor.autoStoppedForOverage, true);
+  assert.equal(conductor._overageWasStopped, true, 'full preamble — stopped mid-work');
 });
 
 // Guard the fallback (no in-control conductor) direct-stop under stop-resume.
@@ -807,57 +969,67 @@ test('routing stop-resume: fallback worker direct-stop arms a resume timer', asy
 });
 
 // ── Conduct orchestrator with NO in-control workers ───────────────────────
-// The bug this fixes: a `.conduct` orchestrator that trips overage while owning
-// no in-control workers (it tripped itself, or its workers were momentarily
-// idle) used to fall into the terse Pass-3 `_directOverageStop` path and receive
-// the leaf-worker soft-interrupt ("Do not make any more tool calls") — semantically wrong
-// for the brain that must reconstruct state on resume. It's now ALWAYS steered
-// gracefully (hasWorkers:false ⇒ no worker-halting clause). Identified durably by
-// project === '.conduct', not the (opposite) `conducted` worker flag.
-async function createConductor() {
+// A `.conduct` orchestrator that trips overage while owning no in-control workers
+// (it tripped itself, or its workers were momentarily idle) used to be steered
+// gracefully rather than direct-stopped. Card 2026-0183 Part A ends that
+// distinction for the MID-TURN case — a steer the model may silently drop cannot
+// be load-bearing, and a `stream` or `poll` trip always finds the orchestrator
+// mid-turn — so it now takes the same soft interrupt as every other session. What
+// still separates it from a leaf worker is what happens on RESUME, which these two
+// pin. Identified durably by project === '.conduct', not the (opposite) `conducted`
+// worker flag.
+async function createConductor(name) {
   await ensureConductProject();
-  const inst = await ctx.instances.create({ project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions' });
-  await waitFor(() => inst.status === 'idle');
-  return inst;
+  const transcript = name ? path.join(home, `stdin-${name}.jsonl`) : null;
+  if (transcript) process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  try {
+    const inst = await ctx.instances.create({ project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions' });
+    await waitFor(() => inst.status === 'idle');
+    return { inst, transcript };
+  } finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
 }
 
-test('routing: no-workers Conduct orchestrator gets the graceful steer, not the terse soft-interrupt', async () => {
+// REGRESSION — Invariant: a mid-turn no-workers orchestrator is soft-interrupted
+// with EXACTLY ONE control_request and NO steer text on its stdin, identical to
+// any other mid-turn session.
+test('routing: a mid-turn no-workers Conduct orchestrator is soft-interrupted, not steered', async () => {
   await boot(routingScenario(), 'stop');
-  const conductor = await createConductor();
+  const { inst: conductor, transcript } = await createConductor('conduct-stop');
   const cEvs = collect(conductor);
 
   // The orchestrator trips overage itself, with no workers in flight.
   conductor.prompt('TRIP go');
 
-  // Steered (not direct-interrupted): steer notice + a VISIBLE graceful user_echo.
-  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
-  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /no workers in flight/.test(e.text || '')));
-  const echo = cEvs.find(e => e.kind === 'user_echo' && /overage auto-stop/.test(e.text || ''));
-  assert.ok(echo, 'graceful conductor steer surfaced as a visible user_echo');
-  assert.equal(/interrupt_turn/.test(echo.text), false, 'no worker-halting clause when nothing is in flight');
-  assert.equal(/Do not make any more tool calls/.test(echo.text), false, 'not the terse leaf-worker soft-interrupt');
-  // The terse direct path (a hidden soft_interrupted annotation) was NOT taken.
-  assert.equal(sub(cEvs, 'soft_interrupted').length, 0, 'orchestrator not direct-interrupted');
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0);
+  await waitFor(async () => interruptsIn(await stdinOf(transcript)).length === 1);
+  const lines = await stdinOf(transcript);
+  assert.equal(interruptsIn(lines).length, 1, 'exactly one interrupt control_request');
+  assert.equal(userLinesIn(lines).length, 1, 'only the TRIP prompt — no steer was written');
+  assert.ok(!/overage auto-stop just fired/.test(JSON.stringify(lines)),
+    'the conductor steer text never reached the CLI');
+  assert.notEqual(sub(cEvs, 'auto_stop_overage')[0].data.steered, true, 'a stop is not a steer');
+  await waitFor(() => conductor.status === 'idle', { timeout: 10000 });
 });
 
-test('routing stop-resume: no-workers Conduct orchestrator is steered AND arms a resume timer', async () => {
+// PIN — Invariant: the stopped orchestrator arms its resume with the FULL
+// preamble, and — having stopped no workers — gets the plain AUTO_RESUME_TEXT, not
+// the conductor variant. The variant's two claims ("your callbacks were dropped",
+// "your workers will not resume themselves") would both be false here, and a
+// resume prompt that lies sends the orchestrator chasing phantom workers.
+test('routing stop-resume: a no-workers orchestrator arms a resume and gets the PLAIN resume text', async () => {
   await boot(resumeRoutingScenario(), 'stop-resume');
-  const conductor = await createConductor();
+  const { inst: conductor } = await createConductor();
   const cEvs = collect(conductor);
 
   conductor.prompt('TRIP go');
 
-  // Steered, resume-aware, with the graceful no-workers frame.
-  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true && e.data.resume === true));
-  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /no workers in flight/.test(e.text || '')));
-  // The steer turn → idle arms the per-session resume timer (full preamble — it
-  // was genuinely stopped mid-work), exactly as the direct path would have.
-  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.id));
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.resume === true));
+  await waitFor(() => ctx.instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
   assert.equal(conductor.autoStoppedForOverage, true, 'flagged auto-stopped');
   assert.equal(conductor._overageWasStopped, true, 'full preamble — stopped mid-work');
+  assert.equal(conductor._overageStoppedWorkers, false, 'it stopped no workers');
   assert.equal(conductor.autoResumeAt != null, true, 'resume badge set');
 
-  // Firing it delivers the resume prompt to the still-live orchestrator.
   setResumeUsage(UNDER);
   assert.equal(ctx.instances._fireAutoResumeNow(conductor.id), true, 'pending resume fired');
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT),

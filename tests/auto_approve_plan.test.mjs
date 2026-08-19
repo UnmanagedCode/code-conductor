@@ -6,6 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-plan.json');
@@ -194,6 +195,122 @@ test('flag does not fire auto-approve when instance is not in plan mode', async 
       'mode must remain bypassPermissions');
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+    delete process.env.FAKE_PLAN_FILE;
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Card 2026-0183 Part F. _fireAutoApprovePlan's comment used to claim the
+// ExitPlanMode deny ends the turn; it only does so when the CLI has nothing
+// queued behind it, so the approval prompt CAN land mid-turn — and on a model
+// declaring midTurnSteering:false it was then silently swallowed, with the
+// failure visible only on stderr. SCENARIO_MID_TURN holds the turn open after
+// the deny, which is the state these two pin.
+// ---------------------------------------------------------------------------
+
+const SCENARIO_MID_TURN = path.join(__dirname, 'fixtures', 'scenario-plan-mid-turn.json');
+const FLAGGED_MODEL = 'deepseek-v4-flash:0731-cloud';
+
+async function userStdin(transcriptPath) {
+  try {
+    return (await fs.readFile(transcriptPath, 'utf8'))
+      .split('\n').filter(Boolean).map(l => JSON.parse(l))
+      .filter(o => o.type === 'user' && o.message?.role === 'user');
+  } catch { return []; }
+}
+async function allStdin(transcriptPath) {
+  try {
+    return (await fs.readFile(transcriptPath, 'utf8'))
+      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+  } catch { return []; }
+}
+const interruptsIn = (lines) => lines.filter(
+  l => l.type === 'control_request' && l.request?.subtype === 'interrupt');
+const textsOf = (line) => line.message.content.filter(b => b.type === 'text').map(b => b.text);
+
+// Drive to the mid-turn post-deny state with auto-approve armed. Returns the
+// instance and the stdin transcript path.
+async function autoApproveMidTurn({ flagged }) {
+  const transcriptPath = path.join(home, `aa-stdin-${flagged ? 'f' : 'u'}.jsonl`);
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_MID_TURN;
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'plan' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  if (flagged) {
+    inst.backend = 'ollama';
+    inst.model = FLAGGED_MODEL;
+    inst._refreshModelCapabilities();
+    assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+  }
+  inst.setAutoApprovePlan(true);
+  inst.prompt('plan something');
+  await waitFor(() => inst.ring.toArray().some(ev => ev.kind === 'plan_request'), { timeout: 6000 });
+  return { inst, transcriptPath };
+}
+
+test('F-T1 auto-approve on a flagged worker mid-turn defers to a post-stop turn', async () => {
+  // Invariant: on a flagged worker whose ExitPlanMode deny did NOT end the turn,
+  // the auto-approval prompt is not injected live — it is parked behind one
+  // block-edge stop and delivered as a fresh turn carrying POST_STOP_STEER_NOTE.
+  const tmpDir = await seedPlanFile();
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  try {
+    const { inst, transcriptPath } = await autoApproveMidTurn({ flagged: true });
+    const approveText = 'I approve the plan. Please proceed with the implementation.';
+
+    // The fire path is setMode (a control round-trip) then the send, so wait for the
+    // mode flip and then for the send to have taken EITHER route before driving a
+    // block edge. Deliberately not `waitFor(steerPending)`: that would make the
+    // revert-the-fix proof a timeout rather than a failed assertion.
+    await waitFor(() => inst.mode === 'bypassPermissions', { timeout: 6000 });
+    await waitFor(async () => inst.steerPending
+      || (await userStdin(transcriptPath)).length === 2, { timeout: 6000 });
+    assert.equal(inst.status, 'turn', 'the deny did not end the turn');
+
+    // Block edge → the armed stop fires; the turn_end then flushes the steer. A no-op
+    // if the approval was injected live instead.
+    inst._handleStdoutLine(JSON.stringify(
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } }));
+    await waitFor(async () => (await userStdin(transcriptPath)).length === 2, { timeout: 6000 });
+
+    const lines = await allStdin(transcriptPath);
+    assert.equal(interruptsIn(lines).length, 1, 'exactly one interrupt control_request');
+    const users = await userStdin(transcriptPath);
+    assert.deepEqual(textsOf(users[1]), [POST_STOP_STEER_NOTE, approveText],
+      'the note rides as its OWN leading block, then the verbatim approval');
+    await waitFor(() => inst.steerPending === false);
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    delete process.env.FAKE_PLAN_FILE;
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+test('F-T2 auto-approve on an unflagged worker mid-turn is byte-identical', async () => {
+  // Invariant: an unflagged mid-turn auto-approval is still ONE live user line
+  // whose blocks are exactly [MID_TURN_NOTE, approveText], with zero
+  // control_request on stdin.
+  const tmpDir = await seedPlanFile();
+  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+  try {
+    const { inst, transcriptPath } = await autoApproveMidTurn({ flagged: false });
+    const approveText = 'I approve the plan. Please proceed with the implementation.';
+
+    await waitFor(async () => (await userStdin(transcriptPath)).length === 2, { timeout: 6000 });
+    const lines = await allStdin(transcriptPath);
+    assert.equal(interruptsIn(lines).length, 0, 'a live injection arms NO stop');
+    const users = await userStdin(transcriptPath);
+    assert.deepEqual(textsOf(users[1]), [MID_TURN_NOTE, approveText],
+      'the ordinary mid-turn annotation, unchanged');
+    assert.equal(inst.steerPending, false, 'nothing was parked');
+    assert.equal(inst.status, 'turn', 'the turn was not stopped');
+  } finally {
+    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     delete process.env.FAKE_PLAN_FILE;
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }

@@ -18,8 +18,6 @@ import {
   drainToManifest,
   restoreFromResumeManifest,
   buildConductorResumeText,
-  WIND_DOWN_TEXT,
-  WIND_DOWN_TEXT_CONDUCTOR,
   RESUME_TEXT,
 } from '../src/resumeRestart.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
@@ -32,9 +30,9 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASIC = path.join(__dirname, 'fixtures', 'scenario-basic.json');
 const NO_TURN = path.join(__dirname, 'fixtures', 'scenario-no-turn.json');
-// Two-prompt scenario: first prompt keeps instance in 'turn' (empty emit),
-// second prompt (the windDown user message) emits a result so drainToManifest's
-// waitAllIdle loop can resolve without looping forever.
+// Drain scenario: the first prompt keeps the instance in 'turn' (empty emit), and
+// its control:interrupt turn answers the drain's soft interrupt with a result so
+// drainToManifest's wait-without-forcing loop can converge.
 const DRAIN = path.join(__dirname, 'fixtures', 'scenario-drain.json');
 
 let ctx, baseUrl, instances, home, projectsRoot, claudeProjectsRoot;
@@ -109,45 +107,80 @@ test('shutdownForResumeSync SIGKILLs subprocesses but preserves temp + normal js
   await fs.access(normalJsonl);
 });
 
-// --- 3. windDown semantics -------------------------------------------------
+// --- 3. drain stop semantics ----------------------------------------------
 
-test('windDown is a no-op when idle and injects the hidden marker mid-turn', async () => {
-  const transcript = path.join(os.tmpdir(), `cc-winddown-${randomUUID()}.log`);
-  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
-  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
-  process.env.FAKE_CLAUDE_SCENARIO = NO_TURN;
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'winddown' });
-    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'winddown' });
-    const inst = instances.get(res.body.id);
-    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+// REGRESSION (card 2026-0183 Part B). Invariant, run for BOTH model
+// configurations: drainToManifest stops a mid-turn session with EXACTLY ONE
+// `control_request subtype:interrupt` and writes NOTHING to its stdin — zero lines
+// carrying SOFT_INTERRUPT_MARKER, zero user lines beyond the prompt that opened
+// the turn — and the drain returns.
+//
+// The blanket change matters most for a flagged model: the wind-down steer was
+// silently swallowed there, and step 3 waits forever without forcing, so the
+// orchestrator restart hung indefinitely. Asserting the two configurations agree is
+// what keeps the fix uniform. Note the OUTCOME (the drain returns) is vacuous on
+// main for the unflagged half — the fake answered the wind-down message, so the
+// drain converged either way. The mechanism is what fails there.
+for (const flagged of [false, true]) {
+  test(`drainToManifest soft-interrupts a mid-turn session and writes no steer (flagged: ${flagged})`, async () => {
+    const transcript = path.join(os.tmpdir(), `cc-drainstop-${randomUUID()}.log`);
+    const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+    const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
+    process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+    process.env.FAKE_CLAUDE_SCENARIO = DRAIN;
+    try {
+      await api(baseUrl, 'POST', '/api/projects', { name: 'drainstop' });
+      const res = await api(baseUrl, 'POST', '/api/instances', { project: 'drainstop' });
+      const inst = instances.get(res.body.id);
+      await waitFor(() => inst.status === 'idle' && inst.sessionId);
+      if (flagged) {
+        inst.backend = 'ollama';
+        inst.model = 'deepseek-v4-flash:0731-cloud';
+        inst._refreshModelCapabilities();
+        assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+      }
 
-    // Idle → no-op.
-    inst.windDown('should be ignored');
-    assert.equal(inst.interrupting, false);
+      await inst.prompt('go');
+      await waitFor(() => inst.status === 'turn');
+      // The fake emits its startup `system/init` lazily, on its first stdin line —
+      // so it can still be in flight here. Draining before it lands would have the
+      // post-abort drain window mistake it for a spurious new turn and fire a
+      // SECOND interrupt, which is a harness artifact, not the drain's behaviour.
+      await waitFor(() => inst.ring.toArray().some(ev => ev.kind === 'system' && ev.subtype === 'init'));
 
-    // Drive into a turn (no-turn scenario keeps it open).
-    await inst.prompt('go');
-    await waitFor(() => inst.status === 'turn');
-    inst.windDown(WIND_DOWN_TEXT);
-    assert.equal(inst.interrupting, true);
+      // PIN (owner-requested, mirroring the overage stop's soft-tier pin): the
+      // drain's stop is the SOFT tier. `interrupt({force:true})` returns before
+      // ever setting `interrupting`, so latching that flag off the status stream is
+      // the only thing standing between a future force:true "optimisation" and a
+      // restart that starts discarding partial work.
+      let armedSoft = false;
+      const latch = (sm) => { if (sm.interrupting) armedSoft = true; };
+      inst.on('status', latch);
 
-    await waitFor(async () => {
-      try { return (await fs.readFile(transcript, 'utf8')).includes(SOFT_INTERRUPT_MARKER); }
-      catch { return false; }
-    });
-    const dump = await fs.readFile(transcript, 'utf8');
-    assert.ok(dump.includes(SOFT_INTERRUPT_MARKER), 'marker injected to stdin');
-    assert.ok(dump.includes('about to restart'), 'wind-down text injected');
-  } finally {
-    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
-    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
-    if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
-    else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
-    await fs.rm(transcript, { force: true });
-  }
-});
+      await drainToManifest({ server: null, wss: null, instances,
+        log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
+      inst.off('status', latch);
+      assert.equal(armedSoft, true, 'the drain armed a SOFT interrupt, never a forced abort');
+
+      const lines = (await fs.readFile(transcript, 'utf8'))
+        .split('\n').filter(Boolean).map(l => JSON.parse(l));
+      const interrupts = lines.filter(
+        l => l.type === 'control_request' && l.request?.subtype === 'interrupt');
+      const users = lines.filter(l => l.type === 'user' && l.message?.role === 'user');
+      assert.equal(interrupts.length, 1, 'exactly one interrupt control_request');
+      assert.equal(users.length, 1, 'only the prompt that opened the turn — no wind-down text');
+      assert.ok(!JSON.stringify(lines).includes(SOFT_INTERRUPT_MARKER),
+        'no marked steer was written to the CLI');
+      clearResumeManifest();
+    } finally {
+      if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+      else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+      if (prevScenario === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+      else process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
+      await fs.rm(transcript, { force: true });
+    }
+  });
+}
 
 // --- 4. conductedWorkersOf -------------------------------------------------
 
@@ -587,10 +620,10 @@ test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores i
 // The regression fix: an idle conductor that ended its turn and is parked on an
 // OUTGOING idle-subscription (waiting on a worker) has durable re-conduct work,
 // so it must be wasBusy:true → re-prompted on boot. An idle conductor with NO
-// subscription stays wasBusy:false → resurrected silently. Shutdown stop
-// (windDown) stays mid-turn-only regardless.
+// subscription stays wasBusy:false → resurrected silently. The shutdown stop stays
+// mid-turn-only regardless.
 
-test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; idle-no-sub stays silent; windDown is mid-turn-only', async () => {
+test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; idle-no-sub stays silent; the stop is mid-turn-only', async () => {
   const transcript = path.join(os.tmpdir(), `cc-parked-${randomUUID()}.log`);
   const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
@@ -616,21 +649,25 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     assert.equal(instances.isIdleCaller(parked.id), true, 'parked conductor is an idle caller');
     assert.equal(instances.isIdleCaller(idleNoSub.id), false, 'idle-no-sub conductor is not a caller');
 
-    // Drive only `midTurn` into a turn (DRAIN scenario keeps it open until windDown).
+    // Drive only `midTurn` into a turn (DRAIN scenario keeps it open until stopped).
     await midTurn.prompt('go');
     await waitFor(() => midTurn.status === 'turn');
+    // Let the fake's lazily-emitted startup `system/init` land before draining, or
+    // the post-abort drain window mistakes it for a spurious new turn and fires a
+    // second interrupt (a harness artifact — see the drain-stop tests above).
+    await waitFor(() => midTurn.ring.toArray().some(ev => ev.kind === 'system' && ev.subtype === 'init'));
 
-    // Capture windDown invocation via status event: drainToManifest's step 2 calls
-    // windDown() which sets interrupting=true and emits 'status'. Step 3 then waits
-    // for the instance to go idle (result event from the DRAIN scenario's second
-    // turn), which transitions status away from 'turn' and resets interrupting=false
-    // via _setStatus(). We must capture the flag before that reset.
-    let midTurnWoundDown = false;
-    const captureWindDown = (s) => { if (s.interrupting) midTurnWoundDown = true; };
-    midTurn.on('status', captureWindDown);
+    // Capture the stop via the status event: drainToManifest's step 2 calls
+    // interrupt() which sets interrupting=true and emits 'status'. Step 3 then waits
+    // for the instance to go idle (the DRAIN scenario's control:interrupt turn
+    // answers with a result), which transitions status away from 'turn' and resets
+    // interrupting=false via _setStatus(). We must capture the flag before that reset.
+    let midTurnStopped = false;
+    const captureStop = (s) => { if (s.interrupting) midTurnStopped = true; };
+    midTurn.on('status', captureStop);
 
     const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
-    midTurn.off('status', captureWindDown);
+    midTurn.off('status', captureStop);
     const byId = Object.fromEntries(entries.map(e => [e.sessionId, e]));
 
     // wasBusy (the predicate Edit 1 widened): mid-turn OR parked ⇒ true.
@@ -640,21 +677,19 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     // Regression: a plain idle worker (no outgoing subscription) stays silent.
     assert.equal(byId[worker.sessionId].wasBusy,    false, 'idle worker with no outgoing subscription → wasBusy:false');
 
-    // Shutdown side (Bug 1, unchanged): windDown fires ONLY for the mid-turn one.
-    assert.equal(midTurnWoundDown,        true,  'mid-turn conductor wound down');
-    assert.equal(parked.interrupting,    false, 'idle parked conductor NOT wound down');
-    assert.equal(idleNoSub.interrupting, false, 'idle conductor NOT wound down');
-    assert.equal(worker.interrupting,    false, 'idle worker NOT wound down');
+    // Shutdown side (Bug 1, unchanged): the stop fires ONLY for the mid-turn one.
+    assert.equal(midTurnStopped,         true,  'mid-turn conductor stopped');
+    assert.equal(parked.interrupting,    false, 'idle parked conductor NOT stopped');
+    assert.equal(idleNoSub.interrupting, false, 'idle conductor NOT stopped');
+    assert.equal(worker.interrupting,    false, 'idle worker NOT stopped');
 
-    // The conductor wind-down variant was injected exactly once (mid-turn only).
-    await waitFor(async () => {
-      try { return (await fs.readFile(transcript, 'utf8')).includes(WIND_DOWN_TEXT_CONDUCTOR); }
-      catch { return false; }
-    });
-    const dump = await fs.readFile(transcript, 'utf8');
-    const frag = 'Every worker you are conducting';
-    const condWindCount = (dump.match(new RegExp(frag, 'g')) || []).length;
-    assert.equal(condWindCount, 1, 'WIND_DOWN_TEXT_CONDUCTOR injected once — to the mid-turn conductor only');
+    // …and exactly one abort reached a CLI (the mid-turn one). The four sessions
+    // share this transcript, so a stop leaking to an idle session shows up here.
+    const dump = (await fs.readFile(transcript, 'utf8'))
+      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+    assert.equal(
+      dump.filter(l => l.type === 'control_request' && l.request?.subtype === 'interrupt').length,
+      1, 'one interrupt total — to the mid-turn conductor only');
 
     clearResumeManifest();
   } finally {
