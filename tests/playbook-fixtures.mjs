@@ -146,18 +146,6 @@ export const GATELAB = {
 // rejected fixture can never leave a consumer's tests vacuously green.
 export const GATELAB_PB = pb(GATELAB);
 
-// A solo run part-way through: the planner has been approved into
-// `implement`, and a reviewer has been spawned against it.
-//
-// DEPRECATED — being retired file by file in favour of GATELAB_RUN below, which
-// no hand edit to playbooks/*.json can invalidate. Delete with its last consumer.
-export const SOLO_RUN = [
-  { kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan', project: 'demo' },
-  { kind: 'transition', sessionId: 'w-planner-1', from: 'plan', to: 'implement', via: 'approve_plan' },
-  { kind: 'spawn', sessionId: 'w-review-01', playbook: 'solo', stage: 'review',
-    provenance: { implement: 'w-planner-1' }, project: 'demo' },
-];
-
 // A GATELAB run part-way through: the drafter has been approved into `build`,
 // and an auditor has been spawned against it.
 export const GATELAB_RUN = [
