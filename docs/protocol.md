@@ -428,41 +428,9 @@ Commits a **`resume`** ledger event (never a second `spawn` — that would reset
 
 Because a `spawn` ledger event needs the new worker's sessionId — which does not exist until the handler has run — the checkpoint is **check-before / commit-after**: one call decides, a second records. A handler that throws never reaches the commit, and one that soft-refuses is filtered inside it; either way the move did not happen, so the ledger must not claim it did.
 
-**Read tools.** `list_playbooks` (ids, names, descriptions, entry + spawnable stages, plus `errors` for definitions rejected at load — JSON, because `errors` is structured data), `describe_playbook({id})` (the full graph, as **plain text** — see [Rendered read results](#rendered-read-results); rendered by `renderPlaybook`, `src/mcp/readRenderers.ts`), `playbook_state({sessionId?})` (the run graph, legal next moves, and the run's ledger history). All three are read-only in the strong sense: on an install with no ledger they answer with empty state and **create no file**.
+**Read tools.** `list_playbooks` (ids, names, descriptions, entry + spawnable stages, plus `errors` for definitions rejected at load — JSON, because `errors` is structured data), `describe_playbook({id})` (the full graph, as **plain text** — see [Rendered read results](#rendered-read-results)), `playbook_state({sessionId?})` (the run graph, legal next moves, and the run's ledger history). All three are read-only in the strong sense: on an install with no ledger they answer with empty state and **create no file**.
 
-`describe_playbook({id:"solo"})`, abridged — every `…` marks truncated description prose; the `implement` and `refine` stages are left out entirely, with nothing marking where (the `STAGES (4)` count is the real one). The layout is owned by `renderPlaybook`; this sample is here to be compared against it, not to restate it:
-
-```
-PLAYBOOK solo
-name Solo — one worker plans/implements/refines, separate reviewers
-entry plan
-
-DESCRIPTION
-  One worker plans, implements and refines its own work; …
-
-STAGES (4)
-▸ plan   workers one   spawnable yes
-    needs —
-    tools (2)
-      spawn_instance pin {"mode":"plan","createWorktree":true}
-      set_mode deny
-    description
-      Spawn and brief a plan worker — …
-▸ review   workers many   spawnable yes
-    needs implement@live in implement|refine
-    tools (3)
-      spawn_instance pin {"mode":"bypassPermissions","model":"reviewer"}
-      sync_worktree deny
-      approve_plan deny
-    description
-      Spawn an adversarial reviewer onto the implementer's worktree, briefed to inspect only — …
-
-TRANSITIONS (4)
-  plan → implement    via approve_plan
-  implement → refine  via send_prompt
-  refine → refine     via send_prompt
-  review → review     via send_prompt
-```
+`describe_playbook`'s layout is owned by `renderPlaybook` (`src/mcp/readRenderers.ts`). The worked example is the synthetic `GRAPH` in `tests/mcp-text-render.test.mjs`, whose expected rendering is asserted line by line and exercises every layout feature at once — a multi-member `needs.position` join, `tools (none)`, a `"*"` policy entry, edge-label padding, and verbatim indented description prose. Read it there rather than from a pasted sample: a renderer change fails that test, so it cannot drift the way a hand-pasted rendering of a hand-editable built-in silently did.
 
 `playbook_state`'s `nextMoves` is answered by dry-running the same `decide()` that enforces, once per outgoing edge, so what it advertises and what the gate permits cannot diverge. Each move is evaluated as the **bare call**, with no `provenance` supplied, so an edge into a stage declaring `needs` reads `ok:false`/`NEEDS_UNSATISFIED` even when a satisfying worker exists — that is "pass the argument", not "impossible", and the `reason` names what to pass. `playbook_state` declares a `sessionId`, so it is governable like any other targeted tool and a stage may deny it; the no-argument form names no worker, so it is never subject to a stage's policy and remains available.
 
