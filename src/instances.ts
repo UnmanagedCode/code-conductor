@@ -1280,8 +1280,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     // message_start surviving the tail's quiescent snap. NOT cleared at
     // turn_end — the reading stays valid between turns, which is exactly the
     // window where a reload would otherwise show `ctx —`.
-    if (ev.kind === 'message_start') {
-      this._lastContextUsage = ev.usage ?? null;
+    // Last-wins over MEASUREMENTS only: the parser nulls out an all-zero usage
+    // block (src/parser.ts), and a substitution backend's gateway sends one on
+    // every frame — so a null block must leave the latch alone or the very
+    // first live frame would wipe the reading loadHistory seeded from the
+    // jsonl, and a reload would drop to `ctx —` while the already-subscribed
+    // client still shows the number. Mirrors public/usage.js's `&& ev.usage`.
+    if (ev.kind === 'message_start' && ev.usage) {
+      this._lastContextUsage = ev.usage;
     }
     // Same funnel again: advance the live quiescence scan so an armed deferred
     // interrupt can fire at the first boundary (see _maybeFireArmedInterrupt,
@@ -1919,18 +1925,19 @@ export class Instance extends EventEmitter implements InstanceLike {
         // window's trigger — so no spurious post-spawn turn and no fight with
         // the post-abort drain (which severs on init, before any API round-trip).
         if (this.status === 'idle') this._setStatus('turn');
-        // The parser only emits message_start when usage is present, so these
-        // reads are guaranteed on the reachable path; the optional chain keeps
-        // them defensive (a missing field falls back to 0, same as the old
-        // `?? 0`).
+        // ev.usage may be `null`: the parser nulls out an all-zero block
+        // (src/parser.ts) while still emitting the event. The optional chains
+        // keep reqRead/reqCreation at 0 — which is exactly what that all-zero
+        // block yielded before, so cache-miss verdicts on such a backend are
+        // unchanged.
         const usage = ev.usage as { cache_read_input_tokens?: unknown; cache_creation_input_tokens?: unknown } | null | undefined;
         const reqRead = (usage?.cache_read_input_tokens as number | undefined) ?? 0;
         const reqCreation = (usage?.cache_creation_input_tokens as number | undefined) ?? 0;
         // Cross-turn cache-miss detection. The FIRST message_start of this turn
         // (the reset above/in _setStatus left `_turnFirstReqCacheRead` null)
         // decides; later message_starts only keep P (`_turnLastReqPrefix`)
-        // current. The parser only emits message_start when usage is present
-        // (src/parser.ts), so ev.usage is always defined here.
+        // current. A null ev.usage (all-zero block, nulled by the parser)
+        // decides on 0/0 — the same values the zero block itself produced.
         if (this._turnFirstReqCacheRead === null) {
           this._turnFirstReqCacheRead = reqRead;
           this._turnFirstReqCacheCreation = reqCreation;

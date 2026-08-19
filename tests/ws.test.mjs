@@ -310,6 +310,42 @@ test('lastContextUsage tracks the newest message_start and is cleared by a rewin
   } finally { await close(); }
 });
 
+test('lastContextUsage survives a null-usage message_start', async () => {
+  const { baseUrl, instances, close } = await setup();
+  try {
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+    const inst = instances.get(id);
+
+    inst._emitUi({ kind: 'message_start', msgId: 'm1', usage: { input_tokens: 46398 } });
+    assert.deepEqual(inst.lastContextUsage, { input_tokens: 46398 });
+    // The shape the parser now produces for a substitution backend's all-zero
+    // gateway frame: the event fires, the block is null.
+    inst._emitUi({ kind: 'message_start', msgId: 'm2', model: 'deepseek-v4-flash', usage: null });
+    assert.deepEqual(inst.lastContextUsage, { input_tokens: 46398 },
+      'a null-usage frame must not wipe a good reading — including the replayed jsonl seed');
+  } finally { await close(); }
+});
+
+test('lastContextUsage ignores a usage-bearing turn_end (the ctx 743% shape)', async () => {
+  const { baseUrl, instances, close } = await setup();
+  try {
+    const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = created.body.id;
+    await waitFor(() => instances.get(id).status === 'idle' && instances.get(id).sessionId);
+    const inst = instances.get(id);
+
+    inst._emitUi({ kind: 'message_start', msgId: 'm1', usage: { input_tokens: 50000, cache_read_input_tokens: 100 } });
+    inst._emitUi({
+      kind: 'turn_end', subtype: 'success',
+      usage: { input_tokens: 900, output_tokens: 4000, cache_read_input_tokens: 7_400_000 },
+    });
+    assert.deepEqual(inst.lastContextUsage, { input_tokens: 50000, cache_read_input_tokens: 100 },
+      'turn_end.usage is a per-turn SUM and never a context reading');
+  } finally { await close(); }
+});
+
 // ── seeding the reading from jsonl replay (card 2026-0026) ──────────────────
 
 // The replay path emits no `message_start` of its own, so before this a resumed
