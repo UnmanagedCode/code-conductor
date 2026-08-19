@@ -1,6 +1,5 @@
-// Unit tests for src/waitFor.ts — the one promise shape behind the four
-// listener-driven waiters (MCP wait_for_idle / turn_end, resume-restart's
-// per-instance and all-idle drains).
+// Unit tests for src/waitFor.ts — the one promise shape behind every
+// listener-driven waiter in the codebase (see this module's importers).
 //
 // The real risk the helper exists to remove is teardown that runs on only ONE
 // of the settle/timeout paths, so every test here asserts `listenerCount()` on
@@ -78,7 +77,7 @@ test('a value-returning onTimeout resolves, and detaches', async () => {
 });
 
 test('an Error-returning onTimeout rejects, and detaches', async () => {
-  // The waitForStatus / waitForEvent disposition.
+  // The waitForEvent disposition.
   const em = new EventEmitter();
   const boom = new Error('timed out after 20 ms');
   await assert.rejects(

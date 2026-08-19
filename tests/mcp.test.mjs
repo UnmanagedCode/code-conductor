@@ -156,13 +156,12 @@ test('tools/list returns the full expected tool catalog', async () => {
     'locate_session',
     'merge_worktree',
     'playbook_state',
-    'project_bash', 'project_diff', 'project_read', 'project_status', 'promote_session',
+    'project_bash', 'project_diff', 'project_read', 'project_status',
     'reject_plan', 'rename_workspace', 'renew_session', 'respawn_instance',
     'send_prompt', 'set_mode',
     'set_project_workspace',
     'spawn_instance', 'subscribe_to_idle', 'sync_worktree',
     'unsubscribe_from_idle',
-    'wait_for_idle',
   ].sort();
   assert.deepEqual(names, expected);
   // Every tool carries a schema.
@@ -288,27 +287,6 @@ test('get_transcript + get_recent_messages survive a trimmed ring', async () => 
   }
 });
 
-test('wait_for_idle resolves when an in-flight turn completes', async () => {
-  const prev = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
-    const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
-    await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
-
-    // Kick a non-blocking prompt off, then race wait_for_idle against
-    // the orchestrator's own status flip.
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one' });
-    const waitRes = unwrap(await callTool(baseUrl, 'wait_for_idle', {
-      sessionId: spawn.sessionId, timeoutMs: 5000,
-    }));
-    assert.equal(waitRes.status, 'idle');
-  } finally {
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
-    else process.env.FAKE_CLAUDE_SCENARIO = prev;
-  }
-});
-
 test('interrupt_turn: soft (default) reports interrupting (armed) and sends nothing; force aborts the turn', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
@@ -365,15 +343,17 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   const { encodeCwd } = await import('../src/projects.ts');
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
-  // Conducted session: spawned via the MCP spawn_instance tool. Pass
-  // temp:false explicitly — MCP spawns default to temp:true, and this test
-  // is about list annotation (MCP conducted:true vs HTTP false), not temp
-  // durability. A non-temp session is the simplest fixture for that:
-  // it survives kill_instance without its jsonl being wiped.
-  const cond = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions', temp: false }));
+  // Conducted session: spawned via the MCP spawn_instance tool. MCP spawns
+  // default to temp:true with no MCP knob to override it, so this test is
+  // about list annotation (MCP conducted:true vs HTTP false), not temp
+  // durability — promote in-process afterward. A non-temp session is the
+  // simplest fixture for that: it survives kill_instance without its jsonl
+  // being wiped.
+  const cond = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
   assert.equal(cond.conducted, true, 'MCP-spawned summary carries conducted:true');
   const condInst = instForSession(instances, cond.sessionId);
   await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
+  await condInst.promoteToNormal();
   // Drive a turn so the durable marker is persisted on turn_end.
   await callTool(baseUrl, 'send_prompt', { sessionId: cond.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
   // BOTH ids are needed here, and keeping them apart is the point: a LIVE row is
@@ -1023,10 +1003,11 @@ test('project_read scoped to a worktree reads from the worktree root, not the pa
 
 // ---------- spawn_instance temp/mode defaults ----------
 //
-// The MCP spawn path defaults temp:true (disposable conducted worker) and
-// gets mode plan automatically — create() is policy-light and never couples
-// temp to mode. The temp⇒bypassPermissions shortcut lives only at the REST
-// route POST /api/instances (covered by instances.test.mjs).
+// The MCP spawn path defaults temp:true (archived-on-exit conducted worker,
+// transcript retained and resumable) and gets mode plan automatically —
+// create() is policy-light and never couples temp to mode. The
+// temp⇒bypassPermissions shortcut lives only at the REST route
+// POST /api/instances (covered by instances.test.mjs).
 
 async function spawnIdle(args) {
   const summary = unwrap(await callTool(baseUrl, 'spawn_instance', args));
@@ -1043,20 +1024,6 @@ test('spawn_instance defaults to temp:true with mode still plan (coupling broken
     assert.equal(summary.temp, true, 'temp defaults to true for MCP spawns');
     assert.equal(summary.mode, 'plan', 'mode stays plan despite temp:true');
     assert.equal(summary.conducted, true);
-  } finally {
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
-    else process.env.FAKE_CLAUDE_SCENARIO = prev;
-  }
-});
-
-test('spawn_instance explicit temp:false wins, mode still plan', async () => {
-  const prev = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const summary = await spawnIdle({ project: 'demo', temp: false });
-    assert.equal(summary.temp, false, 'explicit temp:false overrides the default');
-    assert.equal(summary.mode, 'plan');
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;
@@ -1085,53 +1052,6 @@ test('spawn_instance explicit debug:false overrides an ON debugByDefault default
     await setDebugByDefault(true);
     const summary = await spawnIdle({ project: 'demo', debug: false });
     assert.equal(summary.debug, false, 'explicit debug:false overrides the ON default on the MCP spawn path too');
-  } finally {
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
-    else process.env.FAKE_CLAUDE_SCENARIO = prev;
-  }
-});
-
-// ---------- promote_session ----------
-
-test('promote_session flips temp:false on a temp session', async () => {
-  const prev = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const summary = await spawnIdle({ project: 'demo' });
-    assert.equal(summary.temp, true);
-    const promoted = unwrap(await callTool(baseUrl, 'promote_session', { sessionId: summary.sessionId }));
-    assert.equal(promoted.temp, false, 'promote flips temp to false');
-    assert.equal(instForSession(instances, summary.sessionId).temp, false, 'in-memory flag flipped too');
-  } finally {
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
-    else process.env.FAKE_CLAUDE_SCENARIO = prev;
-  }
-});
-
-test('promote_session on a non-temp session returns a structured error', async () => {
-  const prev = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const summary = await spawnIdle({ project: 'demo', temp: false });
-    const res = await callTool(baseUrl, 'promote_session', { sessionId: summary.sessionId });
-    assert.equal(res.isError, true, 'not-temp surfaces as isError, not a crash');
-    assert.match(res.content.map(c => c.text).join(''), /not temp/);
-  } finally {
-    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
-    else process.env.FAKE_CLAUDE_SCENARIO = prev;
-  }
-});
-
-test('promote_session on an unknown sessionId soft-refuses SESSION_UNKNOWN', async () => {
-  const prev = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
-  try {
-    const res = unwrap(await callTool(baseUrl, 'promote_session', { sessionId: 'no-such-session' }));
-    assert.equal(res.ok, false, 'unknown session soft-refuses, not isError/crash');
-    assert.equal(res.code, 'SESSION_UNKNOWN');
-    assert.equal(res.sessionId, 'no-such-session');
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;
@@ -1312,9 +1232,10 @@ test('send_prompt on an exited non-temp session soft-refuses SESSION_NOT_LIVE an
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
-    // temp:false → the instance is retained in byId after its subprocess exits.
-    const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions', temp: false }));
+    const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
     await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
+    // Promote so the instance is retained in byId after its subprocess exits.
+    await instForSession(instances, spawn.sessionId).promoteToNormal();
     const countBefore = instances.idsForSession(spawn.sessionId).length;
 
     // Kill the subprocess directly (NOT instances.remove) so the non-temp
@@ -1346,11 +1267,12 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
     const { encodeCwd } = await import('../src/projects.ts');
     await makeRealRepo(projectsRoot, 'demo');
 
-    // Spawn a persistent (non-temp) instance into a fresh worktree.
+    // Spawn into a fresh worktree, then promote to a persistent (non-temp) session.
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
-      project: 'demo', mode: 'bypassPermissions', createWorktree: true, temp: false,
+      project: 'demo', mode: 'bypassPermissions', createWorktree: true,
     }));
     await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
+    await instForSession(instances, spawn.sessionId).promoteToNormal();
     const sessionId = spawn.sessionId;
     const worktreeName = spawn.worktree.worktreeName;
     const branch = spawn.worktree.branch;

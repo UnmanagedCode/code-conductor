@@ -116,10 +116,10 @@ interface DiffFileRow {
 //
 // An EXPLICIT ALLOWLIST, not a spread with keys deleted. The previous
 // `({id, callerInstanceId, ...rest}) => rest` form silently published every
-// field ever added to summary() — that is how `sonnetWindow` reached
-// list_sessions / spawn_instance / wait_for_idle.summary / respawn_instance /
-// promote_session without ever being documented. Adding a key here is now a
-// deliberate act, and CONDUCTOR_VIEW_KEYS is asserted against the documented
+// field ever added to summary() — that is how `sonnetWindow` reached every
+// conductor-facing return (the toConductorView call sites below) without
+// ever being documented. Adding a key here is now a deliberate act, and
+// CONDUCTOR_VIEW_KEYS is asserted against the documented
 // list in src/mcp/tools.ts by tests/mcp-conductor-view.test.mjs, so the two
 // cannot drift.
 //
@@ -291,23 +291,6 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
 function notLiveRefusal(sessionId: string): SoftRefusal {
   return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
     reason: `session ${sessionId} has no running process — call spawn_instance({resume:"${sessionId}"}) to bring it back.` };
-}
-
-// Resolve when `inst.status` first satisfies predicate, or reject on timeout.
-// Resolves immediately if the predicate is already true.
-function waitForStatus(inst: InstanceLike, predicate: (status: string) => boolean, timeoutMs: number): Promise<{ status: string; summary: InstanceSummary }> {
-  return waitFor<{ status: string; summary: InstanceSummary }>({
-    initial: () => predicate(inst.status) ? { value: { status: inst.status, summary: inst.summary() } } : null,
-    subscribe: (settle) => {
-      function onStatus(s: InstanceSummary): void {
-        if (predicate(s.status)) settle({ status: s.status, summary: s });
-      }
-      inst.on('status', onStatus);
-      return () => inst.off('status', onStatus);
-    },
-    timeoutMs,
-    onTimeout: () => new Error(`wait_for_idle timed out after ${timeoutMs} ms (status=${inst.status})`),
-  });
 }
 
 // Resolve when the next event matching `predicate` arrives. Rejects on
@@ -808,7 +791,6 @@ interface SpawnArgs {
   createWorktree?: boolean;
   baseWorktree?: string;
   name?: string;
-  temp?: boolean;
   debug?: boolean;
   // Playbook-policy inputs. Declared so the router's unknown-argument rejection
   // admits them; consumed entirely by src/mcp/playbookGate.ts before this
@@ -907,15 +889,16 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
     // otherwise rather than ignoring them.
     baseWorktree: args.baseWorktree,
     name: args.name,
-    // Conductor workers default to temp (disposable). Unlike the UI's temp
+    // Conductor workers are always temp: archived on subprocess exit — the
+    // transcript is retained and stays resumable, it just leaves the default
+    // session list (only the sub-agent dir is dropped). Unlike the UI's temp
     // checkbox (which the REST route maps to bypassPermissions), temp here
     // does NOT affect the mode default — create() leaves it at plan, so
-    // workers plan before acting. Explicit temp:false / mode from the
-    // caller win. On resume, leave it undefined instead of forcing true —
-    // create()'s sidecar recovery (isTemp(resume)) decides the session's
-    // actual persisted state; forcing true here would silently convert a
-    // persistent session into a disposable one on every MCP resume.
-    temp: args.temp !== undefined ? args.temp : (args.resume ? undefined : true),
+    // workers plan before acting. On resume, leave it undefined rather than
+    // forcing true — create()'s sidecar recovery (isTemp(resume)) decides the
+    // session's actual persisted state; forcing true would silently re-temp a
+    // session the human promoted, on every MCP resume.
+    temp: args.resume ? undefined : true,
     debug: args.debug,
     // Sessions spawned through the MCP tool are "conducted" sessions
     // (the worker agents an orchestrator conducts). This is the ONLY
@@ -1067,18 +1050,6 @@ export async function sendPrompt(
   return { sessionId: inst.sessionId, status: inst.status, ...sub, ...forwardedField };
 }
 
-export async function waitForIdle({ sessionId, timeoutMs = 600_000 }: { sessionId: string; timeoutMs?: number }, { instances }: McpCtx) {
-  const r = await getInst(instances, sessionId);
-  if ('soft' in r) return r.soft;
-  const inst = r.inst;
-  const { status } = await waitForStatus(
-    inst,
-    (s) => s === 'idle' || s === 'exited' || s === 'crashed',
-    timeoutMs,
-  );
-  return { sessionId: inst.sessionId, status, summary: toConductorView(inst.summary()) };
-}
-
 export async function setMode({ sessionId, mode }: { sessionId: string; mode: string }, { instances }: McpCtx) {
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
@@ -1220,7 +1191,7 @@ export async function renewSession(
   const busy = inst.status !== 'idle' ? inst.status : renewalDeferredBy(inst);
   if (busy) {
     // The remedy must not say "wait for idle": every `renewalDeferredBy` state
-    // reports status:'idle' already, so a conductor that called wait_for_idle would
+    // reports status:'idle' already, so a conductor gating on status alone would
     // be satisfied instantly and retry into the same refusal. Name what actually
     // frees it, per state.
     const remedy = busy === 'overage-queue'
@@ -1291,17 +1262,6 @@ export async function respawnInstance({ sessionId }: { sessionId: string }, { in
   }
   const respawned = await instances.respawn(inst.id);
   return toConductorView(respawned.summary());
-}
-
-// Promote a temp session to a persistent one — reuses the same
-// Instance.promoteToNormal() the REST endpoint calls. getInst returns a soft
-// SESSION_NOT_LIVE/SESSION_UNKNOWN for a non-live/unknown session;
-// promoteToNormal throws "instance is not temp" (statusCode 400) → isError.
-export async function promoteSession({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
-  const r = await getInst(instances, sessionId);
-  if ('soft' in r) return r.soft;
-  const inst = r.inst;
-  return toConductorView(await inst.promoteToNormal());
 }
 
 // ---------- mutating: plan approval ----------

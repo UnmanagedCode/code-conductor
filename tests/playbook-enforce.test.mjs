@@ -461,7 +461,7 @@ test('enforce: a stage binding survives a renewal — one row, and capacity is r
   const t = await setup({ enforcement: 'enforce', scenarioPath: SCENARIO_RENEW });
   try {
     const w = await t.spawnWorker({
-      project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',
+      project: 'demo', playbook: 'freeform', stage: 'freeform', mode: 'bypassPermissions',
     });
     const publicId = w.sessionId;
     assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
@@ -532,7 +532,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     // at inst.cwd rather than the project path. Neither matters to the prune; both
     // are consequences of the fixture choice, recorded so a future reader is not
     // left wondering where the worktree came from.
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan', temp: false });
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
     const publicId = w.sessionId;
     assert.ok(publicId, `bound spawn must succeed: ${JSON.stringify(w)}`);
     const inst = instForSession(t.instances, publicId);
@@ -1046,11 +1046,11 @@ test('a conductor spawned with no playbookEnforcement and nothing persisted defa
 //
 // The fake engine writes no transcript, so the sequence is: spawn a real
 // playbook-bound worker, seed the jsonl the CLI would have left, kill it, resume.
-// `temp: false` here is incidental, not load-bearing — a temp session's jsonl
-// is archived (not deleted) on exit and stays just as resumable.
+// A temp session's jsonl is archived (not deleted) on exit and stays just as
+// resumable, so the default MCP temp:true spawn works fine here.
 async function killedBoundWorker(t) {
   const w = await t.spawnWorker({
-    project: 'demo', playbook: 'freeform', stage: 'freeform', temp: false, mode: 'bypassPermissions',
+    project: 'demo', playbook: 'freeform', stage: 'freeform', mode: 'bypassPermissions',
   });
   assert.ok(w.sessionId, `the bound spawn must succeed: ${JSON.stringify(w)}`);
   // freeform pins nothing, so the worker sits in the project root with no worktree
@@ -1194,7 +1194,7 @@ test('enforce: a stage may deny a renewal REQUEST, while the conductor\'s own ba
     });
 
     const w = await t.spawnWorker({
-      project: 'demo', playbook: 'norenew', stage: 'locked', temp: false, mode: 'bypassPermissions',
+      project: 'demo', playbook: 'norenew', stage: 'locked', mode: 'bypassPermissions',
     });
     assert.ok(w.sessionId, `bound spawn must succeed: ${JSON.stringify(w)}`);
     const inst = instForSession(t.instances, w.sessionId);

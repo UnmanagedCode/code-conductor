@@ -341,23 +341,6 @@ test('project_diff invalid baseRef surfaces statusCode 400', async () => {
   assert.equal(JSON.parse(body.result.content[1].text).statusCode, 400);
 });
 
-test('promote_session on a non-temp session surfaces statusCode 400', async () => {
-  // Needs scenario-instance so spawn_instance resolves to idle quickly.
-  const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
-  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
-  try {
-    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
-    const spawn = meta(await callTool('spawn_instance', { project: 'demo', temp: false }));
-    await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
-    const { body } = await rpc('tools/call', { name: 'promote_session', arguments: { sessionId: spawn.sessionId } });
-    assert.equal(body.result.isError, true);
-    assert.match(errText(body.result), /not temp.*\(HTTP 400\)/);
-    assert.equal(JSON.parse(body.result.content[1].text).code, 'BAD_REQUEST');
-  } finally {
-    process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
-  }
-});
-
 // ---------- project_status dirty cap ----------
 
 test('project_status caps the dirty list with dirtyTruncated + dirtyTotal', async () => {

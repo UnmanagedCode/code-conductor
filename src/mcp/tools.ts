@@ -184,8 +184,8 @@ export function buildTools(): Tool[] {
         'Returns the worker summary — capture the returned `sessionId`, the stable handle every other ' +
         'worker-addressing tool takes. Pass createWorktree:true to create a fresh worktree off HEAD, or ' +
         'worktree:"<name>" to attach to an existing one (createWorktree wins if both are given). ' +
-        'Defaults to temp:true (disposable worker) but mode still defaults to plan ' +
-        '(NOT bypassPermissions) so workers plan before acting — promote with promote_session to keep one. ' +
+        'The session is archived on subprocess exit (transcript retained and still resumable, just out of the ' +
+        'default list_sessions view); mode still defaults to plan (NOT bypassPermissions) so workers plan before acting. ' +
         'project is required for a fresh spawn, but optional when resume is given: if worktree is also ' +
         'omitted, the session\'s recorded project + worktree are recovered automatically so ' +
         'spawn_instance({resume:sessionId}) alone re-attaches the right cwd/branch and its prior history. ' +
@@ -199,7 +199,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan, independent of temp. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value always wins.' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value always wins.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
             description:
@@ -239,7 +239,6 @@ export function buildTools(): Tool[] {
             type: 'string',
             description: 'Requires createWorktree:true (else refused). Names the new WORKTREE, not the session — see create_worktree\'s schema.',
           },
-          temp: { type: 'boolean', default: true, description: 'If true, the session is archived (not deleted) on subprocess exit. Defaults to true for MCP spawns; pass false to keep it out of the archive (or promote_session later).' },
           debug: { type: 'boolean', description: 'If true, raw CLI traffic is mirrored to .code-conductor/debug/<id>/.' },
           playbook: {
             type: 'string',
@@ -298,21 +297,6 @@ export function buildTools(): Tool[] {
         required: ['sessionId', 'text'],
       },
       handler: h.sendPrompt,
-    },
-    {
-      name: 'wait_for_idle',
-      description:
-        'Block until an instance returns to status idle, exited, or crashed. Returns the resolved ' +
-        'status. Useful between send_prompt({wait:false}) and get_transcript.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          sessionId: { type: 'string', description: 'Worker sessionId.' },
-          timeoutMs: { type: 'integer', default: 600000, description: 'Default matches send_prompt\'s wait cap (see the schema default).' },
-        },
-        required: ['sessionId'],
-      },
-      handler: h.waitForIdle,
     },
     {
       name: 'set_mode',
@@ -516,7 +500,7 @@ export function buildTools(): Tool[] {
     },
     {
       name: 'interrupt_turn',
-      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped; use wait_for_idle to confirm the turn ended. Pass force:true to abort immediately, discarding in-progress work.',
+      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped; subscribe_to_idle to be woken when the turn actually ends. Pass force:true to abort immediately, discarding in-progress work.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -552,19 +536,6 @@ export function buildTools(): Tool[] {
         required: ['sessionId'],
       },
       handler: h.respawnInstance,
-    },
-    {
-      name: 'promote_session',
-      description:
-        'Promote a temp session to a persistent one: flips temp=false and writes last-prompt + ' +
-        'permission-mode so `claude --resume` finds it (emits a status update). Refuses if the ' +
-        'session is unknown / not live, and errors if the session is not temp.',
-      inputSchema: {
-        type: 'object',
-        properties: { sessionId: { type: 'string', description: 'Worker sessionId of the temp session to keep.' } },
-        required: ['sessionId'],
-      },
-      handler: h.promoteSession,
     },
     {
       name: 'create_worktree',

@@ -1,6 +1,5 @@
 // One promise shape for "settle when a listener-driven predicate fires, or on a
-// timeout". The four event-driven waiters (MCP wait_for_idle and turn_end,
-// resume-restart's per-instance and all-idle drains) differed only in which
+// timeout". Its callers (see this module's importers) differed only in which
 // listeners they attach and whether a timeout resolves or rejects — and each
 // hand-rolled its own clearTimeout + off() teardown on BOTH paths. This owns the
 // teardown once: exactly one cleanup, on whichever of settle/fail/timeout fires
