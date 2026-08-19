@@ -226,9 +226,35 @@ export class Parser {
         // than only when the final `result` lands. Skip emission when
         // there's no usage payload (defensive — keeps DOM tests stable
         // for fixtures that omit it).
+        //
+        // A zero prompt sum is not a measurement: some substitution
+        // backends' gateways report an all-zero usage block on EVERY
+        // message_start (real numbers only on the final `result` and in
+        // the jsonl), which latched verbatim renders a false
+        // `ctx 0% · 0/200k` forever. So drop the BLOCK, not the event —
+        // message_start also carries the turn-boundary model reading and
+        // the idle→turn flip for a turn we didn't initiate (see
+        // Instance._emitUi), and suppressing it would strand such turns
+        // at `idle`. `usage: null` is the shape both latches already read
+        // as "no reading". The replay path applies the same floor over
+        // the same three fields (loadPersistedTranscript in
+        // src/transcript.ts).
         const usage = ev.message?.usage ?? null;
         if (!usage) return [];
-        return [{ kind: 'message_start', msgId: this.currentMsgId, usage, model: ev.message?.model ?? null }];
+        const u = usage as {
+          input_tokens?: number;
+          cache_read_input_tokens?: number;
+          cache_creation_input_tokens?: number;
+        };
+        const prompt = (u.input_tokens ?? 0)
+                     + (u.cache_read_input_tokens ?? 0)
+                     + (u.cache_creation_input_tokens ?? 0);
+        return [{
+          kind: 'message_start',
+          msgId: this.currentMsgId,
+          usage: prompt > 0 ? usage : null,
+          model: ev.message?.model ?? null,
+        }];
       }
       case 'content_block_start': {
         const idx = eventIndex(ev);

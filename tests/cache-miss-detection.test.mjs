@@ -313,3 +313,29 @@ test('a rewind turn whose prefix is warm-but-smaller is NOT flagged (cf. the col
     await fs.rm(cwd, { recursive: true, force: true });
   }
 });
+
+// ── the zero-sum usage floor (card 2026-0185) ───────────────────────────────
+//
+// The reason the fix nulls the usage BLOCK instead of suppressing the event:
+// message_start carries the idle→turn flip for a turn we didn't initiate, and a
+// substitution backend whose gateway reports all-zero usage on every frame must
+// keep it. This spans parser → _handleStdoutLine → _emitUi.
+
+test('an all-zero gateway message_start still flips idle→turn and leaves the ctx reading unknown', async () => {
+  const { inst, events, cwd } = await makeInstance();
+  try {
+    assert.equal(inst.status, 'idle', 'precondition: no prompt() ran, so the flip must come from message_start');
+    inst._handleStdoutLine(msgStartLine({ read: 0, creation: 0, id: 'z0' }));
+    assert.equal(inst.status, 'turn', 'the turn-start signal survives the dropped usage block');
+    assert.equal(inst.lastContextUsage, null, 'an all-zero block is not a measurement');
+
+    // Cache-miss bookkeeping is byte-identical to the old all-zero block: 0/0.
+    inst._handleStdoutLine(resultLine());
+    const te = turnEnds(events).at(-1);
+    assert.equal(te.firstReqCacheRead, 0);
+    assert.equal(te.firstReqCacheCreation, 0);
+    assert.equal(te.cacheMiss, false, 'creation(0) > read(0) is false — same verdict as before');
+  } finally {
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
+});

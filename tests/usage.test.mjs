@@ -317,6 +317,32 @@ test('UsageTracker: seedContext supplies the current size when the tail has no m
   assert.equal(t.currentContextSize(), 500);
 });
 
+// ── the zero-sum usage floor, client end (card 2026-0185) ───────────────────
+
+test('UsageTracker: a null-usage message_start leaves the chip at ctx —', async () => {
+  const { UsageTracker, formatPct, formatTokens } = await import(USAGE_URL);
+  const chip = (tracker, windowTokens) => {
+    const used = tracker.currentContextSize();
+    const frac = tracker.currentFillPct(windowTokens);
+    if (used == null || frac == null) return 'ctx —';
+    return `ctx ${formatPct(frac)} · ${formatTokens(used)}/${formatTokens(windowTokens)}`;
+  };
+  const t = new UsageTracker();
+  // The shape the parser produces for an all-zero gateway usage block.
+  t.apply({ kind: 'message_start', msgId: 'm1', model: 'deepseek-v4-flash', usage: null });
+  assert.equal(t.currentContextSize(), null);
+  assert.equal(t.currentFillPct(200_000), null);
+  assert.equal(chip(t, 200_000), 'ctx —', 'never a false `ctx 0% · 0/200k`');
+});
+
+test('UsageTracker: a null-usage message_start does not clobber a seeded resume reading', async () => {
+  const { UsageTracker } = await import(USAGE_URL);
+  const t = new UsageTracker();
+  t.seedContext({ input_tokens: 46398 });
+  t.apply({ kind: 'message_start', msgId: 'm1', usage: null });
+  assert.equal(t.currentContextSize(), 46398, 'the resume seed survives the first live gateway frame');
+});
+
 test('UsageTracker: seeded snapshot replay renders the chip against the model window, not `ctx —`', async () => {
   const { UsageTracker, formatPct, formatTokens, fillClass } = await import(USAGE_URL);
   try {

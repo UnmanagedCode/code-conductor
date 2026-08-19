@@ -409,6 +409,100 @@ test('parser: message_start without usage stays silent (legacy fixtures)', () =>
   assert.equal(out.length, 0);
 });
 
+// ── the zero-sum usage floor (card 2026-0185) ───────────────────────────────
+//
+// Some substitution backends' gateways report an all-zero usage block on EVERY
+// message_start. Zero is not a measurement, so the parser must null the BLOCK
+// while still emitting the EVENT (which also carries the turn-boundary model
+// reading and the idle→turn flip — see tests/cache-miss-detection.test.mjs).
+
+test('parser: an all-zero message_start usage block is dropped, but the event still fires', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'stream_event',
+    event: {
+      type: 'message_start',
+      message: {
+        id: 'msg_zero',
+        role: 'assistant',
+        model: 'deepseek-v4-flash',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    },
+  });
+  assert.equal(out.length, 1, 'the event is NOT suppressed — it carries the idle→turn flip');
+  assert.equal(out[0].kind, 'message_start');
+  assert.equal(out[0].usage, null, 'a zero prompt sum is not a measurement');
+  assert.equal(out[0].msgId, 'msg_zero');
+  assert.equal(out[0].model, 'deepseek-v4-flash', 'the turn-boundary model reading survives');
+});
+
+test('parser: the zero-sum floor sums only the three prompt-side fields, not output_tokens', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'stream_event',
+    event: {
+      type: 'message_start',
+      message: {
+        id: 'msg_out_only',
+        role: 'assistant',
+        usage: {
+          input_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          output_tokens: 5000,
+        },
+      },
+    },
+  });
+  assert.equal(out[0].usage, null, 'output_tokens is not part of the context prompt size');
+});
+
+test('parser: a non-zero input_tokens alone still latches', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'stream_event',
+    event: {
+      type: 'message_start',
+      message: { id: 'm', role: 'assistant', usage: { input_tokens: 7, output_tokens: 0 } },
+    },
+  });
+  assert.notEqual(out[0].usage, null, 'the floor must not swallow a real reading');
+  assert.equal(out[0].usage.input_tokens, 7);
+});
+
+test('parser: a non-zero cache_read alone still latches', () => {
+  const p = new Parser();
+  const out = p.handleObject({
+    type: 'stream_event',
+    event: {
+      type: 'message_start',
+      message: { id: 'm', role: 'assistant', usage: { input_tokens: 0, cache_read_input_tokens: 190000 } },
+    },
+  });
+  assert.notEqual(out[0].usage, null);
+  assert.equal(out[0].usage.cache_read_input_tokens, 190000);
+});
+
+test('parser: a non-zero cache_creation alone still latches, and one token is not zero', () => {
+  const p = new Parser();
+  const creation = p.handleObject({
+    type: 'stream_event',
+    event: {
+      type: 'message_start',
+      message: { id: 'mc', role: 'assistant', usage: { input_tokens: 0, cache_creation_input_tokens: 1024 } },
+    },
+  });
+  assert.notEqual(creation[0].usage, null);
+  assert.equal(creation[0].usage.cache_creation_input_tokens, 1024);
+  // The floor is `> 0`, not `> 1` / `>= 1024`.
+  const one = p.handleObject({
+    type: 'stream_event',
+    event: { type: 'message_start', message: { id: 'm1', role: 'assistant', usage: { input_tokens: 1 } } },
+  });
+  assert.notEqual(one[0].usage, null, 'a single token is a measurement');
+});
+
 test('parser: synthetic assistant message (slash command) emits text events', () => {
   const p = new Parser();
   // Shape lifted from a real debug trace: the CLI handles slash commands
