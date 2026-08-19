@@ -309,9 +309,26 @@ describe('the resolved effort reaches the spawn', () => {
     await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
     // Every tier tuned away from the default — a spawn with no tier must ignore them.
     for (const tier of ['fast', 'balanced', 'powerful', 'frontier']) await setTierEffort(tier, 'low');
-    const { inst, argv } = await spawnAndCapture({ project: 'p', mode: 'bypassPermissions' });
+    // A concrete {model, backend} names no Settings row, so no row's effort can
+    // apply. It also opts out of the route's default-tier fill (which only fires
+    // when NEITHER model nor backend is given — see the next test).
+    const { inst, argv } = await spawnAndCapture({
+      project: 'p', mode: 'bypassPermissions', model: DEFAULT_VERSIONS.haiku, backend: 'claude',
+    });
     assert.equal(inst.effort, DEFAULT_EFFORT);
     assert.equal(effortArg(argv), DEFAULT_EFFORT);
+  });
+
+  // Accepted consequence of routing a model-less fresh spawn through the default
+  // spawn tier: spawning ON a tier means that tier's row governs BOTH its axes,
+  // so its stored effort applies too. No change out of the box (both `high`).
+  test("a spawn naming neither model nor tier/role picks up the DEFAULT TIER's effort", async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    await setDefaultSpawnTier('balanced');
+    await setTierEffort('balanced', 'low'); // distinguishable from DEFAULT_EFFORT
+    const { inst, argv } = await spawnAndCapture({ project: 'p', mode: 'bypassPermissions' });
+    assert.equal(inst.effort, 'low', 'the resolved default tier\'s row governs effort too');
+    assert.equal(effortArg(argv), 'low');
   });
 
   test("MCP spawn_instance({model:'<tier>'}) applies that tier's default effort", async () => {

@@ -188,6 +188,14 @@ to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 **Tiers** — `CAPABILITY_TIERS` (the tier list in `src/modelVersions.ts`) is the primary spawn vocabulary. Each binds to `{backend, model}` under
 `models.tierBackend`. Defaults (`DEFAULT_TIER_BACKEND`) are all-Claude; see the module for the per-tier mapping.
 
+`models.defaultTier` (`getDefaultSpawnTier()`, fallback `DEFAULT_SPAWN_TIER`) names **which** tier is the
+default. A fresh spawn that names no model/tier/role resolves through
+`defaultSpawnBinding()` = `getTierBackend(getDefaultSpawnTier())` — so it also picks up that tier's
+**default effort** — on both fresh-spawn surfaces (MCP `spawn_instance`, and `POST /api/instances` when
+neither `model` nor `backend` is given). Total by construction: both halves revert on their own, so the
+result never has a null model and no spawn reaches the CLI without `--model`. A **resume** is excluded —
+it recovers the model it last ran.
+
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points
 at — **or** a concrete `{backend, model}`. The two are told apart by

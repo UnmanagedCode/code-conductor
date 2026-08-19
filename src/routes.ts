@@ -55,7 +55,7 @@ import {
   getConductorCompactWindow, setConductorCompactWindow,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
-  getTierBackend, setTierBackend,
+  getTierBackend, setTierBackend, defaultSpawnBinding,
   getTierEffort, setTierEffort,
   getRoleEffort, setRoleEffort, inheritedRoleEffort,
   effectiveRoleBinding, setRoleBinding,
@@ -959,6 +959,20 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // `model`+`backend` from; they exist so create() can resolve THAT row's
         // default effort when `effort` is omitted (resolveSpawnEffort). The client
         // never resolves effort itself — see public/spawnDialog.js.
+        // A fresh spawn that names no model runs on the Settings default tier, not the
+        // account default — the same rule the MCP surface applies in resolveSpawnModel.
+        // Gated on BOTH being absent: a binding is an inseparable pair, so a caller that
+        // named a backend has made a choice this must not overwrite. The UI never reaches
+        // this (spawnDialog resolves the selected tier before POSTing); a raw API client does.
+        let spawnModel = model as string | null | undefined;
+        let spawnBackend = backend as string | null | undefined;
+        let spawnTier = tier as string | undefined;
+        if (!resume && spawnModel == null && spawnBackend == null) {
+          const binding = defaultSpawnBinding();
+          spawnModel = binding.model;
+          spawnBackend = binding.backend;
+          spawnTier ??= getDefaultSpawnTier();
+        }
         // Each field is asserted to create()'s input type — create() remains the
         // runtime validator (unknown project / bad effort → its own error), so
         // the erased casts change nothing at runtime.
@@ -967,11 +981,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           resume: resume as string | undefined,
           mode: effectiveMode as string | null | undefined,
           effort: effort as string | null | undefined,
-          tier: tier as string | undefined,
+          tier: spawnTier,
           role: role as string | undefined,
           thinking: thinking as string | null | undefined,
-          model: model as string | null | undefined,
-          backend: backend as string | null | undefined,
+          model: spawnModel,
+          backend: spawnBackend,
           worktree: worktree as string | boolean | null | undefined,
           temp: temp as boolean | undefined,
           debug: debug as boolean | undefined,

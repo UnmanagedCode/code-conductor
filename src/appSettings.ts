@@ -641,6 +641,14 @@ export function getTierBackend(tier: TierName): BackendBinding {
   return isValidBinding(stored) ? stored : DEFAULT_TIER_BACKEND[tier];
 }
 
+// The {backend, model} a spawn that names no tier/role/model runs on: the tier
+// selected as default in Settings → Models, resolved through its binding. Total
+// by construction — getDefaultSpawnTier falls back to DEFAULT_SPAWN_TIER and
+// getTierBackend to DEFAULT_TIER_BACKEND[tier] — so this never yields a null model.
+export function defaultSpawnBinding(): BackendBinding {
+  return getTierBackend(getDefaultSpawnTier());
+}
+
 export async function setTierBackend(tier: TierName, backend: unknown): Promise<Record<string, unknown>> {
   if (!isKnownTier(tier) || !isValidBinding(backend)) {
     throw httpError(400, 'tierBackend must be {backend, model} naming a known backend + model');
@@ -760,7 +768,7 @@ export function resolveRoleBackend(role: string): BackendBinding {
   const b = effectiveRoleBinding(role);
   if ('kind' in b) return getTierBackend(b.tier);
   if (b.backend === CLAUDE_BACKEND_ID && !isKnownClaudeModel(b.model)) {
-    return getTierBackend(getDefaultSpawnTier());
+    return defaultSpawnBinding();
   }
   return persistBinding(b);
 }

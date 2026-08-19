@@ -1378,14 +1378,16 @@ export class Instance extends EventEmitter implements InstanceLike {
       // switch without waiting for an unrelated refetch.
       this.emit('status', this.summary());
     } else {
-      // No explicit spawn-time model (account default) — this is discovery
-      // of the resolved default, not a user-visible switch. Adopt silently:
-      // no model_changed event, since nothing changed from the user's view.
+      // No spawn-time model at all — reachable only on a RESUME whose model
+      // couldn't be recovered (no sidecar, no assistant model in the jsonl yet);
+      // both fresh-spawn surfaces now resolve the default spawn tier. So this is
+      // discovery of what the CLI picked, not a user-visible switch. Adopt
+      // silently: no model_changed event, since nothing changed from the user's view.
       this.model = canonical;
       this._refreshModelCapabilities();
       // But DO push the summary, like the sibling branch. This is the first
       // moment the server knows the model — and therefore its capacity — for a
-      // session spawned with no `--model` (the documented default). Without the
+      // session launched with no `--model`. Without the
       // emit the client holds `contextWindowTokens: null` until some unrelated
       // refetch, so the ctx chip reads `ctx —` for the whole first turn.
       this.emit('status', this.summary());

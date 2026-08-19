@@ -42,7 +42,7 @@ import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } fr
 import { composeProjectConventionsDoc } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
-import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel } from '../appSettings.ts';
+import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
 import { textPayload, textResult } from './content.ts';
 import {
   renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
@@ -805,7 +805,10 @@ interface SpawnArgs {
 // model names are spawnable at all: tests/playbook-schema.test.mjs runs every
 // built-in playbook's `pin: {model}` through it, so a definition can never
 // ship pinning a model the product cannot resolve.
-export function resolveSpawnModel(input: string | null | undefined): {
+export function resolveSpawnModel(
+  input: string | null | undefined,
+  { resume }: { resume?: string | null } = {},
+): {
   model: string | null | undefined; backend: string; tier?: string; role?: string;
 } {
   // Resolve `input` to a concrete {model, backend} pair:
@@ -820,6 +823,7 @@ export function resolveSpawnModel(input: string | null | undefined): {
   //   - a model id served by a configured backend, passed directly → that
   //     backend (robustness);
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
+  //   - omitted on a FRESH spawn → the Settings default tier's binding;
   //   - anything else → reject, rather than silently spawn a broken claude.
   let model: string | null | undefined = input;
   let backend = CLAUDE_BACKEND_ID;
@@ -859,6 +863,16 @@ export function resolveSpawnModel(input: string | null | undefined): {
         { statusCode: 400, code: 'BAD_MODEL' },
       );
     }
+  } else if (!resume) {
+    // No model named on a FRESH spawn → the tier selected as default in
+    // Settings → Models, resolved through its binding. Never fall through to a
+    // null model: `claude` with no --model picks the ACCOUNT default, which is
+    // not ours to choose. A resume is excluded — it recovers the model it last
+    // ran (see _doCreate's readLastSessionModel).
+    const binding = defaultSpawnBinding();
+    tier = getDefaultSpawnTier();
+    backend = binding.backend;
+    model = binding.model;
   }
   return { model, backend, ...(tier ? { tier } : {}), ...(role ? { role } : {}) };
 }
@@ -868,7 +882,7 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
   // callerId is the conductor's stable sessionId (?caller=). Resolve it to the
   // conductor's live instanceId so callerInstanceId stays an instanceId.
   const callerInst = callerId ? instances.liveForSession(callerId) : null;
-  const { model, backend, tier, role } = resolveSpawnModel(args.model);
+  const { model, backend, tier, role } = resolveSpawnModel(args.model, { resume: args.resume });
   // createWorktree:true → create a fresh worktree (passed to create() as the
   // boolean `true`); worktree:"<name>" → attach to an existing one.
   // createWorktree wins if both are given. create() still accepts the

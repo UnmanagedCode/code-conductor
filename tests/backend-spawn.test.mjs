@@ -20,7 +20,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
-  setPluginRolesProvider, getTierBackend, getDefaultSpawnTier,
+  setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
 import { hasSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
 import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from '../src/projects.ts';
@@ -131,20 +131,31 @@ describe('substitution-backend spawn command/args', () => {
     assert.ok(!argv.some(a => a.includes('{model}')), 'the placeholder is always substituted');
   });
 
-  // The identity backend is the one case where a model-less spawn IS legal (the
-  // account default), so `--model` must simply be absent — not `undefined`.
-  test('a fresh claude spawn with no model omits --model entirely', async () => {
+  // There is NO legal model-less spawn on any backend, identity included: a bare
+  // `claude` would run on whatever the ACCOUNT resolves as its default, which is
+  // not cc's to choose. A fresh REST spawn naming neither model nor backend
+  // resolves the Settings default tier's binding, so `--model` is always present
+  // and carries that tier's model — never absent, never `undefined`.
+  test('a fresh claude spawn with no model emits --model from the default spawn tier', async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-nomodel-'));
     const argvDump = path.join(tmp, 'argv.txt');
     process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
     try {
+      // Rebind the default tier to a model distinguishable from every other
+      // tier's default, so a passing assertion can't be a coincidence.
+      await setDefaultSpawnTier('fast');
+      await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
       await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
       const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
       assert.equal(r.status, 201, JSON.stringify(r.body));
       await waitFor(() => instances.get(r.body.id)?.status === 'idle');
       await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
       const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
-      assert.ok(!argv.includes('--model'), `no --model at all: ${argv.join(' ')}`);
+      const i = argv.indexOf('--model');
+      assert.ok(i >= 0, `--model must be present: ${argv.join(' ')}`);
+      assert.equal(argv[i + 1], 'claude-haiku-4-5');
+      assert.equal(r.body.model, 'claude-haiku-4-5');
+      assert.equal(r.body.backend, 'claude');
       assert.ok(!argv.includes('undefined'));
     } finally {
       delete process.env.FAKE_CLAUDE_ARGV_DUMP;

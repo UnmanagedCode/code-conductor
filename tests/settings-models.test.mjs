@@ -17,7 +17,7 @@ import {
   getConductorCompactWindow, setConductorCompactWindow,
   getEnabledTiers, setTierEnabled,
   getDefaultSpawnTier, setDefaultSpawnTier,
-  getTierBackend, setTierBackend, getRoleBinding, setRoleBinding, isKnownBackendModel,
+  getTierBackend, setTierBackend, defaultSpawnBinding, getRoleBinding, setRoleBinding, isKnownBackendModel,
   getAllRoles, isResolvableRole, resolveRoleBackend,
   getCustomRoles, addCustomRole, removeCustomRole,
   addCustomModel, removeCustomModel, setPluginRolesProvider,
@@ -1024,6 +1024,57 @@ test('removeCustomRole does not materialize a roleEffort map in a store that nev
       const stored = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'settings.json'), 'utf8'));
       assert.equal('roleEffort' in stored.models, false,
         'nothing to strip ⇒ write no setting the user never touched');
+    });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+// defaultSpawnBinding() is the {backend, model} a spawn that names no
+// tier/role/model runs on — the composition of `models.defaultTier` (WHICH tier)
+// and `models.tierBackend[tier]` (WHAT model). The claim it carries is TOTALITY:
+// there is no stored shape that makes it yield a null/empty model, because both
+// halves revert on their own. Each case below is one fallback rung.
+test('defaultSpawnBinding is total: every malformed defaultTier / dead binding still yields a concrete model', async () => {
+  const backendIds = new Set(MANAGED_BACKENDS.map(b => b.id));
+  const cases = [
+    ['defaultTier unset', {}],
+    ['defaultTier non-string', { defaultTier: 7 }],
+    ['defaultTier unknown string', { defaultTier: 'turbo' }],
+    // A since-removed custom model: valid when stored, dead now. This is the
+    // rung that proves getTierBackend's revert is on the path — an implementation
+    // reading settings.models.tierBackend[tier] raw would return `gone:v1` here.
+    ['dead tierBackend binding', { defaultTier: 'powerful', tierBackend: { powerful: { backend: 'ollama', model: 'gone:v1' } } }],
+  ];
+  for (const [label, models] of cases) {
+    const root = await mkTmp();
+    try {
+      await withEnv({ PROJECTS_ROOT: root }, async () => {
+        const settingsFile = path.join(orchStoreRoot(), 'settings.json');
+        await fs.mkdir(path.dirname(settingsFile), { recursive: true });
+        await fs.writeFile(settingsFile, JSON.stringify({ models }));
+        const b = defaultSpawnBinding();
+        assert.ok(typeof b.model === 'string' && b.model.length > 0, `${label}: model must be concrete, got ${JSON.stringify(b.model)}`);
+        assert.ok(backendIds.has(b.backend), `${label}: backend must be a registry id, got ${JSON.stringify(b.backend)}`);
+        // And it is exactly the composition, not some third value.
+        assert.deepEqual(b, getTierBackend(getDefaultSpawnTier()), `${label}: composition mismatch`);
+      });
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('defaultSpawnBinding follows a rebound default tier and its binding', async () => {
+  const root = await mkTmp();
+  try {
+    await withEnv({ PROJECTS_ROOT: root }, async () => {
+      await setDefaultSpawnTier('fast');
+      await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+      assert.deepEqual(defaultSpawnBinding(), { backend: 'claude', model: 'claude-haiku-4-5' });
+      // Rebinding the tier moves the default without touching defaultTier…
+      await setTierBackend('fast', { backend: 'claude', model: 'claude-sonnet-5' });
+      assert.deepEqual(defaultSpawnBinding(), { backend: 'claude', model: 'claude-sonnet-5' });
+      // …and repointing defaultTier moves it without touching any binding.
+      await setTierBackend('frontier', { backend: 'claude', model: 'claude-haiku-4-5' });
+      await setDefaultSpawnTier('frontier');
+      assert.deepEqual(defaultSpawnBinding(), { backend: 'claude', model: 'claude-haiku-4-5' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
