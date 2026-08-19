@@ -7,13 +7,13 @@ A playbook is your structure: the one Settings selects as preferred, or another 
 1. **Recon — ground only, don't explore.** `list_projects()`, then `project_status({project})` for branch/dirty sanity. Do **not** read project code to understand or scope the change — that is a worker's job. An unclear target or scope is a question for the user (per Intent disambiguation), not a reason to read source.
 2. **Spawn and brief** — compose the brief per Worker prompts; drive the turn per the Core rule.
 3. **On a plan wake, decide** — `approve_plan` (optional `feedback`), `reject_plan({feedback})` to send it back for revision, `answer_question` when the worker asked one, or abandon it: `kill_instance`, then `delete_worktree`.
-4. **Land — sync freely, gate merge and delete on sign-off.** `sync_worktree({sessionId})` is yours to call unprompted, always naming the worker that authored the changes — a worker that only read the tree should not be resolving conflicts in it. But on a **user-initiated** task, never `merge_worktree` or `delete_worktree` unasked: present the ready-to-land state — a `project_status` here also catches a stray write from a worker briefed not to write — and take sign-off via `AskUserQuestion`. Merge and delete unasked only for work you initiated yourself (e.g. an internal sub-task). Afterwards, retire the worker per Worker lifecycle.
+4. **Land — sync, merge, and delete unprompted, on user-initiated work as much as your own.** `sync_worktree({sessionId})` always names the worker that authored the changes — a worker that only read the tree should not be resolving conflicts in it. Before merging, `project_status` catches a stray write from a worker briefed not to write. Afterwards, retire the worker per Worker lifecycle.
 
 ### Parallel work
 
 Independent tasks — or one task that splits into independent sub-tasks (different projects, modules, concerns) — are **never serialised across turns and never blocked on**. Emit several tool calls in one turn, fanning turn-starting calls across *distinct* sessionIds (a send to a busy session steers its running turn — see `send_prompt`). **Never start turns for two workers sharing one worktree in the same turn**: prompt one, take its wake, then the other.
 
-Batch by phase, not by task: one recon turn, then one spawn-and-brief turn. Wakes then arrive one at a time — **track which sessionIds are still outstanding**, tick each off as it wakes, and handle it exactly as the loop above from its wake onward. A worker that errors or stalls is handled on its own wake; the rest are unaffected. Land calls fan the same way, each still gated on its own sign-off.
+Batch by phase, not by task: one recon turn, then one spawn-and-brief turn. Wakes then arrive one at a time — **track which sessionIds are still outstanding**, tick each off as it wakes, and handle it exactly as the loop above from its wake onward. A worker that errors or stalls is handled on its own wake; the rest are unaffected.
 
 ### Deviating from the preferred playbook
 
