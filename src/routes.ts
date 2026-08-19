@@ -38,7 +38,7 @@ import {
 } from './transcribe.ts';
 import { WHISPER_MODELS, isKnownModel, DEFAULT_MODEL } from './whisperModels.ts';
 import {
-  MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier,
+  MODEL_FAMILIES, CAPABILITY_TIERS, isKnownTier, CLAUDE_BACKEND_ID,
   type TierName, type BackendBinding, type TierBinding,
 } from './modelVersions.ts';
 import { EFFORT_LEVELS, DEFAULT_EFFORT } from './effortLevels.ts';
@@ -986,23 +986,48 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         let spawnBackend = named(backend);
         let spawnTier = tier as string | undefined;
         let spawnRole = role as string | undefined;
-        if (!resume && spawnModel == null && spawnBackend == null) {
+        // The row a model-less fresh spawn runs on, plus the side effect of committing
+        // to it: the name forwarded for effort is the one that resolved the binding.
+        const takeSpawnRow = (): BackendBinding => {
           const namedRole = named(role);
           const namedTier = named(tier);
-          let binding;
           if (namedRole && isResolvableRole(namedRole)) {
-            binding = resolveRoleBackend(namedRole);
             // No need to clear a stale `tier`: resolveSpawnEffort ranks role above it.
             spawnRole = namedRole;
-          } else if (namedTier && isKnownTier(namedTier)) {
-            binding = getTierBackend(namedTier);
-            spawnTier = namedTier;
-          } else {
-            binding = defaultSpawnBinding();
-            spawnTier = getDefaultSpawnTier();
+            return resolveRoleBackend(namedRole);
           }
+          if (namedTier && isKnownTier(namedTier)) {
+            spawnTier = namedTier;
+            return getTierBackend(namedTier);
+          }
+          spawnTier = getDefaultSpawnTier();
+          return defaultSpawnBinding();
+        };
+        if (!resume && spawnModel == null && spawnBackend == null) {
+          const binding = takeSpawnRow();
           spawnModel = binding.model;
           spawnBackend = binding.backend;
+        } else if (!resume && spawnModel == null && spawnBackend === CLAUDE_BACKEND_ID) {
+          // A named backend with no model. Naming a backend is a choice this must not
+          // overwrite, so the row can only supply the MODEL, and only when the row is on
+          // that same backend — otherwise there is nothing to fill and the request is
+          // refused with the same BACKEND_MODEL_MISSING every other backend already
+          // gives for this input (minted here rather than in _doCreate, whose own guard
+          // is `backend !== claude`, i.e. deliberately blind to the identity backend).
+          //
+          // Scoped to the IDENTITY backend, which is the whole gap: `claude` with no
+          // model is the only combination that reaches the CLI's account default. A
+          // named SUBSTITUTION backend falls through untouched and keeps _doCreate's
+          // existing refusal — see the report note; filling one from a matching row
+          // would turn a refusal into a spawn, which is not what was approved.
+          const binding = takeSpawnRow();
+          if (binding.backend !== CLAUDE_BACKEND_ID) {
+            throw Object.assign(
+              new Error(`backend '${spawnBackend}' was named with no model, and the row this spawn resolves to is bound to backend '${binding.backend}' — pass an explicit model, or rebind that row to '${CLAUDE_BACKEND_ID}'`),
+              { statusCode: 422, code: 'BACKEND_MODEL_MISSING' },
+            );
+          }
+          spawnModel = binding.model;
         }
         // Each field is asserted to create()'s input type — create() remains the
         // runtime validator (unknown project / bad effort → its own error), so

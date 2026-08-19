@@ -209,10 +209,18 @@ two different mechanisms depending on the branch:
 | named `tier` | `tier` is **overwritten** with the trimmed tier that resolved the binding. |
 | neither | `tier` is **overwritten** with `getDefaultSpawnTier()`. |
 
-**Known gap:** `backend:"claude"` with no `model` is left alone (the gate never overwrites a caller's
-backend) and has nothing to refuse, so it still launches bare — the one remaining fresh-spawn path that
-reaches the account default. Every other named backend refuses first: a substitution backend with no
-resolvable model is `422 BACKEND_MODEL_MISSING`, an unregistered one `422 BACKEND_GONE`.
+**A named `backend` with no `model`.** Naming a backend is a choice the gate never overwrites, so the row
+can only supply the *model*, and only when the row is on that same backend. Per named backend:
+
+| Named `backend` | Row on `claude` | Row on a substitution backend |
+|---|---|---|
+| `claude` | model filled from the row (and that row governs effort, per the table above) | `422 BACKEND_MODEL_MISSING` — no Claude model to fill |
+| a registered substitution backend | `422 BACKEND_MODEL_MISSING` (`_doCreate`'s own guard, unchanged — cc can't know which of that backend's models was meant) | same `422` — deliberately **not** filled from a matching row; that path never reached the account default, so it kept its existing refusal |
+| unregistered | `422 BACKEND_GONE` | `422 BACKEND_GONE` |
+
+No fresh-spawn path on either surface now reaches the CLI's account default: every one either resolves an
+explicit `--model` or refuses. Refusal codes are documented with the endpoint in
+[protocol.md](protocol.md).
 
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points

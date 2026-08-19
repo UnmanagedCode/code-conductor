@@ -20,7 +20,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
-  setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier,
+  setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier, setTierEffort,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
 import { hasSessionBackend, markSessionBackend } from '../src/sessionBackends.ts';
 import { claudeProjectsRoot, encodeCwd, orchStoreRoot } from '../src/projects.ts';
@@ -190,6 +190,88 @@ describe('substitution-backend spawn command/args', () => {
       delete process.env.FAKE_CLAUDE_ARGV_DUMP;
       await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
     }
+  });
+
+  // Naming `backend:'claude'` with no model used to be the ONE fresh-spawn shape that
+  // reached the CLI's account default: the no-backend gate deliberately leaves a caller
+  // who named a backend alone, and _doCreate's BACKEND_MODEL_MISSING guard is
+  // `backend !== claude`, so there was nothing to refuse. The row now supplies the model.
+  test('a fresh spawn naming backend:claude with no model fills the model from the row', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'backend-spawn-claudeonly-'));
+    const argvDump = path.join(tmp, 'argv.txt');
+    process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+    try {
+      await setDefaultSpawnTier('fast');
+      await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', backend: 'claude' });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      await waitFor(() => instances.get(r.body.id)?.status === 'idle');
+      await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+      const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+      const i = argv.indexOf('--model');
+      assert.ok(i >= 0, `--model must be present: ${argv.join(' ')}`);
+      assert.equal(argv[i + 1], 'claude-haiku-4-5');
+      assert.equal(r.body.model, 'claude-haiku-4-5');
+      assert.equal(r.body.backend, 'claude');
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  // The row is picked by the SAME precedence the no-backend gate uses, so a named
+  // tier decides here too — not the default tier.
+  test('backend:claude with no model resolves the NAMED tier, not the default tier', async () => {
+    await setDefaultSpawnTier('powerful');
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await setTierEffort('powerful', 'max');
+    await setTierEffort('fast', 'low');
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', {
+      project: 'p', mode: 'bypassPermissions', backend: 'claude', tier: 'fast',
+    });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.model, 'claude-haiku-4-5', "the named tier's binding supplies the model");
+    assert.equal(r.body.effort, 'low', '…and the SAME row supplies the effort');
+  });
+
+  // Mismatch: the row this spawn resolves to is on a substitution backend, so there is
+  // no claude model to fill. Refused with the code every other backend already gives
+  // for a model-less spawn, rather than launching bare on the account default.
+  test('backend:claude with no model refuses BACKEND_MODEL_MISSING when the row is on another backend', async () => {
+    await addCustomModel({ label: 'G', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 200_000 });
+    await setDefaultSpawnTier('fast');
+    await setTierBackend('fast', { backend: 'ollama', model: 'gemma4:cloud' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', backend: 'claude' });
+    // The express error handler emits `{error}` only — `code` is internal, so the
+    // 422 + the message text are the whole observable REST contract here.
+    assert.equal(r.status, 422, JSON.stringify(r.body));
+    // Provenance: this must be the ROUTE's refusal, naming the row's backend, not
+    // _doCreate's (`session on backend '…' has no resolvable model`) — whose guard is
+    // `backend !== claude` and so cannot fire here at all. A test satisfied by that
+    // other message would be vacuous.
+    assert.match(r.body.error, /the row this spawn resolves to is bound to backend 'ollama'/);
+    assert.equal(instances.list().length, 0, 'refused before any instance was created');
+  });
+
+  // Regression guards for the two cases option (a) deliberately did NOT touch.
+  test('a substitution backend named with no model still refuses BACKEND_MODEL_MISSING', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', backend: 'ollama' });
+    assert.equal(r.status, 422, JSON.stringify(r.body));
+    // _doCreate's wording, not the route's — proof the fall-through is intact and the
+    // route did not start filling models for a backend that refuses today.
+    assert.match(r.body.error, /session on backend 'ollama' has no resolvable model/);
+  });
+
+  test('an unregistered backend named with no model still refuses BACKEND_GONE', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions', backend: 'ghost' });
+    assert.equal(r.status, 422, JSON.stringify(r.body));
+    assert.match(r.body.error, /unknown backend 'ghost'/);
   });
 
   test('a cc-managed context var beats a same-named backend env pair', async () => {
