@@ -1036,14 +1036,58 @@ export async function sendPrompt(
   }
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
+  // A worker whose model cannot take a mid-turn injection gets the same message
+  // by a different route: stop the running turn at a block edge, then send it as
+  // a fresh turn (Instance.queueSteerAfterStop). Behaviourally identical from
+  // here — the send still steers the worker in flight rather than waiting out its
+  // turn — so no schema or result-shape change.
+  // `=== false` is the opt-out polarity used everywhere this flag is read: only
+  // an explicit declaration diverts, anything unknown keeps the live send.
+  const deferred = inst.status === 'turn' && inst.acceptsMidTurnSteering === false;
+
   if (wait) {
     // Attach the listener *before* sending so we can't miss a fast turn_end.
     // A one-shot subscription registered here would fire on the *next* turn
     // (this one is already being awaited inline), so skip it entirely.
+    if (deferred) {
+      // ONE waiter, created up-front with the FULL budget and consumed on every
+      // path — structurally the same as the live branch below, and that is the
+      // point: the block-edge stop is unbounded, so anything that caps the call
+      // separately from the waiter can outlive the caller. `beforeSend` only
+      // flips a gate here; it creates nothing that could be orphaned.
+      //
+      // The gate is what the stop costs us: the aborted turn emits a `turn_end`
+      // of its own, and answering with THAT would report the stop as the steered
+      // turn's result. `steerSent` is set synchronously in the same tick as the
+      // delivering prompt() (see _flushPendingSteers), so every turn_end after it
+      // belongs to the steered turn and every one before it is the stop's.
+      let steerSent = false;
+      const waiter = waitForEvent(inst, (e) => steerSent && e?.kind === 'turn_end', waitTimeoutMs);
+      const delivered = inst.queueSteerAfterStop(composedText, { beforeSend: () => { steerSent = true; } });
+      // `waiter` is handled unconditionally, right here, before anything can
+      // return — so a timeout or an exit that lands after this call has already
+      // given up rejects into an owned handler, not into the process. A delivery
+      // that fails outright (process died, session being rewritten) surfaces its
+      // own error instead of idling out the rest of the budget; the waiter is
+      // still owned, so its later rejection is absorbed.
+      const ev = await new Promise<UiEvent | null>((resolve, reject) => {
+        waiter.then(resolve, reject);
+        delivered.catch(reject);
+      });
+      return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
+    }
     const waiter = waitForEvent(inst, (ev) => ev?.kind === 'turn_end', waitTimeoutMs);
     await inst.prompt(composedText);
     const ev = await waiter;
     return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
+  }
+  if (deferred) {
+    // Deliberately NOT awaited: the stop lands at the model's next block edge,
+    // which is unbounded, and this tool must return promptly. A delivery failure
+    // is already annotated into the worker's own transcript by _flushPendingSteers.
+    void inst.queueSteerAfterStop(composedText).catch(() => {});
+    const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
+    return { sessionId: inst.sessionId, status: inst.status, ...sub, ...forwardedField };
   }
   await inst.prompt(composedText);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });

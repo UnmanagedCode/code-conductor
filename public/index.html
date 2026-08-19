@@ -164,13 +164,14 @@
             </fieldset>
             <fieldset class="sm-group sm-custom">
               <legend>Custom models</legend>
-              <p class="settings-hint">Add a model served by one of your <strong>Backends</strong>, then pick that backend for a tier above and select the model. A bound tier resolves straight to the model id, launched through the backend's command template. The <strong>context</strong> field is <strong>required</strong>: it is the model's native window in tokens, and it drives the context-usage bar plus the CLI auto-compact point at spawn — a wrong value silently truncates or over-fills the window. Removing a model still bound to a tier makes that tier fall back to its default Claude model.</p>
+              <p class="settings-hint">Add a model served by one of your <strong>Backends</strong>, then pick that backend for a tier above and select the model. A bound tier resolves straight to the model id, launched through the backend's command template. The <strong>context</strong> field is <strong>required</strong>: it is the model's native window in tokens, and it drives the context-usage bar plus the CLI auto-compact point at spawn — a wrong value silently truncates or over-fills the window. Removing a model still bound to a tier makes that tier fall back to its default Claude model. Leave <strong>Accepts mid-turn steering</strong> ticked unless the model errors on — or silently swallows — a message sent into a running turn; unticked, such a send stops the turn at a block boundary (finished work is kept) and arrives as a fresh turn instead.</p>
               <ul id="sm-custom-list" class="sm-custom-list"></ul>
               <div class="sm-custom-form">
                 <input id="sm-custom-label" type="text" placeholder="Label (e.g. Local GPT)" autocomplete="off" />
                 <select id="sm-custom-backend" aria-label="Backend"></select>
                 <input id="sm-custom-model" type="text" placeholder="Model id (e.g. gemma4:cloud)" autocomplete="off" />
                 <input id="sm-custom-context" type="number" min="1" step="1000" placeholder="Context (tokens)" autocomplete="off" />
+                <label class="tt-toggle sm-custom-steer"><input id="sm-custom-steer" type="checkbox" checked /> Accepts mid-turn steering</label>
                 <button type="button" id="sm-custom-add" class="btn">Add</button>
               </div>
               <div id="sm-custom-status" class="st-status" aria-live="polite"></div>

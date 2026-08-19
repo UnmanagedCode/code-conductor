@@ -1590,6 +1590,10 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 .sm-custom-form input { flex: 1 1 140px; min-width: 0; }
 .sm-custom-form select { flex: 0 0 auto; }
 .sm-custom-form .btn { flex: 0 0 auto; }
+/* The steering toggle is a label wrapping a checkbox — it must not pick up the
+   text/number inputs' `flex: 1 1 140px` growth above. */
+.sm-custom-form .sm-custom-steer { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; }
+.sm-custom-form .sm-custom-steer input { flex: 0 0 auto; }
 
 /* Models view at narrow widths. The wide tier grid never wraps and floors at a
    406px row box — 20+76+88+22+76+48 tracks + 5 gaps + padding + border, where the

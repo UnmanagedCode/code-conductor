@@ -19,15 +19,21 @@
 // is 1M *max* (only 512k guaranteed-minimum, billed 2× above 512k) — we
 // deliberately advertise the 1M ceiling here.
 
+// `midTurnSteering` is an OPT-OUT capability flag: absent/true means the model
+// accepts a user message written INTO a running turn, `false` means it does not
+// (it either hard-errors or silently swallows the injection). Read through
+// resolveMidTurnSteering() in src/appSettings.ts, which a custom-model row of the
+// same id overrides. See docs/models.md.
 export interface OllamaCloudModel {
   model: string;
   label: string;
   contextWindow: number;
+  midTurnSteering?: boolean;
 }
 
 export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
   { model: 'deepseek-v4-flash:cloud',    label: 'DeepSeek V4 Flash',         contextWindow: 1_000_000 },
-  { model: 'deepseek-v4-flash:0731-cloud', label: 'DeepSeek V4 Flash (0731)', contextWindow: 1_000_000 },
+  { model: 'deepseek-v4-flash:0731-cloud', label: 'DeepSeek V4 Flash (0731)', contextWindow: 1_000_000, midTurnSteering: false },
   { model: 'qwen3.5:cloud',              label: 'Qwen3.5',                  contextWindow:   256_000 },
   { model: 'glm-5.2:cloud',              label: 'GLM-5.2',                  contextWindow: 1_000_000 },
   { model: 'deepseek-v4-pro:cloud',      label: 'DeepSeek V4 Pro',          contextWindow: 1_000_000 },

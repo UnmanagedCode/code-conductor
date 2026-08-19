@@ -320,7 +320,8 @@ describe('backend registry data model', () => {
   test('custom models: add / list / remove keyed by model id, scoped to a backend', async () => {
     assert.deepEqual(getCustomModels(), []);
     const rec = await addCustomModel({ label: 'Local GPT', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
-    assert.deepEqual(rec, { label: 'Local GPT', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 });
+    // midTurnSteering defaults to true (opt-OUT flag) when the caller omits it.
+    assert.deepEqual(rec, { label: 'Local GPT', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000, midTurnSteering: true });
     assert.equal(getCustomModels().length, 1);
     assert.equal(isKnownBackendModel('ollama', 'gemma4:cloud'), true);
     assert.equal(isKnownBackendModel('ollama', 'nope:tag'), false);
@@ -506,7 +507,7 @@ describe('models + backends settings routes', () => {
     assert.deepEqual(r.body.backends.map(b => b.id), ['claude', 'ollama']);
     assert.ok(r.body.claudeFamilies.some(f => f.family === 'sonnet'));
     assert.equal(r.body.tierBackend.powerful.backend, 'claude');
-    assert.deepEqual(r.body.customModels, [{ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000 }]);
+    assert.deepEqual(r.body.customModels, [{ label: 'Local', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 128_000, midTurnSteering: true }]);
     // Renamed away — the old key names must be gone, not aliased.
     assert.equal(r.body.providers, undefined);
     assert.equal(r.body.customBackends, undefined);
@@ -649,7 +650,7 @@ describe('models + backends settings routes', () => {
     // fine and only fails at spawn.
     const ok = await api(baseUrl, 'POST', '/api/settings/models/custom', { label: 'Fine', model: 'fine:cloud', backend: 'ollama', contextWindow: 256_000 });
     assert.equal(ok.status, 201, JSON.stringify(ok.body));
-    assert.deepEqual(ok.body.added, { label: 'Fine', model: 'fine:cloud', backend: 'ollama', contextWindow: 256_000 });
+    assert.deepEqual(ok.body.added, { label: 'Fine', model: 'fine:cloud', backend: 'ollama', contextWindow: 256_000, midTurnSteering: true });
   });
 
   test('DELETE /settings/models/custom/:model removes by model id (404 when absent)', async () => {

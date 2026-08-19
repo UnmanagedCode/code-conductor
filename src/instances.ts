@@ -29,7 +29,7 @@ import { getDefaultPlaybookEnforcement } from './conductorConventions.ts';
 // applied at the ingress boundaries — the spawn route and the WS toggle — not here.
 import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbooks.ts';
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
-import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
+import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
@@ -95,6 +95,16 @@ interface OverageQueueItem {
   text: string;
   attachments: unknown[];
   ts: number;
+}
+
+// One steer parked on `_pendingSteers` until the armed block-edge stop lands.
+// `beforeSend` runs synchronously in the same tick as the delivering prompt(),
+// so a caller awaiting the resulting turn can attach its listener first.
+interface PendingSteer {
+  text: string;
+  beforeSend?: () => void;
+  resolve: () => void;
+  reject: (e: Error) => void;
 }
 
 // Narrow an event's `data` payload (UiEvent's index signature is `unknown`) to
@@ -242,6 +252,28 @@ export const MID_TURN_NOTE =
   'This may be new direction or a reaction to earlier work — weigh it accordingly; ' +
   'don\'t assume it refers to your latest action.\n' +
   '</system-reminder>';
+
+// The note that rides a steer delivered AFTER a block-edge stop, on a model that
+// cannot take a mid-turn injection (acceptsMidTurnSteering === false). THIS
+// CONSTANT IS THE ONLY PLACE THAT DECISION LIVES — the sender never knows which
+// delivery mechanism ran, so the fact that the turn was cut off has to be carried
+// here rather than written into each caller's text.
+//
+// Built by splicing an extra clause INTO MID_TURN_NOTE's <system-reminder>
+// wrapper, not concatenated after it: that keeps all three signals
+// isMidTurnNoteContent (src/parser.ts) matches on — leading '<system-reminder>',
+// the 'mid-turn' token, trailing '</system-reminder>' — true by construction. If
+// this ever becomes a second, separate block instead, replay renders it as a real
+// user bubble and shifts the rewind/fork user-message index
+// (docs/architecture.md → prefix-safety invariant).
+export const POST_STOP_STEER_NOTE = MID_TURN_NOTE.replace(
+  '\n</system-reminder>',
+  '\n\nYour turn was STOPPED at a block boundary so this message could be delivered — ' +
+  'it did NOT run to completion. The work you had already finished is intact, but ' +
+  'nothing past that point ran: do not read your own transcript as a completed turn. ' +
+  'Decide explicitly whether to resume the interrupted work, abandon it, or clean up ' +
+  'after it, and say which.\n</system-reminder>',
+);
 
 // Returns true when a rate_limit_event signals the session is now using
 // paid overage credits. Defensive: matches isUsingOverage at either
@@ -413,6 +445,11 @@ export class Instance extends EventEmitter implements InstanceLike {
   thinking: string;
   model: string | null;
   contextWindowTokens: number | null;
+  // False when this session's model cannot accept a user message injected into a
+  // running turn — see resolveMidTurnSteering. Re-resolved from the live registry
+  // whenever the model changes (never persisted: a deleted row degrades to the
+  // pre-flag behaviour, which is what a missing capability declaration means).
+  acceptsMidTurnSteering: boolean;
   backend: string;
   hookCallbackUrl: string | null;
   mcpServerUrl: string | null;
@@ -527,6 +564,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   _overageHandled: boolean;
   _overageWasStopped: boolean;
   _overageQueue: OverageQueueItem[];
+  // Steers waiting for a block-edge stop to complete before they are sent, on a
+  // model that cannot take a mid-turn injection. See queueSteerAfterStop.
+  _pendingSteers: PendingSteer[];
   _activeAgentTasks: Map<string, string | null>;
   _taskNotificationPending: boolean;
   _idleWindowDirty: boolean;
@@ -571,6 +611,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Registry id, normalized to the identity backend when unknown (a backend
     // the user has since removed must not strand the session unspawnable).
     this.backend = isKnownBackend(backend) ? backend : CLAUDE_BACKEND_ID;
+    // Resolved from the same {backend, model} pair as the capacity above; both
+    // move together in _refreshModelCapabilities().
+    this.acceptsMidTurnSteering = resolveMidTurnSteering({ backend: this.backend, model: this.model });
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
     // Absolute Claude Code plugin roots (each directly containing
@@ -771,6 +814,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // prompt when the window-reset deadline fires. Reset on (re)spawn and
     // cleared on cancel/flush. Persisted across a resume-restart.
     this._overageQueue = [];
+    // Steers parked until an armed block-edge stop completes (queueSteerAfterStop).
+    this._pendingSteers = [];
     // In-flight Agent-tool (subagent) tasks, keyed by task_id → tool_use_id.
     // Populated from the raw `system/task_started` event and cleared on a
     // terminal `system/task_updated` / `task_notification` (see the stdout
@@ -1178,6 +1223,17 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._interruptArmed = false;
       this._interruptFired = false;
     }
+    // The process is gone: a parked steer can never be delivered. Reject each
+    // waiter and clear the queue — leaving `steerPending` true on a dead instance
+    // would wedge IdleSubscriptionHub's defer until its watchdog.
+    if (isDeadStatus(next) && this._pendingSteers.length) {
+      const entries = this._pendingSteers.splice(0);
+      this._emitUi({ kind: 'system', subtype: 'stderr',
+        data: { line: `deferred steer delivery failed: instance ${next} before the stop completed` } });
+      const err = new Error(`instance ${next} before the queued steer could be delivered`);
+      for (const e of entries) e.reject(err);
+      this._emitSteerSettled();
+    }
     // A new turn is starting (the early-return above means this is a real
     // transition INTO 'turn', covering both prompt()-initiated and unprompted
     // re-invocation turns) — clear the pending task-notification flag: the CLI
@@ -1313,7 +1369,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       this.model = canonical;
       // Capacity is a function of the model, so it must move with it — a stale
       // denominator survives as a wrong ctx% for the rest of the session.
-      this._refreshContextWindowTokens();
+      this._refreshModelCapabilities();
       // The cache is model-specific, so a switch legitimately shrinks/invalidates
       // the prefix; re-baseline next turn instead of flagging a cross-turn miss.
       this._prefixBaselineInvalid = true;
@@ -1326,7 +1382,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // of the resolved default, not a user-visible switch. Adopt silently:
       // no model_changed event, since nothing changed from the user's view.
       this.model = canonical;
-      this._refreshContextWindowTokens();
+      this._refreshModelCapabilities();
       // But DO push the summary, like the sibling branch. This is the first
       // moment the server knows the model — and therefore its capacity — for a
       // session spawned with no `--model` (the documented default). Without the
@@ -1349,9 +1405,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // The mid-session row-deletion case is NOT handled here and does not need to
   // be: nothing recomputes while the model is unchanged, and a deletion observed
   // across a resume is covered by `carriedContextWindowTokens` in create().
-  _refreshContextWindowTokens(): void {
+  // Also re-resolves the mid-turn-steering capability: both are pure functions of
+  // {backend, model}, and a live model change must move them together or a steer
+  // is routed by the OLD model's rules for the rest of the session.
+  _refreshModelCapabilities(): void {
     const cw = resolveContextWindowTokens({ backend: this.backend, model: this.model });
     this.contextWindowTokens = Number.isFinite(cw) ? cw : null;
+    this.acceptsMidTurnSteering = resolveMidTurnSteering({ backend: this.backend, model: this.model });
   }
 
   async loadHistory(backingId: string): Promise<void> {
@@ -1978,6 +2038,14 @@ export class Instance extends EventEmitter implements InstanceLike {
         // still latched when the plan above is enriched.
         this._planFiles.noteTurnBoundary();
         this._writeSessionMetadata().catch(() => {});
+        // Deliver any steer parked for a block-edge stop. ONE trigger for both
+        // outcomes: the armed abort landed here, or the turn finished on its own
+        // before the boundary (in which case _setStatus already cleared the arm
+        // and nothing ever reached the CLI). On a microtask, not inline, so this
+        // turn_end reaches every subscriber — including IdleSubscriptionHub,
+        // which reads `steerPending` synchronously — before prompt() flips the
+        // status back to 'turn'.
+        if (this._pendingSteers.length) queueMicrotask(() => this._flushPendingSteers());
       }
       // Agent-tool (subagent) task lifecycle. `task_started` fires the moment
       // the tool_use dispatches — for a backgrounded call (`run_in_background:
@@ -2214,7 +2282,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // vision content) and arbitrary file bytes on demand. This avoids
   // re-paying the base64 token cost on every subsequent turn and
   // keeps the prompt-cache prefix stable.
-  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false }: { annotateIfMidTurn?: boolean; internal?: boolean } = {}): Promise<void> {
+  async prompt(text: string, attachments: unknown[] = [], { annotateIfMidTurn = true, internal = false, midTurnNote }: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string } = {}): Promise<void> {
     // A rewind/fork/prune is rewriting this session's jsonl. The `!this.proc`
     // check below already rejects for most of that window (the subprocess is
     // killed first), but not for the sliver between the caller's idle check and
@@ -2320,9 +2388,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.firstPrompt == null && safeText.length) {
       this.firstPrompt = safeText.slice(0, 200);
     }
-    if (annotateIfMidTurn && this.status === 'turn') {
-      content.unshift({ type: 'text', text: MID_TURN_NOTE });
-    }
+    // An explicit `midTurnNote` overrides the status test: a steer flushed after
+    // a block-edge stop lands while this instance is IDLE, but the message is
+    // still a mid-turn one from the sender's point of view (see
+    // POST_STOP_STEER_NOTE). Either way the note rides as its OWN content block,
+    // never concatenated into the text — see the prefix-safety invariant in
+    // docs/architecture.md.
+    const note = midTurnNote ?? ((annotateIfMidTurn && this.status === 'turn') ? MID_TURN_NOTE : null);
+    if (note) content.unshift({ type: 'text', text: note });
     this._sendRaw({
       type: 'user',
       message: { role: 'user', content },
@@ -2535,7 +2608,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // kill-and-respawn — and so this matches `spawn_instance`, which already
     // accepts such an id. Capacity is what makes that safe: an id the catalog
     // can't price resolves to null and the chip honestly reads `ctx —` (see
-    // _refreshContextWindowTokens). Accepting it never fabricates a denominator.
+    // _refreshModelCapabilities). Accepting it never fabricates a denominator.
     if (!model || !familyOf(model)) throw new Error('invalid model');
     // Canonicalize the incoming pick rather than trusting the client to have
     // baked the launch tag: the tag is catalog policy and the client now sends
@@ -2545,7 +2618,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     await this._controlRequest({ subtype: 'set_model', model: canonical });
     this.model = canonical;
     // Capacity moves with the model.
-    this._refreshContextWindowTokens();
+    this._refreshModelCapabilities();
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.model;
@@ -2655,6 +2728,67 @@ export class Instance extends EventEmitter implements InstanceLike {
       },
     );
     this._openDrainWindow();
+  }
+
+  // True while at least one steer is parked waiting for a block-edge stop. Read
+  // by IdleSubscriptionHub: the turn_end an armed stop produces must not consume
+  // a one-shot idle subscription (the worker was cut off, it did not finish), and
+  // a deferred wake must not race the steer's own prompt().
+  get steerPending(): boolean { return this._pendingSteers.length > 0; }
+
+  // Deliver `text` to a model that cannot take a mid-turn injection: stop the
+  // running turn at the next block edge (the SOFT tier — completed work and
+  // finished tool results survive, no dangling tool_use), then send the text as a
+  // fresh turn carrying POST_STOP_STEER_NOTE. Resolves once the text has actually
+  // reached the CLI; rejects if it never can (the process died first).
+  //
+  // Off-turn this is just a prompt on the next microtask — interrupt() no-ops
+  // when the status is not 'turn', so nothing else would ever wake the queue.
+  // Coalescing is free: interrupt() is idempotent while armed, so N queued steers
+  // arm exactly ONE abort and are delivered as one joined message.
+  //
+  // Nothing routes onto this except send_prompt today; the other injection sites
+  // (windDown, the plan/question answers, the UI composer) are card 2026-0183.
+  async queueSteerAfterStop(text: string, opts: { beforeSend?: () => void } = {}): Promise<void> {
+    const entry: PendingSteer = { text, beforeSend: opts.beforeSend, resolve: () => {}, reject: () => {} };
+    const p = new Promise<void>((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
+    this._pendingSteers.push(entry);
+    if (this.status !== 'turn') queueMicrotask(() => this._flushPendingSteers());
+    else await this.interrupt();
+    return p;
+  }
+
+  // Send every parked steer as ONE fresh turn. Called from the turn_end branch
+  // (the stop landed, or the turn ended on its own first — one path for both) and
+  // from queueSteerAfterStop when there was no turn to stop.
+  _flushPendingSteers(): void {
+    if (!this._pendingSteers.length) return;
+    // Drained BEFORE any await, so a second trigger in the same window delivers
+    // nothing twice.
+    const entries = this._pendingSteers.splice(0);
+    for (const e of entries) { try { e.beforeSend?.(); } catch { /* the caller's own waiter */ } }
+    this.prompt(entries.map(e => e.text).join('\n\n'), [], { midTurnNote: POST_STOP_STEER_NOTE }).then(
+      () => {
+        for (const e of entries) e.resolve();
+        // prompt() can return WITHOUT starting a turn (the overage queue
+        // intercept), so no turn_end is coming to flush a wake deferred behind
+        // this steer. Say so rather than let it strand.
+        if (this.status !== 'turn') this._emitSteerSettled();
+      },
+      (err: Error) => {
+        this._emitUi({ kind: 'system', subtype: 'stderr',
+          data: { line: `deferred steer delivery failed: ${err.message}` } });
+        for (const e of entries) e.reject(err);
+        this._emitSteerSettled();
+      },
+    );
+  }
+
+  // Announce that the steer queue drained without a turn to end. IdleSubscriptionHub
+  // treats this exactly like the turn_end it was waiting for, so a wake deferred
+  // behind a steer is never stranded by a failed or overage-queued delivery.
+  _emitSteerSettled(): void {
+    this._emitUi({ kind: 'system', subtype: 'steer_settled', data: { pending: this._pendingSteers.length } });
   }
 
   // A STEER, not an interrupt: a mid-turn user message carrying caller-supplied

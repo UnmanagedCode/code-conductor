@@ -151,8 +151,8 @@ purpose: each closes a distinct route, and none subsumes another.
 
 ## Custom models
 
-`models.customModels: [{ label, model, backend, contextWindow }]` — the models
-selectable for a substitution backend.
+`models.customModels: [{ label, model, backend, contextWindow, midTurnSteering }]`
+— the models selectable for a substitution backend.
 
 - `model` (the backend's own model id) **is the identity**: re-adding it updates the
   row in place, and a given model id belongs to exactly one backend.
@@ -164,11 +164,20 @@ selectable for a substitution backend.
   `contextWindowForModel()` (`src/appSettings.ts`) — an **exact** match on the
   model id, which is the registry key. There is no client-side mirror: the server
   ships the resolved number as `contextWindowTokens`.
+- `midTurnSteering` is **required** on a stored row (migration
+  `0030-backfill-mid-turn-steering` backfills `true`) and **opt-out** on the wire:
+  `POST /api/settings/models/custom` stores `true` unless the body carries an
+  explicit `false`. Set `false` for a model that hard-errors on — or silently
+  swallows — a user message written into a running turn. Settings → Models shows it
+  as the **Accepts mid-turn steering** checkbox (`#sm-custom-steer`, checked by
+  default); the list badges only the opt-out (`· no mid-turn steering`).
 
 ### The curated Ollama cloud catalog
 
 `src/ollamaCloudModels.ts` ships a read-only catalog of Ollama cloud coding models, each with its
-native `contextWindow` — bindable with no "Add" step. **Scoped to the built-in
+native `contextWindow` — bindable with no "Add" step. A preset may also carry
+`midTurnSteering: false` (optional there — absent means steerable); see the module
+for which rows declare it. **Scoped to the built-in
 `ollama` backend only**: `isKnownBackendModel(backend, model)` accepts a preset just
 for that row, and the picker renders the optgroup only there. A user-defined backend
 has no curated catalog. `OLLAMA_CLOUD_TIER_DEFAULTS` (a per-tier UI pre-selection only — see the module for which tiers carry one) applies when a tier switches
@@ -296,6 +305,23 @@ A binding is exactly `{backend, model}`. Sidecar and manifest records carry
 `contextWindowTokens` as a **fallback only**, used when the model's custom-model
 row was deleted since the session last ran; live registry resolution wins
 whenever it succeeds.
+
+### Mid-turn steering capability
+
+`resolveMidTurnSteering({backend, model})` in `src/appSettings.ts` is the single
+place "can this model take a user message injected into a running turn?" is
+resolved. Same precedence and matching rules as capacity above: the `claude`
+backend short-circuits to `true`, a custom-model row wins over a curated preset,
+the model-id match is **exact**, and anything unknown resolves `true` (the
+pre-flag behaviour). `Instance` stores it as `acceptsMidTurnSteering`, re-resolved
+alongside capacity by `_refreshModelCapabilities()` whenever the model changes.
+Never persisted in the sidecar or the resume manifest — a deleted row degrades to
+`true`, which is what "nothing declared" means.
+
+`false` changes two paths, both documented in `docs/protocol.md`: a mid-turn
+`send_prompt` becomes a block-edge stop + fresh turn
+(`Instance.queueSteerAfterStop`), and an idle-subscription wake into that session
+is held until its own next `turn_end`.
 
 ### Canonicalization is gated on `backend`
 

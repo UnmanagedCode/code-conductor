@@ -130,7 +130,14 @@ export interface InstanceLike {
   flushLineage(): Promise<void>;
   summary(): InstanceSummary;
   _emitUi(ev: UiEvent): void;
-  prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean }): Promise<unknown>;
+  prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string }): Promise<unknown>;
+  // False when this session's model cannot take a message injected into a running
+  // turn; such a send is routed through queueSteerAfterStop instead (a block-edge
+  // stop, then a fresh turn). `steerPending` is true while one is parked — read by
+  // IdleSubscriptionHub's defer gate. See src/instances.ts.
+  readonly acceptsMidTurnSteering: boolean;
+  readonly steerPending: boolean;
+  queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void }): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
   interrupt(opts?: { force?: boolean }): Promise<unknown>;

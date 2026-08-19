@@ -465,6 +465,10 @@ interface CustomModelRecord {
   model: string;
   backend: string;
   contextWindow?: unknown;
+  // Capability flag, REQUIRED on a stored row (migration 0030 backfills `true`
+  // onto every pre-existing one): false means the model cannot accept a user
+  // message injected into a running turn. See resolveMidTurnSteering.
+  midTurnSteering: boolean;
 }
 
 export function getCustomModels(): CustomModelRecord[] {
@@ -474,9 +478,14 @@ export function getCustomModels(): CustomModelRecord[] {
   const out: CustomModelRecord[] = [];
   for (const m of list) {
     if (!m || typeof m !== 'object') continue;
-    const rec = m as { label?: unknown; model?: unknown; backend?: unknown; contextWindow?: unknown };
+    const rec = m as { label?: unknown; model?: unknown; backend?: unknown; contextWindow?: unknown; midTurnSteering?: unknown };
     if (typeof rec.model === 'string' && typeof rec.backend === 'string') {
-      out.push({ label: rec.label, model: rec.model, backend: rec.backend, contextWindow: rec.contextWindow });
+      out.push({
+        label: rec.label, model: rec.model, backend: rec.backend, contextWindow: rec.contextWindow,
+        // Only an explicit `false` opts out — the same "unknown ⇒ supported"
+        // polarity resolveMidTurnSteering applies to an unknown model id.
+        midTurnSteering: rec.midTurnSteering !== false,
+      });
     }
   }
   return out;
@@ -536,14 +545,32 @@ export function resolveContextWindowTokens(input: { backend?: unknown; model?: u
   return contextWindowForModel(model);
 }
 
+// THE single place "can this model take a message injected into a running turn?"
+// is resolved, from the concrete {backend, exact model} pair. Opt-OUT: a model
+// that hard-errors or silently drops an injected steer declares
+// `midTurnSteering: false`; everything else — including an unknown id — is
+// steerable, which is the pre-flag behaviour. Same precedence as
+// contextWindowForModel (a user row overrides a curated preset) and the same
+// EXACT model-id matching (a substitution model id is an opaque registry key).
+export function resolveMidTurnSteering(input: { backend?: unknown; model?: unknown } = {}): boolean {
+  const { backend, model } = input;
+  if (backend === CLAUDE_BACKEND_ID) return true;
+  if (typeof model !== 'string' || !model) return true;
+  const custom = getCustomModels().find(m => m.model === model);
+  if (custom) return custom.midTurnSteering;
+  const preset = OLLAMA_CLOUD_MODELS.find(m => m.model === model);
+  if (preset) return preset.midTurnSteering !== false;
+  return true;
+}
+
 // `contextWindow` is REQUIRED and must be a positive, finite number of raw tokens
 // (stored `Math.round`ed): it
 // drives the header ctx bar plus CLAUDE_CODE_AUTO_COMPACT_WINDOW and
 // CLAUDE_CODE_MAX_CONTEXT_TOKENS at spawn, and guessing it wrong silently
 // truncates or over-fills the window. `backend` must name a substitution
 // backend (never `claude`).
-export async function addCustomModel(input: { label?: unknown; model?: unknown; backend?: unknown; contextWindow?: unknown } = {}): Promise<{ label: string; model: string; backend: string; contextWindow: number }> {
-  const { label, model, backend, contextWindow } = input;
+export async function addCustomModel(input: { label?: unknown; model?: unknown; backend?: unknown; contextWindow?: unknown; midTurnSteering?: unknown } = {}): Promise<{ label: string; model: string; backend: string; contextWindow: number; midTurnSteering: boolean }> {
+  const { label, model, backend, contextWindow, midTurnSteering } = input;
   const cleanLabel = String(label || '').trim();
   const cleanModel = String(model || '').trim();
   const cleanBackend = String(backend || '').trim();
@@ -557,7 +584,13 @@ export async function addCustomModel(input: { label?: unknown; model?: unknown; 
   if (!Number.isFinite(cw) || cw <= 0) {
     throw httpError(400, 'contextWindow is required and must be a positive number of tokens');
   }
-  const entry = { label: cleanLabel, model: cleanModel, backend: cleanBackend, contextWindow: Math.round(cw) };
+  // Opt-out: only an explicit `false` from the caller turns steering off, so an
+  // omitted field stores `true` rather than leaving the row unflagged (an
+  // INPUT default — the stored shape always carries the boolean).
+  const entry = {
+    label: cleanLabel, model: cleanModel, backend: cleanBackend, contextWindow: Math.round(cw),
+    midTurnSteering: midTurnSteering !== false,
+  };
   const cur = loadSync();
   // The model id is the identity — re-adding it updates the row in place.
   const nextList = getCustomModels().filter(m => m.model !== cleanModel).concat([entry]);
