@@ -315,6 +315,20 @@ function waitForEvent(inst: InstanceLike, predicate: (ev: UiEvent | null) => boo
   });
 }
 
+// Cap an otherwise-unbounded promise at the caller's wait budget, with the same
+// error text waitForEvent's own timeout produces. The underlying work is NOT
+// cancelled — a queued steer still delivers when its block edge arrives, exactly
+// as a live prompt keeps running past a timed-out wait.
+function withDeadline<T>(p: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`wait timed out after ${timeoutMs} ms`)), timeoutMs);
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 // ---------- read-only ----------
 
 export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
@@ -1036,14 +1050,50 @@ export async function sendPrompt(
   }
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
+  // A worker whose model cannot take a mid-turn injection gets the same message
+  // by a different route: stop the running turn at a block edge, then send it as
+  // a fresh turn (Instance.queueSteerAfterStop). Behaviourally identical from
+  // here — the send still steers the worker in flight rather than waiting out its
+  // turn — so no schema or result-shape change.
+  // `=== false` is the opt-out polarity used everywhere this flag is read: only
+  // an explicit declaration diverts, anything unknown keeps the live send.
+  const deferred = inst.status === 'turn' && inst.acceptsMidTurnSteering === false;
+
   if (wait) {
     // Attach the listener *before* sending so we can't miss a fast turn_end.
     // A one-shot subscription registered here would fire on the *next* turn
     // (this one is already being awaited inline), so skip it entirely.
+    if (deferred) {
+      // The block-edge wait is unbounded (it ends when the model reaches a
+      // boundary), so the whole call — stop AND the steered turn — is capped at
+      // the SAME waitTimeoutMs a live send gets, or a busy worker could block a
+      // conductor well past the documented cap.
+      const deadline = Date.now() + waitTimeoutMs;
+      let waiter: Promise<UiEvent | null> | null = null;
+      await withDeadline(
+        inst.queueSteerAfterStop(composedText, {
+          beforeSend: () => {
+            waiter = waitForEvent(inst, (e) => e?.kind === 'turn_end', Math.max(1, deadline - Date.now()));
+          },
+        }),
+        waitTimeoutMs,
+      );
+      // beforeSend ran before queueSteerAfterStop resolved, so the waiter is set.
+      const ev = await (waiter as unknown as Promise<UiEvent | null>);
+      return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
+    }
     const waiter = waitForEvent(inst, (ev) => ev?.kind === 'turn_end', waitTimeoutMs);
     await inst.prompt(composedText);
     const ev = await waiter;
     return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
+  }
+  if (deferred) {
+    // Deliberately NOT awaited: the stop lands at the model's next block edge,
+    // which is unbounded, and this tool must return promptly. A delivery failure
+    // is already annotated into the worker's own transcript by _flushPendingSteers.
+    void inst.queueSteerAfterStop(composedText).catch(() => {});
+    const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
+    return { sessionId: inst.sessionId, status: inst.status, ...sub, ...forwardedField };
   }
   await inst.prompt(composedText);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });

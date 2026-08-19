@@ -262,7 +262,7 @@ export function buildTools(): Tool[] {
       description:
         'Send a user turn to a running instance. Defaults to wait:false (returns immediately). ' +
         'Pass wait:true to block until the turn ends and return the turn_end event inline. ' +
-        'A mid-turn send_prompt is delivered live into the running turn (not queued), so it can steer a worker in flight. ' +
+        'A mid-turn send_prompt steers a worker in flight rather than waiting out its turn. ' +
         'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`. ' +
         'Skipped automatically when wait:true, since the turn already resolves inline. ' +
         'PLAYBOOKS: always carry `stage` — it is what makes send_prompt the default transition driver.',

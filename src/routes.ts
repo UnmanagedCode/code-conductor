@@ -1486,8 +1486,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.post('/settings/models/custom', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { label, model, backend, contextWindow } = body;
-      const rec = await addCustomModel({ label, model, backend, contextWindow });
+      const { label, model, backend, contextWindow, midTurnSteering } = body;
+      const rec = await addCustomModel({ label, model, backend, contextWindow, midTurnSteering });
       res.status(201).json({ ...modelsSettingsState(), added: rec });
     } catch (e) { next(e); }
   });

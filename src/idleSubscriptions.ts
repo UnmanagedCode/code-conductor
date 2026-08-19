@@ -74,6 +74,23 @@ interface PendingSettle {
   armSeq: number;
 }
 
+// Prefixed into a wake that was held while its recipient was mid-turn and whose
+// worker has started ANOTHER turn since. Marked, never dropped: dropping loses a
+// wake the conductor may be blocked on, while the note removes the "it's done"
+// reading the plain stub would otherwise carry.
+const STALE_WAKE_NOTE = 'NOTE: this report was held while you were mid-turn, and the worker has '
+  + 'since started another turn — it is no longer idle.';
+
+// Options threaded through deliver(). `note` is a pre-taken decline note (a
+// deferred wake takes it at defer time); `stale` marks a deferred wake whose
+// target went busy again before the wake could be delivered.
+interface DeliverOpts {
+  timedOut?: boolean;
+  timeoutMs?: number;
+  note?: string | null;
+  stale?: boolean;
+}
+
 // The wording for a declined renewal request, prefixed into the wake stub's
 // summary. One sentence, true whether or not the conductor supplied a followUp.
 // Server-only — the client never builds it.
@@ -107,6 +124,12 @@ export class IdleSubscriptionHub {
   // worker happens to wake next. Read-and-deleted by _takeDecline; see
   // noteRenewalDeclined.
   _pendingDeclines: Map<string, Map<string, string>>;
+  // Wakes held back because the RECIPIENT (a conductor) is mid-turn on a model
+  // that cannot take an injected message — keyed by callerInstanceId, flushed at
+  // that conductor's own next turn_end. The decline note is taken at defer time
+  // and carried, because it belongs to the wake that was deferred, not to
+  // whatever else that pair does in between.
+  _deferredWakes: Map<string, Array<{ targetInstanceId: string; opts?: DeliverOpts; note: string | null }>>;
 
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
@@ -114,6 +137,7 @@ export class IdleSubscriptionHub {
     this._justConsumed = new Map();
     this._pendingSettles = new Map();
     this._pendingDeclines = new Map();
+    this._deferredWakes = new Map();
   }
 
   // Driven by InstanceManager's `event` listener — EVERY instance event lands
@@ -130,6 +154,15 @@ export class IdleSubscriptionHub {
   onEvent({ id, ev }: { id: string; ev: UiEvent | null }): void {
     if (ev?.kind === 'turn_end') {
       this._onTurnEnd(id);
+      // …and, as the RECIPIENT of a held-back wake, this is the boundary that
+      // makes it deliverable. Synchronously, so a steer queued on this instance
+      // is still `steerPending` when _flushDeferredWakes reads it (its own flush
+      // runs on a microtask) and the wake correctly re-defers behind it.
+      this._flushDeferredWakes(id);
+    } else if (ev?.kind === 'system' && ev.subtype === 'steer_settled') {
+      // A queued steer drained WITHOUT starting a turn (delivery failed, or the
+      // process died) — no turn_end is coming, so flush here or the wake strands.
+      this._flushDeferredWakes(id);
     } else if (ev?.kind === 'system'
         && (ev.subtype === 'task_updated' || ev.subtype === 'task_notification')) {
       this._onTaskEvent(id);
@@ -197,8 +230,16 @@ export class IdleSubscriptionHub {
     // turn early. The window lives on the Instance (set at arm time, before this
     // can fire), so this defer works regardless of listener registration order —
     // which is what makes it correct without reordering the two listeners.
+    // …and defer while a steer is parked on this target waiting for a block-edge
+    // stop (a model that can't take a mid-turn injection — see
+    // Instance.queueSteerAfterStop). The turn_end being observed is the one the
+    // stop produced: the worker was CUT OFF to deliver the steer, it did not
+    // finish, so spending the one-shot here would wake the conductor a turn early.
+    // Same shape and same reason as rotationPending — the flag lives on the
+    // Instance and is set in the send_prompt handler before the abort is even
+    // armed, so this defer is independent of listener registration order.
     if (target.activeAgentTaskCount > 0 || target.taskNotificationPending
-        || target.rotationPending) return;
+        || target.rotationPending || target.steerPending) return;
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
@@ -457,6 +498,10 @@ export class IdleSubscriptionHub {
   purge(instanceId: string): void {
     if (!instanceId) return;
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
+    // As RECIPIENT: wakes held for this instance have nowhere to go. (As a
+    // deferred wake's TARGET it needs no cleanup — deliver() resolves a missing
+    // target to its raw id and still reports honestly.)
+    this._deferredWakes.delete(instanceId);
     this._pendingDeclines.delete(instanceId); // …and every note about it
     // As CALLER: a note filed for this instance under some other target can no
     // longer reach anyone either.
@@ -479,7 +524,32 @@ export class IdleSubscriptionHub {
     }
   }
 
-  deliver(callerInstanceId: string, targetInstanceId: string, opts?: { timedOut?: boolean; timeoutMs?: number }): void {
+  // Deliver every wake held back for this recipient, now that it has reached a
+  // boundary. Re-defers (returns, keeping the queue) while a steer is still parked
+  // on it: that steer starts a turn in a microtask, and delivering here would race
+  // a second prompt() into the same instant.
+  _flushDeferredWakes(callerInstanceId: string): void {
+    const pending = this._deferredWakes.get(callerInstanceId);
+    if (!pending) return;
+    const caller = this.manager.byId.get(callerInstanceId);
+    if (!caller?.proc) {
+      // Recipient gone — nothing can be delivered. Its notes were already
+      // consumed at defer time.
+      this._deferredWakes.delete(callerInstanceId);
+      return;
+    }
+    if (caller.steerPending) return;
+    this._deferredWakes.delete(callerInstanceId);
+    for (const p of pending) {
+      // The worker may have gone busy again while the wake waited — say so
+      // rather than let a "finished its turn" stub misreport it.
+      const target = this.manager.byId.get(p.targetInstanceId);
+      const stale = target != null && target.status === 'turn';
+      this.deliver(callerInstanceId, p.targetInstanceId, { ...p.opts, note: p.note, stale });
+    }
+  }
+
+  deliver(callerInstanceId: string, targetInstanceId: string, opts?: DeliverOpts): void {
     // Resolve the live caller instance directly by instanceId.
     const caller = this.manager.byId.get(callerInstanceId);
     if (!caller || !caller.proc) {
@@ -491,17 +561,31 @@ export class IdleSubscriptionHub {
     // Boundary: the stub names the worker by sessionId and points at
     // get_recent_messages (sessionId-addressed), so translate the target's
     // CURRENT sessionId here (a /clear-rotated target resolves to its new id).
+    // A recipient that cannot take a message injected into a running turn gets
+    // the wake HELD until its own next turn_end — never a block-edge stop: an
+    // idle report is not urgent, and aborting a conductor mid-turn would sever
+    // whatever orchestration it has in flight. The decline note is taken NOW,
+    // synchronously, because it belongs to this wake (see noteRenewalDeclined).
+    if (caller.status === 'turn' && caller.acceptsMidTurnSteering === false) {
+      const queue = this._deferredWakes.get(callerInstanceId) ?? [];
+      queue.push({ targetInstanceId, opts, note: this._takeDecline(targetInstanceId, callerInstanceId) });
+      this._deferredWakes.set(callerInstanceId, queue);
+      return;
+    }
     const targetSessionId = this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
     // Fold the worker's recent output into the stub ONLY on a real turn_end
     // delivered to an already-idle caller. The timeout-watchdog path and the
     // live mid-turn steering path keep the plain pointer stub. Decided here,
     // synchronously, on the caller's status at delivery time.
-    const fold = !opts?.timedOut && caller.status !== 'turn';
+    // A STALE wake keeps the plain pointer stub too: folding a busy worker's
+    // mid-flight output in would read as its finished result.
+    const fold = !opts?.timedOut && !opts?.stale && caller.status !== 'turn';
     const deliver = async (): Promise<void> => {
       // Read-and-delete BEFORE any await: the expiry that recorded this note ran
       // synchronously in the dispatch that queued this microtask, and the note
-      // belongs to exactly one wake.
-      const note = this._takeDecline(targetInstanceId, callerInstanceId);
+      // belongs to exactly one wake. A deferred wake already took its note at
+      // defer time and carries it in `opts`.
+      const note = opts?.note ?? this._takeDecline(targetInstanceId, callerInstanceId);
       try {
         if (!caller.proc) return;
         const stub = fold
@@ -532,7 +616,7 @@ export class IdleSubscriptionHub {
   // mid-turn steering path. Tells the caller to go call get_recent_messages.
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
-  _plainStub(targetSessionId: string, opts?: { timedOut?: boolean; timeoutMs?: number; note?: string | null }): string {
+  _plainStub(targetSessionId: string, opts?: DeliverOpts): string {
     const summary = opts?.timedOut
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
         `it may still be busy or stuck. ` +
@@ -542,7 +626,8 @@ export class IdleSubscriptionHub {
       : `Worker \`${targetSessionId}\` finished its turn. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to inspect the result.`;
-    return markPlainStub(opts?.note ? `${opts.note} ${summary}` : summary);
+    const prefix = [opts?.note, opts?.stale ? STALE_WAKE_NOTE : null].filter(Boolean).join(' ');
+    return markPlainStub(prefix ? `${prefix} ${summary}` : summary);
   }
 
   // The folded stub — reuses buildRecentMessages (the SAME selection/bonding a

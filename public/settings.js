@@ -44,6 +44,7 @@ export function installSettings({
   const smCustomBackendEl = document.getElementById('sm-custom-backend');
   const smCustomModelEl = document.getElementById('sm-custom-model');
   const smCustomContextEl = document.getElementById('sm-custom-context');
+  const smCustomSteerEl = document.getElementById('sm-custom-steer');
   const smCustomAddEl = document.getElementById('sm-custom-add');
   const smCustomStatusEl = document.getElementById('sm-custom-status');
   let lastModelsData = null;
@@ -1200,7 +1201,9 @@ export function installSettings({
       const meta = document.createElement('span');
       meta.className = 'sm-custom-meta';
       const ctx = Number.isFinite(c.contextWindow) ? ` · ${fmtCtxTokens(c.contextWindow)} ctx` : '';
-      meta.textContent = `${c.label} — ${c.model} · ${backendLabel(c.backend)}${ctx}`;
+      // Only the OPT-OUT is worth a badge — steerable is the default.
+      const steer = c.midTurnSteering === false ? ' · no mid-turn steering' : '';
+      meta.textContent = `${c.label} — ${c.model} · ${backendLabel(c.backend)}${ctx}${steer}`;
       li.appendChild(meta);
       const rm = document.createElement('button');
       rm.type = 'button';
@@ -1233,13 +1236,14 @@ export function installSettings({
       const r = await fetch('/api/settings/models/custom', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label, model, backend, contextWindow: ctx }),
+        body: JSON.stringify({ label, model, backend, contextWindow: ctx, midTurnSteering: smCustomSteerEl ? !!smCustomSteerEl.checked : true }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
       if (smCustomLabelEl) smCustomLabelEl.value = '';
       if (smCustomModelEl) smCustomModelEl.value = '';
       if (smCustomContextEl) smCustomContextEl.value = '';
+      if (smCustomSteerEl) smCustomSteerEl.checked = true;
       if (smCustomStatusEl) smCustomStatusEl.textContent = 'Added.';
       renderModels(data);
       onModelsChange?.(data);

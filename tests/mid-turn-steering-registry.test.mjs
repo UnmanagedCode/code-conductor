@@ -1,0 +1,103 @@
+// The per-model "accepts mid-turn steering" capability flag: its resolver
+// (resolveMidTurnSteering — precedence, exact-id matching, opt-out polarity), the
+// curated preset that declares it, and the REST round-trip that must carry it
+// (addCustomModel rebuilds each row from scratch and getCustomModels re-projects
+// only known keys, so an unwired field is silently dropped on the next read).
+
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { addCustomModel, getCustomModels, resolveMidTurnSteering } from '../src/appSettings.ts';
+import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
+import { CLAUDE_BACKEND_ID } from '../src/modelVersions.ts';
+
+describe('resolveMidTurnSteering', () => {
+  let ctx, baseUrl, home;
+  before(async () => { ctx = await bootServer(); ({ baseUrl } = ctx); });
+  after(async () => { await ctx.close(); });
+  beforeEach(async () => {
+    const r = await freshProjectsRoot();
+    home = r.home;
+    ctx.projectsRoot = r.projectsRoot;
+  });
+  afterEach(async () => { await ctx.instances.shutdown(); await rmrf(home); });
+
+  test('the identity backend is always steerable, whatever the model id says', () => {
+    assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: 'claude-opus-5' }), true);
+    // Even an id that a preset declares false for: the backend short-circuits.
+    assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: 'deepseek-v4-flash:0731-cloud' }), true);
+  });
+
+  test('a curated preset declares the opt-out; its siblings stay steerable', () => {
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:0731-cloud' }), false);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'qwen3.5:cloud' }), true);
+    // Exactly one preset opts out — the flag is not accidentally set on the row
+    // next to it (they differ only by tag).
+    assert.deepEqual(
+      OLLAMA_CLOUD_MODELS.filter(m => m.midTurnSteering === false).map(m => m.model),
+      ['deepseek-v4-flash:0731-cloud'],
+    );
+  });
+
+  test('unknown / empty ids resolve to steerable — the pre-flag behaviour', () => {
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'never-heard-of-it:cloud' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: '' }), true);
+    assert.equal(resolveMidTurnSteering({}), true);
+  });
+
+  test('the match is EXACT: a stripped tag is a different model', () => {
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash' }), true,
+      'the tagless id is not the flagged registry key');
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:0731-cloud ' }), true);
+  });
+
+  test('a custom row wins over a curated preset, in both directions', async () => {
+    // Override the flagged preset back to steerable.
+    await addCustomModel({
+      label: 'Mine', model: 'deepseek-v4-flash:0731-cloud', backend: 'ollama',
+      contextWindow: 1000, midTurnSteering: true,
+    });
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:0731-cloud' }), true);
+    // …and opt an unflagged preset out.
+    await addCustomModel({
+      label: 'Other', model: 'qwen3.5:cloud', backend: 'ollama',
+      contextWindow: 1000, midTurnSteering: false,
+    });
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'qwen3.5:cloud' }), false);
+  });
+
+  test('addCustomModel stores the flag; only an explicit false opts out', async () => {
+    await addCustomModel({ label: 'A', model: 'a:cloud', backend: 'ollama', contextWindow: 1 });
+    await addCustomModel({ label: 'B', model: 'b:cloud', backend: 'ollama', contextWindow: 1, midTurnSteering: false });
+    // A junk value is not an opt-out — the flag is a declaration, not a guess.
+    await addCustomModel({ label: 'C', model: 'c:cloud', backend: 'ollama', contextWindow: 1, midTurnSteering: 'no' });
+    const by = Object.fromEntries(getCustomModels().map(m => [m.model, m.midTurnSteering]));
+    assert.deepEqual(by, { 'a:cloud': true, 'b:cloud': false, 'c:cloud': true });
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'b:cloud' }), false);
+  });
+
+  // The gotcha this test exists for: addCustomModel rebuilds the persisted entry
+  // field-by-field and getCustomModels re-projects only known keys, so a field
+  // that is not wired through BOTH is dropped on the next read with no error.
+  test('REST round-trip: midTurnSteering:false survives POST → GET → resolver', async () => {
+    const post = await api(baseUrl, 'POST', '/api/settings/models/custom', {
+      label: 'Flagged', model: 'flagged:cloud', backend: 'ollama', contextWindow: 256_000, midTurnSteering: false,
+    });
+    assert.equal(post.status, 201, JSON.stringify(post.body));
+    assert.equal(post.body.added.midTurnSteering, false);
+
+    const get = await api(baseUrl, 'GET', '/api/settings/models');
+    assert.equal(get.status, 200);
+    const row = get.body.customModels.find(m => m.model === 'flagged:cloud');
+    assert.equal(row.midTurnSteering, false, 'the flag survived the store round-trip');
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'flagged:cloud' }), false);
+
+    // Omitted on the wire ⇒ steerable, and still present as a boolean.
+    const plain = await api(baseUrl, 'POST', '/api/settings/models/custom', {
+      label: 'Plain', model: 'plain:cloud', backend: 'ollama', contextWindow: 256_000,
+    });
+    assert.equal(plain.status, 201);
+    assert.equal(plain.body.added.midTurnSteering, true);
+  });
+});
