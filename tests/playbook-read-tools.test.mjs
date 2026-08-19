@@ -18,6 +18,17 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { ledgerFile } from '../src/playbookLedger.ts';
 import { orchStoreRoot } from '../src/projects.ts';
+import { SEED_PLAYBOOK_IDS, DEFAULT_PLAYBOOK_ID } from '../src/playbooks.ts';
+import { GATELAB } from './playbook-fixtures.mjs';
+
+// The graph every worker below is spawned on is GATELAB (tests/playbook-fixtures.mjs),
+// installed into this test's own user-overlay store by setup(). The shipped
+// playbooks/*.json are hand-editable by their owner, so spawning on their stage
+// names — or asserting their pins, `needs` and edges — would make an ordinary
+// edit redden this file. What is genuinely about the built-ins (that all three
+// load, and are listed and describable) is asserted against SEED_PLAYBOOK_IDS,
+// the constant that owns the list.
+const BUILT_INS = [...SEED_PLAYBOOK_IDS].sort();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -50,6 +61,10 @@ async function setup({ enforcement } = {}) {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   await makeRealRepo(ctx.projectsRoot, 'demo');
   await api(ctx.baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  // Per-test store, so the fixture is invisible to production by construction.
+  const pbDir = path.join(orchStoreRoot(), 'playbooks');
+  await fs.mkdir(pbDir, { recursive: true });
+  await fs.writeFile(path.join(pbDir, 'gatelab.json'), JSON.stringify(GATELAB));
   const spawned = await api(ctx.baseUrl, 'POST', '/api/instances', {
     project: '.conduct', mode: 'bypassPermissions', temp: true,
     ...(enforcement ? { playbookEnforcement: enforcement } : {}),
@@ -126,21 +141,24 @@ const refused = (res, code) => {
 
 // ── list_playbooks / describe_playbook ─────────────────────────────────────
 
-test('list_playbooks reports the built-ins with their entry and spawnable stages', async () => {
+test('list_playbooks reports every loaded definition with its entry and spawnable stages', async () => {
   const t = await setup();
   try {
     const res = await t.call('list_playbooks', {});
     const byId = Object.fromEntries(res.playbooks.map(p => [p.id, p]));
-    assert.deepEqual(Object.keys(byId).sort(), ['freeform', 'relay', 'solo']);
+    // The built-ins are all present and all loaded clean...
+    assert.deepEqual(Object.keys(byId).sort(), [...BUILT_INS, 'gatelab'].sort());
     for (const p of res.playbooks) {
       assert.ok(p.name.length > 0, `${p.id} has no name`);
       assert.ok(p.description.length > 0, `${p.id} has no description`);
     }
-    assert.deepEqual(byId.solo.entryStages, ['plan']);
-    // spawn_instance fails closed, so `plan` is the only stage of solo a
-    // worker can be created in — implement/refine are transition-only, and
-    // `review` is spawnable but not an entry stage.
-    assert.deepEqual(byId.solo.spawnableStages.sort(), ['plan', 'review']);
+    // ...and the two stage lists are asserted on the fixture, whose shape is
+    // ours to keep still. They are DIFFERENT lists, which is the point:
+    // spawn_instance fails closed, so `build`/`amend` appear in neither, while
+    // `audit`/`handoff` are spawnable without being entry stages.
+    assert.deepEqual(byId.gatelab.entryStages.sort(), [...GATELAB.entryStages].sort());
+    assert.deepEqual(byId.gatelab.spawnableStages.sort(),
+      ['audit', 'draft', 'handoff', 'loose', 'sealed']);
     assert.deepEqual(res.errors, []);
   } finally { await t.close(); }
 });
@@ -177,20 +195,20 @@ test('send_prompt\'s stage description names `via`, never the authoring key `on`
 
 // describe_playbook's success path is a plain-text rendering (renderPlaybook,
 // src/mcp/readRenderers.ts), pinned exactly in tests/mcp-text-render.test.mjs
-// against hand-built payloads. This is the WIRE half: it asserts the real
-// `solo` definition reaches that rendering with the derivations intact —
-// which a pure suite cannot see, since `spawnable` and `via` are computed in the
-// handler.
+// against hand-built payloads. This is the WIRE half: it asserts a real
+// definition, loaded from disk, reaches that rendering with the derivations
+// intact — which a pure suite cannot see, since `spawnable` and `via` are
+// computed in the handler.
 test('describe_playbook returns the graph the enforcement actually uses', async () => {
   const t = await setup();
   try {
-    const pb = await t.callText('describe_playbook', { id: 'solo' });
-    assert.match(pb, /^PLAYBOOK solo$/m);
-    assert.match(pb, /^entry plan$/m);
+    const pb = await t.callText('describe_playbook', { id: 'gatelab' });
+    assert.match(pb, /^PLAYBOOK gatelab$/m);
+    assert.match(pb, /^entry draft, sealed, loose$/m);
 
     // `pin` — enforced argument values, reported verbatim so a caller knows
     // what will be filled in or refused.
-    assert.match(pb, /^ {6}spawn_instance pin \{"mode":"plan","createWorktree":true\}$/m);
+    assert.match(pb, /^ {6}spawn_instance pin \{"mode":"ask","createWorktree":true\}$/m);
     assert.match(pb, /^ {6}set_mode deny$/m);
 
     // `needs` — worker provenance, not argument values. Read off `review`'s
@@ -204,24 +222,25 @@ test('describe_playbook returns the graph the enforcement actually uses', async 
     };
     // Both axes reach the text: the anchor stage with its liveness, and the
     // position list. A renderer that dropped either would still print a cell.
-    assert.match(stageBlock('review'), /^ {4}needs implement@live in implement\|refine$/m);
-    assert.match(stageBlock('refine'), /^ {4}needs review@live in review$/m);
-    assert.match(stageBlock('plan'), /workers one/);
+    assert.match(stageBlock('audit'), /^ {4}needs build@live in build\|amend$/m);
+    assert.match(stageBlock('amend'), /^ {4}needs audit@live in audit$/m);
+    assert.match(stageBlock('handoff'), /^ {4}needs sealed@any in sealed$/m);
+    assert.match(stageBlock('draft'), /workers one/);
+    assert.match(stageBlock('audit'), /workers many/);
 
     // `spawnable` is derived from the fail-closed rule, so the caller does not
     // have to know that a "*" wildcard confers nothing. Both answers are
     // asserted: a rendering that always said yes would satisfy half of this.
-    for (const name of ['plan', 'review']) assert.match(stageBlock(name), /spawnable yes/);
-    for (const name of ['implement', 'refine']) assert.match(stageBlock(name), /spawnable no/);
+    for (const name of ['draft', 'audit']) assert.match(stageBlock(name), /spawnable yes/);
+    for (const name of ['build', 'amend']) assert.match(stageBlock(name), /spawnable no/);
 
     // `via` names the ONE tool that drives each edge — both the declared `on`
     // and the send_prompt default.
-    assert.match(pb, /^ {2}plan → implement {2,}via approve_plan$/m);
-    assert.match(pb, /^ {2}implement → refine {2,}via send_prompt$/m);
-    // The declared self-loops: ordinary send_prompt edges, and the reason a
+    assert.match(pb, /^ {2}draft → build {2,}via approve_plan$/m);
+    assert.match(pb, /^ {2}build → amend {2,}via send_prompt$/m);
+    // The declared self-loop: an ordinary send_prompt edge, and the reason a
     // repeated round is countable at all.
-    assert.match(pb, /^ {2}refine → refine {2,}via send_prompt$/m);
-    assert.match(pb, /^ {2}review → review {2,}via send_prompt$/m);
+    assert.match(pb, /^ {2}amend → amend {2,}via send_prompt$/m);
   } finally { await t.close(); }
 });
 
@@ -346,7 +365,7 @@ test('describe_playbook soft-refuses an unknown id and lists the known ones', as
   const t = await setup();
   try {
     const res = refused(await t.call('describe_playbook', { id: 'nope' }), 'PLAYBOOK_UNKNOWN');
-    assert.deepEqual(res.known, ['freeform', 'relay', 'solo']);
+    assert.deepEqual(res.known, [...BUILT_INS, 'gatelab'].sort());
   } finally { await t.close(); }
 });
 
@@ -369,9 +388,10 @@ test('the read tools create no ledger when there is nothing to read', async () =
       return body.result.content[0].text;
     };
     const call = async (name, args) => JSON.parse(await rawCall(name, args));
-    assert.equal((await call('list_playbooks', {})).playbooks.length, 3);
+    assert.deepEqual((await call('list_playbooks', {})).playbooks.map(p => p.id).sort(), BUILT_INS);
     // describe_playbook renders text, so it is read raw rather than parsed.
-    assert.match(await rawCall('describe_playbook', { id: 'solo' }), /^PLAYBOOK solo$/m);
+    assert.match(await rawCall('describe_playbook', { id: DEFAULT_PLAYBOOK_ID }),
+      new RegExp(`^PLAYBOOK ${DEFAULT_PLAYBOOK_ID}$`, 'm'));
     assert.deepEqual((await call('playbook_state', {})).runs, []);
 
     // Give any deferred write real chances to land rather than reading once and
@@ -394,8 +414,10 @@ test('the read tools append no events to a ledger that already exists', async ()
     await waitFor(async () => (await t.eventCount()) > 0);
     const before = await t.eventCount();
 
-    assert.equal((await t.call('list_playbooks', {})).playbooks.length, 3);
-    assert.match(await t.callText('describe_playbook', { id: 'solo' }), /^PLAYBOOK solo$/m);
+    assert.deepEqual((await t.call('list_playbooks', {})).playbooks.map(p => p.id).sort(),
+      [...BUILT_INS, 'gatelab'].sort());
+    assert.match(await t.callText('describe_playbook', { id: DEFAULT_PLAYBOOK_ID }),
+      new RegExp(`^PLAYBOOK ${DEFAULT_PLAYBOOK_ID}$`, 'm'));
     assert.deepEqual((await t.call('playbook_state', {})).runs, [],
       'the illegal spawn was refused-but-allowed, so it bound no run');
     assert.equal((await t.call('playbook_state', { sessionId: worker.sessionId })).tracked, false);
@@ -454,42 +476,42 @@ test('a stage that denies playbook_state cannot lock the conductor out of intros
 // ── advertised == enforced ─────────────────────────────────────────────────
 
 // nextMoves is answered by dry-running the enforcing decide(), so this walks a
-// solo run and, at every step, PERFORMS what nextMoves advertises and compares
+// full run and, at every step, PERFORMS what nextMoves advertises and compares
 // the outcome. Predictions are re-derived after each performed move, because each
 // move changes what is legal next — comparing a stale prediction would degrade
 // this into "the first move matched".
 test('every move playbook_state advertises behaves exactly as advertised when performed', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const impl = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const wtName = impl.worktree.worktreeName;
 
     const movesNow = async () =>
       (await t.call('playbook_state', { sessionId: impl.sessionId })).nextMoves;
 
-    // Step 1 — in `plan`. The only edge is approve_plan-driven, and it is legal.
+    // Step 1 — in `draft`. The only edge is approve_plan-driven, and it is legal.
     let moves = await movesNow();
-    assert.deepEqual(moves, [{ to: 'implement', via: 'approve_plan', ok: true }]);
+    assert.deepEqual(moves, [{ to: 'build', via: 'approve_plan', ok: true }]);
     await t.call(moves[0].via, { sessionId: impl.sessionId, subscribe: false });
-    assert.equal((await t.call('playbook_state', { sessionId: impl.sessionId })).worker.stage, 'implement');
+    assert.equal((await t.call('playbook_state', { sessionId: impl.sessionId })).worker.stage, 'build');
 
-    // Step 2 — in `implement`. Re-derived, and now the prediction is a BLOCKED
-    // edge: refine needs a reviewer that does not exist yet. A prediction that
+    // Step 2 — in `build`. Re-derived, and now the prediction is a BLOCKED
+    // edge: amend needs an auditor that does not exist yet. A prediction that
     // only ever says yes would prove half the property.
     moves = await movesNow();
     assert.equal(moves.length, 1);
     assert.deepEqual({ to: moves[0].to, via: moves[0].via, ok: moves[0].ok },
-      { to: 'refine', via: 'send_prompt', ok: false });
+      { to: 'amend', via: 'send_prompt', ok: false });
     assert.equal(moves[0].code, 'NEEDS_UNSATISFIED');
     // Performing it produces the SAME code and the same reason text.
     const attempted = await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
     });
     refused(attempted, moves[0].code);
     assert.equal(attempted.reason, moves[0].reason,
       'the advertised reason is the enforced reason, verbatim');
 
-    // Step 3 — a reviewer now exists, and the prediction DELIBERATELY still says
+    // Step 3 — an auditor now exists, and the prediction DELIBERATELY still says
     // NEEDS_UNSATISFIED. `provenance` is a caller-supplied argument, not an ambient
     // fact, so the dry run describes the bare call: "call this with no `provenance`
     // and you get this". Inferring which worker the caller meant would be a second
@@ -497,43 +519,43 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
     // fails. What the prediction owes the caller is an actionable recipe, and its
     // `reason` is one.
     const rev = await t.spawnWorker({
-      project: 'demo', playbook: 'solo', stage: 'review', worktree: wtName,
-      provenance: { implement: impl.sessionId },
+      project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
+      provenance: { build: impl.sessionId },
     });
     moves = await movesNow();
     assert.equal(moves[0].ok, false, 'the bare call is still blocked — provenance is an argument, not a fact');
-    assert.match(moves[0].reason, /pass provenance: \{ "review": "<sessionId>" \}/,
+    assert.match(moves[0].reason, /pass provenance: \{ "audit": "<sessionId>" \}/,
       'and the reason names exactly what to pass');
 
     // Following that recipe succeeds.
     const ok = await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'refine', stage: 'refine', subscribe: false,
-      provenance: { review: rev.sessionId },
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      provenance: { audit: rev.sessionId },
     });
     assert.equal(ok.ok, undefined, 'supplying what the reason asked for makes the move legal');
 
-    // Step 4 — `refine`'s only outgoing edge is its own self-loop, which is
+    // Step 4 — `amend`'s only outgoing edge is its own self-loop, which is
     // always legal (a self-edge is never gated) and is what makes each further
     // round a ledgered event rather than an invisible re-prompt.
-    assert.deepEqual(await movesNow(), [{ to: 'refine', via: 'send_prompt', ok: true }]);
+    assert.deepEqual(await movesNow(), [{ to: 'amend', via: 'send_prompt', ok: true }]);
   } finally { await t.close(); }
 });
 
 test('playbook_state derives the run graph and its history, keeping concurrent runs separate', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const a = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const a = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     await t.call('approve_plan', { sessionId: a.sessionId, subscribe: false });
     const aRev = await t.spawnWorker({
-      project: 'demo', playbook: 'solo', stage: 'review',
-      worktree: a.worktree.worktreeName, provenance: { implement: a.sessionId },
+      project: 'demo', playbook: 'gatelab', stage: 'audit',
+      worktree: a.worktree.worktreeName, provenance: { build: a.sessionId },
     });
     // A second, independent run of the same playbook.
-    const b = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const b = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
 
     const stateA = await t.call('playbook_state', { sessionId: a.sessionId });
-    assert.deepEqual(stateA.worker.stageHistory, ['plan', 'implement']);
-    assert.equal(stateA.worker.playbook, 'solo');
+    assert.deepEqual(stateA.worker.stageHistory, ['draft', 'build']);
+    assert.equal(stateA.worker.playbook, 'gatelab');
     assert.equal(stateA.worker.live, true);
     assert.deepEqual(stateA.run.members.map(m => m.sessionId).sort(),
       [a.sessionId, aRev.sessionId].sort(),
@@ -569,7 +591,7 @@ test('playbook_state\'s `live` flips to false once the worker is actually killed
   // not merely start true and never move.
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     assert.equal((await t.call('playbook_state', { sessionId: w.sessionId })).worker.live, true);
     await t.call('kill_instance', { sessionId: w.sessionId });
     await waitFor(async () => (await t.call('playbook_state', { sessionId: w.sessionId })).worker.live === false);
@@ -579,7 +601,7 @@ test('playbook_state\'s `live` flips to false once the worker is actually killed
 test('playbook_state reports no enforcement block for a non-conductor caller', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const w = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const w = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const workerHandle = instForSession(t.instances, w.sessionId).id;
     // A worker driving the MCP itself is not a conductor, so there is no
     // enforcement level of its own to publish — and nothing here may make a
@@ -596,7 +618,7 @@ test('playbook_state reports no enforcement block for a non-conductor caller', a
 test('list_sessions carries playbook/stage for a tracked worker and null for an untracked one', async () => {
   const t = await setup({ enforcement: 'enforce' });
   try {
-    const tracked = await t.spawnWorker({ project: 'demo', playbook: 'solo', stage: 'plan' });
+    const tracked = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     // Spawned by a NON-conductor caller, so the gate never tracks it.
     const workerHandle = instForSession(t.instances, tracked.sessionId).id;
     const untracked = await t.callAs(workerHandle, 'spawn_instance', { project: 'demo', mode: 'plan' });
@@ -613,7 +635,7 @@ test('list_sessions carries playbook/stage for a tracked worker and null for an 
       assert.ok(line, `no playbook line for ${sid}`);
       return line.trim();
     };
-    assert.equal(playbookLineFor(tracked.sessionId), 'playbook solo / plan');
+    assert.equal(playbookLineFor(tracked.sessionId), 'playbook gatelab / draft');
     // A dash, not a blank — "not in a playbook" must be distinguishable from
     // "this build does not report it".
     assert.equal(playbookLineFor(untracked.sessionId), 'playbook — / —');

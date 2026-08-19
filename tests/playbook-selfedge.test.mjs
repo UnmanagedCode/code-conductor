@@ -8,20 +8,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide, resolveMove } from '../src/playbooks.ts';
-import { pb, pbs, proj, builtins, SOLO_RUN, isLiveFromEvents } from './playbook-fixtures.mjs';
+import { pb, pbs, proj, isLiveFromEvents, GATELAB_PB, GATELAB_RUN } from './playbook-fixtures.mjs';
 
-const PB = await builtins();
+// Driven through GATELAB (tests/playbook-fixtures.mjs), never through the
+// shipped playbooks/*.json: those are hand-editable, and both branches below
+// turn on whether a self-loop is DECLARED, which is exactly the kind of value an
+// owner may move. GATELAB declares `amend -> amend` and no `draft -> draft`.
+const PB = pbs(GATELAB_PB);
 
 function d(toolName, args, events) {
   return decide({ toolName, args, projection: proj(events), playbooks: PB, isLive: isLiveFromEvents(events) });
 }
 
 test('a self-edge is allowed even though no self-transition is declared', () => {
-  // solo declares no plan->plan edge; an ordinary follow-up prompt must work.
-  const events = [{ kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan' }];
-  assert.equal(PB.get('solo').transitions.some(t => t.from === 'plan' && t.to === 'plan'), false,
-    'premise: solo declares no plan->plan self-loop');
-  const res = d('send_prompt', { sessionId: 'w-planner-1', text: 'also handle X', stage: 'plan' }, events);
+  // gatelab declares no draft->draft edge; an ordinary follow-up prompt must work.
+  const events = [{ kind: 'spawn', sessionId: 'w-drafter-1', playbook: 'gatelab', stage: 'draft' }];
+  assert.equal(PB.get('gatelab').transitions.some(t => t.from === 'draft' && t.to === 'draft'), false,
+    'premise: gatelab declares no draft->draft self-loop');
+  const res = d('send_prompt', { sessionId: 'w-drafter-1', text: 'also handle X', stage: 'draft' }, events);
   assert.equal(res.ok, true, `expected ok, got ${res.code}: ${res.reason}`);
 });
 
@@ -33,43 +37,43 @@ test('a self-edge is allowed even though no self-transition is declared', () => 
 // Either mutant survives a one-sided test, which is why this is not one.
 
 test('a DECLARED self-loop reports recorded:true; an undeclared one does not', () => {
-  const solo = PB.get('solo');
-  assert.equal(solo.transitions.some(t => t.from === 'refine' && t.to === 'refine'), true,
-    'premise: solo declares refine->refine');
-  assert.equal(solo.transitions.some(t => t.from === 'plan' && t.to === 'plan'), false,
-    'premise: solo declares no plan->plan');
+  const graph = PB.get('gatelab');
+  assert.equal(graph.transitions.some(t => t.from === 'amend' && t.to === 'amend'), true,
+    'premise: gatelab declares amend->amend');
+  assert.equal(graph.transitions.some(t => t.from === 'draft' && t.to === 'draft'), false,
+    'premise: gatelab declares no draft->draft');
 
   const declared = resolveMove({
-    toolName: 'send_prompt', args: { stage: 'refine' }, playbook: solo, currentStage: 'refine',
+    toolName: 'send_prompt', args: { stage: 'amend' }, playbook: graph, currentStage: 'amend',
   });
   assert.deepEqual(declared,
-    { currentStage: 'refine', resultingStage: 'refine', kind: 'self', recorded: true });
+    { currentStage: 'amend', resultingStage: 'amend', kind: 'self', recorded: true });
 
   const undeclared = resolveMove({
-    toolName: 'send_prompt', args: { stage: 'plan' }, playbook: solo, currentStage: 'plan',
+    toolName: 'send_prompt', args: { stage: 'draft' }, playbook: graph, currentStage: 'draft',
   });
-  assert.deepEqual(undeclared, { currentStage: 'plan', resultingStage: 'plan', kind: 'self' });
+  assert.deepEqual(undeclared, { currentStage: 'draft', resultingStage: 'draft', kind: 'self' });
 });
 
 test('decide() carries the self-loop through as a from===to move the gate can ledger', () => {
   // The gate writes from `move`, so `recorded` alone is not enough: the move has
   // to carry the endpoints too, or commitMove has nothing to append.
   const events = [
-    ...SOLO_RUN,
-    { kind: 'transition', sessionId: 'w-planner-1', from: 'implement', to: 'refine', via: 'send_prompt',
-      provenance: { review: 'w-review-01' } },
+    ...GATELAB_RUN,
+    { kind: 'transition', sessionId: 'w-drafter-1', from: 'build', to: 'amend', via: 'send_prompt',
+      provenance: { audit: 'w-auditor-1' } },
   ];
-  const res = d('send_prompt', { sessionId: 'w-planner-1', text: 'round 2', stage: 'refine' }, events);
+  const res = d('send_prompt', { sessionId: 'w-drafter-1', text: 'round 2', stage: 'amend' }, events);
   assert.equal(res.ok, true, `expected ok, got ${res.code}: ${res.reason}`);
   assert.deepEqual(res.move,
-    { kind: 'self', from: 'refine', to: 'refine', via: 'send_prompt', recorded: true });
+    { kind: 'self', from: 'amend', to: 'amend', via: 'send_prompt', recorded: true });
   // Still a self-edge, NOT a transition — legality never went through the edge
   // set, which is what keeps the follow-up prompt unconditional.
   assert.equal(res.move.kind, 'self');
 
   // …and the undeclared branch stays a bare self with nothing to write.
-  const plain = d('send_prompt', { sessionId: 'w-planner-1', text: 'more', stage: 'plan' },
-    [{ kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan' }]);
+  const plain = d('send_prompt', { sessionId: 'w-drafter-2', text: 'more', stage: 'draft' },
+    [{ kind: 'spawn', sessionId: 'w-drafter-2', playbook: 'gatelab', stage: 'draft' }]);
   assert.deepEqual(plain.move, { kind: 'self' });
 });
 
@@ -112,27 +116,27 @@ test('a DECLARED self-loop still skips needs and capacity', () => {
 });
 
 test('a self-edge does NOT re-run the stage\'s needs', () => {
-  // The worker is in `refine`, whose needs are a LIVE worker in `review`. Its
-  // reviewer has been retired, so the needs are NOT currently satisfiable —
+  // The worker is in `amend`, whose needs are a LIVE worker in `audit`. Its
+  // auditor has been retired, so the needs are NOT currently satisfiable —
   // an ordinary follow-up prompt must still go through.
   const events = [
-    ...SOLO_RUN,
-    { kind: 'transition', sessionId: 'w-planner-1', from: 'implement', to: 'refine', via: 'send_prompt',
-      provenance: { review: 'w-review-01' } },
-    { kind: 'retire', sessionId: 'w-review-01', reason: 'review done' },
+    ...GATELAB_RUN,
+    { kind: 'transition', sessionId: 'w-drafter-1', from: 'build', to: 'amend', via: 'send_prompt',
+      provenance: { audit: 'w-auditor-1' } },
+    { kind: 'retire', sessionId: 'w-auditor-1', reason: 'audit done' },
   ];
-  assert.deepEqual(PB.get('solo').stages.refine.needs,
-    [{ stage: 'review', position: ['review'], liveness: 'live' }],
-    'premise: refine needs a worker currently in review');
-  const res = d('send_prompt', { sessionId: 'w-planner-1', text: 'address comment 3', stage: 'refine' }, events);
+  assert.deepEqual(PB.get('gatelab').stages.amend.needs,
+    [{ stage: 'audit', position: ['audit'], liveness: 'live' }],
+    'premise: amend needs a worker currently in audit');
+  const res = d('send_prompt', { sessionId: 'w-drafter-1', text: 'address comment 3', stage: 'amend' }, events);
   assert.equal(res.ok, true, `expected ok, got ${res.code}: ${res.reason}`);
   assert.equal(res.move.kind, 'self');
-  // Re-ENTERING refine from implement with the same broken needs IS refused —
+  // Re-ENTERING amend from build with the same broken needs IS refused —
   // proving the exemption is specific to the self-edge, not a blanket skip.
-  const reentry = d('send_prompt', { sessionId: 'w-planner-2', text: 'go', stage: 'refine' }, [
+  const reentry = d('send_prompt', { sessionId: 'w-drafter-2', text: 'go', stage: 'amend' }, [
     ...events,
-    { kind: 'spawn', sessionId: 'w-planner-2', playbook: 'solo', stage: 'plan' },
-    { kind: 'transition', sessionId: 'w-planner-2', from: 'plan', to: 'implement', via: 'approve_plan' },
+    { kind: 'spawn', sessionId: 'w-drafter-2', playbook: 'gatelab', stage: 'draft' },
+    { kind: 'transition', sessionId: 'w-drafter-2', from: 'draft', to: 'build', via: 'approve_plan' },
   ]);
   assert.equal(reentry.ok, false);
   assert.equal(reentry.code, 'NEEDS_UNSATISFIED');
@@ -181,9 +185,9 @@ test('a self-edge still honours the current stage\'s `require` (resulting stage 
 });
 
 test('a send_prompt naming a stage that does not exist is STAGE_UNKNOWN, not a self-edge', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan' }];
-  const res = d('send_prompt', { sessionId: 'w-planner-1', text: 'hi', stage: 'paln' }, events);
+  const events = [{ kind: 'spawn', sessionId: 'w-drafter-1', playbook: 'gatelab', stage: 'draft' }];
+  const res = d('send_prompt', { sessionId: 'w-drafter-1', text: 'hi', stage: 'drfat' }, events);
   assert.equal(res.ok, false);
   assert.equal(res.code, 'STAGE_UNKNOWN');
-  assert.match(res.reason, /'paln' is not a stage of playbook 'solo'/);
+  assert.match(res.reason, /'drfat' is not a stage of playbook 'gatelab'/);
 });

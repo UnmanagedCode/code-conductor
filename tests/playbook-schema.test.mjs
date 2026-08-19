@@ -63,58 +63,69 @@ test('the built-in playbooks are exactly solo/relay/freeform, and all load clean
     // name/description come from the JSON body, not from a restated TS list.
     assert.ok(playbooks.get(id).name.length > 0, `${id} has no name`);
     assert.ok(playbooks.get(id).description.length > 0, `${id} has no description`);
+    // WHICH stages are entry stages is the author's business; that there is at
+    // least one is not. A playbook with none can only ever be entered through a
+    // stage declaring `needs`, so no run of it can ever start. (That every entry
+    // stage is spawnable is a load-time rule, already covered by the empty
+    // `errors` above.)
+    assert.ok(playbooks.get(id).entryStages.length > 0,
+      `${id} declares no entry stage — no run of it could ever start`);
   }
-  assert.equal(playbooks.get('solo').entryStages.join(','), 'plan');
-  // relay's defining property: the planner has no way out of `plan`. Also the
-  // premise relay.implement's DEFAULT position:["plan"] rests on — a planner
-  // that could leave `plan` would make that default silently wrong.
-  assert.equal(playbooks.get('relay').transitions.some(t => t.from === 'plan'), false);
 });
 
-// ── the resolved-needs table ────────────────────────────────────────────────
+// ── `needs.position` vs the graph ───────────────────────────────────────────
 //
-// Deliberately a change-detector, and worth the maintenance: `at:"current"`
-// drifting onto relay.review by inheritance (618d62a) is what broke the
-// second-lens reviewer, and nothing else would have caught it. It lists
-// POST-DEFAULT values, so a `needs` that silently inherits the strict position
-// gate is as visible here as one that declares its loosening.
+// This replaces a frozen table of every built-in stage's resolved `needs`. The
+// table restated values from playbooks/*.json as literal expectations, so an
+// ordinary hand edit reddened it; what it was actually guarding is stated here
+// as the invariant instead, generic over whatever ships.
 //
-// Adding a stage to a worker's path changes no list, so this test still passes
-// — what it does is put the new stage in front of whoever added it. Treat a
-// diff here as a prompt to re-read every `position` list against the graph, not
-// as a formality.
-const RESOLVED_NEEDS = {
-  solo: {
-    plan: [],
-    implement: [],
-    // Item C: the implementer has moved to `refine` by round 2, so a
-    // second-lens reviewer must still be spawnable against it.
-    review: [{ stage: 'implement', position: ['implement', 'refine'], liveness: 'live' }],
-    // Strict, and free: with review->review declared, a reviewer never leaves
-    // `review`. `liveness:"live"` is the load-bearing half — refine sends the
-    // same reviewers back.
-    refine: [{ stage: 'review', position: ['review'], liveness: 'live' }],
-  },
-  relay: {
-    plan: [],
-    // Item F: the planner must have PASSED THROUGH `plan` — provenance only.
-    // Strict position is still right because relay.plan is a dead end, so a
-    // planner stands in `plan` whether it is live or retired. `liveness:"any"`
-    // is deliberate on both sides: the plan must survive to be forwarded into
-    // the implementer, and a planner that dies on its own must not brick the
-    // run by making `implement` permanently unenterable.
-    implement: [{ stage: 'plan', position: ['plan'], liveness: 'any' }],
-    review: [{ stage: 'implement', position: ['implement', 'refine'], liveness: 'live' }],
-    refine: [{ stage: 'review', position: ['review'], liveness: 'live' }],
-  },
-  freeform: { freeform: [] },
-};
-
-test('every built-in stage\'s resolved `needs` matches the frozen table', async () => {
-  const { playbooks } = await loadPlaybooks();
-  const actual = Object.fromEntries([...playbooks.values()].map(pb =>
-    [pb.id, Object.fromEntries(Object.entries(pb.stages).map(([name, s]) => [name, s.needs]))]));
-  assert.deepEqual(actual, RESOLVED_NEEDS);
+// The regression it exists for (618d62a): the `review` gate was narrowed to its
+// anchor alone while `implement -> refine` existed, so a second-lens reviewer
+// became unspawnable the moment the implementer advanced — legally — into
+// `refine`, and nothing else caught it.
+//
+// Direction: this guards NARROWING only. A `["*"]` list covers every closure by
+// construction, so the widening direction is invisible here; it is pinned at the
+// render layer instead, by describe_playbook's `needs` line in
+// tests/playbook-read-tools.test.mjs.
+//
+// `liveness` is deliberately NOT pinned here. relay.implement's `any` (a planner
+// that dies must not brick the run) and solo.review's `live` (refine sends the
+// same reviewers back) are editorial calls with no mechanical rule to derive
+// them from, and freezing them is the change-detector this test replaces.
+test('every built-in `needs.position` covers every stage its anchor can reach', async () => {
+  const playbooks = await builtins();
+  let checked = 0;
+  for (const pb of playbooks.values()) {
+    // Transitive closure of the edges out of `from`, `from` included.
+    const reachable = from => {
+      const seen = new Set([from]);
+      const queue = [from];
+      while (queue.length) {
+        const at = queue.pop();
+        for (const t of pb.transitions) {
+          if (t.from === at && !seen.has(t.to)) { seen.add(t.to); queue.push(t.to); }
+        }
+      }
+      return seen;
+    };
+    for (const [stageName, stage] of Object.entries(pb.stages)) {
+      for (const need of stage.needs) {
+        checked++;
+        // `["*"]` accepts any stage, so it covers the closure by construction.
+        if (need.position.includes('*')) continue;
+        const unreachable = [...reachable(need.stage)].filter(s => !need.position.includes(s));
+        assert.deepEqual(unreachable, [],
+          `${pb.id}.${stageName}.needs.${need.stage}.position is ${JSON.stringify(need.position)}, but a ` +
+          `worker in '${need.stage}' can legally reach ${JSON.stringify(unreachable)} — advancing there ` +
+          'would make this stage unenterable.');
+      }
+    }
+  }
+  // Guards the loop: a graph edit that left no `needs` entry to check, or a
+  // refactor that stopped finding them, would otherwise pass vacuously.
+  assert.ok(checked >= 4, `expected to check several needs entries, checked ${checked}`);
 });
 
 // The built-ins are the templates user authors copy, and (per the dynamic

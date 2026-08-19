@@ -5,9 +5,30 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decide } from '../src/playbooks.ts';
-import { pb, pbs, proj, builtins, SOLO_RUN, isLiveFromEvents } from './playbook-fixtures.mjs';
+import {
+  pb, pbs, proj, builtins, isLiveFromEvents, GATELAB_PB, GATELAB_RUN,
+} from './playbook-fixtures.mjs';
+import { resolvePolicy } from '../src/playbooks.ts';
 
-const PB = await builtins();
+// decide() is driven through GATELAB, a test-only graph (tests/playbook-fixtures.mjs),
+// never through the shipped playbooks/*.json — those are hand-editable by their
+// owner, so restating their pins, stage names or `needs` here would make an
+// ordinary edit redden this file. The one claim that is genuinely ABOUT the
+// built-ins is at the bottom, and reads their definitions rather than copying
+// them.
+// A second graph, so the cross-playbook cases (inheritance disagreement,
+// PLAYBOOK_MISMATCH) have something to disagree WITH. Deliberately minimal: its
+// only job is to be a different id whose stage names overlap GATELAB's.
+const OTHERLAB = pb({
+  id: 'otherlab', name: 'Otherlab', description: 'A second graph, for mismatch cases.',
+  entryStages: ['draft'],
+  stages: {
+    draft: { tools: { spawn_instance: 'allow' } },
+    build: { needs: [{ stage: 'draft' }], tools: { spawn_instance: 'allow' } },
+  },
+  transitions: [],
+});
+const PB = pbs(GATELAB_PB, OTHERLAB);
 
 function d(toolName, args, events = []) {
   return decide({ toolName, args, projection: proj(events), playbooks: PB, isLive: isLiveFromEvents(events) });
@@ -27,36 +48,33 @@ function allowed(res) {
 // ── spawn: fails closed, and `require` fills or refuses ─────────────────────
 
 test('spawn into an entry stage is allowed and `require` FILLS the omitted arguments', () => {
-  const res = allowed(d('spawn_instance', { playbook: 'solo', stage: 'plan', project: 'demo' }));
-  assert.equal(res.patchedArgs.mode, 'plan');
+  const res = allowed(d('spawn_instance', { playbook: 'gatelab', stage: 'draft', project: 'demo' }));
+  assert.equal(res.patchedArgs.mode, 'ask');
   assert.equal(res.patchedArgs.createWorktree, true);
-  // solo's plan stage deliberately does NOT pin `model`: its worker is the
-  // same session that goes on to implement and refine, so pinning the model at
-  // the plan stage would pin it for the whole run. Model choice is the
-  // conductor's per-task judgment; playbooks enforce structure.
+  // A stage pins what it pins and nothing more: `draft` names no `model`, so
+  // none is invented. (The mirror — a stage that DOES pin one — is the next test.)
   assert.equal('model' in res.patchedArgs, false);
-  assert.deepEqual(res.move, { kind: 'spawn', to: 'plan', playbook: 'solo' });
+  assert.deepEqual(res.move, { kind: 'spawn', to: 'draft', playbook: 'gatelab' });
 });
 
-// The contrast with solo above is the whole reason relay CAN pin here: its
-// planner is a DIFFERENT worker from the implementer (no edge out of `plan`),
-// so the pin binds one worker rather than a whole run.
-test('relay\'s plan stage pins the planner role, and refuses a spawn that names another model', () => {
-  const res = allowed(d('spawn_instance', { playbook: 'relay', stage: 'plan', project: 'demo' }));
-  assert.equal(res.patchedArgs.model, 'planner');
-  assert.equal(res.patchedArgs.mode, 'plan');
+test('a stage that pins a role fills it in, and refuses a spawn that names another model', () => {
+  const args = { playbook: 'gatelab', stage: 'audit', project: 'demo',
+    provenance: { build: 'w-drafter-1' } };
+  const res = allowed(d('spawn_instance', args, GATELAB_RUN.slice(0, 2)));
+  assert.equal(res.patchedArgs.model, 'reviewer');
+  assert.equal(res.patchedArgs.mode, 'bypassPermissions');
 
   const conflict = refusal(
-    d('spawn_instance', { playbook: 'relay', stage: 'plan', project: 'demo', model: 'sonnet' }),
+    d('spawn_instance', { ...args, model: 'sonnet' }, GATELAB_RUN.slice(0, 2)),
     'ARG_PIN_CONFLICT');
   assert.match(conflict.reason, /model/);
 });
 
 test('a supplied argument that contradicts `require` is refused, not overridden', () => {
   const res = refusal(
-    d('spawn_instance', { playbook: 'solo', stage: 'plan', mode: 'bypassPermissions' }),
+    d('spawn_instance', { playbook: 'gatelab', stage: 'draft', mode: 'bypassPermissions' }),
     'ARG_PIN_CONFLICT');
-  assert.match(res.reason, /requires spawn_instance to be called with mode="plan"/);
+  assert.match(res.reason, /requires spawn_instance to be called with mode="ask"/);
   assert.match(res.reason, /hard constraint, not a default/);
 });
 
@@ -89,11 +107,18 @@ test('`require` is enforced per tool, not once per stage — a second tool has i
 });
 
 test('spawn_instance is DENIED BY DEFAULT on a stage that omits it — no explicit deny needed', () => {
-  // solo's `implement` and `refine` say nothing about spawn_instance.
-  for (const stage of ['implement', 'refine']) {
-    const res = refusal(d('spawn_instance', { playbook: 'solo', stage }), 'STAGE_NOT_SPAWNABLE');
+  // `build` and `amend` say nothing about spawn_instance. The recovery list is
+  // derived from the graph rather than restated, so it follows a fixture edit.
+  const spawnable = Object.keys(GATELAB_PB.stages)
+    .filter(n => { const t = GATELAB_PB.stages[n].tools ?? {}; return t.spawn_instance !== undefined && t.spawn_instance !== 'deny'; });
+  assert.ok(spawnable.length > 0, 'premise: the fixture has spawnable stages to offer');
+  for (const stage of ['build', 'amend']) {
+    const res = refusal(d('spawn_instance', { playbook: 'gatelab', stage }), 'STAGE_NOT_SPAWNABLE');
     assert.match(res.reason, /does not declare spawn_instance/);
-    assert.match(res.reason, /Spawnable stages: plan, review/);
+    for (const s of spawnable) {
+      assert.match(res.reason, new RegExp(`Spawnable stages:[^.]*\\b${s}\\b`),
+        `the recovery list must name '${s}'`);
+    }
   }
 });
 
@@ -130,8 +155,8 @@ test('a run-root spawn must name a playbook; an unknown playbook or stage is nam
   assert.doesNotMatch(root.reason, /has no `needs`/,
     'the refusal must not name `needs` as the argument to pass — no tool accepts it');
   refusal(d('spawn_instance', { playbook: 'nope', stage: 'plan' }), 'PLAYBOOK_UNKNOWN');
-  refusal(d('spawn_instance', { playbook: 'solo', stage: 'nope' }), 'STAGE_UNKNOWN');
-  assert.match(refusal(d('spawn_instance', { playbook: 'solo' }), 'STAGE_UNKNOWN').reason,
+  refusal(d('spawn_instance', { playbook: 'gatelab', stage: 'nope' }), 'STAGE_UNKNOWN');
+  assert.match(refusal(d('spawn_instance', { playbook: 'gatelab' }), 'STAGE_UNKNOWN').reason,
     /must name the `stage` to enter/);
 });
 
@@ -179,10 +204,23 @@ test('acting on that refusal alone yields a LEGAL spawn — no second round-trip
   assert.deepEqual({ playbook: retry.move.playbook, to: retry.move.to }, { playbook, to: stage });
 });
 
-test('naming a playbook but no stage still names that playbook\'s entry stages', () => {
+test('naming a playbook but no stage names its entry stages, and ONLY those', () => {
   // The second step of recovery, if the conductor supplies only the playbook.
-  assert.match(refusal(d('spawn_instance', { playbook: 'solo' }), 'STAGE_UNKNOWN').reason,
-    /can be entered at: plan/);
+  // Read off the graph, so a fixture edit moves the expectation with it — but
+  // asserted as the WHOLE list, not stage by stage: a per-stage membership check
+  // is satisfied by any over-inclusive list, so advertising a stage a run cannot
+  // actually start in would read as correct. The trailing literal is what closes
+  // that direction. `Stages now:` in the definition-drift block below is exact
+  // the same way. `Spawnable stages:` is NOT, where it is read off gatelab
+  // above — that one is a per-stage loop, and its over-report direction is
+  // pinned on the `wild` fixture instead, whose smaller graph lets the list be
+  // matched whole.
+  assert.notDeepEqual([...GATELAB_PB.entryStages].sort(), Object.keys(GATELAB_PB.stages).sort(),
+    'premise: the fixture has non-entry stages, or over-reporting is unobservable here');
+  const reason = refusal(d('spawn_instance', { playbook: 'gatelab' }), 'STAGE_UNKNOWN').reason;
+  assert.match(reason,
+    new RegExp(`can be entered at: ${GATELAB_PB.entryStages.join(', ')} \\(or a stage`),
+    `the offered list must be exactly the entry stages; got: ${reason}`);
 });
 
 // ── resume of a playbook-tracked worker ─────────────────────────────────────
@@ -193,44 +231,43 @@ test('naming a playbook but no stage still names that playbook\'s entry stages',
 // The worker is coming back to where it already is, so none of the entered-stage
 // checks (spawnability, `needs`, capacity, `pin`) apply.
 
-// The planner has been approved into `implement` and then died. `implement` is
-// solo's non-entry, NON-SPAWNABLE stage, which is the interesting case: a resume
-// has to work there, and an entry check would refuse it.
+// The drafter has been approved into `build` and then died. `build` is a
+// non-entry, NON-SPAWNABLE stage, which is the interesting case: a resume has to
+// work there, and an entry check would refuse it.
 const RESUMABLE = [
-  ...SOLO_RUN.slice(0, 2),
-  { kind: 'retire', sessionId: 'w-planner-1', reason: 'subprocess exited' },
+  ...GATELAB_RUN.slice(0, 2),
+  { kind: 'retire', sessionId: 'w-drafter-1', reason: 'subprocess exited' },
 ];
 
 test('a BARE resume of a playbook-tracked worker is allowed — no playbook/stage needed', () => {
-  const res = allowed(d('spawn_instance', { resume: 'w-planner-1' }, RESUMABLE));
+  const res = allowed(d('spawn_instance', { resume: 'w-drafter-1' }, RESUMABLE));
   assert.equal(res.move.kind, 'resume');
 });
 
 test('a bare resume inherits the RECORDED stage, and spawnability is never consulted', () => {
   // Pins two mutations at once: taking the stage from entryStages (would give
-  // 'plan'), and applying isSpawnable to the resume path (would refuse
-  // STAGE_NOT_SPAWNABLE, since solo's `implement` declares no spawn_instance).
-  const res = allowed(d('spawn_instance', { resume: 'w-planner-1' }, RESUMABLE));
-  assert.deepEqual(res.move, { kind: 'resume', to: 'implement', playbook: 'solo' });
-  assert.equal(PB.get('solo').entryStages.includes('implement'), false,
-    'the fixture is only meaningful while `implement` is NOT an entry stage');
+  // 'draft'), and applying isSpawnable to the resume path (would refuse
+  // STAGE_NOT_SPAWNABLE, since `build` declares no spawn_instance).
+  const res = allowed(d('spawn_instance', { resume: 'w-drafter-1' }, RESUMABLE));
+  assert.deepEqual(res.move, { kind: 'resume', to: 'build', playbook: 'gatelab' });
+  assert.equal(PB.get('gatelab').entryStages.includes('build'), false,
+    'the fixture is only meaningful while `build` is NOT an entry stage');
 });
 
 test('a resume does NOT apply the entered-stage `pin` — the args pass through untouched', () => {
-  // The highest-value case in this section: relay's `plan` stage pins `model` AND
-  // `mode`, and solo's pins createWorktree:true — so routing a resume through
-  // applyPin would silently hand a resumed session a brand-new worktree, which no
-  // other assertion here would notice.
-  const events = [{ kind: 'spawn', sessionId: 'w-relay-p1', playbook: 'relay', stage: 'plan', project: 'demo' }];
-  const args = { resume: 'w-relay-p1' };
+  // The highest-value case in this section: `sealed` pins createWorktree:true, so
+  // routing a resume through applyPin would silently hand a resumed session a
+  // brand-new worktree, which no other assertion here would notice.
+  const events = [{ kind: 'spawn', sessionId: 'w-sealed-p1', playbook: 'gatelab', stage: 'sealed', project: 'demo' }];
+  const args = { resume: 'w-sealed-p1' };
   const res = allowed(d('spawn_instance', args, events));
   // Identity, not deep-equal: the contract is "unchanged", and deep-equal would
   // still pass on a defensive copy that a later edit could start mutating.
   assert.equal(res.patchedArgs, args, 'patchedArgs must be the caller\'s own args object');
   assert.deepEqual(Object.keys(res.patchedArgs), ['resume']);
-  // Guard the premise: relay's plan really does pin, so this test is about the
-  // resume path skipping it rather than about a stage with nothing to apply.
-  assert.equal(allowed(d('spawn_instance', { playbook: 'relay', stage: 'plan' })).patchedArgs.model, 'planner');
+  // Guard the premise: `sealed` really does pin, so this test is about the resume
+  // path skipping it rather than about a stage with nothing to apply.
+  assert.equal(allowed(d('spawn_instance', { playbook: 'gatelab', stage: 'sealed' })).patchedArgs.createWorktree, true);
 });
 
 test('an explicit binding EQUAL to the record is accepted, and is still a resume', () => {
@@ -239,17 +276,17 @@ test('an explicit binding EQUAL to the record is accepted, and is still a resume
   // they know. And it must resolve as a RESUME, not fall back to a run-root spawn
   // — a spawn event here would reset the worker's stageHistory.
   const res = allowed(d('spawn_instance',
-    { resume: 'w-planner-1', playbook: 'solo', stage: 'implement' }, RESUMABLE));
-  assert.deepEqual(res.move, { kind: 'resume', to: 'implement', playbook: 'solo' });
+    { resume: 'w-drafter-1', playbook: 'gatelab', stage: 'build' }, RESUMABLE));
+  assert.deepEqual(res.move, { kind: 'resume', to: 'build', playbook: 'gatelab' });
 });
 
 test('a resume naming a DIFFERENT playbook is PLAYBOOK_MISMATCH, printing both pairs', () => {
   const res = refusal(d('spawn_instance',
-    { resume: 'w-planner-1', playbook: 'relay', stage: 'implement' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+    { resume: 'w-drafter-1', playbook: 'mover', stage: 'build' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
   // One refusal has to be enough to retry legally, so BOTH halves of the recorded
   // pair and the supplied value appear.
-  assert.match(res.reason, /'solo'\/'implement'/, 'the recorded pair must be printed');
-  assert.match(res.reason, /'relay'\/'implement'/, 'the supplied pair must be printed');
+  assert.match(res.reason, /'gatelab'\/'build'/, 'the recorded pair must be printed');
+  assert.match(res.reason, /'mover'\/'build'/, 'the supplied pair must be printed');
   assert.match(res.reason, /omit `playbook`\/`stage`, or name the recorded pair/);
 });
 
@@ -258,24 +295,24 @@ test('a resume naming a different STAGE under a MATCHING playbook is still a con
   // compare only `playbook`, which would let this through and re-enter the worker
   // at a stage it never reached.
   const res = refusal(d('spawn_instance',
-    { resume: 'w-planner-1', playbook: 'solo', stage: 'review' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
-  assert.match(res.reason, /'solo'\/'implement'/);
-  assert.match(res.reason, /'solo'\/'review'/);
+    { resume: 'w-drafter-1', playbook: 'gatelab', stage: 'audit' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+  assert.match(res.reason, /'gatelab'\/'build'/);
+  assert.match(res.reason, /'gatelab'\/'audit'/);
 });
 
 test('a resume naming only a conflicting `stage` is refused with no `playbook` supplied at all', () => {
-  refusal(d('spawn_instance', { resume: 'w-planner-1', stage: 'review' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+  refusal(d('spawn_instance', { resume: 'w-drafter-1', stage: 'audit' }, RESUMABLE), 'PLAYBOOK_MISMATCH');
   // …and naming only the matching stage is fine.
-  assert.equal(allowed(d('spawn_instance', { resume: 'w-planner-1', stage: 'implement' }, RESUMABLE)).move.kind,
+  assert.equal(allowed(d('spawn_instance', { resume: 'w-drafter-1', stage: 'build' }, RESUMABLE)).move.kind,
     'resume');
 });
 
 test('`provenance` alongside a tracked resume is refused, not silently ignored', () => {
   const res = refusal(d('spawn_instance',
-    { resume: 'w-planner-1', provenance: { plan: 'w-review-01' } }, RESUMABLE), 'PLAYBOOK_MISMATCH');
+    { resume: 'w-drafter-1', provenance: { draft: 'w-auditor-1' } }, RESUMABLE), 'PLAYBOOK_MISMATCH');
   assert.match(res.reason, /enters no stage, so it satisfies no `needs` and takes no `provenance`/);
   // An EMPTY provenance map is not a claim about anything, so it resumes.
-  assert.equal(allowed(d('spawn_instance', { resume: 'w-planner-1', provenance: {} }, RESUMABLE)).move.kind,
+  assert.equal(allowed(d('spawn_instance', { resume: 'w-drafter-1', provenance: {} }, RESUMABLE)).move.kind,
     'resume');
 });
 
@@ -297,8 +334,8 @@ test('a resume of an UNTRACKED session that names playbook + stage is still a le
   // Regression guard: adopting a loose session into a playbook is unchanged, and
   // the resume branch must not swallow ids the ledger knows nothing about.
   const res = allowed(d('spawn_instance',
-    { resume: 'w-nobody-01', playbook: 'solo', stage: 'plan' }, RESUMABLE));
-  assert.deepEqual(res.move, { kind: 'spawn', to: 'plan', playbook: 'solo' });
+    { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'draft' }, RESUMABLE));
+  assert.deepEqual(res.move, { kind: 'spawn', to: 'draft', playbook: 'gatelab' });
 });
 
 test('a resume whose recorded playbook is no longer loaded is refused, naming the cause', () => {
@@ -312,17 +349,17 @@ test('a resume whose recorded playbook is no longer loaded is refused, naming th
 
 // ── needs: worker provenance, on spawn-entry AND transition-entry ───────────
 
-test('needs is enforced on SPAWN-entry: a reviewer needs an implementer', () => {
-  const events = SOLO_RUN.slice(0, 2); // planner in `implement`, no reviewer yet
-  const missing = refusal(d('spawn_instance', { playbook: 'solo', stage: 'review' }, events), 'NEEDS_UNSATISFIED');
-  assert.match(missing.reason, /requires a live worker that has passed through stage 'implement'/);
+test('needs is enforced on SPAWN-entry: an auditor needs a builder', () => {
+  const events = GATELAB_RUN.slice(0, 2); // drafter in `build`, no auditor yet
+  const missing = refusal(d('spawn_instance', { playbook: 'gatelab', stage: 'audit' }, events), 'NEEDS_UNSATISFIED');
+  assert.match(missing.reason, /requires a live worker that has passed through stage 'build'/);
   // The refusal names the ARGUMENT to pass, which is `provenance` — the stage's
   // declaration is `needs`, and telling the caller to pass "needs" would name a
   // key that no tool accepts.
-  assert.match(missing.reason, /pass provenance: \{ "implement": "<sessionId>" \}/);
+  assert.match(missing.reason, /pass provenance: \{ "build": "<sessionId>" \}/);
 
   const ok = allowed(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', provenance: { implement: 'w-planner-1' } }, events));
+    { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-drafter-1' } }, events));
   assert.equal(ok.patchedArgs.model, 'reviewer');
   assert.equal(ok.patchedArgs.mode, 'bypassPermissions');
 });
@@ -331,49 +368,48 @@ test('needs is enforced on SPAWN-entry: a reviewer needs an implementer', () => 
 // name. Passing it must NOT satisfy the stage's needs — a silent acceptance
 // would let a spawn skip the provenance edge and land in no run.
 test('the retired `needs` argument does not satisfy a stage\'s needs', () => {
-  const events = SOLO_RUN.slice(0, 2);
+  const events = GATELAB_RUN.slice(0, 2);
   refusal(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', needs: { implement: 'w-planner-1' } }, events),
+    { playbook: 'gatelab', stage: 'audit', needs: { build: 'w-drafter-1' } }, events),
     'NEEDS_UNSATISFIED');
   // …and the current name does.
   allowed(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', provenance: { implement: 'w-planner-1' } }, events));
+    { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-drafter-1' } }, events));
 });
 
 test('needs is enforced on TRANSITION-entry too, not only on spawn', () => {
-  const noReviewer = SOLO_RUN.slice(0, 2);
-  // implement -> refine is a legal edge, but `refine` needs a reviewer.
-  refusal(d('send_prompt', { sessionId: 'w-planner-1', text: 'go', stage: 'refine' }, noReviewer),
+  const noAuditor = GATELAB_RUN.slice(0, 2);
+  // build -> amend is a legal edge, but `amend` needs an auditor.
+  refusal(d('send_prompt', { sessionId: 'w-drafter-1', text: 'go', stage: 'amend' }, noAuditor),
     'NEEDS_UNSATISFIED');
-  // With the reviewer spawned, the same call is allowed and IS a transition.
+  // With the auditor spawned, the same call is allowed and IS a transition.
   const res = allowed(d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', provenance: { review: 'w-review-01' } }, SOLO_RUN));
-  assert.deepEqual(res.move, { kind: 'transition', from: 'implement', to: 'refine', via: 'send_prompt' });
+    { sessionId: 'w-drafter-1', text: 'go', stage: 'amend', provenance: { audit: 'w-auditor-1' } }, GATELAB_RUN));
+  assert.deepEqual(res.move, { kind: 'transition', from: 'build', to: 'amend', via: 'send_prompt' });
 });
 
-// ── the joint C+D invariant ────────────────────────────────────────────────
+// ── the joint capacity + position invariant ────────────────────────────────
 //
-// The single most load-bearing case here. It needs BOTH halves of the change:
-// `review.workers:"many"` for the second reviewer to have a slot, and
-// `position:["implement","refine"]` for the implementer to still satisfy the
-// need once it has moved on. Reverting either one alone fails this test, with a
-// different code each time — which is what makes it a real pin rather than a
-// pair of assertions that happen to hold.
-for (const playbook of ['solo', 'relay']) {
-  test(`${playbook}: a second reviewer on another lens is spawnable while the implementer is in refine`, () => {
-    const events = [
-      { kind: 'spawn', sessionId: 'w-imp-0001', playbook, stage: 'implement' },
-      { kind: 'spawn', sessionId: 'w-review-01', playbook, stage: 'review', provenance: { implement: 'w-imp-0001' } },
-      // Round 1 relayed: the implementer is now in `refine`, not `implement`.
-      { kind: 'transition', sessionId: 'w-imp-0001', from: 'implement', to: 'refine', via: 'send_prompt' },
-    ];
-    // Mutant `workers:"one"`  => STAGE_AT_CAPACITY (the first reviewer holds it).
-    // Mutant position ["implement"] => NEEDS_UNSATISFIED (it is in `refine`).
-    const ok = allowed(d('spawn_instance',
-      { playbook, stage: 'review', provenance: { implement: 'w-imp-0001' } }, events));
-    assert.equal(ok.patchedArgs.model, 'reviewer');
-  });
-}
+// The single most load-bearing case here. It needs BOTH halves at once:
+// `audit.workers:"many"` for a second lens to have a slot, and
+// `position:["build","amend"]` for the builder to still satisfy the need once it
+// has moved on. Reverting either one alone fails this test, with a different code
+// each time — which is what makes it a real pin rather than a pair of assertions
+// that happen to hold.
+test('a second lens is spawnable while the worker it audits has moved on to amend', () => {
+  const events = [
+    { kind: 'spawn', sessionId: 'w-imp-0001', playbook: 'gatelab', stage: 'draft' },
+    { kind: 'transition', sessionId: 'w-imp-0001', from: 'draft', to: 'build', via: 'approve_plan' },
+    { kind: 'spawn', sessionId: 'w-audit-01', playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-imp-0001' } },
+    // Round 1 relayed: the builder is now in `amend`, not `build`.
+    { kind: 'transition', sessionId: 'w-imp-0001', from: 'build', to: 'amend', via: 'send_prompt' },
+  ];
+  // Mutant `workers:"one"`      => STAGE_AT_CAPACITY (the first lens holds it).
+  // Mutant position ["build"]   => NEEDS_UNSATISFIED (it is in `amend`).
+  const ok = allowed(d('spawn_instance',
+    { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-imp-0001' } }, events));
+  assert.equal(ok.patchedArgs.model, 'reviewer');
+});
 
 // A worker that HAS the provenance but has since moved on. No built-in can
 // express this — solo's reviewer never leaves `review`, and relay's planner
@@ -417,13 +453,13 @@ test('liveness:"live" refuses a RETIRED worker with NEEDS_WORKER_GONE, not NEEDS
   // named worker is gone. A mutant folding it back into NEEDS_UNSATISFIED fails
   // on the code; a mutant dropping the liveness check entirely fails on `ok`.
   const cur = [
-    { kind: 'spawn', sessionId: 'w-cl-imp-1', playbook: 'solo', stage: 'plan' },
-    { kind: 'transition', sessionId: 'w-cl-imp-1', from: 'plan', to: 'implement', via: 'approve_plan' },
+    { kind: 'spawn', sessionId: 'w-cl-imp-1', playbook: 'gatelab', stage: 'draft' },
+    { kind: 'transition', sessionId: 'w-cl-imp-1', from: 'draft', to: 'build', via: 'approve_plan' },
     { kind: 'retire', sessionId: 'w-cl-imp-1', reason: 'killed' },
   ];
   const res = refusal(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', provenance: { implement: 'w-cl-imp-1' } }, cur), 'NEEDS_WORKER_GONE');
-  assert.match(res.reason, /to still be running, but it has no running process \(last known stage 'implement'\)/);
+    { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-cl-imp-1' } }, cur), 'NEEDS_WORKER_GONE');
+  assert.match(res.reason, /to still be running, but it has no running process \(last known stage 'build'\)/);
   assert.match(res.reason, /not a wiring mistake/);
 });
 
@@ -435,11 +471,11 @@ test('liveness:"live" refuses a RETIRED worker with NEEDS_WORKER_GONE, not NEEDS
 // instead of calling isLive would flip one or both of these two assertions).
 test('needs.liveness:"live" is answered from isLive(), not from the projection\'s retire event', () => {
   const cur = [
-    { kind: 'spawn', sessionId: 'w-cl-imp-1', playbook: 'solo', stage: 'plan' },
-    { kind: 'transition', sessionId: 'w-cl-imp-1', from: 'plan', to: 'implement', via: 'approve_plan' },
+    { kind: 'spawn', sessionId: 'w-cl-imp-1', playbook: 'gatelab', stage: 'draft' },
+    { kind: 'transition', sessionId: 'w-cl-imp-1', from: 'draft', to: 'build', via: 'approve_plan' },
     { kind: 'retire', sessionId: 'w-cl-imp-1', reason: 'killed' },
   ];
-  const args = { playbook: 'solo', stage: 'review', provenance: { implement: 'w-cl-imp-1' } };
+  const args = { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w-cl-imp-1' } };
   const projection = proj(cur);
   // The ledger recorded a retire, but the oracle says the worker IS live —
   // this must be ALLOWED, which a projection-derived `live` bit could never do.
@@ -545,13 +581,13 @@ test('the loose values — liveness:"any" and position:["*"] — each drop exact
 
 test('needs is scoped to one run — a worker from another run cannot satisfy it', () => {
   const twoRuns = [
-    ...SOLO_RUN,                                                     // run A
-    { kind: 'spawn', sessionId: 'w-planner-2', playbook: 'solo', stage: 'plan' },   // run B
-    { kind: 'transition', sessionId: 'w-planner-2', from: 'plan', to: 'implement', via: 'approve_plan' },
+    ...GATELAB_RUN,                                                  // run A
+    { kind: 'spawn', sessionId: 'w-drafter-2', playbook: 'gatelab', stage: 'draft' },   // run B
+    { kind: 'transition', sessionId: 'w-drafter-2', from: 'draft', to: 'build', via: 'approve_plan' },
   ];
-  // run B's implementer trying to enter refine on run A's reviewer
+  // run B's builder trying to enter amend on run A's auditor
   const res = refusal(d('send_prompt',
-    { sessionId: 'w-planner-2', text: 'go', stage: 'refine', provenance: { review: 'w-review-01' } }, twoRuns),
+    { sessionId: 'w-drafter-2', text: 'go', stage: 'amend', provenance: { audit: 'w-auditor-1' } }, twoRuns),
     'NEEDS_UNSATISFIED');
   assert.match(res.reason, /belongs to a different run/);
 });
@@ -563,7 +599,7 @@ test('needs is scoped to one run — a worker from another run cannot satisfy it
 // it. Both are pinned, or the transition path is covered only by accident.
 test('SPAWN: an unknown needs ancestor is refused during playbook inheritance', () => {
   const res = refusal(d('spawn_instance',
-    { playbook: 'solo', stage: 'review', provenance: { implement: 'ghost-000' } }, SOLO_RUN.slice(0, 2)),
+    { playbook: 'gatelab', stage: 'audit', provenance: { build: 'ghost-000' } }, GATELAB_RUN.slice(0, 2)),
     'NEEDS_UNSATISFIED');
   assert.match(res.reason, /is not a playbook-tracked worker/);
   assert.match(res.reason, /its playbook and stage are unknown/);
@@ -571,28 +607,28 @@ test('SPAWN: an unknown needs ancestor is refused during playbook inheritance', 
 
 test('TRANSITION: an unknown needs target is refused by the needs check itself', () => {
   const res = refusal(d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', provenance: { review: 'ghost-000' } },
-    SOLO_RUN.slice(0, 2)), 'NEEDS_UNSATISFIED');
-  assert.match(res.reason, /needs\.review names sessionId 'ghost-000', which is not a playbook-tracked worker/);
+    { sessionId: 'w-drafter-1', text: 'go', stage: 'amend', provenance: { audit: 'ghost-000' } },
+    GATELAB_RUN.slice(0, 2)), 'NEEDS_UNSATISFIED');
+  assert.match(res.reason, /needs\.audit names sessionId 'ghost-000', which is not a playbook-tracked worker/);
 });
 
 // ── playbook binding + inheritance ─────────────────────────────────────────
 
 test('a non-root spawn inherits its playbook; disagreement is PLAYBOOK_MISMATCH', () => {
   const mixed = [
-    { kind: 'spawn', sessionId: 'w-cl-0001', playbook: 'solo', stage: 'plan' },
-    { kind: 'spawn', sessionId: 'w-sp-0001', playbook: 'relay', stage: 'plan' },
+    { kind: 'spawn', sessionId: 'w-cl-0001', playbook: 'gatelab', stage: 'draft' },
+    { kind: 'spawn', sessionId: 'w-sp-0001', playbook: 'otherlab', stage: 'draft' },
   ];
   // ancestors disagree with each other
   assert.match(refusal(d('spawn_instance',
-    { stage: 'implement', provenance: { plan: 'w-sp-0001', other: 'w-cl-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
-    /disagree about their playbook \(relay, solo\)/);
+    { stage: 'build', provenance: { draft: 'w-sp-0001', other: 'w-cl-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
+    /disagree about their playbook \(gatelab, otherlab\)/);
   // an explicitly supplied playbook contradicting the inherited one
   assert.match(refusal(d('spawn_instance',
-    { playbook: 'solo', stage: 'implement', provenance: { plan: 'w-sp-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
-    /this spawn inherits 'relay'/);
+    { playbook: 'gatelab', stage: 'build', provenance: { draft: 'w-sp-0001' } }, mixed), 'PLAYBOOK_MISMATCH').reason,
+    /this spawn inherits 'otherlab'/);
   // naming the inherited playbook is fine
-  allowed(d('spawn_instance', { playbook: 'relay', stage: 'implement', provenance: { plan: 'w-sp-0001' } }, mixed));
+  allowed(d('spawn_instance', { playbook: 'otherlab', stage: 'build', provenance: { draft: 'w-sp-0001' } }, mixed));
 });
 
 // ── capacity ───────────────────────────────────────────────────────────────
@@ -716,13 +752,13 @@ test('TRANSITION: capacity is enforced on the DESTINATION stage of a transition'
 // ancestors, so it always matches) and reachable only on a transition.
 test('TRANSITION: a needs target bound to another playbook is PLAYBOOK_MISMATCH', () => {
   const events = [
-    ...SOLO_RUN.slice(0, 2),                                                    // solo implementer
-    { kind: 'spawn', sessionId: 'w-relay-rv', playbook: 'relay', stage: 'plan' },   // a worker on another playbook
+    ...GATELAB_RUN.slice(0, 2),                                                       // gatelab builder
+    { kind: 'spawn', sessionId: 'w-other-01', playbook: 'otherlab', stage: 'draft' },  // a worker on another playbook
   ];
   const res = refusal(d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'go', stage: 'refine', provenance: { review: 'w-relay-rv' } }, events),
+    { sessionId: 'w-drafter-1', text: 'go', stage: 'amend', provenance: { audit: 'w-other-01' } }, events),
     'PLAYBOOK_MISMATCH');
-  assert.match(res.reason, /names a worker on playbook 'relay', not 'solo'/);
+  assert.match(res.reason, /names a worker on playbook 'otherlab', not 'gatelab'/);
 });
 
 test('capacity is scoped to the RUN, not globally — a second run gets its own slot', () => {
@@ -740,11 +776,11 @@ test('capacity is scoped to the RUN, not globally — a second run gets its own 
 
 // ── the tools map: deny, wildcard, precedence, prefix ──────────────────────
 
-test('set_mode is denied in solo\'s plan stage', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan' }];
-  const res = refusal(d('set_mode', { sessionId: 'w-planner-1', mode: 'bypassPermissions' }, events),
+test('a stage that denies a tool refuses it, and the reason names the stage and playbook', () => {
+  const events = [{ kind: 'spawn', sessionId: 'w-sealed-01', playbook: 'gatelab', stage: 'sealed' }];
+  const res = refusal(d('set_mode', { sessionId: 'w-sealed-01', mode: 'bypassPermissions' }, events),
     'TOOL_DENIED_IN_STAGE');
-  assert.match(res.reason, /set_mode is denied for a worker in stage 'plan' of playbook 'solo'/);
+  assert.match(res.reason, /set_mode is denied for a worker in stage 'sealed' of playbook 'gatelab'/);
 });
 
 test('"*": "deny" reads as an allowlist, and an exact name beats the wildcard', () => {
@@ -767,16 +803,16 @@ test('"*": "deny" reads as an allowlist, and an exact name beats the wildcard', 
 });
 
 test('the mcp__code-conductor__ prefix is normalized before policy lookup', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan' }];
-  refusal(d('mcp__code-conductor__set_mode', { sessionId: 'w-planner-1', mode: 'ask' }, events),
+  const events = [{ kind: 'spawn', sessionId: 'w-sealed-01', playbook: 'gatelab', stage: 'sealed' }];
+  refusal(d('mcp__code-conductor__set_mode', { sessionId: 'w-sealed-01', mode: 'ask' }, events),
     'TOOL_DENIED_IN_STAGE');
   // and the prefixed spawn_instance still routes to the spawn path
-  refusal(d('mcp__code-conductor__spawn_instance', { playbook: 'solo', stage: 'implement' }),
+  refusal(d('mcp__code-conductor__spawn_instance', { playbook: 'gatelab', stage: 'build' }),
     'STAGE_NOT_SPAWNABLE');
 });
 
 test('a worker that is not playbook-tracked is ungoverned', () => {
-  const res = allowed(d('sync_worktree', { sessionId: 'not-tracked' }, SOLO_RUN));
+  const res = allowed(d('sync_worktree', { sessionId: 'not-tracked' }, GATELAB_RUN));
   assert.deepEqual(res.move, { kind: 'none' });
 });
 
@@ -836,12 +872,13 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
 // ── definition drift (settled: definitions are NOT pinned to a live run) ────
 
 test('a live worker whose stage vanished gets STAGE_UNKNOWN that says the DEFINITION changed', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-drift-01', playbook: 'solo', stage: 'gone' }];
+  const events = [{ kind: 'spawn', sessionId: 'w-drift-01', playbook: 'gatelab', stage: 'gone' }];
   const res = refusal(d('send_prompt', { sessionId: 'w-drift-01', text: 'hi', stage: 'gone' }, events), 'STAGE_UNKNOWN');
-  assert.match(res.reason, /no longer exists in playbook 'solo'/);
+  assert.match(res.reason, /no longer exists in playbook 'gatelab'/);
   assert.match(res.reason, /the definition was edited while this worker was live/);
   assert.match(res.reason, /not a problem with your call/);
-  assert.match(res.reason, /Stages now: plan, implement, review, refine/);
+  // The recovery list is the graph's own stage set, read rather than restated.
+  assert.match(res.reason, new RegExp(`Stages now: ${Object.keys(GATELAB_PB.stages).join(', ')}`));
 });
 
 test('a live worker whose whole playbook vanished gets PLAYBOOK_UNKNOWN saying the same', () => {
@@ -854,11 +891,13 @@ test('a live worker whose whole playbook vanished gets PLAYBOOK_UNKNOWN saying t
 // ── refusals carry the legal moves ─────────────────────────────────────────
 
 test('every refusal carries the playbook, the stage, and the legal transitions from here', () => {
-  const events = [{ kind: 'spawn', sessionId: 'w-planner-1', playbook: 'solo', stage: 'plan' }];
-  const res = refusal(d('set_mode', { sessionId: 'w-planner-1', mode: 'ask' }, events), 'TOOL_DENIED_IN_STAGE');
-  assert.equal(res.legalMoves.playbook, 'solo');
-  assert.equal(res.legalMoves.stage, 'plan');
-  assert.deepEqual(res.legalMoves.transitions, [{ to: 'implement', via: 'approve_plan' }]);
+  // `draft` both denies a tool and has an outgoing edge, so the transitions list
+  // is non-empty — an empty one would pass a mutant that always returned [].
+  const events = [{ kind: 'spawn', sessionId: 'w-drafter-1', playbook: 'gatelab', stage: 'draft' }];
+  const res = refusal(d('set_mode', { sessionId: 'w-drafter-1', mode: 'ask' }, events), 'TOOL_DENIED_IN_STAGE');
+  assert.equal(res.legalMoves.playbook, 'gatelab');
+  assert.equal(res.legalMoves.stage, 'draft');
+  assert.deepEqual(res.legalMoves.transitions, [{ to: 'build', via: 'approve_plan' }]);
 });
 
 // ── the forward SOURCE is a second policy subject ───────────────────────────
@@ -976,63 +1015,48 @@ test('a "*": "deny" wildcard denies the forwarded read too', () => {
   refusal(fwd('w-sink-0001', { sessionId: 'w-guarded-1' }), 'FORWARD_DENIED_IN_STAGE');
 });
 
-// ── relay's own forwards must stay legal (the hard constraint) ──────────────
+// ── the shipped built-ins: the ONE claim that is genuinely about them ───────
 //
-// relay's `implement` and `review` stage descriptions both instruct a
-// send_prompt({forward}) from the live planner. If this check ever refuses one of
-// those, the shipped playbook is broken by its own gate.
-
-const RELAY_RUN = [
-  { kind: 'spawn', sessionId: 'w-rplan-001', playbook: 'relay', stage: 'plan', project: 'demo' },
-  { kind: 'spawn', sessionId: 'w-rimpl-001', playbook: 'relay', stage: 'implement',
-    provenance: { plan: 'w-rplan-001' }, project: 'demo' },
-  { kind: 'spawn', sessionId: 'w-rrev-0001', playbook: 'relay', stage: 'review',
-    provenance: { implement: 'w-rimpl-001' }, project: 'demo' },
-];
-
-test('relay: forwarding the planner\'s output into the implementer is legal', () => {
-  allowed(d('send_prompt',
-    { sessionId: 'w-rimpl-001', text: 'implement this', stage: 'implement', forward: { sessionId: 'w-rplan-001' } },
-    RELAY_RUN));
-});
-
-test('relay: forwarding the same plan into a reviewer is legal', () => {
-  allowed(d('send_prompt',
-    { sessionId: 'w-rrev-0001', text: 'review against this', stage: 'review', forward: { sessionId: 'w-rplan-001' } },
-    RELAY_RUN));
-});
-
-test('solo and freeform forwards are legal too — no built-in\'s `tools` map needs to change', () => {
-  // solo: the reviewer's findings back into the implementer.
-  allowed(d('send_prompt',
-    { sessionId: 'w-planner-1', text: 'fix these', stage: 'implement', forward: { sessionId: 'w-review-01' } },
-    SOLO_RUN));
-  // freeform: one investigator's dump into another. Each freeform worker is its
-  // own run root (the stage declares no `needs`), which is precisely the fan-out
-  // a run-membership rule would have refused.
-  const FREE = [
-    { kind: 'spawn', sessionId: 'w-free-0001', playbook: 'freeform', stage: 'freeform' },
-    { kind: 'spawn', sessionId: 'w-free-0002', playbook: 'freeform', stage: 'freeform' },
-  ];
-  allowed(d('send_prompt',
-    { sessionId: 'w-free-0002', text: 'synthesise', stage: 'freeform', forward: { sessionId: 'w-free-0001' } },
-    FREE));
+// Every mechanism above rides GATELAB, so nothing here fails when the owner
+// hand-edits playbooks/*.json. What still has to hold of the shipped graphs is
+// that their own instructions stay legal under their own gate: relay's
+// `implement` and `review` descriptions both instruct a send_prompt({forward})
+// out of the planner, and solo's refine round forwards the reviewer's findings
+// back. A built-in that denied `get_recent_messages` anywhere would break itself.
+//
+// Stated as the property rather than as three worked examples, so it covers
+// every stage of every built-in — including ones added later — instead of the
+// four a hand-written run happened to name. The deny/allow mechanism itself is
+// exhaustively pinned on GUARD above.
+test('no built-in stage denies get_recent_messages, so no built-in forward is refused by its own gate', async () => {
+  const shipped = await builtins();
+  let checked = 0;
+  for (const playbook of shipped.values()) {
+    for (const [name, stage] of Object.entries(playbook.stages)) {
+      assert.notEqual(resolvePolicy(stage, 'get_recent_messages'), 'deny',
+        `${playbook.id}.${name} denies get_recent_messages — a forward out of a worker in that stage ` +
+        'would be refused FORWARD_DENIED_IN_STAGE, and the stage descriptions instruct exactly that forward.');
+      checked++;
+    }
+  }
+  // Guards the loop against a refactor that stopped finding stages.
+  assert.ok(checked >= 4, `expected to check several stages, checked ${checked}`);
 });
 
 test('cross-run forwarding is LEGAL, deliberately', () => {
   // A DOCUMENTED LIMITATION, not a bug: "a forward source is checked for
   // permission, never for run membership" (docs/protocol.md → Playbooks → Known
-  // limitations). A same-run rule would refuse freeform's fan-out-and-synthesise
-  // pattern outright, recoverable only by declaring `provenance` at spawn time
-  // and never retroactively. Do not "fix" this test.
+  // limitations). A same-run rule would refuse the fan-out-and-synthesise
+  // pattern a needs-free stage invites, recoverable only by declaring
+  // `provenance` at spawn time and never retroactively. Do not "fix" this test.
+  //
+  // `w-open-0001` and `w-open-0002` each declare no `needs`, so each is its own
+  // run root — the two workers below are genuinely in different runs.
   const twoRuns = [
-    ...RELAY_RUN,
-    { kind: 'spawn', sessionId: 'w-rplan-002', playbook: 'relay', stage: 'plan', project: 'demo' },
-    { kind: 'spawn', sessionId: 'w-rimpl-002', playbook: 'relay', stage: 'implement',
-      provenance: { plan: 'w-rplan-002' }, project: 'demo' },
+    ...GUARD_RUN,
+    { kind: 'spawn', sessionId: 'w-open-0002', playbook: 'guard', stage: 'open' },
+    { kind: 'spawn', sessionId: 'w-sink-0002', playbook: 'guard', stage: 'sink',
+      provenance: { open: 'w-open-0002' } },
   ];
-  allowed(d('send_prompt',
-    { sessionId: 'w-rimpl-002', text: 'run B, plan from run A', stage: 'implement',
-      forward: { sessionId: 'w-rplan-001' } },
-    twoRuns));
+  allowed(fwd('w-sink-0002', { sessionId: 'w-open-0001' }, twoRuns));
 });

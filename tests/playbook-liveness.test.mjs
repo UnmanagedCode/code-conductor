@@ -24,6 +24,22 @@ import os from 'node:os';
 import { createPlaybookGate } from '../src/mcp/playbookGate.ts';
 import { createPlaybookLedger, readEvents } from '../src/playbookLedger.ts';
 import { CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
+import { orchStoreRoot } from '../src/projects.ts';
+import { GATELAB } from './playbook-fixtures.mjs';
+
+// The gate loads real definitions, so the graph these cases drive has to exist
+// on disk. It is installed into a per-FILE user-overlay store rather than read
+// from playbooks/*.json: the shipped graphs are hand-editable by their owner, and
+// every case below turns on a stage's `needs`, `workers` or liveness value.
+// PROJECTS_ROOT is read live by orchStoreRoot(), and node:test runs each file in
+// its own process, so this is scoped to this file alone. The user overlay is read
+// per call (docs/protocol.md → Playbooks), so no cache has to be primed.
+process.env.PROJECTS_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbliveness-root-'));
+{
+  const dir = path.join(orchStoreRoot(), 'playbooks');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'gatelab.json'), JSON.stringify(GATELAB));
+}
 
 async function tmpLedgerFile() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-pbliveness-'));
@@ -62,16 +78,16 @@ test('a needs:@live entry is satisfied from isSessionLive() even though the ledg
   const { dir, file } = await tmpLedgerFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'w1', playbook: 'solo', stage: 'plan' },
-      { kind: 'transition', sessionId: 'w1', from: 'plan', to: 'implement', via: 'approve_plan' },
+      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
+      { kind: 'transition', sessionId: 'w1', from: 'draft', to: 'build', via: 'approve_plan' },
       { kind: 'retire', sessionId: 'w1', reason: 'subprocess exited' },
     ]);
     const before = await fs.readFile(file, 'utf8');
-    // solo's 'review' stage needs.implement defaults to liveness:"live".
+    // gatelab's 'audit' stage needs.build defaults to liveness:"live".
     const gate = gateOver(file, stubManager({ live: ['w1'] }));
     const outcome = await gate.check({
       toolName: 'spawn_instance',
-      args: { playbook: 'solo', stage: 'review', provenance: { implement: 'w1' } },
+      args: { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w1' } },
       callerId: CONDUCTOR_ID,
     });
     assert.ok(!('refusal' in outcome),
@@ -85,14 +101,14 @@ test('the same ledger row with isSessionLive() false is refused NEEDS_WORKER_GON
   const { dir, file } = await tmpLedgerFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'w1', playbook: 'solo', stage: 'plan' },
-      { kind: 'transition', sessionId: 'w1', from: 'plan', to: 'implement', via: 'approve_plan' },
+      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
+      { kind: 'transition', sessionId: 'w1', from: 'draft', to: 'build', via: 'approve_plan' },
       { kind: 'retire', sessionId: 'w1', reason: 'subprocess exited' },
     ]);
     const gate = gateOver(file, stubManager({ live: [] }));
     const outcome = await gate.check({
       toolName: 'spawn_instance',
-      args: { playbook: 'solo', stage: 'review', provenance: { implement: 'w1' } },
+      args: { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w1' } },
       callerId: CONDUCTOR_ID,
     });
     assert.ok('refusal' in outcome, 'expected a refusal');
@@ -108,8 +124,8 @@ test('the gate asks isSessionLive, not anyForSession/liveForSession — a sessio
   const { dir, file } = await tmpLedgerFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'w1', playbook: 'solo', stage: 'plan' },
-      { kind: 'transition', sessionId: 'w1', from: 'plan', to: 'implement', via: 'approve_plan' },
+      { kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' },
+      { kind: 'transition', sessionId: 'w1', from: 'draft', to: 'build', via: 'approve_plan' },
     ]);
     // `known: []` -> anyForSession('w1') is null, mirroring _resumingPublicIds'
     // pre-registration window. isSessionLive alone must still say live.
@@ -117,7 +133,7 @@ test('the gate asks isSessionLive, not anyForSession/liveForSession — a sessio
     assert.equal(gate.isLive('w1'), true, 'the read surface must answer from isSessionLive alone');
     const outcome = await gate.check({
       toolName: 'spawn_instance',
-      args: { playbook: 'solo', stage: 'review', provenance: { implement: 'w1' } },
+      args: { playbook: 'gatelab', stage: 'audit', provenance: { build: 'w1' } },
       callerId: CONDUCTOR_ID,
     });
     assert.ok(!('refusal' in outcome), `expected allowed; got ${JSON.stringify(outcome.refusal)}`);
@@ -127,18 +143,19 @@ test('the gate asks isSessionLive, not anyForSession/liveForSession — a sessio
 test('a workers:"one" slot held by a ledger row with no retire event reads free the moment isSessionLive says so — 2026-0149\'s reboot guarantee, with no boot repair', async () => {
   const { dir, file } = await tmpLedgerFile();
   try {
-    // A complete relay run, NO retire anywhere: exactly what a previous
-    // orchestrator process would leave behind after an unobserved host reboot.
+    // A complete run, NO retire anywhere: exactly what a previous orchestrator
+    // process would leave behind after an unobserved host reboot. `handoff`
+    // declares no `workers`, so it is the default "one".
     await seed(file, [
-      { kind: 'spawn', sessionId: 'planner-1', playbook: 'relay', stage: 'plan' },
-      { kind: 'spawn', sessionId: 'impl-1', playbook: 'relay', stage: 'implement', provenance: { plan: 'planner-1' } },
+      { kind: 'spawn', sessionId: 'planner-1', playbook: 'gatelab', stage: 'sealed' },
+      { kind: 'spawn', sessionId: 'impl-1', playbook: 'gatelab', stage: 'handoff', provenance: { sealed: 'planner-1' } },
     ]);
     const before = await fs.readFile(file, 'utf8');
     // The new process's registry knows NOTHING from the old one.
     const gate = gateOver(file, stubManager({ live: [] }));
     const outcome = await gate.check({
       toolName: 'spawn_instance',
-      args: { playbook: 'relay', stage: 'implement', provenance: { plan: 'planner-1' } },
+      args: { playbook: 'gatelab', stage: 'handoff', provenance: { sealed: 'planner-1' } },
       callerId: CONDUCTOR_ID,
     });
     assert.ok(!('refusal' in outcome),
@@ -152,13 +169,13 @@ test('the same rebooted run still wedges the slot if the new process\'s registry
   const { dir, file } = await tmpLedgerFile();
   try {
     await seed(file, [
-      { kind: 'spawn', sessionId: 'planner-1', playbook: 'relay', stage: 'plan' },
-      { kind: 'spawn', sessionId: 'impl-1', playbook: 'relay', stage: 'implement', provenance: { plan: 'planner-1' } },
+      { kind: 'spawn', sessionId: 'planner-1', playbook: 'gatelab', stage: 'sealed' },
+      { kind: 'spawn', sessionId: 'impl-1', playbook: 'gatelab', stage: 'handoff', provenance: { sealed: 'planner-1' } },
     ]);
     const gate = gateOver(file, stubManager({ live: ['impl-1'] }));
     const outcome = await gate.check({
       toolName: 'spawn_instance',
-      args: { playbook: 'relay', stage: 'implement', provenance: { plan: 'planner-1' } },
+      args: { playbook: 'gatelab', stage: 'handoff', provenance: { sealed: 'planner-1' } },
       callerId: CONDUCTOR_ID,
     });
     assert.ok('refusal' in outcome, 'the slot must still be held while the oracle says the occupant is live');
@@ -170,7 +187,7 @@ test('the same rebooted run still wedges the slot if the new process\'s registry
 test('two readProjection() calls append nothing — the load stays read-only', async () => {
   const { dir, file } = await tmpLedgerFile();
   try {
-    await seed(file, [{ kind: 'spawn', sessionId: 'w1', playbook: 'solo', stage: 'plan' }]);
+    await seed(file, [{ kind: 'spawn', sessionId: 'w1', playbook: 'gatelab', stage: 'draft' }]);
     const before = await fs.readFile(file, 'utf8');
     const gate = gateOver(file, stubManager({ live: ['w1'] }));
     await gate.readProjection();
