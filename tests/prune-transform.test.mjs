@@ -175,6 +175,12 @@ test('toolUseResult, timestamps, is_error and sidechain lines are never touched'
   });
 });
 
+// DO NOT DELETE AS "redundant with the full-cut exemption test below". This is a
+// PARTIAL cut with unresolved thinking in a KEPT turn — the only configuration
+// that discriminates a cut-INDEPENDENT exemption from a cut-gated one, and so the
+// only test that kills a mutation gating the exemption on `inCut`. Its full-cut
+// sibling cannot: at cut === turnCount every turn is in the cut, which makes the
+// two behaviours identical.
 test('thinking in an entry with an unresolved tool_use is exempt', async () => {
   await withStore(async () => {
     const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
@@ -413,9 +419,15 @@ function newestTurnPayloadScenario() {
 }
 
 test('a full cut reaches the newest turn, which a capped cut leaves verbatim', async () => {
-  // A1. Kills both a reverted `> turnCount - 1` bound and a `<`→`<=` flip in
-  // `inCut`: the SAME fixture is pruned at turnCount-1 and at turnCount, and the
-  // newest turn's payloads must be verbatim in the first and stubbed in the second.
+  // A1. The SAME fixture is pruned at turnCount-1 and at turnCount: the newest
+  // turn's payloads must be verbatim in the first and stubbed in the second.
+  //
+  // What each half proves. The FULL-cut assertions kill a reverted
+  // `> turnCount - 1` bound (which 400s before reaching them). They do NOT
+  // discriminate `<` from `<=` in `inCut` — at cut === turnCount no turn index
+  // equals the cut, so the two operators agree. That flip is killed by the
+  // CAPPED-cut half's verbatim assertions here, and by the savings-preview
+  // equivalence test above.
   await withStore(async () => {
     const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const { dir, sid } = await seed(newestTurnPayloadScenario());
@@ -472,9 +484,13 @@ test('a full cut never eats the conversation\'s own prose', async () => {
 });
 
 test('a full cut keeps the thinking of an UNRESOLVED tool_use in the newest turn', async () => {
-  // A4. The exemption is message-keyed and cut-independent; making it cut-gated
-  // would ship a signature the API rejects on the very next request. An
-  // interrupted newest turn is exactly where that now becomes reachable.
+  // A4. An interrupted NEWEST turn is a configuration only the raised cap can
+  // reach, and stubbing its thinking would ship a signature the API rejects on
+  // the very next request. What this pins is that the exemption still applies at
+  // the new maximum — NOT that it is cut-independent: at cut === turnCount every
+  // turn is in the cut, so a cut-gated exemption would behave identically here.
+  // The cut-independence guard is the partial-cut test above, which must not be
+  // deleted as redundant with this one.
   await withStore(async () => {
     const { pruneSessionToNewId } = await import('../src/sessionPrune.ts');
     const lines = newestTurnPayloadScenario();

@@ -234,10 +234,20 @@ test('prune_session refuses SESSION_ROTATING while a rotation holds the worker',
   } finally { await ctx.close(); }
 });
 
-test('prune_session argument constraints are enforced by the schema, not by hand', async () => {
-  // Declared as `enum` / `minimum` on the inputSchema, so validateArgs rejects
-  // them BEFORE the handler runs — these are the one class of bad input that is a
-  // hard isError rather than a soft refusal.
+test('prune_session rejects bad arguments without touching the subprocess', async () => {
+  // Bad arguments are the one class of input that is a hard isError rather than a
+  // soft refusal. `inst.proc === procBefore` is the load-bearing assertion, and it
+  // pins different things for the two arguments:
+  //
+  //   keepLatestTurns — genuinely SCHEMA-gated (`minimum: 0`, `type: 'integer'`).
+  //     Drop the constraint and -1 reaches the handler, which kills the
+  //     subprocess before the post-kill transform rejects it — so proc-untouched
+  //     is what catches a schema that stopped declaring it.
+  //   inputMode — rejected pre-kill, but NOT provably by the schema. It is
+  //     deliberately validated three times (schema `enum`, Instance.pruneSession
+  //     pre-kill, pruneSessionToNewId), all three of which produce the same
+  //     isError and leave the proc alone, so this test cannot tell which layer
+  //     fired. It kills only the removal of ALL of them.
   const ctx = await bootServer({ scenarioPath: SCENARIO });
   mgr = ctx.instances;
   try {
