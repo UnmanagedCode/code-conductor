@@ -212,7 +212,7 @@ export function buildTools(): Tool[] {
             type: 'string',
             description:
               'A capability tier (fast / balanced / powerful / frontier — the primary vocabulary), a role, ' +
-              'or a specific model id to pin one exact model. Empty/omitted uses the account default.',
+              'or a specific model id to pin one exact model. Omit it to use the default tier set in Settings → Models.',
           },
           resume: {
             type: 'string',
@@ -221,7 +221,8 @@ export function buildTools(): Tool[] {
               'every other sessionId argument, this one is not prefix-resolved. When the session is ' +
               'playbook-tracked, its recorded playbook + stage are recovered too, alongside the project + ' +
               'worktree above: a resume re-attaches a worker where it already is, so it enters no stage and the ' +
-              'entered-stage checks (`needs`, `pin`, spawnability, capacity) do not apply.',
+              'entered-stage checks (`needs`, `pin`, spawnability, capacity) do not apply. A resume with no ' +
+              '`model` comes back on the model it last ran.',
           },
           worktree: {
             type: 'string',

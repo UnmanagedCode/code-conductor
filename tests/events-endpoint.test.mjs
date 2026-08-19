@@ -1213,16 +1213,22 @@ test('a batch spanning a page boundary still gets its bubble in the completing p
 // fails on deletion of A3/A6): only deleting A1 fails T14 — assertion (i)
 // has no head to find. A3's mutant fails 6 OTHER tests but not this one, and
 // A6's fails exactly one other test but not this one: this fixture's ring
-// (depth-2, `ORCH_SNAPSHOT_TAIL=8`) is too short for either backstop to be
-// exercised — the tail never needs to reject a window, and paging at
-// limit=3 never produces a snap-rejected window either. No correctness
+// (depth-2, with `ORCH_SNAPSHOT_TAIL` set below to the whole ring) is too short
+// for either backstop to be exercised — the tail never needs to reject a
+// window, and paging at limit=3 never produces a snap-rejected window either. No correctness
 // risk: A3 and A6 are independently pinned by their own tests (T6/T7/T8 and
 // T10 respectively) — this is a claim-accuracy note, not a coverage hole.
 test('a depth-2 sub-agent session renders its full history and pages to seq 0', async () => {
   const prevScenario = process.env.FAKE_CLAUDE_SCENARIO;
   const prevTail = process.env.ORCH_SNAPSHOT_TAIL;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_SUBAGENT_DEPTH2;
-  process.env.ORCH_SNAPSHOT_TAIL = '8';
+  // Sized to this fixture's exact ring length so the tail covers the whole turn
+  // (assertion (ii) is about tail CONTENT, not about the cap doing any trimming).
+  // 9, not 8: a fresh spawn now resolves the default tier explicitly, and this
+  // fixture's init reports a different model, so cc emits one extra
+  // `model_changed` notice ahead of the turn. A production spawn gets the model
+  // it asked for and no such event.
+  process.env.ORCH_SNAPSHOT_TAIL = '9';
   let inst;
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'subagentdepth2' });

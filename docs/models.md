@@ -188,6 +188,40 @@ to the `ollama` row — `DEFAULT_TIER_BACKEND` stays all-Claude.
 **Tiers** — `CAPABILITY_TIERS` (the tier list in `src/modelVersions.ts`) is the primary spawn vocabulary. Each binds to `{backend, model}` under
 `models.tierBackend`. Defaults (`DEFAULT_TIER_BACKEND`) are all-Claude; see the module for the per-tier mapping.
 
+`models.defaultTier` (`getDefaultSpawnTier()`, fallback `DEFAULT_SPAWN_TIER`) names **which** tier is the
+default. A fresh spawn that names no model/tier/role resolves through
+`defaultSpawnBinding()` = `getTierBackend(getDefaultSpawnTier())` — so it also picks up that tier's
+**default effort** — on both fresh-spawn surfaces (MCP `spawn_instance`, and `POST /api/instances` when
+neither `model` nor `backend` is given; absence is judged on the **trimmed** value, so `model: ""` counts
+as absent). Total by construction: both halves revert on their own, so the result never has a null model.
+A **resume** is excluded — it recovers the model it last ran.
+
+<a id="same-row"></a>
+**Same-row guarantee (`POST /api/instances`).** A fresh model-less spawn that *does* name a row uses
+**that** row instead of the default tier — `role` first (`resolveRoleBackend`), else a known `tier`
+(`getTierBackend`); `role` first because that is [resolveSpawnEffort's own
+precedence](#default-effort). The binding and the default effort then always come from one row, but by
+two different mechanisms depending on the branch:
+
+| Branch taken | How the axes stay on one row |
+|---|---|
+| named `role` | `role` is forwarded **trimmed** (the exact string that resolved the binding, so `resolveSpawnEffort` recognises it). A stale `tier` alongside it needs no clearing — `resolveSpawnEffort` ranks `role` above `tier`, so `{role:'conductor', tier:'fast'}` gets the conductor row for both axes while the forwarded `tier` stays `'fast'`, unread. |
+| named `tier` | `tier` is **overwritten** with the trimmed tier that resolved the binding. |
+| neither | `tier` is **overwritten** with `getDefaultSpawnTier()`. |
+
+**A named `backend` with no `model`.** Naming a backend is a choice the gate never overwrites, so the row
+can only supply the *model*, and only when the row is on that same backend. Per named backend:
+
+| Named `backend` | Row on `claude` | Row on a substitution backend |
+|---|---|---|
+| `claude` | model filled from the row (and that row governs effort, per the table above) | `422 BACKEND_MODEL_MISSING` — no Claude model to fill |
+| a registered substitution backend | `422 BACKEND_MODEL_MISSING` (`_doCreate`'s own guard, unchanged — cc can't know which of that backend's models was meant) | same `422` — deliberately **not** filled from a matching row; that path never reached the account default, so it kept its existing refusal |
+| unregistered | `422 BACKEND_GONE` | `422 BACKEND_GONE` |
+
+No fresh-spawn path on either surface now reaches the CLI's account default: every one either resolves an
+explicit `--model` or refuses. Refusal codes are documented with the endpoint in
+[protocol.md](protocol.md).
+
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points
 at — **or** a concrete `{backend, model}`. The two are told apart by

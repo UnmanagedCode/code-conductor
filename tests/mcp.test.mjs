@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
-import { setTierBackend, setTierEnabled, setDebugByDefault } from '../src/appSettings.ts';
+import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -1111,13 +1111,143 @@ test('spawn_instance: full model id passes through unchanged (deliberate Setting
   }
 });
 
-test('spawn_instance: omitted model leaves summary.model null', async () => {
+// ---------- spawn_instance: an omitted model resolves the DEFAULT SPAWN TIER ----------
+//
+// A bare `claude` with no --model runs on whatever the ACCOUNT resolves as its
+// default — not cc's choice to make, and non-deterministic per worker. So an
+// omitted `model` on a FRESH spawn resolves defaultSpawnBinding() = the tier
+// selected in Settings → Models, through its binding. Every test here rebinds
+// that tier to a model distinguishable from DEFAULT_TIER_BACKEND's `powerful`
+// entry, so a pass can't be a coincidence between the default tier's model and
+// whatever the fake CLI would otherwise report.
+
+test('spawn_instance: omitted model resolves the default spawn tier binding', async () => {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
   try {
+    await setDefaultSpawnTier('balanced');
+    await setTierBackend('balanced', { backend: 'claude', model: 'claude-haiku-4-5' });
     await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const summary = await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
-    assert.equal(summary.model, null, 'omitted model should leave model null (account default)');
+    assert.equal(summary.model, 'claude-haiku-4-5', 'omitted model resolves the default tier binding, never null');
+    assert.equal(summary.backend, 'claude');
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+// summary.model is server bookkeeping; this is the only assertion that the flag
+// actually reaches the CLI, so a fix that populates the summary without emitting
+// --model dies here.
+test('spawn_instance: omitted model emits --model on the launched argv', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  const argvPath = path.join(home, 'argv-mcp-nomodel.txt');
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
+  try {
+    await setDefaultSpawnTier('balanced');
+    await setTierBackend('balanced', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
+    await waitFor(async () => { try { await fs.stat(argvPath); return true; } catch { return false; } });
+    const argv = (await fs.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
+    const i = argv.indexOf('--model');
+    assert.ok(i >= 0, `--model must reach the CLI; argv was: ${argv.join(' ')}`);
+    assert.equal(argv[i + 1], 'claude-haiku-4-5');
+  } finally {
+    delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+// Kills the mutant that hardcodes DEFAULT_SPAWN_TIER / DEFAULT_TIER_BACKEND
+// instead of reading models.defaultTier: `fast` is not the shipped default tier.
+test('spawn_instance: omitted model follows models.defaultTier, not a hardcoded tier', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    await setDefaultSpawnTier('fast');
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-sonnet-5' });
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(summary.model, 'claude-sonnet-5', 'the tier named by models.defaultTier decides');
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+// Pins the FIRST fallback rung (getDefaultSpawnTier → DEFAULT_SPAWN_TIER) while
+// still proving the stored BINDING is read rather than DEFAULT_TIER_BACKEND.
+test('spawn_instance: omitted model with models.defaultTier unset uses the powerful tier BINDING', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    // defaultTier deliberately never set in this fresh store.
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(summary.model, 'claude-haiku-4-5');
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+// The default tier's row governs BOTH of its axes: spawning on it means its
+// stored default effort applies too (resolveSpawnEffort sees the resolved tier).
+// Deliberate side effect of setting `tier` on the default-resolution path.
+test('spawn_instance: omitted model also picks up the default tier\'s default effort', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_INSTANCE;
+  try {
+    await setDefaultSpawnTier('balanced');
+    await setTierBackend('balanced', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await setTierEffort('balanced', 'low'); // distinguishable from DEFAULT_EFFORT ('high')
+    await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const summary = await spawnIdle({ project: 'demo', mode: 'bypassPermissions' });
+    assert.equal(summary.model, 'claude-haiku-4-5');
+    assert.equal(summary.effort, 'low', 'the resolved default tier\'s stored effort governs');
+  } finally {
+    if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
+    else process.env.FAKE_CLAUDE_SCENARIO = prev;
+  }
+});
+
+// Regression guard (passes before the fix too): the new default branch is gated
+// on !resume, so a resume still recovers the model it last ran from the jsonl.
+// An ungated branch — the most likely wrong implementation — hijacks this.
+// instances.test.mjs covers the same invariant over REST; nothing covered MCP.
+test('spawn_instance: a resume with no model recovers the jsonl model, not the default tier', async () => {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = SCENARIO_RESUME;
+  const { encodeCwd } = await import('../src/projects.ts');
+  try {
+    await setDefaultSpawnTier('fast');
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await api(baseUrl, 'POST', '/api/projects', { name: 'resume-mcp-model' });
+    const projectPath = path.join(projectsRoot, 'resume-mcp-model');
+    const sid = '77777777-aaaa-bbbb-cccc-dddddddddddd';
+    const sessionDir = path.join(claudeProjectsRoot, encodeCwd(projectPath));
+    await fs.mkdir(sessionDir, { recursive: true });
+    const lines = [
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', uuid: 'a1', message: {
+        id: 'm1', role: 'assistant', model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: 'hello' }],
+      } },
+    ];
+    await fs.writeFile(path.join(sessionDir, `${sid}.jsonl`), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+
+    const summary = unwrap(await callTool(baseUrl, 'spawn_instance', {
+      project: 'resume-mcp-model', resume: sid, // intentionally no `model`
+    }));
+    await waitFor(() => instForSession(instances, summary.sessionId)?.status === 'idle');
+    const inst = instForSession(instances, summary.sessionId);
+    assert.equal(inst.model, 'claude-sonnet-4-6[1m]', 'the jsonl model wins over the default tier on a resume');
   } finally {
     if (prev === undefined) delete process.env.FAKE_CLAUDE_SCENARIO;
     else process.env.FAKE_CLAUDE_SCENARIO = prev;

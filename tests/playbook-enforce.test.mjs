@@ -1487,3 +1487,40 @@ test('enforce: a retired forward SOURCE is still governed — policy, not livene
     assert.equal(refusals[0].forwardSessionId, denied.sessionId);
   } finally { await t.close(); }
 });
+
+// A stage `pin: {model}` must keep deciding the model, and an omitted `model`
+// must never turn into an ARG_PIN_CONFLICT. This is the exact regression the
+// tempting shortcut for "model-less spawns use the default tier" would cause:
+// put the default UPSTREAM of the gate (a JSON-schema `default`, a pre-gate arg
+// filler) and `args.model` is already present when applyPin runs, so applyPin's
+// mismatch check refuses EVERY relay plan/review spawn. The correct home is
+// downstream (resolveSpawnModel), where a pin has already filled args.model.
+//
+// Made falsifiable by binding Planner and the default tier to DIFFERENT models,
+// so "pin won" and "default tier won" are distinguishable outcomes.
+test('enforce: a stage model pin beats the default-spawn-tier fallback and never conflicts', async () => {
+  const { setRoleBinding, setDefaultSpawnTier, setTierBackend } = await import('../src/appSettings.ts');
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    await setDefaultSpawnTier('fast');
+    await setTierBackend('fast', { backend: 'claude', model: 'claude-sonnet-5' });
+    await setRoleBinding('planner', { backend: 'claude', model: 'claude-haiku-4-5' });
+
+    // `model` deliberately omitted — relay's plan stage pins it to the Planner role.
+    const planner = await t.spawnWorker({
+      project: 'demo', playbook: 'relay', stage: 'plan',
+    });
+    assert.ok(planner.sessionId, `plan spawn refused: ${JSON.stringify(planner)}`);
+    assert.notEqual(planner.code, 'ARG_PIN_CONFLICT');
+    assert.equal(planner.model, 'claude-haiku-4-5', 'the Planner-role pin decides, not the default tier');
+
+    // The implement stage pins `mode` but NOT `model` — so it is the stage that
+    // legitimately falls through to the default tier.
+    const dev = await t.spawnWorker({
+      project: 'demo', stage: 'implement', worktree: planner.worktree.worktreeName,
+      provenance: { plan: planner.sessionId },
+    });
+    assert.ok(dev.sessionId, `implement spawn refused: ${JSON.stringify(dev)}`);
+    assert.equal(dev.model, 'claude-sonnet-5', 'an unpinned stage falls through to the default tier');
+  } finally { await t.close(); }
+});
