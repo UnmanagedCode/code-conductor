@@ -196,12 +196,23 @@ neither `model` nor `backend` is given; absence is judged on the **trimmed** val
 as absent). Total by construction: both halves revert on their own, so the result never has a null model.
 A **resume** is excluded — it recovers the model it last ran.
 
-On `POST /api/instances` a fresh model-less spawn that *does* name a row uses **that** row instead —
-`role` first (`resolveRoleBackend`), else a known `tier` (`getTierBackend`) — and the forwarded `tier` is
-overwritten to the row actually used, so the model and the default effort can never come from different
-rows. **Known gap:** `backend:"claude"` with no `model` is left alone (the gate never overwrites a
-caller's backend) and has nothing to refuse, so it still launches bare — the one remaining fresh-spawn
-path that reaches the account default.
+<a id="same-row"></a>
+**Same-row guarantee (`POST /api/instances`).** A fresh model-less spawn that *does* name a row uses
+**that** row instead of the default tier — `role` first (`resolveRoleBackend`), else a known `tier`
+(`getTierBackend`); `role` first because that is [resolveSpawnEffort's own
+precedence](#default-effort). The binding and the default effort then always come from one row, but by
+two different mechanisms depending on the branch:
+
+| Branch taken | How the axes stay on one row |
+|---|---|
+| named `role` | `role` is forwarded **trimmed** (the exact string that resolved the binding, so `resolveSpawnEffort` recognises it). A stale `tier` alongside it needs no clearing — `resolveSpawnEffort` ranks `role` above `tier`, so `{role:'conductor', tier:'fast'}` gets the conductor row for both axes while the forwarded `tier` stays `'fast'`, unread. |
+| named `tier` | `tier` is **overwritten** with the trimmed tier that resolved the binding. |
+| neither | `tier` is **overwritten** with `getDefaultSpawnTier()`. |
+
+**Known gap:** `backend:"claude"` with no `model` is left alone (the gate never overwrites a caller's
+backend) and has nothing to refuse, so it still launches bare — the one remaining fresh-spawn path that
+reaches the account default. Every other named backend refuses first: a substitution backend with no
+resolvable model is `422 BACKEND_MODEL_MISSING`, an unregistered one `422 BACKEND_GONE`.
 
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points

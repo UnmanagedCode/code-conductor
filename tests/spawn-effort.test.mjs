@@ -338,6 +338,62 @@ describe('the resolved effort reaches the spawn', () => {
     assert.equal(effortArg(argv), 'low');
   });
 
+  // The `role` branch of the same gate — its own code path (`resolveRoleBackend`),
+  // and the shape a raw client sends for the Conduct button. Without this the
+  // branch is untestable-by-accident: every other role test either supplies a
+  // model (so the gate never fires) or passes the role through MCP's `model:` arg.
+  // The role's row and the default tier differ on BOTH axes, so a build that drops
+  // the role branch — or its isResolvableRole guard — lands on the default tier and
+  // fails here.
+  test("a spawn naming a role but no model takes model AND effort from THAT role's row", async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    await setDefaultSpawnTier('powerful');
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setTierEffort('powerful', 'low');
+    await setRoleBinding('conductor', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await setRoleEffort('conductor', 'max');
+    const { inst, argv } = await spawnAndCapture({ project: 'p', mode: 'bypassPermissions', role: 'conductor' });
+    assert.equal(inst.model, 'claude-haiku-4-5', "the named role's binding supplies the model");
+    assert.equal(argv[argv.indexOf('--model') + 1], 'claude-haiku-4-5');
+    assert.equal(inst.effort, 'max', "…and the SAME role's row supplies the effort");
+    assert.equal(effortArg(argv), 'max');
+  });
+
+  // isResolvableRole lowercases but does NOT trim, so the name that resolved the
+  // binding must be the one forwarded to create(): forwarding the caller's padded
+  // string instead leaves resolveSpawnEffort unable to recognise it, and the spawn
+  // runs the role's model at the GLOBAL default effort — the same two-row split
+  // for a role that `??=` used to produce for a tier.
+  test("a spawn naming a PADDED role keeps model AND effort on that one row", async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    await setDefaultSpawnTier('powerful');
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setRoleBinding('reviewer', { backend: 'claude', model: 'claude-haiku-4-5' });
+    await setRoleEffort('reviewer', 'max'); // distinguishable from DEFAULT_EFFORT ('high')
+    const { inst, argv } = await spawnAndCapture({ project: 'p', mode: 'bypassPermissions', role: '  reviewer  ' });
+    assert.equal(inst.model, 'claude-haiku-4-5', 'the padded role still resolves the binding');
+    assert.equal(inst.effort, 'max', '…and padding must not cost it the row\'s effort');
+    assert.equal(effortArg(argv), 'max');
+  });
+
+  // What the isResolvableRole guard buys, and the only place it is observable.
+  // resolveRoleBackend never throws — an unknown role falls through it to the
+  // default spawn tier's binding — so dropping the guard yields the SAME model
+  // either way. The difference is which row is forwarded: guarded, the gate takes
+  // its else branch and sets `tier` to the default tier, so that row's effort
+  // applies; unguarded, it forwards the unknown role instead, resolveSpawnEffort
+  // recognises neither name, and the spawn silently drops to DEFAULT_EFFORT.
+  test('a spawn naming an UNKNOWN role falls to the default tier for BOTH axes', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    await setDefaultSpawnTier('powerful');
+    await setTierBackend('powerful', { backend: 'claude', model: 'claude-opus-4-8' });
+    await setTierEffort('powerful', 'max'); // distinguishable from DEFAULT_EFFORT ('high')
+    const { inst, argv } = await spawnAndCapture({ project: 'p', mode: 'bypassPermissions', role: 'ghost' });
+    assert.equal(inst.model, 'claude-opus-4-8', 'an unknown role falls through to the default tier');
+    assert.equal(inst.effort, 'max', "…and it is the default TIER's row that governs effort, not DEFAULT_EFFORT");
+    assert.equal(effortArg(argv), 'max');
+  });
+
   // Accepted consequence of routing a model-less fresh spawn through the default
   // spawn tier: spawning ON a tier means that tier's row governs BOTH its axes,
   // so its stored effort applies too. No change out of the box (both `high`).

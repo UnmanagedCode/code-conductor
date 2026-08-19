@@ -960,35 +960,40 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // default effort when `effort` is omitted (resolveSpawnEffort). The client
         // never resolves effort itself — see public/spawnDialog.js.
         // A fresh spawn that names no model runs on a Settings → Models ROW, never the
-        // account default — the same rule the MCP surface applies in resolveSpawnModel.
-        // The UI never reaches this (spawnDialog resolves the selected tier before
-        // POSTing); a raw API client does.
+        // account default. Policy + the same-row mechanism: docs/models.md → Capability
+        // tiers & roles. The UI never reaches this (spawnDialog resolves the selected
+        // tier before POSTing); a raw API client does.
         //
-        // "Names no model" is tested on the TRIMMED value, matching both
-        // resolveSpawnModel's falsy check and _doCreate's own `model.trim()`: `model:""`
-        // would otherwise slip through to a bare `claude` on the account default, which
-        // is the one outcome this whole path exists to make unreachable. `backend` gets
-        // the same treatment because _doCreate reads it by truthiness too, so `""` there
-        // already means "absent".
+        // "Names no model" is tested on the TRIMMED value — `_doCreate` trims `model`
+        // itself, so an untrimmed check would let `model:""` through to a bare `claude`
+        // on the account default. `backend` gets the same treatment because `_doCreate`
+        // reads it by truthiness, so `""` there already means "absent". This matches the
+        // MCP surface for `""`/null/undefined/omitted, the shapes a client actually
+        // sends. It deliberately does NOT match for a whitespace-only string: `"   "` is
+        // truthy and unresolvable to `resolveSpawnModel`, so MCP refuses BAD_MODEL 400,
+        // while here it trims to absent and resolves a row. Neither reaches the account
+        // default, so the rule holds on both surfaces; only the diagnostic differs.
         //
         // Which row: the one the caller NAMED (`role`, else `tier`) when it is
-        // resolvable, else the default spawn tier. `spawnTier` is then overwritten
-        // rather than defaulted, because `tier`/`role` also select the row whose default
-        // effort applies (resolveSpawnEffort) — leaving a caller's `tier` next to another
-        // tier's binding would run one tier's model at another tier's effort. Spawning on
-        // a row means that row governs both of its axes. `role` is checked first, the
-        // same precedence resolveSpawnEffort uses.
+        // resolvable, else the default spawn tier. `role` is checked first, the same
+        // precedence resolveSpawnEffort uses. Whichever row wins, the name forwarded to
+        // create() is the TRIMMED one that resolved the binding — a padded `role` would
+        // otherwise resolve the model here and then go unrecognised by
+        // resolveSpawnEffort, splitting the two axes across different rows.
         const named = (v: unknown): string | null =>
           typeof v === 'string' && v.trim() ? v.trim() : null;
         let spawnModel = named(model);
         let spawnBackend = named(backend);
         let spawnTier = tier as string | undefined;
+        let spawnRole = role as string | undefined;
         if (!resume && spawnModel == null && spawnBackend == null) {
           const namedRole = named(role);
           const namedTier = named(tier);
           let binding;
           if (namedRole && isResolvableRole(namedRole)) {
             binding = resolveRoleBackend(namedRole);
+            // No need to clear a stale `tier`: resolveSpawnEffort ranks role above it.
+            spawnRole = namedRole;
           } else if (namedTier && isKnownTier(namedTier)) {
             binding = getTierBackend(namedTier);
             spawnTier = namedTier;
@@ -1008,7 +1013,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           mode: effectiveMode as string | null | undefined,
           effort: effort as string | null | undefined,
           tier: spawnTier,
-          role: role as string | undefined,
+          role: spawnRole,
           thinking: thinking as string | null | undefined,
           model: spawnModel,
           backend: spawnBackend,
