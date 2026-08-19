@@ -10,15 +10,15 @@
       "tools": {
         "spawn_instance": { "pin": { "mode": "plan", "createWorktree": true, "model": "planner" } },
         "set_mode": "deny",
-        "approve_plan": "deny",
-        "sync_worktree": "deny"
+        "approve_plan": "deny"
       }
     },
     "implement": {
       "description": "A fresh worker, not the planner — it starts with no context, so hand it the approved plan itself, never a paraphrase: spawn it, then `send_prompt({forward})` the planner's output into it. Put it on the planner's worktree: one branch stays one merge unit, and it inherits the base the plan was written against.",
       "needs": [{ "stage": "plan", "liveness": "any" }],
       "tools": {
-        "spawn_instance": { "pin": { "mode": "bypassPermissions" } }
+        "spawn_instance": { "pin": { "mode": "bypassPermissions" } },
+        "set_mode": "deny"
       }
     },
     "review": {
@@ -26,9 +26,7 @@
       "needs": [{ "stage": "implement", "position": ["implement", "refine"] }],
       "workers": "many",
       "tools": {
-        "spawn_instance": { "pin": { "mode": "bypassPermissions", "model": "reviewer" } },
-        "sync_worktree": "deny",
-        "approve_plan": "deny"
+        "spawn_instance": { "pin": { "mode": "bypassPermissions", "model": "reviewer" } }
       }
     },
     "refine": {
