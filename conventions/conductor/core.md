@@ -36,7 +36,7 @@ approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_
 - **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel and resubscribe while the worker has turns coming.
 - **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need subscribe-and-end-turn.
 - **Watchdog, never timers.** Every subscription arms a watchdog (default per `ORCH_SUBSCRIBE_TIMEOUT_MS`; override via `subscribeTimeoutMs`, or `timeoutMs` on `subscribe_to_idle`) that wakes you if the worker hangs, crashes, or a subagent gets stuck. Its stub is labelled "did NOT finish" — on such a wake, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
-- `wait:true` / `wait_for_idle` are **discouraged fallbacks** — only for a send you expect to return near-instantly *and* where you have nothing else to do. Never for an implementation wait.
+- `send_prompt({wait:true})` is a **discouraged fallback** — only for a send you expect to return near-instantly *and* where you have nothing else to do. Never for an implementation wait.
 
 ## MCP toolbelt
 
@@ -51,7 +51,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `list_playbooks` · `describe_playbook` · `playbook_state` — the enforced stage graphs a worker can be bound to, and where a run currently sits.
 
 **Spawn workers**
-- `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Defaults to disposable (`temp`) with mode defaulting to `plan`. `effort` and `thinking` are spawn-time only. `resume` inherits the session's recorded mode, or `bypassPermissions` when it has none — `list_sessions`' `resumes-hot` flag marks which; pass `mode` to override.
+- `spawn_instance` — returns `{sessionId}`, the worker handle every other tool takes. Prefer `createWorktree:true` for any worker that will modify code; `worktree:"<name>"` attaches to an existing one. Workers spawn **temp**: archived on exit — dropped from the default `list_sessions` view, transcript retained and still resumable. Mode defaults to `plan`. `effort` and `thinking` are spawn-time only. `resume` inherits the session's recorded mode, or `bypassPermissions` when it has none — `list_sessions`' `resumes-hot` flag marks which; pass `mode` to override.
 - `create_project` — greenfield work.
 - `create_worktree` — worktree without a spawn (rare; usually you want `spawn_instance({createWorktree:true})`).
 
@@ -60,10 +60,8 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 **Drive workers** — always dispatch-and-wake (see Core rule).
 - `send_prompt` — send a turn; auto-subscribes unless `subscribe:false`. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
 - `subscribe_to_idle` / `unsubscribe_from_idle` — re-arm / cancel a one-shot wake without sending a prompt.
-- `wait_for_idle` — blocking fallback; discouraged (see Core rule).
 - `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
 - `interrupt_turn` · `kill_instance` · `respawn_instance` (resume a just-exited instance).
-- `promote_session` — flip a temp worker to a persistent session (`claude --resume` finds it). Use it when an assignment legitimately spans many turns and you want the worker to survive a session restart. Soft-refuses when the session is not live or unknown.
 
 **`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning, **except the calls that only READ a session** (`get_recent_messages`, `get_transcript`, `send_prompt`'s `forward` source), which serve a retired worker if you name it by its **full** sessionId. Otherwise: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`, or `respawn_instance` if it only just exited); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
 

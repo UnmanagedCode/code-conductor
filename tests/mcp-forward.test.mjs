@@ -319,9 +319,10 @@ test('forward: two-session distinguishability — an unknown source names forwar
 
 test('forward: a killed-but-known source with nothing on disk soft-refuses NOTHING_TO_FORWARD', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', temp: false }));
+  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions' }));
   const sourceSid = spawn.sessionId;
   await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
+  await instForSession(instances, sourceSid).promoteToNormal();
   const targetSid = await spawnReady('p');
 
   // Kill the subprocess directly (NOT instances.remove) so the non-temp
@@ -539,7 +540,7 @@ test('forward: a successful result keeps today\'s shape plus forwarded — nothi
 // read.
 test('forward: a fully retired source is relayed from disk, verbatim, with its own content', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', temp: true }));
+  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions' }));
   const sourceSid = spawn.sessionId;
   await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
   const targetSid = await spawnReady('p');
@@ -577,7 +578,7 @@ test('forward: a fully retired source is relayed from disk, verbatim, with its o
 // unrewritten and refuses distinctly.
 test('forward: a PREFIX of a retired source refuses FORWARD_SESSION_UNKNOWN rather than silently missing', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', temp: true }));
+  const spawn = unwrap(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions' }));
   const sourceSid = spawn.sessionId;
   await waitFor(() => instForSession(instances, sourceSid)?.status === 'idle');
   const targetSid = await spawnReady('p');

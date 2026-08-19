@@ -304,7 +304,7 @@ test('a prune-created segment is addressable by its new backing id, permanently'
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
-        params: { name: 'wait_for_idle', arguments: { sessionId: newBacking, timeoutMs: 5000 } } }),
+        params: { name: 'set_mode', arguments: { sessionId: newBacking, mode: 'bypassPermissions' } } }),
     });
     const out = JSON.parse(JSON.parse(await res.text()).result.content[0].text);
     assert.equal(out.sessionId, sid, `MCP must resolve the new segment: ${JSON.stringify(out)}`);

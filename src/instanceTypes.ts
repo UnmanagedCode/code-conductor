@@ -138,9 +138,10 @@ export interface InstanceLike {
   setAutoApprovePlan(enabled: boolean): void;
   setPlaybookEnforcement(mode: PlaybookEnforcement): void;
   resolveHookCallback(toolUseId: unknown, allow: boolean): boolean;
-  // MCP handler surface (src/mcp/handlers.ts): the worktree the session is
-  // attached to (or null), temp→normal promotion, and the EventEmitter 'event'
-  // channel (UI events) alongside 'status'.
+  // Orchestrator surfaces beyond the core lifecycle: the worktree the session
+  // is attached to (MCP handlers, src/mcp/handlers.ts), temp→normal promotion
+  // (REST POST /api/instances/:id/promote, src/routes.ts), and the
+  // EventEmitter 'event' channel (UI events) alongside 'status'.
   readonly worktree: WorktreeMeta | null;
   promoteToNormal(): Promise<InstanceSummary>;
   on(event: 'event', cb: (ev: UiEvent | null) => void): void;

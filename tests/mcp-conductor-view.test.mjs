@@ -4,8 +4,7 @@
 // The defect this guards: toConductorView used to be
 // `({id, callerInstanceId, ...rest}) => rest`, so every field ever added to
 // Instance.summary() was published to conductors automatically. That is how the
-// misleading `sonnetWindow` reached list_sessions / spawn_instance /
-// wait_for_idle.summary / respawn_instance / promote_session while tools.ts
+// misleading `sonnetWindow` reached every conductor-facing return while tools.ts
 // documented only 13 keys. The surface being UNDOCUMENTED was the bug — not its
 // width — so the allowlist is close to parity and the tool description is
 // pinned against it here rather than by review.
@@ -114,26 +113,18 @@ test('every conductor-facing projection emits exactly the allowlist', async () =
   // field". Both are required: a field can satisfy every check here and still
   // never be emitted.
 
-  // wait_for_idle.summary
-  const waited = await callTool('wait_for_idle', { sessionId, timeoutMs: 5000 });
-  assert.deepEqual(sorted(Object.keys(waited.summary)), sorted(CONDUCTOR_VIEW_KEYS));
-
-  // promote_session — the spawned worker is temp by default on the MCP path.
-  const promoted = await callTool('promote_session', { sessionId });
-  assert.ok(!('ok' in promoted && promoted.ok === false), `promote refused: ${JSON.stringify(promoted)}`);
-  assert.deepEqual(sorted(Object.keys(promoted)), sorted(CONDUCTOR_VIEW_KEYS));
-
 });
 
 test('every worker-summary handler routes through the single projection', async () => {
   // respawn_instance's success path needs a CRASHED-but-still-in-memory
   // instance, which this harness can't arrange cleanly (kill removes it, and a
-  // live one is refused with SESSION_NOT_LIVE / "still running"). The four
-  // lifecycle-verified call sites above plus this source-level check together
-  // cover all five: nothing may hand-roll its own worker projection, because a
-  // second projection is exactly how a field escapes the documented list.
+  // live one is refused with SESSION_NOT_LIVE / "still running"). The
+  // lifecycle-verified call site above plus this source-level check together
+  // cover every handler that projects a worker summary: nothing may hand-roll
+  // its own worker projection, because a second projection is exactly how a
+  // field escapes the documented list.
   const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts'), 'utf8');
-  for (const fn of ['listSessions', 'spawnInstance', 'waitForIdle', 'respawnInstance', 'promoteSession']) {
+  for (const fn of ['listSessions', 'spawnInstance', 'respawnInstance']) {
     const at = src.indexOf(`export async function ${fn}(`);
     assert.ok(at >= 0, `handler ${fn} not found`);
     const body = src.slice(at, src.indexOf('\nexport ', at + 1));

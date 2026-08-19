@@ -150,7 +150,7 @@ function unwrapMsgs(result) {
 async function retiredWorkerWithLines(ctx, projectName, lines) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: projectName });
   const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
-    project: projectName, mode: 'bypassPermissions', temp: true,
+    project: projectName, mode: 'bypassPermissions',
   }));
   const sid = spawn.sessionId;
   await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');

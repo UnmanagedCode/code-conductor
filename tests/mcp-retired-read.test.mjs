@@ -49,7 +49,7 @@ function unwrapMsgs(result) {
 async function retiredTempWorker(ctx, projectName, lines) {
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: projectName });
   const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
-    project: projectName, mode: 'bypassPermissions', temp: true,
+    project: projectName, mode: 'bypassPermissions',
   }));
   const sid = spawn.sessionId;
   await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
@@ -311,10 +311,11 @@ test('get_recent_messages / get_transcript: a dead-but-retained non-temp worker 
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'retainednontemp' });
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', {
-      project: 'retainednontemp', mode: 'bypassPermissions', temp: false,
+      project: 'retainednontemp', mode: 'bypassPermissions',
     }));
     const sid = spawn.sessionId;
     await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
+    await instForSession(ctx.instances, sid).promoteToNormal();
 
     await seedSessionJsonl(ctx.claudeProjectsRoot, path.join(ctx.projectsRoot, 'retainednontemp'),
       instForSession(ctx.instances, sid).backingSessionId, [
