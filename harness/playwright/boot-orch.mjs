@@ -1,8 +1,8 @@
-// Orch-specific wrapper around code-playwright's generic
-// bootServer. Hardcodes the orchestrator's cwd (..) and entrypoint
-// (server.ts), plus the sandbox shape that tests/fake-claude.mjs expects
-// (PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT subdirs and CLAUDE_BIN pointing
-// at the fake).
+// Orch-specific wrapper around code-playwright's generic bootServer. Hardcodes
+// the orchestrator's cwd and entrypoint (ORCH_ROOT / ORCH_ENTRY from ./paths.mjs
+// — the repo root, two levels up from this directory), plus the sandbox shape
+// that tests/fake-claude.mjs expects (PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT
+// subdirs and CLAUDE_BIN pointing at the fake).
 //
 // The generic harness lives in a sibling repo cloned to the parent directory
 // of code-conductor. See ./README.md for setup.
@@ -14,13 +14,21 @@
 //     // orch.sandbox.dirs.PROJECTS_ROOT, orch.sandbox.dirs.CLAUDE_PROJECTS_ROOT
 //   } finally { await orch.close(); }
 
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import { bootServer } from '../../../code-playwright/browser.mjs';
+import { ORCH_ROOT, ORCH_ENTRY, FAKE_CLAUDE } from './paths.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ORCH_ROOT = path.resolve(__dirname, '..');
-const FAKE_CLAUDE = path.join(ORCH_ROOT, 'tests', 'fake-claude.mjs');
+// A silent depth change spends 15s inside bootServer's readiness poll and then
+// reports only "child server exited before binding" — the child's real
+// MODULE_NOT_FOUND is swallowed by `silent: true` (snap.mjs:53). Say what broke.
+for (const p of [ORCH_ENTRY, FAKE_CLAUDE]) {
+  if (!existsSync(p)) {
+    throw new Error(
+      `boot-orch: ORCH_ROOT=${ORCH_ROOT} but ${p} does not exist — ` +
+      `./paths.mjs is resolving the wrong depth (see tests/harness-playwright-paths.test.mjs)`,
+    );
+  }
+}
 
 // Pass `sandbox: true` for the common orch test-shape: ephemeral
 // PROJECTS_ROOT + CLAUDE_PROJECTS_ROOT, plus CLAUDE_BIN pointing at
@@ -29,7 +37,7 @@ const FAKE_CLAUDE = path.join(ORCH_ROOT, 'tests', 'fake-claude.mjs');
 export async function bootOrch({ sandbox = false, scenario, ...rest } = {}) {
   return bootServer({
     cwd: ORCH_ROOT,
-    entry: 'server.ts',
+    entry: ORCH_ENTRY,
     ...rest,
     sandbox: sandbox ? {
       dirs: {
