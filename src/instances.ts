@@ -2203,7 +2203,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         if (!this.proc) return;
         if (this.mode === 'plan') await this.setMode('bypassPermissions');
         if (!this.proc) return;
-        await this.promptOrQueueSteer(buildApprovePrompt(undefined)).sent;
+        await this.promptOrQueueSteer(buildApprovePrompt(undefined));
       } catch (err) {
         this._emitUi({ kind: 'system', subtype: 'stderr',
           data: { line: `auto-approve plan failed: ${(err as Error).message}` } });
@@ -2346,7 +2346,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // fail loudly, not silently). The composer stops offering to queue for such a
     // session (`overageStoppedUnarmed` on the status frame), so this is the
     // backstop, not the notice.
-    if (!internal && this._overageStoppedUnarmed && gate.active) {
+    if (!internal && this.overageSendRefused) {
       throw Object.assign(
         new Error(
           'this worker was stopped for account overage and is waiting on its conductor, ' +
@@ -2783,28 +2783,41 @@ export class Instance extends EventEmitter implements InstanceLike {
   // tested — every injection site reads this rather than spelling it again.
   // `=== false` is the opt-out polarity used everywhere this flag is read: only an
   // explicit declaration diverts, anything unknown keeps the live send.
+  // True when a send to this session would be neither deliverable (the account is
+  // still throttled) nor queueable: the overage stop left it UN-ARMED, so it has no
+  // resume deadline, and the queue is flushed only by a fired deadline while
+  // cancel() discards it. THE ONE PLACE this is tested — prompt() throws on it and
+  // the MCP handlers turn it into a soft `OVERAGE_STOPPED_UNARMED` refusal.
+  get overageSendRefused(): boolean {
+    if (!this._overageStoppedUnarmed) return false;
+    return !!(this._overageGate ? this._overageGate().active : false);
+  }
+
   get needsPostStopSteer(): boolean {
     return this.status === 'turn' && this.acceptsMidTurnSteering === false;
   }
 
-  // Send `text` by whichever route this model can actually receive, and say which
-  // ran. Never waits for a block edge: `sent` resolves as soon as a parked steer is
-  // queued, because the stop is unbounded and every caller here is answering a
-  // request that must return promptly (the WS ack times out in 10s). A deferred
-  // delivery failure is annotated into the session's own transcript by
-  // _flushPendingSteers.
+  // Send `text` by whichever route this model can actually receive. Which route ran
+  // is deliberately NOT reported: a live steer is itself injected at a block edge,
+  // so "not in the worker's transcript yet" holds either way and the distinction is
+  // unobservable to the caller — exposing it would leak the delivery mechanism into
+  // the contract and invite branching on something that must not matter. Never waits
+  // for a block edge: a parked steer resolves as soon as it is queued, because the
+  // stop is unbounded and every caller here is answering a request that must return
+  // promptly (the WS ack times out in 10s). A parked delivery that fails is
+  // annotated into the session's own transcript by _flushPendingSteers.
   //
-  // NOT async, and `sent` is prompt()'s own promise rather than a wrapper: callers
-  // must be able to await the send and run in the SAME microtask its completion
-  // lands in. maybeSubscribeIdle is why — it registers a one-shot AFTER the send,
-  // so even two extra microtasks let a fast turn_end land first and lose the wake
-  // (tests/mcp-subscribe-to-idle.test.mjs catches exactly that).
-  promptOrQueueSteer(text: string, attachments: unknown[] = []): { deferred: boolean; sent: Promise<void> } {
+  // NOT async, and the live branch returns prompt()'s OWN promise rather than a
+  // wrapper: callers must be able to await the send and run in the SAME microtask
+  // its completion lands in. maybeSubscribeIdle is why — it registers a one-shot
+  // AFTER the send, so even two extra microtasks let a fast turn_end land first and
+  // lose the wake (tests/mcp-subscribe-to-idle.test.mjs catches exactly that).
+  promptOrQueueSteer(text: string, attachments: unknown[] = []): Promise<void> {
     if (this.needsPostStopSteer) {
       void this.queueSteerAfterStop(text, { attachments }).catch(() => {});
-      return { deferred: true, sent: Promise.resolve() };
+      return Promise.resolve();
     }
-    return { deferred: false, sent: this.prompt(text, attachments) };
+    return this.prompt(text, attachments);
   }
 
   // Deliver `text` to a model that cannot take a mid-turn injection: stop the

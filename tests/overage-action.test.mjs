@@ -17,6 +17,7 @@ import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { buildConductorResumePreamble } from '../src/overageResume.ts';
+import { sendPrompt, approvePlan } from '../src/mcp/handlers.ts';
 import { getAccountUsage } from '../src/accountUsage.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
@@ -642,6 +643,23 @@ test('an un-armed worker REFUSES a queued send instead of stranding it', async (
   assert.equal(instances._autoResumeTimers.has(worker.id), false, 'still un-armed');
   // The status frame tells the composer not to offer queueing at all.
   assert.equal(worker.summary().overageStoppedUnarmed, true);
+
+  // The MCP surface soft-refuses rather than throwing: this project treats an
+  // expected refusal as a normal result carrying a `code` (as sync_worktree,
+  // merge_worktree and the session-resolution errors all do), and a conductor that
+  // was just told to re-drive these workers hitting one early is a correctable
+  // mistake it should be able to branch on. The WS path keeps the throw — an
+  // `ack ok:false` and a failed send is the right shape for a human at a composer.
+  for (const [label, call] of [
+    ['send_prompt', () => sendPrompt({ sessionId: worker.sessionId, text: 'go on', subscribe: false }, { instances })],
+    ['approve_plan', () => approvePlan({ sessionId: worker.sessionId, subscribe: false }, { instances })],
+  ]) {
+    const res = await call();
+    assert.equal(res.ok, false, `${label}: soft-refused, not thrown`);
+    assert.equal(res.code, 'OVERAGE_STOPPED_UNARMED', `${label}: names the state`);
+    assert.match(res.reason, /Nothing was sent/, `${label}: says nothing was sent`);
+  }
+  assert.equal(worker._overageQueue.length, 0, 'and still nothing was queued');
 
   // Paired positive: its CONDUCTOR still queues normally — the refusal is scoped to
   // the un-armed worker, not a blanket lockout break.

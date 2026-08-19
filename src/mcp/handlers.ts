@@ -1014,6 +1014,8 @@ export async function sendPrompt(
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
+  const refusedUnarmed = overageUnarmedRefusal(inst);
+  if (refusedUnarmed) return refusedUnarmed;
   // getInst is LIVE-only, so inst.proc is guaranteed here.
 
   // Every `forward` refusal fires here — before inst.prompt, before
@@ -1383,20 +1385,25 @@ export async function respawnInstance({ sessionId }: { sessionId: string }, { in
 
 // ---------- mutating: plan approval ----------
 
-// Surface promptOrQueueSteer's route on a tool result, and only when it says
-// something: `deferred:true` means the text is parked behind a block-edge stop and
-// lands as a fresh turn, so it is not in the worker's transcript yet. Absent =
-// delivered live.
-function deferredField({ deferred }: { deferred: boolean }): { deferred?: true } {
-  return deferred ? { deferred: true } : {};
+// Soft refusal for a worker the overage stop left UN-ARMED. A send to it can be
+// neither delivered (the account is still throttled) nor queued (the queue flushes
+// only on a resume deadline this session deliberately does not have — its conductor
+// is the sole driver). A normal result carrying a `code`, not a throw: that is this
+// surface's convention, and a conductor that was just told to re-drive these workers
+// hitting one before the window resets is a correctable mistake, not a bug. The WS
+// path keeps the throw — `ack ok:false` plus a failed send is the right shape for a
+// human at a composer.
+function overageUnarmedRefusal(inst: { overageSendRefused: boolean; sessionId: unknown }) {
+  if (!inst.overageSendRefused) return null;
+  return {
+    ok: false as const, code: 'OVERAGE_STOPPED_UNARMED', sessionId: inst.sessionId,
+    reason: 'this worker was stopped for account overage and left un-armed — its resume is ' +
+      'yours to drive, not the rate-limit window\'s, so a send to it can be neither delivered ' +
+      'nor queued. Re-prompt it once the window resets (its conductor resume prompt says when), ' +
+      'or send to a session that is not overage-stopped. Nothing was sent.',
+  };
 }
 
-// Approve a worker's plan: flip the instance to bypassPermissions so it
-// can actually act on what was just approved, then send the approval
-// prompt as a normal user turn. Mirrors the UI's Approve & Implement
-// button (public/app.js onPlanDecision) — phrasing comes from the
-// shared planApproval module so the three entry points (UI click,
-// server-side auto-approve, MCP) all look identical to the worker.
 export async function approvePlan(
   { sessionId, feedback, subscribe = true, subscribeTimeoutMs }: {
     sessionId: string; feedback?: string; subscribe?: boolean; subscribeTimeoutMs?: number;
@@ -1412,11 +1419,12 @@ export async function approvePlan(
       throw new Error(`failed to switch session ${sessionId} to bypassPermissions: ${errMsg(e)}`);
     }
   }
+  const refused = overageUnarmedRefusal(inst);
+  if (refused) return refused;
   const text = buildApprovePrompt(feedback);
-  const delivery = inst.promptOrQueueSteer(text);
-  await delivery.sent;
+  await inst.promptOrQueueSteer(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...deferredField(delivery), ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
@@ -1431,11 +1439,12 @@ export async function rejectPlan(
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
+  const refused = overageUnarmedRefusal(inst);
+  if (refused) return refused;
   const text = buildRejectPrompt(feedback);
-  const delivery = inst.promptOrQueueSteer(text);
-  await delivery.sent;
+  await inst.promptOrQueueSteer(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...deferredField(delivery), ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
 interface AnswerEntry {
@@ -1453,7 +1462,7 @@ interface AnswerEntry {
 // turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
 // so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn,
 // or is routed behind a block-edge stop on a model that cannot take one
-// (promptOrQueueSteer → `deferred:true`).
+// (promptOrQueueSteer). Which route ran is deliberately not reported.
 //
 // `answers` is aligned BY INDEX (0-based) to the pending questions — the same
 // questions get_recent_messages renders 1-based in its "--- questions ---"
@@ -1474,6 +1483,9 @@ export async function answerQuestion(
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
+
+  const refused = overageUnarmedRefusal(inst);
+  if (refused) return refused;
 
   const msgs = reconstructMessages(inst.ringSnapshot(), false);
   let questions: Question[] | null = null;
@@ -1529,10 +1541,9 @@ export async function answerQuestion(
   }
 
   const text = formatUserQuestionAnswers(questions, states);
-  const delivery = inst.promptOrQueueSteer(text);
-  await delivery.sent;
+  await inst.promptOrQueueSteer(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...deferredField(delivery), ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
 
 // ---------- read-only: worktree diff ----------

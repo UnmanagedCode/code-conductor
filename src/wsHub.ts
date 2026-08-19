@@ -218,7 +218,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             // public/ws.js rejects a pending ack after 10s and sendCardAnswer's
             // onFail re-opens the card, so waiting on the unbounded stop would make
             // every deferred card answer falsely report failure.
-            await inst.promptOrQueueSteer(String(msg.text ?? ''), atts).sent;
+            await inst.promptOrQueueSteer(String(msg.text ?? ''), atts);
             reply(true);
             return;
           }

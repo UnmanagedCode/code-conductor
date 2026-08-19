@@ -89,8 +89,10 @@ export interface InstanceLike {
   _overageDroppedCallbacks: boolean;
   _overageUnarmedWorkers: boolean;
   // Set on a WORKER the stop left un-armed: it must not queue sends behind a resume
-  // it will never get, so prompt() refuses them.
+  // it will never get. `overageSendRefused` is the one test of that — prompt()
+  // throws on it, the MCP handlers soft-refuse OVERAGE_STOPPED_UNARMED.
   _overageStoppedUnarmed: boolean;
+  readonly overageSendRefused: boolean;
   _overageHandled: boolean;
   _overageResetsAt: number | null;
   _overageQueue: unknown[];
@@ -147,7 +149,7 @@ export interface InstanceLike {
   readonly steerPending: boolean;
   readonly needsPostStopSteer: boolean;
   queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void; attachments?: unknown[] }): Promise<void>;
-  promptOrQueueSteer(text: string, attachments?: unknown[]): { deferred: boolean; sent: Promise<void> };
+  promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
   interrupt(opts?: { force?: boolean }): Promise<unknown>;

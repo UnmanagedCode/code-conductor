@@ -42,18 +42,6 @@ interface Tool {
   annotations?: ToolAnnotations;
 }
 
-// The `deferred` half of approve_plan / reject_plan / answer_question's result,
-// appended verbatim to all three descriptions. ONE copy: three literal ones is
-// three homes for one rule in a file loaded into every session's tool list.
-// `absent` (not `false`) is stated because handlers.ts omits the key on the live
-// path, so a conductor branching on `deferred === false` would read `undefined`
-// and misclassify every live send.
-const DEFERRED_NOTE =
-  'Returns `deferred:true` when the worker\'s model cannot take a message injected into a running turn: ' +
-  '`sentText` is parked behind a block-edge stop and arrives as a fresh turn, so it is not in the worker\'s ' +
-  'transcript yet — do not re-send. Your idle callback still fires on the answering turn, not the stop\'s. ' +
-  'Absent (not `false`) when delivered live.';
-
 export function buildTools(): Tool[] {
   return [
     {
@@ -333,8 +321,7 @@ export function buildTools(): Tool[] {
         'Approve a worker\'s plan: flips the instance to bypassPermissions and sends the canonical approval ' +
         'prompt as a normal user turn. Mirrors the UI\'s Approve & Implement button — use this rather than ' +
         'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message. ' +
-        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`. ' +
-        DEFERRED_NOTE,
+        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -359,8 +346,7 @@ export function buildTools(): Tool[] {
         'Reject a worker\'s plan and ask for refinement. The instance stays in plan mode; the worker will ' +
         'produce a revised plan in its next turn. `feedback` is recommended — without it the worker has no ' +
         'guidance for what to change. Also auto-subscribes to the worker\'s idle callback by default ' +
-        '(dispatch-and-wake) — see `subscribe`. ' +
-        DEFERRED_NOTE,
+        '(dispatch-and-wake) — see `subscribe`.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -389,8 +375,7 @@ export function buildTools(): Tool[] {
         'aligned by index to those SAME server-side pending questions — 0-based, so body question N is answers[N-1] ' +
         '— each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
         '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options. ' +
-        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`. ' +
-        DEFERRED_NOTE,
+        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`.',
       inputSchema: {
         type: 'object',
         properties: {

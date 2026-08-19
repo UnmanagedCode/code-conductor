@@ -3,9 +3,11 @@
 //
 // Each handler used to call inst.prompt() unconditionally, so on such a model its
 // text was written into the running turn and silently swallowed. They now route
-// through Instance.promptOrQueueSteer: arm the SOFT block-edge stop, deliver the
-// same text as a fresh turn carrying POST_STOP_STEER_NOTE, and report
-// `deferred:true`. Proven by reading the fake CLI's stdin capture
+// through Instance.promptOrQueueSteer: arm the SOFT block-edge stop and deliver the
+// same text as a fresh turn carrying POST_STOP_STEER_NOTE. Which route ran is
+// deliberately absent from the result shape — a live steer is itself injected at a
+// block edge, so the distinction is unobservable to the caller. These tests
+// therefore assert the WIRE, not a field. Proven by reading the fake CLI's stdin capture
 // (FAKE_CLAUDE_TRANSCRIPT) — the only view of what actually reached the CLI —
 // with boundary events driven synthetically via inst._handleStdoutLine(), so
 // nothing depends on subprocess timing. Harness copied from
@@ -155,7 +157,7 @@ async function assertDeferredThenDelivered(inst, text, label) {
 
 // ── C-T1/2/3 (REGRESSION): one per handler ─────────────────────────────────
 // Invariant: called against a flagged mid-turn worker, the handler writes nothing
-// at call time, arms exactly one block-edge stop, reports `deferred:true`, and
+// at call time, arms exactly one block-edge stop, and
 // delivers its own text as a fresh turn whose blocks are exactly
 // [POST_STOP_STEER_NOTE, <that handler's text>].
 
@@ -164,8 +166,8 @@ test('C-T1 approve_plan: flagged + mid-turn defers to a post-stop turn', async (
   const text = buildApprovePrompt(undefined);
   const res = await approvePlan({ sessionId: inst.sessionId, subscribe: false }, { instances });
   await assertDeferredThenDelivered(inst, text, 'approve_plan');
-  assert.equal(res.deferred, true, 'approve_plan reports the deferral');
   assert.equal(res.sentText, text, 'sentText is still exactly what will be sent');
+  assert.ok(!('deferred' in res), 'the delivery route is not exposed on the result');
 });
 
 test('C-T2 reject_plan: flagged + mid-turn defers to a post-stop turn', async () => {
@@ -175,8 +177,8 @@ test('C-T2 reject_plan: flagged + mid-turn defers to a post-stop turn', async ()
     { sessionId: inst.sessionId, feedback: 'tighten the migration step', subscribe: false },
     { instances });
   await assertDeferredThenDelivered(inst, text, 'reject_plan');
-  assert.equal(res.deferred, true, 'reject_plan reports the deferral');
   assert.equal(res.sentText, text);
+  assert.ok(!('deferred' in res), 'the delivery route is not exposed on the result');
 });
 
 test('C-T3 answer_question: flagged + mid-turn defers to a post-stop turn', async () => {
@@ -185,8 +187,8 @@ test('C-T3 answer_question: flagged + mid-turn defers to a post-stop turn', asyn
     { sessionId: inst.sessionId, answers: [{ option: 'Apple' }], subscribe: false },
     { instances });
   await assertDeferredThenDelivered(inst, ANSWER_TEXT, 'answer_question');
-  assert.equal(res.deferred, true, 'answer_question reports the deferral');
   assert.equal(res.sentText, ANSWER_TEXT);
+  assert.ok(!('deferred' in res), 'the delivery route is not exposed on the result');
 });
 
 // ── C-T4 (PIN) ─────────────────────────────────────────────────────────────
@@ -207,7 +209,7 @@ test('C-T4 unflagged + mid-turn is byte-identical for all three handlers', async
     const inst = await setup({ flagged: false });
     const before = userLinesIn(await stdinLines()).length;
     const res = await call(inst);
-    assert.equal(res.deferred, undefined, `${label}: no deferred field on a live send`);
+    assert.ok(!('deferred' in res), `${label}: the result shape is route-agnostic`);
     await waitFor(async () => userLinesIn(await stdinLines()).length === before + 1);
     const lines = await stdinLines();
     assert.equal(interruptsIn(lines).length, 0, `${label}: a live injection arms NO stop`);
@@ -230,8 +232,8 @@ test('C-T5 the armed idle subscription survives the stop and fires on the steere
 
   const res = await approvePlan(
     { sessionId: target.sessionId, subscribe: true }, { instances, callerId: caller.sessionId });
-  assert.equal(res.deferred, true);
   assert.equal(res.subscribed, true, 'the handler armed the one-shot');
+  await waitFor(() => target.steerPending === true);
   assert.equal(instances._idleHub.hasSubscriber(target.id), true);
 
   // The stop's own turn_end must NOT consume it — the worker was cut off to
@@ -249,8 +251,8 @@ test('C-T5 the armed idle subscription survives the stop and fires on the steere
 });
 
 // ── C-T6 (PIN) ─────────────────────────────────────────────────────────────
-// Invariant: a flagged worker that is IDLE gets an ordinary prompt — no stop, no
-// deferred field, and NO POST_STOP_STEER_NOTE (the status half of
+// Invariant: a flagged worker that is IDLE gets an ordinary prompt — no stop and
+// NO POST_STOP_STEER_NOTE (the status half of
 // needsPostStopSteer is load-bearing, not just the flag).
 
 test('C-T6 flagged but IDLE takes the ordinary prompt path', async () => {
@@ -258,8 +260,7 @@ test('C-T6 flagged but IDLE takes the ordinary prompt path', async () => {
   assert.equal(inst.status, 'idle');
   const text = buildApprovePrompt(undefined);
 
-  const res = await approvePlan({ sessionId: inst.sessionId, subscribe: false }, { instances });
-  assert.equal(res.deferred, undefined, 'an idle send is not deferred');
+  await approvePlan({ sessionId: inst.sessionId, subscribe: false }, { instances });
   assert.equal(inst.steerPending, false, 'nothing was parked');
 
   await waitFor(async () => userLinesIn(await stdinLines()).length === 1);
