@@ -138,7 +138,8 @@ test('T9: a usage-bearing turn_end never overwrites a delta-sourced reading', as
 // It does NOT pin the clause's placement relative to the cum.* accumulator:
 // that accumulator is itself `if (ev.kind === 'turn_end')`-guarded, so no
 // context_usage reaches it wherever this clause sits. The two cum.* assertions
-// below are documentation of that, not a mutation pin — they cannot fail.
+// below are documentation of that, not a mutation pin — they cannot fail under
+// any single mutation.
 test('T10: UsageTracker latches context_usage as the reading, and turn_end does not clobber it', () => {
   const t = new UsageTracker();
   t.apply({ kind: 'context_usage', usage: DELTA_USAGE });
