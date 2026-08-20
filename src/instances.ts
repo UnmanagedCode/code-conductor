@@ -372,6 +372,11 @@ export class EventLog {
   push(v: UiEvent): void {
     if (v.kind === 'system' && v.subtype === 'thinking_tokens') return;
     if (v.kind === 'message_start' && v.replayed) return;
+    // `context_usage` is storage-pointless for the same reason: a re-subscribing
+    // client is seeded from the `lastContextUsage` FIELD, and on the only
+    // backends that emit it every in-tail message_start carries `usage: null`
+    // and so cannot clobber that seed.
+    if (v.kind === 'context_usage') return;
     const tail = this.buf[this.buf.length - 1];
     if ((v.kind === 'thinking_delta' || v.kind === 'text_delta')
         && tail && tail.kind === v.kind
@@ -692,7 +697,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // to a char count), while a closed REDACTED block keeps the final estimate
     // on its ring slot (see _emitUi). Reset on resume (see _wipeForResume).
     this._liveThinkingTokens = null;
-    // Last observed message_start.usage — the current context-size reading that
+    // Last observed message_start.usage, or context_usage.usage on a backend
+    // whose message_start is all-zero — the current context-size reading that
     // drives the header's ctx chip. Held as O(1) state because the ring is NOT a
     // reliable carrier: the snapshot tail is capped and its start snaps FORWARD
     // past any open block (snapshotTail → snapStartToQuiescent), so a turn whose
@@ -1054,10 +1060,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // already carries the partial thinking text).
   get liveThinkingTokens(): number | null { return this._liveThinkingTokens; }
 
-  // Last observed message_start.usage (the current context-size reading), or null
-  // before the first one. The WS subscribe path carries this on the snapshot frame
-  // so the client can seed its UsageTracker even when the tail holds no
-  // message_start — see the constructor comment for why the ring can't be trusted.
+  // The current context-size reading, or null before the first one: whichever of
+  // message_start.usage / context_usage.usage landed last (see the latch in
+  // _emitUi — the two are mutually exclusive per message). The WS subscribe path
+  // carries this on the snapshot frame so the client can seed its UsageTracker
+  // even when the tail holds no message_start — see the constructor comment for
+  // why the ring can't be trusted, and note context_usage is never retained at
+  // all, so for that kind this field is the only carrier.
   get lastContextUsage(): unknown { return this._lastContextUsage; }
 
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
@@ -1289,7 +1298,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     // first live frame would wipe the reading loadHistory seeded from the
     // jsonl, and a reload would drop to `ctx —` while the already-subscribed
     // client still shows the number. Mirrors public/usage.js's `&& ev.usage`.
-    if (ev.kind === 'message_start' && ev.usage) {
+    // `context_usage` is the parser's fallback reading for a backend whose
+    // message_start is all-zero (src/parser.ts); it is armed only when THAT
+    // message produced no message_start reading, so the two can never fight
+    // within one message. Whole-object last-wins, same as above — there is no
+    // per-field merge site anywhere on this path.
+    if ((ev.kind === 'message_start' || ev.kind === 'context_usage') && ev.usage) {
       this._lastContextUsage = ev.usage;
     }
     // Same funnel again: advance the live quiescence scan so an armed deferred

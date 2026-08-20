@@ -61,11 +61,13 @@ export function installWsRouter({
     const usage = getUsage(m.id);
     usage.reset();
     // Same shape as the task seed above: the tail is not guaranteed to carry a
-    // message_start (its quiescent snap can jump past a whole long text block, and
-    // only message_start feeds the ctx readout), so seed the current context size
-    // from the server's own last reading BEFORE replaying the tail — an in-tail
-    // message_start then overrides it. Absent on a reset_snapshot (rewind wipes
-    // the server-side value), which is why that handler has no equivalent.
+    // message_start (its quiescent snap can jump past a whole long text block),
+    // so seed the current context size from the server's own last reading
+    // BEFORE replaying the tail — an in-tail message_start then overrides it.
+    // For a `context_usage` reading (the fallback branch below) this is not a
+    // backstop but the ONLY carrier: that kind is never retained, so no tail
+    // length carries it. Absent on a reset_snapshot (rewind wipes the
+    // server-side value), which is why that handler has no equivalent.
     if (m.lastContextUsage) usage.seedContext(m.lastContextUsage);
     // Rate limits are account-wide — do NOT reset globalRLTracker per snapshot,
     // and do NOT feed it from this replay loop either. A session's replayed
@@ -177,8 +179,12 @@ export function installWsRouter({
     // rate_limit_event updates the left-side rate-limit chip independently.
     // model_changed covers a mid-session model switch before the next
     // message_start/turn_end would otherwise refresh it.
+    // context_usage is message_start's stand-in on a backend whose gateway
+    // reports an all-zero usage block, so it needs the same refresh — without
+    // it the number lands in the tracker but the chip lags until turn_end.
     if (m.ev?.kind === 'turn_end'
         || m.ev?.kind === 'message_start'
+        || m.ev?.kind === 'context_usage'
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'model_changed')
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'rate_limit_event')) {
