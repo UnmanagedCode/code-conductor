@@ -165,7 +165,10 @@ test('UsageTracker: mixed usage/no-usage turns — turns count all, tokens only 
   assert.ok(Math.abs(cost - 0.0102) < 1e-9, `expected cost ~0.0102, got ${cost}`);
 });
 
-test('UsageTracker: message_start is the only source of currentContextSize', async () => {
+// `context_usage` is the other source of currentContextSize (see
+// tests/ctx-delta-fallback.test.mjs); what this test pins is that turn_end is
+// not one of them.
+test('UsageTracker: turn_end never feeds currentContextSize, message_start does', async () => {
   const { UsageTracker } = await import(USAGE_URL);
   const t = new UsageTracker();
   t.apply({ kind: 'message_start', usage: {

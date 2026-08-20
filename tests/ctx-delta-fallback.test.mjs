@@ -132,9 +132,14 @@ test('T9: a usage-bearing turn_end never overwrites a delta-sourced reading', as
 
 // ── client half: UsageTracker ───────────────────────────────────────────────
 
-// T10 — criterion 4, client half, plus the clause's PLACEMENT: it must return
-// before the cum.* accumulator.
-test('T10: UsageTracker latches context_usage as the reading only, never as cumulative work', () => {
+// T10 — criterion 4, client half: the clause latches the reading, and a
+// following per-turn SUM does not clobber it.
+//
+// It does NOT pin the clause's placement relative to the cum.* accumulator:
+// that accumulator is itself `if (ev.kind === 'turn_end')`-guarded, so no
+// context_usage reaches it wherever this clause sits. The two cum.* assertions
+// below are documentation of that, not a mutation pin — they cannot fail.
+test('T10: UsageTracker latches context_usage as the reading, and turn_end does not clobber it', () => {
   const t = new UsageTracker();
   t.apply({ kind: 'context_usage', usage: DELTA_USAGE });
   assert.equal(t.currentContextSize(), 60_000);

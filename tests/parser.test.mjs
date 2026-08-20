@@ -1010,7 +1010,11 @@ test('parser T4: the flag stays armed across deltas of one message and is re-dec
     'a usage-bearing message_start disarms — the flag is not "armed once, forever"');
 });
 
-// T5 — reads event-level `usage`, and never emits an undefined-usage event.
+// T5 — never emits an event carrying an undefined `usage`. It does NOT pin the
+// choice of event-level `ev.usage` over `ev.delta.usage`: under that swap both
+// paths yield `[]` here and this test still passes. That half is pinned by
+// T1/T4 (and T7/T9/T15 downstream), and co-guarded by the type — declaring no
+// `usage` member on `WireStreamEvent.delta` means the naive form won't compile.
 test('parser T5: an armed message_delta with no usage key emits nothing', () => {
   const p = new Parser();
   p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
