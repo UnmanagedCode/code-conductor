@@ -177,8 +177,10 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageResetsAt',
 ];
 
-// The three fields listInstances attaches on top of the shared projection (see
-// the note in listInstances). Exported so the two tests that bind against the
+// The three fields listSessions attaches on top of the shared projection, in its
+// own `view()` closure: `hasIdleSubscriber` from InstanceManager.list(),
+// `playbook`/`stage` from the playbook projection it reads once per call.
+// Exported so the two tests that bind against the
 // full list_sessions key set — the doc-drift gate in
 // tests/mcp-conductor-view.test.mjs and the rendering gate in
 // tests/mcp-text-render.test.mjs — read one definition instead of two copies.
