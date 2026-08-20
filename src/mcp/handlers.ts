@@ -1398,9 +1398,8 @@ function overageUnarmedRefusal(inst: { overageSendRefused: boolean; sessionId: u
   return {
     ok: false as const, code: 'OVERAGE_STOPPED_UNARMED', sessionId: inst.sessionId,
     reason: 'this worker was stopped for account overage and left un-armed — its resume is ' +
-      'yours to drive, not the rate-limit window\'s, so a send to it can be neither delivered ' +
-      'nor queued. Re-prompt it once the window resets (its conductor resume prompt says when), ' +
-      'or send to a session that is not overage-stopped. Nothing was sent.',
+      'the conductor\'s to drive, not the rate-limit window\'s, so a send to it can be neither ' +
+      'delivered nor queued. You will be prompted when the window resets — re-drive it then.',
   };
 }
 

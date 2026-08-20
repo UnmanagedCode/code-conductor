@@ -42,18 +42,28 @@ const DROPPED_CALLBACKS_CLAUSE =
   'on directly with `mcp__code-conductor__list_sessions` and ' +
   '`mcp__code-conductor__get_recent_messages` instead of waiting to be woken.';
 const UNARMED_WORKERS_CLAUSE =
-  'Your workers are idle and un-armed — they will NOT resume themselves, so re-prompt ' +
-  'each one you still need.';
+  'Any worker of yours that was stopped is un-armed — it will NOT resume itself, so ' +
+  're-prompt the ones you still need. Check each before sending: a worker that was ' +
+  'never stopped (an exempt backend, or one already idle) may still be running.';
 
-// AUTO_RESUME_TEXT plus whichever conductor clauses actually apply; the plain text
-// when neither does.
-export function buildConductorResumePreamble(
-  { droppedCallbacks = false, unarmedWorkers = false } = {},
+// `base` plus whichever conductor clauses actually apply; `base` unchanged when
+// neither does. Shared by both preamble branches so a queued-only session cannot
+// silently lose them.
+function appendConductorClauses(
+  base: string, { droppedCallbacks = false, unarmedWorkers = false } = {},
 ): string {
   const clauses = [];
   if (droppedCallbacks) clauses.push(DROPPED_CALLBACKS_CLAUSE);
   if (unarmedWorkers) clauses.push(UNARMED_WORKERS_CLAUSE);
-  return clauses.length ? `${AUTO_RESUME_TEXT}\n\n${clauses.join(' ')}` : AUTO_RESUME_TEXT;
+  return clauses.length ? `${base}\n\n${clauses.join(' ')}` : base;
+}
+
+// AUTO_RESUME_TEXT plus whichever conductor clauses actually apply; the plain text
+// when neither does.
+export function buildConductorResumePreamble(
+  flags: { droppedCallbacks?: boolean; unarmedWorkers?: boolean } = {},
+): string {
+  return appendConductorClauses(AUTO_RESUME_TEXT, flags);
 }
 
 // A message the user queued while the session was paused — the shape
@@ -79,7 +89,13 @@ function buildCombinedResumeText(
 ): string {
   const stopped = buildConductorResumePreamble(conductor);
   if (!queue.length) return stopped;
-  const preamble = wasStopped ? stopped : QUEUED_ONLY_RESUME_TEXT;
+  // The conductor clauses ride BOTH branches. A queued-only session is one the
+  // human typed into while it was paused — including a stopped conductor, which
+  // would otherwise lose the notice that its callbacks are gone and its workers are
+  // un-armed and go back to waiting for a wake nothing will send.
+  const preamble = wasStopped
+    ? stopped
+    : appendConductorClauses(QUEUED_ONLY_RESUME_TEXT, conductor);
   const fmt = (ts: number): string => {
     try { return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
     catch { return ''; }
