@@ -37,11 +37,14 @@ export class UsageTracker {
   }
 
   // Seed the current context-size reading from the WS snapshot's
-  // `lastContextUsage` (server-held last message_start.usage). Needed because a
-  // subscribe rebuilds this tracker from the snapshot TAIL alone, and the tail's
-  // quiescent snap can leave every message_start below the window (a turn whose
-  // final text block outruns the tail) — without a seed the chip would read
-  // `ctx —` until the next turn. Called right after reset() and BEFORE the tail
+  // `lastContextUsage` (server-held last message_start.usage, or
+  // context_usage.usage on a backend whose message_start is all-zero — see the
+  // clause for that kind in apply()). Needed because a subscribe rebuilds this
+  // tracker from the snapshot TAIL alone, and the tail's quiescent snap can
+  // leave every message_start below the window (a turn whose final text block
+  // outruns the tail) — without a seed the chip would read `ctx —` until the
+  // next turn. A context_usage reading is never in the tail at all, so for that
+  // kind the seed is the only path, not a backstop. Called right after reset() and BEFORE the tail
   // replay, so an in-tail message_start still wins.
   seedContext(usage) {
     if (usage && typeof usage === 'object') this.lastUsage = usage;

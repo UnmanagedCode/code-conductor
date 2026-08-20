@@ -697,7 +697,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // to a char count), while a closed REDACTED block keeps the final estimate
     // on its ring slot (see _emitUi). Reset on resume (see _wipeForResume).
     this._liveThinkingTokens = null;
-    // Last observed message_start.usage — the current context-size reading that
+    // Last observed message_start.usage, or context_usage.usage on a backend
+    // whose message_start is all-zero — the current context-size reading that
     // drives the header's ctx chip. Held as O(1) state because the ring is NOT a
     // reliable carrier: the snapshot tail is capped and its start snaps FORWARD
     // past any open block (snapshotTail → snapStartToQuiescent), so a turn whose
@@ -1059,10 +1060,13 @@ export class Instance extends EventEmitter implements InstanceLike {
   // already carries the partial thinking text).
   get liveThinkingTokens(): number | null { return this._liveThinkingTokens; }
 
-  // Last observed message_start.usage (the current context-size reading), or null
-  // before the first one. The WS subscribe path carries this on the snapshot frame
-  // so the client can seed its UsageTracker even when the tail holds no
-  // message_start — see the constructor comment for why the ring can't be trusted.
+  // The current context-size reading, or null before the first one: whichever of
+  // message_start.usage / context_usage.usage landed last (see the latch in
+  // _emitUi — the two are mutually exclusive per message). The WS subscribe path
+  // carries this on the snapshot frame so the client can seed its UsageTracker
+  // even when the tail holds no message_start — see the constructor comment for
+  // why the ring can't be trusted, and note context_usage is never retained at
+  // all, so for that kind this field is the only carrier.
   get lastContextUsage(): unknown { return this._lastContextUsage; }
 
   // Trailing slice of the ring for the WS `subscribe` snapshot — tabs no
