@@ -43,6 +43,23 @@ async function callTool(name, args) {
 
 const sorted = (a) => a.slice().sort();
 
+// Withheld = the COMPLEMENT of the allowlist over what summary() actually
+// emits. The literal list and the derived difference below pin DIFFERENT
+// things, and both are needed:
+//   • the literal pins INTENT — moving one of these into CONDUCTOR_VIEW_KEYS
+//     must fail here, which a derived expectation could never catch (it would
+//     move with the change);
+//   • the derived difference pins the LITERAL — a newly-withheld summary()
+//     field cannot land while this list, the `Excluded on purpose` comment on
+//     CONDUCTOR_VIEW_KEYS and docs/protocol.md → Emitted handles all still say
+//     otherwise. That drift is exactly how `playbookEnforcement` and
+//     `overageStoppedUnarmed` went undocumented.
+// Keep this list, that comment and that doc paragraph in step.
+const WITHHELD_KEYS = [
+  'id', 'callerInstanceId', 'debugDir', 'autoApprovePlan',
+  'playbookEnforcement', 'interrupting', 'overageStoppedUnarmed',
+];
+
 // Pull the documented key names out of the single `{…}` block in the
 // list_sessions description. Exported so the vacuity guard below can reuse it.
 export function documentedKeys(toolsSource) {
@@ -145,8 +162,18 @@ test('the projection publishes contextWindowTokens and withholds sonnetWindow / 
   assert.equal(view.backend, 'claude');
   assert.equal(view.model, 'claude-haiku-4-5');
 
-  // The removed field, and the per-process handles a conductor must never bind to.
-  for (const gone of ['sonnetWindow', 'id', 'callerInstanceId', 'debugDir', 'autoApprovePlan', 'interrupting']) {
+  // The withheld set, bound to its owner: summary() minus the allowlist must be
+  // exactly WITHHELD_KEYS. `sonnetWindow` is NOT in that difference — it is gone
+  // from summary() entirely — so it stays a separate regression sentinel.
+  const inst = instances.liveForSession(view.sessionId);
+  assert.ok(inst, 'the spawned worker must still be live to read its summary()');
+  const emitted = Object.keys(inst.summary());
+  assert.deepEqual(
+    sorted(emitted.filter(k => !CONDUCTOR_VIEW_KEYS.includes(k))),
+    sorted(WITHHELD_KEYS),
+    'summary() minus CONDUCTOR_VIEW_KEYS must be exactly the documented withheld set',
+  );
+  for (const gone of ['sonnetWindow', ...WITHHELD_KEYS]) {
     assert.ok(!(gone in view), `${gone} must not reach the conductor view`);
   }
 });
