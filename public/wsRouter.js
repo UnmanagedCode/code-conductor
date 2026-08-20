@@ -177,8 +177,12 @@ export function installWsRouter({
     // rate_limit_event updates the left-side rate-limit chip independently.
     // model_changed covers a mid-session model switch before the next
     // message_start/turn_end would otherwise refresh it.
+    // context_usage is message_start's stand-in on a backend whose gateway
+    // reports an all-zero usage block, so it needs the same refresh — without
+    // it the number lands in the tracker but the chip lags until turn_end.
     if (m.ev?.kind === 'turn_end'
         || m.ev?.kind === 'message_start'
+        || m.ev?.kind === 'context_usage'
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'init')
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'model_changed')
         || (m.ev?.kind === 'system' && m.ev?.subtype === 'rate_limit_event')) {

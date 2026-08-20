@@ -73,6 +73,16 @@ export class UsageTracker {
       if (ev.model) this.model = ev.model;
       return;
     }
+    // The parser's fallback reading for a backend whose message_start usage is
+    // all-zero: same per-call prompt size, sourced from that message's
+    // message_delta instead (see src/parser.ts). Same latch, same `&& ev.usage`
+    // guard; it carries no model, so the window denominator keeps falling back
+    // to the instance's tagged model. It must NOT reach cum.* below — this is a
+    // context-size snapshot, not per-turn work.
+    if (ev.kind === 'context_usage' && ev.usage) {
+      this.lastUsage = ev.usage;
+      return;
+    }
     // turn_end's `usage`, by contrast, is the per-turn SUM across every
     // agent-loop LLM call in that turn. A turn with 100 tool calls each
     // reading 74k from cache lands here as cache_read=7.4M — that's

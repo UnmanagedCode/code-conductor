@@ -941,3 +941,88 @@ test('parser: a forwarded sub-agent envelope emits one head per tool_use block i
   assert.deepEqual(heads.map(e => e.toolUseId), ['X', 'Y']);
   assert.deepEqual(heads.map(e => e.blockIdx), [0, 1]);
 });
+
+// ── ctx fallback: message_delta.usage when message_start.usage is all-zero ──
+// Card 2026-0195. A backend whose gateway reports {input_tokens:0,
+// output_tokens:0} on EVERY message_start latched nothing (the block is
+// floored to null), so a fresh session read `ctx —` for its whole life even
+// though the real prompt size rides the same stream on message_delta.usage.
+// The parser arms per-message on a present-but-zero-sum message_start and
+// disarms on a usage-bearing one, so the two sources are mutually exclusive
+// within a message and no merge site exists.
+
+function msgStartEv({ usage, id = 'm1', model = 'deepseek-v4-flash' }) {
+  return { type: 'stream_event', event: { type: 'message_start', message: { id, role: 'assistant', model, ...(usage === undefined ? {} : { usage }) } } };
+}
+function msgDeltaEv(usage) {
+  const event = { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } };
+  if (usage !== undefined) event.usage = usage;
+  return { type: 'stream_event', event };
+}
+const ZERO_USAGE = { input_tokens: 0, output_tokens: 0 };
+const REAL_DELTA_USAGE = { input_tokens: 12_000, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 8_000, output_tokens: 110 };
+
+// T1 — the emission itself, plus "one whole usage object" (deepEqual, not a sum).
+test('parser T1: a zero-sum message_start still fires with usage:null and its delta emits one context_usage', () => {
+  const p = new Parser();
+  const starts = p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
+  assert.equal(starts.length, 1, 'the message_start event must still fire (it carries the idle→turn flip)');
+  assert.equal(starts[0].kind, 'message_start');
+  assert.equal(starts[0].usage, null, 'the zero BLOCK is dropped, not the event');
+
+  const out = p.handleObject(msgDeltaEv(REAL_DELTA_USAGE));
+  assert.equal(out.length, 1);
+  assert.equal(out[0].kind, 'context_usage');
+  assert.equal(out[0].msgId, 'm1');
+  assert.deepEqual(out[0].usage, REAL_DELTA_USAGE, 'the whole usage object rides through — no per-field copy');
+});
+
+// T2 — criterion 2: a backend whose message_start IS a measurement never gets a
+// fallback. Shape taken from the real capture in scenario-live-skill-load.json.
+test('parser T2: a usage-bearing message_start suppresses the fallback entirely', () => {
+  const p = new Parser();
+  const starts = p.handleObject(msgStartEv({ usage: { input_tokens: 46179, output_tokens: 0 } }));
+  assert.equal(starts[0].usage.input_tokens, 46179, 'the real reading is the message_start one');
+  const out = p.handleObject(msgDeltaEv({ input_tokens: 37395, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 110 }));
+  assert.deepEqual(out, [], 'a native backend\'s message_delta must never win over its message_start');
+});
+
+// T3 — the delta-side floor. Latching a zero renders `ctx 0% · 0/200k`.
+test('parser T3: an armed all-zero message_delta usage emits nothing', () => {
+  const p = new Parser();
+  p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
+  assert.deepEqual(p.handleObject(msgDeltaEv({ input_tokens: 0, output_tokens: 110 })), []);
+});
+
+// T4 — stays armed within a message (last non-zero wins is the latch's job),
+// and re-decides per message.
+test('parser T4: the flag stays armed across deltas of one message and is re-decided by the next', () => {
+  const p = new Parser();
+  p.handleObject(msgStartEv({ usage: ZERO_USAGE, id: 'm1' }));
+  const a = p.handleObject(msgDeltaEv({ input_tokens: 100 }));
+  const b = p.handleObject(msgDeltaEv({ input_tokens: 200 }));
+  assert.deepEqual([...a, ...b].map(e => [e.kind, e.usage.input_tokens]),
+    [['context_usage', 100], ['context_usage', 200]],
+    'both deltas emit, in order — disarming after the first would break "last non-zero wins"');
+
+  p.handleObject(msgStartEv({ usage: { input_tokens: 5000 }, id: 'm2' }));
+  assert.deepEqual(p.handleObject(msgDeltaEv({ input_tokens: 300 })), [],
+    'a usage-bearing message_start disarms — the flag is not "armed once, forever"');
+});
+
+// T5 — reads event-level `usage`, and never emits an undefined-usage event.
+test('parser T5: an armed message_delta with no usage key emits nothing', () => {
+  const p = new Parser();
+  p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
+  assert.deepEqual(p.handleObject(msgDeltaEv(undefined)), []);
+});
+
+// T6 — reset()/rewind isolation: _wipeForResume clears the flag alongside
+// Instance._lastContextUsage.
+test('parser T6: reset() disarms the ctx fallback', () => {
+  const p = new Parser();
+  p.handleObject(msgStartEv({ usage: ZERO_USAGE }));
+  p.reset();
+  assert.deepEqual(p.handleObject(msgDeltaEv(REAL_DELTA_USAGE)), [],
+    'a rewound session must not inherit an armed flag');
+});

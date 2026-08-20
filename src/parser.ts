@@ -7,6 +7,7 @@
 //
 // Emitted UI event kinds:
 //   message_start           { msgId, usage }                // live context-size signal
+//   context_usage           { msgId, usage }                // fallback context-size signal (see _ctxFallbackArmed)
 //   text_delta              { msgId, blockIdx, text }
 //   text_end                { msgId, blockIdx }
 //   thinking_delta          { msgId, blockIdx, text }
@@ -66,6 +67,7 @@ interface WireStreamEvent {
   message?: WireMessage | null;
   content_block?: WireContentBlock | null;
   delta?: { type?: unknown; text?: unknown; thinking?: unknown; partial_json?: unknown } | null;
+  usage?: unknown; // message_delta only — the ctx fallback source
 }
 
 export interface WireEnvelope {
@@ -119,12 +121,33 @@ function eventIndex(ev: WireStreamEvent): number {
   return typeof idx === 'number' ? idx : 0;
 }
 
+// The prompt size of one API call: the three input-side fields the ctx readout
+// sums. One definition, because both context-reading sources (message_start
+// and the message_delta fallback) apply the same "a zero sum is not a
+// measurement" floor and must not drift apart.
+function promptTokenSum(usage: unknown): number {
+  const u = (usage ?? {}) as {
+    input_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+  return (u.input_tokens ?? 0)
+       + (u.cache_read_input_tokens ?? 0)
+       + (u.cache_creation_input_tokens ?? 0);
+}
+
 export class Parser {
   currentMsgId: string | null = null;
   blocks = new Map<number, BlockState>(); // blockIdx -> { type, accumText, accumJson, toolUseId, name }
   _lastCost = 0; // tracks cumulative cost to compute per-turn delta
   _lastApiMs = 0; // tracks cumulative duration_api_ms to compute per-turn delta
   _pendingSkillLoads: PendingSkillLoad[] = []; // {toolUseId, skill} entries awaiting their content injection
+  // Armed by a present-but-all-zero message_start.usage — the shape a
+  // substitution backend's gateway reports on every frame — so this message's
+  // message_delta.usage can supply the ctx reading instead. Disarmed by a
+  // usage-bearing message_start, which makes the two sources mutually
+  // exclusive within one message (see the message_delta arm).
+  _ctxFallbackArmed = false;
 
   reset() {
     this.currentMsgId = null;
@@ -132,6 +155,7 @@ export class Parser {
     this._lastCost = 0;
     this._lastApiMs = 0;
     this._pendingSkillLoads = [];
+    this._ctxFallbackArmed = false;
   }
 
   // Signal a genuine turn boundary (a real prompt or interrupt emitted
@@ -229,8 +253,9 @@ export class Parser {
         //
         // A zero prompt sum is not a measurement: some substitution
         // backends' gateways report an all-zero usage block on EVERY
-        // message_start (real numbers only on the final `result` and in
-        // the jsonl), which latched verbatim renders a false
+        // message_start (real numbers only on the final `result`, in the
+        // jsonl, and — on some of them — on this message's
+        // `message_delta.usage`), which latched verbatim renders a false
         // `ctx 0% · 0/200k` forever. So drop the BLOCK, not the event —
         // message_start also carries the turn-boundary model reading and
         // the idle→turn flip for a turn we didn't initiate (see
@@ -240,15 +265,17 @@ export class Parser {
         // the same three fields (loadPersistedTranscript in
         // src/transcript.ts).
         const usage = ev.message?.usage ?? null;
+        // An ABSENT usage suppresses the event and leaves the fallback flag
+        // untouched: nothing armed it, so there is nothing to disarm, and the
+        // absent-then-delta shape has no in-tree evidence to arm on.
         if (!usage) return [];
-        const u = usage as {
-          input_tokens?: number;
-          cache_read_input_tokens?: number;
-          cache_creation_input_tokens?: number;
-        };
-        const prompt = (u.input_tokens ?? 0)
-                     + (u.cache_read_input_tokens ?? 0)
-                     + (u.cache_creation_input_tokens ?? 0);
+        const prompt = promptTokenSum(usage);
+        // Arm the message_delta fallback exactly when this message produced no
+        // reading, and disarm when it did. That gate is what makes the two
+        // sources mutually exclusive per message — a backend whose
+        // message_start carries real numbers never emits a context_usage, so
+        // there is nothing to interleave with its own readings.
+        this._ctxFallbackArmed = prompt === 0;
         return [{
           kind: 'message_start',
           msgId: this.currentMsgId,
@@ -396,7 +423,23 @@ export class Parser {
         }
         return [];
       }
-      case 'message_delta':
+      case 'message_delta': {
+        // Normally discarded. The one exception: this message's message_start
+        // reported an all-zero prompt (armed above), and this backend puts the
+        // real prompt size here instead — event-level `usage`, not
+        // `delta.usage` (see tests/fixtures/scenario-live-skill-load.json for
+        // the captured envelope). Emitted as its OWN kind rather than a second
+        // `message_start`, which would feed the delta's cache numbers into
+        // cross-turn cache-miss bookkeeping (Instance._handleMessageStart).
+        if (!this._ctxFallbackArmed) return [];
+        const usage = ev.usage ?? null;
+        // Same floor as message_start, for the same reason: a zero renders
+        // `ctx 0% · 0/200k`, which is worse than `ctx —`.
+        if (!usage || promptTokenSum(usage) === 0) return [];
+        // Deliberately stays armed — "last non-zero delta wins" is the latch's
+        // job, and the next message_start always re-decides the flag.
+        return [{ kind: 'context_usage', msgId: this.currentMsgId, usage }];
+      }
       case 'message_stop':
         return [];
       default:
