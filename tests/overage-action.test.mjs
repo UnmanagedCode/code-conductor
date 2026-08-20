@@ -689,64 +689,63 @@ test('an un-armed worker REFUSES a queued send instead of stranding it', async (
 // that the refusal FIRES; nothing asserted it ever stops — and a conductor told to
 // "re-prompt the ones you still need" that cannot re-prompt any of them is the
 // failure this closes.
-test('the un-armed refusal lifts when the window resets', async () => {
+test('the window release clears the un-armed flag, not just the gate', async () => {
   const { worker } = await tripMidTurnConductor(
     { flagged: false, action: 'stop-resume', scenarioObj: resumeRoutingScenario() });
   await waitFor(() => worker._overageStoppedUnarmed === true);
   await waitFor(() => worker.status === 'idle', { timeout: 10000 });
   assert.equal(worker.overageSendRefused, true, 'precondition: refusing');
 
-  // The window resets: the global gate goes inactive.
+  const summaries = [];
+  const onStatus = (sm) => { if (sm.id === worker.id) summaries.push(sm); };
+  instances.on('status', onStatus);
+
+  // The window resets. Asserting the FLAG, not overageSendRefused: the gate alone
+  // settles that predicate, so a test that only reads it passes whether or not the
+  // flag was ever cleared — the vacuity class that hid this for a round.
   instances._clearOverage();
-  assert.equal(worker.overageSendRefused, false,
-    'the refusal lifts with the window — it is not a latch');
+  instances.off('status', onStatus);
+  assert.equal(worker._overageStoppedUnarmed, false,
+    'the release clears the flag itself, not merely the window it is ANDed with');
+  // The release re-emits every summary; that frame is what re-renders the composer,
+  // so a stale flag locks Send with no way for the human to clear it.
+  const last = summaries.at(-1);
+  assert.ok(last, 'the release re-emitted this session\'s summary');
+  assert.equal(last.overageStoppedUnarmed, false, 'and the frame does not re-lock the composer');
+
   const res = await sendPrompt(
     { sessionId: worker.sessionId, text: 'carry on', subscribe: false }, { instances });
-  assert.notEqual(res?.code, 'OVERAGE_STOPPED_UNARMED', 'and the send is accepted again');
+  assert.notEqual(res?.code, 'OVERAGE_STOPPED_UNARMED', 'and sends are accepted again');
 });
 
-// REGRESSION — Invariant: `_overageStoppedUnarmed` is ASSIGNED per trip, not latched.
-// A later trip that finds this worker un-protected must clear it, or the worker is
-// self-locked: every send refuses, `_armQueuedOnly` will not arm it, and the only
-// thing that would clear the flag is the send it refuses.
-test('a later trip that leaves a worker un-protected clears the un-armed flag', async () => {
-  await boot(resumeRoutingScenario(), 'stop-resume');
-  const conductor = await createInst({});
-  const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
-  const tripper = await createInst({});
-  const wEvs = collect(worker);
-
-  conductor.prompt('STAY');
-  await waitFor(() => conductor.status === 'turn');
-  worker.prompt('TRIP go');
-  await waitFor(() => worker._overageStoppedUnarmed === true, { timeout: 10000 });
+// REGRESSION — Invariant: the PER-SESSION clear in OverageResumeController.cancel()
+// drops the un-armed flag while the global window is still active — the one property
+// that distinguishes it from the release clear above, and the reason the two are not
+// redundant. Asserted on the flag with the gate left ACTIVE, so neither the gate nor
+// the release can settle it.
+test('cancelling a session\'s overage state clears its un-armed flag mid-window', async () => {
+  const { worker } = await tripMidTurnConductor(
+    { flagged: false, action: 'stop-resume', scenarioObj: resumeRoutingScenario() });
+  await waitFor(() => worker._overageStoppedUnarmed === true);
   await waitFor(() => worker.status === 'idle', { timeout: 10000 });
 
-  // Trip #2 with the conductor gone: the worker is no longer protected, so this stop
-  // ARMS it — and a stale flag would refuse everything queued into a session that
-  // demonstrably will auto-resume.
-  //
-  // Everything below is deliberately arranged so the routing assignment is the ONLY
-  // thing that can clear the flag: the worker is driven mid-turn by an INTERNAL
-  // prompt (a non-internal one emits `user_prompt` → _cancelAutoResume → cancel(),
-  // which clears the flag itself and would make this test pass vacuously), and a
-  // THIRD session springs the trip.
-  instances._clearOverage();
-  instances._overageResume.clearAll();
-  await instances.remove(conductor.id);
-  assert.equal(worker._overageStoppedUnarmed, true, 'still flagged from trip #1');
+  instances._cancelAutoResume(worker.id);
 
-  worker.prompt('STAY', [], { internal: true });
-  await waitFor(() => worker.status === 'turn');
-  tripper._overageHandled = false;
-  tripper.prompt('TRIP go');
-  await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 1, { timeout: 10000 });
-
-  assert.equal(worker._overageStoppedUnarmed, false,
-    'the flag tracks THIS trip — an unprotected worker is not un-armed');
-  assert.equal(worker.overageSendRefused, false, 'so nothing refuses its sends');
-  await waitFor(() => worker.autoStoppedForOverage === true, { timeout: 10000 });
+  assert.equal(instances._overageActive, true, 'the global window is still active');
+  assert.equal(worker._overageStoppedUnarmed, false, 'yet this session is no longer un-armed');
+  assert.equal(worker.overageSendRefused, false, 'so its sends are accepted mid-window');
 });
+
+// The round-3 test 'a later trip that leaves a worker un-protected clears the
+// un-armed flag' lived here. It is OBSOLETE, not broken: `_handleOverageTrip` returns
+// early on `_overageActive`, so routing runs exactly once per window, and the only
+// two writers of `_overageActive = false` are the constructor and `_clearOverage` —
+// which now clears `_overageStoppedUnarmed` itself. A worker can therefore never
+// reach a second routing pass still carrying the previous window's flag, so Pass 3's
+// `= unarmed` assignment and a conditional `if (unarmed) = true` are equivalent, and
+// the only way to fail the old test was to poke `_overageActive` directly, i.e. to
+// assert a state production cannot produce. The window-release clear below owns the
+// real invariant.
 
 // REGRESSION — Invariant: an IDLE+subscribed conductor's one-shot on a target that is
 // ALSO idle at trip time is severed. `_directOverageStop` severs only around sessions
@@ -759,8 +758,11 @@ test('an idle conductor\'s one-shot on an IDLE target is severed by the stop', a
   const conductor = await createInst({});
   const idleWorker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   const tripper = await createInst({});
+  const observer = await createInst({});
   const cEvs = collect(conductor);
 
+  // A third session waits ON the conductor — the reverse direction of the edge below.
+  instances.subscribeIdle(observer.sessionId, conductor.sessionId);
   // The conductor waits on a worker that is IDLE — subscribe_to_idle re-arms without
   // sending a prompt, so this is the ordinary shape, not an exotic one.
   instances.subscribeIdle(conductor.sessionId, idleWorker.sessionId);
@@ -780,6 +782,15 @@ test('an idle conductor\'s one-shot on an IDLE target is severed by the stop', a
   await new Promise(r => setTimeout(r, 50));
   assert.equal(cEvs.some(e => e.kind === 'user_echo' && /finished its turn/.test(e.text || '')), false,
     'no wake reaches the stopped conductor');
+
+  // The sever purges BOTH directions, so a THIRD session waiting ON this conductor
+  // loses its wait too — and must be marked, not silently dropped. This is what makes
+  // the idle branch's loop identical to _directOverageStop's; marking only the
+  // conductor returned the same array and ignored every other entry.
+  assert.equal(instances.hasIdleSubscriber(conductor.id), false,
+    'the wait held ON the conductor is severed as well');
+  assert.equal(observer._overageDroppedCallbacks, true,
+    'and its holder is marked, so its own resume prompt says the callback is gone');
 });
 
 // REGRESSION — Invariant: the conductor clauses ride the QUEUED-ONLY preamble too.

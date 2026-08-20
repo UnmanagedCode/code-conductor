@@ -4379,8 +4379,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       this._directOverageStop(conductor, { resume, resetsAt });
       return;
     }
-    if (this._idleHub.severForOverageStop(conductor.id).length) {
-      conductor._overageDroppedCallbacks = true;
+    // Same loop shape as _directOverageStop: the sever purges BOTH directions, so a
+    // third session waiting ON this conductor loses its wait too and must be marked
+    // as well. Marking only the conductor dropped those silently.
+    for (const callerId of this._idleHub.severForOverageStop(conductor.id)) {
+      const caller = this.byId.get(callerId);
+      if (caller) caller._overageDroppedCallbacks = true;
     }
     // `internal:true` so the steer's user_prompt doesn't cancel the resume we arm
     // next; set the flags AFTER the call regardless, so the steer turn's turn→idle
@@ -4450,6 +4454,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // by the resume sweep — this is just the banner/gate teardown.
     for (const inst of this.byId.values()) {
       inst._overageHandled = false;
+      // The un-armed refusal's lifetime IS this window (overageSendRefused ANDs the
+      // flag with gate.active), so the release ends it. Pass 3's per-trip assignment
+      // cannot cover this: it sits behind `if (inst.status !== 'turn') continue`, so a
+      // worker that is idle at the next trip is never visited. Left set, the flag
+      // outlives its meaning twice over — `summary()` reports it ungated, and this
+      // loop's own emit re-renders the composer with Send disabled under "messages
+      // can't be queued here" while the server would accept that send; the human
+      // cannot clear it, because the only per-session clear needs a successful
+      // non-internal prompt and the button that would send one is the disabled one.
+      inst._overageStoppedUnarmed = false;
       this.emit('status', inst.summary());
     }
   }
