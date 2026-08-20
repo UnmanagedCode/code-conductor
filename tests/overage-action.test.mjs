@@ -689,6 +689,30 @@ test('an un-armed worker REFUSES a queued send instead of stranding it', async (
 // that the refusal FIRES; nothing asserted it ever stops — and a conductor told to
 // "re-prompt the ones you still need" that cannot re-prompt any of them is the
 // failure this closes.
+// REGRESSION — Invariant: `overageSendRefused` ANDs the un-armed flag with the LIVE
+// gate, and the gate is load-bearing. Asserted under plain `Stop`, where Pass 3 still
+// sets the flag (it does so regardless of mode) but `_overageGate` is inactive because
+// it requires `_overageResumeMode` — so the flag is TRUE and the refusal must still be
+// false. That combination is the only place the conjunct is visible: after a window
+// RELEASE the flag is cleared too, so `overageSendRefused` short-circuits on its first
+// line and a test there cannot see a missing gate. Plain `Stop` has no queue at all,
+// so there is nothing to strand and nothing to refuse.
+test('plain Stop: an un-armed worker is flagged but NOT refused (no queue to strand)', async () => {
+  const { worker } = await tripMidTurnConductor(
+    { flagged: false, action: 'stop', scenarioObj: routingScenario() });
+  await waitFor(() => worker._overageStoppedUnarmed === true);
+
+  assert.equal(instances._overageActive, true, 'the window is active');
+  assert.equal(instances._overageResumeMode, false, 'but not in stop-resume, so the gate is inactive');
+  assert.equal(worker._overageGate().active, false, 'gate inactive with the flag still set');
+  assert.equal(worker.overageSendRefused, false,
+    'the flag alone does not refuse — overageSendRefused ANDs it with the live gate');
+
+  const res = await sendPrompt(
+    { sessionId: worker.sessionId, text: 'carry on', subscribe: false }, { instances });
+  assert.notEqual(res?.code, 'OVERAGE_STOPPED_UNARMED', 'so the send is accepted');
+});
+
 test('the window release clears the un-armed flag, not just the gate', async () => {
   const { worker } = await tripMidTurnConductor(
     { flagged: false, action: 'stop-resume', scenarioObj: resumeRoutingScenario() });
