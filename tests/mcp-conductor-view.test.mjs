@@ -49,12 +49,15 @@ const sorted = (a) => a.slice().sort();
 //   • the literal pins INTENT — moving one of these into CONDUCTOR_VIEW_KEYS
 //     must fail here, which a derived expectation could never catch (it would
 //     move with the change);
-//   • the derived difference pins the LITERAL — a newly-withheld summary()
-//     field cannot land while this list, the `Excluded on purpose` comment on
-//     CONDUCTOR_VIEW_KEYS and docs/protocol.md → Emitted handles all still say
-//     otherwise. That drift is exactly how `playbookEnforcement` and
+//   • the derived difference pins the LITERAL — a new summary() field nobody
+//     allowlisted fails that assertion, and (as of the mutation run for card
+//     2026-0176) that assertion ALONE in the whole suite: the wire loop below
+//     never sees it. That is the drift by which `playbookEnforcement` and
 //     `overageStoppedUnarmed` went undocumented.
-// Keep this list, that comment and that doc paragraph in step.
+// What is pinned is this array and nothing else. The `Excluded on purpose`
+// comment on CONDUCTOR_VIEW_KEYS and docs/protocol.md → Emitted handles are
+// UNPINNED prose — no test reads either, so adding a name here alone turns the
+// suite green with both stale. Update all three by hand, together.
 const WITHHELD_KEYS = [
   'id', 'callerInstanceId', 'debugDir', 'autoApprovePlan',
   'playbookEnforcement', 'interrupting', 'overageStoppedUnarmed',
