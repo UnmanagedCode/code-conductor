@@ -204,6 +204,23 @@ export async function driveTurn(instances, sessionId, send) {
   return res;
 }
 
+// Drain queued micro/macrotasks so anything already scheduled has run.
+// LOAD-INDEPENDENT, unlike `await new Promise(r => setTimeout(r, 200))`: a fixed
+// sleep is both flaky (too short when the box is starved) and weak (it passes
+// vacuously when the box is fast, because nothing forced the thing you are
+// asserting the absence of to have had its chance yet).
+//
+// This is NOT a barrier on its own — it cannot wait for work that has not been
+// scheduled yet. Use it AFTER a causal barrier (a waitFor on something that is
+// downstream of the decision you are testing), never instead of one. A settle()
+// with no barrier in front of it is exactly as vacuous as the sleep it replaced.
+//
+// driveTurn() above is the canonical barrier for "the target finished a turn";
+// settle() is what you add after it before asserting an ABSENCE.
+export async function settle(turns = 3) {
+  for (let i = 0; i < turns; i++) await new Promise(r => setImmediate(r));
+}
+
 // The sidecar backend record for a session, once spawn()'s write has landed.
 // spawn() is synchronous and fires markSessionBackend without awaiting it (see
 // src/instances.ts spawn()), so a 201 / `idle` / argv-dump wait can beat the
