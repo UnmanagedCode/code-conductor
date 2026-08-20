@@ -40,9 +40,17 @@ export const LEAK_GRACE_MS = ms('CC_TEST_LEAK_GRACE_MS', 15_000);
 // init the instant its parent dies and is unreachable from here afterwards.
 export const ORPHAN_SWEEP_MS = ms('CC_TEST_ORPHAN_SWEEP_MS', 5_000);
 
-// Parent-side, absolute: the whole run may not exceed this. Sized so WE
-// produce the verdict rather than an external harness's ceiling (code-mutant
-// kills at 300s). A run that is merely slow — e.g. the criterion-3 starvation
-// campaign under 24-way CPU load — must raise this via CC_TEST_RUN_CAP_MS
-// rather than eat a false red; see docs/architecture.md.
-export const RUN_CAP_MS = ms('CC_TEST_RUN_CAP_MS', 240_000);
+// Parent-side, absolute: the whole run may not exceed this. LAST-RESORT
+// BACKSTOP ONLY — it exists to make an unbounded hang finite, not to bound a
+// slow box. The layers that actually produce a timely verdict are the per-file
+// ones above (FILE_KILL_MS / LEAK_GRACE_MS / ORPHAN_SWEEP_MS), and those are
+// what have to fit inside an external harness's ceiling; a scoped mutation run
+// is a handful of files, so they fire long before this does.
+//
+// MEASURED: a full 268-file run under 24-way CPU starvation (load avg ~30)
+// takes 170s — so the original 240s left only 1.4x margin and would have gone
+// red on a merely-loaded box. A cap that fires on a slow box is a false red,
+// and this card exists to make the suite's cost BELIEVABLE. 600s is ~3.5x the
+// starved figure and ~9.5x a quiet run, while still bounding a true hang.
+// Re-measure this if the suite grows substantially.
+export const RUN_CAP_MS = ms('CC_TEST_RUN_CAP_MS', 600_000);
