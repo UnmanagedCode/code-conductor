@@ -297,12 +297,22 @@ test('poll stop-resume: arms a timer off five_hour reset and delivers the resume
 
 // ── Routing parity: conductor steered, worker untouched (same as the stream) ──
 
-test('poll routing parity: in-control conductor is steered, worker untouched', async () => {
+test('poll routing parity: in-control conductor AND its worker are both soft-interrupted', async () => {
+  // Card 2026-0183 Parts A/A2: the poll path shares _routeOverageStop with the
+  // stream path, so it inherits both changes — a mid-turn in-control conductor is
+  // soft-interrupted rather than steered (`steered` is now the idle branch's marker
+  // alone), and the worker it owns is stopped too instead of being left to a steer
+  // the model may silently drop.
   await boot('stop', { enabled: true, value: 25 });
   const conductor = await createInst({});
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   const cEvs = collect(conductor);
   const wEvs = collect(worker);
+  // Latched off the 'status' stream: _setStatus clears `interrupting` on turn exit,
+  // so reading the live field after the abort lands would race.
+  const armed = new Set();
+  const onStatus = (sm) => { if (sm.interrupting === true) armed.add(sm.id); };
+  ctx.instances.on('status', onStatus);
 
   // Conductor mid-turn (in control); worker also mid-turn so the poll's gate passes.
   await midTurn(conductor);
@@ -311,7 +321,15 @@ test('poll routing parity: in-control conductor is steered, worker untouched', a
   ctx.instances._usageMonitor.fetchUsage = async () => usagePayload(99, nowSec() + 3600);
   await ctx.instances._usageMonitor._tick();
 
-  await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
-  await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && /interrupt_turn/.test(e.text || '')));
-  assert.equal(sub(wEvs, 'auto_stop_overage').length, 0, 'worker is left to its conductor, not direct-stopped');
+  await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0);
+  assert.notEqual(sub(cEvs, 'auto_stop_overage')[0].data.steered, true,
+    'a mid-turn conductor is stopped, not steered');
+  await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
+  await waitFor(() => armed.has(conductor.id) && armed.has(worker.id));
+  assert.ok(armed.has(conductor.id), 'the conductor stop is ARMED (soft), not forced');
+  assert.ok(armed.has(worker.id), 'its worker is stopped too, not left running');
+  // Let BOTH aborts land before teardown: shutting down with a control_request
+  // still in flight rejects it against an exiting subprocess.
+  await waitFor(() => conductor.status === 'idle' && worker.status === 'idle', { timeout: 10000 });
+  ctx.instances.off('status', onStatus);
 });

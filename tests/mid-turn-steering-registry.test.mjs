@@ -10,6 +10,7 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { addCustomModel, getCustomModels, resolveMidTurnSteering } from '../src/appSettings.ts';
 import { OLLAMA_CLOUD_MODELS } from '../src/ollamaCloudModels.ts';
 import { CLAUDE_BACKEND_ID } from '../src/modelVersions.ts';
+import { Instance } from '../src/instances.ts';
 
 describe('resolveMidTurnSteering', () => {
   let ctx, baseUrl, home;
@@ -99,5 +100,46 @@ describe('resolveMidTurnSteering', () => {
     });
     assert.equal(plain.status, 201);
     assert.equal(plain.body.added.midTurnSteering, true);
+  });
+});
+
+// ── X-T1 (PIN) ─────────────────────────────────────────────────────────────
+// Instance.needsPostStopSteer is the ONE place the {status, flag} pair is tested —
+// six injection sites read it instead of spelling it again — so its truth table is
+// pinned here directly rather than inferred from six integration tests. Kills
+// polarity inversion, a dropped status test and a dropped flag test in one place.
+// It does NOT distinguish `!== true` from `=== false`: on a typed boolean those
+// are equivalent, so no test can separate them.
+describe('needsPostStopSteer', () => {
+  // The lightest way to an Instance with no server (tests/mid-turn-annotation.mjs
+  // idiom): the getter reads only `status` and `acceptsMidTurnSteering`.
+  const inst = () => new Instance({
+    id: 'nps-1', project: 'demo', cwd: '/tmp', mode: 'bypassPermissions',
+    effort: 'high', thinking: 'adaptive', model: null,
+  });
+
+  test('true for exactly {status:turn} × {acceptsMidTurnSteering:false}', () => {
+    for (const [status, accepts, want] of [
+      ['turn', false, true],
+      ['turn', true, false],
+      ['idle', false, false],
+      ['idle', true, false],
+    ]) {
+      const i = inst();
+      i.status = status;
+      i.acceptsMidTurnSteering = accepts;
+      assert.equal(i.needsPostStopSteer, want,
+        `status=${status} acceptsMidTurnSteering=${accepts}`);
+    }
+  });
+
+  test('false for every non-turn status, even flagged', () => {
+    // 'turn' is the ONLY status a message can be injected into.
+    for (const status of ['spawning', 'idle', 'exited', 'crashed']) {
+      const i = inst();
+      i.status = status;
+      i.acceptsMidTurnSteering = false;
+      assert.equal(i.needsPostStopSteer, false, `status=${status}`);
+    }
   });
 });

@@ -524,6 +524,48 @@ export class IdleSubscriptionHub {
     }
   }
 
+  // Sever every subscription edge touching a session the overage stop is stopping,
+  // and return the instanceIds of the callers that lost a wait on it — the overage
+  // stop marks each so its own resume prompt says the callbacks are gone.
+  //
+  // Keyed on the SUBSCRIPTION graph, not the conducted-ownership graph: subscribe()
+  // imposes no ownership check, so a conductor can be waiting on a session it never
+  // spawned. Keying on ownership left exactly that case armed — the stopped
+  // session's turn_end delivered an `internal:true` wake, which the overage queue
+  // intercept deliberately does NOT hold, and the caller started a fresh turn
+  // inside the lockout.
+  //
+  // Both directions, because the session is stopped: its turn_end must wake nobody,
+  // and nothing may later wake it. purge() covers all of that except one case it is
+  // deliberately wrong for here — a wake ALREADY deferred behind some mid-turn
+  // recipient that names this session as its target. purge() leaves those (a
+  // REMOVED target still reports honestly through deliver()), but a
+  // stopped-and-alive one must not be reported at all: _flushDeferredWakes would
+  // deliver it at the recipient's next boundary and restart the burn.
+  severForOverageStop(instanceId: string): string[] {
+    if (!instanceId) return [];
+    // Every id read BEFORE purge() empties the maps.
+    const lost = new Set<string>();
+    for (const caller of this.subscribers.get(instanceId)?.keys() ?? []) lost.add(caller);
+    // The stopped session's OWN waits end here too, so it is reported alongside the
+    // callers waiting on it — a stopped conductor needs the same "your callbacks are
+    // gone" line as one that merely lost a worker.
+    const lostFrom = [...this.subscribers]
+      .filter(([, subs]) => subs.has(instanceId)).map(([target]) => target);
+    if (lostFrom.length || this._deferredWakes.has(instanceId)) lost.add(instanceId);
+    this.purge(instanceId);
+    for (const [callerInstanceId, queue] of [...this._deferredWakes]) {
+      const kept = queue.filter(q => q.targetInstanceId !== instanceId);
+      if (kept.length === queue.length) continue;
+      if (kept.length) this._deferredWakes.set(callerInstanceId, kept);
+      else this._deferredWakes.delete(callerInstanceId);
+      lost.add(callerInstanceId);
+    }
+    for (const target of lostFrom) this.manager.emit('subscription_changed', { targetId: target });
+    this.manager.emit('subscription_changed', { targetId: instanceId });
+    return [...lost];
+  }
+
   // Deliver every wake held back for this recipient, now that it has reached a
   // boundary. Re-defers (returns, keeping the queue) while a steer is still parked
   // on it: that steer starts a turn in a microtask, and delivering here would race

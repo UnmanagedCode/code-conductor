@@ -370,35 +370,13 @@ test('a failed fire leaves a parked permission alone: the abort never landed', a
   assert.match(stderr.at(-1)?.data?.line ?? '', /interrupt failed: boom/);
 });
 
-test('a windDown steer is NOT an armed interrupt: no control_request, ever', async () => {
-  const inst = await setupInstance();
-  const evs = collect(inst);
-  inst.prompt('open text');
-  await waitFor(() => evs.some(e => e.kind === 'text_delta'));
-
-  // windDown() raises the SAME `interrupting` flag the WS frames carry, and its
-  // user_echo force-resets the quiescence scan — so anything that gates the fire
-  // on `interrupting` instead of `_interruptArmed` aborts this turn here.
-  inst.windDown('wrap up: the orchestrator is restarting');
-  assert.equal(inst.interrupting, true, 'wind-down raises the UI flag');
-  assert.equal(inst._interruptArmed, false, 'but nothing is armed');
-  assert.equal(inst._interruptFired, false);
-  assert.equal(await interruptCount(), 0, 'no abort at steer time');
-
-  // ...nor at the next boundary, nor at the one after it.
-  inject(inst, blockStop(0));
-  assert.equal(inst._interruptFired, false, 'no fire at the block close');
-  inject(inst, toolResult('tu_di_bash'));
-  assert.equal(inst._interruptFired, false, 'no fire at a tool_result either');
-  assert.equal(inst.status, 'turn', 'the turn is winding down, not severed');
-
-  const lines = await stdinLines();
-  assert.equal(interruptsIn(lines).length, 0, 'the CLI received NO interrupt control_request');
-  // The steer itself did go out — otherwise the negative above is vacuous.
-  const steers = lines.filter(l => l.type === 'user' && JSON.stringify(l).includes('wrap up'));
-  assert.equal(steers.length, 1, 'the wind-down message reached the CLI');
-  assert.ok(JSON.stringify(steers[0]).includes('[[cc:soft-interrupt]]'), 'marked so replay drops it');
-});
+// The `windDown()` steer this file used to pin — a mid-turn user message that
+// raised `interrupting` without arming an abort — is gone with card 2026-0183: the
+// resume-restart drain and the overage conductor stop are plain aborts now, so
+// nothing writes a steer here any more. `_interruptArmed` remains the fire's gate
+// (not `interrupting`), pinned by the forced-escalation test above; the marker's
+// READ path is pinned by tests/soft-interrupt-filter.test.mjs, which still matters
+// for historical jsonls.
 
 test('a failed fire is re-armable within the same turn', async () => {
   const { inst } = await armedMidTextBlock();

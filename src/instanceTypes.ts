@@ -83,6 +83,16 @@ export interface InstanceLike {
   autoResumeAt: number | null;
   autoStoppedForOverage: boolean;
   _overageWasStopped: boolean;
+  // Two independent facts a stopped conductor's resume prompt carries (see
+  // buildConductorResumePreamble): a pending idle callback was severed, and/or a
+  // worker of its was stopped un-armed.
+  _overageDroppedCallbacks: boolean;
+  _overageUnarmedWorkers: boolean;
+  // Set on a WORKER the stop left un-armed: it must not queue sends behind a resume
+  // it will never get. `overageSendRefused` is the one test of that — prompt()
+  // throws on it, the MCP handlers soft-refuse OVERAGE_STOPPED_UNARMED.
+  _overageStoppedUnarmed: boolean;
+  readonly overageSendRefused: boolean;
   _overageHandled: boolean;
   _overageResetsAt: number | null;
   _overageQueue: unknown[];
@@ -137,7 +147,9 @@ export interface InstanceLike {
   // IdleSubscriptionHub's defer gate. See src/instances.ts.
   readonly acceptsMidTurnSteering: boolean;
   readonly steerPending: boolean;
-  queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void }): Promise<void>;
+  readonly needsPostStopSteer: boolean;
+  queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void; attachments?: unknown[] }): Promise<void>;
+  promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
   interrupt(opts?: { force?: boolean }): Promise<unknown>;
@@ -161,7 +173,6 @@ export interface InstanceLike {
   // Accepts null (clears the title) — the routes title endpoint stores
   // `setSessionTitle(...)`'s result, which is null when the title is cleared.
   setTitle(title: string | null): void;
-  windDown(text: string): void;
   // Route surface (src/routes.ts): the three destructive session rewrites,
   // debug mutation and the hook-callback envelope. `_mutating` is the guard
   // fork/rewind/prune claim synchronously; it stays on the contract for the

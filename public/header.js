@@ -762,8 +762,12 @@ export function installHeader({
     // signal (overageActive) as well as an armed session (autoResumeAt) so
     // opening OR starting any chat during the window immediately shows the paused
     // banner + "Queue" button — even before the first message is typed.
+    // …EXCEPT a worker the overage stop left un-armed: it has no resume deadline
+    // and the server refuses a queued send for it (its conductor is the driver), so
+    // the composer must not promise queueing.
     composer.set({ canType, canSend,
       overagePaused: !!(inst.overageActive || inst.autoResumeAt),
+      overageUnarmed: !!inst.overageStoppedUnarmed,
       resumeAt: inst.autoResumeAt ?? inst.overageResetsAt ?? null });
     // Rewind/fork buttons are only safe between turns — the server refuses
     // a rewind during `turn` status anyway, but disabling them here keeps

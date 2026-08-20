@@ -21,7 +21,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, userStdinLines } from './helpers.mjs';
-import { MID_TURN_NOTE } from '../src/instances.ts';
+import { promises as fs } from 'node:fs';
+import { MID_TURN_NOTE, POST_STOP_STEER_NOTE } from '../src/instances.ts';
 import { isUserQuestionAnswerText } from '../public/userQuestionAnswers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,13 +78,14 @@ async function upToOpenQuestion(ctx, c) {
 
 test('the can_use_tool deny does NOT leave the instance idle when a message is queued behind it', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let client = null;
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
     const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'bypassPermissions' });
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const c = await wsClient(ctx.wsUrl);
+    const c = client = await wsClient(ctx.wsUrl);
     c.instanceId = id;
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
@@ -95,12 +97,15 @@ test('the can_use_tool deny does NOT leave the instance idle when a message is q
     assert.equal(ctx.instances.get(id).status, 'turn',
       'turn must still be running after the deny + injected wake callback');
 
-    await c.close();
-  } finally { await ctx.close(); }
+  } finally {
+    if (client) { try { await client.close(); } catch { /* already gone */ } }
+    await ctx.close();
+  }
 });
 
 test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let client = null;
   try {
     const transcriptPath = path.join(ctx.tmpHome, 'transcript.log');
     process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
@@ -110,7 +115,7 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
     const id = r.body.id;
     await waitFor(() => ctx.instances.get(id).status === 'idle');
 
-    const c = await wsClient(ctx.wsUrl);
+    const c = client = await wsClient(ctx.wsUrl);
     c.instanceId = id;
     c.send({ t: 'subscribe', id });
     await c.wait(m => m.t === 'snapshot');
@@ -146,6 +151,16 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
       [{ type: 'text', text: MID_TURN_NOTE }, { type: 'text', text: ANSWER_TEXT }],
     );
 
+    // E-T3 (card 2026-0183): the same frame on a model that CAN take a mid-turn
+    // injection must still arm no stop at all. The interrupt count is what
+    // distinguishes "routed live" from "routed unconditionally through the
+    // block-edge stop"; the block shape above alone does not.
+    const allLines = (await fs.readFile(transcriptPath, 'utf8'))
+      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+    assert.equal(
+      allLines.filter(l => l.type === 'control_request' && l.request?.subtype === 'interrupt').length,
+      0, 'an unflagged WS prompt frame arms NO control_request');
+
     // PAIRING INVARIANT: the note never reaches the text the UI pairs on, so
     // the answer still matches its card.
     const echo = c.messages[echoIdx].ev;
@@ -153,8 +168,84 @@ test('a card answer submitted mid-turn reaches the CLI BEFORE turn_end', async (
     assert.equal(isUserQuestionAnswerText(QUESTIONS, echo.text), true,
       'the mid-turn answer still pairs back to its question card');
 
-    await c.close();
   } finally {
+    // Close the socket HERE, not on the success path: a leaked client keeps handles
+    // open, so ctx.close() never completes and a failed assertion reads as a
+    // 60s file-level hang instead of a failure.
+    if (client) { try { await client.close(); } catch { /* already gone */ } }
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    await ctx.close();
+  }
+});
+
+// E-T5 (card 2026-0183 Part E) — the same card-answer frame on a model that
+// CANNOT take a mid-turn injection. Invariant: it is parked behind exactly one
+// block-edge stop, delivered as a fresh turn carrying POST_STOP_STEER_NOTE, and
+// the answered turn still reaches a non-error turn_end.
+//
+// The fixture emits `result` only in reaction to a prompt containing "Answer to",
+// so a dropped answer HANGS this test rather than passing green — the strongest
+// non-vacuity guarantee available in this suite.
+test('a card answer on a model that cannot take a mid-turn injection is deferred, delivered, and still ends the turn', async () => {
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  let client = null;
+  try {
+    const transcriptPath = path.join(ctx.tmpHome, 'flagged-card.log');
+    process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'q' });
+    const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project: 'q', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const inst = ctx.instances.get(id);
+    await waitFor(() => inst.status === 'idle');
+    inst.backend = 'ollama';
+    inst.model = 'deepseek-v4-flash:0731-cloud';
+    inst._refreshModelCapabilities();
+    assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
+
+    const c = client = await wsClient(ctx.wsUrl);
+    c.instanceId = id;
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    await upToOpenQuestion(ctx, c);
+    assert.equal(inst.status, 'turn', 'precondition: still mid-turn');
+
+    const readLines = async () => (await fs.readFile(transcriptPath, 'utf8'))
+      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const users = (ls) => ls.filter(l => l.type === 'user' && l.message?.role === 'user');
+    const before = users(await readLines()).length;
+
+    c.send({ t: 'prompt', id, text: ANSWER_TEXT });
+
+    // The wake stub's block is already closed, so the whole sequence — arm, fire,
+    // abort, flush, answer — completes without any synthetic boundary event. The
+    // parked window is therefore too short to observe, so the deferral is asserted
+    // from its RESULT: a block-edge stop was armed and fired. Bounded and asserted
+    // FIRST so reverting the routing fails here, fast and legibly, rather than
+    // wedging on the fixture's withheld `result`.
+    await waitFor(async () => (await readLines()).some(
+      l => l.type === 'control_request' && l.request?.subtype === 'interrupt'),
+      { timeout: 4000 });
+
+    const turnEnd = await c.wait(m => m.t === 'event' && m.ev.kind === 'turn_end' && m.ev.isError === false);
+    assert.ok(turnEnd, 'the answered turn reached a non-error turn_end');
+
+    const lines = await readLines();
+    assert.equal(
+      lines.filter(l => l.type === 'control_request' && l.request?.subtype === 'interrupt').length,
+      1, 'exactly one block-edge stop');
+    const us = users(lines);
+    assert.equal(us.length, before + 1, 'the answer went out exactly once');
+    assert.deepEqual(
+      us[us.length - 1].message.content.filter(b => b.type === 'text').map(b => b.text),
+      [POST_STOP_STEER_NOTE, ANSWER_TEXT],
+      'delivered as a fresh turn carrying the post-stop note');
+
+  } finally {
+    // Close the socket HERE, not on the success path: a leaked client keeps handles
+    // open, so ctx.close() never completes and a failed assertion reads as a
+    // 60s file-level hang instead of a failure.
+    if (client) { try { await client.close(); } catch { /* already gone */ } }
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     await ctx.close();
   }

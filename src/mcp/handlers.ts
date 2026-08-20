@@ -1014,6 +1014,8 @@ export async function sendPrompt(
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
+  const refusedUnarmed = overageUnarmedRefusal(inst);
+  if (refusedUnarmed) return refusedUnarmed;
   // getInst is LIVE-only, so inst.proc is guaranteed here.
 
   // Every `forward` refusal fires here — before inst.prompt, before
@@ -1054,10 +1056,9 @@ export async function sendPrompt(
   // by a different route: stop the running turn at a block edge, then send it as
   // a fresh turn (Instance.queueSteerAfterStop). Behaviourally identical from
   // here — the send still steers the worker in flight rather than waiting out its
-  // turn — so no schema or result-shape change.
-  // `=== false` is the opt-out polarity used everywhere this flag is read: only
-  // an explicit declaration diverts, anything unknown keeps the live send.
-  const deferred = inst.status === 'turn' && inst.acceptsMidTurnSteering === false;
+  // turn — so no schema or result-shape change. The {status, flag} test itself
+  // lives on the Instance (needsPostStopSteer), shared with every other site.
+  const deferred = inst.needsPostStopSteer;
 
   if (wait) {
     // Attach the listener *before* sending so we can't miss a fast turn_end.
@@ -1384,12 +1385,24 @@ export async function respawnInstance({ sessionId }: { sessionId: string }, { in
 
 // ---------- mutating: plan approval ----------
 
-// Approve a worker's plan: flip the instance to bypassPermissions so it
-// can actually act on what was just approved, then send the approval
-// prompt as a normal user turn. Mirrors the UI's Approve & Implement
-// button (public/app.js onPlanDecision) — phrasing comes from the
-// shared planApproval module so the three entry points (UI click,
-// server-side auto-approve, MCP) all look identical to the worker.
+// Soft refusal for a worker the overage stop left UN-ARMED. A send to it can be
+// neither delivered (the account is still throttled) nor queued (the queue flushes
+// only on a resume deadline this session deliberately does not have — its conductor
+// is the sole driver). A normal result carrying a `code`, not a throw: that is this
+// surface's convention, and a conductor that was just told to re-drive these workers
+// hitting one before the window resets is a correctable mistake, not a bug. The WS
+// path keeps the throw — `ack ok:false` plus a failed send is the right shape for a
+// human at a composer.
+function overageUnarmedRefusal(inst: { overageSendRefused: boolean; sessionId: unknown }) {
+  if (!inst.overageSendRefused) return null;
+  return {
+    ok: false as const, code: 'OVERAGE_STOPPED_UNARMED', sessionId: inst.sessionId,
+    reason: 'this worker was stopped for account overage and left un-armed — its resume is ' +
+      'the conductor\'s to drive, not the rate-limit window\'s, so a send to it can be neither ' +
+      'delivered nor queued. You will be prompted when the window resets — re-drive it then.',
+  };
+}
+
 export async function approvePlan(
   { sessionId, feedback, subscribe = true, subscribeTimeoutMs }: {
     sessionId: string; feedback?: string; subscribe?: boolean; subscribeTimeoutMs?: number;
@@ -1405,8 +1418,10 @@ export async function approvePlan(
       throw new Error(`failed to switch session ${sessionId} to bypassPermissions: ${errMsg(e)}`);
     }
   }
+  const refused = overageUnarmedRefusal(inst);
+  if (refused) return refused;
   const text = buildApprovePrompt(feedback);
-  await inst.prompt(text);
+  await inst.promptOrQueueSteer(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
@@ -1423,8 +1438,10 @@ export async function rejectPlan(
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
+  const refused = overageUnarmedRefusal(inst);
+  if (refused) return refused;
   const text = buildRejectPrompt(feedback);
-  await inst.prompt(text);
+  await inst.promptOrQueueSteer(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }
@@ -1442,7 +1459,9 @@ interface AnswerEntry {
 // answer because both call the same public/userQuestionAnswers.js formatter.
 // The worker is NOT necessarily idle here — the can_use_tool deny only ends the
 // turn if the CLI has nothing queued behind it (see Instance._handleStdoutLine),
-// so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn.
+// so the send is unconditional and picks up MID_TURN_NOTE when it lands mid-turn,
+// or is routed behind a block-edge stop on a model that cannot take one
+// (promptOrQueueSteer). Which route ran is deliberately not reported.
 //
 // `answers` is aligned BY INDEX (0-based) to the pending questions — the same
 // questions get_recent_messages renders 1-based in its "--- questions ---"
@@ -1463,6 +1482,9 @@ export async function answerQuestion(
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
+
+  const refused = overageUnarmedRefusal(inst);
+  if (refused) return refused;
 
   const msgs = reconstructMessages(inst.ringSnapshot(), false);
   let questions: Question[] | null = null;
@@ -1518,7 +1540,7 @@ export async function answerQuestion(
   }
 
   const text = formatUserQuestionAnswers(questions, states);
-  await inst.prompt(text);
+  await inst.promptOrQueueSteer(text);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
 }

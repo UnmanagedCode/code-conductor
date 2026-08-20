@@ -27,7 +27,7 @@ import { CONDUCT_PROJECT_NAME, ensureConductProject, isConductorInstance } from 
 import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbooks.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 
-// Wait-and-retry grace: after wind-down, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
+// Wait-and-retry grace: after the drain's soft interrupts, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
 // instance to leave its turn on its own. If the grace elapses, log a warning
 // and keep waiting (re-arming the grace) — it never force-interrupts. If an
 // agent is wedged and won't finish its turn, the user can manually interrupt
@@ -40,21 +40,6 @@ export const RESUME_STAGGER_MS = 1500;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // --- Message texts -------------------------------------------------------
-
-export const WIND_DOWN_TEXT =
-  '⚙️ CodeConductor is about to restart to apply changes. Stop now — do not ' +
-  'start or continue any tool calls, and end your current turn immediately ' +
-  'without replying. Your session is being preserved; you will be sent a ' +
-  'message to resume once the restart completes. Nothing is lost.';
-
-export const WIND_DOWN_TEXT_CONDUCTOR =
-  '⚙️ CodeConductor is about to restart to apply changes. Stop now — do not ' +
-  'send any further messages to your workers, and end your current turn ' +
-  'immediately without replying. Every worker you are conducting has been sent ' +
-  'the same stop-and-wait notice, so do not message them. Idle callbacks will ' +
-  'not fire across the restart. Your session and all your workers\' sessions ' +
-  'are being preserved; you will be sent a message to resume (and to resume ' +
-  'your workers) once the restart completes.';
 
 export const RESUME_TEXT =
   '✅ CodeConductor has restarted successfully. You may resume activity now — ' +
@@ -120,7 +105,7 @@ function waitAllIdle(instances: InstanceManagerLike, graceMs: number): Promise<{
   });
 }
 
-// Steps 1–6 of the drain: wind down, wait-for-idle (graceful — no force),
+// Steps 1–6 of the drain: soft-stop, wait-for-idle (never forced),
 // tear down networking, write the manifest (NO temp wipe), gracefully close
 // subprocesses without deleting temp jsonl. Returns the manifest entries
 // written. Split out from drainAndScheduleRestart so tests can exercise it
@@ -141,7 +126,7 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     }
   }
 
-  // Snapshot which instances had resumable work BEFORE wind-down so the manifest
+  // Snapshot which instances had resumable work BEFORE the stop so the manifest
   // can distinguish sessions that need a resume prompt from ones that were idle
   // with nothing pending (resurrected silently). "Resumable work" = mid-turn OR
   // idle-but-parked on a pending OUTGOING idle-subscription, i.e. a conductor
@@ -153,14 +138,20 @@ export async function drainToManifest({ server, wss, instances, log = console, g
     live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.id)).map((i) => i.id),
   );
 
-  // (2) Wind down mid-turn instances. wss/http stay UP throughout.
+  // (2) Stop mid-turn instances — the SOFT tier, so completed work and finished
+  // tool results survive and no tool_use is left dangling. wss/http stay UP
+  // throughout. A stop, not a steer: a wind-down message is silently dropped by a
+  // model that cannot take a mid-turn injection, and step 3 waits forever without
+  // forcing, so a swallowed steer hangs the restart indefinitely. The explanation
+  // the steer used to carry is re-delivered on boot by RESUME_TEXT /
+  // buildConductorResumeText, which is its durable owner either way.
   for (const inst of live) {
     if (inst.status !== 'turn') continue;
-    const text = groupOf(inst) === 'conductor' ? WIND_DOWN_TEXT_CONDUCTOR : WIND_DOWN_TEXT;
-    try { inst.windDown(text); } catch (e) { log.warn?.('resume-restart: windDown failed', errMsg(e)); }
+    inst.interrupt().catch((e: unknown) => log.warn?.('resume-restart: interrupt failed', errMsg(e)));
   }
 
-  // (3) Wait for all-idle — gracefully, no forced interrupt ever. If the grace
+  // (3) Wait for all-idle. Step 2's stop is the armed SOFT tier — it lands at the
+  // model's next block edge — and this loop never escalates to FORCED. If the grace
   // window expires, log a warning and keep waiting; repeat every graceMs until
   // all instances finish their turns on their own.
   { let { timedOut, stragglers } = await waitAllIdle(instances, graceMs);
@@ -232,6 +223,17 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       // queued-only (softened preamble)? Carried so the resume text is right
       // after a restart.
       overageWasStopped: !!inst._overageWasStopped,
+      // The two conductor resume-text selectors, carried for the same reason as
+      // overageWasStopped: losing either delivers a resume prompt missing a fact the
+      // conductor must act on — it then waits forever for a wake nothing will send,
+      // or never re-drives a worker nothing else will restart.
+      //
+      // KEY NAME: `overageStoppedWorkers` is the pre-rename spelling of what is now
+      // `_overageDroppedCallbacks`. Deliberately NOT renamed — a manifest written
+      // before the rename is read during exactly the restart it exists for, and a
+      // schema mismatch there is unrecoverable.
+      overageStoppedWorkers: !!inst._overageDroppedCallbacks,
+      overageUnarmedWorkers: !!inst._overageUnarmedWorkers,
       overageResetsAt: inst._overageResetsAt ?? null,
       // Messages queued during the wait window — carried across the restart so
       // they still flush with the resume once the deadline fires.
@@ -353,6 +355,8 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       if (e.overageStopped && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
         inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
+        inst._overageDroppedCallbacks = !!e.overageStoppedWorkers; // pre-rename key, see the writer
+        inst._overageUnarmedWorkers = !!e.overageUnarmedWorkers;
         // Restore queued messages BEFORE re-arming so armRestored's status emit
         // carries the restored queuedCount (badge shows "· N queued").
         inst._overageQueue = Array.isArray(e.overageQueue) ? e.overageQueue : [];
@@ -401,6 +405,8 @@ interface ResumeEntry {
   overageResumeAt: number | null;
   overageStopped: boolean;
   overageWasStopped: boolean;
+  overageStoppedWorkers: boolean;
+  overageUnarmedWorkers: boolean;
   overageResetsAt: number | null;
   overageQueue: unknown[];
   workers?: Array<{ project: string; sessionId: string; worktreeName: string | null }>;

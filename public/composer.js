@@ -52,6 +52,11 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   // composer stays usable, but sending QUEUES the message (delivered when the
   // window resets) — surfaced via a banner + "Queue" send label.
   let overagePaused = false;
+  // Stopped for overage and left UN-ARMED: no resume deadline, and the server
+  // refuses a queued send (the conductor is the sole driver). Sending is disabled
+  // rather than relabelled — offering "Queue" here would promise a delivery that
+  // cannot happen.
+  let overageUnarmed = false;
   let resumeAt = null;
 
   // Inline paused banner, prepended into the form and hidden by default.
@@ -86,16 +91,24 @@ export function attachComposer({ form, textarea, sendBtn, attachBtn, fileInput, 
   let holdDidRecord = false;        // suppress post-hold click from sending
   let recordingCancelled = false;   // abort without transcribing (pointercancel etc.)
 
-  function setState({ canType: ct, canSend: cs, overagePaused: op = false, resumeAt: ra = null }) {
-    canType = ct; canSend = cs;
-    overagePaused = !!op; resumeAt = ra;
+  function setState({ canType: ct, canSend: cs, overagePaused: op = false,
+    overageUnarmed: ou = false, resumeAt: ra = null }) {
+    canType = ct;
+    overageUnarmed = !!ou;
+    // Un-armed wins over paused: never show the queue affordance for a session
+    // whose sends are refused.
+    canSend = cs && !overageUnarmed;
+    overagePaused = !!op && !overageUnarmed;
+    resumeAt = ra;
     textarea.disabled = !ct;
     if (attachBtn) attachBtn.disabled = !ct;
     if (fileInput) fileInput.disabled = !ct;
     const at = overagePaused ? formatAutoResumeTime(resumeAt)?.replace('resumes at ', '') : null;
-    overageBanner.textContent = overagePaused
-      ? `Paused${at ? ` until ${at}` : ''} — new messages will be queued` : '';
-    overageBanner.hidden = !overagePaused;
+    overageBanner.textContent = overageUnarmed
+      ? 'Stopped for account overage — your conductor resumes this worker. Messages can\'t be queued here.'
+      : overagePaused
+        ? `Paused${at ? ` until ${at}` : ''} — new messages will be queued` : '';
+    overageBanner.hidden = !(overageUnarmed || overagePaused);
     updateButton();
   }
   setState({ canType: false, canSend: false });
