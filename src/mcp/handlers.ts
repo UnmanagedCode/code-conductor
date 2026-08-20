@@ -123,10 +123,16 @@ interface DiffFileRow {
 // list in src/mcp/tools.ts by tests/mcp-conductor-view.test.mjs, so the two
 // cannot drift.
 //
-// Excluded on purpose: `id` + `callerInstanceId` (per-process instanceIds that
-// die on restart — `sessionId` is the only worker handle this surface speaks),
-// `debugDir` (the `debug` boolean is the signal), `autoApprovePlan` (UI-only),
-// `interrupting` (transient; a conductor that called interrupt_turn knows).
+// Excluded on purpose — the complement of this list over summary(), pinned as a
+// set by tests/mcp-conductor-view.test.mjs (WITHHELD_KEYS) and described in
+// docs/protocol.md → Emitted handles; update all three together:
+// `id` + `callerInstanceId` (per-process instanceIds that die on restart —
+// `sessionId` is the only worker handle this surface speaks), `debugDir` (the
+// `debug` boolean is the signal), `autoApprovePlan` (UI-only),
+// `playbookEnforcement` (the gate reads the CALLING conductor's level, never its
+// target's — a worker's copy is the inert default), `interrupting` (transient; a
+// conductor that called interrupt_turn knows), `overageStoppedUnarmed` (the
+// OVERAGE_STOPPED_UNARMED refusal delivers it where a conductor would act on it).
 export const CONDUCTOR_VIEW_KEYS = [
   'project',
   // Load-bearing for the conductor's self-identification check: it confirms its
@@ -171,8 +177,10 @@ export const CONDUCTOR_VIEW_KEYS = [
   'overageResetsAt',
 ];
 
-// The three fields listInstances attaches on top of the shared projection (see
-// the note in listInstances). Exported so the two tests that bind against the
+// The three fields listSessions attaches on top of the shared projection, in its
+// own `view()` closure: `hasIdleSubscriber` from InstanceManager.list(),
+// `playbook`/`stage` from the playbook projection it reads once per call.
+// Exported so the two tests that bind against the
 // full list_sessions key set — the doc-drift gate in
 // tests/mcp-conductor-view.test.mjs and the rendering gate in
 // tests/mcp-text-render.test.mjs — read one definition instead of two copies.
