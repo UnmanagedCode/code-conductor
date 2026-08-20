@@ -15,9 +15,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
 import { RENEW_SUMMARY_TEMPLATE } from '../src/sessionRenew.ts';
 import { isConducted } from '../src/conductedSessions.ts';
@@ -67,8 +67,11 @@ const userTexts = (transcript) =>
     .map((o) => (o.message?.content ?? []).map((c) => c.text ?? '').join(' '));
 
 test('renew_session drives a /clear that rotates the session in place and reseeds with the summary', async () => {
-  const transcript = path.join(os.tmpdir(), `renew-tx-${process.pid}.jsonl`);
-  await fs.rm(transcript, { force: true });
+  // mkdtemp from the registry, NOT a pid-named path in os.tmpdir(): a
+  // pid-named file is orphaned by a crash and collides outright when two runs
+  // share a pid space, and nothing cleans it up. tmpRegistry tears every
+  // directory it mints down automatically, including on the crash path.
+  const transcript = path.join(await mkdtemp('renew-tx-'), 'transcript.jsonl');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
   const srv = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
   mgr = srv.instances;
@@ -190,6 +193,20 @@ test('resume after rotation resumes CURRENT, not the first segment', async () =>
     await callTool(srv.baseUrl, 'renew_session', { summary: 'resume-target check' }, { caller: publicId });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: publicId, text: 'go1' });
     await waitFor(() => inst.backingSessionId === NEW_SID && inst.status === 'idle');
+    // MISSING BARRIER, not a slow test. `backingSessionId` and `status` are both
+    // IN-MEMORY facts that flip independently of the durable lineage write: the
+    // renew path records the rotation fire-and-forget (Instance._kickLineageWrite
+    // → recordRotation). `spawn_instance {resume}` below resolves through
+    // resolveBacking(), which reads the STORE — so losing that race returns the
+    // PRE-rotation segment and this test fails in ~150ms with a misleading
+    // "resume redirection is wrong". Measured 2/45 under 24-way CPU starvation,
+    // 0/24 unloaded. flushLineage() awaits the serialised write chain and
+    // rethrows a failed write, so it is both the exact barrier and stricter than
+    // polling segmentsFor() (which cannot see a write that FAILED).
+    await inst.flushLineage();
+    const { resolveBacking: resolveBackingPreKill } = await import('../src/sessionLineage.ts');
+    assert.equal(await resolveBackingPreKill(publicId), NEW_SID,
+      'the rotation must be durable BEFORE we resume — otherwise the --resume assertion below is testing a race, not the redirection');
 
     // The fake CLI writes no transcripts, so materialise BOTH segments with
     // distinguishable content. If the resume redirection is wrong it will find a
@@ -1087,8 +1104,8 @@ test('a requested renewal: the worker authors the summary, and the followUp land
 });
 
 test('a DECLINED request: nothing is cleared, and the decline rides the conductor\'s wake', async () => {
-  const transcript = path.join(os.tmpdir(), `renew-decline-${process.pid}.jsonl`);
-  await fs.rm(transcript, { force: true });
+  // Registry-owned temp dir — see the note on the renew-tx transcript above.
+  const transcript = path.join(await mkdtemp('renew-decline-'), 'transcript.jsonl');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
   mgr = srv.instances;
