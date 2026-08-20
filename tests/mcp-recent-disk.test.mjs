@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, driveTurn } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -173,7 +173,8 @@ test('get_recent_messages: ring-first hot path (no disk dependency when the ring
     const spawn = unwrap(await callTool(ctx.baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
     await waitFor(() => instForSession(ctx.instances, spawn.sessionId)?.status === 'idle');
     // Live text turn — its prose is in the ring, no jsonl was ever written.
-    await callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(ctx.instances, spawn.sessionId, () =>
+      callTool(ctx.baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go' }));
 
     const res = unwrapMsgs(await callTool(ctx.baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(res.messages.length, 1);

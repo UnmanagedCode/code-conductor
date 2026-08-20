@@ -31,7 +31,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const { InstanceManager, Instance } = await import('../src/instances.ts');
-const { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } =
+const { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } =
   await import('./helpers.mjs');
 const { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } = await import('../public/wakeCallback.js');
 
@@ -505,7 +505,7 @@ test('e2e orphan: bg task drains at idle with no re-invocation → settle wakes 
   // Drive the target's single turn: turn_end fires while the bg task is live
   // (deferred), then task_updated + task_notification arrive at idle and the
   // stream goes silent — the orphan repro.
-  await callTool('send_prompt', { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(srvInstances, targetId, () => callTool('send_prompt', { sessionId: targetId, text: 'go' }));
   assert.equal(srvInstances._idleHub.hasSubscriber(instForSession(srvInstances, targetId).id), true,
     'deferred at turn_end (bg task still live)');
 
@@ -529,7 +529,7 @@ test('e2e trap: idle completion WITH a re-invocation turn → no early wake, sin
   const targetId = await spawnReadyWithScenario('p', SCENARIO_IDLE_REINVOKE);
 
   await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
-  await callTool('send_prompt', { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 8000 });
+  await driveTurn(srvInstances, targetId, () => callTool('send_prompt', { sessionId: targetId, text: 'go' }));
 
   const caller = instForSession(srvInstances, callerId);
   const target = instForSession(srvInstances, targetId);

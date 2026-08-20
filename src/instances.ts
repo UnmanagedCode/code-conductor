@@ -98,12 +98,9 @@ interface OverageQueueItem {
 }
 
 // One steer parked on `_pendingSteers` until the armed block-edge stop lands.
-// `beforeSend` runs synchronously in the same tick as the delivering prompt(),
-// so a caller awaiting the resulting turn can attach its listener first.
 interface PendingSteer {
   text: string;
   attachments?: unknown[];
-  beforeSend?: () => void;
   resolve: () => void;
   reject: (e: Error) => void;
 }
@@ -2843,11 +2840,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Coalescing is free: interrupt() is idempotent while armed, so N queued steers
   // arm exactly ONE abort and are delivered as one joined message.
   //
-  // Every mid-turn injection site routes here on a model that needs it; most go
-  // through promptOrQueueSteer, send_prompt calls this directly because its
-  // `wait:true` branch needs the `beforeSend` gate.
-  async queueSteerAfterStop(text: string, opts: { beforeSend?: () => void; attachments?: unknown[] } = {}): Promise<void> {
-    const entry: PendingSteer = { text, attachments: opts.attachments, beforeSend: opts.beforeSend, resolve: () => {}, reject: () => {} };
+  // Every mid-turn injection site routes here on a model that needs it, through
+  // promptOrQueueSteer.
+  async queueSteerAfterStop(text: string, opts: { attachments?: unknown[] } = {}): Promise<void> {
+    const entry: PendingSteer = { text, attachments: opts.attachments, resolve: () => {}, reject: () => {} };
     const p = new Promise<void>((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
     this._pendingSteers.push(entry);
     if (this.status !== 'turn') queueMicrotask(() => this._flushPendingSteers());
@@ -2863,7 +2859,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Drained BEFORE any await, so a second trigger in the same window delivers
     // nothing twice.
     const entries = this._pendingSteers.splice(0);
-    for (const e of entries) { try { e.beforeSend?.(); } catch { /* the caller's own waiter */ } }
     const atts = entries.flatMap(e => Array.isArray(e.attachments) ? e.attachments : []);
     this.prompt(entries.map(e => e.text).join('\n\n'), atts, { midTurnNote: POST_STOP_STEER_NOTE }).then(
       () => {

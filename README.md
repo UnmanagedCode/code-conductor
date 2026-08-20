@@ -86,7 +86,7 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 - **Playbook definitions are unpinned** — editing a definition while workers are in flight lets them drift onto the new graph rather than pinning them to the old, and a worker spawned illegally under `warn` stays untracked, so flipping to `enforce` governs new spawns only. Both are deliberate — see [docs/protocol.md](docs/protocol.md#playbooks).
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
 - **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
-- **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — via `wait:true` or (preferred, per the conductor role prompt) `wait:false` + `subscribe_to_idle`.
+- **Claude-spawning-Claude recursion** — auto-registered MCP lets any session call `spawn_instance`; children inherit the auto-registration, no depth guard. Mitigations: (1) `ORCH_DISABLE_MCP_AUTOREGISTER=1`, (2) keep child default mode `plan`, (3) observe each worker step before it proceeds — `send_prompt` auto-subscribes to the worker's idle callback (or `subscribe_to_idle` standalone).
 - **Notifications need permission** — desktop browsers need API grant; mobile Chrome needs the Service Worker; iOS Safari needs PWA install.
 
 ## Documentation

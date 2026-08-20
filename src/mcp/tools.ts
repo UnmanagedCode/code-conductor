@@ -261,22 +261,18 @@ export function buildTools(): Tool[] {
     {
       name: 'send_prompt',
       description:
-        'Send a user turn to a running instance. Defaults to wait:false (returns immediately). ' +
-        'Pass wait:true to block until the turn ends and return the turn_end event inline. ' +
+        'Send a user turn to a running instance. ' +
         'A mid-turn send_prompt steers a worker in flight rather than waiting out its turn. ' +
         'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`. ' +
-        'Skipped automatically when wait:true, since the turn already resolves inline. ' +
         'PLAYBOOKS: always carry `stage` — it is what makes send_prompt the default transition driver.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           text: { type: 'string' },
-          wait: { type: 'boolean', default: false, description: 'Block until turn_end. Default false.' },
-          waitTimeoutMs: { type: 'integer', default: 600000, description: 'Per-call wait cap (default per the schema).' },
           subscribe: {
             type: 'boolean', default: true,
-            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true. Pass false for mid-turn steers / fire-and-forget. Ignored (never subscribes) when wait:true.",
+            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true. Pass false for mid-turn steers / fire-and-forget.",
           },
           subscribeTimeoutMs: {
             type: 'integer',
@@ -415,7 +411,7 @@ export function buildTools(): Tool[] {
         'stub user prompt into the *calling* instance pointing at get_recent_messages. The wake thus means ' +
         'the worker AND all its subagents are done — a turn_end while a subagent is still running defers the ' +
         'wake until the follow-up turn_end after that subagent completes. ' +
-        'Use this right after send_prompt({wait:false}) so you can hand control back to the user but still ' +
+        'Use this right after send_prompt so you can hand control back to the user but still ' +
         'be re-woken when the worker finishes. The subscription is consumed on fire — call again to watch ' +
         'further turns. Caller identity is taken from the MCP URL (?caller=<sessionId>), so this only works for ' +
         'orchestrator-spawned instances. ' +

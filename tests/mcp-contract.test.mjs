@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -152,6 +152,28 @@ test('spawn_instance rejects a temp argument as unknown (no MCP knob for it)', a
   assert.match(body.result.content[0].text, /unexpected argument 'temp'/);
 });
 
+test('send_prompt no longer accepts wait — refused as an unknown argument, and no turn starts', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const spawn = meta(await callTool('spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+  await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
+  const inst = instForSession(instances, spawn.sessionId);
+  const before = inst.ringSnapshot().length;
+
+  const { body } = await rpc('tools/call', {
+    name: 'send_prompt',
+    arguments: { sessionId: spawn.sessionId, text: 'go', wait: true },
+  });
+  const rendered = JSON.stringify(body);
+  assert.match(rendered, /unexpected argument 'wait'/);
+  assert.match(rendered, /Allowed:.*subscribe/, 'the refusal names the surviving parameter set');
+
+  // The refusal fires before any handler work: no turn, no echo.
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(inst.status, 'idle', 'the worker never started a turn');
+  assert.ok(!inst.ringSnapshot().slice(before).some(e => e.kind === 'user_echo'),
+    'nothing was sent to the worker');
+});
+
 test('spawn_instance schema does not advertise a temp property', async () => {
   const { body } = await rpc('tools/list');
   const tool = body.result.tools.find(t => t.name === 'spawn_instance');
@@ -250,8 +272,8 @@ test('get_recent_messages → metadata + one raw body block per message (block k
   assert.equal(empty.content.length, 1);
   assert.deepEqual(meta(empty).messages, []);
 
-  await callTool('send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
-  await callTool('send_prompt', { sessionId: spawn.sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, spawn.sessionId, () => callTool('send_prompt', { sessionId: spawn.sessionId, text: 'one' }));
+  await driveTurn(instances, spawn.sessionId, () => callTool('send_prompt', { sessionId: spawn.sessionId, text: 'two' }));
 
   const res = await callTool('get_recent_messages', { sessionId: spawn.sessionId, count: 2 });
   const m = meta(res);

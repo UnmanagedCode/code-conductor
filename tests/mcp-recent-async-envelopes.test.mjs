@@ -12,7 +12,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -74,7 +74,7 @@ async function spawnAsyncShape(projectName) {
 
 test('single-block envelopes: text preceding a tool_use survives reconstruction', async () => {
   const sessionId = await spawnAsyncShape('a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'go' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1);
@@ -88,8 +88,8 @@ test('single-block envelopes: text preceding a tool_use survives reconstruction'
 
 test('single-block envelopes: plan message keeps both its prose and the hoisted plan', async () => {
   const sessionId = await spawnAsyncShape('a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'one' }));
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'text+plan live in ONE message — returned alone, no bonding needed');
@@ -107,8 +107,8 @@ test('single-block envelopes: plan message keeps both its prose and the hoisted 
 
 test('single-block envelopes: explicit count returns both messages oldest-first with intact text', async () => {
   const sessionId = await spawnAsyncShape('a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'one' }));
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'two' }));
 
   const raw = await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 2 });
   const res = unwrapMessages(raw);

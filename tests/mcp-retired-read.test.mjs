@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
-import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn } from './helpers.mjs';
 import { orchStoreRoot } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -53,7 +53,8 @@ async function retiredTempWorker(ctx, projectName, lines) {
   }));
   const sid = spawn.sessionId;
   await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
-  await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(ctx.instances, sid, () =>
+    callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'go' }));
 
   // Seed at the BACKING id — the id that actually names a transcript on disk;
   // `sid` is the public handle a conductor addresses it by.
