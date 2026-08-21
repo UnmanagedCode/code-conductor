@@ -24,9 +24,11 @@ function ms(envName, fallback) {
 // can never pre-empt a test that node itself would still cancel and report.
 // MEASURED slowest whole file: ~23-32s quiet, **~38.6s under 24-way CPU
 // starvation** — a ~2.3x margin against the 90s limit at the worst observation.
-// Read it as a PLATEAU, not one culprit: the top five files sit within ~2.7s of
-// each other under starvation, so the figure tracks CONTENTION as much as any
-// single file's own work. tests/hang-guard.test.mjs is usually at or near the
+// Read it as a PLATEAU, not one culprit: the top five files sit within ~600ms of
+// each other on a quiet box and within ~2.7s under starvation, so the figure
+// tracks CONTENTION as much as any single file's own work. (Those two spreads are
+// the same phenomenon at two load levels — docs/architecture.md points here
+// rather than restating either.) tests/hang-guard.test.mjs is usually at or near the
 // top, since it serially spawns a dozen nested runners, some CPU-burning.
 //
 // WATCH THE TREND. Across this card's three review rounds the starved plateau
@@ -37,6 +39,23 @@ function ms(envName, fallback) {
 // tests/hang-guard.test.mjs (its cases are independent subprocess runs, so
 // splitting recovers concurrency) or raise this constant — deliberately, with a
 // fresh measurement, not reactively after a false KILL.
+//
+// THE BINDING CONSTRAINT IS NOT THE HEALTHY-RUN PLATEAU. 38.6s / ~2.3x is what a
+// GREEN run costs. What actually governs whether the regression suite can be
+// silenced by the regressions it catches is the BROKEN-GUARD figure: with the
+// stall trigger disabled, several cases in tests/hang-guard.test.mjs fall back to
+// their inner cap and the file takes **68.9s quiet** — ~1.31x against this
+// constant, and at or past it once starved. Obtain it in one command:
+//
+//   temporarily disable the stall branch in tests/run.mjs, then
+//   `time node tests/run.mjs tests/hang-guard.test.mjs`
+//
+// The reassuring half: exceeding it yields a TRUNCATED RED, never a green. The
+// per-file watchdog SIGKILLs the file, the completeness ledger names it, and the
+// run fails; what is lost is the diagnostic saying WHICH guard broke. That is why
+// card 2026-0198 (split tests/hang-guard.test.mjs — its cases are independent
+// subprocess runs, so splitting recovers concurrency AND divides the broken-guard
+// cost) is the right fix rather than raising this constant.
 //
 // The `hang-guard:` verdict line prints the slowest 5 files on every run, green
 // or red. THAT live line, not this comment, is the load-bearing evidence.

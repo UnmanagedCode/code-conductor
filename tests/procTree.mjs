@@ -134,7 +134,18 @@ export function descendants(pid, snap = snapshot()) {
 // Pure over `snap`: pass a synthesised snapshot to test it without processes.
 export function processesWithMarker(marker, snap = snapshot({ environ: true })) {
   if (!marker || !snap.available) return [];
-  const needle = `CC_TEST_RUN_ID=${marker}`;
+  // The trailing '\0' ANCHORS the needle. /proc/<pid>/environ is a sequence of
+  // NUL-terminated entries (verified: the final entry is terminated too), so this
+  // makes the match exact for free. Without it, one marker being a strict prefix
+  // of another means an inner runner's sweep matches an OUTER runner's marker and
+  // SIGKILLs the outer run's processes — measured with an 8-char marker: the outer
+  // file died at 3.8s having reported 5 of 16 cases. Nothing here should depend on
+  // mkdtemp's fixed-width suffix, which is a fact of tests/safeStoreRoot.mjs and
+  // not of this predicate.
+  //
+  // Write it as the ESCAPE '\0', never a literal NUL byte: a literal would make
+  // git render every diff of this file as binary.
+  const needle = `CC_TEST_RUN_ID=${marker}\0`;
   const out = [];
   for (const info of snap.byPid.values()) {
     if (info.pid === process.pid || info.pid <= 1) continue;

@@ -58,7 +58,11 @@ function redactTotals(out) {
 // Runs the real runner against one fixture. Always awaits the child's exit, so
 // this file never leaves a ChildProcess handle behind — Layer B is preloaded
 // into this very file and would (correctly) fail it if we did.
-function runGuard(name, env = FAST, { hardTimeoutMs = 45_000, stdoutPauseMs = 0, discardStdout = false } = {}) {
+// hardTimeoutMs is 20s, not 45s: it only fires when an inner runner never arms
+// its own cap, and TWO such cases at 45s sum past the outer 90s per-file watchdog
+// — which would SIGKILL this file and truncate exactly the diagnostics naming
+// which guard broke. 20s keeps two comfortably under the deadline.
+function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPauseMs = 0, discardStdout = false } = {}) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     // NODE_TEST_CONTEXT must not reach the child. node:test sets it in every
@@ -129,6 +133,11 @@ test('processesWithMarker matches this run\'s descendants and nothing else', () 
     { pid: 4004, env: 'PATH=/usr/bin\0HOME=/root\0' },   // a stranger, no marker at all
     { pid: 4005, env: '' },                               // environ unreadable (not ours)
     { pid: 4006, env: 'CC_TEST_RUN_IDX=' + MARK + '\0' }, // near-miss variable name
+    // PREFIX SHARING — the cross-run fratricide case the trailing-NUL anchor
+    // exists for. This marker STARTS WITH ours, so an unanchored `includes`
+    // matches it and one run's sweep SIGKILLs another run's processes (measured
+    // with a truncated marker: an inner runner killed the outer run's).
+    { pid: 4007, env: envWith(MARK + 'XY') },
   ];
   const hits = processesWithMarker(MARK, snapOf(rows)).map(h => h.pid).sort((a, b) => a - b);
   assert.deepEqual(hits, [4001, 4002],
@@ -139,7 +148,18 @@ test('processesWithMarker refuses to match when it cannot see', () => {
   // No marker and no /proc are both "I cannot tell" — and must never be read as
   // "everything matches", which would SIGKILL the box.
   assert.deepEqual(processesWithMarker('', snapOf([{ pid: 4001, env: envWith(MARK) }])), []);
-  assert.deepEqual(processesWithMarker(MARK, { available: false, byPid: new Map(), byParent: new Map() }), []);
+  // The unavailable snapshot is deliberately POPULATED with a row that WOULD
+  // match. An empty byPid makes this pass with the `!snap.available` guard
+  // deleted, since the loop returns [] either way — and a partially populated
+  // unavailable snapshot is exactly what a /proc partial read yields, the one case
+  // where that guard is all that stands between "I cannot see" and a kill list.
+  assert.deepEqual(
+    processesWithMarker(MARK, {
+      available: false,
+      byPid: new Map([[4001, { pid: 4001, ident: '1', argv: [], env: envWith(MARK) }]]),
+      byParent: new Map(),
+    }),
+    [], 'an unavailable snapshot must yield nothing even when a row would match');
 });
 
 test('killPids re-verifies pid identity before signalling', () => {
@@ -206,12 +226,17 @@ test('a healthy run whose stdout consumer stalls is NOT reported as a stall', as
   // The stall check's false-positive shape, and the one that matters most because
   // it fires on GREEN runs. The ledger settles from SOURCE-stream events (push
   // time); the wait is on the COMPOSED reporter, which cannot end until the
-  // runner's stdout drains. With a paused consumer and ~200KB of output, every
-  // file settles while `end` is still blocked on backpressure, and the sampler
-  // keeps ticking throughout — so an ungated check declares STREAM STALLED,
-  // SIGKILL-sweeps, and fails a run with no defect in it. `node tests/run.mjs |
-  // less` is enough to trigger it, and raising ORPHAN_SWEEP_MS cannot help
-  // because a pager pause is unbounded.
+  // runner's stdout drains. With a paused consumer, every file settles while
+  // `end` is still blocked on backpressure and the sampler keeps ticking — so an
+  // ungated check declares STREAM STALLED, SIGKILL-sweeps, and fails a run with
+  // no defect in it. `node tests/run.mjs | less` is enough to trigger it, and
+  // raising ORPHAN_SWEEP_MS cannot help because a pager pause is unbounded.
+  //
+  // THE FIXTURE'S OUTPUT VOLUME IS LOAD-BEARING — see the do-not-shrink note in
+  // chatty.fixture.mjs. ~4MB reproduces (writes block ~4030ms); ~200KB provably
+  // does NOT (finishes in ~134ms with 0 bytes read), so a trimmed fixture would
+  // make this case pass against the broken code. Do not shrink it to speed this
+  // file up; split the file instead (card 2026-0198).
   //
   // The gate is `nodeFinished` (node's single run-level test:summary): emitted at
   // push time on a healthy run, never emitted in a genuine wedge.
@@ -324,7 +349,11 @@ test('the stall grace is actually applied, not just present', async () => {
   // would declare a stall on a healthy run. This pins the grace by TIMING —
   // with it raised to 5s the stall may not be declared before then, whereas a
   // graceless check declares it on the first tick after settling.
-  const grace = 5000;
+  // 2500ms, not 5000: a graceless check declares the stall on the first tick
+  // after settling (~100ms), so this still discriminates by ~6x while recovering
+  // ~2.5s from the suite's slowest file. Do not shrink much further — below ~1s
+  // the margin over a starved sampler tick stops being comfortable.
+  const grace = 2500;
   const r = await runGuard('detached-orphan', { ...FAST, CC_TEST_ORPHAN_SWEEP_MS: String(grace) });
   assert.notEqual(r.code, 0, `expected a red run:\n${r.out}`);
   assert.match(r.out, /hang-guard: STREAM STALLED/);
