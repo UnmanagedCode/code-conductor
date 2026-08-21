@@ -22,18 +22,24 @@ function ms(envName, fallback) {
 // Parent-side, per test file: SIGKILL a child process that has outlived this.
 // MUST stay above the 60s per-test `timeout` passed to run() in run.mjs, so it
 // can never pre-empt a test that node itself would still cancel and report.
-// MEASURED slowest whole file on this tree: ~23-32s depending on load, i.e. a
-// ~2.8x margin at the worst observation. Read that as a PLATEAU, not one culprit
-// — several unrelated files sit within ~600ms of the top under concurrency, so
-// the figure tracks contention as much as any single file's own work.
-// tests/hang-guard.test.mjs is usually at or near the top, since it serially
-// spawns a dozen nested runners, some CPU-burning.
+// MEASURED slowest whole file: ~23-32s quiet, **~38.6s under 24-way CPU
+// starvation** — a ~2.3x margin against the 90s limit at the worst observation.
+// Read it as a PLATEAU, not one culprit: the top five files sit within ~2.7s of
+// each other under starvation, so the figure tracks CONTENTION as much as any
+// single file's own work. tests/hang-guard.test.mjs is usually at or near the
+// top, since it serially spawns a dozen nested runners, some CPU-burning.
 //
-// The figure MOVES with two things this card owns: the number of cases in
-// tests/hang-guard.test.mjs, and the bounded wall-clock windows in
-// tests/mcp-subscribe-to-idle.test.mjs. The `hang-guard:` verdict line prints the
-// slowest 5 files on every run, green or red — THAT live line, not this comment,
-// is the load-bearing evidence; re-read it rather than trusting this number.
+// WATCH THE TREND. Across this card's three review rounds the starved plateau
+// went 19.4s -> 28.8s -> 38.6s (margin 4.6x -> 3.1x -> 2.3x), driven almost
+// entirely by cases added to tests/hang-guard.test.mjs plus the bounded
+// wall-clock windows in tests/mcp-subscribe-to-idle.test.mjs. It is still safe,
+// but the next few additions to either file should either split
+// tests/hang-guard.test.mjs (its cases are independent subprocess runs, so
+// splitting recovers concurrency) or raise this constant — deliberately, with a
+// fresh measurement, not reactively after a false KILL.
+//
+// The `hang-guard:` verdict line prints the slowest 5 files on every run, green
+// or red. THAT live line, not this comment, is the load-bearing evidence.
 export const FILE_KILL_MS = ms('CC_TEST_FILE_KILL_MS', 90_000);
 
 // Child-side: how long after the root after() hook begins we wait before
