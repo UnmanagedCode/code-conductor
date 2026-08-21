@@ -204,19 +204,21 @@ export async function driveTurn(instances, sessionId, send) {
   return res;
 }
 
-// Drain queued micro/macrotasks so anything already scheduled has run.
-// LOAD-INDEPENDENT, unlike `await new Promise(r => setTimeout(r, 200))`: a fixed
-// sleep is both flaky (too short when the box is starved) and weak (it passes
-// vacuously when the box is fast, because nothing forced the thing you are
-// asserting the absence of to have had its chance yet).
+// Yield the event loop a bounded number of times (`turns` setImmediate hops), so
+// work ALREADY QUEUED as macrotasks gets to run before you assert an absence.
 //
-// This is NOT a barrier on its own — it cannot wait for work that has not been
-// scheduled yet. Use it AFTER a causal barrier (a waitFor on something that is
-// downstream of the decision you are testing), never instead of one. A settle()
-// with no barrier in front of it is exactly as vacuous as the sleep it replaced.
+// WHAT IT GUARANTEES, precisely: `turns` full loop iterations have completed. It
+// does NOT guarantee that any particular pending operation has finished — a
+// spurious delivery whose path includes file I/O, a socket round-trip, or more
+// than `turns` chained continuations can still be outstanding when this returns.
+// So it is a *drain*, not a barrier, and not strictly load-independent either:
+// under enough contention a queued continuation can be preempted.
 //
-// driveTurn() above is the canonical barrier for "the target finished a turn";
-// settle() is what you add after it before asserting an ABSENCE.
+// Use it only AFTER a causal barrier — a waitFor on something downstream of the
+// decision under test. The barrier is what establishes that the decision was
+// made; settle() only flushes what that decision queued. A settle() with no
+// barrier in front of it is exactly as vacuous as the fixed sleep it replaced.
+// driveTurn() above is the canonical barrier for "the target finished a turn".
 export async function settle(turns = 3) {
   for (let i = 0; i < turns; i++) await new Promise(r => setImmediate(r));
 }

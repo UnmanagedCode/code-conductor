@@ -706,11 +706,11 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
 
   // HONEST PINNING NOTE. This test does NOT prove the watchdog timer was
   // cleared — with a 600s window an uncancelled timer is indistinguishable from
-  // a cancelled one here. Cancellation is pinned by (a) the empty snapshot
-  // below, since the only path that removes this pair from the subscriber map
-  // is the one that also calls clearTimeout (src/idleSubscriptions.ts, the
-  // `cancel watchdog — turn_end arrived first` branch), and (b) the
-  // unsubscribe negative/positive pair further down.
+  // a cancelled one here. Nor does the empty snapshot below prove it: on this
+  // path the map removal runs BEFORE the clearTimeout, so the snapshot is empty
+  // under a mutation that drops the clearTimeout entirely. The site is pinned by
+  // the bounded-window negative further down ('a turn_end DELIVERY clears the
+  // watchdog'), whose observation window an uncancelled timer cannot survive.
   //
   // It is explicitly NOT pinned by the handle-leak guard. The watchdog timer is
   // .unref()'d (src/idleSubscriptions.ts, `a lone watchdog must not keep the
@@ -768,20 +768,24 @@ test('list() hasIdleSubscriber goes false after unsubscribe', async () => {
     'hasIdleSubscriber must be false after manual unsubscribe');
 });
 
-// ── unsubscribe-clears-the-watchdog: a NEGATIVE and its POSITIVE control ─────
+// ── watchdog-cancellation: TWO negatives and ONE shared positive control ─────
 //
-// "No stub arrived" proves the timer was cleared ONLY if a stub would otherwise
-// have arrived. The pair below is what establishes that, so the negative cannot
-// decay into a vacuous green — if someone raises the window past the wait, or
-// the watchdog stops firing for an unrelated reason, the POSITIVE control goes
+// There are two distinct sites that must cancel a pending watchdog timer: the
+// unsubscribe path, and the turn_end DELIVERY path. Each gets a negative below.
+//
+// "No stub arrived" proves the timer was cancelled ONLY if a stub would
+// otherwise have arrived in the same window. The single positive control below
+// establishes exactly that — an armed watchdog with these constants DOES fire
+// inside this observation window — so neither negative can decay into a vacuous
+// green. If the watchdog stops firing for any unrelated reason, the control goes
 // red and says so.
 //
-// Both cases MUST share these two constants. Splitting them is what would let
-// the pair drift apart and silently stop being a control.
-const UNSUB_WATCHDOG_MS = 1500;
+// All three cases MUST share these two constants. Splitting them is what would
+// let the group drift apart and silently stop being a control.
+const WATCHDOG_MS = 1500;
 // Strictly greater than the watchdog, so the window provably elapses: an
 // uncancelled timer has necessarily fired by the time we assert.
-const UNSUB_OBSERVE_MS = UNSUB_WATCHDOG_MS + 600;
+const OBSERVE_MS = WATCHDOG_MS + 600;
 
 // 1500ms rather than the original 150ms because the original flake was a
 // >150ms stall between the subscribe and unsubscribe round-trips on a starved
@@ -797,7 +801,7 @@ test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered aft
   const targetId = await spawnReady('p');
 
   await callTool('subscribe_to_idle',
-    { sessionId: targetId, timeoutMs: UNSUB_WATCHDOG_MS }, { caller: callerId });
+    { sessionId: targetId, timeoutMs: WATCHDOG_MS }, { caller: callerId });
 
   // Unsubscribe immediately — should clear the timer.
   const unsub = unwrap(await callTool('unsubscribe_from_idle',
@@ -807,7 +811,7 @@ test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered aft
 
   // Outlive the window, then drain: an uncancelled watchdog has fired by now,
   // and settle() ensures its queued delivery would have reached the ring.
-  await new Promise(r => setTimeout(r, UNSUB_OBSERVE_MS));
+  await new Promise(r => setTimeout(r, OBSERVE_MS));
   await settle();
 
   const caller = instForSession(instances, callerId);
@@ -827,17 +831,60 @@ test('timeoutMs: control — WITHOUT unsubscribe the same watchdog does fire in 
   const targetId = await spawnReady('p');
 
   await callTool('subscribe_to_idle',
-    { sessionId: targetId, timeoutMs: UNSUB_WATCHDOG_MS }, { caller: callerId });
+    { sessionId: targetId, timeoutMs: WATCHDOG_MS }, { caller: callerId });
 
   const caller = instForSession(instances, callerId);
   // Bounded by the SAME window the negative waits out, not by waitFor's default
   // 10s deadline: the claim being controlled is "a stub arrives inside that
   // window", so a stub that only showed up at 8s would not justify the negative.
-  await waitFor(() => !!findTimeoutStubFor(caller, targetId), { timeout: UNSUB_OBSERVE_MS });
+  await waitFor(() => !!findTimeoutStubFor(caller, targetId), { timeout: OBSERVE_MS });
 
   assert.match(findTimeoutStubFor(caller, targetId).text, /did NOT finish/);
   assert.deepEqual(instances._idleSubscriberSnapshot(), {},
     'the fired watchdog consumes the subscription');
+});
+
+test('timeoutMs: a turn_end DELIVERY clears the watchdog — no spurious timeout stub follows', async () => {
+  // The second cancellation site, and the one with no coverage at all before
+  // this test: the turn_end delivery path's clearTimeout. Deleting it changed
+  // nothing anywhere in the suite.
+  //
+  // It cannot be pinned by an empty subscriber snapshot: the map removal happens
+  // BEFORE the clearTimeout on that path, so the snapshot is empty either way.
+  // And it cannot be pinned by the handle-leak guard: the watchdog is
+  // .unref()'d, so an uncancelled one holds nothing open. The only observable is
+  // the spurious stub it later delivers — the timer callback calls deliver()
+  // UNCONDITIONALLY, without re-checking that the subscription is still live.
+  //
+  // Production consequence if it regresses: after a wake has already been
+  // delivered, the conductor gets a second, false "did NOT finish — timed out"
+  // stub up to the subscribe timeout later.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  await callTool('subscribe_to_idle',
+    { sessionId: targetId, timeoutMs: WATCHDOG_MS }, { caller: callerId });
+
+  // Let turn_end win the race and deliver the wake. findStubFor resolving IS the
+  // barrier that the delivery path ran.
+  const caller = instForSession(instances, callerId);
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
+  await waitFor(() => !!findStubFor(caller, targetId));
+  assert.doesNotMatch(findStubFor(caller, targetId).text, /did NOT finish/,
+    'the delivered stub must be the completion one, not a timeout — if this fails the ' +
+    'watchdog beat the turn and the window needs re-examining, not widening');
+
+  // Outlive the window: an uncancelled watchdog has fired by now.
+  await new Promise(r => setTimeout(r, OBSERVE_MS));
+  await settle();
+
+  assert.equal(findTimeoutStubFor(caller, targetId), undefined,
+    'no timeout stub may follow a delivered wake — the delivery must have cleared the watchdog');
+  const allStubs = caller.ringSnapshot().filter(ev =>
+    ev.kind === 'user_echo' && ev.text?.includes(targetId));
+  assert.equal(allStubs.length, 1, 'exactly one stub for this pair, ever');
 });
 
 // ── auto-subscribe folded into send_prompt / approve_plan / reject_plan /

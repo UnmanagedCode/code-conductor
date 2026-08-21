@@ -101,13 +101,23 @@ function report() {
     lines.push(`${LEAK_MARKER}   Node (${process.version}). The leak above is still real; only the`);
     lines.push(`${LEAK_MARKER}   naming of it is lost. See docs/architecture.md → "Suite hang guard".`);
   } else if (handles.length === 0) {
-    // Timers are NOT reported by _getActiveHandles() in Node v24 (measured), yet
-    // a ref'd setTimeout absolutely does hold the loop open. So an empty handle
-    // list with a live loop is the signature of a leaked timer — the most likely
-    // cause being a watchdog/interval a teardown path failed to clear.
-    lines.push(`${LEAK_MARKER} culprits: no ref'd HANDLE — but the loop is open, which in Node`);
-    lines.push(`${LEAK_MARKER}   ${process.version} means a leaked ref'd TIMER (setTimeout/setInterval);`);
-    lines.push(`${LEAK_MARKER}   _getActiveHandles() does not report timers. Active resource types:`);
+    // Two DIFFERENT causes produce an empty handle list on a live loop, and this
+    // guard cannot tell them apart — so it must not assert either one:
+    //   * a leaked ref'd TIMER. _getActiveHandles() does not report timers at all
+    //     in Node v24 (measured), yet a ref'd setTimeout does hold the loop open.
+    //   * teardown work still IN FLIGHT. Pending fs operations and awaited child
+    //     exits are REQUESTS, not handles, so they are equally invisible here —
+    //     and "await the child's actual exit in teardown" is exactly the pattern
+    //     docs/architecture.md recommends, so this is a shape we expect to meet.
+    // Either way the loop was open past the grace, which is the criterion; only
+    // the attribution is uncertain.
+    lines.push(`${LEAK_MARKER} culprits: no ref'd HANDLE, but the loop is open. In Node`);
+    lines.push(`${LEAK_MARKER}   ${process.version} that means EITHER a leaked ref'd timer`);
+    lines.push(`${LEAK_MARKER}   (setTimeout/setInterval never cleared) OR teardown work still in`);
+    lines.push(`${LEAK_MARKER}   flight (pending fs ops / an awaited child exit) — both are`);
+    lines.push(`${LEAK_MARKER}   requests rather than handles, so neither is listable here.`);
+    lines.push(`${LEAK_MARKER}   If it is the latter, raise CC_TEST_LEAK_GRACE_MS rather than`);
+    lines.push(`${LEAK_MARKER}   hunting a timer. Active resource types:`);
     lines.push(`${LEAK_MARKER}   ${JSON.stringify(safeResourceCensus())}`);
     lines.push(`${LEAK_MARKER}   (census includes this guard's own unref'd grace timer.)`);
   } else {
