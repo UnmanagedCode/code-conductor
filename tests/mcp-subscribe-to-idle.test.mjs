@@ -14,7 +14,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, settle } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -289,8 +289,12 @@ test('subscribe_to_idle DEFERS the wake while the target has a live background A
   await waitFor(() => target.status === 'idle' && target.summary().activeAgentTasks === 1);
   assert.equal(target.summary().displayStatus, 'running');
 
-  // The wake is deferred: no stub delivered, subscription still armed.
-  await new Promise(r => setTimeout(r, 300));
+  // BARRIER: the waitFor above is downstream of the delivery decision — the
+  // turn_end handler is what flips status to 'idle', and it is the same handler
+  // that chooses to fire or defer. So the choice is already made here. settle()
+  // then drains what that choice queued: had it (wrongly) fired, the stub would
+  // be in the caller's ring and findStubFor below would find it.
+  await settle();
   const caller = instForSession(instances, callerId);
   assert.equal(findStubFor(caller, targetId), undefined,
     'wake must be deferred while a background subagent is still running');
@@ -318,8 +322,11 @@ test('subscribe_to_idle delivers exactly once after the subagent completes and a
   assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER), 'delivery stub is a wake-callback');
   assert.ok(stub.text.includes(WAKE_BODY_SEP), 'folded stub carries the body separator');
 
-  // Exactly one — the intermediate (deferred) turn_end did not also deliver.
-  await new Promise(r => setTimeout(r, 200));
+  // BARRIER: findStubFor resolved, so the FOLLOW-UP turn_end has been handled —
+  // and the intermediate (deferred) turn_end strictly preceded it. A second
+  // delivery from that earlier turn_end would therefore already be queued, and
+  // settle() drains it into the ring, making the count 2.
+  await settle();
   const stubs = countUserEchoes(caller,
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubs, 1, 'delivery fires exactly once, at the follow-up turn_end');
@@ -350,7 +357,11 @@ test('subscribe_to_idle defers a MID-TURN subagent completion until the re-invoc
   await waitFor(() => target.status === 'idle');
   // The completion happened mid-turn, so this turn_end must be DEFERRED even
   // though the count is 0 — the subscription stays armed and no stub lands yet.
-  await new Promise(r => setTimeout(r, 300));
+  // BARRIER: `target.status === 'idle'` above means turn 1's turn_end handler
+  // ran, and that handler is where the defer-or-fire choice happens. settle()
+  // drains a delivery it would have queued, so a wrongly-fired wake shows up in
+  // findStubFor below rather than racing us.
+  await settle();
   assert.equal(target.summary().activeAgentTasks, 0, 'count already drained (completion was mid-turn)');
   assert.equal(findStubFor(caller, targetId), undefined,
     'a mid-turn completion must NOT wake the caller at that turn_end (re-invocation turn owed)');
@@ -363,7 +374,10 @@ test('subscribe_to_idle defers a MID-TURN subagent completion until the re-invoc
   await waitFor(() => !!findStubFor(caller, targetId));
   assert.match(findStubFor(caller, targetId).text, /finished its turn/);
 
-  await new Promise(r => setTimeout(r, 200));
+  // BARRIER: turn 2's delivery has landed, and turn 1's turn_end was asserted
+  // deferred above — so both handlers have run. A duplicate from either would
+  // already be queued; settle() drains it and the count becomes 2.
+  await settle();
   const stubs = countUserEchoes(caller,
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubs, 1, 'delivery fires exactly once, at the re-invocation turn_end');
@@ -397,7 +411,10 @@ test('subscribe_to_idle wakes at turn_end when a MID-TURN completion was consume
 
   // Exactly once, and the one-shot subscription is consumed — no re-invocation
   // turn is needed or awaited.
-  await new Promise(r => setTimeout(r, 200));
+  // BARRIER: the wake landed, so this turn's turn_end handler has run. A second
+  // delivery could only have been queued by that same handler, and settle()
+  // drains it — so a double-fire reads as count 2 rather than slipping past us.
+  await settle();
   const stubs = countUserEchoes(caller,
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubs, 1, 'wake fires exactly once, at the consuming turn\'s end');
@@ -479,10 +496,18 @@ test('one-shot: a second target turn does not re-fire the callback', async () =>
 
   // Turn 2: scenario-ws has a second turn defined. Drive it and assert
   // no additional stub arrives.
+  // BARRIER, in two steps, because the assertion below is a NEGATIVE one.
+  // driveTurn waits for a NEW turn_end to reach the target's ring (send_prompt's
+  // blocking wait option is gone as of card 2026-0187). Then wait for the
+  // instance-level handler to have completed — `status === 'idle'` is set by the
+  // same turn_end handling that would re-fire the callback — and settle() drains
+  // the delivery it would have queued. So a re-fire is COUNTED here rather than
+  // outrun by us.
   await driveTurn(instances, targetId, () => callTool('send_prompt',
     { sessionId: targetId, text: 'two' }));
-  // Give any spurious delivery a chance to land before we count.
-  await new Promise(r => setTimeout(r, 200));
+  const target = instForSession(instances, targetId);
+  await waitFor(() => target.status === 'idle');
+  await settle();
   const stubsAfterTurn2 = countUserEchoes(caller,
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages'));
   assert.equal(stubsAfterTurn2, 1, 'subscription is one-shot — no second stub');
@@ -565,9 +590,17 @@ test('unsubscribe_from_idle cancels a pending subscription', async () => {
   assert.deepEqual(instances._idleSubscriberSnapshot(), {});
 
   // Driving the target now should not deliver a stub.
+  // BARRIER, in two steps — see the one-shot test above for why a negative
+  // assertion needs both. driveTurn gets a new turn_end into the ring; the
+  // status wait means the handler that makes the fire-or-defer decision has
+  // finished; settle() drains what it queued. Had the unsubscribe failed to
+  // remove the pair, that handler would have queued a stub and it would be in
+  // the ring for the assertion below, instead of racing us.
   await driveTurn(instances, targetId, () => callTool('send_prompt',
     { sessionId: targetId, text: 'go' }));
-  await new Promise(r => setTimeout(r, 200));
+  const target = instForSession(instances, targetId);
+  await waitFor(() => target.status === 'idle');
+  await settle();
   const caller = instForSession(instances, callerId);
   assert.equal(findStubFor(caller, targetId), undefined);
 
@@ -638,9 +671,20 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
   const callerId = await spawnReady('p');
   const targetId = await spawnReady('p');
 
-  // Long watchdog — turn_end should fire well before it.
+  // A watchdog nothing can beat. At the previous 2000ms this test RACED
+  // production's real watchdog against a real fake-CLI turn round-trip: on a
+  // starved box the watchdog won and the test failed on a `did NOT finish` stub.
+  //
+  // Raising it costs nothing that existed. The old "timer was cancelled"
+  // assertion below was ALREADY vacuous: the observation ended ~300ms after the
+  // stub arrived, well inside the 2000ms window, so an UNCANCELLED watchdog would
+  // not have fired within the observation window either. (That ~300ms was the
+  // fixed sleep, not the round-trip: MEASURED subscribe→stub is 1-11ms quiet and
+  // max 47ms under 24-way starvation. An earlier version of this comment implied
+  // ~500ms and misled a reviewer into thinking the bounded window below was
+  // marginal.)
   await callTool('subscribe_to_idle',
-    { sessionId: targetId, timeoutMs: 2000 }, { caller: callerId });
+    { sessionId: targetId, timeoutMs: 600_000 }, { caller: callerId });
 
   // Drive the target to turn_end before the watchdog fires.
   await driveTurn(instances, targetId, () => callTool('send_prompt',
@@ -655,11 +699,30 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
   // Must NOT say "did NOT finish".
   assert.doesNotMatch(completionStub.text, /did NOT finish/);
 
-  // Wait well past the 2000ms watchdog window to confirm the timer was cancelled.
-  await new Promise(r => setTimeout(r, 300));
+  // Barrier: the delivery decision is already made (findStubFor above resolved,
+  // so turn_end was processed and the stub was written to the ring). settle()
+  // then drains anything that decision queued. A second delivery would have to
+  // be scheduled by that same drained work, so it would be in the ring here.
+  await settle();
   const allStubs = caller.ringSnapshot().filter(ev =>
     ev.kind === 'user_echo' && ev.text?.includes(targetId));
-  assert.equal(allStubs.length, 1, 'exactly one stub — timer was cancelled');
+  assert.equal(allStubs.length, 1, 'exactly one stub delivered for this pair');
+
+  // HONEST PINNING NOTE. This test does NOT prove the watchdog timer was
+  // cleared — with a 600s window an uncancelled timer is indistinguishable from
+  // a cancelled one here. Nor does the empty snapshot below prove it: on this
+  // path the map removal runs BEFORE the clearTimeout, so the snapshot is empty
+  // under a mutation that drops the clearTimeout entirely. The site is pinned by
+  // the bounded-window negative further down ('a turn_end DELIVERY clears the
+  // watchdog'), whose observation window an uncancelled timer cannot survive.
+  //
+  // It is explicitly NOT pinned by the handle-leak guard. The watchdog timer is
+  // .unref()'d (src/idleSubscriptions.ts, `a lone watchdog must not keep the
+  // event loop alive`), and Node v24's process._getActiveHandles() does not
+  // report timers at all — so an uncancelled watchdog holds nothing open and is
+  // invisible to tests/handleLeakGuard.mjs. Do not "restore" that coupling.
+  assert.deepEqual(instances._idleSubscriberSnapshot(), {},
+    'the subscription is consumed — the same branch that removes it clears the timer');
 });
 
 // ── list() hasIdleSubscriber semantics ───────────────────────────────────────
@@ -709,13 +772,51 @@ test('list() hasIdleSubscriber goes false after unsubscribe', async () => {
     'hasIdleSubscriber must be false after manual unsubscribe');
 });
 
+// ── watchdog-cancellation: TWO negatives and ONE shared positive control ─────
+//
+// There are two distinct sites that must cancel a pending watchdog timer: the
+// unsubscribe path, and the turn_end DELIVERY path. Each gets a negative below.
+//
+// "No stub arrived" proves the timer was cancelled ONLY if a stub would
+// otherwise have arrived in the same window. The single positive control below
+// establishes exactly that — an armed watchdog with these constants DOES fire
+// inside this observation window — so neither negative can decay into a vacuous
+// green. If the watchdog stops firing for any unrelated reason, the control goes
+// red and says so.
+//
+// All three cases MUST share these two constants. Splitting them is what would
+// let the group drift apart and silently stop being a control.
+//
+// WHY 1500 IS SAFE FOR THE DELIVERY NEGATIVE, measured rather than chosen. That
+// case needs a real turn to beat a real watchdog, which is the race §3a exists to
+// remove — so the margin was measured instead of assumed. subscribe→delivered-stub
+// over 30 quiet samples: min 1ms, p50 3ms, max 11ms. Over 90 samples under 24-way
+// CPU starvation (load 10-26): p50 7ms, p90 ~24ms, **max 47ms**. Against 1500ms
+// that is a ~32x margin on the worst starved observation, so the window was kept
+// rather than widened (widening it would lengthen all three cases). The turn is
+// an in-process fake CLI and driveTurn already waits for turn_end, which is why
+// the round-trip is milliseconds and not the ~500ms a reader might assume.
+// Re-measure before shrinking this, or if the fake CLI ever becomes a subprocess.
+const WATCHDOG_MS = 1500;
+// Strictly greater than the watchdog, so the window provably elapses: an
+// uncancelled timer has necessarily fired by the time we assert.
+const OBSERVE_MS = WATCHDOG_MS + 600;
+
+// 1500ms rather than the original 150ms because the original flake was a
+// >150ms stall between the subscribe and unsubscribe round-trips on a starved
+// box — a 10x margin for two localhost HTTP calls. This is a genuine wall-clock
+// dependence and cannot be removed without a fake clock (an src/ change, out of
+// scope for this card): the assertion is "the timer did not fire", which
+// requires giving it a real chance to fire. Same reason the `watchdog fires`
+// test above keeps a short window. If this ever flakes, the answer is a
+// different assertion, not a bigger number.
 test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered after unsubscribe', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
   const targetId = await spawnReady('p');
 
   await callTool('subscribe_to_idle',
-    { sessionId: targetId, timeoutMs: 150 }, { caller: callerId });
+    { sessionId: targetId, timeoutMs: WATCHDOG_MS }, { caller: callerId });
 
   // Unsubscribe immediately — should clear the timer.
   const unsub = unwrap(await callTool('unsubscribe_from_idle',
@@ -723,14 +824,82 @@ test('timeoutMs: unsubscribe clears the watchdog timer — no stub delivered aft
   assert.equal(unsub.removed, true);
   assert.deepEqual(instances._idleSubscriberSnapshot(), {});
 
-  // Wait well past the 150ms window.
-  await new Promise(r => setTimeout(r, 300));
+  // Outlive the window, then drain: an uncancelled watchdog has fired by now,
+  // and settle() ensures its queued delivery would have reached the ring.
+  await new Promise(r => setTimeout(r, OBSERVE_MS));
+  await settle();
 
   const caller = instForSession(instances, callerId);
   assert.equal(findTimeoutStubFor(caller, targetId), undefined,
     'no timeout stub after unsubscribe');
   assert.equal(findStubFor(caller, targetId), undefined,
     'no completion stub either');
+});
+
+test('timeoutMs: control — WITHOUT unsubscribe the same watchdog does fire in the same window', async () => {
+  // The negative above is only meaningful because of this. Identical setup and
+  // identical observation window; the ONLY difference is that nothing
+  // unsubscribes. If this ever fails, the negative above has become vacuous and
+  // must not be trusted.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  await callTool('subscribe_to_idle',
+    { sessionId: targetId, timeoutMs: WATCHDOG_MS }, { caller: callerId });
+
+  const caller = instForSession(instances, callerId);
+  // Bounded by the SAME window the negative waits out, not by waitFor's default
+  // 10s deadline: the claim being controlled is "a stub arrives inside that
+  // window", so a stub that only showed up at 8s would not justify the negative.
+  await waitFor(() => !!findTimeoutStubFor(caller, targetId), { timeout: OBSERVE_MS });
+
+  assert.match(findTimeoutStubFor(caller, targetId).text, /did NOT finish/);
+  assert.deepEqual(instances._idleSubscriberSnapshot(), {},
+    'the fired watchdog consumes the subscription');
+});
+
+test('timeoutMs: a turn_end DELIVERY clears the watchdog — no spurious timeout stub follows', async () => {
+  // The second cancellation site, and the one with no coverage at all before
+  // this test: the turn_end delivery path's clearTimeout. Deleting it changed
+  // nothing anywhere in the suite.
+  //
+  // It cannot be pinned by an empty subscriber snapshot: the map removal happens
+  // BEFORE the clearTimeout on that path, so the snapshot is empty either way.
+  // And it cannot be pinned by the handle-leak guard: the watchdog is
+  // .unref()'d, so an uncancelled one holds nothing open. The only observable is
+  // the spurious stub it later delivers — the timer callback calls deliver()
+  // UNCONDITIONALLY, without re-checking that the subscription is still live.
+  //
+  // Production consequence if it regresses: after a wake has already been
+  // delivered, the conductor gets a second, false "did NOT finish — timed out"
+  // stub up to the subscribe timeout later.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReady('p');
+
+  await callTool('subscribe_to_idle',
+    { sessionId: targetId, timeoutMs: WATCHDOG_MS }, { caller: callerId });
+
+  // Let turn_end win the race and deliver the wake. findStubFor resolving IS the
+  // barrier that the delivery path ran.
+  const caller = instForSession(instances, callerId);
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
+  await waitFor(() => !!findStubFor(caller, targetId));
+  assert.doesNotMatch(findStubFor(caller, targetId).text, /did NOT finish/,
+    'the delivered stub must be the completion one, not a timeout — if this fails the ' +
+    'watchdog beat the turn and the window needs re-examining, not widening');
+
+  // Outlive the window: an uncancelled watchdog has fired by now.
+  await new Promise(r => setTimeout(r, OBSERVE_MS));
+  await settle();
+
+  assert.equal(findTimeoutStubFor(caller, targetId), undefined,
+    'no timeout stub may follow a delivered wake — the delivery must have cleared the watchdog');
+  const allStubs = caller.ringSnapshot().filter(ev =>
+    ev.kind === 'user_echo' && ev.text?.includes(targetId));
+  assert.equal(allStubs.length, 1, 'exactly one stub for this pair, ever');
 });
 
 // ── auto-subscribe folded into send_prompt / approve_plan / reject_plan /
@@ -766,7 +935,11 @@ test('send_prompt subscribe:false does not register a subscription', async () =>
   const target = instForSession(instances, targetId);
   await waitFor(() => target.status === 'idle');
   const caller = instForSession(instances, callerId);
-  await new Promise(r => setTimeout(r, 200));
+  // BARRIER: `target.status === 'idle'` above means the turn_end handler ran.
+  // Had subscribe:false still registered a subscription, that handler would have
+  // queued a stub; settle() drains it into the ring so its absence here is a
+  // real result rather than a fast box.
+  await settle();
   assert.equal(findStubFor(caller, targetId), undefined, 'no stub without a subscription');
 });
 

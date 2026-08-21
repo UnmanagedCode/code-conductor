@@ -3,11 +3,14 @@
 // node:test runner via its public API instead.
 import { run } from 'node:test';
 import { spec } from 'node:test/reporters';
-import { promises as fs, readdirSync, readFileSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSafeRoot, assertStoreIsolated, removeSafeRoot } from './safeStoreRoot.mjs';
+import { snapshot, countMatching, liveChildren, descendants, killTree, killDescendants, killPids,
+         processesWithMarker } from './procTree.mjs';
+import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS } from './hangGuardConfig.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +23,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const safeRoot = createSafeRoot();
 process.env.PROJECTS_ROOT = safeRoot.projectsRoot;
 process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
+
+// Run-unique marker, exported BEFORE any child forks so every descendant at any
+// depth inherits it. This is how a leaked process is identified EXACTLY rather
+// than heuristically — see processesWithMarker in tests/procTree.mjs. It gets its
+// own variable because PROJECTS_ROOT (the obvious candidate) is reassigned by
+// bootServer per server, so a grandchild spawned mid-test would not carry the
+// run root. Nothing else writes CC_TEST_RUN_ID.
+const RUN_MARKER = path.basename(safeRoot.root); // mkdtemp'd, so unique per run
+process.env.CC_TEST_RUN_ID = RUN_MARKER;
 
 // Backstop: abort loudly if the resolved store still points into the real
 // workspace (env forced above, so this validates the default and catches a
@@ -78,26 +90,207 @@ if (files.length === 0) {
 // spawns real processes without opting in. /proc reads are safe on this host;
 // pkill/lsof are not — do not use them here.
 const FAKE_CLAUDE_BUDGET = 12;
-function countFakeClaudeProcs() {
-  let pids;
-  try { pids = readdirSync('/proc'); } catch { return -1; } // no /proc (non-Linux)
-  let n = 0;
-  for (const pid of pids) {
-    if (!/^\d+$/.test(pid)) continue;
-    try {
-      if (readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('fake-claude.mjs')) n++;
-    } catch { /* vanished or unreadable — skip */ }
-  }
-  return n;
-}
 let peakFakeClaude = 0;
-let sampledProcs = false;
+let sampledProcs = false;   // at least one tick READ /proc successfully
+let samplerTicks = 0;       // ticks that ran at all
+
+// ---------------------------------------------------------------------------
+// Layer A of the suite hang guard (card 2026-0190) — the PROCESS-level
+// guarantee. The `timeout: 60_000` passed to run() below reaches each child as
+// `--test-timeout`, which is a PER-TEST deadline on the test body's promise: it
+// cancels the TEST, and has nothing to do with the child's lifetime. A test
+// that PASSES while leaking a handle never trips it at all. Since node emits a
+// file's terminal `test:summary` only when its child EXITS, such a file wedges
+// `reporter.on('end')` below forever — the 2026-0183 failure, which cost
+// code-mutant's whole 300s external ceiling.
+//
+// `--test-force-exit` was evaluated and REJECTED: it does make leaking children
+// exit, but it process.exit()s the child and TRUNCATES its pending report to the
+// parent pipe. Two measured whole-suite scans with it on disagreed by 31 tests,
+// one silently emitting nothing at all for tests/mcp-conductor-view.test.mjs
+// while still reporting `fail 0` and exit 0. A silent green is strictly worse
+// than a hang, which is why A1 below exists regardless of cause.
+// ---------------------------------------------------------------------------
+
+// A1 — completeness ledger. Every discovered file must emit its own terminal
+// per-file summary. Anything discovered but never reported is named and counted
+// as a failure at the end, so a silently-absent file is impossible.
+const discovered = new Set(files);
+const reported = new Set();
+const fileStartedAt = new Map(); // file -> ms at first sighting
+const fileDurations = new Map(); // file -> dispatch→report ms
+
+// A2 — per-file process watchdog. Maps live direct children to the test file
+// named as the LAST element of their argv (verified: node:test's per-file child
+// is a direct child of this process and carries the absolute path we passed to
+// run() as its final argument). A child alive longer than FILE_KILL_MS is
+// SIGKILLed together with its whole descendant tree.
+const childFirstSeen = new Map(); // pid -> { at, file }
+const killedFiles = new Map();    // file -> ms it had been alive when killed
+// Descendants observed under each file's child WHILE IT WAS ALIVE. Recorded
+// eagerly because we cannot recover them later: when the child dies, its own
+// children are reparented to init, so they stop being descendants of this
+// runner and no /proc walk from here will ever find them again. A grandchild
+// that inherited the child's stdio keeps the REPORT PIPE open, so the stream
+// never ends even though every test passed and the child exited cleanly
+// (measured: the run hung until the absolute cap).
+const fileDescendants = new Map(); // file -> Map<pid, ident>
+const childGoneAt = new Map();     // file -> ms its last live child vanished
+let sweptOrphans = 0;              // leaked pids we managed to SIGKILL
+let streamStalled = false;         // all files accounted for, stream never ended
+// When each discovered file became final — see the "SETTLED" note in the sampler.
+const settledAt = new Map();       // file -> ms
+let streamEnded = false;
+let resolveWait = null;            // lets a stall abandon the reporter-end wait
+// Set when node emits its single RUN-LEVEL summary (`data.file === undefined`).
+// This is the discriminator that keeps the stall check from firing on a healthy
+// run whose STDOUT CONSUMER is slow — see the stall block for why that matters.
+let nodeFinished = false;
+
 const procSampler = setInterval(() => {
-  const n = countFakeClaudeProcs();
-  if (n < 0) return; // /proc unavailable
-  sampledProcs = true;
-  if (n > peakFakeClaude) peakFakeClaude = n;
+  samplerTicks++;
+  const snap = snapshot();
+  const n = countMatching('fake-claude.mjs', snap);
+  if (n >= 0) {
+    sampledProcs = true;
+    if (n > peakFakeClaude) peakFakeClaude = n;
+  }
+  const now = Date.now();
+  const live = new Set();
+  for (const { pid, argv } of liveChildren(process.pid, snap)) {
+    const file = argv[argv.length - 1];
+    if (!discovered.has(file)) continue; // not a per-file test child
+    live.add(pid);
+    if (!fileDescendants.has(file)) fileDescendants.set(file, new Map());
+    for (const d of descendants(pid, snap)) {
+      fileDescendants.get(file).set(d, snap.byPid.get(d)?.ident ?? null);
+    }
+    childGoneAt.delete(file);
+    if (!childFirstSeen.has(pid)) { childFirstSeen.set(pid, { at: now, file }); continue; }
+    const seen = childFirstSeen.get(pid);
+    const age = now - seen.at;
+    if (age <= FILE_KILL_MS || killedFiles.has(seen.file)) continue;
+    // Kill the tree, not just the child — see fileDescendants above.
+    const pids = killTree(pid, snap);
+    killedFiles.set(seen.file, age);
+    console.error(
+      `\nhang-guard: KILLED ${seen.file} after ${age}ms (limit ${FILE_KILL_MS}ms; ` +
+      `SIGKILLed pids ${pids.join(',') || 'none'}). The file never exited, so it would ` +
+      'have hung the whole run — node only reports a file when its child exits.',
+    );
+  }
+  // Drop exited pids so a recycled pid can't inherit a stale firstSeen, and
+  // note when each file lost its last live child.
+  for (const [pid, seen] of childFirstSeen) {
+    if (live.has(pid)) continue;
+    childFirstSeen.delete(pid);
+    if (!childGoneAt.has(seen.file)) childGoneAt.set(seen.file, now);
+  }
+  // STREAM-STALL DETECTION — the termination guarantee for a leaked process.
+  //
+  // The trigger is deliberately NOT "this file failed to report". The measured
+  // orphan shape is a file whose child exits CLEANLY with every test passing:
+  // its summary ARRIVES, so a `reported`-gated check switches itself off in
+  // exactly the case it exists for. Meanwhile a process holding stdio it
+  // inherited from that child keeps our read end open, so `reporter.on('end')`
+  // never fires and the run falls through to the absolute cap — the 2026-0183
+  // outcome, reached through a shape we had already measured.
+  //
+  // The honest condition is "the run should be over but is not": every
+  // discovered file is accounted for (reported or killed), yet the stream has
+  // not ended. At that point the stream can teach us NOTHING further — every
+  // file's verdict is already in — so we stop waiting on it. That is what bounds
+  // the damage even when the leaked process cannot be identified at all, and it
+  // needs no /proc access to work.
+  // A file is SETTLED once we will learn nothing further about it.
+  //   1. it reported — the ordinary case;
+  //   2. we killed it — NOT load-bearing for detection: a killed file's child is
+  //      by definition gone, so clause 3 would settle it anyway. All this clause
+  //      changes is the TIMESTAMP (kill time rather than the earlier
+  //      child-vanished time), which widens the grace slightly for a killed file.
+  //      Nothing observes the difference; it is kept for intent, not effect;
+  //   3. its child is gone and it still has not reported — load-bearing. Layer B
+  //      exits a leaking child, which yields a test:fail but never a
+  //      test:summary, so waiting on `reported` alone would wait forever and fall
+  //      through to the cap.
+  for (const f of discovered) {
+    if (settledAt.has(f)) continue;
+    if (reported.has(f) || killedFiles.has(f)) settledAt.set(f, now);
+    else if (childGoneAt.has(f)) settledAt.set(f, childGoneAt.get(f));
+  }
+  // Grace measured from the LAST file to settle, so it is applied once rather
+  // than compounding per file.
+  // `nodeFinished` is REQUIRED, and is what makes this safe on a slow stdout
+  // consumer. The ledger settles from events on the SOURCE stream, which fire at
+  // push time; the wait is on the COMPOSED reporter, which cannot end until
+  // stdout drains. Under `| less`, `| tee` on a slow disk, or any bursty non-TTY
+  // consumer, everything settles while `end` is still blocked on backpressure —
+  // measured: 9 sampler ticks across a 2s paused reader — so without this gate a
+  // perfectly healthy run would declare a stall, SIGKILL-sweep and exit 1.
+  // Raising ORPHAN_SWEEP_MS cannot fix that; a pager pause is unbounded.
+  //
+  // The run-level summary is the exact discriminator (both directions measured):
+  // node emits it at push time in the clean case (~44ms, with nothing consuming
+  // our stdout) and NEVER in the genuine wedge (absent through 5s). So node
+  // finished ⇒ never a stall; node didn't finish ⇒ detection unchanged.
+  const shouldBeOver = !nodeFinished &&
+    settledAt.size === discovered.size &&
+    now - Math.max(...settledAt.values()) > ORPHAN_SWEEP_MS;
+
+  if (!streamEnded && !streamStalled && shouldBeOver) {
+    streamStalled = true;
+    sweepOrphans(snap, 'stream stall');
+    console.error(
+      `\nhang-guard: STREAM STALLED — all ${discovered.size} discovered file(s) are settled, ` +
+      `but the report stream had still not ended ${ORPHAN_SWEEP_MS}ms later. A test leaked a live ` +
+      'process holding stdio inherited from its test child, which keeps our read end open. ' +
+      'Abandoning the wait so the run still produces a verdict. This FAILS the run: a test that ' +
+      'leaks a live process must not read as a pass.',
+    );
+    resolveWait?.();
+  }
 }, 100);
+
+// BEST-EFFORT kill of leaked processes. Two sources, neither complete:
+//   1. our own live descendants (a grandchild whose parent is still alive);
+//   2. pids recorded under each file while its child was alive.
+//
+// WHY THIS CANNOT BE MADE COMPLETE — do not re-attempt the obvious fixes:
+//   * A grandchild is reparented to init the moment its parent dies, so it is
+//     no longer reachable by any /proc walk from here.
+//   * If the file completed inside one 100ms sampler tick it was never recorded
+//     either (measured: a 33ms file's orphan survived an entire run).
+//   * Identifying the orphan by FD-INODE MATCHING does not work: node spawns
+//     child stdio over socketpairs, and a socketpair's two ends have DIFFERENT
+//     inodes, so our /proc/<pid>/fd link never equals the orphan's (measured:
+//     zero overlap, every time). This refutes inode EQUALITY only — peer
+//     resolution does exist, via netlink UNIX_DIAG_PEER; that is out of scope
+//     here, not impossible, so nobody should be warned off it by this note.
+//
+// The third source below is an EXACT identity and covers everything the first
+// two miss. Termination does not depend on any of them: the stream-stall check
+// above needs no /proc at all.
+function sweepOrphans(snap, why) {
+  const targets = descendants(process.pid, snap).reverse()
+    .map(pid => ({ pid, ident: snap.byPid.get(pid)?.ident ?? null }));
+  // Everything carrying this run's marker: an EXACT identity that covers a
+  // detached orphan, a reparented one, and one from a file too fast to have been
+  // sampled — none of which the two lists above can see. Needs the environ-aware
+  // snapshot, which is why the sweep takes its own rather than reusing the
+  // sampler's.
+  targets.push(...processesWithMarker(RUN_MARKER, snapshot({ environ: true })));
+  for (const perFile of fileDescendants.values()) {
+    for (const [pid, ident] of [...perFile].reverse()) targets.push({ pid, ident });
+  }
+  const seen = new Set();
+  const orphans = killPids(targets.filter(t => (seen.has(t.pid) ? false : seen.add(t.pid))));
+  if (orphans.length === 0) return;
+  sweptOrphans += orphans.length;
+  console.error(
+    `\nhang-guard: SWEPT ${orphans.length} leaked process(es) ` +
+    `(pids ${orphans.join(',')}; trigger: ${why}).`,
+  );
+}
 procSampler.unref?.();
 
 const concurrency = resolveConcurrency();
@@ -109,19 +302,140 @@ const concurrency = resolveConcurrency();
 // AssertionError instead of stalling the file for 33-120s in assert's
 // serializer (tests/dom-assert-tripwire.mjs). `run()` spawns process.execPath
 // directly, so this does not go through the node wrapper noted at line 1.
+// Preload the handle-leak guard alongside it (Layer B — tests/handleLeakGuard.mjs):
+// it registers a root after() hook that arms an unref'd LEAK_GRACE_MS timer, so a
+// file which finishes its tests but leaves the loop open fails by name instead of
+// hanging the run forever.
 const tripwireUrl = pathToFileURL(path.join(__dirname, 'dom-assert-tripwire.mjs')).href;
-const stream = run({ files, concurrency, timeout: 60_000, execArgv: ['--import', tripwireUrl] });
+const leakGuardUrl = pathToFileURL(path.join(__dirname, 'handleLeakGuard.mjs')).href;
+const stream = run({
+  files, concurrency, timeout: 60_000,
+  execArgv: ['--import', tripwireUrl, '--import', leakGuardUrl],
+});
 let failed = 0;
 stream.on('test:fail', (data) => {
   // Skip the implicit top-level pass/fail summary entries; only count real failures.
   if (data.details?.type === 'suite') return;
   failed++;
 });
+// Ledger wiring. A per-file `test:summary` carries `data.file`; the single
+// run-level summary emitted last carries `file === undefined`, so the truthiness
+// check is what distinguishes them (verified against node v24.18.0).
+stream.on('test:dequeue', (d) => {
+  if (d.file && !fileStartedAt.has(d.file)) fileStartedAt.set(d.file, Date.now());
+});
+stream.on('test:summary', (d) => {
+  if (!d.file) { nodeFinished = true; return; } // the single run-level summary
+  reported.add(d.file);
+  const startedAt = fileStartedAt.get(d.file);
+  if (startedAt !== undefined) fileDurations.set(d.file, Date.now() - startedAt);
+});
 const reporter = stream.compose(new spec());
 reporter.pipe(process.stdout);
-await new Promise((resolve) => reporter.on('end', resolve));
 
-clearInterval(procSampler);
+// A3 — absolute run cap. Races the stream's own end against RUN_CAP_MS so a
+// wedge we somehow failed to kill still produces OUR verdict rather than an
+// external harness's ceiling.
+//
+// The cap timer is deliberately REF'D (the plan called for unref'd), and this is
+// LOAD-BEARING, not belt-and-braces. An unref'd timer cannot fire once the loop
+// has otherwise drained — the "all children gone but the stream never emitted
+// 'end'" case, where the runner would exit NATURALLY with code 0 and skip the
+// verdict entirely. Critically, `procSampler` is itself .unref()'d, so on a
+// genuinely drained loop the stream-stall check above cannot run either: this
+// timer is the ONLY surviving mechanism for that shape. Do not unref it.
+//
+// Disclosed gap: no test discriminates ref'd from unref'd, because inducing a
+// drained loop with a pending stream requires something holding the stream open,
+// and everything that does also holds a handle. tests/hang-guard.test.mjs pins
+// the cap's observable behaviour instead (fires / fails / prints the verdict /
+// bounds the wall) with a child still alive — a state an unref'd timer would also
+// fire in. The `finally` below is what stops it outliving a clean run.
+let capTripped = false;
+let capTimer;
+try {
+  await Promise.race([
+    new Promise((resolve) => {
+      resolveWait = resolve; // the stream-stall check above abandons the wait
+      reporter.on('end', () => { streamEnded = true; resolve(); });
+    }),
+    new Promise((resolve) => { capTimer = setTimeout(() => { capTripped = true; resolve(); }, RUN_CAP_MS); }),
+  ]);
+} finally {
+  // Release on BOTH paths. A teardown reachable only on success is the exact bug
+  // class this card is about — do not move these into the happy path.
+  clearInterval(procSampler);
+  clearTimeout(capTimer);
+}
+
+if (capTripped) {
+  console.error(
+    `\nhang-guard: RUN CAP TRIPPED — the run exceeded ${RUN_CAP_MS}ms and was aborted. ` +
+    'Raise CC_TEST_RUN_CAP_MS if the box is merely slow (e.g. a starvation campaign); ' +
+    'otherwise a file is wedged and is named below.',
+  );
+  // killDescendants, NOT killTree — killTree(process.pid) would SIGKILL the
+  // runner itself and turn a reportable timeout into a bare exit 137 with no
+  // verdict at all.
+  const snap = snapshot();
+  for (const pid of killDescendants(process.pid, snap)) {
+    console.error(`hang-guard:   SIGKILLed straggler ${pid}`);
+  }
+  // Same sweep the sampler runs — one implementation, so the cap path cannot
+  // drift from it.
+  sweepOrphans(snap, 'run cap');
+  failed++;
+}
+
+// A2b — the verdict line, printed UNCONDITIONALLY (green or red). A green run
+// must STATE the property rather than merely not violate it, and a red run needs
+// it just as much: the slowest-file figure is the standing evidence that
+// FILE_KILL_MS's margin is still real as the suite grows.
+const unreported = [...discovered].filter(f => !reported.has(f));
+const slowest = [...fileDurations.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+// A sweep means a test leaked a live process that had to be SIGKILLed. That is
+// a defect in the test, not a tidy-up: without this the run reads exit 0 and we
+// have traded a hang for a silent green — the very class this card names as
+// worse than a hang.
+// A leaked live process must fail the run — without this we would have traded a
+// hang for a silent green, the very class this card names as worse than a hang.
+// Counted as ONE defect regardless of how many processes it left behind: the
+// stall and the sweep are two symptoms of the same leak, and `failed` feeds a
+// count-based parser that this card exists to keep honest. Every sweep today
+// happens on a path that is already failing (stall or cap), so this branch is
+// belt-and-braces rather than the sole cause of a red run; it stays because a
+// future sweep trigger must not be able to pass silently.
+if (streamStalled || sweptOrphans > 0) failed++;
+console.log(
+  `\nhang-guard: ${reported.size}/${discovered.size} files reported, ` +
+  `${killedFiles.size} killed, ${sweptOrphans} leaked process(es) swept, ` +
+  `${streamStalled ? 'STREAM STALLED' : 'stream ended cleanly'}, ` +
+  `${capTripped ? 'RUN CAP TRIPPED' : 'run cap not reached'}`,
+);
+// The verdict line is the standing evidence for the whole property, so it must
+// say when the watchdog could not actually look. Without /proc, the per-file
+// kill watchdog and the orphan sweep are both inert and "0 killed / 0 swept"
+// means "blind", not "clean".
+if (!sampledProcs && samplerTicks > 0) {
+  console.log(
+    'hang-guard: WARNING — /proc was unavailable, so the per-file kill watchdog ' +
+    'and the orphan sweep never ran. The counts above are "not observed", not "none".',
+  );
+}
+if (slowest.length > 0) {
+  console.log(
+    `hang-guard: slowest files (limit ${FILE_KILL_MS}ms): ` +
+    slowest.map(([f, ms]) => `${path.basename(f)} ${ms}ms`).join(', '),
+  );
+}
+for (const file of unreported) {
+  // Never silently absent — whatever the cause (wedged child, a truncated
+  // report, a process.exit before any test registered), the file is named and
+  // the run goes red.
+  console.error(`hang-guard: NO REPORT from ${file} — the file never emitted a summary.`);
+  failed++;
+}
+
 await removeSafeRoot(safeRoot.root);
 let guardrailFailed = false;
 if (sampledProcs) {
