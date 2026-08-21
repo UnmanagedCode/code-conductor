@@ -77,7 +77,7 @@ test('a value-returning onTimeout resolves, and detaches', async () => {
 });
 
 test('an Error-returning onTimeout rejects, and detaches', async () => {
-  // The waitForEvent disposition.
+  // The Error-returning disposition — no production adopter today; see docs/architecture.md.
   const em = new EventEmitter();
   const boom = new Error('timed out after 20 ms');
   await assert.rejects(
@@ -146,7 +146,7 @@ test('the resolve path also tears down exactly once', async () => {
 });
 
 test('a multi-listener subscribe detaches all of them, on both paths', async () => {
-  // The waitForEvent (event + status) / waitAllIdle (N instances) shape.
+  // The waitAllIdle (N instances) shape.
   const subscribeTwo = (a, b) => (settle, fail) => {
     const onA = (v) => settle(v);
     const onB = () => fail(new Error('aborted'));

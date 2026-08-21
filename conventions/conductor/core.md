@@ -31,12 +31,11 @@ approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_
 ```
 
 - **A wake implies the worker's subagents finished too** — the orchestrator defers it until backgrounded `Agent` tasks complete (a stuck one falls back to the watchdog).
-- **One call, not two.** `send_prompt`, `approve_plan`, `reject_plan`, and `answer_question` all subscribe by default — no separate `subscribe_to_idle` needed. Pass `subscribe:false` for a mid-turn steer or a fire-and-forget send. `send_prompt({wait:true})` never subscribes.
+- **One call, not two.** `send_prompt`, `approve_plan`, `reject_plan`, and `answer_question` all subscribe by default — no separate `subscribe_to_idle` needed. Pass `subscribe:false` for a mid-turn steer or a fire-and-forget send.
 - **One-shot.** Consumed on the first `turn_end`. A worker's plan → implementation → rebase are *separate* turns — **resubscribe inside each wake-up turn** while work remains (keep passing `subscribe:true` on the next turn-starting call, or `subscribe_to_idle({sessionId})` standalone, e.g. after an auto-approved plan). `unsubscribe_from_idle({sessionId})` drops a pending callback when abandoning a worker.
 - **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel and resubscribe while the worker has turns coming.
 - **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need subscribe-and-end-turn.
 - **Watchdog, never timers.** Every subscription arms a watchdog (default per `ORCH_SUBSCRIBE_TIMEOUT_MS`; override via `subscribeTimeoutMs`, or `timeoutMs` on `subscribe_to_idle`) that wakes you if the worker hangs, crashes, or a subagent gets stuck. Its stub is labelled "did NOT finish" — on such a wake, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
-- `send_prompt({wait:true})` is a **discouraged fallback** — only for a send you expect to return near-instantly *and* where you have nothing else to do. Never for an implementation wait.
 
 ## MCP toolbelt
 

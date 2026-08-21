@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -96,7 +96,7 @@ test('get_recent_messages: empty-input ExitPlanMode surfaces the plan file\'s pa
   const { planFile, cleanup } = await seedPlanFile('# Plan\n- Make X\n');
   try {
     const sessionId = await spawnWithScenario(SCENARIO_PLAN_FILE, 'a');
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
     const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
     assert.equal(res.messages[0].planPath, planFile, 'the plan file path reaches the MCP metadata');
@@ -109,7 +109,7 @@ test('get_recent_messages: empty-input ExitPlanMode bonds with the turn\'s trail
   const { cleanup } = await seedPlanFile('# Plan\n- Make X\n');
   try {
     const sessionId = await spawnWithScenario(SCENARIO_PLAN_FILE, 'a');
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
     // The defect this card fixes: before the change, a plan written to a file
     // left the message plan-less, so the default call returned ONLY the
@@ -125,7 +125,7 @@ test('get_recent_messages: an unreadable plan file still yields a path and still
   const { planFile, cleanup } = await seedPlanFile(null); // path reserved, file never created
   try {
     const sessionId = await spawnWithScenario(SCENARIO_PLAN_FILE, 'a');
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
     const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
     assert.equal(res.messages.length, 2, 'a path-only plan message still bonds its trailing prose');
@@ -145,7 +145,7 @@ test('get_recent_messages: an inline plan written the same turn also carries the
   const { planFile, cleanup } = await seedPlanFile('# Plan\n- Make X\n');
   try {
     const sessionId = await spawnWithScenario(SCENARIO_PLAN_FILE_INLINE, 'a');
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
     const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
     assert.equal(res.messages[0].planPath, planFile, 'same-turn write binds the file to this plan');
@@ -158,8 +158,8 @@ test('get_recent_messages: an inline plan in a later turn does not inherit the e
   const { cleanup } = await seedPlanFile('# Plan\n- Make X\n');
   try {
     const sessionId = await spawnWithScenario(SCENARIO_PLAN_FILE_LATER_TURN, 'a');
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'revise it', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'revise it' }));
 
     // Turn 2's ExitPlanMode supplied its own text and wrote no file. The
     // remembered path is from turn 1 — nothing ties it to this plan, and
@@ -181,7 +181,7 @@ test('get_recent_messages: a path named by the ExitPlanMode input itself is surf
   const { planFile, cleanup } = await seedPlanFile('# Plan\n- Make X\n');
   try {
     const sessionId = await spawnWithScenario(SCENARIO_PLAN_NAMED_PATH, 'a');
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
     const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
     assert.equal(res.messages.length, 2, 'a path-only plan message bonds its trailing prose');

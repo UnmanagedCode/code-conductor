@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { InstanceManager, SESSION_PREFIX_MIN } from '../src/instances.ts';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -202,23 +202,21 @@ async function spawnLiveWorker() {
 
 test('full UUID addresses the worker (exact match)', async () => {
   const full = await spawnLiveWorker();
-  const body = unwrap(await callTool(baseUrl, 'send_prompt', {
-    sessionId: full, text: 'go', wait: true, waitTimeoutMs: 5000,
-  }));
+  const body = unwrap(await driveTurn(instances, full, () => callTool(baseUrl, 'send_prompt', {
+    sessionId: full, text: 'go',
+  })));
   assert.equal(body.sessionId, full);
-  assert.ok(body.turnEnd, 'turn completed — full id resolved to the live worker');
 });
 
 test('unique prefix resolves to the full sessionId', async () => {
   const full = await spawnLiveWorker();
   const prefix = full.slice(0, 5);
-  const body = unwrap(await callTool(baseUrl, 'send_prompt', {
-    sessionId: prefix, text: 'go', wait: true, waitTimeoutMs: 5000,
-  }));
+  const body = unwrap(await driveTurn(instances, full, () => callTool(baseUrl, 'send_prompt', {
+    sessionId: prefix, text: 'go',
+  })));
   // The handler echoes the CANONICAL full sessionId — proof the prefix was
   // rewritten at the dispatch boundary before the handler ran.
   assert.equal(body.sessionId, full);
-  assert.ok(body.turnEnd, 'turn completed via the resolved worker');
 });
 
 test('ambiguous prefix soft-refuses with SESSION_AMBIGUOUS + matches', async () => {

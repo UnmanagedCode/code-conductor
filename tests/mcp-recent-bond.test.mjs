@@ -9,7 +9,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -80,7 +80,7 @@ async function spawnWithScenario(scenarioPath, projectName) {
 
 test('get_recent_messages: default call bonds a split ExitPlanMode + trailing prose', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_SPLIT, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 2, 'default call bonds the plan message with the trailing prose');
@@ -92,7 +92,7 @@ test('get_recent_messages: default call bonds a split ExitPlanMode + trailing pr
 
 test('get_recent_messages: default call bonds a plan + TWO trailing prose messages in one turn', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_MULTI_TRAILING, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
   const raw = await callTool(baseUrl, 'get_recent_messages', { sessionId });
   const res = unwrapMessages(raw);
@@ -114,7 +114,7 @@ test('get_recent_messages: default call bonds a plan + TWO trailing prose messag
 
 test('get_recent_messages: explicit count:1 stays literal on a multi-trailing turn (no bonding)', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_MULTI_TRAILING, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 1 }));
   assert.equal(res.messages.length, 1, 'explicit count:1 returns exactly one message, no bonding');
@@ -124,7 +124,7 @@ test('get_recent_messages: explicit count:1 stays literal on a multi-trailing tu
 
 test('get_recent_messages: explicit count:1 stays literal (no bonding) on a split ExitPlanMode turn', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_SPLIT, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId, count: 1 }));
   assert.equal(res.messages.length, 1, 'explicit count:1 returns exactly one message, no bonding');
@@ -134,7 +134,7 @@ test('get_recent_messages: explicit count:1 stays literal (no bonding) on a spli
 
 test('get_recent_messages: default call bonds a split AskUserQuestion + trailing prose', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_QUESTION, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'ask me', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'ask me' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 2, 'default call bonds the question message with the trailing prose');
@@ -149,11 +149,11 @@ test('get_recent_messages: default call bonds a split AskUserQuestion + trailing
 
 test('get_recent_messages: bonding never walks back more than one message', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_QUESTION, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'ask me', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'ask me' }));
   // Second turn: a further pure-prose message. Its immediate predecessor
   // ("Waiting for your response.") is pure prose too, so the question two
   // messages back must NOT be pulled in.
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'continue', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'continue' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'no bonding when the immediate predecessor has no plan/questions');
@@ -162,7 +162,7 @@ test('get_recent_messages: bonding never walks back more than one message', asyn
 
 test('get_recent_messages: an already-combined message (text + plan together) is returned alone', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_COMBINED, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'no bonding attempted when the last message already carries its own plan');
@@ -174,8 +174,8 @@ test('get_recent_messages: an already-combined message (text + plan together) is
 
 test('get_recent_messages: last message carrying its own plan is not bonded backward to earlier prose', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_PROSE_THEN_PLAN, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'one' }));
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'two' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'the plan message is returned alone, earlier prose is not pulled backward');
@@ -185,7 +185,7 @@ test('get_recent_messages: last message carrying its own plan is not bonded back
 
 test('get_recent_messages: a message carrying BOTH a plan and questions renders both, order-faithful', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_EXIT_PLAN_AND_QUESTION, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan and ask', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan and ask' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'no bonding needed — the single message carries everything');
@@ -203,7 +203,7 @@ test('get_recent_messages: a message carrying BOTH a plan and questions renders 
 
 test('get_recent_messages: a plan block that precedes prose renders the plan first (atypical order)', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_PLAN_BEFORE_PROSE, 'a');
-  await callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'plan this' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
   assert.equal(res.messages.length, 1, 'the message carries its own plan — not bonded, not split');

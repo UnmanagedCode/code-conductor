@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines, driveTurn } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -207,7 +207,7 @@ async function spawnWedgedMidTurn(transcriptName) {
   await waitFor(() => inst.status === 'idle');
   const sid = inst.sessionId;
 
-  await callTool('send_prompt', { sessionId: sid, text: 'go', wait: true });
+  await driveTurn(instances, sid, () => callTool('send_prompt', { sessionId: sid, text: 'go' }));
   await waitFor(() => inst.status === 'idle');
   await waitFor(() => inst.ring.toArray().some(ev => ev.kind === 'plan_request'));
 

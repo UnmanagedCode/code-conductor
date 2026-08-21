@@ -48,7 +48,6 @@ import {
   renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
   renderPlaybook,
 } from './readRenderers.ts';
-import { waitFor } from '../waitFor.ts';
 import { pageInstanceEvents, pagePersistedEvents } from '../eventArchive.ts';
 import { indexDiffLines, paginateDiff } from './diffPaging.ts';
 import {
@@ -299,28 +298,6 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
 function notLiveRefusal(sessionId: string): SoftRefusal {
   return { ok: false, code: 'SESSION_NOT_LIVE', sessionId,
     reason: `session ${sessionId} has no running process — call spawn_instance({resume:"${sessionId}"}) to bring it back.` };
-}
-
-// Resolve when the next event matching `predicate` arrives. Rejects on
-// timeout or if the instance exits/crashes mid-wait.
-function waitForEvent(inst: InstanceLike, predicate: (ev: UiEvent | null) => boolean, timeoutMs: number): Promise<UiEvent | null> {
-  return waitFor<UiEvent | null>({
-    subscribe: (settle, fail) => {
-      function onEvent(ev: UiEvent | null): void {
-        if (predicate(ev)) settle(ev);
-      }
-      function onStatus(s: InstanceSummary): void {
-        if (s.status === 'exited' || s.status === 'crashed') {
-          fail(new Error(`instance ${s.status} before event arrived`));
-        }
-      }
-      inst.on('event', onEvent);
-      inst.on('status', onStatus);
-      return () => { inst.off('event', onEvent); inst.off('status', onStatus); };
-    },
-    timeoutMs,
-    onTimeout: () => new Error(`wait timed out after ${timeoutMs} ms`),
-  });
 }
 
 // ---------- read-only ----------
@@ -1000,8 +977,8 @@ function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): Soft
 }
 
 export async function sendPrompt(
-  { sessionId, text, wait = false, waitTimeoutMs = 600_000, subscribe = true, subscribeTimeoutMs, forward }: {
-    sessionId: string; text: string; wait?: boolean; waitTimeoutMs?: number; subscribe?: boolean; subscribeTimeoutMs?: number;
+  { sessionId, text, subscribe = true, subscribeTimeoutMs, forward }: {
+    sessionId: string; text: string; subscribe?: boolean; subscribeTimeoutMs?: number;
     // Unlike `stage`/`provenance` below, this handler consumes `forward`
     // itself, so it IS destructured. `sessionId` is `unknown` here because the
     // schema declares `forward` as a bare object — validateArgs does no
@@ -1060,72 +1037,7 @@ export async function sendPrompt(
   }
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
-  // A worker whose model cannot take a mid-turn injection gets the same message
-  // by a different route: stop the running turn at a block edge, then send it as
-  // a fresh turn (Instance.queueSteerAfterStop). Behaviourally identical from
-  // here — the send still steers the worker in flight rather than waiting out its
-  // turn — so no schema or result-shape change. The {status, flag} test itself
-  // lives on the Instance (needsPostStopSteer), shared with every other site.
-  const deferred = inst.needsPostStopSteer;
-
-  if (wait) {
-    // Attach the listener *before* sending so we can't miss a fast turn_end.
-    // A one-shot subscription registered here would fire on the *next* turn
-    // (this one is already being awaited inline), so skip it entirely.
-    if (deferred) {
-      // ONE waiter, created up-front with the FULL budget and consumed on every
-      // path — structurally the same as the live branch below, and that is the
-      // point: the block-edge stop is unbounded, so anything that caps the call
-      // separately from the waiter can outlive the caller. `beforeSend` only
-      // flips a gate here; it creates nothing that could be orphaned.
-      //
-      // The gate is what the stop costs us: the aborted turn emits a `turn_end`
-      // of its own, and answering with THAT would report the stop as the steered
-      // turn's result. `steerSent` is set synchronously in the same tick as the
-      // delivering prompt() (see _flushPendingSteers), so every turn_end after it
-      // belongs to the steered turn and every one before it is the stop's.
-      let steerSent = false;
-      const waiter = waitForEvent(inst, (e) => steerSent && e?.kind === 'turn_end', waitTimeoutMs);
-      const delivered = inst.queueSteerAfterStop(composedText, { beforeSend: () => { steerSent = true; } });
-      // `waiter` is handled unconditionally, right here, before anything can
-      // return — so a timeout or an exit that lands after this call has already
-      // given up rejects into an owned handler, not into the process. A delivery
-      // that fails outright (process died, session being rewritten) surfaces its
-      // own error instead of idling out the rest of the budget; the waiter is
-      // still owned, so its later rejection is absorbed.
-      const ev = await new Promise<UiEvent | null>((resolve, reject) => {
-        waiter.then(resolve, reject);
-        delivered.catch(reject);
-      });
-      return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
-    }
-    // ONE waiter, created up-front and consumed on every path — the same shape
-    // the deferred branch above holds, for the same reason. `prompt()` rejecting
-    // (session being rewritten, process gone) used to throw out of this function
-    // before `await waiter` could attach, leaving the waiter's timer to reject
-    // into the process: Node's default --unhandled-rejections=throw then takes
-    // the ORCHESTRATOR down, orphaning every live worker.
-    const waiter = waitForEvent(inst, (ev) => ev?.kind === 'turn_end', waitTimeoutMs);
-    const delivered = inst.prompt(composedText);
-    // `.catch` only: a successful send must not settle the call — the waiter is
-    // the sole source of the value. A delivery that fails outright surfaces its
-    // own error instead of idling out the budget, and the waiter is still owned,
-    // so its later rejection is absorbed.
-    const ev = await new Promise<UiEvent | null>((resolve, reject) => {
-      waiter.then(resolve, reject);
-      delivered.catch(reject);
-    });
-    return { sessionId: inst.sessionId, turnEnd: ev, subscribed: false, subscribeSkipped: 'wait', ...forwardedField };
-  }
-  if (deferred) {
-    // Deliberately NOT awaited: the stop lands at the model's next block edge,
-    // which is unbounded, and this tool must return promptly. A delivery failure
-    // is already annotated into the worker's own transcript by _flushPendingSteers.
-    void inst.queueSteerAfterStop(composedText).catch(() => {});
-    const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-    return { sessionId: inst.sessionId, status: inst.status, ...sub, ...forwardedField };
-  }
-  await inst.prompt(composedText);
+  await inst.promptOrQueueSteer(composedText);
   const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
   return { sessionId: inst.sessionId, status: inst.status, ...sub, ...forwardedField };
 }

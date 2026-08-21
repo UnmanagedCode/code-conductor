@@ -192,6 +192,18 @@ export async function waitFor(predicate, { timeout = 10000, interval = 20 } = {}
   }
 }
 
+// Drive one worker turn to completion. Replaces the removed send_prompt blocking-wait option.
+// `send` is a thunk performing the actual call — each test file has its own
+// callTool signature, so the helper owns only the waiting.
+export async function driveTurn(instances, sessionId, send) {
+  const seqOf = () => instForSession(instances, sessionId)
+    ?.ringSnapshot().filter(e => e.kind === 'turn_end').at(-1)?._seq ?? -1;
+  const before = seqOf();
+  const res = await send();
+  await waitFor(() => seqOf() > before);
+  return res;
+}
+
 // The sidecar backend record for a session, once spawn()'s write has landed.
 // spawn() is synchronous and fires markSessionBackend without awaiting it (see
 // src/instances.ts spawn()), so a 201 / `idle` / argv-dump wait can beat the

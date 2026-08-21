@@ -7,7 +7,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, userStdinLines, driveTurn } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_QUESTION = path.join(__dirname, 'fixtures', 'scenario-question.json');
@@ -47,7 +47,7 @@ async function spawnAtQuestion() {
   const inst = instances.get(r.body.id);
   await waitFor(() => inst.status === 'idle');
   const sid = inst.sessionId;
-  await callTool('send_prompt', { sessionId: sid, text: 'go', wait: true });
+  await driveTurn(instances, sid, () => callTool('send_prompt', { sessionId: sid, text: 'go' }));
   await waitFor(() => inst.ring.toArray().some(ev => ev.kind === 'user_question'));
   return { inst, sid };
 }
@@ -133,7 +133,7 @@ test('answer_question to a MID-TURN worker prepends MID_TURN_NOTE as its own blo
     // Drain the fixture's one remaining unfiltered prompt-turn so the injection
     // below has nothing left to answer it — otherwise the fake replies with a
     // `result` and the worker is idle again before answer_question runs.
-    await callTool('send_prompt', { sessionId: sid, text: 'filler', wait: true });
+    await driveTurn(instances, sid, () => callTool('send_prompt', { sessionId: sid, text: 'filler' }));
     await waitFor(() => inst.status === 'idle');
 
     // Put the worker back mid-turn the way the real bug does: a wake callback

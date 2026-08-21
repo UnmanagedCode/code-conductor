@@ -161,7 +161,7 @@ test('a self-edge still honours the current stage\'s tools deny', () => {
 test('a self-edge still honours the current stage\'s `require` (resulting stage IS current)', () => {
   const pinned = pb({
     id: 'pinned', name: 'Pinned', description: 'pinned args', entryStages: ['a'],
-    stages: { a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { wait: false } } } } },
+    stages: { a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { subscribe: false } } } } },
     transitions: [],
   });
   const pinnedEvents = [{ kind: 'spawn', sessionId: 'w-pinned-1', playbook: 'pinned', stage: 'a' }];
@@ -173,11 +173,11 @@ test('a self-edge still honours the current stage\'s `require` (resulting stage 
     projection, playbooks: pbs(pinned), isLive,
   });
   assert.equal(filled.ok, true);
-  assert.equal(filled.patchedArgs.wait, false);
+  assert.equal(filled.patchedArgs.subscribe, false);
   assert.equal(filled.move.kind, 'self');
   // contradicted -> refused, even on a self-edge
   const conflict = decide({
-    toolName: 'send_prompt', args: { sessionId: 'w-pinned-1', text: 'hi', stage: 'a', wait: true },
+    toolName: 'send_prompt', args: { sessionId: 'w-pinned-1', text: 'hi', stage: 'a', subscribe: true },
     projection, playbooks: pbs(pinned), isLive,
   });
   assert.equal(conflict.ok, false);

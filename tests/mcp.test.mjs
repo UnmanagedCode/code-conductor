@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn } from './helpers.mjs';
 import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -204,7 +204,7 @@ test('list_projects sees projects created via REST', async () => {
   assert.equal((out.match(/^ {2}sessions \d+ {3}last /gm) ?? []).length, 2);
 });
 
-test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', async () => {
+test('spawn_instance + send_prompt + get_transcript round-trip', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
 
   // Spawn a fresh instance via MCP.
@@ -215,14 +215,12 @@ test('spawn_instance + send_prompt(wait:true) + get_transcript round-trip', asyn
   assert.ok(spawn.sessionId, 'spawn returns sessionId');
   await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
 
-  // Send a prompt and wait for turn_end inline.
-  const promptRes = await callTool(baseUrl, 'send_prompt', {
-    sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000,
-  });
+  // Send a prompt and drive it to turn_end.
+  const promptRes = await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', {
+    sessionId: spawn.sessionId, text: 'go',
+  }));
   const promptBody = unwrap(promptRes);
   assert.equal(promptBody.sessionId, spawn.sessionId);
-  assert.ok(promptBody.turnEnd, 'wait:true returns the turn_end event');
-  assert.equal(promptBody.turnEnd.kind, 'turn_end');
 
   // Read the transcript and verify the events flow.
   const txRes = await callTool(baseUrl, 'get_transcript', { sessionId: spawn.sessionId });
@@ -247,7 +245,7 @@ test('get_transcript + get_recent_messages survive a trimmed ring', async () => 
     await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
     const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
     await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go' }));
 
     // Force eviction with synthetic history; the newest assistant text
     // must remain reachable for get_recent_messages.
@@ -356,7 +354,7 @@ test('list_sessions marks MCP-spawned sessions conducted:true, HTTP ones false, 
   await waitFor(() => condInst.status === 'idle' && condInst.sessionId);
   await condInst.promoteToNormal();
   // Drive a turn so the durable marker is persisted on turn_end.
-  await callTool(baseUrl, 'send_prompt', { sessionId: cond.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, cond.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: cond.sessionId, text: 'go' }));
   // BOTH ids are needed here, and keeping them apart is the point: a LIVE row is
   // rendered from the instance (public id) while an inactive row and the durable
   // sidecar both come off disk (backing id).
@@ -440,7 +438,7 @@ test('temp conducted session persists the conducted marker and recovers it on re
   // Drive a turn so _writeSessionMetadata() runs. Both durable markers must
   // land even though the session is temp. (Before the fix, isConducted(sid)
   // would be false here — markConducted sat after the temp early-return.)
-  await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'go' }));
   await waitFor(async () => (await isConducted(sid)) === true);
   assert.equal(await isConducted(sid), true, 'conducted marker persisted for a temp session');
   assert.equal(await isTemp(sid), true, 'temp marker persisted (shared code path)');
@@ -670,7 +668,7 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
   assert.equal(before.messages.length, 0);
 
   // First turn: text "First " + Bash tool_use.
-  await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one' }));
   const first = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
   assert.equal(first.messages[0].text, 'First ');
   assert.equal(first.messages[0].hasToolUse, true);
@@ -678,7 +676,7 @@ test('get_recent_messages reads the most recent assistant text from the ring', a
   assert.ok(first.messages[0].blocks.every(b => b.type !== 'text'), 'tool-call message blocks has no text entries');
 
   // Second turn: just text "Second!" — should now be the latest.
-  await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two' }));
   const second = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
   assert.equal(second.messages[0].text, 'Second!');
   assert.notEqual(second.messages[0].msgId, first.messages[0].msgId);
@@ -712,14 +710,14 @@ test('get_recent_messages filters tool-call-only messages by default', async () 
     await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
 
     // Turn 1: tool-only. Default filter → messages[] is empty.
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one' }));
     const afterToolOnly = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(afterToolOnly.messages.length, 0);
 
     // Turn 2: text "Hello".
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'two' }));
     // Turn 3: tool-only.
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'three', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'three' }));
 
     // Default filter: count:3 yields only the one message with text.
     const filtered = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId, count: 3 }));
@@ -751,7 +749,7 @@ test('get_recent_messages strips thinking blocks by default, includeThinking res
     await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
 
     // Turn: assistant message with thinking + text "42".
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'one' }));
 
     // Default: thinking stripped, text-bearing message still returned.
     const stripped = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
@@ -785,7 +783,7 @@ test('get_recent_messages returns plan-bearing messages by default', async () =>
     const before = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(before.messages.length, 0);
 
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'plan this' }));
 
     const after = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(after.messages.length, 1, 'plan-bearing message returned by default');
@@ -813,7 +811,7 @@ test('get_recent_messages returns question-bearing messages by default', async (
     const before = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(before.messages.length, 0);
 
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'ask me something', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'ask me something' }));
 
     const after = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(after.messages.length, 1, 'question-bearing message returned by default');
@@ -841,7 +839,7 @@ test('get_recent_messages: reconciled ExitPlanMode not duplicated in blocks[]', 
       project: 'a', mode: 'bypassPermissions',
     }));
     await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'plan this', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'plan this' }));
     const result = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(result.messages.length, 1, 'plan-bearing message returned (reconciled path)');
     assert.equal(result.messages[0].text, '--- plan ---\nStep 1\nStep 2', 'plan rendered into the body (reconciled path)');
@@ -863,7 +861,7 @@ test('get_recent_messages: reconciled AskUserQuestion not duplicated in blocks[]
       project: 'a', mode: 'bypassPermissions',
     }));
     await waitFor(() => instForSession(instances, spawn.sessionId).status === 'idle' && instForSession(instances, spawn.sessionId).sessionId);
-    await callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'ask me', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId: spawn.sessionId, text: 'ask me' }));
     const result = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId: spawn.sessionId }));
     assert.equal(result.messages.length, 1, 'question-bearing message returned (reconciled path)');
     assert.equal(
@@ -1338,9 +1336,9 @@ test('sessionId is the only worker handle: returns carry sessionId, never id/cal
   assert.equal(spawn.callerInstanceId, undefined, 'spawn return carries no callerInstanceId');
   await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
 
-  const sent = unwrap(await callTool(baseUrl, 'send_prompt', {
-    sessionId: spawn.sessionId, text: 'go', wait: true, waitTimeoutMs: 5000,
-  }));
+  const sent = unwrap(await driveTurn(instances, spawn.sessionId, () => callTool(baseUrl, 'send_prompt', {
+    sessionId: spawn.sessionId, text: 'go',
+  })));
   assert.equal(sent.sessionId, spawn.sessionId);
   assert.equal(sent.id, undefined);
 
@@ -1414,7 +1412,7 @@ test('spawn_instance({resume}) re-attaches the recorded worktree, cwd, and repla
     // Run a real turn so a jsonl actually exists under the WORKTREE's
     // encoded cwd (writeSessionMetadata's last-prompt/permission-mode lines,
     // written fire-and-forget off turn_end — wait for it to land on disk).
-    await callTool(baseUrl, 'send_prompt', { sessionId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'go' }));
     const sessionDir = path.join(claudeProjectsRoot, encodeCwd(worktreePath));
     // The transcript is named by the BACKING id; `sessionId` above is the public
     // handle the resume below deliberately uses instead.

@@ -148,7 +148,7 @@ export interface InstanceLike {
   readonly acceptsMidTurnSteering: boolean;
   readonly steerPending: boolean;
   readonly needsPostStopSteer: boolean;
-  queueSteerAfterStop(text: string, opts?: { beforeSend?: () => void; attachments?: unknown[] }): Promise<void>;
+  queueSteerAfterStop(text: string, opts?: { attachments?: unknown[] }): Promise<void>;
   promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;

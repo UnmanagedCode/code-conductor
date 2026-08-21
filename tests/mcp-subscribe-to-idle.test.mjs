@@ -14,7 +14,7 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -112,10 +112,10 @@ test('happy path: caller receives a stub user_echo when target hits turn_end', a
   assert.equal(sub.sessionId, targetId);
   assert.equal(sub.already, false);
 
-  // Drive target through one full turn (wait:true ensures turn_end fires
+  // Drive target through one full turn (driveTurn ensures turn_end fires
   // before we assert on caller state).
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
 
   // The stub is delivered via queueMicrotask + an async prompt() call.
   // Poll the caller's ring until the user_echo appears. Inherit the default
@@ -141,8 +141,8 @@ test('fold: real turn_end to an idle caller folds the recent-messages payload in
   await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
 
   // Drive the target through turn 1 of scenario-ws (emits the prose "First ").
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
 
   const caller = instForSession(instances, callerId);
   await waitFor(() => !!findStubFor(caller, targetId));
@@ -437,8 +437,8 @@ test('steering: caller mid-turn at delivery gets the plain stub delivered LIVE',
 
   try {
     // Fire the target's turn_end while the caller is still mid-turn.
-    await callTool('send_prompt',
-      { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+    await driveTurn(instances, targetId, () => callTool('send_prompt',
+      { sessionId: targetId, text: 'go' }));
     // The stub is delivered live — no waiting for the caller's slow turn to drain.
     await waitFor(() => statusAtDelivery !== null);
   } finally {
@@ -466,8 +466,8 @@ test('one-shot: a second target turn does not re-fire the callback', async () =>
     { sessionId: targetId }, { caller: callerId });
 
   // Turn 1: stub should land.
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'one', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'one' }));
   const caller = instForSession(instances, callerId);
   await waitFor(() => !!findStubFor(caller, targetId));
 
@@ -479,8 +479,8 @@ test('one-shot: a second target turn does not re-fire the callback', async () =>
 
   // Turn 2: scenario-ws has a second turn defined. Drive it and assert
   // no additional stub arrives.
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'two', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'two' }));
   // Give any spurious delivery a chance to land before we count.
   await new Promise(r => setTimeout(r, 200));
   const stubsAfterTurn2 = countUserEchoes(caller,
@@ -527,8 +527,8 @@ test('caller removed before target turn_end: subscription is purged, no crash', 
   assert.deepEqual(instances._idleSubscriberSnapshot(), {});
 
   // Drive target through a turn. No callers exist → silent no-op, no throw.
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
   // If we got here without an unhandled rejection / crash, the test passes.
   assert.equal(instForSession(instances, targetId).status, 'idle');
 });
@@ -565,8 +565,8 @@ test('unsubscribe_from_idle cancels a pending subscription', async () => {
   assert.deepEqual(instances._idleSubscriberSnapshot(), {});
 
   // Driving the target now should not deliver a stub.
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
   await new Promise(r => setTimeout(r, 200));
   const caller = instForSession(instances, callerId);
   assert.equal(findStubFor(caller, targetId), undefined);
@@ -643,8 +643,8 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
     { sessionId: targetId, timeoutMs: 2000 }, { caller: callerId });
 
   // Drive the target to turn_end before the watchdog fires.
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
 
   const caller = instForSession(instances, callerId);
   await waitFor(() => !!findStubFor(caller, targetId));
@@ -684,8 +684,8 @@ test('list() sets hasIdleSubscriber on the caller (conductor), not the target (w
     'target (worker) must NOT show hasIdleSubscriber:true');
 
   // After the subscription fires (target completes a turn): caller goes false.
-  await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(instances, targetId, () => callTool('send_prompt',
+    { sessionId: targetId, text: 'go' }));
   const caller = instForSession(instances, callerId);
   await waitFor(() => !!findStubFor(caller, targetId));
   listed = instances.list();
@@ -770,19 +770,6 @@ test('send_prompt subscribe:false does not register a subscription', async () =>
   assert.equal(findStubFor(caller, targetId), undefined, 'no stub without a subscription');
 });
 
-test('send_prompt wait:true never subscribes, even with subscribe left at its default', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
-  const callerId = await spawnReady('p');
-  const targetId = await spawnReady('p');
-
-  const res = unwrap(await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000 },
-    { caller: callerId }));
-  assert.equal(res.subscribed, false);
-  assert.equal(res.subscribeSkipped, 'wait');
-  assert.deepEqual(instances._idleSubscriberSnapshot(), {});
-});
-
 test('send_prompt with no caller still succeeds; subscribed:false, subscribeSkipped:no-caller', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const targetId = await spawnReady('p');
@@ -833,7 +820,7 @@ test('answer_question auto-subscribes the caller by default', async () => {
   let targetId;
   try {
     targetId = await spawnReady('p');
-    await callTool('send_prompt', { sessionId: targetId, text: 'go', wait: true, waitTimeoutMs: 5000, subscribe: false });
+    await driveTurn(instances, targetId, () => callTool('send_prompt', { sessionId: targetId, text: 'go', subscribe: false }));
   } finally {
     process.env.FAKE_CLAUDE_SCENARIO = prevScenario;
   }

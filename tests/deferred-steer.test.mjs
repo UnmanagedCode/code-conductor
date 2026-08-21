@@ -213,35 +213,6 @@ test('the process dies with a steer queued: the promise rejects, it is annotated
     'the hub is told no turn_end is coming');
 });
 
-test('wait:true resolves on the STEERED turn end, not on the stop that preceded it', async () => {
-  const { inst, evs } = await busyMidTextBlock();
-  const call = send(inst, 'WAITED', { wait: true, waitTimeoutMs: 5_000 });
-  await waitFor(() => inst.steerPending, { timeout: 2_000 });
-
-  inject(inst, blockStop(0));
-  inject(inst, turnEnd());              // the stop's own turn_end — NOT the answer
-  const stopEnd = evs.filter(e => e.kind === 'turn_end').at(-1);
-  assert.ok(Number.isInteger(stopEnd._seq));
-
-  // The steer goes out and the fake CLI runs the steered turn to its own end.
-  const res = await call;
-  assert.ok(res.turnEnd, 'returns a turn_end event inline, same shape as a live send');
-  assert.ok(res.turnEnd._seq > stopEnd._seq,
-    'resolved on a LATER turn_end than the stop\'s — the steered turn, not the aborted one');
-  assert.ok(evs.some(e => e.kind === 'user_echo' && e.text === 'WAITED'),
-    'and the steer really was delivered before that end');
-  assert.equal(res.subscribeSkipped, 'wait');
-});
-
-// ── a timed-out / failed wait:true must strand no promise ───────────────────
-//
-// The deferred branch must hold the live branch's invariant: no promise is
-// created whose only consumer has already returned. A waiter created after the
-// caller gave up rejects with nobody listening, and Node's default
-// --unhandled-rejections=throw takes the ORCHESTRATOR process down — every live
-// worker orphaned, not just this call. Both tests below therefore assert on
-// process-level unhandled rejections, which is the actual failure.
-
 // Capture unhandled rejections for the duration of one test. Installing a
 // listener also suppresses the default crash, so the assertion is on the
 // captured list rather than on the runner surviving.
@@ -255,61 +226,21 @@ function captureUnhandled() {
 // Unhandled rejections are reported a tick after the microtask queue drains.
 const settleUnhandled = () => new Promise(r => setTimeout(r, 60));
 
-// BOTH tests deliver the steer through the NATURAL turn end (inject `turnEnd()`
-// with no preceding block edge), not through a fired stop. That is deliberate
-// and load-bearing: this scenario answers an `interrupt` control_request with a
-// `result` of its own, so the stop path hands the abandoned waiter a `turn_end`
-// within milliseconds and RESOLVES it — masking the orphan the tests exist to
-// catch. Delivered from a natural end, nothing is written to the CLI but the
-// steer itself, whose text matches no scenario turn, so the steered turn is
-// still running when the expired budget elapses — the real-world case (a steered
-// turn outliving a budget that has already run out).
-
-test('wait:true that times out before the steer is delivered: same error as a live send, and the late delivery strands nothing', async () => {
-  const { inst } = await busyMidTextBlock();
+test('a steer whose delivery FAILS is annotated, rejects its caller, and settles the queue', async () => {
+  const { inst, evs } = await busyMidTextBlock();
   const unhandled = captureUnhandled();
-
-  // No boundary at all inside the budget, so the steer cannot be delivered yet.
-  await assert.rejects(
-    () => send(inst, 'LATE', { wait: true, waitTimeoutMs: 120 }),
-    /wait timed out after 120 ms/,
-    'the deferred timeout is observationally identical to the live one',
-  );
-  assert.equal(inst.steerPending, true, 'the steer is still queued — a timed-out wait cancels nothing');
-
-  // The turn ends long after the budget expired; the steer goes out and its own
-  // turn is still running when what remained of that budget would have elapsed.
-  inject(inst, turnEnd());
-  await waitFor(async () => (await stdinLines()).filter(l => l.type === 'user').length === 2);
-  await settleUnhandled();
-
-  assert.deepEqual(unhandled.map(e => e.message), [], 'nothing rejected without an owner');
-  // Parity with the live path: the message still reaches the worker, exactly as
-  // a live prompt keeps running past a timed-out wait.
-  const users = userLinesIn(await stdinLines());
-  assert.deepEqual(textsOf(users[1]), [POST_STOP_STEER_NOTE, 'LATE']);
-});
-
-test('wait:true whose delivery FAILS: the delivery error surfaces, and no waiter is left behind', async () => {
-  const { inst } = await busyMidTextBlock();
-  const unhandled = captureUnhandled();
-
-  // The boundary arrives inside the budget, but the send itself then fails — a
-  // rewind is rewriting this session's jsonl, so prompt() refuses.
-  const call = send(inst, 'DOOMED', { wait: true, waitTimeoutMs: 400 });
+  const call = inst.queueSteerAfterStop('DOOMED');
   await waitFor(() => inst.steerPending, { timeout: 2_000 });
   inst._mutating = true;
-  inject(inst, turnEnd());
+  inject(inst, turnEnd());                       // natural end → flush → prompt() refuses
 
-  await assert.rejects(() => call, /being rewritten/,
-    'the delivery failure surfaces promptly instead of idling out the budget');
+  await assert.rejects(() => call, /being rewritten/);
   assert.equal(inst.steerPending, false, 'the queue was drained by the failed flush');
-
-  // Past the point an abandoned waiter's remaining budget would have expired.
-  await new Promise(r => setTimeout(r, 500));
+  assert.ok(evs.some(e => e.kind === 'system' && e.subtype === 'stderr'
+    && /deferred steer delivery failed/.test(e.data?.line ?? '')), 'annotated into the transcript');
+  assert.ok(evs.some(e => e.kind === 'system' && e.subtype === 'steer_settled'));
   await settleUnhandled();
-  assert.deepEqual(unhandled.map(e => e.message), [],
-    'the waiter was owned even though nobody awaited its value');
+  assert.deepEqual(unhandled.map(e => e.message), []);
   inst._mutating = false;
 });
 

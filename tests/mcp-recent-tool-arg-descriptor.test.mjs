@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { capBlockInput, TOOL_ARG_VALUE_CAP, MSG_TEXT_CAP } from '../src/mcp/messageReconstruction.ts';
-import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, seedSessionJsonl, driveTurn } from './helpers.mjs';
 import { InstanceManager } from '../src/instances.ts';
 import { buildRecentMessages } from '../src/mcp/handlers.ts';
 
@@ -154,7 +154,8 @@ async function retiredWorkerWithLines(ctx, projectName, lines) {
   }));
   const sid = spawn.sessionId;
   await waitFor(() => instForSession(ctx.instances, sid)?.status === 'idle');
-  await callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'go', wait: true, waitTimeoutMs: 5000 });
+  await driveTurn(ctx.instances, sid, () =>
+    callTool(ctx.baseUrl, 'send_prompt', { sessionId: sid, text: 'go' }));
 
   const projectPath = path.join(ctx.projectsRoot, projectName);
   await seedSessionJsonl(ctx.claudeProjectsRoot, projectPath, instForSession(ctx.instances, sid).backingSessionId, lines);
