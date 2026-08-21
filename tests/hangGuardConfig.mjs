@@ -22,9 +22,10 @@ function ms(envName, fallback) {
 // Parent-side, per test file: SIGKILL a child process that has outlived this.
 // MUST stay above the 60s per-test `timeout` passed to run() in run.mjs, so it
 // can never pre-empt a test that node itself would still cancel and report.
-// MEASURED slowest whole file on this tree: ~23.1s (tests/hang-guard.test.mjs
-// itself, which serially spawns ~11 nested runners including CPU-burning and
-// deliberately-capped ones), against a 90s limit — a ~3.9x margin. This figure
+// MEASURED slowest whole file on this tree: ~23.1s quiet / ~28.8s under 24-way
+// CPU starvation (tests/hang-guard.test.mjs itself, which serially spawns ~11
+// nested runners including CPU-burning and deliberately-capped ones), against a
+// 90s limit — a ~3.1x margin at the starved figure. This figure
 // MOVES with two things this card owns: the number of cases in
 // tests/hang-guard.test.mjs, and the bounded wall-clock windows in
 // tests/mcp-subscribe-to-idle.test.mjs (WATCHDOG_MS/OBSERVE_MS add ~6s of
