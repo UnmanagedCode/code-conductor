@@ -22,16 +22,18 @@ function ms(envName, fallback) {
 // Parent-side, per test file: SIGKILL a child process that has outlived this.
 // MUST stay above the 60s per-test `timeout` passed to run() in run.mjs, so it
 // can never pre-empt a test that node itself would still cancel and report.
-// MEASURED slowest whole file on this tree: ~23.1s quiet / ~28.8s under 24-way
-// CPU starvation (tests/hang-guard.test.mjs itself, which serially spawns ~11
-// nested runners including CPU-burning and deliberately-capped ones), against a
-// 90s limit — a ~3.1x margin at the starved figure. This figure
-// MOVES with two things this card owns: the number of cases in
+// MEASURED slowest whole file on this tree: ~23-32s depending on load, i.e. a
+// ~2.8x margin at the worst observation. Read that as a PLATEAU, not one culprit
+// — several unrelated files sit within ~600ms of the top under concurrency, so
+// the figure tracks contention as much as any single file's own work.
+// tests/hang-guard.test.mjs is usually at or near the top, since it serially
+// spawns a dozen nested runners, some CPU-burning.
+//
+// The figure MOVES with two things this card owns: the number of cases in
 // tests/hang-guard.test.mjs, and the bounded wall-clock windows in
-// tests/mcp-subscribe-to-idle.test.mjs (WATCHDOG_MS/OBSERVE_MS add ~6s of
-// deliberate real waiting across three tests there). The `hang-guard:` verdict line prints the slowest 5 files on every
-// run (green or red) — that live line, not this comment, is the load-bearing
-// evidence; re-read it rather than trusting this number.
+// tests/mcp-subscribe-to-idle.test.mjs. The `hang-guard:` verdict line prints the
+// slowest 5 files on every run, green or red — THAT live line, not this comment,
+// is the load-bearing evidence; re-read it rather than trusting this number.
 export const FILE_KILL_MS = ms('CC_TEST_FILE_KILL_MS', 90_000);
 
 // Child-side: how long after the root after() hook begins we wait before

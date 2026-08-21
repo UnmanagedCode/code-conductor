@@ -21,7 +21,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 
 // A single consistent read of every visible process. `available:false` means
 // /proc is unreadable, which callers distinguish from "nothing is running".
-export function snapshot() {
+export function snapshot({ environ = false } = {}) {
   let entries;
   try {
     entries = readdirSync('/proc');
@@ -34,7 +34,6 @@ export function snapshot() {
     if (!/^\d+$/.test(name)) continue;
     const pid = Number(name);
     let ppid = null;
-    let pgrp = null;
     let ident = null;
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -44,8 +43,6 @@ export function snapshot() {
       const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
       const n = Number(f[1]);
       if (Number.isInteger(n)) ppid = n;
-      const g = Number(f[2]); // field 5, process group
-      if (Number.isInteger(g)) pgrp = g;
       // starttime is the pid's INCARNATION identity: monotonic clock ticks
       // since boot at exec. Two processes that reuse the same pid number
       // cannot share it, which is what makes a remembered pid safe to signal
@@ -54,7 +51,13 @@ export function snapshot() {
     } catch { /* vanished between readdir and read */ }
     let raw = '';
     try { raw = readFileSync(`/proc/${pid}/cmdline`, 'utf8'); } catch { /* ditto */ }
-    byPid.set(pid, { pid, ppid, pgrp, ident, raw, argv: raw.split('\0').filter(Boolean) });
+    // environ is OPT-IN: it is one extra read per visible pid, so the 100ms
+    // sampler never asks for it — only the sweep, which is rare, does.
+    let env = '';
+    if (environ) {
+      try { env = readFileSync(`/proc/${pid}/environ`, 'utf8'); } catch { /* not ours / vanished */ }
+    }
+    byPid.set(pid, { pid, ppid, ident, raw, env, argv: raw.split('\0').filter(Boolean) });
     if (ppid !== null) {
       if (!byParent.has(ppid)) byParent.set(ppid, []);
       byParent.get(ppid).push(pid);
@@ -102,32 +105,40 @@ export function descendants(pid, snap = snapshot()) {
   return out;
 }
 
-// Processes that were orphaned OUT of our own job — i.e. almost certainly a
-// grandchild whose test-child parent has exited. This is the only discovery path
-// that works for a file which completed inside one sampler tick (never recorded)
-// AND whose child has since died (reparented, so unreachable by descendants()).
+// Every process carrying THIS run's marker in its environment — i.e. every
+// descendant of this runner at any depth, however it was spawned.
 //
-// Three conjuncts, and each one is load-bearing for SAFETY:
-//   * same process group as us — scopes it to our job, so an unrelated system
-//     daemon can never match;
-//   * ppid === 1 — it has actually been orphaned. This is what excludes a
-//     sibling in the user's shell PIPELINE (`node tests/run.mjs | tee log`),
-//     whose parent is the still-live shell. Killing that would be catastrophic
-//     and is the reason a bare same-pgrp match was rejected;
-//   * started after us — it cannot be something that predates this run.
-// A `detached: true` child escapes into a NEW process group and is deliberately
-// NOT matched here; see the sweep note in tests/run.mjs for why that case is
-// handled by abandoning the wait rather than by killing.
-export function orphansInOurGroup(snap = snapshot()) {
-  if (!snap.available) return [];
-  const self = snap.byPid.get(process.pid);
-  if (!self || self.pgrp === null || self.ident === null) return [];
+// This is an EXACT IDENTITY, not a heuristic. tests/run.mjs exports a
+// run-unique CC_TEST_RUN_ID (minted by mkdtemp) into the environment before any
+// child forks, so every descendant inherits it, and /proc/<pid>/environ reflects
+// the environment as of exec — which means:
+//   * it survives `setsid`/`detached: true`, which escapes the process group
+//     (verified: readable on a detached child whose pgrp had become its own pid);
+//   * it survives reparenting to init, since it has nothing to do with lineage;
+//   * it survives a file completing inside one sampler tick, since nothing has
+//     to have been observed beforehand;
+//   * it cannot match a stranger, a system daemon, a sibling in the user's shell
+//     pipeline, or a DIFFERENT concurrent run of this suite — each mints its own.
+//
+// It deliberately replaced a process-group/ppid/start-time heuristic. That
+// heuristic was unsafe: a process group is a job boundary only under interactive
+// job control, and under `sh -c`, CI, or an agent harness (how this runner is
+// actually executed) the runner inherits its parent's group, so the group spans
+// unrelated work that the conjuncts could not reliably exclude.
+//
+// NOTE on the marker choice: PROJECTS_ROOT looks like a ready-made marker and is
+// NOT usable. bootServer reassigns it per server to a path outside the run root,
+// so a grandchild spawned mid-test inherits the reassigned value (measured).
+// CC_TEST_RUN_ID exists precisely because nothing else mutates it.
+//
+// Pure over `snap`: pass a synthesised snapshot to test it without processes.
+export function processesWithMarker(marker, snap = snapshot({ environ: true })) {
+  if (!marker || !snap.available) return [];
+  const needle = `CC_TEST_RUN_ID=${marker}`;
   const out = [];
   for (const info of snap.byPid.values()) {
     if (info.pid === process.pid || info.pid <= 1) continue;
-    if (info.pgrp !== self.pgrp) continue;
-    if (info.ppid !== 1) continue;
-    if (info.ident === null || Number(info.ident) <= Number(self.ident)) continue;
+    if (!info.env || !info.env.includes(needle)) continue;
     out.push({ pid: info.pid, ident: info.ident, argv: info.argv });
   }
   return out;
@@ -136,23 +147,27 @@ export function orphansInOurGroup(snap = snapshot()) {
 // SIGKILL an explicit, already-ordered list. Entries may be a bare pid or
 // `{pid, ident}`; when `ident` is present it is RE-VERIFIED against the live
 // process immediately before signalling. Returns the pids actually signalled.
-export function killPids(entries) {
+export function killPids(entries, { identOf: identFn = identOf, kill = (pid) => process.kill(pid, 'SIGKILL'), self = process.pid } = {}) {
   const killed = [];
   for (const entry of entries) {
     const pid = typeof entry === 'number' ? entry : entry.pid;
-    const ident = typeof entry === 'number' ? null : entry.ident;
+    // `?? null` normalises BOTH null and undefined to "no identity recorded".
+    // Without it, an entry written as `{pid}` (no ident key) took the
+    // identity-check branch, compared undefined against a live starttime, and was
+    // silently SKIPPED — i.e. a process we meant to kill best-effort survived.
+    const ident = typeof entry === 'number' ? null : (entry.ident ?? null);
     // Never signal ourselves or the init/process-group sentinel. An earlier
     // revision called killTree(process.pid) at the run cap and SIGKILLed the
     // runner, turning a reportable timeout into a bare exit 137 with no verdict.
-    if (pid === process.pid || pid <= 1) continue;
+    if (pid === self || pid <= 1) continue;
     // Identity re-check. A pid remembered from an earlier tick may since have
     // been recycled onto an unrelated process — unlikely at this box's
     // pid_max, but Termux is an explicit target of this repo and typically
     // runs pid_max 32768, where a long session wraps and we would otherwise
     // SIGKILL a stranger. starttime cannot collide across incarnations.
-    if (ident !== null && identOf(pid) !== ident) continue;
+    if (ident !== null && identFn(pid) !== ident) continue;
     try {
-      process.kill(pid, 'SIGKILL');
+      kill(pid);
       killed.push(pid);
     } catch { /* already gone, or not ours to kill */ }
   }

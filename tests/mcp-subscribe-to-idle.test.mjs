@@ -676,9 +676,13 @@ test('timeoutMs: turn_end before timeout wins; timer is cancelled, only one stub
   // starved box the watchdog won and the test failed on a `did NOT finish` stub.
   //
   // Raising it costs nothing that existed. The old "timer was cancelled"
-  // assertion below was ALREADY vacuous: subscribe→stub→300ms lands around
-  // 800ms, well inside the 2000ms window, so an UNCANCELLED watchdog would not
-  // have fired within the observation window either.
+  // assertion below was ALREADY vacuous: the observation ended ~300ms after the
+  // stub arrived, well inside the 2000ms window, so an UNCANCELLED watchdog would
+  // not have fired within the observation window either. (That ~300ms was the
+  // fixed sleep, not the round-trip: MEASURED subscribe→stub is 1-11ms quiet and
+  // max 47ms under 24-way starvation. An earlier version of this comment implied
+  // ~500ms and misled a reviewer into thinking the bounded window below was
+  // marginal.)
   await callTool('subscribe_to_idle',
     { sessionId: targetId, timeoutMs: 600_000 }, { caller: callerId });
 
@@ -782,6 +786,17 @@ test('list() hasIdleSubscriber goes false after unsubscribe', async () => {
 //
 // All three cases MUST share these two constants. Splitting them is what would
 // let the group drift apart and silently stop being a control.
+//
+// WHY 1500 IS SAFE FOR THE DELIVERY NEGATIVE, measured rather than chosen. That
+// case needs a real turn to beat a real watchdog, which is the race §3a exists to
+// remove — so the margin was measured instead of assumed. subscribe→delivered-stub
+// over 30 quiet samples: min 1ms, p50 3ms, max 11ms. Over 90 samples under 24-way
+// CPU starvation (load 10-26): p50 7ms, p90 ~24ms, **max 47ms**. Against 1500ms
+// that is a ~32x margin on the worst starved observation, so the window was kept
+// rather than widened (widening it would lengthen all three cases). The turn is
+// an in-process fake CLI and driveTurn already waits for turn_end, which is why
+// the round-trip is milliseconds and not the ~500ms a reader might assume.
+// Re-measure before shrinking this, or if the fake CLI ever becomes a subprocess.
 const WATCHDOG_MS = 1500;
 // Strictly greater than the watchdog, so the window provably elapses: an
 // uncancelled timer has necessarily fired by the time we assert.

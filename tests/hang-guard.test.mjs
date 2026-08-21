@@ -17,7 +17,7 @@ import assert from 'node:assert';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { killDescendants } from './procTree.mjs';
+import { killDescendants, killPids, processesWithMarker } from './procTree.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RUNNER = path.join(__dirname, 'run.mjs');
@@ -27,11 +27,22 @@ const fixture = name => path.join(__dirname, 'fixtures', 'hang', `${name}.fixtur
 const LEAK_GRACE = 1500;
 const FILE_KILL = 8000;   // deliberately >> LEAK_GRACE, so the two are separable
 const SWEEP = 1500;
+// The holder lifetime in detached-orphan.fixture.mjs, single-sourced here
+// because that fixture is only valid while SWEEP is far below it.
+const HOLDER_LIFETIME = 60_000;
+// 12s, NOT 30s. The largest legitimate inner wait is FILE_KILL (8000), so 12s
+// leaves headroom while bounding a run whose guard is BROKEN. Measured with a
+// broken stall trigger at 30s: three cases fell back to the inner cap, the file
+// reached 107.2s, the OUTER 90s per-file watchdog SIGKILLed it, and the report
+// truncated to 9 of 12 cases — losing exactly the diagnostics naming which guard
+// broke. The regression suite must not be silenceable by the regressions it
+// catches.
 const FAST = {
   CC_TEST_LEAK_GRACE_MS: String(LEAK_GRACE),
   CC_TEST_FILE_KILL_MS: String(FILE_KILL),
   CC_TEST_ORPHAN_SWEEP_MS: String(SWEEP),
-  CC_TEST_RUN_CAP_MS: '30000',
+  CC_TEST_RUN_CAP_MS: '12000',
+  CC_TEST_HOLDER_LIFETIME_MS: String(HOLDER_LIFETIME),
 };
 
 // The inner runner emits a full spec report, including `tests`/`pass`/`fail`
@@ -47,7 +58,7 @@ function redactTotals(out) {
 // Runs the real runner against one fixture. Always awaits the child's exit, so
 // this file never leaves a ChildProcess handle behind — Layer B is preloaded
 // into this very file and would (correctly) fail it if we did.
-function runGuard(name, env = FAST, { hardTimeoutMs = 45_000 } = {}) {
+function runGuard(name, env = FAST, { hardTimeoutMs = 45_000, stdoutPauseMs = 0, discardStdout = false } = {}) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     // NODE_TEST_CONTEXT must not reach the child. node:test sets it in every
@@ -62,8 +73,21 @@ function runGuard(name, env = FAST, { hardTimeoutMs = 45_000 } = {}) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
-    child.stdout.on('data', d => { out += d; });
+    // stderr is ALWAYS drained, so the guard's own diagnostics reach us even when
+    // stdout is deliberately stalled below.
     child.stderr.on('data', d => { out += d; });
+    const keep = d => { if (!discardStdout) out += d; };
+    if (stdoutPauseMs > 0) {
+      // Simulate a slow consumer (a pager, a slow disk) by reading nothing for
+      // this long, so the runner's writes hit backpressure once the pipe fills.
+      // We must still drain EVENTUALLY, or the child cannot close and we would be
+      // testing our own deadlock instead of the guard.
+      child.stdout.pause();
+      setTimeout(() => { child.stdout.on('data', keep); child.stdout.resume(); },
+        stdoutPauseMs).unref?.();
+    } else {
+      child.stdout.on('data', keep);
+    }
     // Backstop so a guard regression surfaces as a failed assertion here rather
     // than as a stalled test. killDescendants FIRST: several fixtures leak a
     // busy-looping or interval-holding process, and SIGKILLing only the nested
@@ -80,6 +104,65 @@ function runGuard(name, env = FAST, { hardTimeoutMs = 45_000 } = {}) {
     });
   });
 }
+
+// --- the leaked-process predicate, table-driven ------------------------------
+//
+// processesWithMarker is pure over its snapshot argument, so both directions are
+// testable with synthesised rows and no real processes. This is the safety-
+// critical half: over-firing here means SIGKILLing something that is not ours.
+
+const snapOf = rows => ({
+  available: true,
+  byPid: new Map(rows.map(r => [r.pid, { ident: '1', argv: [], ...r }])),
+  byParent: new Map(),
+});
+const MARK = 'cc-testrun-Abc123';
+const envWith = id => `PATH=/usr/bin\0CC_TEST_RUN_ID=${id}\0HOME=/root\0`;
+
+test('processesWithMarker matches this run\'s descendants and nothing else', () => {
+  const rows = [
+    { pid: 1, env: envWith(MARK) },                       // init — never, even if marked
+    { pid: process.pid, env: envWith(MARK) },             // ourselves — never
+    { pid: 4001, env: envWith(MARK) },                    // plain descendant
+    { pid: 4002, env: envWith(MARK) },                    // detached descendant, same marker
+    { pid: 4003, env: envWith('cc-testrun-Other99') },    // a DIFFERENT concurrent run
+    { pid: 4004, env: 'PATH=/usr/bin\0HOME=/root\0' },   // a stranger, no marker at all
+    { pid: 4005, env: '' },                               // environ unreadable (not ours)
+    { pid: 4006, env: 'CC_TEST_RUN_IDX=' + MARK + '\0' }, // near-miss variable name
+  ];
+  const hits = processesWithMarker(MARK, snapOf(rows)).map(h => h.pid).sort((a, b) => a - b);
+  assert.deepEqual(hits, [4001, 4002],
+    'only pids carrying THIS run\'s marker, never init, ourselves, another run, or a stranger');
+});
+
+test('processesWithMarker refuses to match when it cannot see', () => {
+  // No marker and no /proc are both "I cannot tell" — and must never be read as
+  // "everything matches", which would SIGKILL the box.
+  assert.deepEqual(processesWithMarker('', snapOf([{ pid: 4001, env: envWith(MARK) }])), []);
+  assert.deepEqual(processesWithMarker(MARK, { available: false, byPid: new Map(), byParent: new Map() }), []);
+});
+
+test('killPids re-verifies pid identity before signalling', () => {
+  // The safety direction: a remembered pid may have been RECYCLED onto an
+  // unrelated process by the time we act (Termux runs pid_max 32768, so a long
+  // session wraps). starttime cannot collide across incarnations.
+  const signalled = [];
+  const kill = pid => signalled.push(pid);
+  const identOf = pid => ({ 5001: 'same', 5002: 'DIFFERENT-NOW', 5003: null }[pid] ?? null);
+
+  const killed = killPids([
+    { pid: 5001, ident: 'same' },           // identity intact -> kill
+    { pid: 5002, ident: 'was' },            // pid recycled    -> MUST NOT kill
+    { pid: 5003, ident: 'was' },            // vanished        -> MUST NOT kill
+    { pid: 5004 },                          // no ident recorded -> kill (best effort)
+    { pid: 1, ident: 'same' },              // init            -> never
+    { pid: 7777, ident: 'same' },           // "ourselves"     -> never
+  ], { identOf, kill, self: 7777 });
+
+  assert.deepEqual(signalled.sort((a, b) => a - b), [5001, 5004]);
+  assert.deepEqual(killed.sort((a, b) => a - b), [5001, 5004],
+    'the return value must report only what was actually signalled');
+});
 
 // --- the control -----------------------------------------------------------
 
@@ -117,6 +200,30 @@ test('the absolute run cap fires, fails the run, and still prints the verdict', 
   assert.match(r.out, /hang-guard: \d+\/\d+ files reported.*RUN CAP TRIPPED/,
     'the verdict line must still print on the cap path');
   assert.ok(r.wallMs < 20_000, `capped run took ${r.wallMs}ms — the cap did not bound it`);
+});
+
+test('a healthy run whose stdout consumer stalls is NOT reported as a stall', async () => {
+  // The stall check's false-positive shape, and the one that matters most because
+  // it fires on GREEN runs. The ledger settles from SOURCE-stream events (push
+  // time); the wait is on the COMPOSED reporter, which cannot end until the
+  // runner's stdout drains. With a paused consumer and ~200KB of output, every
+  // file settles while `end` is still blocked on backpressure, and the sampler
+  // keeps ticking throughout — so an ungated check declares STREAM STALLED,
+  // SIGKILL-sweeps, and fails a run with no defect in it. `node tests/run.mjs |
+  // less` is enough to trigger it, and raising ORPHAN_SWEEP_MS cannot help
+  // because a pager pause is unbounded.
+  //
+  // The gate is `nodeFinished` (node's single run-level test:summary): emitted at
+  // push time on a healthy run, never emitted in a genuine wedge.
+  // stdout is DISCARDED here, and the assertions are stderr-only on purpose: the
+  // runner's closing process.exit() drops whatever the paused consumer had not
+  // taken, so the verdict line is not reliably observable in this shape. Every
+  // guard diagnostic goes to stderr, which is drained throughout.
+  const r = await runGuard('chatty', FAST, { stdoutPauseMs: 4000, discardStdout: true });
+  assert.equal(r.code, 0, `a healthy run must stay green behind a slow consumer:\n${r.out}`);
+  assert.doesNotMatch(r.out, /STREAM STALLED/,
+    'a slow stdout consumer is not a leaked process');
+  assert.doesNotMatch(r.out, /SWEPT/, 'nothing may be SIGKILLed on a healthy run');
 });
 
 // --- Layer B: the child-side leak detector ---------------------------------
@@ -189,13 +296,18 @@ test('a file that REPORTS CLEANLY but leaves an orphan still terminates and fail
   // The shape a `reported`-gated sweep switches itself off for: the child exits
   // cleanly, every test passes, the summary ARRIVES — and a detached orphan
   // holding our inherited stdio keeps the stream from ever ending. Pre-fix this
-  // ran to the absolute cap (600s at production defaults, above code-mutant's
-  // 300s ceiling), which is the 2026-0183 outcome all over again.
+  // ran to the absolute cap, which is the 2026-0183 outcome all over again.
+  // (Not reproducible from THIS fixture at production defaults, because the
+  // holder self-terminates at 60s and the shape then self-heals; the unbounded
+  // version was measured before the holder was given a lifetime.)
   //
-  // The orphan here is `detached`, so it escapes our process group and is NOT
-  // identifiable (see the sweep note in tests/run.mjs for why). Termination and
-  // the non-zero exit therefore come from abandoning the stalled stream, not
-  // from killing anything — which is exactly the guarantee being pinned.
+  // VALIDITY PRECONDITION, asserted rather than assumed: the holder must outlive
+  // the stall grace by a wide margin. If grace ever exceeded the holder's life
+  // the holder would die first, the stream would end on its own, and this fixture
+  // would pass while proving nothing (demonstrated: it passes at 60.2s that way).
+  assert.ok(SWEEP * 4 < HOLDER_LIFETIME,
+    `stall grace ${SWEEP}ms must stay far below the holder's ${HOLDER_LIFETIME}ms life, ` +
+    'or this fixture self-heals and stops testing anything');
   const r = await runGuard('detached-orphan');
   assert.notEqual(r.code, 0, `a leaked live process must fail the run, not read as a pass:\n${r.out}`);
   assert.match(r.out, /hang-guard: STREAM STALLED/);
@@ -203,6 +315,21 @@ test('a file that REPORTS CLEANLY but leaves an orphan still terminates and fail
     'the verdict line must record the stall even though the file itself reported');
   assert.ok(r.wallMs < 20_000,
     `run took ${r.wallMs}ms — the stall check did not abandon the wait, so it fell to the cap`);
+});
+
+test('the stall grace is actually applied, not just present', async () => {
+  // `> ORPHAN_SWEEP_MS` -> `> -1` leaves every other case green, yet removing the
+  // grace would make the whole suite flaky: a 100ms sampler tick landing in the
+  // measured ~4ms window between the last file's summary and the run-level one
+  // would declare a stall on a healthy run. This pins the grace by TIMING —
+  // with it raised to 5s the stall may not be declared before then, whereas a
+  // graceless check declares it on the first tick after settling.
+  const grace = 5000;
+  const r = await runGuard('detached-orphan', { ...FAST, CC_TEST_ORPHAN_SWEEP_MS: String(grace) });
+  assert.notEqual(r.code, 0, `expected a red run:\n${r.out}`);
+  assert.match(r.out, /hang-guard: STREAM STALLED/);
+  assert.ok(r.wallMs > grace * 0.8,
+    `the stall was declared after only ${r.wallMs}ms with a ${grace}ms grace — the grace is not being applied`);
 });
 
 test('a file that never reports is never silently absent', async () => {
