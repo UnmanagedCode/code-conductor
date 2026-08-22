@@ -369,7 +369,7 @@ test('housekeeping: turn_end / purge / disarmSilently cancel a pending settle; a
   armWake('cs9', 'ws9d');
   emitTaskEvent('w9d', 'task_notification');
   assert.equal(pendingSettles().has('w9d'), true);
-  instances.disarmIdleSilently('w9d');
+  instances.disarmIdleSilently('cs9', 'w9d');
   assert.equal(pendingSettles().has('w9d'), false, 'disarmSilently cancelled the settle');
 
   // The HEARTBEAT deliberately does NOT: it reports without consuming, so the

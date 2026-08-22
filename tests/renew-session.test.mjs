@@ -1350,7 +1350,7 @@ test('a decline note is recorded only for a conductor that is waiting, and dies 
 
     // (3) …but the note dies with the wait: a silent disarm ends it.
     srv.instances.noteRenewalDeclined(worker.id, condSid);
-    srv.instances.disarmIdleSilently(worker.id);
+    srv.instances.disarmIdleSilently(condSid, worker.id);
     assert.equal(hub._takeDecline(worker.id, condId), null,
       'the disarm took the note with it');
 

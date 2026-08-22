@@ -131,8 +131,10 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   // with nothing pending (resurrected silently). "Resumable work" = mid-turn OR
   // idle-but-parked on an armed OUTGOING idle wake, i.e. a conductor
   // that ended its turn and is waiting on a worker (isIdleCaller — the caller
-  // side — the same fact list()/the sidebar surface as `awaitingWake`, and true
-  // only while an owned worker is genuinely mid-turn). Such a conductor has
+  // side — the same fact list()/the sidebar surface as `awaitingWake`: true while
+  // an armed wake is PENDING, which is wider than "its worker is mid-turn" and
+  // deliberately covers the held states, a deferred turn_end and a dropped
+  // idle-drain settle, where the target is already idle). Such a conductor has
   // durable re-conduct work (re-spawn workers, re-drive them) even
   // though it's idle, so it must still receive its restart prompt.
   const busyAtDrain = new Set(

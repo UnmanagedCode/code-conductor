@@ -34,6 +34,10 @@
 //   3. rotation completion (_onRotationComplete — a rotation that comes up IDLE
 //      with no turn at all, i.e. a prune; a renewal declares comesUpIdle:false
 //      and is delivered by its reseed turn's turn_end instead).
+// A forced `interrupt_turn` clears only the INTERRUPTER's own entry
+// (disarmSilently) — every other owner is still woken at that turn_end and told
+// the turn was INTERRUPTED rather than finished, since silencing an owner that did
+// not ask for the abort would strand a wait nothing else can end.
 // Alongside those runs a repeating HEARTBEAT (_arm's setInterval) that reports
 // "did NOT finish" without consuming anything: a hung worker keeps pinging its
 // owner, and the real turn_end wake is still there when the turn finally ends.
@@ -114,6 +118,9 @@ interface DeliverOpts {
   timeoutMs?: number;
   note?: string | null;
   stale?: boolean;
+  // The turn being reported was force-aborted, so its output is partial and the
+  // worker did not finish. Never folded — see deliver().
+  interrupted?: boolean;
 }
 
 // The wording for a declined renewal request, prefixed into the wake stub's
@@ -276,9 +283,16 @@ export class IdleSubscriptionHub {
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
+    // A force-aborted turn is reported as INTERRUPTED, not finished. The owner who
+    // called for the abort has already had its own entry silently disarmed
+    // (disarmSilently), so the owners still here are the ones that did not ask for
+    // it — and telling them a killed turn "finished" is the misreport this exists
+    // to prevent. The UI's stop button has no interrupter at all, so on that door
+    // every owner takes this path.
+    const interrupted = target.turnForceAborted === true;
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId); // stop the heartbeat — turn_end arrived
-      this.deliver(callerInstanceId, targetInstanceId);
+      this.deliver(callerInstanceId, targetInstanceId, interrupted ? { interrupted } : undefined);
     }
   }
 
@@ -510,22 +524,23 @@ export class IdleSubscriptionHub {
     return { armed: true };
   }
 
-  // Clear every armed wake on a target and deliver NOTHING — the forced
-  // `interrupt_turn` path. The turn_end a forced abort produces then finds
-  // nothing armed, so no suppression flag is needed; and because arming only
-  // ever happens on turn START, which has already passed, nothing re-arms until
-  // the target's next turn. `_owners` is deliberately left intact: the conductor
-  // still owns the worker, it just does not want a report on the turn it killed.
-  disarmSilently(targetInstanceId: string): void {
-    const subs = this.subscribers.get(targetInstanceId);
-    if (!subs || subs.size === 0) return;
-    for (const [callerInstanceId, { timerId }] of subs) {
-      clearInterval(timerId);
-      this._takeDecline(targetInstanceId, callerInstanceId); // this wait is over
-    }
-    subs.clear();
-    this.subscribers.delete(targetInstanceId);
-    this._cancelSettle(targetInstanceId); // no watchers left
+  // Clear ONE caller's armed wake on a target and deliver nothing to it — the
+  // forced `interrupt_turn` path. Because arming only ever happens on turn START,
+  // which has already passed, nothing re-arms for that caller until the target's
+  // next turn; `_owners` is deliberately left intact, since the conductor still
+  // owns the worker, it just wants no report on the turn it killed.
+  //
+  // Scoped to the CALLER on purpose. The justification — "a turn this caller just
+  // killed" — extends to nobody else: a target can have several owners (spawn OR
+  // dispatch, and the interrupter need not be an owner at all), and clearing the
+  // whole per-target map left every other owner with no stub, no heartbeat, and a
+  // wait that could never end. Those owners are woken instead, and told the turn
+  // was interrupted rather than finished — see `Instance.turnForceAborted` and
+  // `_plainStub`'s interrupted variant.
+  disarmSilently(targetInstanceId: string, callerInstanceId: string): void {
+    if (!this.subscribers.get(targetInstanceId)?.has(callerInstanceId)) return;
+    this._dropArmed(targetInstanceId, callerInstanceId);
+    this._takeDecline(targetInstanceId, callerInstanceId); // this wait is over
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
   }
 
@@ -548,8 +563,13 @@ export class IdleSubscriptionHub {
   // NO other state: the pending turn_end wake it reports about is still armed
   // afterwards, which is the whole point — a hung worker keeps pinging and the
   // real wake still arrives when the turn finally ends. The single exception is a
-  // target whose process is gone: no turn_end can ever follow, so that ping is
-  // the last one rather than the first of an unbounded series.
+  // target that is gone for good: no turn_end can ever follow, so that ping is
+  // the last one rather than the first of an unbounded series. "Gone for good" is
+  // NOT just `!proc` — a prune/rewind/respawn kills the subprocess and relaunches
+  // it, and a beat landing in that gap would retire an entry whose wake is still
+  // owed (the rotation's own completion, or the reseed turn's turn_end, would then
+  // find nothing armed and the owner would be left with "did NOT finish" as its
+  // last word). So the retirement also requires that nothing is reviving it.
   // .unref()'d so a lone heartbeat never keeps the process alive.
   _arm(targetInstanceId: string, callerInstanceId: string): boolean {
     let subs = this.subscribers.get(targetInstanceId);
@@ -558,9 +578,9 @@ export class IdleSubscriptionHub {
     const timeoutMs = this._owners.get(targetInstanceId)?.get(callerInstanceId)?.timeoutMs
       ?? DEFAULT_SUBSCRIBE_TIMEOUT_MS;
     const timerId = setInterval(() => {
-      if (!this.manager.byId.get(targetInstanceId)?.proc) {
-        // The target's process is gone — this heartbeat has nothing left to
-        // report on after this ping, so retire it instead of pinging forever.
+      if (this._goneForGood(targetInstanceId)) {
+        // Nothing can ever end this turn — this ping is the last one rather than
+        // the first of an unbounded series.
         this._dropArmed(targetInstanceId, callerInstanceId);
         this.manager.emit('subscription_changed', { targetId: targetInstanceId });
       }
@@ -569,6 +589,17 @@ export class IdleSubscriptionHub {
     timerId.unref?.();
     subs.set(callerInstanceId, { timerId, timeoutMs });
     return true;
+  }
+
+  // Is this target past every possible wake point — no subprocess AND nothing in
+  // flight that will bring one back? A removed instance qualifies; a live one in
+  // the kill→relaunch gap of a prune/rewind/respawn (or holding `_mutating` around
+  // a destructive rewrite) explicitly does not.
+  _goneForGood(targetInstanceId: string): boolean {
+    const t = this.manager.byId.get(targetInstanceId);
+    if (!t) return true;
+    if (t.proc) return false;
+    return !t.relaunching && t.rotationInFlight == null && !t.rotationPending && !t._mutating;
   }
 
   // Remove one armed entry (clearing its heartbeat) and tidy the maps behind it.
@@ -735,7 +766,11 @@ export class IdleSubscriptionHub {
     // synchronously, on the caller's status at delivery time.
     // A STALE wake keeps the plain pointer stub too: folding a busy worker's
     // mid-flight output in would read as its finished result.
-    const fold = !opts?.timedOut && !opts?.stale && caller.status !== 'turn';
+    // …and so does an INTERRUPTED one, deliberately: the presence of the body
+    // separator IS the client's "this is the finished result" signal, so folding
+    // partial aborted output in would invite the conductor to act on exactly what
+    // the abort was meant to stop it acting on. It gets the pointer instead.
+    const fold = !opts?.timedOut && !opts?.stale && !opts?.interrupted && caller.status !== 'turn';
     const deliver = async (): Promise<void> => {
       // Read-and-delete BEFORE any await: the expiry that recorded this note ran
       // synchronously in the dispatch that queued this microtask, and the note
@@ -773,7 +808,12 @@ export class IdleSubscriptionHub {
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
   _plainStub(targetSessionId: string, opts?: DeliverOpts): string {
-    const summary = opts?.timedOut
+    const summary = opts?.interrupted
+      ? `Worker \`${targetSessionId}\` was INTERRUPTED — its turn was force-aborted, so it did ` +
+        `NOT finish and whatever it produced is PARTIAL; work in progress was discarded. ` +
+        `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
+        `to see how far it got, then re-drive it or escalate — do not treat this as a result.`
+      : opts?.timedOut
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
         `it may still be busy or stuck. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +

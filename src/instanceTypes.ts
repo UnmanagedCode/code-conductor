@@ -107,6 +107,9 @@ export interface InstanceLike {
   readonly autoApprovePlan: boolean;
   readonly playbookEnforcement: PlaybookEnforcement;
   readonly interrupting: boolean;
+  // The CURRENT/just-ended turn was force-aborted. Read by IdleSubscriptionHub at
+  // turn_end so an owner hears "interrupted", not "finished". See src/instances.ts.
+  readonly turnForceAborted: boolean;
   readonly liveThinkingTokens: number | null;
   readonly lastContextUsage: unknown;
   readonly ring: { trimmedBefore: number; nextSeq: number };
@@ -251,7 +254,7 @@ export interface InstanceManagerLike {
   respawn(id: string): Promise<InstanceLike>;
   noteDispatch(callerSessionId: string, targetSessionId: string, timeoutMs?: number): void;
   setIdleTimeout(callerSessionId: string, targetSessionId: string, timeoutMs: number): { armed: boolean };
-  disarmIdleSilently(targetInstanceId: string): void;
+  disarmIdleSilently(callerSessionId: string, targetInstanceId: string): void;
   armSessionRenew(instanceId: string, opts: { summary: string; followUp?: string | null }): void;
   requestSessionRenew(instanceId: string, opts: { followUp?: string | null; requestedBy?: string | null }): { requested: boolean; rerequested: boolean };
   dropSessionRenewRequest(instanceId: string): void;

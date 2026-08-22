@@ -580,10 +580,10 @@ test('target removed before turn_end: the wake is purged', async () => {
 
 // ── interrupt_turn: the two tiers do OPPOSITE things to the armed wake ────────
 
-test('interrupt_turn force:true clears the armed wake and delivers none', async () => {
+test('interrupt_turn force:true wakes the INTERRUPTER not at all', async () => {
   // A forced abort produces a turn_end like any other. Without the disarm the
-  // owner is told the worker "finished its turn" about a turn the owner itself
-  // killed — and the fixture's interrupt turn emits exactly that result, so this
+  // interrupter is told the worker "finished its turn" about a turn it killed
+  // itself — and the fixture's interrupt turn emits exactly that result, so this
   // is the real wire shape, not a synthetic event.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
@@ -595,7 +595,7 @@ test('interrupt_turn force:true clears the armed wake and delivers none', async 
   await waitFor(() => target.status === 'turn');
   await waitFor(() => instances._idleHub.hasArmedWake(target.id));
 
-  await callTool('interrupt_turn', { sessionId: targetId, force: true });
+  await callTool('interrupt_turn', { sessionId: targetId, force: true }, { caller: callerId });
 
   // BARRIER: the forced abort's own turn_end is what flips the target to idle,
   // and that same handler is where a wake would be delivered. settle() then
@@ -603,11 +603,79 @@ test('interrupt_turn force:true clears the armed wake and delivers none', async 
   await waitFor(() => target.status === 'idle');
   await settle();
   assert.equal(findStubFor(caller, targetId), undefined,
-    'a forced interrupt delivers no wake — the conductor caused this turn_end');
+    'the interrupter gets no wake at all — not a completion, not an interrupted one');
   assert.equal(instances._idleHub.hasArmedWake(target.id), false, 'and nothing stays armed');
   // Ownership survives: the NEXT turn re-arms.
   assert.ok(instances._idleHub.ownersOf(target.id).includes(caller.id),
     'the disarm drops the wake, not the ownership');
+});
+
+test('a forced interrupt silences ONLY the interrupter; every other owner is woken, and told INTERRUPTED', async () => {
+  // The disarm is caller-scoped. Clearing the whole per-target map instead left
+  // every other owner with no stub, no heartbeat, and a wait nothing could ever
+  // end — and the interrupter need not be an owner at all, so any session that
+  // could address a target could silence its watchers. Multi-owner is
+  // first-class: the edge is spawn OR dispatch.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const aId = await spawnReady('p');
+  const bId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
+  const target = instForSession(instances, targetId);
+  const a = instForSession(instances, aId);
+  const b = instForSession(instances, bId);
+
+  // A opens the turn (arming A); B then dispatches mid-turn (arming B too).
+  await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: aId });
+  await waitFor(() => target.status === 'turn');
+  await callTool('send_prompt', { sessionId: targetId, text: 'me too' }, { caller: bId });
+  assert.equal(instances._idleSubscribers.get(target.id).size, 2, 'precondition: two owners armed');
+
+  await callTool('interrupt_turn', { sessionId: targetId, force: true }, { caller: aId });
+  await waitFor(() => target.status === 'idle');
+  await settle();
+
+  assert.equal(findStubFor(a, targetId), undefined, 'A asked for the abort, so A hears nothing');
+  const bStub = await waitFor(() => findInterruptedStubFor(b, targetId));
+  assert.match(bStub.text, /was INTERRUPTED/, 'B is woken rather than stranded');
+  assert.match(bStub.text, /PARTIAL/, 'and told its output is partial');
+  assert.doesNotMatch(bStub.text, /finished its turn/,
+    'a killed turn must never be reported to B as finished');
+  // Renders as the bell bubble, but is NEVER folded: the body separator is the
+  // client's "this is the finished result" signal.
+  assert.ok(bStub.text.startsWith(WAKE_CALLBACK_MARKER), 'still a wake-callback bubble');
+  assert.ok(!bStub.text.includes(WAKE_BODY_SEP),
+    'interrupted output must not fold — folding invites acting on what the abort stopped');
+  assert.equal(countUserEchoes(b,
+    ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages')), 1,
+    'exactly one wake for B');
+});
+
+test('the UI stop button (no interrupter) tells EVERY owner the turn was interrupted', async () => {
+  // wsHub calls Instance.interrupt({force:true}) directly with no caller, so there
+  // is nobody to silence. Before the interrupted variant existed, that door
+  // delivered a FOLDED "finished its turn" stub about aborted partial work — the
+  // exact misreport the MCP force path was built to prevent. Driving
+  // Instance.interrupt directly is that door's own shape.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
+  const target = instForSession(instances, targetId);
+  const caller = instForSession(instances, callerId);
+
+  await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId });
+  await waitFor(() => target.status === 'turn');
+  await waitFor(() => instances._idleHub.hasArmedWake(target.id));
+
+  await target.interrupt({ force: true });
+  await waitFor(() => target.status === 'idle');
+
+  const stub = await waitFor(() => findInterruptedStubFor(caller, targetId));
+  assert.match(stub.text, /was INTERRUPTED/);
+  assert.doesNotMatch(stub.text, /finished its turn/);
+  assert.ok(!stub.text.includes(WAKE_BODY_SEP), 'never folded, even to an idle recipient');
+  await settle();
+  assert.equal(countUserEchoes(caller,
+    ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages')), 1);
 });
 
 test('a SOFT interrupt leaves the wake armed, and the heartbeat keeps firing', async () => {
@@ -662,6 +730,66 @@ test('idempotency: a dispatch plus a mid-turn steer produce exactly ONE wake', a
     'exactly one wake for one turn, however many times it was dispatched to');
 });
 
+test('idempotency is ONE INTERVAL, not one map entry: no beat survives the turn_end', async () => {
+  // The sibling test above counts wakes and map entries, and neither notices a
+  // SECOND interval armed for the same pair: `subs.set()` preserves cardinality,
+  // so `.size === 1` still holds while the replaced entry's timer is orphaned and
+  // unreachable. `_onTurnEnd` clears the one the map still holds; the orphan keeps
+  // pinging forever. It is only observable on a SHORT window — on the 30-minute
+  // default the leak outlives any test — which is why the window is set here.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
+  const target = instForSession(instances, targetId);
+  const caller = instForSession(instances, callerId);
+  const beats = () => countUserEchoes(caller,
+    ev => ev.text?.includes(targetId) && ev.text?.includes('did NOT finish'));
+
+  await callTool('send_prompt',
+    { sessionId: targetId, text: 'one', idleTimeoutMs: 150 }, { caller: callerId });
+  await waitFor(() => target.status === 'turn');
+  // The mid-turn steer is the second arm attempt for the same pair.
+  await callTool('send_prompt',
+    { sessionId: targetId, text: 'two', idleTimeoutMs: 150 }, { caller: callerId });
+  assert.equal(instances._idleSubscribers.get(target.id).size, 1, 'one entry for the pair');
+
+  // BARRIER: the paced fixture ends the turn on its own, and that turn_end is what
+  // clears the interval the map holds.
+  await waitFor(() => target.status === 'idle');
+  await waitFor(() => !!findCompletionStubFor(caller, targetId));
+  await settle();
+  const atEnd = beats();
+
+  // A second, orphaned interval would fire several more times in this window.
+  await new Promise(r => setTimeout(r, 150 * 5));
+  await settle();
+  assert.equal(beats(), atEnd,
+    'the turn_end cleared EVERY interval for the pair — a leaked second one keeps pinging');
+  assert.equal(instances._idleHub.hasArmedWake(target.id), false);
+});
+
+test('a dispatch with no idleTimeoutMs preserves an earlier set_idle_timeout preference', async () => {
+  // The docblock on _recordOwner promises this: an absent/invalid timeoutMs leaves
+  // the owner's stored window intact rather than silently resetting it to the
+  // default. Without the intervening dispatch the fallback is never exercised.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
+  const target = instForSession(instances, targetId);
+  const caller = instForSession(instances, callerId);
+
+  const set = unwrap(await callTool('set_idle_timeout',
+    { sessionId: targetId, timeoutMs: 5_000 }, { caller: callerId }));
+  assert.equal(set.armed, false, 'target idle, so nothing to re-arm — preference only');
+
+  // A plain dispatch, carrying NO idleTimeoutMs.
+  await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId });
+  await waitFor(() => target.status === 'turn');
+  await waitFor(() => instances._idleHub.hasArmedWake(target.id));
+  assert.equal(instances._idleSubscribers.get(target.id).get(caller.id).timeoutMs, 5_000,
+    'the turn armed on the STORED window, not on the default');
+});
+
 // ── heartbeat tests ──────────────────────────────────────────────────────────
 
 // A COMPLETION stub specifically — findStubFor matches any wake naming the
@@ -672,6 +800,15 @@ function findCompletionStubFor(inst, targetId) {
     typeof ev.text === 'string' &&
     ev.text.includes(targetId) &&
     ev.text.includes('finished its turn'),
+  );
+}
+
+function findInterruptedStubFor(inst, targetId) {
+  return inst.ringSnapshot().find(ev =>
+    ev.kind === 'user_echo' &&
+    typeof ev.text === 'string' &&
+    ev.text.includes(targetId) &&
+    ev.text.includes('was INTERRUPTED'),
   );
 }
 
@@ -860,6 +997,92 @@ test('set_idle_timeout on an idle target records the preference and reports arme
   instances._idleHub.onTurnStart(target.id);
   assert.equal(instances._idleSubscribers.get(target.id)
     .get(instForSession(instances, callerId).id).timeoutMs, 5_000);
+});
+
+// ── retirement: the ONE case a heartbeat consumes, and the gap it must not ────
+
+// A NON-temp worker (the REST spawn path): an MCP-spawned worker is temp, so its
+// exit drops it from byId and purge() clears the graph before any beat can land —
+// which is exactly the case these two tests are NOT about.
+async function restWorker(project, scenarioPath) {
+  const prev = process.env.FAKE_CLAUDE_SCENARIO;
+  process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+    assert.equal(r.status, 201);
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    return inst;
+  } finally { process.env.FAKE_CLAUDE_SCENARIO = prev; }
+}
+
+test('a heartbeat on a target that is GONE FOR GOOD retires itself after one ping', async () => {
+  // The one case the heartbeat consumes: no turn_end can ever follow a dead
+  // process, so pinging on forever would be an unbounded false report. Without the
+  // retirement the owner of a crashed worker is told "did NOT finish" every window
+  // for the life of the daemon.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const worker = await restWorker('p', SCENARIO_OPEN);
+  const caller = instForSession(instances, callerId);
+  const beats = () => countUserEchoes(caller,
+    ev => ev.text?.includes(worker.sessionId) && ev.text?.includes('did NOT finish'));
+
+  await callTool('send_prompt',
+    { sessionId: worker.sessionId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+  await waitFor(() => worker.status === 'turn');
+  await waitFor(() => instances._idleHub.hasArmedWake(worker.id));
+
+  // The process dies mid-turn, with nothing reviving it. Non-temp, so the instance
+  // stays in byId and no purge runs.
+  await worker.kill();
+  await waitFor(() => !worker.proc);
+  assert.ok(instances.byId.has(worker.id), 'precondition: still registered, just dead');
+
+  await waitFor(() => beats() >= 1);
+  assert.equal(instances._idleHub.hasArmedWake(worker.id), false,
+    'that ping was the last one — the entry retired');
+  const atRetire = beats();
+  await new Promise(r => setTimeout(r, 150 * 5));
+  await settle();
+  assert.equal(beats(), atRetire, 'and no further ping arrives');
+});
+
+test('a heartbeat inside a rotation gap does NOT retire — the wake is still owed', async () => {
+  // `!proc` is equally true across a prune/rewind/respawn's kill -> relaunch gap.
+  // Retiring there drops an entry whose wake is still owed (the rotation's own
+  // completion, or the reseed turn's turn_end), leaving the owner with "did NOT
+  // finish" as its last word and no heartbeat until some later turn start. This
+  // stages that gap with the same contract calls pruneSession makes.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const worker = await restWorker('p', SCENARIO_OPEN);
+  const caller = instForSession(instances, callerId);
+  const beats = () => countUserEchoes(caller,
+    ev => ev.text?.includes(worker.sessionId) && ev.text?.includes('did NOT finish'));
+
+  await callTool('send_prompt',
+    { sessionId: worker.sessionId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+  await waitFor(() => worker.status === 'turn');
+  await waitFor(() => instances._idleHub.hasArmedWake(worker.id));
+
+  // Enter the gap: rotation open, subprocess gone — exactly pruneSession's
+  // `beginRotation` -> `kill` -> (transform) -> `launch` shape.
+  worker.beginRotation('prune');
+  await worker.kill();
+  await waitFor(() => !worker.proc);
+
+  await waitFor(() => beats() >= 1);
+  assert.equal(instances._idleHub.hasArmedWake(worker.id), true,
+    'a beat inside the gap reports, but must NOT retire a wake that is still owed');
+  // …and the wake it kept is still deliverable: the rotation coming up idle is the
+  // only wake point a prune will ever offer, and it finds the entry armed.
+  worker.endRotation({ ok: true, comesUpIdle: true });
+  instances.emit('event', { id: worker.id, ev: {
+    kind: 'system', subtype: 'rotation_complete', data: { comesUpIdle: true },
+  } });
+  await waitFor(() => !!findStubFor(caller, worker.sessionId));
+  assert.equal(instances._idleHub.hasArmedWake(worker.id), false, 'and the rotation consumed it');
 });
 
 // ── the clamp: ceiling == default, so these inputs can only SHORTEN ───────────

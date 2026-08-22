@@ -70,6 +70,69 @@ test('Sessions subnode merges a live instance with its on-disk row (single combi
   assert.ok(offlineRow.querySelector('.dot.offline'), 'historical row has offline dot');
 });
 
+// The `awaitingWake` dot modifier is CALLER-side: an idle conductor renders the
+// accent dot while an armed wake on a session it owns is pending, which is the only
+// thing on the row distinguishing "idle because I am waiting on a worker" from
+// "idle because I am done". The Playwright check
+// (harness/playwright/check-awaiting-wake-dot.mjs) covers the computed COLOUR and
+// the stays-lit-across-a-heartbeat behaviour end to end, but it is not wired into
+// `npm test` — so the class and the tooltip are pinned here, where the suite
+// actually loads the render path.
+test('an idle row with awaitingWake renders the accent dot modifier and its tooltip', async () => {
+  const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [],
+    sessions: { count: 0, lastActivity: 0 },
+  }]);
+  sidebar.setInstances([
+    { id: 'inst-wait', project: 'demo', sessionId: 'sid-wait', status: 'idle', mode: 'plan',
+      worktree: null, awaitingWake: true },
+    { id: 'inst-done', project: 'demo', sessionId: 'sid-done', status: 'idle', mode: 'plan',
+      worktree: null, awaitingWake: false },
+  ]);
+  await new Promise(r => setTimeout(r, 0));
+
+  const dotFor = (sid) => [...root.querySelectorAll('.session-row')]
+    .find(r => r.parentElement?._holder?.session?.sessionId === sid)?.querySelector('.dot');
+
+  const waiting = dotFor('sid-wait');
+  assert.ok(waiting, 'the awaiting row rendered');
+  assert.ok(waiting.classList.contains('idle'), 'still an idle dot');
+  assert.ok(waiting.classList.contains('awaiting'),
+    'awaitingWake adds the accent modifier — this is the only automated cover for it');
+  assert.equal(waiting.title, 'idle — waiting on a worker',
+    'and the accent state names itself, since the colour alone is not self-explaining');
+
+  // The paired negative: same status, no armed wake ⇒ no modifier, plain tooltip.
+  const done = dotFor('sid-done');
+  assert.ok(!done.classList.contains('awaiting'), 'an idle-and-done row stays plain');
+  assert.equal(done.title, 'idle');
+});
+
+test('the awaiting modifier is dropped when the armed wake is consumed', async () => {
+  // The dot must go back to plain when the wake fires — a modifier that only ever
+  // turns on would leave a finished conductor reading as still waiting.
+  const { root, sidebar } = await setupSidebar({ onLoadSessions: async () => [] });
+  sidebar.setProjects([{
+    name: 'demo', path: '/p/demo', sessionIds: [],
+    isGitRepo: false, worktrees: [], sessions: { count: 0, lastActivity: 0 },
+  }]);
+  const row = (awaitingWake) => [{
+    id: 'inst-c', project: 'demo', sessionId: 'sid-c', status: 'idle', mode: 'plan',
+    worktree: null, awaitingWake,
+  }];
+  sidebar.setInstances(row(true));
+  await new Promise(r => setTimeout(r, 0));
+  assert.ok(root.querySelector('.dot').classList.contains('awaiting'));
+
+  sidebar.setInstances(row(false));
+  await new Promise(r => setTimeout(r, 0));
+  const dot = root.querySelector('.dot');
+  assert.ok(!dot.classList.contains('awaiting'), 'the modifier is removed, not sticky');
+  assert.equal(dot.title, 'idle');
+});
+
 test('Sessions subnode renders a synthetic row for a freshly-spawned instance with no on-disk jsonl', async () => {
   const { root, sidebar } = await setupSidebar({
     onLoadSessions: async () => [], // no on-disk sessions

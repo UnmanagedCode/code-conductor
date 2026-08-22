@@ -1262,18 +1262,20 @@ export async function pruneSession(
   };
 }
 
-export async function interruptTurn({ sessionId, force }: { sessionId: string; force?: boolean }, { instances }: McpCtx) {
+export async function interruptTurn({ sessionId, force }: { sessionId: string; force?: boolean }, { instances, callerId }: McpCtx) {
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
-  if (force) {
+  if (force && callerId) {
     // A forced abort produces a turn_end like any other, which would otherwise
-    // deliver a "finished its turn" wake about a turn the caller just killed.
-    // Disarm BEFORE the abort, so that turn_end finds nothing armed; nothing
-    // re-arms until the target's next turn STARTS. A soft interrupt deliberately
-    // leaves the wake armed — its boundary wait is unbounded, so the continuing
-    // heartbeat is what tells the conductor to escalate to force.
-    instances!.disarmIdleSilently(inst.id);
+    // deliver a "finished its turn" wake about a turn THIS caller just killed.
+    // Disarm its own entry BEFORE the abort, so that turn_end finds nothing armed
+    // for it; nothing re-arms until the target's next turn STARTS. Scoped to the
+    // caller: every OTHER owner is still woken, and told the turn was interrupted
+    // (Instance.turnForceAborted) — silencing them would strand a wait they never
+    // asked to end. A soft interrupt disarms nobody: its boundary wait is
+    // unbounded, so the continuing heartbeat is the escalation signal.
+    instances!.disarmIdleSilently(callerId, inst.id);
   }
   await inst.interrupt({ force: !!force });
   return { sessionId: inst.sessionId, status: inst.status, interrupting: !!inst.interrupting };

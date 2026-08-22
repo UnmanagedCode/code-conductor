@@ -539,6 +539,14 @@ export class Instance extends EventEmitter implements InstanceLike {
   _quiescence: QuiescenceScan;
   _interruptArmed: boolean;
   _interruptFired: boolean;
+  // This turn was FORCE-aborted (partial output, work discarded). Read by
+  // IdleSubscriptionHub at turn_end so an owner is told the turn was interrupted
+  // rather than finished. Set in interrupt({force:true}) — the one chokepoint both
+  // doors (the MCP tool and the UI's stop button via wsHub) go through, so neither
+  // can forget it. Cleared only on a turn START: the turn_end that reads it fires
+  // AFTER _setStatus('idle'), and a deferred wake may not read it until a later
+  // turn_end still belonging to the same abort.
+  _turnForceAborted: boolean;
   pendingPrefill: string | null;
   _drainTimer: NodeJS.Timeout | null;
   _drainListener: ((ev: UiEvent) => void) | null;
@@ -761,6 +769,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
     this._interruptFired = false;
+    this._turnForceAborted = false;
     // Fork drops the dropped user prompt here so it can ride the new
     // instance's first `snapshot` frame as `droppedText` — the inline
     // analogue of rewind's `reset_snapshot` droppedText. Consumed once by
@@ -1232,6 +1241,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._interruptArmed = false;
       this._interruptFired = false;
     }
+    // NOT cleared alongside those: the wake this flag qualifies is delivered from
+    // the turn_end that FOLLOWS this transition, and a deferred one from a later
+    // turn_end still belonging to the same abort. A turn START is the only point
+    // at which it is certainly stale.
+    if (next === 'turn') this._turnForceAborted = false;
     // The process is gone: a parked steer can never be delivered. Reject each
     // waiter and clear the queue — leaving `steerPending` true on a dead instance
     // would wedge IdleSubscriptionHub's defer indefinitely.
@@ -1598,6 +1612,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
     this._interruptFired = false;
+    this._turnForceAborted = false;
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
     // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
@@ -2715,6 +2730,9 @@ export class Instance extends EventEmitter implements InstanceLike {
       // Also disarms any pending deferred fire: the abort is happening now, so a
       // later boundary must not send a second control_request.
       this._interruptFired = true;
+      // The turn_end this abort produces reports an INTERRUPTED turn, not a
+      // finished one — whichever door called us. See _turnForceAborted.
+      this._turnForceAborted = true;
       await this._controlRequest({ subtype: 'interrupt' });
       this._releaseParkedPermissions();
       // Open the drain window synchronously in the same microtask as the ACK.
@@ -2796,6 +2814,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // resume deadline, and the queue is flushed only by a fired deadline while
   // cancel() discards it. THE ONE PLACE this is tested — prompt() throws on it and
   // the MCP handlers turn it into a soft `OVERAGE_STOPPED_UNARMED` refusal.
+  // Read by IdleSubscriptionHub at turn_end — see _turnForceAborted.
+  get turnForceAborted(): boolean { return this._turnForceAborted; }
+
   get overageSendRefused(): boolean {
     if (!this._overageStoppedUnarmed) return false;
     return !!(this._overageGate ? this._overageGate().active : false);
@@ -3258,6 +3279,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
     this._interruptFired = false;
+    this._turnForceAborted = false;
     // A rewind/respawn rewrites the CLI's prefix, so the pre-wipe context reading
     // must not leak into the replayed session (it would over-report a rewound
     // session's fill until its first live message_start).
@@ -3402,8 +3424,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   setIdleTimeout(callerSessionId: string, targetSessionId: string, timeoutMs: number): { armed: boolean } {
     return this._idleHub.setIdleTimeout(callerSessionId, targetSessionId, timeoutMs);
   }
-  disarmIdleSilently(targetInstanceId: string): void {
-    return this._idleHub.disarmSilently(targetInstanceId);
+  // Caller-scoped: only the interrupter's own wake is dropped. See the hub.
+  disarmIdleSilently(callerSessionId: string, targetInstanceId: string): void {
+    const caller = this.liveForSession(callerSessionId);
+    if (!caller) return;
+    return this._idleHub.disarmSilently(targetInstanceId, caller.id);
   }
   _idleSubscriberSnapshot(): Record<string, string[]> { return this._idleHub.snapshot(); }
   _purgeIdleFor(instanceId: string): void { return this._idleHub.purge(instanceId); }
