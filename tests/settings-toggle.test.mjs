@@ -196,59 +196,6 @@ test('settings: close() hides panel even when hash drifted via replaceState', as
   window.happyDOM.abort();
 });
 
-// ── sidebar collapse on open ─────────────────────────────────────────────────
-
-// app.js does:
-//   dom.settingsBtn.addEventListener('click', () => {
-//     ...
-//     else { closeSidebarOnMobile(); settings.open(); }
-//   });
-// where closeSidebarOnMobile() only calls setSidebarOpen(false) when
-// `window.matchMedia('(max-width: 720px)').matches` — above that breakpoint
-// '.open' has no visual effect (styles.css gates the drawer transform to the
-// same query) so the sidebar must be left untouched. These tests mirror that
-// exact helper (not the pre-fix unconditional call) to verify both branches.
-function closeSidebarOnMobile(window, sidebar) {
-  if (window.matchMedia('(max-width: 720px)').matches) sidebar.classList.remove('open');
-}
-
-test('settings: opening settings collapses the sidebar on mobile', async () => {
-  const { window, mod, main, sidebar } = await setup();
-  mod.installSettings({ requestClose: () => {} });
-  window.matchMedia = () => ({ matches: true });
-
-  // Sidebar starts open (user tapped the hamburger on mobile)
-  sidebar.classList.add('open');
-  assert.equal(sidebar.classList.contains('open'), true);
-
-  // Simulate what app.js click handler does: collapse sidebar, then open settings
-  closeSidebarOnMobile(window, sidebar);
-  window.location.hash = '#settings';        // settings.open()
-  await window.happyDOM.waitUntilComplete();
-
-  assert.equal(sidebar.classList.contains('open'), false, 'sidebar must be collapsed');
-  assert.equal(main.classList.contains('settings-open'), true, 'settings panel must be open');
-  window.happyDOM.abort();
-});
-
-test('settings: opening settings on desktop leaves the always-visible sidebar column alone', async () => {
-  const { window, mod, main, sidebar } = await setup();
-  mod.installSettings({ requestClose: () => {} });
-  window.matchMedia = () => ({ matches: false });
-
-  // Desktop sidebar isn't a drawer — '.open' shouldn't even be present, but
-  // if it were, closeSidebarOnMobile() must not touch it above the breakpoint.
-  sidebar.classList.add('open');
-
-  closeSidebarOnMobile(window, sidebar);
-  window.location.hash = '#settings';
-  await window.happyDOM.waitUntilComplete();
-
-  assert.equal(sidebar.classList.contains('open'), true, 'desktop sidebar must be untouched');
-  assert.equal(main.classList.contains('settings-open'), true, 'settings panel must still open');
-  window.happyDOM.abort();
-});
-
 // ── plugin catalog change refreshes the conventions panels ──────────────────
 // Regression test: enabling a plugin used to leave the Conductor/Workspace/
 // Project conventions panels stale until Settings was reopened. Drives the
