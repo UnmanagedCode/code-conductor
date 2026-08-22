@@ -83,7 +83,7 @@ test('the documented key list matches what toConductorView emits, one-for-one', 
   const src = await fs.readFile(TOOLS_SRC, 'utf8');
   const documented = documentedKeys(src);
   // Three fields are appended downstream by listSessions, not by the
-  // projection: `hasIdleSubscriber` (added by list()), and `playbook`/`stage`
+  // projection: `awaitingWake` (added by list()), and `playbook`/`stage`
   // (joined from the sessionId-keyed playbook projection). None of them exists on
   // InstanceSummary, so putting them in the allowlist would publish permanently-
   // undefined fields on the four other projections — hence list_sessions

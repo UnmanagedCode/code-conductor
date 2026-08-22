@@ -34,7 +34,7 @@ async function readTranscript(p) {
 // `can_use_tool` control_requests. We answer `deny`, which ends the turn — so
 // the plan_request / user_question card (from the tool-use) surfaces and the
 // existing approve_plan / next-prompt drive-forward path is unchanged. A held
-// (in-turn) answer would break the conductor's subscribe_to_idle→turn_end wake.
+// (in-turn) answer would break the conductor's turn_end wake.
 test('can_use_tool(ExitPlanMode): denied with awaiting-input message, plan_request surfaces, turn ends', async () => {
   const ctx = await bootServer({ scenarioPath: SCENARIO_CUT_PLAN });
   try {

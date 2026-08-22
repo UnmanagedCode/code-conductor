@@ -23,16 +23,17 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-// The default watchdog length is a module-load-time constant
+// The default heartbeat window is a module-load-time constant
 // (src/idleSubscriptions.ts DEFAULT_SUBSCRIBE_TIMEOUT_MS ←
 // ORCH_SUBSCRIBE_TIMEOUT_MS), so the short test value must be set BEFORE
-// src/instances.ts is imported — hence the dynamic import below (same pattern
-// as idle-drain-settle.test.mjs).
+// src/instances.ts is imported — hence the dynamic imports below (same pattern
+// as idle-drain-settle.test.mjs). Read back rather than re-declared, so the
+// assertions cannot drift from the value the hub actually armed with.
 process.env.ORCH_SUBSCRIBE_TIMEOUT_MS = '400';
-const DEFAULT_WATCHDOG_MS = 400;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const { InstanceManager, Instance } = await import('../src/instances.ts');
+const { DEFAULT_SUBSCRIBE_TIMEOUT_MS } = await import('../src/idleSubscriptions.ts');
 
 const instances = new InstanceManager();
 after(() => instances.shutdown().catch(() => {}));
@@ -72,8 +73,17 @@ function inject(cond, work) {
   instances.byId.set(cond.id, cond);
   instances.byId.set(work.id, work);
 }
+// Ownership + the turn that arms it. `noteDispatch` records the ownership edge;
+// the ARM happens when the target enters a turn — in production that is
+// Instance._setStatus's 'turn_start' emit, which these injected fakes never run,
+// so the test drives onTurnStart directly.
+function armWake(callerSid, targetSid, timeoutMs) {
+  instances.noteDispatch(callerSid, targetSid, timeoutMs);
+  instances._idleHub.onTurnStart(instances.liveForSession(targetSid).id);
+}
 function cleanup(cond, work) {
   instances._idleSubscribers.clear();
+  instances._idleHub._owners.clear();
   instances.byId.delete(cond.id);
   instances.byId.delete(work.id);
 }
@@ -82,13 +92,13 @@ test('(a)+(b) turn_end with an active subagent defers; delivery fires once after
   const cond = makeFake({ id: 'c1', sessionId: 'cs1' });
   const work = makeFake({ id: 'w1', sessionId: 'ws1', activeAgentTaskCount: 1 });
   inject(cond, work);
-  instances.subscribeIdle('cs1', 'ws1');
+  armWake('cs1', 'ws1');
 
   // (a) turn_end while a subagent is active → deferred, subscription untouched.
   emitTurnEnd('w1');
   await tick();
   assert.equal(cond._promptCalls.length, 0, 'no delivery while a background subagent is active');
-  assert.equal(instances._idleHub.hasSubscriber('w1'), true,
+  assert.equal(instances._idleHub.hasArmedWake('w1'), true,
     'a deferred turn_end must NOT consume the one-shot subscription');
 
   // (b) subagent finishes → follow-up turn_end at count 0 → deliver exactly once.
@@ -96,7 +106,7 @@ test('(a)+(b) turn_end with an active subagent defers; delivery fires once after
   emitTurnEnd('w1');
   await tick();
   assert.equal(cond._promptCalls.length, 1, 'delivered exactly once after the count drained');
-  assert.equal(instances._idleHub.hasSubscriber('w1'), false, 'subscription consumed on delivery');
+  assert.equal(instances._idleHub.hasArmedWake('w1'), false, 'subscription consumed on delivery');
 
   cleanup(cond, work);
 });
@@ -105,7 +115,7 @@ test('(c) multiple background subagents — delivery waits for the LAST', async 
   const cond = makeFake({ id: 'c2', sessionId: 'cs2' });
   const work = makeFake({ id: 'w2', sessionId: 'ws2', activeAgentTaskCount: 2 });
   inject(cond, work);
-  instances.subscribeIdle('cs2', 'ws2');
+  armWake('cs2', 'ws2');
 
   emitTurnEnd('w2'); await tick();
   assert.equal(cond._promptCalls.length, 0, 'count 2 → defer');
@@ -117,7 +127,7 @@ test('(c) multiple background subagents — delivery waits for the LAST', async 
   work.activeAgentTaskCount = 0;
   emitTurnEnd('w2'); await tick();
   assert.equal(cond._promptCalls.length, 1, 'count 0 → delivered exactly once');
-  assert.equal(instances._idleHub.hasSubscriber('w2'), false);
+  assert.equal(instances._idleHub.hasArmedWake('w2'), false);
 
   cleanup(cond, work);
 });
@@ -130,13 +140,13 @@ test('(c2) queued notification: count 0 but taskNotificationPending defers until
   const cond = makeFake({ id: 'c7', sessionId: 'cs7' });
   const work = makeFake({ id: 'w7', sessionId: 'ws7', activeAgentTaskCount: 0, taskNotificationPending: true });
   inject(cond, work);
-  instances.subscribeIdle('cs7', 'ws7');
+  armWake('cs7', 'ws7');
 
   // turn_end with count 0 but an unconsumed notification → deferred, subscription kept.
   emitTurnEnd('w7'); await tick();
   assert.equal(cond._promptCalls.length, 0,
     'count 0 but an unconsumed mid-turn notification → defer (re-invocation turn owed)');
-  assert.equal(instances._idleHub.hasSubscriber('w7'), true,
+  assert.equal(instances._idleHub.hasArmedWake('w7'), true,
     'a deferred turn_end must NOT consume the one-shot subscription');
 
   // The re-invocation turn runs; _setStatus clears the flag at its start.
@@ -144,7 +154,7 @@ test('(c2) queued notification: count 0 but taskNotificationPending defers until
   work.taskNotificationPending = false;
   emitTurnEnd('w7'); await tick();
   assert.equal(cond._promptCalls.length, 1, 'delivered once at the re-invocation turn_end');
-  assert.equal(instances._idleHub.hasSubscriber('w7'), false, 'subscription consumed on delivery');
+  assert.equal(instances._idleHub.hasArmedWake('w7'), false, 'subscription consumed on delivery');
 
   cleanup(cond, work);
 });
@@ -153,56 +163,71 @@ test('(e) regression: a normal no-subagent turn_end delivers immediately', async
   const cond = makeFake({ id: 'c3', sessionId: 'cs3' });
   const work = makeFake({ id: 'w3', sessionId: 'ws3', activeAgentTaskCount: 0 });
   inject(cond, work);
-  instances.subscribeIdle('cs3', 'ws3');
+  armWake('cs3', 'ws3');
 
   emitTurnEnd('w3'); await tick();
   assert.equal(cond._promptCalls.length, 1, 'no subagents → immediate single delivery');
-  assert.equal(instances._idleHub.hasSubscriber('w3'), false);
+  assert.equal(instances._idleHub.hasArmedWake('w3'), false);
 
   cleanup(cond, work);
 });
 
-test('every subscription arms a watchdog by default — the default deadline fires the timeout stub', async () => {
+test('every armed wake heartbeats at the DEFAULT window, and the beat consumes nothing', async () => {
   const cond = makeFake({ id: 'c4', sessionId: 'cs4' });
   const work = makeFake({ id: 'w4', sessionId: 'ws4' });
   inject(cond, work);
-  instances.subscribeIdle('cs4', 'ws4'); // no timeoutMs → DEFAULT_SUBSCRIBE_TIMEOUT_MS
+  armWake('cs4', 'ws4'); // no timeoutMs → DEFAULT_SUBSCRIBE_TIMEOUT_MS
 
   const entry = instances._idleSubscribers.get('w4')?.get('c4');
-  assert.ok(entry, 'subscription registered');
+  assert.ok(entry, 'wake armed');
   assert.notEqual(entry.timerId, null,
-    'a default watchdog timer is armed even with no explicit timeoutMs');
+    'a default heartbeat is armed even with no explicit timeoutMs');
+  assert.equal(entry.timeoutMs, DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+    'and it repeats on the default window, not on some other number');
 
-  // No turn_end ever arrives, so ONLY the default-length watchdog can deliver:
-  // wait past that deadline and observe the non-completion stub actually arrive.
-  await sleep(DEFAULT_WATCHDOG_MS + 250);
-  assert.equal(cond._promptCalls.length, 1, 'the default watchdog fired exactly once');
+  // No turn_end ever arrives, so ONLY the default-window heartbeat can deliver:
+  // wait past that window and observe the non-completion stub actually arrive.
+  await sleep(DEFAULT_SUBSCRIBE_TIMEOUT_MS + 250);
+  assert.ok(cond._promptCalls.length >= 1, 'the default-window heartbeat fired');
   assert.match(cond._promptCalls[0].text, /did NOT finish/,
     'the stub is the non-completion "did NOT finish" wording');
-  assert.match(cond._promptCalls[0].text, new RegExp(`timed out after ${DEFAULT_WATCHDOG_MS}ms`),
-    'the stub names the DEFAULT deadline, not an explicit one');
-  assert.equal(instances._idleHub.hasSubscriber('w4'), false, 'watchdog consumed the subscription');
+  assert.match(cond._promptCalls[0].text,
+    new RegExp(`timed out after ${DEFAULT_SUBSCRIBE_TIMEOUT_MS}ms`),
+    'the stub names the DEFAULT window, not an explicit one');
+  // …and unlike the one-shot watchdog it replaced, the beat consumes NOTHING:
+  // the turn-end wake this target still owes its owner is untouched.
+  assert.equal(instances._idleHub.hasArmedWake('w4'), true,
+    'a heartbeat reports without disarming');
 
-  cleanup(cond, work);
+  instances.disarmIdleSilently('cs4', 'w4'); // clears the interval
+  instances._idleHub._owners.clear();
+  instances.byId.delete('c4');
+  instances.byId.delete('w4');
 });
 
-test('(d) watchdog still fires across a deferral when a subagent never completes', async () => {
+test('(d) the heartbeat keeps firing across a deferral when a subagent never completes', async () => {
   const cond = makeFake({ id: 'c5', sessionId: 'cs5' });
   const work = makeFake({ id: 'w5', sessionId: 'ws5', activeAgentTaskCount: 1 });
   inject(cond, work);
-  instances.subscribeIdle('cs5', 'ws5', 60); // short watchdog
+  armWake('cs5', 'ws5', 60); // short heartbeat window
 
-  // turn_end defers (count 1) and must NOT clear the watchdog.
+  // turn_end defers (count 1) and must NOT stop the heartbeat.
   emitTurnEnd('w5'); await tick();
   assert.equal(cond._promptCalls.length, 0, 'deferred — no completion delivery');
 
-  // Wait past the 60ms watchdog window (measured across the whole deferral).
-  await new Promise(r => setTimeout(r, 150));
-  assert.equal(cond._promptCalls.length, 1, 'watchdog fired across the deferral');
-  assert.match(cond._promptCalls[0].text, /did NOT finish/,
-    'watchdog stub is the non-completion "did NOT finish" wording');
-  assert.equal(instances._idleHub.hasSubscriber('w5'), false, 'watchdog consumed the subscription');
+  // Wait past several 60ms windows (measured across the whole deferral).
+  await new Promise(r => setTimeout(r, 250));
+  assert.ok(cond._promptCalls.length >= 2,
+    `the heartbeat REPEATS across the deferral, got ${cond._promptCalls.length}`);
+  for (const call of cond._promptCalls) {
+    assert.match(call.text, /did NOT finish/,
+      'every ping is the non-completion "did NOT finish" wording');
+  }
+  assert.equal(instances._idleHub.hasArmedWake('w5'), true,
+    'and it never consumes the wake — the real turn_end wake is still armed');
 
+  instances._idleSubscribers.clear();
+  instances._idleHub._owners.clear();
   instances.byId.delete('c5');
   instances.byId.delete('w5');
 });
@@ -211,7 +236,7 @@ test('a deferred turn_end still marks the worker consumed (turn_notification sta
   const cond = makeFake({ id: 'c6', sessionId: 'cs6' });
   const work = makeFake({ id: 'w6', sessionId: 'ws6', activeAgentTaskCount: 1 });
   inject(cond, work);
-  instances.subscribeIdle('cs6', 'ws6');
+  armWake('cs6', 'ws6');
 
   emitTurnEnd('w6');
   // wasConsumed() is set synchronously in onTurnEnd (before the microtask that
@@ -221,7 +246,7 @@ test('a deferred turn_end still marks the worker consumed (turn_notification sta
     'worker marked consumed on the deferred turn_end');
   await tick();
   assert.equal(cond._promptCalls.length, 0, 'still deferred (no delivery)');
-  assert.equal(instances._idleHub.hasSubscriber('w6'), true);
+  assert.equal(instances._idleHub.hasArmedWake('w6'), true);
 
   cleanup(cond, work);
 });

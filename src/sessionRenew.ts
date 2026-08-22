@@ -11,7 +11,7 @@
 // Keyed by instanceId (NOT sessionId): the whole point is that the sessionId
 // rotates mid-operation, so only the stable instanceId (the `byId` key, which
 // `/clear` leaves untouched) can track the caller across the rotation. The
-// other internal side structures (idle-subscription graph, overage timers) are
+// other internal side structures (idle-wake graph, overage timers) are
 // likewise instanceId-keyed, so the rotation needs no migration at all.
 //
 // One pending renewal per instance. State machine, driven by the manager's
@@ -117,7 +117,7 @@ export function buildRenewRequest({ directive }: { directive?: string | null } =
 // turn ends before it and expires the request; an overage-parked send opens no turn
 // at all. With live subagents it is a POLICY, not a hazard: an armed renewal behind
 // them fires fine (that is what _onArmedDrain exists for), but the conductor's
-// prescribed trigger is its own subscribe_to_idle wake, which is gated on that same
+// prescribed trigger is its own idle wake, which is gated on that same
 // background work — so reaching this refusal means it asked without waiting for the
 // wake, and the honest answer is to wait for it. A subset copy of this predicate in
 // either place is the drift the extraction prevents.
@@ -155,13 +155,13 @@ export function buildRenewSeed({ summary, followUp = null, stateBlock = null }: 
 // incomplete self-authored summary. Enumerates, from live manager state, every
 // instance the caller spawned (Instance.callerInstanceId, the same tracking
 // `conductedWorkersOf`/the sub-agent panel use) that is still live, plus the
-// caller's own pending idle subscriptions. If the summary's roster and this
+// caller's own owned wake targets. If the summary's roster and this
 // block disagree, this block wins for EXISTENCE (a worker it lists is really
 // still live) while the summary wins for INTENT (task, state, next action) —
 // so a worker the summary omitted is never silently orphaned.
 export function buildStateBlock(manager: InstanceManagerLike, callerInstanceId: string): string {
   const workers = manager.liveOwnedBy(callerInstanceId);
-  const subs = manager.idleSubscriptionsOf(callerInstanceId);
+  const subs = manager.ownedWakeTargetsOf(callerInstanceId);
   const lines = [
     '--- MECHANICAL STATE (server-generated at renewal; safety net — if this '
     + 'disagrees with your summary above, this list wins for EXISTENCE, the '
@@ -172,7 +172,7 @@ export function buildStateBlock(manager: InstanceManagerLike, callerInstanceId: 
     ? workers.map((w) => `  - sessionId=${w.sessionId} project=${w.project} `
         + `worktree=${w.worktree ?? '(none)'} status=${w.status}`).join('\n')
     : '  (none)');
-  lines.push('Your pending idle subscriptions (workers you are watching for idle):');
+  lines.push('Workers you own (their next turn wakes you):');
   lines.push(subs.length ? subs.map((s) => `  - ${s}`).join('\n') : '  (none)');
   return lines.join('\n');
 }
@@ -218,7 +218,7 @@ export class SessionRenewController {
     // Open the rotation window HERE — mid-turn, when the tool is called — not at
     // the clear. The idle hub's listener runs before this controller's, so a
     // window opened any later would already have let the ARMED turn_end consume a
-    // waiting conductor's one-shot a turn early. beginRotation is idempotent for
+    // waiting conductor's wake a turn early. beginRotation is idempotent for
     // the same mechanism, so a re-arm does not restart it.
     const armed = this.manager.byId.get(instanceId);
     armed?.beginRotation('renew');
@@ -331,7 +331,7 @@ export class SessionRenewController {
     // reseeding then would land in the old id.
     if (!inst.backingSessionId || inst.backingSessionId === p.oldSid) return;
     // No side-structure migration is needed across the rotation: the
-    // idle-subscription graph and overage timers are keyed by the stable
+    // idle-wake graph and overage timers are keyed by the stable
     // instanceId, which `/clear` preserves. The Instance itself already followed
     // the backing-id rotation via its system/init handler.
     // The mechanical state block is built HERE — at reseed time, not arm time —
@@ -389,10 +389,10 @@ export class SessionRenewController {
         },
       });
       // `renew_error` is a UI event on the WORKER's stream — it reaches a human
-      // watching that session and nothing else. A conductor subscribed to this
-      // worker is still waiting for the reseed turn that endRotation promised, and
-      // that turn is never coming, so without this it waits out the full watchdog
-      // and is then told a healthy worker "did NOT finish". Wake it now, by the
+      // watching that session and nothing else. A conductor that owns this worker
+      // is still waiting for the reseed turn that endRotation promised, and that
+      // turn is never coming, so without this it is told a healthy worker "did NOT
+      // finish" every heartbeat, forever. Wake it now, by the
       // same rule every abandonment path already follows.
       inst.signalRotationTurnLost('renew');
     } finally {
@@ -413,7 +413,7 @@ export class SessionRenewController {
   // is that turn's turn_end (comesUpIdle:false). On ABANDONMENT no turn is coming at
   // all — the renewal simply did not happen — so the completion event is the only
   // wake point there will ever be. Skipping it would leave a waiting conductor
-  // deferred until the watchdog fired and told it the worker "did NOT finish".
+  // deferred and the heartbeat told it the worker "did NOT finish" instead.
   //
   // Guarded on `p` so it only ever closes a window this controller opened.
   private _clear(id: string, { ok = false }: { ok?: boolean } = {}): void {

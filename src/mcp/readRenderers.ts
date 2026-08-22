@@ -159,7 +159,7 @@ function instanceRows(rows: Row[]): Array<string | string[]> {
   const parts: Array<string | string[]> = [];
   rows.forEach((r, i) => {
     const lines: string[] = [
-      `status ${dash(r.status)}   display ${dash(r.displayStatus)}   agents ${dash(r.activeAgentTasks ?? 0)}   queued ${dash(r.queuedCount ?? 0)}   idle-sub ${r.hasIdleSubscriber ? 'yes' : 'no'}`,
+      `status ${dash(r.status)}   display ${dash(r.displayStatus)}   agents ${dash(r.activeAgentTasks ?? 0)}   queued ${dash(r.queuedCount ?? 0)}   awaiting-wake ${r.awaitingWake ? 'yes' : 'no'}`,
       `project ${dash(r.project)}   worktree ${worktreeName(r.worktree)}`,
       `cwd ${dash(r.cwd)}`,
       `mode ${dash(r.mode)}   effort ${dash(r.effort)}   thinking ${dash(r.thinking)}   model ${dash(r.backend)}/${dash(r.model)}`,

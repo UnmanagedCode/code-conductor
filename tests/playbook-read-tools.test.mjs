@@ -492,7 +492,7 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
     // Step 1 — in `draft`. The only edge is approve_plan-driven, and it is legal.
     let moves = await movesNow();
     assert.deepEqual(moves, [{ to: 'build', via: 'approve_plan', ok: true }]);
-    await t.call(moves[0].via, { sessionId: impl.sessionId, subscribe: false });
+    await t.call(moves[0].via, { sessionId: impl.sessionId });
     assert.equal((await t.call('playbook_state', { sessionId: impl.sessionId })).worker.stage, 'build');
 
     // Step 2 — in `build`. Re-derived, and now the prediction is a BLOCKED
@@ -505,7 +505,7 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
     assert.equal(moves[0].code, 'NEEDS_UNSATISFIED');
     // Performing it produces the SAME code and the same reason text.
     const attempted = await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
     });
     refused(attempted, moves[0].code);
     assert.equal(attempted.reason, moves[0].reason,
@@ -529,7 +529,7 @@ test('every move playbook_state advertises behaves exactly as advertised when pe
 
     // Following that recipe succeeds.
     const ok = await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
       provenance: { audit: rev.sessionId },
     });
     assert.equal(ok.ok, undefined, 'supplying what the reason asked for makes the move legal');
@@ -545,7 +545,7 @@ test('playbook_state derives the run graph and its history, keeping concurrent r
   const t = await setup({ enforcement: 'enforce' });
   try {
     const a = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
-    await t.call('approve_plan', { sessionId: a.sessionId, subscribe: false });
+    await t.call('approve_plan', { sessionId: a.sessionId });
     const aRev = await t.spawnWorker({
       project: 'demo', playbook: 'gatelab', stage: 'audit',
       worktree: a.worktree.worktreeName, provenance: { build: a.sessionId },

@@ -849,22 +849,22 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
   const scope = pb({
     id: 'scopereq', name: 'ScopeReq', description: 'require scope', entryStages: ['a'],
     stages: {
-      a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { subscribe: false } } } },
-      b: { tools: { send_prompt: { pin: { subscribe: true } } } },
+      a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { idleTimeoutMs: 1000 } } } },
+      b: { tools: { send_prompt: { pin: { idleTimeoutMs: 2000 } } } },
     },
     transitions: [{ from: 'a', to: 'b' }],
   });
   const scopereqEvents = [{ kind: 'spawn', sessionId: 'w-scopeq-1', playbook: 'scopereq', stage: 'a' }];
   const projection = proj(scopereqEvents);
   const isLive = isLiveFromEvents(scopereqEvents);
-  // Transitioning a -> b: the constraint that applies is b's (subscribe:true), not a's.
+  // Transitioning a -> b: the constraint that applies is b's (2000), not a's.
   const res = allowed(decide({
     toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b' }, projection, playbooks: pbs(scope), isLive,
   }));
-  assert.equal(res.patchedArgs.subscribe, true, "`require` must come from the RESULTING stage 'b'");
+  assert.equal(res.patchedArgs.idleTimeoutMs, 2000, "`require` must come from the RESULTING stage 'b'");
   // And supplying a's value explicitly now conflicts with b's constraint.
   refusal(decide({
-    toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b', subscribe: false },
+    toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b', idleTimeoutMs: 1000 },
     projection, playbooks: pbs(scope), isLive,
   }), 'ARG_PIN_CONFLICT');
 });

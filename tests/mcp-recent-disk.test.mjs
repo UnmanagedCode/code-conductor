@@ -458,7 +458,7 @@ test('a LIVE worker served from evicted disk history is still described as activ
     const targetSid = 'cafe0002-1111-2222-3333-444444444444';
     await bootResumed({ ctx, projectName: 'livetarget', sid: targetSid, lines: turnLines(2) });
     const refused = unwrap(await callTool(ctx.baseUrl, 'send_prompt', {
-      sessionId: targetSid, forward: { sessionId: sid }, text: 'go', subscribe: false,
+      sessionId: targetSid, forward: { sessionId: sid }, text: 'go',
     }));
     assert.equal(refused.code, 'NOTHING_TO_FORWARD');
     assert.match(refused.reason, /still working/);

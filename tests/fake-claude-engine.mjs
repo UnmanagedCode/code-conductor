@@ -25,7 +25,9 @@
 //                   "delay_ms"?: number } ]
 //   }
 //
-// Inbound control_request messages always get a synthetic control_response
+// Inbound control_request messages get a synthetic control_response unless the
+// scenario lists their subtype in `swallow_control` — the ONLY way to stage a
+// request the CLI never answers, i.e. a real _controlRequest timeout
 // (success) emitted automatically — the scenario can layer on additional
 // events for the same input (e.g. a `result` after `interrupt`).
 //
@@ -216,7 +218,8 @@ export async function runFakeClaude({ argv, env, cwd, stdin, stdout, stderr, onR
     // interrupt, etc.). control_responses are FROM the parent in response to a
     // control_request we (fake-claude) emitted via a scenario step — don't
     // ack those, they're routed to matchTurn instead.
-    if (obj.type === 'control_request') {
+    if (obj.type === 'control_request'
+        && !(scenario.swallow_control ?? []).includes(obj.request?.subtype)) {
       const ack = {
         type: 'control_response',
         response: {

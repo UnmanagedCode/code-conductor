@@ -50,6 +50,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await instances.shutdown();
   instances._idleSubscribers?.clear();
+  instances._idleHub?._owners.clear();
   await rmrf(home);
 });
 
@@ -630,7 +631,7 @@ test('drainToManifest captures firstPrompt; restoreFromResumeManifest restores i
 
 // --- 11. a parked (idle, waiting-on-worker) conductor is treated as busy ----
 // The regression fix: an idle conductor that ended its turn and is parked on an
-// OUTGOING idle-subscription (waiting on a worker) has durable re-conduct work,
+// OUTGOING idle wake (waiting on a worker) has durable re-conduct work,
 // so it must be wasBusy:true → re-prompted on boot. An idle conductor with NO
 // subscription stays wasBusy:false → resurrected silently. The shutdown stop stays
 // mid-turn-only regardless.
@@ -645,19 +646,28 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     await ensureConductProject();
     await api(baseUrl, 'POST', '/api/projects', { name: 'workproj' });
 
-    // Three conductors in .conduct + one worker (the subscription target).
+    // Three conductors in .conduct + two workers `parked` owns (spawn-side
+    // ownership, via callerInstanceId).
     const midTurn   = await instances.create({ project: CONDUCT_PROJECT_NAME });
     const parked    = await instances.create({ project: CONDUCT_PROJECT_NAME });
     const idleNoSub = await instances.create({ project: CONDUCT_PROJECT_NAME });
     const worker    = await instances.create({ project: 'workproj', callerInstanceId: parked.id, conducted: true });
-    await waitFor(() => [midTurn, parked, idleNoSub, worker].every(i => i.sessionId));
-    await waitFor(() => [midTurn, parked, idleNoSub, worker].every(i => i.status === 'idle'));
+    const idleWorker = await instances.create({ project: 'workproj', callerInstanceId: parked.id, conducted: true });
+    const all = [midTurn, parked, idleNoSub, worker, idleWorker];
+    await waitFor(() => all.every(i => i.sessionId));
+    await waitFor(() => all.every(i => i.status === 'idle'));
 
-    // Park `parked` on the worker's idle: an OUTGOING subscription (parked is the
-    // caller) ⇒ isIdleCaller(parked) true. `idleNoSub` has no subscription.
-    // subscribeIdle takes sessionIds (MCP boundary); isIdleCaller is keyed by the
-    // stable instanceId.
-    instances.subscribeIdle(parked.sessionId, worker.sessionId);
+    // Nothing is armed yet: OWNING a worker is not waiting on one. `parked` owns
+    // two idle workers and is still not an idle caller.
+    assert.equal(instances.isIdleCaller(parked.id), false,
+      'owning only IDLE workers is not waiting on one');
+
+    // Drive `worker` into a turn. That turn start is what arms `parked`'s wake —
+    // the whole point of the ownership model — so isIdleCaller(parked) is true
+    // while `parked` itself stays idle. `idleWorker` never enters a turn.
+    await worker.prompt('go');
+    await waitFor(() => worker.status === 'turn');
+    await waitFor(() => worker.ring.toArray().some(ev => ev.kind === 'system' && ev.subtype === 'init'));
     assert.equal(instances.isIdleCaller(parked.id), true, 'parked conductor is an idle caller');
     assert.equal(instances.isIdleCaller(idleNoSub.id), false, 'idle-no-sub conductor is not a caller');
 
@@ -677,31 +687,39 @@ test('drainToManifest: idle conductor parked on a subscription is wasBusy:true; 
     let midTurnStopped = false;
     const captureStop = (s) => { if (s.interrupting) midTurnStopped = true; };
     midTurn.on('status', captureStop);
+    let workerStopped = false;
+    const captureWorkerStop = (s) => { if (s.interrupting) workerStopped = true; };
+    worker.on('status', captureWorkerStop);
 
     const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 200 });
     midTurn.off('status', captureStop);
+    worker.off('status', captureWorkerStop);
     const byId = Object.fromEntries(entries.map(e => [e.sessionId, e]));
 
     // wasBusy (the predicate Edit 1 widened): mid-turn OR parked ⇒ true.
     assert.equal(byId[midTurn.sessionId].wasBusy,   true,  'mid-turn conductor → wasBusy:true');
     assert.equal(byId[parked.sessionId].wasBusy,    true,  'idle conductor parked on a subscription → wasBusy:true');
     assert.equal(byId[idleNoSub.sessionId].wasBusy, false, 'idle conductor with no subscription → wasBusy:false (silent)');
-    // Regression: a plain idle worker (no outgoing subscription) stays silent.
-    assert.equal(byId[worker.sessionId].wasBusy,    false, 'idle worker with no outgoing subscription → wasBusy:false');
+    assert.equal(byId[worker.sessionId].wasBusy,    true,  'the mid-turn worker → wasBusy:true');
+    // Regression: an OWNED but idle worker stays silent — spawn ownership alone is
+    // not pending work on either end.
+    assert.equal(byId[idleWorker.sessionId].wasBusy, false, 'owned idle worker → wasBusy:false');
 
-    // Shutdown side (Bug 1, unchanged): the stop fires ONLY for the mid-turn one.
+    // Shutdown side (Bug 1, unchanged): the stop fires ONLY for what is mid-turn.
     assert.equal(midTurnStopped,         true,  'mid-turn conductor stopped');
+    assert.equal(workerStopped,          true,  'mid-turn worker stopped');
     assert.equal(parked.interrupting,    false, 'idle parked conductor NOT stopped');
     assert.equal(idleNoSub.interrupting, false, 'idle conductor NOT stopped');
-    assert.equal(worker.interrupting,    false, 'idle worker NOT stopped');
+    assert.equal(idleWorker.interrupting, false, 'idle worker NOT stopped');
 
-    // …and exactly one abort reached a CLI (the mid-turn one). The four sessions
-    // share this transcript, so a stop leaking to an idle session shows up here.
+    // …and exactly two aborts reached a CLI (the two mid-turn ones). All five
+    // sessions share this transcript, so a stop leaking to an idle session shows
+    // up here.
     const dump = (await fs.readFile(transcript, 'utf8'))
       .split('\n').filter(Boolean).map(l => JSON.parse(l));
     assert.equal(
       dump.filter(l => l.type === 'control_request' && l.request?.subtype === 'interrupt').length,
-      1, 'one interrupt total — to the mid-turn conductor only');
+      2, 'two interrupts total — to the mid-turn conductor and the mid-turn worker only');
 
     clearResumeManifest();
   } finally {

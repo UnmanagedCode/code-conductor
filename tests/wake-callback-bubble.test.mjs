@@ -1,4 +1,4 @@
-// Tests for the special idle-subscription wake-callback bubble: a user_echo
+// Tests for the special idle-wake callback bubble: a user_echo
 // tagged with WAKE_CALLBACK_MARKER renders as a collapsed <details> whose
 // summary (worker finished + what to do) stays visible and whose body holds the
 // folded get_recent_messages payload. The marker sentinels never render.

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
+import { DEFAULT_SUBSCRIBE_TIMEOUT_MS } from '../src/idleSubscriptions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -165,7 +166,7 @@ test('send_prompt no longer accepts wait — refused as an unknown argument, and
   });
   const rendered = JSON.stringify(body);
   assert.match(rendered, /unexpected argument 'wait'/);
-  assert.match(rendered, /Allowed:.*subscribe/, 'the refusal names the surviving parameter set');
+  assert.match(rendered, /Allowed:.*idleTimeoutMs/, 'the refusal names the surviving parameter set');
 
   // The refusal fires before any handler work: no turn, no echo.
   await new Promise(r => setTimeout(r, 100));
@@ -473,27 +474,41 @@ test('tools/list emits readOnly / destructive / idempotent annotations', async (
   // A prune kills and respawns the worker's subprocess.
   assert.equal(byName.prune_session.destructiveHint, true);
   assert.equal(byName.set_project_workspace.idempotentHint, true);
-  assert.equal(byName.unsubscribe_from_idle.idempotentHint, true);
+  assert.equal(byName.set_idle_timeout.idempotentHint, true);
   // A mutating, non-idempotent tool carries no hints.
   assert.deepEqual(byName.send_prompt, {});
 });
 
-// ---------- auto-subscribe schema (send_prompt / approve_plan / reject_plan / answer_question) ----------
+// ---------- idle-wake heartbeat schema (the four turn-starting tools + set_idle_timeout) ----------
 
-test('send_prompt, approve_plan, reject_plan, answer_question all expose subscribe + subscribeTimeoutMs', async () => {
+test('the turn-starting tools expose idleTimeoutMs and NO subscribe knob', async () => {
   const { body } = await rpc('tools/list');
   const byName = Object.fromEntries(body.result.tools.map(t => [t.name, t.inputSchema.properties]));
   for (const name of ['send_prompt', 'approve_plan', 'reject_plan', 'answer_question']) {
     const props = byName[name];
     assert.ok(props, `tools/list missing ${name}`);
-    assert.equal(props.subscribe?.type, 'boolean', `${name}.subscribe should be boolean`);
-    assert.equal(props.subscribe?.default, true, `${name}.subscribe should default true`);
-    assert.equal(props.subscribeTimeoutMs?.type, 'integer', `${name}.subscribeTimeoutMs should be integer`);
-    // Neither param is required — both are opt-in overrides of the default-on behavior.
+    // The wake is a property of ownership — there is nothing to opt into or out of.
+    assert.equal(props.subscribe, undefined, `${name} must expose no subscribe knob`);
+    assert.equal(props.subscribeTimeoutMs, undefined, `${name} must not keep the old timeout param name`);
+    assert.equal(props.idleTimeoutMs?.type, 'number', `${name}.idleTimeoutMs should be number`);
+    // `number` + minimum + maximum together: `integer` with no bounds let
+    // idleTimeoutMs:-5 through, to be silently swallowed by the default fallback.
+    assert.equal(props.idleTimeoutMs?.minimum, 1, `${name}.idleTimeoutMs needs a floor`);
+    assert.equal(props.idleTimeoutMs?.maximum, DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+      `${name}.idleTimeoutMs ceiling must be the default, so it can only shorten`);
     const required = body.result.tools.find(t => t.name === name).inputSchema.required ?? [];
-    assert.ok(!required.includes('subscribe'), `${name}.subscribe must not be required`);
-    assert.ok(!required.includes('subscribeTimeoutMs'), `${name}.subscribeTimeoutMs must not be required`);
+    assert.ok(!required.includes('idleTimeoutMs'), `${name}.idleTimeoutMs must not be required`);
   }
+});
+
+test('set_idle_timeout requires a bounded timeoutMs', async () => {
+  const { body } = await rpc('tools/list');
+  const tool = body.result.tools.find(t => t.name === 'set_idle_timeout');
+  assert.ok(tool, 'set_idle_timeout is registered');
+  assert.equal(tool.inputSchema.properties.timeoutMs.type, 'number');
+  assert.equal(tool.inputSchema.properties.timeoutMs.minimum, 1);
+  assert.equal(tool.inputSchema.properties.timeoutMs.maximum, DEFAULT_SUBSCRIBE_TIMEOUT_MS);
+  assert.deepEqual([...tool.inputSchema.required].sort(), ['sessionId', 'timeoutMs']);
 });
 
 // ---------- send_prompt({forward}) schema ----------

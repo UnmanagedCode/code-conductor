@@ -6,8 +6,8 @@
 //     aborting a conductor would sever its in-flight orchestration) and
 //     delivered at that conductor's own next turn_end.
 //   TARGET side — the turn_end an armed stop produces on a worker must NOT
-//     consume the one-shot subscription: the worker was cut off to deliver a
-//     steer, it did not finish.
+//     consume the armed wake: the worker was cut off to deliver a steer, it did
+//     not finish.
 //
 // Drives the REAL InstanceManager → IdleSubscriptionHub edge with injected fake
 // instances, same layer as tests/idle-subagent-defer.test.mjs.
@@ -41,7 +41,7 @@ function makeFake({ id, sessionId, status = 'idle', acceptsMidTurnSteering = tru
     async prompt(text, _atts, opts) { _promptCalls.push({ text, opts }); },
     // The overage-stop surface (_directOverageStop): the fields it writes plus the
     // abort it fires. `interrupt` is a no-op here — these tests are about the
-    // subscription graph, not the wire.
+    // idle-wake graph, not the wire.
     async interrupt() { inst._interrupts++; },
     autoStoppedForOverage: false,
     _overageWasStopped: false,
@@ -53,6 +53,15 @@ function makeFake({ id, sessionId, status = 'idle', acceptsMidTurnSteering = tru
   return inst;
 }
 
+// Ownership + the turn that arms it. `noteDispatch` records the ownership edge;
+// the ARM happens when the target enters a turn — in production that is
+// Instance._setStatus's 'turn_start' emit, which these injected fakes never run,
+// so the test drives onTurnStart directly.
+function armWake(callerSid, targetSid, timeoutMs) {
+  instances.noteDispatch(callerSid, targetSid, timeoutMs);
+  instances._idleHub.onTurnStart(instances.liveForSession(targetSid).id);
+}
+
 const emit = (id, ev) => instances.emit('event', { id, ev });
 const emitTurnEnd = (id) => emit(id, { kind: 'turn_end', isError: false, stopReason: 'end_turn' });
 const emitSteerSettled = (id) => emit(id, { kind: 'system', subtype: 'steer_settled', data: {} });
@@ -61,6 +70,7 @@ const tick = () => new Promise(r => setTimeout(r, 20));
 function inject(...insts) { for (const i of insts) instances.byId.set(i.id, i); }
 function cleanup(...insts) {
   instances._idleSubscribers.clear();
+  instances._idleHub._owners.clear();
   instances._idleHub._deferredWakes.clear();
   for (const i of insts) instances.byId.delete(i.id);
 }
@@ -72,7 +82,7 @@ test('a flagged, mid-turn conductor gets NOTHING now and exactly one folded wake
   const cond = makeFake({ id: 'c1', sessionId: 'cs1', status: 'turn', acceptsMidTurnSteering: false });
   const work = makeFake({ id: 'w1', sessionId: 'ws1' });
   inject(cond, work);
-  instances.subscribeIdle('cs1', 'ws1');
+  armWake('cs1', 'ws1');
 
   emitTurnEnd('w1');
   await tick();
@@ -99,7 +109,7 @@ test('an UNFLAGGED mid-turn conductor is unchanged: a live plain-stub injection'
   const cond = makeFake({ id: 'c2', sessionId: 'cs2', status: 'turn' });
   const work = makeFake({ id: 'w2', sessionId: 'ws2' });
   inject(cond, work);
-  instances.subscribeIdle('cs2', 'ws2');
+  armWake('cs2', 'ws2');
 
   emitTurnEnd('w2');
   await tick();
@@ -114,7 +124,7 @@ test('a held wake whose worker went busy again is MARKED stale, not folded and n
   const cond = makeFake({ id: 'c3', sessionId: 'cs3', status: 'turn', acceptsMidTurnSteering: false });
   const work = makeFake({ id: 'w3', sessionId: 'ws3' });
   inject(cond, work);
-  instances.subscribeIdle('cs3', 'ws3');
+  armWake('cs3', 'ws3');
 
   emitTurnEnd('w3');
   await tick();
@@ -134,7 +144,7 @@ test('a held wake for a conductor that dies is dropped silently', async () => {
   const cond = makeFake({ id: 'c4', sessionId: 'cs4', status: 'turn', acceptsMidTurnSteering: false });
   const work = makeFake({ id: 'w4', sessionId: 'ws4' });
   inject(cond, work);
-  instances.subscribeIdle('cs4', 'ws4');
+  armWake('cs4', 'ws4');
   emitTurnEnd('w4');
   await tick();
 
@@ -152,7 +162,7 @@ test('a wake held behind a queued steer waits for the steered turn, then lands o
   const cond = makeFake({ id: 'c5', sessionId: 'cs5', status: 'turn', acceptsMidTurnSteering: false });
   const work = makeFake({ id: 'w5', sessionId: 'ws5' });
   inject(cond, work);
-  instances.subscribeIdle('cs5', 'ws5');
+  armWake('cs5', 'ws5');
   emitTurnEnd('w5');
   await tick();
 
@@ -178,7 +188,7 @@ test('a steer that settles with no turn at all still flushes the held wake', asy
   const cond = makeFake({ id: 'c6', sessionId: 'cs6', status: 'turn', acceptsMidTurnSteering: false });
   const work = makeFake({ id: 'w6', sessionId: 'ws6' });
   inject(cond, work);
-  instances.subscribeIdle('cs6', 'ws6');
+  armWake('cs6', 'ws6');
   emitTurnEnd('w6');
   await tick();
 
@@ -201,18 +211,18 @@ test('a worker with a steer parked does NOT consume its subscription at that tur
   const cond = makeFake({ id: 'c7', sessionId: 'cs7' });
   const work = makeFake({ id: 'w7', sessionId: 'ws7', steerPending: true });
   inject(cond, work);
-  instances.subscribeIdle('cs7', 'ws7');
+  armWake('cs7', 'ws7');
 
   emitTurnEnd('w7');             // the turn_end the block-edge stop produced
   await tick();
   assert.equal(cond._promptCalls.length, 0, 'the worker was cut off — it did not finish');
-  assert.equal(instances._idleHub.hasSubscriber('w7'), true, 'the one-shot is still armed');
+  assert.equal(instances._idleHub.hasArmedWake('w7'), true, 'the one-shot is still armed');
 
   work.steerPending = false;
   emitTurnEnd('w7');             // the steered turn's real end
   await tick();
   assert.equal(cond._promptCalls.length, 1, 'delivered exactly once, one turn later');
-  assert.equal(instances._idleHub.hasSubscriber('w7'), false);
+  assert.equal(instances._idleHub.hasArmedWake('w7'), false);
   cleanup(cond, work);
 });
 
@@ -234,12 +244,12 @@ test('stopping a session drops a subscription held by a caller that does not OWN
   // two except the subscription itself.
   const other = makeFake({ id: 'o8', sessionId: 'os8', status: 'turn' });
   inject(cond, other);
-  instances.subscribeIdle('cs8', 'os8');
-  assert.equal(instances._idleHub.hasSubscriber('o8'), true, 'precondition: subscribed');
+  armWake('cs8', 'os8');
+  assert.equal(instances._idleHub.hasArmedWake('o8'), true, 'precondition: subscribed');
 
   instances._directOverageStop(other, { resume: true, resetsAt: null, armResume: false });
 
-  assert.equal(instances._idleHub.hasSubscriber('o8'), false, 'the subscription is severed');
+  assert.equal(instances._idleHub.hasArmedWake('o8'), false, 'the subscription is severed');
   assert.equal(cond._overageDroppedCallbacks, true, 'the caller is told its callback is gone');
   assert.equal(other._interrupts, 1, 'and the session was actually stopped');
 
@@ -256,7 +266,7 @@ test('stopping a session also drops a wake ALREADY deferred behind a mid-turn ca
   const cond = makeFake({ id: 'c9', sessionId: 'cs9', status: 'turn', acceptsMidTurnSteering: false });
   const work = makeFake({ id: 'w9', sessionId: 'ws9', status: 'turn' });
   inject(cond, work);
-  instances.subscribeIdle('cs9', 'ws9');
+  armWake('cs9', 'ws9');
 
   emitTurnEnd('w9');                 // the worker finished; the wake DEFERS
   await tick();
@@ -281,11 +291,11 @@ test('an unrelated subscription is untouched by a stop elsewhere', async () => {
   const keep = makeFake({ id: 'k10', sessionId: 'ks10' });
   const stop = makeFake({ id: 's10', sessionId: 'ss10', status: 'turn' });
   inject(cond, keep, stop);
-  instances.subscribeIdle('cs10', 'ks10');
+  armWake('cs10', 'ks10');
 
   instances._directOverageStop(stop, { resume: false, resetsAt: null });
 
-  assert.equal(instances._idleHub.hasSubscriber('k10'), true, 'the unrelated wait survives');
+  assert.equal(instances._idleHub.hasArmedWake('k10'), true, 'the unrelated wait survives');
   assert.equal(cond._overageDroppedCallbacks, false, 'and its caller is not falsely marked');
   emitTurnEnd('k10');
   await tick();

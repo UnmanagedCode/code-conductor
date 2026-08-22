@@ -59,7 +59,7 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
       const inst = instances.get(id);
       // Suppress orchestration-internal notifications:
       //   - conductor finishing its own turn while waiting for a worker (isCaller)
-      //   - worker whose turn_end just woke a subscribed conductor (wasConsumed)
+      //   - worker whose turn_end just woke its owner (wasConsumed)
       if (instances.shouldSuppressTurnNotification(id)) return;
       const note = JSON.stringify({
         t: 'turn_notification',

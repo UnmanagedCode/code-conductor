@@ -251,7 +251,7 @@ const INSTANCE = {
   autoResumeAt: null,
   overageActive: false,
   overageResetsAt: null,
-  hasIdleSubscriber: true,
+  awaitingWake: true,
   playbook: 'solo',
   stage: 'implement',
 };
@@ -278,7 +278,7 @@ describe('renderSessions — live rows', () => {
       '▸ code-conductor  /w/cc-projects/code-conductor   live 1 · inactive 0 · archived 0',
       '  main checkout  br main   live 1 · inactive 0 · archived 0',
       `    [1] LIVE ${SID_A}`,
-      '        status idle   display running   agents 2   queued 0   idle-sub yes',
+      '        status idle   display running   agents 2   queued 0   awaiting-wake yes',
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
@@ -358,7 +358,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
       '▸ code-conductor  /w/cc-projects/code-conductor   live 1 · inactive 1 · archived 0',
       '  main checkout  br main   live 1 · inactive 1 · archived 0',
       `    [1] LIVE ${SID_A}`,
-      '        status idle   display running   agents 2   queued 0   idle-sub yes',
+      '        status idle   display running   agents 2   queued 0   awaiting-wake yes',
       '        project code-conductor   worktree code-conductor_worktree_dcd22e',
       '        cwd /w/cc-projects/code-conductor_worktree_dcd22e',
       '        mode code   effort high   thinking adaptive   model claude/claude-opus-5',
@@ -372,7 +372,7 @@ describe('renderSessions — inactive rows, grouping and archived', () => {
 
   test('an inactive row claims no runtime state, and no size', () => {
     const out = renderSessions([grp({ inactive: [stoppedRow({ title: 'T' })] })]);
-    for (const claim of ['status ', 'mode ', 'display ', 'idle-sub ', 'effort ']) {
+    for (const claim of ['status ', 'mode ', 'display ', 'awaiting-wake ', 'effort ']) {
       assert.ok(!out.includes(claim), `an inactive row must not render "${claim}" — there is no process to read it from:\n${out}`);
     }
     assert.ok(!/\d+(\.\d+)? (B|KB|MB)/.test(out), `size was dropped from the inactive row:\n${out}`);
@@ -695,13 +695,13 @@ describe('list_sessions renders every allowlisted field', () => {
   const DROPPED = ['pid', 'createdAt', 'contextWindowTokens', 'firstPrompt'];
   // Rendered as a fixed label rather than its value, so a sentinel can't be
   // looked for. Checked by its own assertion below instead.
-  const LABEL_ONLY = ['hasIdleSubscriber'];
+  const LABEL_ONLY = ['awaitingWake'];
   // Everything else must appear verbatim. A NEW key falls in here by default.
   const BY_VALUE = ALL_KEYS.filter(k => !DROPPED.includes(k) && !LABEL_ONLY.includes(k));
 
   const sentinelRow = (over = {}) => ({
     ...Object.fromEntries(ALL_KEYS.map(k => [k, sentinel(k)])),
-    hasIdleSubscriber: true,
+    awaitingWake: true,
     ...over,
   });
 
@@ -729,9 +729,9 @@ describe('list_sessions renders every allowlisted field', () => {
     assert.deepEqual(leaked, [], 'a field listed as dropped is being rendered');
   });
 
-  test('hasIdleSubscriber renders as a label, both ways', () => {
-    assert.match(liveOnly([sentinelRow({ hasIdleSubscriber: true })]), /idle-sub yes/);
-    assert.match(liveOnly([sentinelRow({ hasIdleSubscriber: false })]), /idle-sub no/);
+  test('awaitingWake renders as a label, both ways', () => {
+    assert.match(liveOnly([sentinelRow({ awaitingWake: true })]), /awaiting-wake yes/);
+    assert.match(liveOnly([sentinelRow({ awaitingWake: false })]), /awaiting-wake no/);
   });
 
   test('firstPrompt is dropped only because a title is there to replace it', () => {

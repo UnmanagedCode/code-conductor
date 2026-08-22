@@ -164,7 +164,7 @@ async function assertDeferredThenDelivered(inst, text, label) {
 test('C-T1 approve_plan: flagged + mid-turn defers to a post-stop turn', async () => {
   const inst = await busyMidTextBlock();
   const text = buildApprovePrompt(undefined);
-  const res = await approvePlan({ sessionId: inst.sessionId, subscribe: false }, { instances });
+  const res = await approvePlan({ sessionId: inst.sessionId }, { instances });
   await assertDeferredThenDelivered(inst, text, 'approve_plan');
   assert.equal(res.sentText, text, 'sentText is still exactly what will be sent');
   assert.ok(!('deferred' in res), 'the delivery route is not exposed on the result');
@@ -174,7 +174,7 @@ test('C-T2 reject_plan: flagged + mid-turn defers to a post-stop turn', async ()
   const inst = await busyMidTextBlock();
   const text = buildRejectPrompt('tighten the migration step');
   const res = await rejectPlan(
-    { sessionId: inst.sessionId, feedback: 'tighten the migration step', subscribe: false },
+    { sessionId: inst.sessionId, feedback: 'tighten the migration step' },
     { instances });
   await assertDeferredThenDelivered(inst, text, 'reject_plan');
   assert.equal(res.sentText, text);
@@ -184,7 +184,7 @@ test('C-T2 reject_plan: flagged + mid-turn defers to a post-stop turn', async ()
 test('C-T3 answer_question: flagged + mid-turn defers to a post-stop turn', async () => {
   const inst = await busyWithPendingQuestion();
   const res = await answerQuestion(
-    { sessionId: inst.sessionId, answers: [{ option: 'Apple' }], subscribe: false },
+    { sessionId: inst.sessionId, answers: [{ option: 'Apple' }] },
     { instances });
   await assertDeferredThenDelivered(inst, ANSWER_TEXT, 'answer_question');
   assert.equal(res.sentText, ANSWER_TEXT);
@@ -199,11 +199,11 @@ test('C-T3 answer_question: flagged + mid-turn defers to a post-stop turn', asyn
 test('C-T4 unflagged + mid-turn is byte-identical for all three handlers', async () => {
   const cases = [
     ['approve_plan', busyMidTextBlock, buildApprovePrompt(undefined),
-      (inst) => approvePlan({ sessionId: inst.sessionId, subscribe: false }, { instances })],
+      (inst) => approvePlan({ sessionId: inst.sessionId }, { instances })],
     ['reject_plan', busyMidTextBlock, buildRejectPrompt('revise'),
-      (inst) => rejectPlan({ sessionId: inst.sessionId, feedback: 'revise', subscribe: false }, { instances })],
+      (inst) => rejectPlan({ sessionId: inst.sessionId, feedback: 'revise' }, { instances })],
     ['answer_question', busyWithPendingQuestion, ANSWER_TEXT,
-      (inst) => answerQuestion({ sessionId: inst.sessionId, answers: [{ option: 'Apple' }], subscribe: false }, { instances })],
+      (inst) => answerQuestion({ sessionId: inst.sessionId, answers: [{ option: 'Apple' }] }, { instances })],
   ];
   for (const [label, setup, text, call] of cases) {
     const inst = await setup({ flagged: false });
@@ -222,32 +222,32 @@ test('C-T4 unflagged + mid-turn is byte-identical for all three handlers', async
 });
 
 // ── C-T5 (PIN) ─────────────────────────────────────────────────────────────
-// Invariant: the one-shot idle subscription these handlers arm survives the
-// STOP's own turn_end (IdleSubscriptionHub._onTurnEnd defers while steerPending)
-// and is consumed only by the steered turn's turn_end.
+// Invariant: the idle wake these handlers arm survives the STOP's own turn_end
+// (IdleSubscriptionHub._onTurnEnd defers while steerPending) and is consumed only
+// by the steered turn's turn_end.
 
-test('C-T5 the armed idle subscription survives the stop and fires on the steered turn', async () => {
+test('C-T5 the armed idle wake survives the stop and fires on the steered turn', async () => {
   const caller = await setupWorker({ flagged: false });
   const target = await busyMidTextBlock();
 
-  const res = await approvePlan(
-    { sessionId: target.sessionId, subscribe: true }, { instances, callerId: caller.sessionId });
-  assert.equal(res.subscribed, true, 'the handler armed the one-shot');
+  await approvePlan(
+    { sessionId: target.sessionId }, { instances, callerId: caller.sessionId });
   await waitFor(() => target.steerPending === true);
-  assert.equal(instances._idleHub.hasSubscriber(target.id), true);
+  assert.equal(instances._idleHub.hasArmedWake(target.id), true,
+    'the handler recorded ownership and the target\'s running turn armed the wake');
 
   // The stop's own turn_end must NOT consume it — the worker was cut off to
   // deliver the message, it did not finish.
   inject(target, blockStop(0));
   inject(target, turnEnd());
-  assert.equal(instances._idleHub.hasSubscriber(target.id), true,
-    'the stop\'s turn_end deferred rather than consuming the one-shot');
+  assert.equal(instances._idleHub.hasArmedWake(target.id), true,
+    'the stop\'s turn_end deferred rather than consuming the wake');
 
   // The steered turn's turn_end is the one that spends it. That turn is real —
   // the fixture answers a POST_STOP_STEER_NOTE-carrying prompt with a complete
   // turn — so nothing here is injected synthetically.
   await waitFor(() => target.steerPending === false);
-  await waitFor(() => instances._idleHub.hasSubscriber(target.id) === false);
+  await waitFor(() => instances._idleHub.hasArmedWake(target.id) === false);
 });
 
 // ── C-T6 (PIN) ─────────────────────────────────────────────────────────────
@@ -260,7 +260,7 @@ test('C-T6 flagged but IDLE takes the ordinary prompt path', async () => {
   assert.equal(inst.status, 'idle');
   const text = buildApprovePrompt(undefined);
 
-  await approvePlan({ sessionId: inst.sessionId, subscribe: false }, { instances });
+  await approvePlan({ sessionId: inst.sessionId }, { instances });
   assert.equal(inst.steerPending, false, 'nothing was parked');
 
   await waitFor(async () => userLinesIn(await stdinLines()).length === 1);

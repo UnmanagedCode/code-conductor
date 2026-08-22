@@ -39,6 +39,7 @@ beforeEach(async () => { roots = await freshProjectsRoot(); ({ home } = roots); 
 afterEach(async () => {
   await instances.shutdown();
   instances._idleSubscribers?.clear();
+  instances._idleHub?._owners.clear();
   await rmrf(home);
   delete process.env.FAKE_PLAN_FILE;
 });
@@ -130,7 +131,7 @@ test('forward: data-dependent, byte-identical to get_recent_messages, correctly 
 
   const GUIDING = 'Implement the findings above.';
   const res = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid }, text: GUIDING, subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: GUIDING,
   }));
   assert.equal(res.forwarded, 1);
   assert.equal(calls.length, 1, 'inst.prompt was called exactly once');
@@ -140,7 +141,7 @@ test('forward: data-dependent, byte-identical to get_recent_messages, correctly 
   assert.ok(composed.includes(NONCE), 'the composed prompt carries the source\'s actual text');
   const target2Sid = await spawnReady('p'); // fresh instance — no coupling to the call above
   const plainCalls = recordPrompt(instForSession(instances, target2Sid));
-  await callTool('send_prompt', { sessionId: target2Sid, text: GUIDING, subscribe: false });
+  await callTool('send_prompt', { sessionId: target2Sid, text: GUIDING });
   assert.ok(!plainCalls[0][0].includes(NONCE), 'an ordinary send (no forward) never carries the source\'s text');
 
   // 2. Byte-identity with get_recent_messages' own rendering of the same selection.
@@ -192,7 +193,7 @@ test('forward: multi-message payload uses bare boundaries, not get_recent_messag
   src._emitUi({ kind: 'turn_end' });
 
   const res = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go', subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go',
   }));
   assert.equal(res.forwarded, 2);
   const composed = calls[0][0];
@@ -219,7 +220,7 @@ test('forward: a plan backed by a file carries the saved path and the full body 
     const calls = recordPrompt(instForSession(instances, targetSid));
 
     const res = unwrap(await callTool('send_prompt', {
-      sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'implement it', subscribe: false,
+      sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'implement it',
     }));
     assert.equal(res.forwarded, 2, 'the plan message bonds with its trailing prose, same as get_recent_messages');
     const composed = calls[0][0];
@@ -240,7 +241,7 @@ test('forward: a questions section survives intact', async () => {
   });
 
   const res = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'answer for me', subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'answer for me',
   }));
   assert.equal(res.forwarded, 1);
   const composed = calls[0][0];
@@ -265,15 +266,13 @@ test('forward: an empty source soft-refuses NOTHING_TO_FORWARD before any prompt
   assert.equal(res.forwardSessionId, sourceSid);
   assert.equal(res.sessionId, undefined, 'a forward refusal never carries a bare sessionId field');
   assert.equal(calls.length, 0, 'no turn was started');
-  assert.equal(res.subscribed, undefined, 'no subscription result on a refusal');
-
-  // The refusal must not have armed a subscription either: even if the target
-  // later reaches turn_end, the caller gets no wake stub from THIS call.
+  // The refusal must not have armed a wake either: even if the target later
+  // reaches turn_end, the caller gets no wake stub from THIS call.
   targetInst._emitUi({ kind: 'turn_end' });
   const callerInst = instForSession(instances, callerId);
   await assertNever(
     () => callerInst.ringSnapshot().some(ev => ev.kind === 'user_echo' && typeof ev.text === 'string' && ev.text.includes('get_recent_messages')),
-    'a refused forward must never arm the default subscribe-by-default wake',
+    'a refused forward starts no turn, so it can arm no wake',
   );
 });
 
@@ -380,7 +379,7 @@ test('forward: an unambiguous sessionId prefix resolves before the handler runs'
   instForSession(instances, sourceSid)._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'hello there' });
 
   const res = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid.slice(0, 8) }, text: 'go', subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid.slice(0, 8) }, text: 'go',
   }));
   assert.equal(res.forwarded, 1, 'the prefix resolved to the live source and forwarded its output');
 });
@@ -413,7 +412,7 @@ test('forward: a truncated message with no planPath is honest that the cut prose
   const HUGE = 'a'.repeat(32 * 1024 + 1000);
   instForSession(instances, sourceSid)._emitUi({ kind: 'text_delta', msgId: 'm-huge', blockIdx: 0, text: HUGE });
 
-  await callTool('send_prompt', { sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go', subscribe: false });
+  await callTool('send_prompt', { sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go' });
   const composed = calls[0][0];
   assert.ok(composed.includes('exceeded the forward size cap'));
   assert.ok(composed.includes('not recoverable from your side — ask the orchestrator rather than inferring it'));
@@ -432,7 +431,7 @@ test('forward: a truncated message WITH a planPath points at the complete plan d
   src._emitUi({ kind: 'text_delta', msgId: 'm-huge2', blockIdx: 0, text: HUGE });
   src._emitUi({ kind: 'tool_use', msgId: 'm-huge2', blockIdx: 1, toolUseId: 'tu-huge', name: 'ExitPlanMode', input: {} });
 
-  await callTool('send_prompt', { sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go', subscribe: false });
+  await callTool('send_prompt', { sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go' });
   const composed = calls[0][0];
   assert.ok(composed.includes(`document at ${FAKE_PATH} is complete`), 'names the recovery route');
   assert.ok(composed.includes('The cut prose itself is not recoverable from your'), 'still honest that the PROSE is gone');
@@ -449,12 +448,12 @@ test('forward: mid-turn is delivered live (steering), not queued', async () => {
   // Put the target mid-turn (SCENARIO_SLOW delays 1500ms before finishing —
   // the scenario was baked into the subprocess's env at spawn time above, so
   // it applies to every turn this instance runs from here on).
-  await callTool('send_prompt', { sessionId: targetSid, text: 'start', subscribe: false });
+  await callTool('send_prompt', { sessionId: targetSid, text: 'start' });
   await waitFor(() => targetInst.status !== 'idle');
 
   const calls = recordPrompt(targetInst);
   const res = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'steer now', subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'steer now',
   }));
   // Delivered immediately — not deferred until the running turn ends.
   assert.equal(calls.length, 1, 'the forward was delivered live into the running turn');
@@ -462,17 +461,25 @@ test('forward: mid-turn is delivered live (steering), not queued', async () => {
 });
 
 
-test('forward: subscribe still defaults on for a successful forward', async () => {
+test('forward: a successful forward still arms the caller\'s wake', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
   const sourceSid = await spawnReady('p');
   const targetSid = await spawnReady('p');
   instForSession(instances, sourceSid)._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'payload' });
 
-  const res = unwrap(await callTool('send_prompt', {
+  await callTool('send_prompt', {
     sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go',
-  }, { caller: callerId }));
-  assert.equal(res.subscribed, true, 'the default dispatch-and-wake subscription still arms');
+  }, { caller: callerId });
+  // No result field says so any more — the wake is not a thing you opt into, so
+  // the observables are the ownership edge the send recorded and the stub it
+  // eventually delivers.
+  const target = instForSession(instances, targetSid);
+  assert.deepEqual(instances._idleHub.ownersOf(target.id),
+    [instForSession(instances, callerId).id], 'the forward recorded the caller as owner');
+  const caller = instForSession(instances, callerId);
+  await waitFor(() => caller.ringSnapshot().some(ev => ev.kind === 'user_echo'
+    && typeof ev.text === 'string' && ev.text.includes('get_recent_messages')));
 });
 
 test('forward: a successful result keeps today\'s shape plus forwarded — nothing else', async () => {
@@ -482,9 +489,9 @@ test('forward: a successful result keeps today\'s shape plus forwarded — nothi
   instForSession(instances, sourceSid)._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'payload' });
 
   const res = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go', subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go',
   }));
-  assert.deepEqual(Object.keys(res).sort(), ['forwarded', 'sessionId', 'status', 'subscribed'].sort(),
+  assert.deepEqual(Object.keys(res).sort(), ['forwarded', 'sessionId', 'status'].sort(),
     'no truncation flag, payload size, or source id — the conductor has no lever for any of them');
 });
 
@@ -520,7 +527,7 @@ test('forward: a fully retired source is relayed from disk, verbatim, with its o
   await waitFor(() => instances.idsForSession(sourceSid).length === 0);
 
   const res = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'act on it', subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'act on it',
   }));
   assert.equal(res.ok, undefined, `the forward must succeed: ${JSON.stringify(res)}`);
   assert.equal(res.forwarded, 1);
@@ -559,7 +566,7 @@ test('forward: a PREFIX of a retired source refuses FORWARD_SESSION_UNKNOWN rath
   // ...and the same call with the FULL id succeeds, so the refusal above is
   // about the prefix, not about the session being retired.
   const full = unwrap(await callTool('send_prompt', {
-    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go', subscribe: false,
+    sessionId: targetSid, forward: { sessionId: sourceSid }, text: 'go',
   }));
   assert.equal(full.forwarded, 1);
 });

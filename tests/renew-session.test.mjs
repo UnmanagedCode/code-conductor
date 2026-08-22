@@ -45,6 +45,15 @@ let nextRpcId = 1;
 // stable INSTANCE id (what Instance.spawn bakes), so translate a caller sessionId to
 // its instanceId here; a value that resolves to no instance (bogus/absent) passes
 // through so the "no caller" refusal paths still fire.
+// Ownership + the turn that arms it. `noteDispatch` records the ownership edge;
+// the ARM happens when the target enters a turn. Tests that need an armed entry
+// without running a turn (the target must stay idle for the rotation under test)
+// drive onTurnStart directly — the same call Instance._setStatus makes.
+function armWake(instances, callerSid, targetSid, timeoutMs) {
+  instances.noteDispatch(callerSid, targetSid, timeoutMs);
+  instances._idleHub.onTurnStart(instances.liveForSession(targetSid).id);
+}
+
 let mgr = null;
 async function rpc(baseUrl, method, params, { caller } = {}) {
   const handle = caller ? (instForSession(mgr, caller)?.id ?? caller) : null;
@@ -386,7 +395,7 @@ test('renew_session: an outgoing idle subscription survives the caller\'s /clear
     await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
     // `worker` is watched; `sub` watches it and then renews ITSELF — the
     // self-renewal case where the caller's own backing id rotates while it holds
-    // an outgoing subscription. Because the idle-subscription graph is keyed by
+    // an outgoing wake. Because the idle-wake graph is keyed by
     // the stable instanceId (which /clear preserves), the entry is untouched by
     // the rotation — nothing to re-key. The snapshot is a sessionId-shaped view,
     // so it simply reflects the caller's CURRENT (rotated) sessionId.
@@ -396,9 +405,11 @@ test('renew_session: an outgoing idle subscription survives the caller\'s /clear
     await waitFor(() => instForSession(srv.instances, wSid)?.status === 'idle'
       && instForSession(srv.instances, sSid)?.status === 'idle');
 
-    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: wSid }, { caller: sSid });
+    // Armed directly: the worker must stay idle across the caller's rotation, so
+    // there is no turn of its own to arm on.
+    armWake(srv.instances, sSid, wSid, 600_000);
     let snap = srv.instances._idleSubscriberSnapshot();
-    assert.ok(snap[wSid]?.includes(sSid), 'subscription registered under the caller\'s original sid');
+    assert.ok(snap[wSid]?.includes(sSid), 'wake armed under the caller\'s original sid');
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'keep watching the worker' }, { caller: sSid });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sSid, text: 'go1' });
@@ -410,7 +421,7 @@ test('renew_session: an outgoing idle subscription survives the caller\'s /clear
     // too: the entry does not move, and the id the conductor was given stays the
     // one it is listed under. (Pre-card it re-keyed onto the rotated id, which is
     // exactly how a conductor's held reference went stale.)
-    assert.ok(snap[wSid]?.includes(sSid), 'subscription still listed under the caller\'s UNCHANGED public id');
+    assert.ok(snap[wSid]?.includes(sSid), 'wake still listed under the caller\'s UNCHANGED public id');
     assert.ok(!snap[wSid]?.includes(NEW_SID), 'the internal backing id never surfaces here');
   } finally {
     await srv.close();
@@ -507,8 +518,6 @@ test('renew_session: the mechanical state block lists live spawned workers and i
     const workerSid = worker.sessionId;
     await waitFor(() => instForSession(srv.instances, workerSid)?.status === 'idle');
 
-    // Conductor subscribes to the worker's idle callback.
-    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: workerSid }, { caller: conductorSid });
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-STATE-1' }, { caller: conductorSid });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: conductorSid, text: 'go1' });
@@ -525,9 +534,9 @@ test('renew_session: the mechanical state block lists live spawned workers and i
     assert.ok(seedEcho, 'summary was injected');
     assert.ok(seedEcho.text.includes(workerSid), 'state block lists the live spawned worker by sessionId');
     assert.ok(seedEcho.text.includes('project=p'), 'state block carries the worker project');
-    // The worker sessionId also appears as a pending idle subscription entry.
-    const subsSection = seedEcho.text.split('pending idle subscriptions')[1] ?? '';
-    assert.ok(subsSection.includes(workerSid), 'state block lists the pending idle subscription');
+    // The worker sessionId also appears in the owned-wake-targets section.
+    const subsSection = seedEcho.text.split('Workers you own')[1] ?? '';
+    assert.ok(subsSection.includes(workerSid), 'state block lists the owned wake target');
   } finally {
     await srv.close();
   }
@@ -545,11 +554,11 @@ test('renew_session: the state block is composed at reseed time, not arm time', 
     // Arm renewal BEFORE the worker even exists.
     await callTool(srv.baseUrl, 'renew_session', { summary: 'HANDOFF-STATE-2' }, { caller: conductorSid });
 
-    // Spawn the worker (and subscribe) AFTER arming, but before the turn ends.
+    // Spawn the worker AFTER arming, but before the turn ends. The spawn IS the
+    // ownership edge (callerInstanceId), so nothing else needs registering.
     const worker = await callTool(srv.baseUrl, 'spawn_instance', { project: 'p', mode: 'bypassPermissions' }, { caller: conductorSid });
     const workerSid = worker.sessionId;
     await waitFor(() => instForSession(srv.instances, workerSid)?.status === 'idle');
-    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: workerSid }, { caller: conductorSid });
 
     // NOW end the turn — the clear (and state-block composition) fires here.
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: conductorSid, text: 'go1' });
@@ -838,7 +847,7 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
   }
 });
 
-test('a FAILED reseed wakes the subscriber instead of stranding it on the watchdog', async () => {
+test('a FAILED reseed wakes its owner instead of stranding it on the heartbeat', async () => {
   // endRotation closed the hub's window with comesUpIdle:false on the promise that
   // a reseed turn was coming. When that promise breaks, the promise has to be
   // retracted: `renew_error` is a UI event on the WORKER's stream and reaches no
@@ -857,8 +866,8 @@ test('a FAILED reseed wakes the subscriber instead of stranding it on the watchd
     const inst = instForSession(srv.instances, sid1);
     const watcherInst = instForSession(srv.instances, watcherSid);
 
-    // A watchdog long enough that this test cannot pass by timing out.
-    srv.instances.subscribeIdle(watcherSid, sid1, 600_000);
+    // A heartbeat window long enough that this test cannot pass by pinging out.
+    armWake(srv.instances, watcherSid, sid1, 600_000);
     // Break the reseed specifically — not the clear, not the lineage write.
     const realPrompt = inst.prompt.bind(inst);
     inst.prompt = async (text, atts, opts) => {
@@ -879,7 +888,7 @@ test('a FAILED reseed wakes the subscriber instead of stranding it on the watchd
     assert.ok(!stub.text.includes('did NOT finish'),
       `the wake must come from the lost-turn signal, not the watchdog: ${stub.text}`);
     assert.ok(stub.text.includes(sid1), 'and it names the pinned public id');
-    assert.equal(srv.instances._idleHub.hasSubscriber(inst.id), false, 'one-shot consumed');
+    assert.equal(srv.instances._idleHub.hasArmedWake(inst.id), false, 'the wake was consumed');
     // The renewal window is released even though the reseed threw, so the session
     // is not left permanently un-prunable.
     await waitFor(() => inst.renewalPending === false);
@@ -888,7 +897,7 @@ test('a FAILED reseed wakes the subscriber instead of stranding it on the watchd
   }
 });
 
-test('an ABANDONED renewal closes the rotation window and wakes its subscriber', async () => {
+test('an ABANDONED renewal closes the rotation window and wakes its owner', async () => {
   // The failure mode this guards: the rotation window is opened at arm() and the
   // idle hub defers every turn_end while it is open. If an abandonment path forgot
   // to close it, a conductor waiting on that worker would hang until the 30-minute
@@ -907,9 +916,9 @@ test('an ABANDONED renewal closes the rotation window and wakes its subscriber',
     const inst = instForSession(srv.instances, sid1);
     const watcher = instForSession(srv.instances, watcherSid);
 
-    // The watcher subscribes to the renewing session, with a watchdog long enough
+    // The watcher owns the renewing session, with a heartbeat window long enough
     // that this test cannot pass by timing out.
-    srv.instances.subscribeIdle(watcherSid, sid1, 600_000);
+    armWake(srv.instances, watcherSid, sid1, 600_000);
     await callTool(srv.baseUrl, 'renew_session', { summary: 'never delivered' }, { caller: sid1 });
     assert.equal(inst.rotationPending, true);
 
@@ -930,7 +939,7 @@ test('an ABANDONED renewal closes the rotation window and wakes its subscriber',
       && typeof ev.text === 'string' && ev.text.includes('get_recent_messages')));
     assert.ok(!stub.text.includes('did NOT finish'),
       `the wake must come from the rotation trigger, not the watchdog: ${stub.text}`);
-    assert.equal(srv.instances._idleHub.hasSubscriber(inst.id), false, 'one-shot consumed');
+    assert.equal(srv.instances._idleHub.hasArmedWake(inst.id), false, 'the wake was consumed');
   } finally {
     await srv.close();
   }
@@ -1051,7 +1060,8 @@ test('a requested renewal: the worker authors the summary, and the followUp land
     assert.equal(req.requested, true, JSON.stringify(req));
     assert.equal(req.ok, undefined, 'an acknowledgement carries no ok');
     assert.equal(req.sessionId, wSid, 'and names the PUBLIC id it targeted');
-    assert.equal(req.subscribed, true, 'the targeted form always auto-subscribes the conductor');
+    assert.ok(srv.instances._idleHub.ownersOf(worker.id).includes(instForSession(srv.instances, condSid).id),
+      'the targeted form records the conductor as owner — the wake needs no opt-in');
 
     // Turn A: the request reached the worker, carrying the conductor's PRE-directive.
     const reqEcho = await waitFor(() => echoWith(worker, DIRECTIVE));
@@ -1145,8 +1155,7 @@ test('a DECLINED request: nothing is cleared, and the decline rides the conducto
 
     // The note belongs to exactly ONE wake: a later, unrelated wake for the same
     // worker must not repeat it.
-    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: wSid }, { caller: condSid });
-    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go2' });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go2' }, { caller: condSid });
     const second = await waitFor(() => cond.ringSnapshot().filter((ev) => ev.kind === 'user_echo'
       && typeof ev.text === 'string' && ev.text.includes('get_recent_messages'))[1]);
     assert.ok(!second.text.includes('DECLINED'),
@@ -1283,7 +1292,7 @@ test('an armed renewal fires when a background task drains an ALREADY-IDLE worke
 test('a MID-TURN target is refused rather than producing a false decline', async () => {
   // The defect: with no idle guard the request registers against a turn the worker
   // did not open for it. That turn's end expires the request (a DECLINE the worker
-  // never saw), drops the followUp, and spends the conductor's one-shot — inverting
+  // never saw), drops the followUp, and spends the conductor's armed wake — inverting
   // the one signal the whole decline contract rests on.
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
   mgr = srv.instances;
@@ -1304,13 +1313,13 @@ test('a MID-TURN target is refused rather than producing a false decline', async
       'and registers nothing against the turn the worker is already in');
 
     // Now end that unrelated turn. Nothing may be reported: no decline for a
-    // request the worker never saw, and no wake at all (the refusal never subscribed).
+    // request the worker never saw, and no wake at all (the refusal never recorded ownership).
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
     await waitFor(() => worker.status === 'idle');
     await assert.rejects(
       () => waitFor(() => echoWith(cond, 'DECLINED'), { timeout: 800, interval: 20 }),
       /timeout/, 'an unrelated turn end must never report a decline');
-    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), false,
+    assert.equal(srv.instances._idleHub.hasArmedWake(worker.id), false,
       'and the refused request must not have burned a subscription');
   } finally {
     await srv.close();
@@ -1334,20 +1343,19 @@ test('a decline note is recorded only for a conductor that is waiting, and dies 
     assert.equal(hub._pendingDeclines.size, 0, 'no watcher, no note');
 
     // (2) Recorded while waiting…
-    srv.instances.subscribeIdle(condSid, wSid, 600_000);
+    armWake(srv.instances, condSid, wSid, 600_000);
     srv.instances.noteRenewalDeclined(worker.id, condSid);
     assert.ok(hub._takeDecline(worker.id, condId), 'recorded for the waiting requester');
     assert.equal(hub._pendingDeclines.size, 0, 'and read-and-deleted, not left behind');
 
-    // (3) …but the note dies with the wait: unsubscribing ends it.
+    // (3) …but the note dies with the wait: a silent disarm ends it.
     srv.instances.noteRenewalDeclined(worker.id, condSid);
-    srv.instances.unsubscribeIdle(condSid, wSid);
+    srv.instances.disarmIdleSilently(condSid, worker.id);
     assert.equal(hub._takeDecline(worker.id, condId), null,
-      'unsubscribe took the note with it');
+      'the disarm took the note with it');
 
     // Nothing recorded above may surface on a real, unrelated wake.
-    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: wSid }, { caller: condSid });
-    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' }, { caller: condSid });
     const stub = await waitFor(() => echoWith(cond, 'get_recent_messages'));
     assert.ok(!stub.text.includes('DECLINED'),
       `an unrelated wake must carry no decline: ${stub.text}`);
@@ -1369,7 +1377,7 @@ test('a DEFERRED wake still carries the decline (the worker declined with a suba
       { sessionId: wSid, directive: `${DIRECTIVE}: roster` }, { caller: condSid });
     // The request turn launches a backgrounded Agent task and ends with it live.
     await waitFor(() => worker.status === 'idle' && worker.summary().activeAgentTasks === 1);
-    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), true,
+    assert.equal(srv.instances._idleHub.hasArmedWake(worker.id), true,
       'the wake is deferred, not consumed, while the subagent runs');
     await assert.rejects(
       () => waitFor(() => echoWith(cond, 'get_recent_messages'), { timeout: 500, interval: 20 }),
@@ -1430,8 +1438,9 @@ test('the decline reaches the conductor that ASKED, not another watcher', async 
     const watcher = instForSession(srv.instances, watcherSid);
     const asker = instForSession(srv.instances, askerSid);
 
-    // The bystander subscribes FIRST, so insertion order would hand it the note.
-    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: wSid }, { caller: watcherSid });
+    // The bystander OWNS the worker first, so insertion order would hand it the
+    // note. Recorded without arming — the worker's own request turn arms both.
+    srv.instances.noteDispatch(watcherSid, wSid);
     await callTool(srv.baseUrl, 'renew_session',
       { sessionId: wSid, directive: `${DIRECTIVE}: roster` }, { caller: askerSid });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
@@ -1501,7 +1510,7 @@ test('a request whose prompt throws leaves no pending entry to expire', async ()
 
     // A later, ordinary turn of that worker must therefore report nothing.
     worker.prompt = realPrompt;
-    srv.instances.subscribeIdle(condSid, wSid, 600_000);
+    armWake(srv.instances, condSid, wSid, 600_000);
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
     const stub = await waitFor(() => echoWith(cond, 'get_recent_messages'));
     assert.ok(!stub.text.includes('DECLINED'), `no phantom decline: ${stub.text}`);
@@ -1574,7 +1583,7 @@ test('an IDLE target that owes a re-invocation turn is still refused', async () 
     assert.equal(busy.code, 'SESSION_BUSY');
     assert.equal(busy.busy, 'task-notification', 'and names the owed re-invocation turn');
     assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false, 'nothing registered');
-    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), false, 'no subscription burned');
+    assert.equal(srv.instances._idleHub.hasArmedWake(worker.id), false, 'no wake burned');
   } finally {
     await srv.close();
   }
@@ -1583,7 +1592,7 @@ test('an IDLE target that owes a re-invocation turn is still refused', async () 
 test('an OVERAGE-PARKED target is refused rather than left to the watchdog', async () => {
   // Deterministic, not a race: an overage-stopped worker is `idle`, and prompt()
   // takes the queue branch WITHOUT opening a turn. Accepting the request would
-  // return subscribed:true for a turn that never runs, so the conductor eats the
+  // report a dispatch for a turn that never runs, so the conductor eats the
   // full watchdog and is told a healthy, merely rate-limited worker "did NOT finish".
   const srv = await bootServer({ scenarioPath: SCENARIO_REQUEST });
   mgr = srv.instances;
@@ -1598,7 +1607,7 @@ test('an OVERAGE-PARKED target is refused rather than left to the watchdog', asy
     assert.equal(busy.code, 'SESSION_BUSY');
     assert.equal(busy.busy, 'overage-queue');
     assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false, 'nothing registered');
-    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), false, 'no subscription burned');
+    assert.equal(srv.instances._idleHub.hasArmedWake(worker.id), false, 'no wake burned');
     // …and no request text was written to the worker either.
     assert.equal(echoWith(worker, DIRECTIVE), undefined, 'and the worker was never prompted');
   } finally {
@@ -1654,7 +1663,7 @@ test('a note whose caller has no live subprocess is consumed, not saved for its 
     const { condSid, wSid, cond, worker } = await pair(srv);
     const hub = srv.instances._idleHub;
 
-    srv.instances.subscribeIdle(condSid, wSid, 600_000);
+    armWake(srv.instances, condSid, wSid, 600_000);
     srv.instances.noteRenewalDeclined(worker.id, condSid);
 
     // The conductor's subprocess dies between the turn_end and the delivery microtask.
@@ -1666,8 +1675,7 @@ test('a note whose caller has no live subprocess is consumed, not saved for its 
       'the undeliverable note was consumed with the wake it belonged to');
 
     // Proof of the consequence: the next real wake carries no stale decline.
-    await callTool(srv.baseUrl, 'subscribe_to_idle', { sessionId: wSid }, { caller: condSid });
-    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: wSid, text: 'go1' }, { caller: condSid });
     const stub = await waitFor(() => echoWith(cond, 'get_recent_messages'));
     assert.ok(!stub.text.includes('DECLINED'), `no stale decline after respawn: ${stub.text}`);
   } finally {
@@ -1681,7 +1689,7 @@ test('a target with LIVE SUBAGENTS is refused on the request path too', async ()
   // defer and fire from the drain — which is exactly why it needs its own pin: the
   // controller-side tests cover the same clause on the /clear path, so without this
   // the request path's use of it could silently revert. The conductor's prescribed
-  // trigger (its own subscribe_to_idle wake) is gated on this same background work.
+  // trigger (its own idle wake) is gated on this same background work.
   const srv = await bootServer({ scenarioPath: SCENARIO_DECLINE_DEFER });
   mgr = srv.instances;
   try {
@@ -1700,7 +1708,7 @@ test('a target with LIVE SUBAGENTS is refused on the request path too', async ()
     assert.equal(busy.busy, 'subagents', 'and names the live background work');
     assert.equal(busy.status, 'idle', 'while `status` alone would have said it was free');
     assert.equal(srv.instances._sessionRenew.pending.has(worker.id), false, 'nothing registered');
-    assert.equal(srv.instances._idleHub.hasSubscriber(worker.id), false, 'no subscription burned');
+    assert.equal(srv.instances._idleHub.hasArmedWake(worker.id), false, 'no wake burned');
     assert.equal(worker.ringSnapshot().find((ev) => ev.kind === 'user_echo'
       && typeof ev.text === 'string' && ev.text.includes('asking you to renew')), undefined,
       'and the worker was never prompted with a request');

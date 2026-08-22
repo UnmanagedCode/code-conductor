@@ -161,8 +161,8 @@ test('tools/list returns the full expected tool catalog', async () => {
     'reject_plan', 'rename_workspace', 'renew_session', 'respawn_instance',
     'send_prompt', 'set_mode',
     'set_project_workspace',
-    'spawn_instance', 'subscribe_to_idle', 'sync_worktree',
-    'unsubscribe_from_idle',
+    'set_idle_timeout',
+    'spawn_instance', 'sync_worktree',
   ].sort();
   assert.deepEqual(names, expected);
   // Every tool carries a schema.

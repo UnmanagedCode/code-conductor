@@ -129,10 +129,13 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   // Snapshot which instances had resumable work BEFORE the stop so the manifest
   // can distinguish sessions that need a resume prompt from ones that were idle
   // with nothing pending (resurrected silently). "Resumable work" = mid-turn OR
-  // idle-but-parked on a pending OUTGOING idle-subscription, i.e. a conductor
+  // idle-but-parked on an armed OUTGOING idle wake, i.e. a conductor
   // that ended its turn and is waiting on a worker (isIdleCaller — the caller
-  // side, NOT hasIdleSubscriber which is the target side). Such a conductor has
-  // durable re-conduct work (re-spawn workers, re-establish subscriptions) even
+  // side — the same fact list()/the sidebar surface as `awaitingWake`: true while
+  // an armed wake is PENDING, which is wider than "its worker is mid-turn" and
+  // deliberately covers the held states, a deferred turn_end and a dropped
+  // idle-drain settle, where the target is already idle). Such a conductor has
+  // durable re-conduct work (re-spawn workers, re-drive them) even
   // though it's idle, so it must still receive its restart prompt.
   const busyAtDrain = new Set(
     live.filter((i) => i.status === 'turn' || instances.isIdleCaller(i.id)).map((i) => i.id),

@@ -241,7 +241,7 @@ test('warn: an illegal spawn PROCEEDS, is ledgered as a refusal, and stays untra
     assert.equal((await t.events()).filter(e => e.kind === 'spawn').length, 0,
       'an illegal spawn records no binding');
     assert.equal((await t.call('send_prompt', {
-      sessionId: w.sessionId, text: 'go', stage: 'amend', subscribe: false,
+      sessionId: w.sessionId, text: 'go', stage: 'amend',
     })).ok, undefined, 'an untracked worker is ungoverned at either level');
   } finally { await t.close(); }
 });
@@ -277,7 +277,7 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     // A SELF-EDGE — every ordinary follow-up prompt is one. Always legal, and
     // NOT ledgered here, because gatelab declares no draft->draft loop.
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'plan it', stage: 'draft', subscribe: false,
+      sessionId: impl.sessionId, text: 'plan it', stage: 'draft',
     })).ok, undefined);
     assert.equal((await t.events()).filter(e => e.kind === 'transition').length, 0,
       'an UNDECLARED self-edge must not be ledgered as a transition');
@@ -285,7 +285,7 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     // draft -> build fires on approve_plan ONLY; send_prompt cannot sneak a
     // worker past the driver.
     const snuck = await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'just build it', stage: 'build', subscribe: false,
+      sessionId: impl.sessionId, text: 'just build it', stage: 'build',
     });
     refused(snuck, 'TRANSITION_ILLEGAL');
     assert.match(snuck.reason, /approve_plan/, 'the refusal names the tool that does drive the edge');
@@ -304,7 +304,7 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     }), 'NEEDS_UNSATISFIED');
 
     // The declared `on` auto-fires the edge.
-    await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false });
+    await t.call('approve_plan', { sessionId: impl.sessionId });
     const moved = (await t.events()).find(e => e.kind === 'transition');
     assert.deepEqual(
       { from: moved.from, to: moved.to, via: moved.via, sessionId: moved.sessionId },
@@ -330,7 +330,7 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
 
     // Permission comes from the worker's CURRENT stage: audit denies both.
     refused(await t.call('sync_worktree', { sessionId: rev.sessionId }), 'TOOL_DENIED_IN_STAGE');
-    refused(await t.call('approve_plan', { sessionId: rev.sessionId, subscribe: false }),
+    refused(await t.call('approve_plan', { sessionId: rev.sessionId }),
       'TOOL_DENIED_IN_STAGE');
     // ...and the same tool is permitted for the implementer, in `build`. Both
     // halves are required: a mutant that denied the tool everywhere would pass
@@ -359,16 +359,16 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     // `needs` on TRANSITION-entry, not just spawn-entry: amend requires the
     // auditor, and the DESTINATION stage's conditions are what get checked.
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
     }), 'NEEDS_UNSATISFIED');
     // The retired auditor cannot satisfy it either — liveness:"live" means now,
     // and the code says "gone" rather than blaming the call.
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
       provenance: { audit: rev.sessionId },
     }), 'NEEDS_WORKER_GONE');
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
       provenance: { audit: rev2.sessionId },
     })).ok, undefined, 'supplying the destination stage\'s needs admits the transition');
 
@@ -380,7 +380,7 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     // and fails this one.
     const before = (await t.events()).filter(e => e.kind === 'transition').length;
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'round 2', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'round 2', stage: 'amend',
     })).ok, undefined, 'a declared self-loop is still ungated');
     const loops = (await t.events()).filter(e => e.kind === 'transition' && e.from === 'amend' && e.to === 'amend');
     assert.equal(loops.length, 1, 'the round was ledgered exactly once');
@@ -448,13 +448,13 @@ test('enforce: a send_prompt whose transition would be legal is not ledgered whe
   try {
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const wtName = impl.worktree.worktreeName;
-    await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false }); // draft -> build
+    await t.call('approve_plan', { sessionId: impl.sessionId }); // draft -> build
     const rev = await t.spawnWorker({
       project: 'demo', playbook: 'gatelab', stage: 'audit', worktree: wtName,
       provenance: { build: impl.sessionId },
     });
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'amend', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'amend', stage: 'amend',
       provenance: { audit: rev.sessionId },
     })).ok, undefined, 'build -> amend is legal once its needs are satisfied');
 
@@ -468,7 +468,7 @@ test('enforce: a send_prompt whose transition would be legal is not ledgered whe
     // refusal this exact call would ledger a transition (see the "ROUND 2"
     // case above) — the only difference here is the attached `forward`.
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'round 2', stage: 'amend', subscribe: false,
+      sessionId: impl.sessionId, text: 'round 2', stage: 'amend',
       forward: { sessionId: source.sessionId },
     }), 'NOTHING_TO_FORWARD');
 
@@ -482,7 +482,7 @@ test('enforce: provenance accepts a sessionId prefix, and refuses an ambiguous o
   try {
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     const wtName = impl.worktree.worktreeName;
-    await t.call('approve_plan', { sessionId: impl.sessionId, subscribe: false });
+    await t.call('approve_plan', { sessionId: impl.sessionId });
 
     // A public id is already only 8 chars, so a genuine PREFIX is shorter than
     // that — and an exact match on the whole public id would resolve outright
@@ -656,7 +656,7 @@ test('enforce: a stage binding survives a PRUNE — tracked under the same key, 
     // no kill, no spawn_instance({resume}). gatelab's draft->build edge is
     // driven by approve_plan (send_prompt cannot drive it — TRANSITION_ILLEGAL —
     // so this is the call that actually advances a gatelab/draft worker).
-    assert.equal((await t.call('approve_plan', { sessionId: publicId, subscribe: false })).ok, undefined,
+    assert.equal((await t.call('approve_plan', { sessionId: publicId })).ok, undefined,
       'approve_plan must succeed on the pruned-and-relaunched worker with no revival step');
     assert.equal(foldProjection(await t.events()).bySession.get(publicId).stage, 'build');
 
@@ -827,7 +827,7 @@ test('enforce: a stage with no outgoing edge and both write doors shut cannot se
 
     // No outgoing edge from `sealed` at all — not merely the wrong driver.
     const res = refused(await t.call('send_prompt', {
-      sessionId: planner.sessionId, text: 'implement it', stage: 'handoff', subscribe: false,
+      sessionId: planner.sessionId, text: 'implement it', stage: 'handoff',
     }), 'TRANSITION_ILLEGAL');
     assert.deepEqual(res.legalMoves.transitions, [], 'gatelab.sealed is a dead end by construction');
     // Nor by escalating its permissions.
@@ -838,7 +838,7 @@ test('enforce: a stage with no outgoing edge and both write doors shut cannot se
     // bypassPermissions, which is the same write unlock set_mode is denied for.
     // Asserting the MODE is the point — a refusal code alone would still pass if
     // the deny were removed and the flip happened before the move was rejected.
-    refused(await t.call('approve_plan', { sessionId: planner.sessionId, subscribe: false }),
+    refused(await t.call('approve_plan', { sessionId: planner.sessionId }),
       'TOOL_DENIED_IN_STAGE');
     assert.equal(instForSession(t.instances, planner.sessionId).mode, 'plan',
       'the planner must still be in plan mode — approve_plan never ran');
@@ -899,7 +899,7 @@ test('warn: an illegal move proceeds but is recorded as a refusal', async () => 
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     // The same call that `enforce` refuses TRANSITION_ILLEGAL goes through.
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build', subscribe: false,
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build',
     })).ok, undefined, 'warn allows the call');
     const refusals = (await t.events()).filter(e => e.kind === 'refusal');
     assert.equal(refusals.length, 1, 'warn still records what it let through');
@@ -922,7 +922,7 @@ test('warn: an illegal move pushes a playbook_warn event to the conductor\'s str
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     c = await watchConductor(t);
     assert.equal((await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build', subscribe: false,
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build',
     })).ok, undefined, 'warn still allows the call');
 
     const m = await c.waitForWarning();
@@ -979,7 +979,7 @@ test('enforce: a refusal pushes no playbook_warn — the caller already got it',
     const impl = await t.spawnWorker({ project: 'demo', playbook: 'gatelab', stage: 'draft' });
     c = await watchConductor(t);
     refused(await t.call('send_prompt', {
-      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build', subscribe: false,
+      sessionId: impl.sessionId, text: 'skip ahead', stage: 'build',
     }), 'TRANSITION_ILLEGAL');
     // The refusal reached the ledger, so the gate ran — the emit is what's
     // absent, which pins it INSIDE the warn branch rather than above it.
@@ -1198,7 +1198,7 @@ test('enforce: the SESSION_NOT_LIVE remedy text round-trips into a legal call', 
   try {
     const w = await killedBoundWorker(t);
 
-    const dead = refused(await t.call('send_prompt', { sessionId: w.sessionId, text: 'go', subscribe: false }),
+    const dead = refused(await t.call('send_prompt', { sessionId: w.sessionId, text: 'go' }),
       'SESSION_NOT_LIVE');
     const m = /spawn_instance\(\{resume:"([0-9a-f-]+)"\}\)/.exec(dead.reason);
     assert.ok(m, `the refusal must name a parseable remedy; got: ${dead.reason}`);
@@ -1361,7 +1361,7 @@ test('warn: a denied forward SOURCE is recorded and warned, naming BOTH workers,
     const { source, target } = await fwdGuardPair(t, 'reader');
     c = await watchConductor(t);
     const res = await t.call('send_prompt', {
-      sessionId: target, text: 'act on this', stage: 'reader', forward: { sessionId: source }, subscribe: false,
+      sessionId: target, text: 'act on this', stage: 'reader', forward: { sessionId: source },
     });
     assert.equal(res.ok, undefined, `warn lets the forward through: ${JSON.stringify(res)}`);
     assert.equal(res.forwarded, 1, 'and it really forwarded the source\'s output');
@@ -1397,13 +1397,13 @@ test('enforce: a denied forward SOURCE refuses the call as a normal result, with
     const { source, target } = await fwdGuardPair(t, 'reader');
     c = await watchConductor(t);
     const res = refused(await t.call('send_prompt', {
-      sessionId: target, text: 'act on this', stage: 'reader', forward: { sessionId: source }, subscribe: false,
+      sessionId: target, text: 'act on this', stage: 'reader', forward: { sessionId: source },
     }), 'FORWARD_DENIED_IN_STAGE');
     assert.match(res.reason, /get_recent_messages/);
     assert.match(res.reason, new RegExp(source.slice(0, 8)), 'the refusal names the source');
     // The same call without the forward is fine — the target was never the problem.
     assert.equal((await t.call('send_prompt', {
-      sessionId: target, text: 'act on this', stage: 'reader', subscribe: false,
+      sessionId: target, text: 'act on this', stage: 'reader',
     })).ok, undefined);
 
     assert.equal((await t.events()).filter(e => e.kind === 'refusal').length, 1);
@@ -1419,7 +1419,7 @@ test('enforce: a refusal about the TARGET still records the forward source — o
     // row records every worker the call named either way.
     const { source, target } = await fwdGuardPair(t, 'mute');
     refused(await t.call('send_prompt', {
-      sessionId: target, text: 'act on this', stage: 'mute', forward: { sessionId: source }, subscribe: false,
+      sessionId: target, text: 'act on this', stage: 'mute', forward: { sessionId: source },
     }), 'TOOL_DENIED_IN_STAGE');
 
     const refusals = (await t.events()).filter(e => e.kind === 'refusal');
@@ -1467,7 +1467,7 @@ test('enforce: a retired forward SOURCE is still governed — policy, not livene
 
     const res = refused(await t.call('send_prompt', {
       sessionId: target.sessionId, text: 'act on this', stage: 'reader',
-      forward: { sessionId: denied.sessionId }, subscribe: false,
+      forward: { sessionId: denied.sessionId },
     }), 'FORWARD_DENIED_IN_STAGE');
     assert.match(res.reason, /get_recent_messages/);
     assert.match(res.reason, new RegExp(denied.sessionId.slice(0, 8)), 'the refusal names the source');
@@ -1477,7 +1477,7 @@ test('enforce: a retired forward SOURCE is still governed — policy, not livene
     // every forward.
     const ok = await t.call('send_prompt', {
       sessionId: target.sessionId, text: 'act on this', stage: 'reader',
-      forward: { sessionId: allowed.sessionId }, subscribe: false,
+      forward: { sessionId: allowed.sessionId },
     });
     assert.equal(ok.ok, undefined, `a permitted retired source must forward: ${JSON.stringify(ok)}`);
     assert.equal(ok.forwarded, 1);

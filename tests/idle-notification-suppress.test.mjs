@@ -73,6 +73,15 @@ attachWsHub({ wss, instances });
 
 after(() => instances.shutdown().catch(() => {}));
 
+// Ownership + the turn that arms it. `noteDispatch` records the ownership edge;
+// the ARM happens when the target enters a turn — in production that is
+// Instance._setStatus's 'turn_start' emit, which these injected fakes never run,
+// so the test drives onTurnStart directly.
+function armWake(callerSid, targetSid, timeoutMs) {
+  instances.noteDispatch(callerSid, targetSid, timeoutMs);
+  instances._idleHub.onTurnStart(instances.liveForSession(targetSid).id);
+}
+
 test('Condition 1: conductor turn_end suppressed while it is subscribed as caller to a worker', () => {
   received.length = 0;
 
@@ -85,7 +94,7 @@ test('Condition 1: conductor turn_end suppressed while it is subscribed as calle
   injectFakeInstance(instances, { id: workId, sessionId: workSid });
 
   // Conductor subscribes to worker — conductor is now isCaller(condSid) === true.
-  instances.subscribeIdle(condSid, workSid);
+  armWake(condSid, workSid);
 
   // Conductor's OWN turn ends. The worker subscription is still pending.
   emitTurnEnd(instances, condId);
@@ -111,7 +120,7 @@ test('Condition 2: worker turn_end suppressed when a conductor is subscribed to 
   injectFakeInstance(instances, { id: condId, sessionId: condSid });
   injectFakeInstance(instances, { id: workId, sessionId: workSid });
 
-  instances.subscribeIdle(condSid, workSid);
+  armWake(condSid, workSid);
 
   // Worker's turn ends — idle hub fires first (consumes subscription + sets
   // _justConsumed), then wsHub handler checks and suppresses.
@@ -122,7 +131,7 @@ test('Condition 2: worker turn_end suppressed when a conductor is subscribed to 
     'worker turn_notification must be suppressed when a conductor is subscribed to it');
 
   // Subscription was consumed; confirm state is clean.
-  assert.equal(instances._idleHub.hasSubscriber(workId), false);
+  assert.equal(instances._idleHub.hasArmedWake(workId), false);
 
   instances.byId.delete(condId);
   instances.byId.delete(workId);
@@ -160,7 +169,7 @@ test('Condition 1: conductor turn_notification fires after its subscription is c
   injectFakeInstance(instances, { id: condId, sessionId: condSid });
   injectFakeInstance(instances, { id: workId, sessionId: workSid });
 
-  instances.subscribeIdle(condSid, workSid);
+  armWake(condSid, workSid);
 
   // Worker finishes → subscription consumed.
   emitTurnEnd(instances, workId);

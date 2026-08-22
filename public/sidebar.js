@@ -40,7 +40,7 @@ function mergeLive(onDisk, liveInstances) {
       row.instanceDisplayStatus = inst.displayStatus;
       row.instanceMode = inst.mode;
       row.instanceTemp = !!inst.temp;
-      row.instanceHasIdleSubscriber = !!inst.hasIdleSubscriber;
+      row.instanceAwaitingWake = !!inst.awaitingWake;
       row.autoResumeAt = inst.autoResumeAt ?? null;
       row.queuedCount = inst.queuedCount ?? 0;
       // Conducted is durable on-disk metadata (row.conducted may already
@@ -74,7 +74,7 @@ function mergeLive(onDisk, liveInstances) {
         instanceDisplayStatus: inst.displayStatus,
         instanceMode: inst.mode,
         instanceTemp: !!inst.temp,
-        instanceHasIdleSubscriber: !!inst.hasIdleSubscriber,
+        instanceAwaitingWake: !!inst.awaitingWake,
         autoResumeAt: inst.autoResumeAt ?? null,
         queuedCount: inst.queuedCount ?? 0,
         conducted: !!inst.conducted,
@@ -344,8 +344,14 @@ export class Sidebar {
     reconcileChildren(row, keys, (k, ex) => {
       if (k === 'dot') {
         const dot = ex ?? el('span', { class: 'dot' });
-        dot.className = `dot ${status}${status === 'idle' && session.instanceHasIdleSubscriber ? ' subscribed' : ''}`;
-        dot.title = status;
+        // `awaitingWake` is CALLER-side: this session is idle because it is
+        // waiting on a worker's running turn, not because it is done. The accent
+        // modifier is the only thing on the row that distinguishes those two, and
+        // it stays lit across a heartbeat (a heartbeat reports without consuming
+        // the wake), so a conductor whose worker is hung no longer reads as done.
+        const awaiting = status === 'idle' && !!session.instanceAwaitingWake;
+        dot.className = `dot ${status}${awaiting ? ' awaiting' : ''}`;
+        dot.title = awaiting ? 'idle — waiting on a worker' : status;
         return dot;
       }
       if (k === 'ago') {
