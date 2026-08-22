@@ -625,20 +625,13 @@ test('merge_worktree requires project + worktree and rejects a sessionId', async
   assert.match(withSession.body.result.content[0].text, /unexpected argument 'sessionId'/);
 });
 
-test('create_project creates the directory, seeds CLAUDE.md, and optionally inits git', async () => {
-  // Plain create — no git.
+test('create_project creates the directory, seeds CLAUDE.md, and inits git', async () => {
   const plain = unwrap(await callTool(baseUrl, 'create_project', { name: 'plain' }));
   assert.equal(plain.name, 'plain');
-  assert.equal(plain.gitInit, false);
   const claudeMd = await fs.readFile(path.join(projectsRoot, 'plain', 'CLAUDE.md'), 'utf8');
   assert.match(claudeMd, /@\.\.\/CLAUDE\.md/);
-  // No .git dir.
-  await assert.rejects(fs.stat(path.join(projectsRoot, 'plain', '.git')));
-
-  // With git init.
-  const repo = unwrap(await callTool(baseUrl, 'create_project', { name: 'with-git', gitInit: true }));
-  assert.equal(repo.gitInit, true);
-  const gitStat = await fs.stat(path.join(projectsRoot, 'with-git', '.git'));
+  // The repo is created with no git-related argument passed — init is not opt-in.
+  const gitStat = await fs.stat(path.join(projectsRoot, 'plain', '.git'));
   assert.ok(gitStat.isDirectory());
 
   // Name validation now fires at the schema layer (pattern) before the handler.
@@ -929,7 +922,10 @@ test('project_status scoped to a worktree returns mergeStatus + diffStat vs base
 });
 
 test('project_status on a non-git project returns isGitRepo:false but still lists files', async () => {
-  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  // Creation always inits a repo now, so reach the non-repo state with a bare
+  // mkdir + the CLAUDE.md the file-listing assertion below needs.
+  await fs.mkdir(path.join(projectsRoot, 'a'), { recursive: true });
+  await fs.writeFile(path.join(projectsRoot, 'a', 'CLAUDE.md'), '@../CLAUDE.md\n');
   const st = text(await callTool(baseUrl, 'project_status', { project: 'a' }));
   assert.match(st, /^! not a git repo$/m);
   // The CLAUDE.md seeded by createProject should be there, and as a file (no

@@ -1760,19 +1760,13 @@ export async function setProjectWorkspace({ project, workspace }: { project: str
 
 // ---------- create / introspect ----------
 
-export async function createProject({ name, gitInit = false, conventions = [] }: { name: string; gitInit?: boolean; conventions?: string[] }) {
+export async function createProject({ name, conventions = [] }: { name: string; conventions?: string[] }) {
   const conventionsDoc = conventions.length ? await composeProjectConventionsDoc(conventions) : null;
   const scaffold = await composeProjectScaffold(name, conventions);
   const created = await fsCreateProject(name, { conventionsDoc });
-  if (gitInit) {
-    const r = await runGit(created.path, ['init', '-q']);
-    if (r.code !== 0) {
-      throw new Error(`git init failed in ${created.path}: ${r.stderr.trim() || r.stdout.trim()}`);
-    }
-  }
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).
-  return { ...created, gitInit: !!gitInit, ...(scaffold ? { scaffold } : {}) };
+  return { ...created, ...(scaffold ? { scaffold } : {}) };
 }
 
 export async function listProjectConventions() {

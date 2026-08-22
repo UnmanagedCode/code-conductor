@@ -755,7 +755,7 @@ export function buildTools(): Tool[] {
       name: 'create_project',
       description:
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
-        'so workspace-wide conventions are inherited. Optionally runs `git init` in the new dir. ' +
+        'so workspace-wide conventions are inherited. The new dir is initialized as a git repo (no commits). ' +
         'Project conventions can be attached by passing their slugs — call list_project_conventions to ' +
         'discover available slugs. Each carries a CLAUDE.md fragment (appended inline) and/or a one-time ' +
         'scaffold directive: a picked convention flagged hasScaffold:true composes a setup directive that is ' +
@@ -765,7 +765,6 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name. Must match ^[a-zA-Z0-9._-]+$.' },
-          gitInit: { type: 'boolean', default: false, description: 'If true, run `git init` in the new project dir. Default false.' },
           conventions: {
             type: 'array',
             items: { type: 'string' },
