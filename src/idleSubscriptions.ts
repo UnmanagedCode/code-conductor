@@ -400,7 +400,7 @@ export class IdleSubscriptionHub {
   // body runs as a microtask, so the note is always set before it reads.
   noteRenewalDeclined(targetInstanceId: string, requestedBy: string | null): void {
     // sessionId in, instanceId thereafter — the same boundary translation
-    // subscribe() does. A requester that is gone has nothing to be told.
+    // noteDispatch() does. A requester that is gone has nothing to be told.
     const callerInstanceId = requestedBy ? this.manager.liveForSession(requestedBy)?.id ?? null : null;
     if (!callerInstanceId) return;
     if (!this._isWaitingOn(targetInstanceId, callerInstanceId)) return;
@@ -445,7 +445,8 @@ export class IdleSubscriptionHub {
   // too late for the turn it was made for.
   //
   // Boundary translation (sessionId in, instanceId thereafter) and the self-edge
-  // throw match the old subscribe(). `timeoutMs`, when a usable positive finite
+  // throw are this hub's only sessionId-facing entry, shared with setIdleTimeout()
+  // below. `timeoutMs`, when a usable positive finite
   // number, becomes this owner's preferred heartbeat window; an absent/invalid
   // one leaves an earlier set_idle_timeout preference intact rather than
   // silently resetting it to the default.
@@ -809,11 +810,11 @@ export class IdleSubscriptionHub {
   }
 
   // Is `callerInstanceId` waiting on `targetInstanceId` right now — either still
-  // subscribed, or subscribed at the turn_end being dispatched (this hub's listener
+  // ARMED, or armed at the turn_end being dispatched (this hub's listener
   // runs FIRST, so by the time the renew controller expires a request the delivered
   // wake is already out of `subscribers`; `_justConsumed` is that record).
   // On the only production trigger — a `turn_end`, where `_onTurnEnd` marks
-  // `_justConsumed` with the whole subscriber set before its defer check — the
+  // `_justConsumed` with the whole armed-owner set before its defer check — the
   // second disjunct subsumes the first. The first is what keeps a DIRECT call
   // correct: `noteRenewalDeclined` is public on `InstanceManagerLike`, and called
   // outside a turn_end dispatch (`_justConsumed` empty) only it is true. That path
