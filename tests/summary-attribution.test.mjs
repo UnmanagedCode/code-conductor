@@ -11,8 +11,10 @@
 //
 // THREE SEAMS, THREE TESTS, and they fail against different wrong implementations —
 // keep all three:
-//   1. `the verdict line charges each file its OWN wall` — the ordering bug itself.
-//      Fails against the pre-fix `test:summary` source.
+//   1. `the verdict line charges each file its OWN wall` — the ordering bug itself,
+//      plus SUB-SECOND RESOLUTION in its assertion (5). Fails against the pre-fix
+//      `test:summary` source, and (5) alone fails against a reporter that coarsens
+//      the figure to whole seconds — which every other assertion here survives.
 //   2. `a KILLED file keeps its figure` — a file with NO summary and NO inner
 //      completion. Fails against the pre-fix source AND against sourcing the
 //      duration from the last INNER `test:complete`.
@@ -26,19 +28,47 @@
 //
 // ── THRESHOLD ALGEBRA — read before changing a fixture sleep or a constant ───────
 // Every bound below is a RATIO or an ORDERING, never an absolute ms figure. Load
-// adds a roughly COMMON spawn+import cost C to all three figures, so absolutes
-// drift with it while ratios hold. (An earlier revision asserted `medium <= 900`
-// and went red on a CORRECT reading of 972ms under starvation.)
+// inflates every figure by that file's own spawn+import cost, so absolutes drift
+// with it while ratios and differences largely cancel it. (An earlier revision
+// asserted `medium <= 900` and went red on a CORRECT reading of 972ms under
+// starvation.)
 //
-// With medium's sleep M and slow's sleep S, so fast = C, medium = M + C, slow = S + C:
-//   assertion (1)  fast * 3 < medium     holds while  C < M / 2
-//   assertion (2)  medium * 1.25 < slow  holds while  C < 4S - 5M
-// The two move in OPPOSITE directions in M, so the sleeps are solved together, not
-// tuned one at a time. At M=1200 / S=1700 the tolerances are C < 600ms and
-// C < 800ms, so the binding figure is 600ms. Measured C: ~37ms quiet, 142-158ms
-// under 8-16 CPU spinners (~2.4x slowdown) — roughly 4x headroom on the binding
-// bound. The previous M=600 / S=1200 gave C < 300ms and C < 1800ms: the same
-// binding safety as one assertion, with the other's slack wasted.
+// THE SPAWN COST IS PER FILE, NOT COMMON. This is the trap: an earlier revision did
+// the algebra with a single shared C and concluded assertion (2) had 800ms of slack,
+// when it had 200ms — and (2) was then MEASURED FAILING 1 run in 20 under starvation
+// (slow 1788 / medium 1431, margin -1ms). The costs differ SYSTEMATICALLY, not
+// randomly: slow.fixture.mjs is dispatched at t=0 into a free slot, while medium
+// waits for the slot fast vacates and pays a contended spawn. So C_medium > C_slow
+// as a rule, and the difference is what the bounds have to absorb.
+//
+// With medium's sleep M=1200 and slow's S=2100 (fast = C_f, medium = M + C_m,
+// slow = S + C_s, subsecond = 550 + C_sub), each assertion tolerates:
+//   (1) fast * 3 < medium        while  3*C_f - C_m  <  M          = 1200ms
+//   (2) medium * 1.25 < slow     while  1.25*C_m - C_s  <  S - 1.25M = 600ms
+//   (4) slow >= 2100             unconditional — it is a control, not a bound
+//   (5) 0 < medium - subsecond < 1000  while  C_sub - C_m < 650  and
+//                                            C_m - C_sub < 350
+// Measured spawn costs: ~37ms quiet. Under 16 CPU spinners, over 20 runs, the
+// per-file maxima were C_f 323ms, C_m 271ms, C_s 264ms, C_sub 236ms — but the MAXIMA
+// are not the risk, the SPREAD between two files in one run is: (2)'s binding
+// quantity 1.25*C_m - C_s ranged -29..198ms, peaking within 2ms of the 200ms that
+// S=1700 allowed. That is why S moved to 2100, buying 600ms. Verified after the
+// change over 20 starved runs: 0 assertions would fail, and the raw margins were
+// (1) min 425ms, (2) min 402ms, (4) min 70ms, (5) gap 569-849ms inside its 0-1000
+// band.
+//
+// Two standing warnings. Raising M widens (1) but NARROWS (2), so the sleeps are
+// solved together, never tuned one at a time. And do not re-derive these bounds with
+// a single C: that is the exact error that shipped a marginal assertion.
+//
+// THAT RE-SOLVE COST SOMETHING, WHICH IS WHY subsecond.fixture.mjs EXISTS. At
+// M=600 / S=1200 assertion (2) happened to DOUBLE as a resolution check: both its
+// figures quantized to 1000ms, so `1250 < 1000` caught a reporter that coarsened the
+// figure to whole seconds. At the current M=1200 / S=2100 they land on 1000 and
+// 2000 and (2) passes on them, so that coverage was lost as a side effect of tuning
+// the sleeps.
+// Assertion (5) pins resolution EXPLICITLY rather than relying on the coincidence,
+// which is what lets these sleeps be chosen for C-tolerance alone.
 // ─────────────────────────────────────────────────────────────────────────────────
 
 import test from 'node:test';
@@ -124,15 +154,17 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
   // ARGV ORDER IS LOAD-BEARING: slow FIRST. discover() preserves argv order, and the
   // bug only fires for a file listed after one that is still running. Reverse these
   // and the unfixed reporter looks correct.
-  const { code, diag, ranking, of } = await runFixtures(['slow', 'fast', 'medium']);
+  const { code, diag, ranking, of } = await runFixtures(['slow', 'fast', 'medium', 'subsecond']);
   assert.equal(code, 0, `the fixture run should be green:\n${diag}`);
-  assert.equal(ranking.length, 3, `expected all three fixtures in the ranking:\n${diag}`);
+  assert.equal(ranking.length, 4, `expected all four fixtures in the ranking:\n${diag}`);
 
-  const slow = of('slow'), medium = of('medium'), fast = of('fast');
+  const slow = of('slow'), medium = of('medium'), fast = of('fast'), sub = of('subsecond');
 
   // (1) A TRIVIAL FILE IS NOT CHARGED A WORKING FILE'S WALL. The primary bug-catcher:
-  // unfixed, fast is charged the ~1.7s it spent WAITING for slow's summary, so this
-  // fails by ~4x at any load. Tolerance C < 600ms (see the algebra above).
+  // unfixed, fast is charged the ~1.7s it spent WAITING for slow's summary. It fails
+  // by ~3x — measured unfixed, fast 1732ms against a ceiling of medium/3 = 566ms, so
+  // 1732/566 = 3.06x. (Derive this ratio afresh if you change a fixture sleep; it is
+  // medium/3 vs fast, not a round number.) Tolerance C < 600ms (see the algebra above).
   assert.ok(fast * 3 < medium,
     `fast.fixture.mjs (no sleep, reported ${fast}ms) should be far cheaper than ` +
     `medium.fixture.mjs (1200ms sleep, reported ${medium}ms); a near-tie means fast is ` +
@@ -143,7 +175,7 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
   // the one real culprit. Tolerance C < 800ms.
   assert.ok(medium * 1.25 < slow,
     `medium.fixture.mjs (1200ms sleep, reported ${medium}ms) should be clearly cheaper ` +
-    `than slow.fixture.mjs (1700ms sleep, reported ${slow}ms); the figure is not ` +
+    `than slow.fixture.mjs (2100ms sleep, reported ${slow}ms); the figure is not ` +
     `resolving their real walls:\n${diag}`);
 
   // (3) THE PUBLISHED RANKING IS THE TRUE ORDER. Asserted as the WHOLE sequence, not
@@ -153,14 +185,36 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
   // so a first-place-only check would pass against the broken reporter most of the
   // time. The full sequence never matches unfixed and always matches fixed.
   assert.deepEqual(ranking.map(r => r.name),
-    ['slow.fixture.mjs', 'medium.fixture.mjs', 'fast.fixture.mjs'],
+    ['slow.fixture.mjs', 'medium.fixture.mjs', 'subsecond.fixture.mjs', 'fast.fixture.mjs'],
     `the ranking must order files by the wall they actually spent:\n${diag}`);
 
   // (4) Control, not a discriminator — it also passes against the unfixed reporter.
-  // slow.fixture.mjs sleeps 1700ms, so dispatch→child-done can never be below that at
+  // slow.fixture.mjs sleeps 2100ms, so dispatch→child-done can never be below that at
   // any load. Kills a mutant that collapses the figure to a small constant.
-  assert.ok(slow >= 1700,
-    `slow.fixture.mjs sleeps 1700ms, so it cannot legitimately report ${slow}ms:\n${diag}`);
+  assert.ok(slow >= 2100,
+    `slow.fixture.mjs sleeps 2100ms, so it cannot legitimately report ${slow}ms:\n${diag}`);
+
+  // (5) SUB-SECOND RESOLUTION. medium and subsecond differ by only ~650ms of true
+  // wall, so the reported figures must stay strictly ordered AND stay under a second
+  // apart. Stated as a two-sided bound on the DIFFERENCE, which is what makes it
+  // both load-safe and complete:
+  //   * a difference cancels the common spawn cost C to first order, so unlike an
+  //     absolute bound it does not drift with load;
+  //   * every way of coarsening the figure to whole seconds violates one side —
+  //     tie the two (difference 0, violating the lower bound) or split them across
+  //     adjacent buckets (difference exactly 1000, violating the upper). That is why
+  //     it does not matter WHERE the buckets happen to fall.
+  // NOTHING ELSE HERE CATCHES THAT. Quantized, the four figures become 2000 / 1000 /
+  // 1000 / 0, on which assertions (1)-(4) all pass and even the ranking sequence in
+  // (3) still matches, because the sort is stable and the tie preserves insertion
+  // order. Measured true gap: 650ms quiet.
+  const gap = medium - sub;
+  assert.ok(gap > 0 && gap < 1000,
+    `medium.fixture.mjs (1200ms sleep, reported ${medium}ms) and subsecond.fixture.mjs ` +
+    `(550ms sleep, reported ${sub}ms) differ by ~650ms of real wall, so the reported ` +
+    `figures must differ by more than 0 and less than 1000ms — got ${gap}ms. A gap of 0 ` +
+    `means the figure lost sub-second resolution; a gap of exactly 1000 means the two ` +
+    `were rounded into adjacent whole seconds:\n${diag}`);
 });
 
 test('a KILLED file keeps its figure and its place in the ranking', async () => {

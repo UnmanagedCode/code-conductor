@@ -364,15 +364,20 @@ stream.on('test:summary', (d) => {
 // (measured). Preferred over test:summary's own duration_ms, which is measured
 // inside the child and so excludes spawn+import: dispatch->child-done keeps this
 // figure comparable to FILE_KILL_MS, which is a process-lifetime deadline.
-// MEASURED on a 16-core box at the default concurrency, 45 real test files, two
-// samples taken at different ambient loads (idle, and again under a concurrent
-// mutation campaign): summary.duration_ms runs 31-297ms LOWER, median 219-234,
-// mean 179-181, never higher in 90 file observations. The two samples agree
-// closely, so this is not a load artefact. The SPREAD is the excluded work itself,
-// so it tracks the file's IMPORT weight — the cheapest files sit at ~31-35ms while
-// express+ws importers reach ~297ms. Do not re-narrow this to a tight range; an
-// earlier "consistently 25-50ms" claim was ~5x low and described only the cheapest
-// files.
+// MEASURED on a 16-core box at the default concurrency: summary.duration_ms runs
+// 31-297ms LOWER, never higher, across 90 file observations. SAMPLE: every 6th name
+// of the sorted tests/*.test.mjs list (45 of 266 files), skipping the two files that
+// spawn nested runners of their own (hang-guard, summary-attribution); two runs, one
+// idle and one under a concurrent mutation campaign, which agreed closely — so the
+// range is not a load artefact.
+//
+// THE RANGE IS THE PORTABLE PART; THE CENTRE IS NOT. Median 219-234ms and mean
+// 179-181ms describe THAT sample. The excluded work IS spawn+import, so the centre
+// tracks the import weight of whichever files you pick: the cheapest files here sit
+// at ~31-35ms and express+ws importers reach ~297ms, and a lighter-weight subset of
+// the suite medians near 87ms. Quote the population with the number, and do not
+// re-narrow it to a tight range — an earlier "consistently 25-50ms" claim was ~5x
+// low because it described only the cheapest files.
 //
 // Inner tests emit test:complete too (measured: 11 events for tests/diff.test.mjs).
 // The FILE-level one carries name === file, which is the exact discriminator, so
