@@ -524,6 +524,17 @@ export async function createProject(
     }
     throw e;
   }
+  // Every project is a git repo from birth — worktrees, diffs and commits are
+  // the whole workflow. The mkdir above proves the dir is brand new, so there
+  // is nothing to clobber and no repo check to make: isGitRepo() walks UP, so
+  // it would answer "yes" for this empty dir whenever the projects root itself
+  // sits inside a repo, and skip the init. Dynamic import because worktrees.ts
+  // statically imports this module (as with listWorktrees below).
+  const { runGit } = await import('./worktrees.ts');
+  const init = await runGit(full, ['init', '-q']);
+  if (init.code !== 0) {
+    throw httpError(500, `git init failed in ${full}: ${init.stderr.trim() || init.stdout.trim()}`);
+  }
   // Seed a CLAUDE.md that imports the workspace-wide one at ~/project/CLAUDE.md.
   // Using @../CLAUDE.md so Claude Code's import resolver pulls the workspace
   // file in regardless of where the project ends up being mounted.

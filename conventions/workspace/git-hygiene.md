@@ -1,6 +1,6 @@
 ## Git hygiene
 
-- **Initialize the repo first.** At the start of working in a project, check whether the project directory is already a git repository (has a `.git/` directory). If not, run `git init` before doing anything else.
+- **Ensure the repo exists.** If the project dir has no `.git` entry (in a worktree it's a file, not a directory), run `git init` before the first commit.
 - **Ensure a git identity is configured.** Before the first commit in a project, check `git config user.name` and `git config user.email` (which falls back from local to global). If either is empty, ask the user for the missing value(s) with `AskUserQuestion` and then set them via `git config --global user.name "…"` and `git config --global user.email "…"`. Never invent or guess a name/email, and do not commit until both are set.
 - **Commit after every prompt that changes files.** When a turn finishes, if the working tree has changes (`git status` shows anything), stage them and create a commit. Use a concise message: a one-line subject naming what changed, followed by a short summary of *why* the change was made. Reference the user's prompt if it helps clarify intent.
 - **Skip the commit when nothing changed.** If the turn was purely conversational (questions, explanations, planning) and produced no file modifications, do not create an empty commit.

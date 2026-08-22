@@ -184,7 +184,7 @@ That future-`resetsAt` check is the **safety rail**: a queued send bypasses the 
 |---|---|---|
 | `GET` | `/api/health` | Liveness + per-process identity: `{ok:true, bootId}`. `bootId` (`src/bootId.ts`) is minted once per process, so the client restart flow polls for a *changed* value to confirm it's on the replacement process, not the old server still up during a resume drain. |
 | `GET` | `/api/projects` | List with workspace, git status, sessions, worktrees. |
-| `POST` | `/api/projects` | `{name, conventions?:[slug,…]}` — create, seeds `CLAUDE.md` with `@../CLAUDE.md` plus each selected convention's fragment appended inline. Any picked convention carrying a scaffold facet contributes its directive, composed in selection order into a framed block RETURNED in the 201 body under `scaffold` (empty/omitted when none; nothing persisted). 400 on unknown slug. |
+| `POST` | `/api/projects` | `{name, conventions?:[slug,…]}` — create, `git init`s the new dir (no commit — HEAD unborn), seeds `CLAUDE.md` with `@../CLAUDE.md` plus each selected convention's fragment appended inline. 500 `git init failed in <path>: <stderr>` if the init fails (dir left behind, empty). Any picked convention carrying a scaffold facet contributes its directive, composed in selection order into a framed block RETURNED in the 201 body under `scaffold` (empty/omitted when none; nothing persisted). 400 on unknown slug. |
 | `DELETE` | `/api/projects/:name` | Cascade: kill instances → remove worktrees → `rm -rf`. Sessions persist under `~/.claude/projects/`. |
 | `PUT` | `/api/projects/:name/workspace` | `{workspace}` — assigns/clears; auto-registers new names. |
 | `GET` | `/api/workspaces` | Union of registry + referenced names. |

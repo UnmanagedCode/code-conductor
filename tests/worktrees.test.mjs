@@ -105,8 +105,9 @@ test('listProjects hides orchestrator-owned worktree directories', async () => {
 });
 
 test('createWorktree rejects when the project is not a git repo', async () => {
-  // Non-git project: just `mkdir`, no `git init`.
-  await api(baseUrl, 'POST', '/api/projects', { name: 'plain' });
+  // Non-git project: just `mkdir`, no `git init`. Creating via the API is no
+  // longer a way to reach this state — creation always inits a repo.
+  await fs.mkdir(path.join(projectsRoot, 'plain'), { recursive: true });
   const r = await api(baseUrl, 'POST', '/api/instances', {
     project: 'plain', mode: 'bypassPermissions', worktree: true,
   });

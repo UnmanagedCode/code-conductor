@@ -6,6 +6,7 @@ import { execFile as execFileCb } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
+  createProject,
   encodeCwd, findSessionLocation,
   readProjectMeta, writeProjectMeta, listWorkspaces,
   findSelfProject, ensureSelfProjectWorkspace,
@@ -64,6 +65,45 @@ test('POST /api/projects creates a directory and lists it', async () => {
   assert.equal(list.body.length, 1);
   assert.equal(list.body[0].name, 'demo');
   assert.deepEqual(list.body[0].sessionIds, []);
+});
+
+test('POST /api/projects inits a git repo', async () => {
+  // Surface parity: the REST/UI path inits too, not just the MCP handler.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'demo' });
+  const stat = await fs.stat(path.join(projectsRoot, 'demo', '.git'));
+  assert.ok(stat.isDirectory());
+});
+
+test('createProject roots the repo at the project dir, with no commits', async () => {
+  const { path: p } = await createProject('u1');
+  // Exactly `.git`, not an absolute path to an ancestor repo: the init target
+  // is the new project dir itself.
+  const gitDir = await git(p, 'rev-parse', '--git-dir');
+  assert.equal(gitDir.stdout.trim(), '.git');
+  // Creation makes no commit — the first commit stays the worker's.
+  await assert.rejects(() => git(p, 'rev-parse', '--verify', 'HEAD'));
+});
+
+test('createProject fails loudly when git init fails', async () => {
+  // Force a deterministic git failure: GIT_DIR pointed at a regular file makes
+  // `git init` fatal ("invalid gitfile format") without touching the project dir.
+  const decoy = path.join(home, 'not-a-git-dir');
+  await fs.writeFile(decoy, 'x');
+  const prev = process.env.GIT_DIR;
+  process.env.GIT_DIR = decoy;
+  let err;
+  try {
+    await assert.rejects(() => createProject('boom'), e => { err = e; return true; });
+  } finally {
+    if (prev === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = prev;
+  }
+  // The throw is provably the init's: the mkdir succeeded first...
+  const dirStat = await fs.stat(path.join(projectsRoot, 'boom'));
+  assert.ok(dirStat.isDirectory());
+  assert.match(err.message, /git init failed in .*boom/);
+  assert.equal(err.statusCode, 500);
+  // ...and the init ran BEFORE the file seeding, so nothing was written.
+  await assert.rejects(fs.readFile(path.join(projectsRoot, 'boom', 'CLAUDE.md')));
 });
 
 test('POST /api/projects seeds CLAUDE.md that imports the workspace-wide one', async () => {
