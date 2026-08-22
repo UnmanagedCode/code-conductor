@@ -22,17 +22,32 @@ function ms(envName, fallback) {
 // Parent-side, per test file: SIGKILL a child process that has outlived this.
 // MUST stay above the 60s per-test `timeout` passed to run() in run.mjs, so it
 // can never pre-empt a test that node itself would still cancel and report.
-// MEASURED slowest whole file: ~23-32s quiet, **~38.6s under 24-way CPU
+// MEASURED slowest whole file: ~30.0s quiet, **~38.6s under 24-way CPU
 // starvation** — a ~2.3x margin against the 90s limit at the worst observation.
-// Read it as a PLATEAU, not one culprit: the top five files sit within ~600ms of
-// each other on a quiet box and within ~2.7s under starvation, so the figure
-// tracks CONTENTION as much as any single file's own work. (Those two spreads are
-// the same phenomenon at two load levels — docs/architecture.md points here
-// rather than restating either.) tests/hang-guard.test.mjs is usually at or near the
-// top, since it serially spawns a dozen nested runners, some CPU-burning.
+// There is ONE culprit, tests/hang-guard.test.mjs, which serially spawns a dozen
+// nested runners, some CPU-burning. It is DEADLINE-bound rather than CPU-bound:
+// ~29.9s at concurrency 4, ~30.1s at 8, ~30.1s at 16, ~30.0s under 8-spinner
+// contention — 0.8% across a 4x concurrency range.
 //
-// WATCH THE TREND. Across this card's three review rounds the starved plateau
-// went 19.4s -> 28.8s -> 38.6s (margin 4.6x -> 3.1x -> 2.3x), driven almost
+// DO NOT READ THE TOP FIVE AS A PLATEAU. This comment used to, on the strength of
+// the top five sitting "within ~600ms of each other" quiet and ~2.7s starved. That
+// spread was a BUG in the figure, not a property of the suite: run.mjs computed
+// each file's duration at `test:summary` time, and per-file summaries are emitted
+// in `files` order, so a file finishing ahead of an earlier-listed one had its
+// summary HELD and was then charged that file's wall. The four files trailing
+// hang-guard.test.mjs in the old ranking were inheriting its ~30s; their real
+// durations were 8ms, 344ms, 386ms and ~100ms. Card 2026-0206 moved the figure to
+// `test:complete` (order-independent). The ranking is now steep — measured at
+// concurrency 8: 29 953 / 15 251 / 13 126 / 11 326 / 10 362 ms — so a flat top five
+// reappearing is itself the signal that the metric regressed.
+//
+// Card 2026-0198's evidence quotes the old plateau reading and its "before"
+// figures were taken with the broken metric; restate them against the fixed one
+// before relying on them.
+//
+// WATCH THE TREND. Across this card's three review rounds the starved
+// slowest-file figure went 19.4s -> 28.8s -> 38.6s (margin 4.6x -> 3.1x -> 2.3x),
+// driven almost
 // entirely by cases added to tests/hang-guard.test.mjs plus the bounded
 // wall-clock windows in tests/mcp-subscribe-to-idle.test.mjs. It is still safe,
 // but the next few additions to either file should either split
@@ -40,7 +55,7 @@ function ms(envName, fallback) {
 // splitting recovers concurrency) or raise this constant — deliberately, with a
 // fresh measurement, not reactively after a false KILL.
 //
-// THE BINDING CONSTRAINT IS NOT THE HEALTHY-RUN PLATEAU. 38.6s / ~2.3x is what a
+// THE BINDING CONSTRAINT IS NOT THE HEALTHY-RUN FIGURE. 38.6s / ~2.3x is what a
 // GREEN run costs. What actually governs whether the regression suite can be
 // silenced by the regressions it catches is the BROKEN-GUARD figure: with the
 // stall trigger disabled, several cases in tests/hang-guard.test.mjs fall back to

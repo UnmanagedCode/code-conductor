@@ -445,9 +445,12 @@ test('forward: mid-turn is delivered live (steering), not queued', async () => {
   const targetInst = instForSession(instances, targetSid);
   instForSession(instances, sourceSid)._emitUi({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'steer payload' });
 
-  // Put the target mid-turn (SCENARIO_SLOW delays 1500ms before finishing —
-  // the scenario was baked into the subprocess's env at spawn time above, so
-  // it applies to every turn this instance runs from here on).
+  // Put the target mid-turn. SCENARIO_SLOW's delay_ms is 300, and the engine
+  // sleeps it after EVERY event (emitMany in tests/fake-claude-engine.mjs), so its
+  // 6 events occupy the turn for ~1.8s — ample for the one in-process round-trip
+  // between here and the delivery capture below. The scenario was baked into the
+  // subprocess's env at spawn time above, so it applies to every turn this
+  // instance runs from here on.
   await callTool('send_prompt', { sessionId: targetSid, text: 'start' });
   await waitFor(() => targetInst.status !== 'idle');
 

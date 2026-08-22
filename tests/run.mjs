@@ -49,10 +49,29 @@ try {
 // default), and the suite is already isolated: bootServer binds an ephemeral
 // port (listen(0)) and mkdtemp's a unique home per server, so files don't
 // contend over ports or paths. That lets us run multiple files concurrently.
-// Default to half the cores (capped at 4) to leave headroom for each file's
-// express+ws boot and the timing-sensitive waits (control-request 5s, waitFor
-// 4s) that contention could otherwise trip. Override with TEST_CONCURRENCY
-// (1 restores the old fully-serial behavior).
+// Half the cores, capped at 8. Override with TEST_CONCURRENCY (1 restores the
+// old fully-serial behavior).
+//
+// THE CAP WAS 4, AND THE `cores / 2` TERM IS UNCHANGED — only the ceiling moved,
+// so nothing below 16 cores changes at all (an 8-core box still gets 4, a 4-core
+// box still gets 2). Measured on a 16-core box, where both terms bind at once and
+// every figure below is therefore the literal output of this expression, not an
+// extrapolation from a different core count:
+//   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
+//     double the ambient load, and cannot go below the floor named next.
+//   * the floor is one file, tests/hang-guard.test.mjs, at ~30.0s — DEADLINE-bound,
+//     not CPU-bound, so it grows only 0.8% from concurrency 4 to 16 and 0.5% under
+//     8-spinner contention. Post-bump it is ~80% of the critical path (card
+//     2026-0198 splits it).
+//   * contention does NOT argue for backing off: under 8 spinners, concurrency 8
+//     was both FASTER than 4 (79.2s vs 87.6s) and had a marginally BETTER per-file
+//     kill margin (3.00x vs 2.92x). Both runs green.
+//   * the fake-claude subprocess guardrail below stayed at peak 3 of a budget of
+//     12 at every concurrency measured (4/8/16, quiet and contended), so it is not
+//     concurrency-driven.
+// The timing-sensitive waits (control-request 5s, waitFor 4s) were the original
+// reason for 4; they were re-measured across 11 concurrency-8 whole-suite runs and
+// none of them tripped.
 function resolveConcurrency() {
   const env = process.env.TEST_CONCURRENCY;
   if (env !== undefined) {
@@ -60,7 +79,7 @@ function resolveConcurrency() {
     if (Number.isInteger(n) && n >= 1) return n;
   }
   const cores = os.availableParallelism ? os.availableParallelism() : os.cpus().length;
-  return Math.max(1, Math.min(4, Math.floor(cores / 2)));
+  return Math.max(1, Math.min(8, Math.floor(cores / 2)));
 }
 
 async function discover() {
@@ -118,7 +137,7 @@ let samplerTicks = 0;       // ticks that ran at all
 const discovered = new Set(files);
 const reported = new Set();
 const fileStartedAt = new Map(); // file -> ms at first sighting
-const fileDurations = new Map(); // file -> dispatch→report ms
+const fileDurations = new Map(); // file -> dispatch→child-done ms (see test:complete)
 
 // A2 — per-file process watchdog. Maps live direct children to the test file
 // named as the LAST element of their argv (verified: node:test's per-file child
@@ -327,6 +346,27 @@ stream.on('test:dequeue', (d) => {
 stream.on('test:summary', (d) => {
   if (!d.file) { nodeFinished = true; return; } // the single run-level summary
   reported.add(d.file);
+});
+// DURATION COMES FROM test:complete, NOT test:summary — do not fold this back
+// into the handler above. Per-file summaries are emitted in `files` order, so a
+// file that finishes ahead of an earlier-listed one has its summary HELD until
+// that one reports, and then `Date.now()` charges it the earlier file's wall.
+// Measured, same two files, order swapped: parser.test.mjs reported 1172ms in one
+// order and 108ms in the other, and in the first it RANKED ABOVE the file that
+// actually spent the time. That inflation is what made the slowest-5 line read as
+// a plateau.
+//
+// test:complete fires at the file's real completion and is order-independent
+// (measured). Preferred over test:summary's own duration_ms, which is measured
+// inside the child and excludes spawn+import (consistently 25-50ms lower):
+// dispatch->child-done keeps this figure comparable to FILE_KILL_MS, which is a
+// process-lifetime deadline.
+//
+// Inner tests emit test:complete too (measured: 11 events for tests/diff.test.mjs).
+// The FILE-level one carries name === file, which is the exact discriminator, so
+// this does not rely on it being last.
+stream.on('test:complete', (d) => {
+  if (!d.file || d.name !== d.file) return; // only the file-level test
   const startedAt = fileStartedAt.get(d.file);
   if (startedAt !== undefined) fileDurations.set(d.file, Date.now() - startedAt);
 });

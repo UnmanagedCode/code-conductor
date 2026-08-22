@@ -83,7 +83,12 @@ test('crash before ready → crashed with output tail', async () => {
 });
 
 test('never-ready child → crashed after the readiness bound', async () => {
-  const sup = createSupervisor({ _readyTimeoutMs: 1500 });
+  // 400ms, not 1500: readyWhen cannot match, so this test WAITS OUT the whole
+  // bound (measured 2067ms of the file's 6.0s). 400ms still leaves >=2 of the
+  // supervisor's 200ms poll intervals, and the assertions below are the timeout
+  // branch — they do not depend on the child having started, so a short bound
+  // cannot flip the outcome.
+  const sup = createSupervisor({ _readyTimeoutMs: 400 });
   const { rec, rt } = await startAndSettle(sup, {
     id: 'fake-plugin',
     // Matches nothing the fixture prints — readiness must time out.
