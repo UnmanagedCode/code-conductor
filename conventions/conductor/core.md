@@ -21,8 +21,7 @@ You only see the human's input when your current tool call returns, and worker p
 **The dispatch-and-wake pattern — how you drive *every* worker turn:**
 
 ```
-send_prompt({sessionId, text})   // or approve_plan / reject_plan / answer_question — each starts a worker
-                                  // turn AND auto-subscribes to its idle callback (subscribe:true by default)
+send_prompt({sessionId, text})   // or approve_plan / reject_plan / answer_question — each starts a worker turn
 // End your turn — the human is free to talk to you.
 // When the worker's turn ends (and all its background subagents finished), the
 // orchestrator wakes you with a stub naming the worker; if you were idle waiting,
@@ -30,12 +29,11 @@ send_prompt({sessionId, text})   // or approve_plan / reject_plan / answer_quest
 approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_recent_messages needed
 ```
 
-- **A wake implies the worker's subagents finished too** — the orchestrator defers it until backgrounded `Agent` tasks complete (a stuck one falls back to the watchdog).
-- **One call, not two.** `send_prompt`, `approve_plan`, `reject_plan`, and `answer_question` all subscribe by default — no separate `subscribe_to_idle` needed. Pass `subscribe:false` for a mid-turn steer or a fire-and-forget send.
-- **One-shot.** Consumed on the first `turn_end`. A worker's plan → implementation → rebase are *separate* turns — **resubscribe inside each wake-up turn** while work remains (keep passing `subscribe:true` on the next turn-starting call, or `subscribe_to_idle({sessionId})` standalone, e.g. after an auto-approved plan). `unsubscribe_from_idle({sessionId})` drops a pending callback when abandoning a worker.
-- **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel and resubscribe while the worker has turns coming.
-- **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need subscribe-and-end-turn.
-- **Watchdog, never timers.** Every subscription arms a watchdog (default per `ORCH_SUBSCRIBE_TIMEOUT_MS`; override via `subscribeTimeoutMs`, or `timeoutMs` on `subscribe_to_idle`) that wakes you if the worker hangs, crashes, or a subagent gets stuck. Its stub is labelled "did NOT finish" — on such a wake, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
+- **A wake implies the worker's subagents finished too** — the orchestrator defers it until backgrounded `Agent` tasks complete (a stuck one shows up as a heartbeat instead).
+- **You are woken automatically.** A session you spawned or have ever prompted is yours: whenever it enters a turn, you are woken when that turn ends. Nothing to arm, nothing to re-arm, no way to opt out — including turns it starts on its own (an auto-approved plan rolling into implementation). Abandon a worker with `kill_instance`.
+- **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel — a turn ending is not the work being done.
+- **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need you to end your turn.
+- **Heartbeat, never timers.** While one of your sessions is mid-turn it pings you every `ORCH_SUBSCRIBE_TIMEOUT_MS` with a stub labelled "did NOT finish" — that means still running, not finished, and it repeats until the turn ends. A heartbeat never consumes your turn-end wake; that still arrives. On one, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
 
 ## MCP toolbelt
 
@@ -57,10 +55,10 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 **Organise the sidebar** — when spawning several related workers, group them in a workspace so the human can collapse the chunk when done: `list_workspaces` · `create_workspace` · `delete_workspace` (clears members' `workspace` field; projects untouched) · `rename_workspace` · `set_project_workspace` (assign or clear; refuses `.conduct`).
 
 **Drive workers** — always dispatch-and-wake (see Core rule).
-- `send_prompt` — send a turn; auto-subscribes unless `subscribe:false`. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. A send you can't yet see in the worker's transcript has not failed — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
-- `subscribe_to_idle` / `unsubscribe_from_idle` — re-arm / cancel a one-shot wake without sending a prompt.
+- `send_prompt` — send a turn. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. A send you can't yet see in the worker's transcript has not failed — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
+- `set_idle_timeout({sessionId, timeoutMs})` — shorten the heartbeat window on one worker; it re-arms a running heartbeat, so mid-turn is its use case. The ceiling is the default, so it can only shorten.
 - `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
-- `interrupt_turn` · `kill_instance` · `respawn_instance` (resume a just-exited instance).
+- `interrupt_turn` — a second heartbeat after a soft interrupt is your signal to escalate to `force:true`. · `kill_instance` · `respawn_instance` (resume a just-exited instance).
 
 **`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning, **except the calls that only READ a session** (`get_recent_messages`, `get_transcript`, `send_prompt`'s `forward` source), which serve a retired worker if you name it by its **full** sessionId. Otherwise: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`, or `respawn_instance` if it only just exited); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
 
@@ -83,7 +81,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 Before `create_project`, call `list_project_conventions`, choose the subset that fits the project (skip what doesn't — e.g. Testing for docs-only, Design for non-code), confirm the picks with the user via `AskUserQuestion` (multi-select), and pass the chosen slugs as `conventions`. None if nothing fits or the user declines. (Enabled plugins may contribute conventions too — they appear in the same list with `<plugin-id>/<slug>` slugs.)
 
-Some conventions are flagged **`hasScaffold: true`** — picking one also triggers a **one-time setup directive** for the project's first worker (e.g. scaffold a test harness) in addition to (or instead of) its CLAUDE.md fragment. Surface that when confirming ("this one also sets up X in the project — include it?"). When any picked convention carries a scaffold, `create_project`'s result carries a composed `scaffold` directive string: **fold it into your FIRST `send_prompt` to the project's first worker** (combine it with your own scoping). It is never auto-sent — driving that turn stays yours, so `subscribe_to_idle` fires normally.
+Some conventions are flagged **`hasScaffold: true`** — picking one also triggers a **one-time setup directive** for the project's first worker (e.g. scaffold a test harness) in addition to (or instead of) its CLAUDE.md fragment. Surface that when confirming ("this one also sets up X in the project — include it?"). When any picked convention carries a scaffold, `create_project`'s result carries a composed `scaffold` directive string: **fold it into your FIRST `send_prompt` to the project's first worker** (combine it with your own scoping). It is never auto-sent — driving that turn stays yours, so the wake fires normally.
 
 ## Safety
 

@@ -159,7 +159,7 @@ export const CONDUCTOR_VIEW_KEYS = [
   'firstPrompt',
   'title',
   'createdAt',
-  // On a watchdog-timeout wake: "silent for 30 minutes" vs "producing until a
+  // On a heartbeat wake: "silent for 30 minutes" vs "producing until a
   // moment ago".
   'lastResponseAt',
   // The rotation tell (see Instance.summary). Deliberately rotation-generic
@@ -177,13 +177,13 @@ export const CONDUCTOR_VIEW_KEYS = [
 ];
 
 // The three fields listSessions attaches on top of the shared projection, in its
-// own `view()` closure: `hasIdleSubscriber` from InstanceManager.list(),
+// own `view()` closure: `awaitingWake` from InstanceManager.list(),
 // `playbook`/`stage` from the playbook projection it reads once per call.
 // Exported so the two tests that bind against the
 // full list_sessions key set — the doc-drift gate in
 // tests/mcp-conductor-view.test.mjs and the rendering gate in
 // tests/mcp-text-render.test.mjs — read one definition instead of two copies.
-export const LIST_ONLY_KEYS = ['hasIdleSubscriber', 'playbook', 'stage'];
+export const LIST_ONLY_KEYS = ['awaitingWake', 'playbook', 'stage'];
 
 function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -406,12 +406,12 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   }
   // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
-  const view = (row: InstanceSummary & { hasIdleSubscriber: boolean }): Record<string, unknown> => {
+  const view = (row: InstanceSummary & { awaitingWake: boolean }): Record<string, unknown> => {
     const tracked = proj && typeof row.sessionId === 'string'
       ? proj.bySession.get(row.sessionId) : undefined;
     return {
       ...toConductorView(row),
-      hasIdleSubscriber: row.hasIdleSubscriber,
+      awaitingWake: row.awaitingWake,
       // null (not absent) for an untracked worker, so a caller can tell "not in a
       // playbook" from "this build does not report it".
       playbook: tracked?.playbook ?? null,
@@ -933,23 +933,23 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
   return toConductorView(inst.summary());
 }
 
-// Fold the idle-subscription registration into every turn-starting call, so a
-// conductor's single send_prompt/approve_plan/reject_plan/answer_question call
-// both starts the turn AND re-arms the dispatch-and-wake callback (the
-// conductor role prompt's Core rule). A failure to subscribe (e.g. the caller died in between) must
-// never turn a successful prompt-send into an error — it degrades to
-// subscribed:false with a reason instead.
-async function maybeSubscribeIdle({ instances, callerId }: McpCtx, sessionId: string, { subscribe, subscribeTimeoutMs }: { subscribe: boolean; subscribeTimeoutMs?: number }): Promise<{ subscribed: boolean; already?: boolean; subscribeSkipped?: string }> {
-  if (!subscribe) return { subscribed: false };
-  if (!callerId) return { subscribed: false, subscribeSkipped: 'no-caller' };
-  if (callerId === sessionId) return { subscribed: false, subscribeSkipped: 'self' };
-  if (!instances) return { subscribed: false, subscribeSkipped: 'no-manager' }; // unreachable (getInst threw)
+// Record the caller's OWNERSHIP of the target before every turn-starting call,
+// so the wake the turn arms belongs to the conductor that drove it. Called
+// BEFORE the send at every site, without exception: the arm happens
+// synchronously inside prompt() → _setStatus('turn'), so an ownership record
+// made afterwards is already too late for the turn it was made for.
+//
+// Silent and result-free by design. There is nothing for a conductor to act on —
+// it cannot opt out, and it is woken either way once the edge exists — and a
+// failure to record (e.g. the caller died in between) must never turn a
+// successful prompt-send into an error.
+function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleTimeoutMs?: number): void {
+  if (!callerId) return;                  // no ?caller= — a UI/REST-shaped call
+  if (callerId === sessionId) return;     // a session cannot wait on its own turn
+  if (!instances) return;                 // unreachable (getInst threw)
   try {
-    const { already } = instances.subscribeIdle(callerId, sessionId, subscribeTimeoutMs);
-    return { subscribed: true, already };
-  } catch (e) {
-    return { subscribed: false, subscribeSkipped: errMsg(e) };
-  }
+    instances.noteDispatch(callerId, sessionId, idleTimeoutMs);
+  } catch { /* soft: a lost wake must not fail the send */ }
 }
 
 // Remap a getInst-style soft refusal about the FORWARD SOURCE session into its
@@ -977,8 +977,8 @@ function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): Soft
 }
 
 export async function sendPrompt(
-  { sessionId, text, subscribe = true, subscribeTimeoutMs, forward }: {
-    sessionId: string; text: string; subscribe?: boolean; subscribeTimeoutMs?: number;
+  { sessionId, text, idleTimeoutMs, forward }: {
+    sessionId: string; text: string; idleTimeoutMs?: number;
     // Unlike `stage`/`provenance` below, this handler consumes `forward`
     // itself, so it IS destructured. `sessionId` is `unknown` here because the
     // schema declares `forward` as a bare object — validateArgs does no
@@ -1004,9 +1004,9 @@ export async function sendPrompt(
   // getInst is LIVE-only, so inst.proc is guaranteed here.
 
   // Every `forward` refusal fires here — before inst.prompt, before
-  // maybeSubscribeIdle, and before the playbook ledger (dispatch's gate.commit
+  // noteOwnership, and before the playbook ledger (dispatch's gate.commit
   // drops any result with ok===false) — so a refused forward starts no turn,
-  // arms no subscription, and records no transition.
+  // arms no wake, and records no transition.
   let composedText = text;
   let forwarded: number | undefined;
   if (forward) {
@@ -1037,9 +1037,9 @@ export async function sendPrompt(
   }
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
   await inst.promptOrQueueSteer(composedText);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, status: inst.status, ...sub, ...forwardedField };
+  return { sessionId: inst.sessionId, status: inst.status, ...forwardedField };
 }
 
 export async function setMode({ sessionId, mode }: { sessionId: string; mode: string }, { instances }: McpCtx) {
@@ -1050,13 +1050,14 @@ export async function setMode({ sessionId, mode }: { sessionId: string; mode: st
   return { sessionId: inst.sessionId, mode: inst.mode };
 }
 
-// Register the calling instance to receive a one-shot stub user prompt
-// when the target instance next hits turn_end. Caller identity comes
-// from the MCP URL's ?caller=<id> query string (baked in at spawn time
-// by InstanceManager.mcpServerUrl). The stub names the target and
-// points at get_recent_messages so the conductor can inspect the
-// result. Re-subscribe after every callback to keep getting pings.
-export async function subscribeToIdle({ sessionId, timeoutMs }: { sessionId: string; timeoutMs?: number }, { instances, callerId }: McpCtx) {
+// Shorten the heartbeat window on one of the caller's sessions. There is nothing
+// to register — the wake is armed by the target entering a turn (see
+// src/idleSubscriptions.ts) — so this only adjusts how often a still-running
+// turn reports in, and re-arms a heartbeat that is already running. Caller
+// identity comes from the MCP URL's ?caller=<id> query string (baked in at spawn
+// time by InstanceManager.mcpServerUrl). `armed` says whether a live heartbeat
+// was re-armed, i.e. whether the target is mid-turn right now.
+export async function setIdleTimeout({ sessionId, timeoutMs }: { sessionId: string; timeoutMs: number }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
@@ -1064,20 +1065,12 @@ export async function subscribeToIdle({ sessionId, timeoutMs }: { sessionId: str
       'Spawn this instance through the orchestrator so its MCP config carries the caller sessionId.',
     );
   }
-  // Existence check before registering, so a not-live target surfaces here
-  // (soft) rather than as a silent drop at callback time.
+  // Existence check first, so a not-live target surfaces here (soft) rather than
+  // as a raw throw out of the hub's boundary translation.
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
-  const res = instances.subscribeIdle(callerId, sessionId, timeoutMs);
-  return { sessionId, already: res.already };
-}
-
-export async function unsubscribeFromIdle({ sessionId }: { sessionId: string }, { instances, callerId }: McpCtx) {
-  if (!instances) throw new Error('orchestrator has no InstanceManager');
-  if (!callerId) throw new Error('caller identity missing — MCP URL lacks ?caller=…');
-  // Idempotent + must work even on a dead target (to clean up), so no getInst.
-  const res = instances.unsubscribeIdle(callerId, sessionId);
-  return { sessionId, removed: res.removed };
+  const res = instances.setIdleTimeout(callerId, sessionId, timeoutMs);
+  return { sessionId, armed: res.armed };
 }
 
 // TWO FORMS, one tool.
@@ -1094,7 +1087,7 @@ export async function unsubscribeFromIdle({ sessionId }: { sessionId: string }, 
 //
 // Targeted (`{sessionId, directive?, followUp?}`) — REQUEST that worker renew
 // itself: register a one-turn request, prompt the worker with buildRenewRequest,
-// auto-subscribe the caller, return immediately. The worker's own self-call (the
+// return immediately (the request's turn wakes the caller like any other). The worker's own self-call (the
 // bare form above) is the ONLY channel a summary is ever authored on, and a worker
 // that ends its turn without calling it has declined — reported on the conductor's
 // wake, see SessionRenewController._expireRequest.
@@ -1174,11 +1167,11 @@ export async function renewSession(
   // A request needs a turn OF ITS OWN. Mid-turn, the prompt lands in a turn the
   // worker did not open for it, and that turn's end would (a) expire the request as
   // a DECLINE the worker never saw, (b) drop the followUp, and (c) spend the
-  // conductor's one-shot on unrelated work. `status` alone does not answer the
+  // conductor's armed wake on unrelated work. `status` alone does not answer the
   // question: an IDLE worker can still owe a re-invocation turn, or have its sends
   // parked in the overage queue (where `prompt()` queues and opens no turn at all,
-  // so the conductor would wait out the full watchdog and be told a healthy worker
-  // "did NOT finish"). Same predicate the controller defers the `/clear` on —
+  // so the conductor would be told a healthy worker "did NOT finish" on every
+  // heartbeat instead). Same predicate the controller defers the `/clear` on —
   // shared, never copied.
   const busy = inst.status !== 'idle' ? inst.status : renewalDeferredBy(inst);
   if (busy) {
@@ -1188,13 +1181,16 @@ export async function renewSession(
     // frees it, per state.
     const remedy = busy === 'overage-queue'
       ? 'it frees up when its rate-limit window resets'
-      : 'a subscribe_to_idle wake is gated on the same work';
+      : 'the idle wake is gated on the same work';
     return { ok: false, code: 'SESSION_BUSY', sessionId: inst.sessionId, status: inst.status, busy,
       reason: `that worker is not free (${busy}), and a renewal request needs a turn of its own — `
         + `wait until it is free (${remedy}), then ask again.` };
   }
   // Register BEFORE prompting: a turn that completed before registration would
-  // leave the entry alive for an extra turn.
+  // leave the entry alive for an extra turn. Ownership is recorded on the same
+  // rule and for the same reason — the request's own turn is what wakes the
+  // conductor with the accept-or-decline, and it arms as prompt() runs.
+  noteOwnership({ instances, callerId }, inst.sessionId as string);
   const reg = instances.requestSessionRenew(inst.id, { followUp: followUp ?? null, requestedBy: callerId });
   if (!reg.requested) {
     // Unreachable through the interlock above, which refuses every live renewal —
@@ -1212,11 +1208,9 @@ export async function renewSession(
     instances.dropSessionRenewRequest(inst.id);
     throw e;
   }
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe: true });
   return {
     requested: true,
     sessionId: inst.sessionId,
-    ...sub,
     note: 'the worker writes its own summary and may decline; you are woken either way.',
   };
 }
@@ -1272,6 +1266,15 @@ export async function interruptTurn({ sessionId, force }: { sessionId: string; f
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
   const inst = r.inst;
+  if (force) {
+    // A forced abort produces a turn_end like any other, which would otherwise
+    // deliver a "finished its turn" wake about a turn the caller just killed.
+    // Disarm BEFORE the abort, so that turn_end finds nothing armed; nothing
+    // re-arms until the target's next turn STARTS. A soft interrupt deliberately
+    // leaves the wake armed — its boundary wait is unbounded, so the continuing
+    // heartbeat is what tells the conductor to escalate to force.
+    instances!.disarmIdleSilently(inst.id);
+  }
   await inst.interrupt({ force: !!force });
   return { sessionId: inst.sessionId, status: inst.status, interrupting: !!inst.interrupting };
 }
@@ -1324,8 +1327,8 @@ function overageUnarmedRefusal(inst: { overageSendRefused: boolean; sessionId: u
 }
 
 export async function approvePlan(
-  { sessionId, feedback, subscribe = true, subscribeTimeoutMs }: {
-    sessionId: string; feedback?: string; subscribe?: boolean; subscribeTimeoutMs?: number;
+  { sessionId, feedback, idleTimeoutMs }: {
+    sessionId: string; feedback?: string; idleTimeoutMs?: number;
   },
   { instances, callerId }: McpCtx,
 ) {
@@ -1341,17 +1344,17 @@ export async function approvePlan(
   const refused = overageUnarmedRefusal(inst);
   if (refused) return refused;
   const text = buildApprovePrompt(feedback);
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
   await inst.promptOrQueueSteer(text);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
 
 // Reject a worker's plan: stay in plan mode, send the refinement prompt.
 // The worker will produce a revised plan; the conductor loops back to
 // reviewing get_recent_messages and either approves or rejects again.
 export async function rejectPlan(
-  { sessionId, feedback, subscribe = true, subscribeTimeoutMs }: {
-    sessionId: string; feedback?: string; subscribe?: boolean; subscribeTimeoutMs?: number;
+  { sessionId, feedback, idleTimeoutMs }: {
+    sessionId: string; feedback?: string; idleTimeoutMs?: number;
   },
   { instances, callerId }: McpCtx,
 ) {
@@ -1361,9 +1364,9 @@ export async function rejectPlan(
   const refused = overageUnarmedRefusal(inst);
   if (refused) return refused;
   const text = buildRejectPrompt(feedback);
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
   await inst.promptOrQueueSteer(text);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
 
 interface AnswerEntry {
@@ -1394,8 +1397,8 @@ interface AnswerEntry {
 // the SAME source get_recent_messages uses — so we format against exactly what
 // the conductor saw. Soft-refuses (never throws) on mismatch.
 export async function answerQuestion(
-  { sessionId, answers, subscribe = true, subscribeTimeoutMs }: {
-    sessionId: string; answers: AnswerEntry[]; subscribe?: boolean; subscribeTimeoutMs?: number;
+  { sessionId, answers, idleTimeoutMs }: {
+    sessionId: string; answers: AnswerEntry[]; idleTimeoutMs?: number;
   },
   { instances, callerId }: McpCtx,
 ) {
@@ -1460,9 +1463,9 @@ export async function answerQuestion(
   }
 
   const text = formatUserQuestionAnswers(questions, states);
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
   await inst.promptOrQueueSteer(text);
-  const sub = await maybeSubscribeIdle({ instances, callerId }, inst.sessionId as string, { subscribe, subscribeTimeoutMs });
-  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text, ...sub };
+  return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
 
 // ---------- read-only: worktree diff ----------
@@ -2014,7 +2017,7 @@ async function selectRecentMessages(
 
 // Core of get_recent_messages: resolve the session, reconstruct + bond + cap the
 // recent assistant messages, and return `{ meta, bodies }` (or `{ soft }` for a
-// soft-refusal). Split out so the idle-subscription wake-callback can fold the
+// soft-refusal). Split out so the idle-wake-callback can fold the
 // SAME content a default get_recent_messages call returns into its stub without
 // re-deriving the selection/bonding logic. `getRecentMessages` wraps this in a
 // textPayload; the wake path flattens it (see src/mcp/content.ts flattenPayload).

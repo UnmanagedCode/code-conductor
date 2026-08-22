@@ -68,7 +68,7 @@ const TOOL_RESULT_EVENT = {
 };
 // A formatted answer text (what the user would have submitted).
 const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
-// An unrelated prompt text — simulates an idle-callback injected by subscribe_to_idle.
+// An unrelated prompt text — simulates an idle wake injected by IdleSubscriptionHub.
 const IDLE_CB_TEXT = 'Worker `abc` finished its turn. Call get_recent_messages to inspect the result.';
 
 test('live mode: idle-callback user_echo does NOT lock an unanswered question card', async () => {

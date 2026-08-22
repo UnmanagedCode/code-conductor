@@ -1,22 +1,31 @@
-// Idle-subscription graph, extracted from InstanceManager as a composed
-// collaborator. This is the orchestrator's dispatch-and-wake lifeline: a
-// conductor calls `subscribe_to_idle` (MCP) on a worker's sessionId, and when
-// that worker's next `turn_end` fires, a wake-stub user prompt is injected into
-// the conductor so it re-wakes and inspects the result. An idle conductor gets
+// Idle-wake graph, extracted from InstanceManager as a composed collaborator.
+// This is the orchestrator's wake lifeline, and it is a property of OWNERSHIP,
+// not of a registration verb:
+//
+//   an owned session enters a turn, therefore its owner is woken when that
+//   turn ends.
+//
+// A conductor OWNS a target if it spawned it (`target.callerInstanceId`) or has
+// ever dispatched to it (noteDispatch, called by every turn-starting MCP
+// handler). On every transition into `turn` the manager calls onTurnStart(),
+// which ARMS one entry per live owner; the entry is consumed when the turn ends
+// and a wake-stub user prompt is injected into the owner. An idle conductor gets
 // the worker's recent output folded into the stub; a conductor that is itself
 // mid-turn gets a plain stub delivered live into its running turn as a steering
-// callback.
+// callback. There is no register verb, so there is no window between "the turn
+// started" and "someone is watching it" for a fast turn_end to fall into.
 //
 // Keyed internally by the stable `instanceId` (NOT a sessionId): the
 // event stream carries the instanceId, and an in-place `/clear` rotates a
 // session's sessionId while keeping its instanceId, so instanceId keying needs
 // no migration across a rotation. sessionId lives only at the boundary — the
-// MCP-supplied args to subscribe()/unsubscribe() (translated to instanceId on
-// entry), the sessionId woven into the wake stub in deliver(), and the
-// sessionId-shaped debug view from snapshot(). A subscription is NOT persisted
-// and is purged on remove(), so there is nothing to "survive a restart."
-// One-shot: a subscription is consumed when it fires — by whichever of FOUR
-// trigger paths lands first:
+// MCP-supplied args to noteDispatch()/setIdleTimeout() (translated to
+// instanceId on entry), the sessionId woven into the wake stub in deliver(),
+// and the sessionId-shaped debug view from snapshot(). Nothing here is
+// persisted, and every map is purged on remove(), so there is nothing to
+// "survive a restart."
+//
+// An ARMED entry is consumed by whichever of THREE trigger paths lands first:
 //   1. turn_end (the classic path — see _onTurnEnd and its defer gate),
 //   2. the idle task-drain settle (_onTaskEvent/_fireSettle — a background
 //      task finishing while the worker is already idle, with NO re-invocation
@@ -24,8 +33,13 @@
 //      thing the stream says),
 //   3. rotation completion (_onRotationComplete — a rotation that comes up IDLE
 //      with no turn at all, i.e. a prune; a renewal declares comesUpIdle:false
-//      and is delivered by its reseed turn's turn_end instead),
-//   4. the timeout watchdog.
+//      and is delivered by its reseed turn's turn_end instead).
+// Alongside those runs a repeating HEARTBEAT (_arm's setInterval) that reports
+// "did NOT finish" without consuming anything: a hung worker keeps pinging its
+// owner, and the real turn_end wake is still there when the turn finally ends.
+// The one non-consuming-path exception is a target whose process is gone: no
+// turn_end can ever arrive, so that ping is the last one (see _arm).
+//
 // Cross-instance lookups (idsForSession / byId / liveForSession) and event
 // emission go through the owning InstanceManager passed in at construction.
 
@@ -35,14 +49,16 @@ import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 import type { InstanceManagerLike } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 
-// Default watchdog for EVERY idle subscription. Delivery is deferred until the
-// worker's turn ends AND all its background subagents have finished (see
-// _onTurnEnd / _onTaskEvent), so a subscription with no explicit timeout could
-// otherwise hang forever on a stuck/hung subagent. This guarantees the "always has a timeout"
-// safety net — a subscription with no caller-supplied timeoutMs still eventually
-// wakes the conductor with the non-completion "did NOT finish" stub. Tunable via
-// ORCH_SUBSCRIBE_TIMEOUT_MS; an explicit finite subscribe timeoutMs wins.
-const DEFAULT_SUBSCRIBE_TIMEOUT_MS = Number(process.env.ORCH_SUBSCRIBE_TIMEOUT_MS) || 1_800_000;
+// The heartbeat interval for EVERY armed wake, AND the ceiling `set_idle_timeout`
+// / `idleTimeoutMs` will accept (src/mcp/tools.ts reads this constant for the
+// schemas' `maximum`), so those inputs can in practice only SHORTEN the window.
+// One number, two uses, deliberately: it means "the longest a mid-turn session
+// may go without telling its owner it is still running", so raising
+// ORCH_SUBSCRIBE_TIMEOUT_MS moves the default and the cap together.
+// Delivery of the real wake is deferred until the worker's turn ends AND all its
+// background subagents have finished (see _onTurnEnd / _onTaskEvent), so without
+// the heartbeat a stuck subagent would leave the owner silent indefinitely.
+export const DEFAULT_SUBSCRIBE_TIMEOUT_MS = Number(process.env.ORCH_SUBSCRIBE_TIMEOUT_MS) || 1_800_000;
 
 // Settle window for the idle task-drain wake path. When a terminal task event
 // drains an ALREADY-IDLE worker to zero background tasks, the CLI either opens
@@ -54,12 +70,21 @@ const DEFAULT_SUBSCRIBE_TIMEOUT_MS = Number(process.env.ORCH_SUBSCRIBE_TIMEOUT_M
 // so "the stream stayed completely frozen for the whole settle window" means
 // no turn is coming. 5s is enormous headroom over that ms-scale gap (even
 // under heavy device throttle — the gap is process-local, never API-bound)
-// while still waking ~360x sooner than the 30-min watchdog fallback.
+// while still waking ~360x sooner than the 30-min heartbeat would report.
 const IDLE_DRAIN_SETTLE_MS = Number(process.env.ORCH_IDLE_DRAIN_SETTLE_MS) || 5_000;
 
-// A subscription entry: the watchdog timer for a single caller→target pair.
+// An ARMED wake for a single caller→target pair: the repeating heartbeat and the
+// window it repeats on (kept so setIdleTimeout can re-arm a running one).
 interface SubscriptionEntry {
   timerId: NodeJS.Timeout;
+  timeoutMs: number;
+}
+
+// An OWNERSHIP edge established by dispatch (spawn-side ownership is read off
+// `Instance.callerInstanceId` instead — see ownersOf). `timeoutMs` is that
+// owner's preferred heartbeat window for this target, null until it names one.
+interface OwnerEntry {
+  timeoutMs: number | null;
 }
 
 // A pending idle task-drain settle, keyed by target instanceId. `proc` pins the
@@ -101,15 +126,22 @@ function declineNote(targetSessionId: string): string {
 
 export class IdleSubscriptionHub {
   manager: InstanceManagerLike;
-  // One-shot idle subscriptions: when target hits turn_end, deliver
-  // a stub user prompt to every registered caller and clear the set.
-  // Keyed by targetInstanceId → Map<callerInstanceId, { timerId }>.
+  // ARMED wakes: when target hits turn_end, deliver a stub user prompt to every
+  // armed owner and clear the set. Armed by onTurnStart (a turn began) — so this
+  // map is empty for every target that is not mid-turn.
+  // Keyed by targetInstanceId → Map<callerInstanceId, SubscriptionEntry>.
   subscribers: Map<string, Map<string, SubscriptionEntry>>;
+  // OWNERSHIP edges established by dispatch, targetInstanceId →
+  // Map<callerInstanceId, OwnerEntry>. Durable across wakes (that is the point:
+  // ownership is what re-arms every subsequent turn) and dropped only by purge.
+  // Spawn-side ownership is NOT mirrored here — it already lives on
+  // `Instance.callerInstanceId`, and a second copy would be a second source.
+  _owners: Map<string, Map<string, OwnerEntry>>;
   // Short-lived map of targetInstanceId → the callerInstanceIds that were watching
   // it, populated in _onTurnEnd() BEFORE subscribers is cleared, so the
   // synchronously-following wsHub turn_notification handler can read it (via
   // wasConsumed) and so a decline note can be attributed to a caller whose
-  // subscription has already been consumed in this dispatch (see
+  // wake has already been consumed in this dispatch (see
   // noteRenewalDeclined). A queueMicrotask cleanup runs after both synchronous
   // listeners complete. turn_end-ONLY by contract: the settle path never touches
   // it (a settle fires while the worker is idle with a frozen stream, so no worker
@@ -134,6 +166,7 @@ export class IdleSubscriptionHub {
   constructor(manager: InstanceManagerLike) {
     this.manager = manager;
     this.subscribers = new Map();
+    this._owners = new Map();
     this._justConsumed = new Map();
     this._pendingSettles = new Map();
     this._pendingDeclines = new Map();
@@ -147,7 +180,7 @@ export class IdleSubscriptionHub {
   // ALREADY idle with no re-invocation turn ever following (verified: a nested
   // Monitor's completion emits only task_updated + task_notification and the
   // stream goes silent) — waiting for the next turn_end would orphan the
-  // subscription until the watchdog. Everything else is ignored, but note that
+  // wake until the next heartbeat. Everything else is ignored, but note that
   // every ignored event still advanced the target's ring seq and, if it
   // arrived while the target was idle, set its idleWindowDirty flag — the two
   // structural signals the settle path uses to avoid firing early.
@@ -172,15 +205,15 @@ export class IdleSubscriptionHub {
   }
 
   // When a target instance's turn_end fires, deliver to every caller
-  // subscribed to it and consume the subscription set (cancelling each
-  // watchdog — turn_end won).
+  // armed for it and consume the armed set (stopping each heartbeat — turn_end
+  // won).
   //
   // Deferral: a backgrounded Agent-tool call resolves its tool_result
   // immediately (isAsync:true), so a worker's turn_end can fire while it still
   // has live subagents (Instance._activeAgentTasks non-empty). We want the wake
   // to mean "the agent AND all its subagents finished, and no re-invocation
   // turn is still owed," so we DEFER for either of two reasons, keeping the
-  // subscription (and its watchdog) armed:
+  // wake (and its heartbeat) armed:
   //   1. activeAgentTaskCount > 0 — a subagent is still running.
   //   2. taskNotificationPending — a task_notification fired during the turn
   //      now ending and NO top-level tool_result followed it, which (per the
@@ -199,13 +232,13 @@ export class IdleSubscriptionHub {
   // turn_end fires the wake correctly — and when NO re-invocation follows at
   // all, the idle task-drain settle path (_onTaskEvent) delivers the wake. A
   // never-finishing subagent — or a CLI that never flushes its queue — is
-  // caught by the watchdog (always armed).
+  // reported by the repeating heartbeat.
   _onTurnEnd(targetInstanceId: string): void {
     // The event payload carries the instanceId — the graph's key directly.
     const target = this.manager.byId.get(targetInstanceId);
     if (!target) return;
     // A turn_end supersedes any pending idle-drain settle: either it consumes
-    // the subscription right here, or its defer keeps the turn_end path in
+    // the wake right here, or its defer keeps the turn_end path in
     // charge (and the settle's fire-time freeze check would drop it anyway —
     // this cancel is the eager form of that).
     this._cancelSettle(targetInstanceId);
@@ -221,12 +254,12 @@ export class IdleSubscriptionHub {
     queueMicrotask(() => this._justConsumed.delete(targetInstanceId));
     // Defer while background subagents are still running OR an unconsumed
     // mid-turn task notification means a re-invocation turn is still owed —
-    // keep the subscription and its watchdog armed; a later turn_end with both
+    // keep the wake and its heartbeat armed; a later turn_end with both
     // clear delivers. `target` is a live Instance here (a falsy `subs` above
     // already returned when it was absent), so the getters are always present.
     // …and defer while a context ROTATION is in flight, for the same reason: the
     // turn_end being observed is the one the rotation was armed in, so firing here
-    // would wake the caller with the pre-rotation state and spend the one-shot a
+    // would wake the caller with the pre-rotation state and spend the wake a
     // turn early. The window lives on the Instance (set at arm time, before this
     // can fire), so this defer works regardless of listener registration order —
     // which is what makes it correct without reordering the two listeners.
@@ -234,7 +267,7 @@ export class IdleSubscriptionHub {
     // stop (a model that can't take a mid-turn injection — see
     // Instance.queueSteerAfterStop). The turn_end being observed is the one the
     // stop produced: the worker was CUT OFF to deliver the steer, it did not
-    // finish, so spending the one-shot here would wake the conductor a turn early.
+    // finish, so spending the wake here would wake the conductor a turn early.
     // Same shape and same reason as rotationPending — the flag lives on the
     // Instance and is set in the send_prompt handler before the abort is even
     // armed, so this defer is independent of listener registration order.
@@ -244,7 +277,7 @@ export class IdleSubscriptionHub {
     subs.clear();
     this.subscribers.delete(targetInstanceId);
     for (const [callerInstanceId, { timerId }] of entries) {
-      clearTimeout(timerId); // cancel watchdog — turn_end arrived first
+      clearInterval(timerId); // stop the heartbeat — turn_end arrived
       this.deliver(callerInstanceId, targetInstanceId);
     }
   }
@@ -256,7 +289,7 @@ export class IdleSubscriptionHub {
   // re-arms) a settle timer. The timer delivers the wake only if the target's
   // stream stays COMPLETELY frozen for the whole window (_fireSettle); any
   // event at all — a re-invocation's init/status, a prompt echo, an exit —
-  // means someone else owns the wake (turn_end or watchdog) and the settle
+  // means someone else owns the wake (turn_end) and the settle
   // drops. Two-sided guard against waking one turn early:
   //   pre-arm:  idleWindowDirty — a re-invocation that STARTED opening before
   //             this drain event (its init/status already written, its
@@ -279,7 +312,7 @@ export class IdleSubscriptionHub {
       && Number.isInteger(target.ring?.nextSeq);
     if (!drained) {
       // The state moved (a new task started, a re-invocation is opening, …) —
-      // whatever was pending is stale. turn_end / watchdog own the wake.
+      // whatever was pending is stale. turn_end owns the wake.
       this._cancelSettle(targetInstanceId);
       return;
     }
@@ -294,7 +327,7 @@ export class IdleSubscriptionHub {
   }
 
   // Settle-timer callback. Every check re-derives current state; failing ANY
-  // of them drops the settle silently — the subscription and its watchdog stay
+  // of them drops the settle silently — the wake and its heartbeat stay
   // armed, so the worst wrong outcome here is "wake later than ideal", never
   // "wake one turn early" or "wake twice".
   _fireSettle(targetInstanceId: string): void {
@@ -302,7 +335,7 @@ export class IdleSubscriptionHub {
     this._pendingSettles.delete(targetInstanceId); // always self-clean, even on drop
     if (!pending) return;
     const subs = this.subscribers.get(targetInstanceId);
-    if (!subs || subs.size === 0) return; // consumed meanwhile (turn_end/watchdog)
+    if (!subs || subs.size === 0) return; // consumed meanwhile (turn_end)
     const inst = this.manager.byId.get(targetInstanceId);
     if (!inst) return;
     // Same subprocess run: respawn/rewind mint a new proc (and reset the
@@ -312,7 +345,7 @@ export class IdleSubscriptionHub {
         || inst.taskNotificationPending || inst.idleWindowDirty) return;
     // The freeze check: zero events of any kind since the arming task event.
     if (inst.ring?.nextSeq !== pending.armSeq) return;
-    // Consume — the same shape as the watchdog path, but with the normal
+    // Consume — the same shape as the heartbeat path, but with the normal
     // "finished" stub. NOTE: _justConsumed is intentionally NOT marked (it is
     // turn_end-only; no worker turn_notification is in flight right now).
     const entries = [...subs.entries()];
@@ -320,7 +353,7 @@ export class IdleSubscriptionHub {
     this.subscribers.delete(targetInstanceId);
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     for (const [callerInstanceId, { timerId }] of entries) {
-      clearTimeout(timerId); // cancel watchdog — the settle won
+      clearInterval(timerId); // stop the heartbeat — the settle won
       this.deliver(callerInstanceId, targetInstanceId);
     }
   }
@@ -347,7 +380,7 @@ export class IdleSubscriptionHub {
     this._cancelSettle(targetInstanceId);
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
     for (const [callerInstanceId, { timerId }] of entries) {
-      clearTimeout(timerId); // cancel watchdog — the rotation won
+      clearInterval(timerId); // stop the heartbeat — the rotation won
       this.deliver(callerInstanceId, targetInstanceId);
     }
   }
@@ -393,17 +426,35 @@ export class IdleSubscriptionHub {
     this._pendingSettles.clear();
   }
 
-  // Register a one-shot callback: when targetId next reaches "turn ended AND
-  // all background subagents done" (via turn_end or the idle task-drain
-  // settle), a stub user prompt lands in callerId pointing at
-  // get_recent_messages. Re-subscribing the same pair
-  // before the callback fires is a no-op.
-  // A watchdog is ALWAYS armed: an explicit finite timeoutMs > 0 wins, otherwise
-  // DEFAULT_SUBSCRIBE_TIMEOUT_MS. It fires the subscription early (with a
-  // timeout-flagged "did NOT finish" stub) if the agent+subagents-done state is
-  // never reached — the safety net for a hung subagent that would otherwise
-  // defer forever. .unref()'d so a lone watchdog never keeps the process alive.
-  subscribe(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean } {
+  // Every LIVE owner of a target: the conductors that will be woken when this
+  // target's next turn ends. Ownership is spawn OR dispatch — the union of the
+  // dispatch edges in `_owners` and the spawner recorded on the Instance itself.
+  // Self is excluded (a session cannot wait on its own turn), and so is any
+  // owner that is no longer in byId (there is nobody left to wake).
+  ownersOf(targetInstanceId: string): string[] {
+    const out = new Set<string>(this._owners.get(targetInstanceId)?.keys() ?? []);
+    const spawner = this.manager.byId.get(targetInstanceId)?.callerInstanceId;
+    if (spawner) out.add(spawner);
+    out.delete(targetInstanceId);
+    return [...out].filter(id => this.manager.byId.get(id) != null);
+  }
+
+  // Record that `caller` dispatched to `target` — called by every turn-starting
+  // MCP handler BEFORE the send, because the arm itself happens synchronously
+  // inside prompt() → _setStatus('turn'), so a record made afterwards is already
+  // too late for the turn it was made for.
+  //
+  // Boundary translation (sessionId in, instanceId thereafter) and the self-edge
+  // throw match the old subscribe(). `timeoutMs`, when a usable positive finite
+  // number, becomes this owner's preferred heartbeat window; an absent/invalid
+  // one leaves an earlier set_idle_timeout preference intact rather than
+  // silently resetting it to the default.
+  //
+  // If the target is ALREADY mid-turn, arm right here: onTurnStart has been and
+  // gone for that turn, and a mid-turn steer from a conductor that did not
+  // previously own the target would otherwise get no wake for the very turn it
+  // just steered. An owner already armed makes this a no-op.
+  noteDispatch(callerSessionId: string, targetSessionId: string, timeoutMs?: number): void {
     if (typeof callerSessionId !== 'string' || !callerSessionId) {
       throw new Error('callerSessionId required');
     }
@@ -411,78 +462,134 @@ export class IdleSubscriptionHub {
       throw new Error('targetSessionId required');
     }
     if (callerSessionId === targetSessionId) {
-      throw new Error('cannot subscribe to self');
+      throw new Error('cannot wait on self');
     }
-    // Boundary translation: each sessionId (from the MCP ?caller= / target arg)
-    // must resolve to a LIVE (proc-attached) instance; the graph is keyed by the
-    // stable instanceId thereafter.
-    const callerInstanceId = this.manager.liveForSession(callerSessionId)?.id ?? null;
-    if (!callerInstanceId) {
-      throw new Error(`caller session not live: ${callerSessionId}`);
+    const caller = this.manager.liveForSession(callerSessionId);
+    if (!caller) throw new Error(`caller session not live: ${callerSessionId}`);
+    const target = this.manager.liveForSession(targetSessionId);
+    if (!target) throw new Error(`target session not live: ${targetSessionId}`);
+    this._recordOwner(target.id, caller.id, timeoutMs);
+    if (target.status === 'turn' && this._arm(target.id, caller.id)) {
+      this.manager.emit('subscription_changed', { targetId: target.id });
     }
-    const targetInstanceId = this.manager.liveForSession(targetSessionId)?.id ?? null;
-    if (!targetInstanceId) {
-      throw new Error(`target session not live: ${targetSessionId}`);
-    }
-    let subs = this.subscribers.get(targetInstanceId);
-    if (!subs) {
-      subs = new Map();
-      this.subscribers.set(targetInstanceId, subs);
-    }
-    const already = subs.has(callerInstanceId);
-    if (!already) {
-      const effTimeout = (typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0)
-        ? timeoutMs
-        : DEFAULT_SUBSCRIBE_TIMEOUT_MS;
-      const timerId = setTimeout(() => {
-        const s = this.subscribers.get(targetInstanceId);
-        if (s) {
-          s.delete(callerInstanceId);
-          if (s.size === 0) {
-            this.subscribers.delete(targetInstanceId);
-            // No watchers left — a pending idle-drain settle has nothing to
-            // deliver to (its fire-time re-check would drop it; this is the
-            // eager form so the map stays clean).
-            this._cancelSettle(targetInstanceId);
-          }
-        }
-        this.manager.emit('subscription_changed', { targetId: targetInstanceId });
-        this.deliver(callerInstanceId, targetInstanceId, { timedOut: true, timeoutMs: effTimeout });
-      }, effTimeout);
-      timerId.unref?.(); // a lone watchdog must not keep the event loop alive
-      subs.set(callerInstanceId, { timerId });
-      this.manager.emit('subscription_changed', { targetId: targetInstanceId });
-    }
-    return { already };
   }
 
-  // Cancel a pending subscription. Idempotent. Clears any watchdog timer.
-  // sessionId args are translated to instanceId at the boundary; an endpoint
-  // that no longer resolves to a live instance yields removed:false (it was
-  // already purged on remove()).
-  unsubscribe(callerSessionId: string, targetSessionId: string): { removed: boolean } {
-    const callerInstanceId = this.manager.liveForSession(callerSessionId)?.id ?? null;
-    const targetInstanceId = this.manager.liveForSession(targetSessionId)?.id ?? null;
-    if (!callerInstanceId || !targetInstanceId) return { removed: false };
+  // A target entered a turn (driven by InstanceManager's per-instance
+  // 'turn_start' wiring, which fires from _setStatus's into-`turn` branch — so
+  // it covers prompt-initiated AND unprompted re-invocation turns alike). Arm
+  // one wake per live owner; owners already armed are left alone, which is what
+  // makes a mid-turn steer deliver ONE wake rather than two.
+  onTurnStart(targetInstanceId: string): void {
+    let armed = false;
+    for (const callerInstanceId of this.ownersOf(targetInstanceId)) {
+      if (this._arm(targetInstanceId, callerInstanceId)) armed = true;
+    }
+    if (armed) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+  }
+
+  // Adjust one owner's heartbeat window. Records the preference for every future
+  // turn AND re-arms a RUNNING heartbeat — mid-turn is the only case a conductor
+  // has any reason to call this, so a stored-but-inert preference would be the
+  // useless half of the behaviour. Returns whether a heartbeat was live to re-arm.
+  setIdleTimeout(callerSessionId: string, targetSessionId: string, timeoutMs: number): { armed: boolean } {
+    const caller = this.manager.liveForSession(callerSessionId);
+    if (!caller) throw new Error(`caller session not live: ${callerSessionId}`);
+    const target = this.manager.liveForSession(targetSessionId);
+    if (!target) throw new Error(`target session not live: ${targetSessionId}`);
+    if (caller.id === target.id) throw new Error('cannot wait on self');
+    // Recording the preference also establishes the ownership edge: asking to be
+    // pinged about a worker is the same declaration of interest a dispatch makes.
+    this._recordOwner(target.id, caller.id, timeoutMs);
+    const entry = this.subscribers.get(target.id)?.get(caller.id);
+    if (!entry) return { armed: false };
+    clearInterval(entry.timerId);
+    this.subscribers.get(target.id)!.delete(caller.id);
+    this._arm(target.id, caller.id);
+    this.manager.emit('subscription_changed', { targetId: target.id });
+    return { armed: true };
+  }
+
+  // Clear every armed wake on a target and deliver NOTHING — the forced
+  // `interrupt_turn` path. The turn_end a forced abort produces then finds
+  // nothing armed, so no suppression flag is needed; and because arming only
+  // ever happens on turn START, which has already passed, nothing re-arms until
+  // the target's next turn. `_owners` is deliberately left intact: the conductor
+  // still owns the worker, it just does not want a report on the turn it killed.
+  disarmSilently(targetInstanceId: string): void {
     const subs = this.subscribers.get(targetInstanceId);
-    if (!subs) return { removed: false };
-    const entry = subs.get(callerInstanceId);
-    if (!entry) return { removed: false };
-    clearTimeout(entry.timerId);
+    if (!subs || subs.size === 0) return;
+    for (const [callerInstanceId, { timerId }] of subs) {
+      clearInterval(timerId);
+      this._takeDecline(targetInstanceId, callerInstanceId); // this wait is over
+    }
+    subs.clear();
+    this.subscribers.delete(targetInstanceId);
+    this._cancelSettle(targetInstanceId); // no watchers left
+    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+  }
+
+  // Create/update one dispatch ownership edge. A usable timeoutMs wins; anything
+  // else preserves whatever window this owner already asked for.
+  _recordOwner(targetInstanceId: string, callerInstanceId: string, timeoutMs?: number): void {
+    let owners = this._owners.get(targetInstanceId);
+    if (!owners) { owners = new Map(); this._owners.set(targetInstanceId, owners); }
+    const prev = owners.get(callerInstanceId)?.timeoutMs ?? null;
+    const wanted = (typeof timeoutMs === 'number' && isFinite(timeoutMs) && timeoutMs > 0)
+      ? timeoutMs
+      : prev;
+    owners.set(callerInstanceId, { timeoutMs: wanted });
+  }
+
+  // Arm the repeating heartbeat for one caller→target pair. Returns false when
+  // the pair is already armed (the idempotency that makes one turn = one wake).
+  //
+  // The heartbeat delivers the timeout-flagged "did NOT finish" stub and touches
+  // NO other state: the pending turn_end wake it reports about is still armed
+  // afterwards, which is the whole point — a hung worker keeps pinging and the
+  // real wake still arrives when the turn finally ends. The single exception is a
+  // target whose process is gone: no turn_end can ever follow, so that ping is
+  // the last one rather than the first of an unbounded series.
+  // .unref()'d so a lone heartbeat never keeps the process alive.
+  _arm(targetInstanceId: string, callerInstanceId: string): boolean {
+    let subs = this.subscribers.get(targetInstanceId);
+    if (!subs) { subs = new Map(); this.subscribers.set(targetInstanceId, subs); }
+    if (subs.has(callerInstanceId)) return false;
+    const timeoutMs = this._owners.get(targetInstanceId)?.get(callerInstanceId)?.timeoutMs
+      ?? DEFAULT_SUBSCRIBE_TIMEOUT_MS;
+    const timerId = setInterval(() => {
+      if (!this.manager.byId.get(targetInstanceId)?.proc) {
+        // The target's process is gone — this heartbeat has nothing left to
+        // report on after this ping, so retire it instead of pinging forever.
+        this._dropArmed(targetInstanceId, callerInstanceId);
+        this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+      }
+      this.deliver(callerInstanceId, targetInstanceId, { timedOut: true, timeoutMs });
+    }, timeoutMs);
+    timerId.unref?.();
+    subs.set(callerInstanceId, { timerId, timeoutMs });
+    return true;
+  }
+
+  // Remove one armed entry (clearing its heartbeat) and tidy the maps behind it.
+  _dropArmed(targetInstanceId: string, callerInstanceId: string): void {
+    const subs = this.subscribers.get(targetInstanceId);
+    const entry = subs?.get(callerInstanceId);
+    if (!subs || !entry) return;
+    clearInterval(entry.timerId);
     subs.delete(callerInstanceId);
-    this._takeDecline(targetInstanceId, callerInstanceId); // this wait is over
     if (subs.size === 0) {
       this.subscribers.delete(targetInstanceId);
-      this._cancelSettle(targetInstanceId); // no watchers left
+      // No watchers left — a pending idle-drain settle has nothing to deliver
+      // to (its fire-time re-check would drop it; this is the eager form so the
+      // map stays clean).
+      this._cancelSettle(targetInstanceId);
     }
-    this.manager.emit('subscription_changed', { targetId: targetInstanceId });
-    return { removed: true };
   }
 
-  // Snapshot of the current idle-subscription graph, projected back to
-  // sessionIds. Test/debug-only — the honest "which sessions subscribe to which"
-  // view (internal keys are instanceIds). Falls back to the raw key if the
-  // instance is already gone.
+  // Snapshot of the currently ARMED wake graph, projected back to sessionIds.
+  // Test/debug-only — the honest "who is waiting on whose running turn" view
+  // (internal keys are instanceIds). Falls back to the raw key if the instance
+  // is already gone.
   snapshot(): Record<string, string[]> {
     const sid = (id: string): string => this.manager.byId.get(id)?.sessionId ?? id;
     const out: Record<string, string[]> = {};
@@ -492,12 +599,18 @@ export class IdleSubscriptionHub {
     return out;
   }
 
-  // Drop an instanceId from every subscription map (as caller) AND drop any
-  // entry where it was the target. Clears watchdog timers. Called on instance
-  // removal so dead instances can't accumulate subscriptions. Guards a falsy id.
+  // Drop an instanceId from every map (as caller) AND drop any entry where it
+  // was the target — armed wakes AND the ownership edges behind them, because a
+  // removed instance can neither be woken nor start another turn. Clears
+  // heartbeat timers. Called on instance removal. Guards a falsy id.
   purge(instanceId: string): void {
     if (!instanceId) return;
     this._cancelSettle(instanceId); // as target: drop any pending idle-drain settle
+    this._owners.delete(instanceId); // as target: every owner edge pointing at it
+    for (const [target, owners] of this._owners) { // as owner of something else
+      if (!owners.delete(instanceId)) continue;
+      if (owners.size === 0) this._owners.delete(target);
+    }
     // As RECIPIENT: wakes held for this instance have nowhere to go. (As a
     // deferred wake's TARGET it needs no cleanup — deliver() resolves a missing
     // target to its raw id and still reports honestly.)
@@ -508,13 +621,13 @@ export class IdleSubscriptionHub {
     for (const [target] of this._pendingDeclines) this._takeDecline(target, instanceId);
     const asTarget = this.subscribers.get(instanceId);
     if (asTarget) {
-      for (const [, { timerId }] of asTarget) clearTimeout(timerId);
+      for (const [, { timerId }] of asTarget) clearInterval(timerId);
       this.subscribers.delete(instanceId);
     }
     for (const [target, subs] of this.subscribers) {
       const entry = subs.get(instanceId);
       if (entry) {
-        clearTimeout(entry.timerId);
+        clearInterval(entry.timerId);
         subs.delete(instanceId);
         if (subs.size === 0) {
           this.subscribers.delete(target);
@@ -524,16 +637,16 @@ export class IdleSubscriptionHub {
     }
   }
 
-  // Sever every subscription edge touching a session the overage stop is stopping,
-  // and return the instanceIds of the callers that lost a wait on it — the overage
+  // Sever every wake edge touching a session the overage stop is stopping, and
+  // return the instanceIds of the callers that lost a wait on it — the overage
   // stop marks each so its own resume prompt says the callbacks are gone.
   //
-  // Keyed on the SUBSCRIPTION graph, not the conducted-ownership graph: subscribe()
-  // imposes no ownership check, so a conductor can be waiting on a session it never
-  // spawned. Keying on ownership left exactly that case armed — the stopped
-  // session's turn_end delivered an `internal:true` wake, which the overage queue
-  // intercept deliberately does NOT hold, and the caller started a fresh turn
-  // inside the lockout.
+  // Keyed on THIS graph, not on the conducted-spawn graph, and that still matters
+  // now that the graph is ownership-keyed: ownership here is spawn OR dispatch, so
+  // a conductor can be waiting on a session it never spawned. Keying on spawn
+  // alone left exactly that case armed — the stopped session's turn_end delivered
+  // an `internal:true` wake, which the overage queue intercept deliberately does
+  // NOT hold, and the caller started a fresh turn inside the lockout.
   //
   // Both directions, because the session is stopped: its turn_end must wake nobody,
   // and nothing may later wake it. purge() covers all of that except one case it is
@@ -616,7 +729,7 @@ export class IdleSubscriptionHub {
     }
     const targetSessionId = this.manager.byId.get(targetInstanceId)?.sessionId ?? targetInstanceId;
     // Fold the worker's recent output into the stub ONLY on a real turn_end
-    // delivered to an already-idle caller. The timeout-watchdog path and the
+    // delivered to an already-idle caller. The heartbeat path and the
     // live mid-turn steering path keep the plain pointer stub. Decided here,
     // synchronously, on the caller's status at delivery time.
     // A STALE wake keeps the plain pointer stub too: folding a busy worker's
@@ -654,7 +767,7 @@ export class IdleSubscriptionHub {
     queueMicrotask(deliver);
   }
 
-  // The plain pointer stub — text for the timeout-watchdog path and the live
+  // The plain pointer stub — text for the heartbeat path and the live
   // mid-turn steering path. Tells the caller to go call get_recent_messages.
   // Tagged with the wake marker (body-less, no WAKE_BODY_SEP) so the conductor
   // UI renders it as a wake bubble too — just the summary line, no fold.
@@ -663,7 +776,7 @@ export class IdleSubscriptionHub {
       ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
         `it may still be busy or stuck. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
-        `to check its current state, then decide whether to resubscribe, ` +
+        `to check its current state, then decide whether to wait, ` +
         `call interrupt_turn, or escalate.`
       : `Worker \`${targetSessionId}\` finished its turn. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
@@ -682,12 +795,14 @@ export class IdleSubscriptionHub {
     return buildWakeStub({ targetSessionId, payloadText: flattenPayload(r.meta, r.bodies), note });
   }
 
-  hasSubscriber(instanceId: string): boolean {
+  // Does this target have at least one ARMED wake on it — i.e. is someone due a
+  // report when its running turn ends.
+  hasArmedWake(instanceId: string): boolean {
     const subs = this.subscribers.get(instanceId);
     return subs != null && subs.size > 0;
   }
 
-  // Returns true when instanceId was the *target* of a subscription that fired
+  // Returns true when instanceId was the *target* of a wake that fired
   // this synchronous event-dispatch cycle (populated before subscribers clears).
   wasConsumed(instanceId: string): boolean {
     return this._justConsumed.has(instanceId);
@@ -696,7 +811,7 @@ export class IdleSubscriptionHub {
   // Is `callerInstanceId` waiting on `targetInstanceId` right now — either still
   // subscribed, or subscribed at the turn_end being dispatched (this hub's listener
   // runs FIRST, so by the time the renew controller expires a request the delivered
-  // subscription is already out of `subscribers`; `_justConsumed` is that record).
+  // wake is already out of `subscribers`; `_justConsumed` is that record).
   // On the only production trigger — a `turn_end`, where `_onTurnEnd` marks
   // `_justConsumed` with the whole subscriber set before its defer check — the
   // second disjunct subsumes the first. The first is what keeps a DIRECT call
@@ -712,8 +827,8 @@ export class IdleSubscriptionHub {
 
   // Read AND delete the note for one caller/target pair — a note belongs to exactly
   // ONE wake. Every path that ends a caller's wait calls this (delivery, a dead
-  // caller, unsubscribe, purge), so a recorded note can never linger and mis-report
-  // on a later, unrelated wake.
+  // caller, disarmSilently, purge), so a recorded note can never linger and
+  // mis-report on a later, unrelated wake.
   _takeDecline(targetInstanceId: string, callerInstanceId: string): string | null {
     const notes = this._pendingDeclines.get(targetInstanceId);
     if (!notes) return null;
@@ -723,8 +838,11 @@ export class IdleSubscriptionHub {
     return note;
   }
 
-  // Returns true when instanceId is the *caller* (conductor) in any pending
-  // subscription — i.e. this instance is actively waiting for a worker to finish.
+  // Returns true when instanceId is the *caller* (conductor) of any ARMED wake —
+  // i.e. one of its sessions is mid-turn right now and it is due a report when
+  // that turn ends. This is what the sidebar's accent idle dot reads (surfaced as
+  // `awaitingWake`), and it stays true across a heartbeat, because a heartbeat
+  // reports without consuming.
   isCaller(instanceId: string): boolean {
     for (const callers of this.subscribers.values()) {
       if (callers.has(instanceId)) return true;
@@ -732,16 +850,19 @@ export class IdleSubscriptionHub {
     return false;
   }
 
-  // Inverse of snapshot(): the sessionIds of every target that callerInstanceId
-  // currently has a pending subscription on. Used by the renewal state block
-  // (src/sessionRenew.ts) — instanceId-keyed throughout, since the caller's
-  // renewal already has direct instanceId access with no sessionId round-trip.
-  subscriptionsOf(callerInstanceId: string): string[] {
+  // The sessionIds of every target callerInstanceId OWNS — i.e. every session
+  // whose next turn will wake it. Reports OWNED rather than currently-armed
+  // deliberately: the armed set is empty whenever a target is idle, which would
+  // gut `renew_session`'s "never orphan a worker" safety net (src/sessionRenew.ts)
+  // precisely in the case it exists for. Owned is a strict superset of armed.
+  // instanceId-keyed throughout, since the caller's renewal already has direct
+  // instanceId access with no sessionId round-trip.
+  ownedWakeTargetsOf(callerInstanceId: string): string[] {
     const out: string[] = [];
-    for (const [targetId, callers] of this.subscribers) {
-      if (callers.has(callerInstanceId)) {
-        out.push(this.manager.byId.get(targetId)?.sessionId ?? targetId);
-      }
+    for (const targetId of this.manager.byId.keys()) {
+      if (targetId === callerInstanceId) continue;
+      if (!this.ownersOf(targetId).includes(callerInstanceId)) continue;
+      out.push(this.manager.byId.get(targetId)?.sessionId ?? targetId);
     }
     return out;
   }

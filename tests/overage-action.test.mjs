@@ -561,7 +561,8 @@ test('the stopped-workers flag is cleared by the resume, so a later trip gets th
   const cEvs = collect(conductor);
 
   // A real pending callback — the flag is set only when a stop actually severs one.
-  instances.subscribeIdle(conductor.sessionId, worker.sessionId);
+  // The conductor already OWNS this worker (callerInstanceId at spawn), so the
+  // worker's TRIP turn arms the wake as that turn starts; nothing to register.
   conductor.prompt('STAY');
   await waitFor(() => conductor.status === 'turn');
   worker.prompt('TRIP go');
@@ -594,28 +595,29 @@ test('the stopped-workers flag is cleared by the resume, so a later trip gets th
     { timeout: 10000 });
 });
 
-// REGRESSION — Invariant: a conductor that owns workers but holds NO subscription
-// still gets the un-armed clause. `severForOverageStop` reports only a severed
-// CALLBACK, so keying the whole conductor text on it left this conductor with the
-// PLAIN resume — never told its workers are un-armed and will not self-resume,
-// which is the original hang returning through a narrower door.
-test('a conductor with workers but no subscription still gets the un-armed clause', async () => {
+// REGRESSION — Invariant: the un-armed clause is reported from the STOP marking
+// (`_overageUnarmedWorkers`, set in Pass 3), independently of whether a callback
+// was severed. Keying the whole conductor text on the severed callback left a
+// conductor with the PLAIN resume — never told its workers are un-armed and will
+// not self-resume, which is the original hang returning through a narrower door.
+//
+// The two facts now CO-OCCUR on this path: ownership means a mid-turn owned
+// worker always has an armed wake, so the stop that leaves it un-armed always
+// also severs a callback. The independence of the clause is therefore pinned
+// where it actually lives — on the pure preamble builder, below.
+test('a conductor whose workers are stopped un-armed gets the un-armed clause', async () => {
   const { conductor, worker, cEvs } = await tripMidTurnConductor(
     { flagged: false, action: 'stop-resume', scenarioObj: resumeRoutingScenario() });
-  // tripMidTurnConductor never subscribes — that is the point of this case.
-  assert.equal(instances.isIdleCaller(conductor.id), false, 'precondition: no callback pending');
 
   await waitFor(() => conductor._overageUnarmedWorkers === true);
-  assert.equal(conductor._overageDroppedCallbacks, false, 'and no callback was severed');
   await waitFor(() => worker.autoStoppedForOverage === false || worker.status === 'idle',
     { timeout: 10000 });
 
   await waitFor(() => instances._autoResumeTimers.has(conductor.id), { timeout: 10000 });
   setResumeUsage(UNDER);
   assert.equal(instances._fireAutoResumeNow(conductor.id), true, 'pending resume fired');
-  // Exactly the un-armed clause, and NOT the dropped-callbacks one: asserting a
-  // severed callback that never existed would send it re-checking phantoms.
-  const expected = buildConductorResumePreamble({ unarmedWorkers: true });
+  const expected = buildConductorResumePreamble({
+    unarmedWorkers: true, droppedCallbacks: conductor._overageDroppedCallbacks });
   await waitFor(() => cEvs.some(e => e.kind === 'user_echo' && e.text === expected),
     { timeout: 10000 });
   assert.match(expected, /will NOT resume itself/, 'names the un-armed workers');
@@ -625,7 +627,14 @@ test('a conductor with workers but no subscription still gets the un-armed claus
   // mid-turn injection, produced by this card's own resume text.
   assert.match(expected, /Any worker of yours that was stopped/, 'scopes the subject');
   assert.match(expected, /may still be running/, 'and warns to check before sending');
-  assert.ok(!/idle callbacks were dropped/.test(expected), 'and claims no severed callback');
+  // …and the clause does not RIDE on the severed callback: the same builder, with
+  // droppedCallbacks off, still carries it. This is the original invariant's real
+  // home — under ownership the two facts co-occur on the integration path above,
+  // because a mid-turn owned worker always has an armed wake for its conductor.
+  const unarmedOnly = buildConductorResumePreamble({ unarmedWorkers: true });
+  assert.match(unarmedOnly, /will NOT resume itself/, 'the un-armed clause stands alone');
+  assert.ok(!/idle callbacks were dropped/.test(unarmedOnly),
+    'and claims no severed callback when none was severed');
 });
 
 // REGRESSION — Invariant: a worker the stop left UN-ARMED refuses a queued send
@@ -661,10 +670,10 @@ test('an un-armed worker REFUSES a queued send instead of stranding it', async (
   // answer_question throwing a raw 409, the shape this surface was changed not to
   // produce.
   for (const [label, call] of [
-    ['send_prompt', () => sendPrompt({ sessionId: worker.sessionId, text: 'go on', subscribe: false }, { instances })],
-    ['approve_plan', () => approvePlan({ sessionId: worker.sessionId, subscribe: false }, { instances })],
-    ['reject_plan', () => rejectPlan({ sessionId: worker.sessionId, feedback: 'revise', subscribe: false }, { instances })],
-    ['answer_question', () => answerQuestion({ sessionId: worker.sessionId, answers: [{ option: 'x' }], subscribe: false }, { instances })],
+    ['send_prompt', () => sendPrompt({ sessionId: worker.sessionId, text: 'go on' }, { instances })],
+    ['approve_plan', () => approvePlan({ sessionId: worker.sessionId }, { instances })],
+    ['reject_plan', () => rejectPlan({ sessionId: worker.sessionId, feedback: 'revise' }, { instances })],
+    ['answer_question', () => answerQuestion({ sessionId: worker.sessionId, answers: [{ option: 'x' }] }, { instances })],
   ]) {
     const res = await call();
     assert.equal(res.ok, false, `${label}: soft-refused, not thrown`);
@@ -709,7 +718,7 @@ test('plain Stop: an un-armed worker is flagged but NOT refused (no queue to str
     'the flag alone does not refuse — overageSendRefused ANDs it with the live gate');
 
   const res = await sendPrompt(
-    { sessionId: worker.sessionId, text: 'carry on', subscribe: false }, { instances });
+    { sessionId: worker.sessionId, text: 'carry on' }, { instances });
   assert.notEqual(res?.code, 'OVERAGE_STOPPED_UNARMED', 'so the send is accepted');
 });
 
@@ -738,7 +747,7 @@ test('the window release clears the un-armed flag, not just the gate', async () 
   assert.equal(last.overageStoppedUnarmed, false, 'and the frame does not re-lock the composer');
 
   const res = await sendPrompt(
-    { sessionId: worker.sessionId, text: 'carry on', subscribe: false }, { instances });
+    { sessionId: worker.sessionId, text: 'carry on' }, { instances });
   assert.notEqual(res?.code, 'OVERAGE_STOPPED_UNARMED', 'and sends are accepted again');
 });
 
@@ -771,50 +780,60 @@ test('cancelling a session\'s overage state clears its un-armed flag mid-window'
 // assert a state production cannot produce. The window-release clear below owns the
 // real invariant.
 
-// REGRESSION — Invariant: an IDLE+subscribed conductor's one-shot on a target that is
-// ALSO idle at trip time is severed. `_directOverageStop` severs only around sessions
-// it stops, and Pass 3 stops only `status === 'turn'`, so this subscription survived
-// both — and the watchdog then fires mid-lockout and delivers an `internal:true` wake
-// the queue intercept does not hold, starting a fresh turn on the conductor just
-// stopped.
-test('an idle conductor\'s one-shot on an IDLE target is severed by the stop', async () => {
+// REGRESSION — Invariant: `_steerConductor`'s IDLE branch needs its own sever.
+// `_directOverageStop` severs only around sessions it stops, and Pass 3 stops only
+// what is in the usage-window flow — so a wake this conductor holds on a worker
+// Pass 3 never touches survives both, and the heartbeat then fires mid-lockout,
+// repeatedly, delivering an `internal:true` wake the queue intercept does not hold
+// and starting a fresh turn on the conductor just stopped.
+//
+// The reachable shape of "a target Pass 3 leaves running" is a backend-EXEMPT one
+// (an ollama-only tree consumes no monitored window). `claudeWorker` is what makes
+// the conductor in-control — Pass 1 only sees instances in the flow — and it is
+// also what Pass 3 does stop, so the exempt worker is the load-bearing half: with
+// the idle branch's sever deleted, its wake survives.
+//
+// The both-directions half of the sever (a THIRD session waiting ON this conductor
+// also loses its wait and is marked) is pinned at the hub layer, by
+// tests/deferred-wake.test.mjs → 'stopping a session drops a subscription held by a
+// caller that does not OWN it'; it cannot be staged here, because a wake on the
+// conductor would require the conductor to be mid-turn, which is the other branch.
+test('an idle conductor\'s wake on a worker Pass 3 leaves running is severed by the stop', async () => {
   await boot(resumeRoutingScenario(), 'stop-resume');
   const conductor = await createInst({});
-  const idleWorker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const claudeWorker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const exemptWorker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   const tripper = await createInst({});
-  const observer = await createInst({});
   const cEvs = collect(conductor);
 
-  // A third session waits ON the conductor — the reverse direction of the edge below.
-  instances.subscribeIdle(observer.sessionId, conductor.sessionId);
-  // The conductor waits on a worker that is IDLE — subscribe_to_idle re-arms without
-  // sending a prompt, so this is the ordinary shape, not an exotic one.
-  instances.subscribeIdle(conductor.sessionId, idleWorker.sessionId);
-  assert.equal(instances.isIdleCaller(conductor.id), true, 'precondition: parked on an idle target');
-  assert.equal(idleWorker.status, 'idle', 'precondition: the target is idle, so Pass 3 skips it');
+  exemptWorker.backend = 'ollama';
+  exemptWorker.model = 'deepseek-v4-flash:0731-cloud';
+  exemptWorker._refreshModelCapabilities();
+  assert.equal(instances._inUsageWindowFlow(exemptWorker), false,
+    'precondition: an ollama-only tree is outside the usage-window flow');
+
+  // Both owned workers go mid-turn, which is what arms the conductor's two wakes.
+  claudeWorker.prompt('STAY');
+  exemptWorker.prompt('STAY');
+  await waitFor(() => claudeWorker.status === 'turn' && exemptWorker.status === 'turn');
+  assert.equal(instances.isIdleCaller(conductor.id), true, 'precondition: two armed wakes');
+  assert.equal(conductor.status, 'idle', 'precondition: the conductor takes the IDLE branch');
 
   tripper.prompt('TRIP go');
   await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0, { timeout: 10000 });
 
-  assert.equal(instances.hasIdleSubscriber(idleWorker.id), false,
-    'the one-shot on the idle target is severed');
+  assert.equal(exemptWorker.status, 'turn',
+    'Pass 3 leaves the exempt worker running — so only the idle branch can sever its wake');
+  assert.equal(instances.hasArmedWake(exemptWorker.id), false,
+    'the wake on the still-running exempt worker is severed');
   assert.equal(instances.isIdleCaller(conductor.id), false, 'the conductor holds no wait');
   assert.equal(conductor._overageDroppedCallbacks, true,
     'and it is marked, so its resume prompt says the callbacks are gone');
-  // The severed wait cannot fire: the idle target reaching turn_end wakes nobody.
-  instances.emit('event', { id: idleWorker.id, ev: { kind: 'turn_end', isError: false } });
+  // The severed wait cannot fire: that worker reaching turn_end wakes nobody.
+  instances.emit('event', { id: exemptWorker.id, ev: { kind: 'turn_end', isError: false } });
   await new Promise(r => setTimeout(r, 50));
   assert.equal(cEvs.some(e => e.kind === 'user_echo' && /finished its turn/.test(e.text || '')), false,
     'no wake reaches the stopped conductor');
-
-  // The sever purges BOTH directions, so a THIRD session waiting ON this conductor
-  // loses its wait too — and must be marked, not silently dropped. This is what makes
-  // the idle branch's loop identical to _directOverageStop's; marking only the
-  // conductor returned the same array and ignored every other entry.
-  assert.equal(instances.hasIdleSubscriber(conductor.id), false,
-    'the wait held ON the conductor is severed as well');
-  assert.equal(observer._overageDroppedCallbacks, true,
-    'and its holder is marked, so its own resume prompt says the callback is gone');
 });
 
 // REGRESSION — Invariant: the conductor clauses ride the QUEUED-ONLY preamble too.
@@ -826,7 +845,8 @@ test('a queued-only conductor still gets its dropped-callbacks clause', async ()
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   const cEvs = collect(conductor);
 
-  instances.subscribeIdle(conductor.sessionId, worker.sessionId);
+  // The conductor owns this worker from spawn, so the worker's TRIP turn arms the
+  // conductor's wake, and the stop severs it.
   conductor.prompt('STAY');
   await waitFor(() => conductor.status === 'turn');
   worker.prompt('TRIP go');
@@ -860,17 +880,16 @@ test('A2 routing: stopping a conductor\'s workers drops its pending idle callbac
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   const cEvs = collect(conductor);
 
-  instances.subscribeIdle(conductor.sessionId, worker.sessionId);
-  assert.equal(instances.isIdleCaller(conductor.id), true, 'precondition: subscribed');
-
+  // Ownership comes from the spawn (callerInstanceId); the wake arms when the
+  // worker's own turn starts, a few lines down.
   conductor.prompt('STAY');
   await waitFor(() => conductor.status === 'turn');
   worker.prompt('TRIP go');
   await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0);
 
   assert.equal(instances.isIdleCaller(conductor.id), false,
-    'the conductor no longer holds an outgoing subscription');
-  assert.equal(instances.hasIdleSubscriber(worker.id), false,
+    'the conductor no longer holds an outgoing wake');
+  assert.equal(instances.hasArmedWake(worker.id), false,
     'and the worker has no watcher left to wake');
   // The interrupted worker reaching idle must NOT produce a wake prompt.
   await waitFor(() => worker.status === 'idle', { timeout: 10000 });
@@ -888,10 +907,10 @@ test('routing: conductor idle+subscribed → conductor is steered via injected p
   const cEvs = collect(conductor);
   const wEvs = collect(worker);
 
-  // Conductor stays idle but is parked waiting on the worker (isIdleCaller).
-  ctx.instances.subscribeIdle(conductor.sessionId, worker.sessionId);
-  assert.equal(ctx.instances.isIdleCaller(conductor.id), true);
-
+  // Conductor stays idle but is parked waiting on the worker: it owns the worker
+  // from spawn, and the worker's TRIP turn arms the wake inside prompt() —
+  // synchronously, before the trip event the same turn emits — so the conductor is
+  // already an idle caller when Pass 1 resolves who is in control.
   worker.prompt('TRIP go');
 
   await waitFor(() => sub(cEvs, 'auto_stop_overage').some(e => e.data.steered === true));
@@ -1023,7 +1042,7 @@ test('stop-resume: an internal prompt during the wait window is NOT queued and d
   inst.prompt('go');
   await waitFor(() => inst.autoResumeAt != null);
 
-  // Orchestrator-injected (internal) prompt — e.g. an idle-subscription wake.
+  // Orchestrator-injected (internal) prompt — e.g. an idle wake.
   await inst.prompt('internal wake', [], { internal: true });
   // It resumes/steers normally: not queued, and it fell through to a real turn.
   assert.equal(inst._overageQueue.length, 0, 'internal prompt not queued');
@@ -1243,7 +1262,7 @@ function resumeRoutingScenario() {
 }
 
 // REGRESSION (fails before the fix): a worker trips while its conductor is
-// idle + subscribed (the CONDUCT.md `subscribe_to_idle` pattern). The conductor
+// idle + awaiting its wake. The conductor
 // is steered via a fresh prompt() — whose synchronous user_prompt runs
 // _cancelAutoResume — so the resume flags must be set AFTER the prompt or no
 // timer ever arms. This asserts the timer arms ON THE CONDUCTOR and fires.
@@ -1253,10 +1272,8 @@ test('routing stop-resume: idle+subscribed conductor is steered AND a resume tim
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
   const cEvs = collect(conductor);
 
-  // Conductor parked idle, subscribed to the worker.
-  ctx.instances.subscribeIdle(conductor.sessionId, worker.sessionId);
-  assert.equal(ctx.instances.isIdleCaller(conductor.id), true);
-
+  // Conductor parked idle, owning the worker: the worker's TRIP turn arms the wake
+  // inside prompt(), before the trip event that same turn emits.
   worker.prompt('TRIP go');
 
   // Conductor is steered, resume-aware.

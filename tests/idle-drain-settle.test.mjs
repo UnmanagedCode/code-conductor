@@ -92,8 +92,17 @@ function inject(cond, work) {
   instances.byId.set(cond.id, cond);
   instances.byId.set(work.id, work);
 }
+// Ownership + the turn that arms it. `noteDispatch` records the ownership edge;
+// the ARM happens when the target enters a turn — in production that is
+// Instance._setStatus's 'turn_start' emit, which these injected fakes never run,
+// so the test drives onTurnStart directly.
+function armWake(callerSid, targetSid, timeoutMs) {
+  instances.noteDispatch(callerSid, targetSid, timeoutMs);
+  instances._idleHub.onTurnStart(instances.liveForSession(targetSid).id);
+}
 function cleanup(cond, work) {
   instances._idleSubscribers.clear();
+  instances._idleHub._owners.clear();
   instances._idleHub._cancelAllSettles();
   instances.byId.delete(cond.id);
   instances.byId.delete(work.id);
@@ -103,7 +112,7 @@ test('orphan repro: idle task-drain with no following turn_end wakes via the set
   const cond = makeFake({ id: 'c1', sessionId: 'cs1' });
   const work = makeFake({ id: 'w1', sessionId: 'ws1', activeAgentTaskCount: 1 });
   inject(cond, work);
-  instances.subscribeIdle('cs1', 'ws1', 3000); // watchdog well past the settle
+  armWake('cs1', 'ws1', 3000); // watchdog well past the settle
   const subChanges = [];
   const onSub = (e) => subChanges.push(e);
   instances.on('subscription_changed', onSub);
@@ -111,7 +120,7 @@ test('orphan repro: idle task-drain with no following turn_end wakes via the set
   // Turn ends while the bg task is live → classic defer, subscription kept.
   emitTurnEnd('w1'); await tick();
   assert.equal(cond._promptCalls.length, 0, 'deferred while the subagent runs');
-  assert.equal(instances._idleHub.hasSubscriber('w1'), true);
+  assert.equal(instances._idleHub.hasArmedWake('w1'), true);
 
   // The task drains while the worker is idle — the stream's last words.
   work.activeAgentTaskCount = 0;
@@ -123,7 +132,7 @@ test('orphan repro: idle task-drain with no following turn_end wakes via the set
 
   await pastSettle();
   assert.equal(cond._promptCalls.length, 1, 'settle delivered the wake exactly once');
-  assert.equal(instances._idleHub.hasSubscriber('w1'), false, 'subscription consumed');
+  assert.equal(instances._idleHub.hasArmedWake('w1'), false, 'subscription consumed');
   assert.equal(pendingSettles().size, 0, 'settle entry self-cleaned');
   assert.ok(subChanges.some(e => e.targetId === 'w1'), 'subscription_changed emitted on settle-consume');
   assert.equal(instances._idleHub.wasConsumed('w1'), false,
@@ -141,7 +150,7 @@ test('trap (post-arm evidence): any event after the arm freezes out the settle; 
   const cond = makeFake({ id: 'c2', sessionId: 'cs2' });
   const work = makeFake({ id: 'w2', sessionId: 'ws2' });
   inject(cond, work);
-  instances.subscribeIdle('cs2', 'ws2');
+  armWake('cs2', 'ws2');
 
   emitTaskEvent('w2', 'task_notification');
   assert.equal(pendingSettles().size, 1, 'idle drain armed the settle');
@@ -152,7 +161,7 @@ test('trap (post-arm evidence): any event after the arm freezes out the settle; 
 
   await pastSettle();
   assert.equal(cond._promptCalls.length, 0, 'frozen-stream check failed → no early wake');
-  assert.equal(instances._idleHub.hasSubscriber('w2'), true, 'one-shot subscription NOT consumed');
+  assert.equal(instances._idleHub.hasArmedWake('w2'), true, 'one-shot subscription NOT consumed');
 
   // The re-invocation turn completes — the classic path owns the wake.
   emitTurnEnd('w2'); await tick();
@@ -168,7 +177,7 @@ test('trap (pre-arm evidence): a dirty idle window refuses to arm; turn_end deli
   const cond = makeFake({ id: 'c3', sessionId: 'cs3' });
   const work = makeFake({ id: 'w3', sessionId: 'ws3', idleWindowDirty: true });
   inject(cond, work);
-  instances.subscribeIdle('cs3', 'ws3');
+  armWake('cs3', 'ws3');
 
   emitTaskEvent('w3', 'task_updated');
   emitTaskEvent('w3', 'task_notification');
@@ -176,7 +185,7 @@ test('trap (pre-arm evidence): a dirty idle window refuses to arm; turn_end deli
 
   await pastSettle();
   assert.equal(cond._promptCalls.length, 0, 'no wake while the re-invocation is pending');
-  assert.equal(instances._idleHub.hasSubscriber('w3'), true);
+  assert.equal(instances._idleHub.hasArmedWake('w3'), true);
 
   // The re-invocation turn_end (which also resets the dirty flag on a real
   // Instance) delivers through the unchanged path.
@@ -190,7 +199,7 @@ test('gate blocks arming: mid-turn / pending notification / live tasks / no ring
   const cond = makeFake({ id: 'c4', sessionId: 'cs4' });
   const work = makeFake({ id: 'w4', sessionId: 'ws4' });
   inject(cond, work);
-  instances.subscribeIdle('cs4', 'ws4');
+  armWake('cs4', 'ws4');
 
   // P2: a task draining MID-TURN arms nothing (that turn's turn_end wakes).
   work.status = 'turn';
@@ -214,7 +223,7 @@ test('gate blocks arming: mid-turn / pending notification / live tasks / no ring
   const bare = makeFake({ id: 'w4b', sessionId: 'ws4b' });
   bare.ring = { trimmedBefore: 0 }; // pre-settle fake shape
   instances.byId.set('w4b', bare);
-  instances.subscribeIdle('cs4', 'ws4b');
+  armWake('cs4', 'ws4b');
   emitTaskEvent('w4b', 'task_notification');
   assert.equal(pendingSettles().size, 0, 'no ring.nextSeq → no arm');
 
@@ -228,7 +237,7 @@ test('a gate-false task event cancels a pending settle', async () => {
   const cond = makeFake({ id: 'c5', sessionId: 'cs5' });
   const work = makeFake({ id: 'w5', sessionId: 'ws5' });
   inject(cond, work);
-  instances.subscribeIdle('cs5', 'ws5');
+  armWake('cs5', 'ws5');
 
   emitTaskEvent('w5', 'task_notification');
   assert.equal(pendingSettles().size, 1);
@@ -241,7 +250,7 @@ test('a gate-false task event cancels a pending settle', async () => {
 
   await pastSettle();
   assert.equal(cond._promptCalls.length, 0);
-  assert.equal(instances._idleHub.hasSubscriber('w5'), true);
+  assert.equal(instances._idleHub.hasArmedWake('w5'), true);
   cleanup(cond, work);
 });
 
@@ -251,29 +260,29 @@ test('fire-time drops: status flip (P8), instance removal, proc replacement (res
   // (a) P8 — a prompt() flips status to 'turn' before the settle fires.
   const w6a = makeFake({ id: 'w6a', sessionId: 'ws6a' });
   inject(cond, w6a);
-  instances.subscribeIdle('cs6', 'ws6a');
+  armWake('cs6', 'ws6a');
   emitTaskEvent('w6a', 'task_notification');
   w6a.status = 'turn';
   // (b) removal — the instance disappears from byId before the settle fires.
   const w6b = makeFake({ id: 'w6b', sessionId: 'ws6b' });
   instances.byId.set('w6b', w6b);
-  instances.subscribeIdle('cs6', 'ws6b');
+  armWake('cs6', 'ws6b');
   emitTaskEvent('w6b', 'task_notification');
   instances.byId.delete('w6b');
   // (c) respawn/rewind — same Instance and instanceId, NEW proc (and a reset
   // ring that could coincidentally land on armSeq — the proc pin must drop it).
   const w6c = makeFake({ id: 'w6c', sessionId: 'ws6c' });
   instances.byId.set('w6c', w6c);
-  instances.subscribeIdle('cs6', 'ws6c');
+  armWake('cs6', 'ws6c');
   emitTaskEvent('w6c', 'task_notification');
   w6c.proc = { pid: 1000 }; // ring.nextSeq left equal to armSeq on purpose
 
   assert.equal(pendingSettles().size, 3);
   await pastSettle();
   assert.equal(cond._promptCalls.length, 0, 'all three fire-time checks dropped the settle');
-  assert.equal(instances._idleHub.hasSubscriber('w6a'), true);
-  assert.equal(instances._idleHub.hasSubscriber('w6b'), true);
-  assert.equal(instances._idleHub.hasSubscriber('w6c'), true);
+  assert.equal(instances._idleHub.hasArmedWake('w6a'), true);
+  assert.equal(instances._idleHub.hasArmedWake('w6b'), true);
+  assert.equal(instances._idleHub.hasArmedWake('w6c'), true);
   assert.equal(pendingSettles().size, 0, 'dropped settles self-cleaned');
 
   // P8 tail: the prompted turn's turn_end delivers normally.
@@ -290,7 +299,7 @@ test('re-arm: a later task event resets the freeze baseline', async () => {
   const cond = makeFake({ id: 'c7', sessionId: 'cs7' });
   const work = makeFake({ id: 'w7', sessionId: 'ws7' });
   inject(cond, work);
-  instances.subscribeIdle('cs7', 'ws7');
+  armWake('cs7', 'ws7');
 
   emitTaskEvent('w7', 'task_updated'); // arms at nextSeq 0
   work.ring.nextSeq = 5;               // events arrived since (e.g. the notification itself)
@@ -306,7 +315,7 @@ test('P5: settle armed-then-dropped still falls back to the watchdog, exactly on
   const cond = makeFake({ id: 'c8', sessionId: 'cs8' });
   const work = makeFake({ id: 'w8', sessionId: 'ws8' });
   inject(cond, work);
-  instances.subscribeIdle('cs8', 'ws8', 1200); // watchdog past the settle
+  armWake('cs8', 'ws8', 1200); // watchdog past the settle
 
   emitTaskEvent('w8', 'task_notification');
   work.ring.nextSeq += 1; // stream moved → settle will drop; no turn_end ever follows
@@ -320,13 +329,13 @@ test('P5: settle armed-then-dropped still falls back to the watchdog, exactly on
   cleanup(cond, work);
 });
 
-test('housekeeping: turn_end / purge / unsubscribe / watchdog all cancel a pending settle', async () => {
+test('housekeeping: turn_end / purge / disarmSilently cancel a pending settle; a heartbeat does not', async () => {
   const cond = makeFake({ id: 'c9', sessionId: 'cs9' });
 
   // turn_end consume cancels (and delivers through the classic path, once).
   const w9a = makeFake({ id: 'w9a', sessionId: 'ws9a' });
   inject(cond, w9a);
-  instances.subscribeIdle('cs9', 'ws9a');
+  armWake('cs9', 'ws9a');
   emitTaskEvent('w9a', 'task_notification');
   assert.equal(pendingSettles().has('w9a'), true);
   emitTurnEnd('w9a');
@@ -339,7 +348,7 @@ test('housekeeping: turn_end / purge / unsubscribe / watchdog all cancel a pendi
   // purge as target cancels.
   const w9b = makeFake({ id: 'w9b', sessionId: 'ws9b' });
   instances.byId.set('w9b', w9b);
-  instances.subscribeIdle('cs9', 'ws9b');
+  armWake('cs9', 'ws9b');
   emitTaskEvent('w9b', 'task_notification');
   assert.equal(pendingSettles().has('w9b'), true);
   instances._purgeIdleFor('w9b');
@@ -348,32 +357,37 @@ test('housekeeping: turn_end / purge / unsubscribe / watchdog all cancel a pendi
   // purge as (sole) caller of another target cancels that target's settle.
   const w9c = makeFake({ id: 'w9c', sessionId: 'ws9c' });
   instances.byId.set('w9c', w9c);
-  instances.subscribeIdle('cs9', 'ws9c');
+  armWake('cs9', 'ws9c');
   emitTaskEvent('w9c', 'task_notification');
   assert.equal(pendingSettles().has('w9c'), true);
   instances._purgeIdleFor('c9'); // cond goes away as caller
   assert.equal(pendingSettles().has('w9c'), false, 'purge(caller) cancelled the orphaned settle');
 
-  // unsubscribe of the last caller cancels.
+  // a silent disarm (the force:true interrupt path) of the last caller cancels.
   const w9d = makeFake({ id: 'w9d', sessionId: 'ws9d' });
   instances.byId.set('w9d', w9d);
-  instances.subscribeIdle('cs9', 'ws9d');
+  armWake('cs9', 'ws9d');
   emitTaskEvent('w9d', 'task_notification');
   assert.equal(pendingSettles().has('w9d'), true);
-  instances.unsubscribeIdle('cs9', 'ws9d');
-  assert.equal(pendingSettles().has('w9d'), false, 'unsubscribe cancelled the settle');
+  instances.disarmIdleSilently('w9d');
+  assert.equal(pendingSettles().has('w9d'), false, 'disarmSilently cancelled the settle');
 
-  // watchdog fire (emptying the subs map) cancels; single timeout delivery.
+  // The HEARTBEAT deliberately does NOT: it reports without consuming, so the
+  // settle it left standing still delivers the real completion wake afterwards.
   const w9e = makeFake({ id: 'w9e', sessionId: 'ws9e' });
   instances.byId.set('w9e', w9e);
-  instances.subscribeIdle('cs9', 'ws9e', 60); // watchdog BEFORE the settle deadline
+  armWake('cs9', 'ws9e', 60); // heartbeat window BEFORE the settle deadline
   emitTaskEvent('w9e', 'task_notification');
   assert.equal(pendingSettles().has('w9e'), true);
   await sleep(200);
-  assert.equal(pendingSettles().has('w9e'), false, 'watchdog fire cancelled the settle');
+  assert.equal(pendingSettles().has('w9e'), true, 'a heartbeat must not cancel the settle');
+  const beats = cond._promptCalls.filter(c => c.text.includes('ws9e') && /did NOT finish/.test(c.text)).length;
+  assert.ok(beats >= 2, `the heartbeat repeats rather than self-consuming, got ${beats}`);
   await pastSettle();
-  const timeouts = cond._promptCalls.filter(c => /did NOT finish/.test(c.text));
-  assert.equal(timeouts.length, 1, 'exactly one watchdog delivery, no settle follow-up');
+  assert.equal(pendingSettles().has('w9e'), false, 'the settle then fired and self-cleaned');
+  assert.equal(instances._idleHub.hasArmedWake('w9e'), false, 'and consumed the wake');
+  assert.equal(cond._promptCalls.filter(c => c.text.includes('ws9e') && /finished its turn/.test(c.text)).length, 1,
+    'exactly one completion wake, from the settle the heartbeat left alone');
 
   instances._idleSubscribers.clear();
   instances._idleHub._cancelAllSettles();
@@ -456,6 +470,7 @@ beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
 afterEach(async () => {
   await srvInstances.shutdown();
   srvInstances._idleSubscribers?.clear();
+  srvInstances._idleHub?._owners.clear();
   srvInstances._idleHub?._cancelAllSettles();
   await rmrf(home);
 });
@@ -499,14 +514,13 @@ test('e2e orphan: bg task drains at idle with no re-invocation → settle wakes 
   const callerId = await spawnReadyWithScenario('p');
   const targetId = await spawnReadyWithScenario('p', SCENARIO_IDLE_DRAIN);
 
-  const sub = await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
-  assert.equal(sub.already, false);
-
-  // Drive the target's single turn: turn_end fires while the bg task is live
-  // (deferred), then task_updated + task_notification arrive at idle and the
-  // stream goes silent — the orphan repro.
-  await driveTurn(srvInstances, targetId, () => callTool('send_prompt', { sessionId: targetId, text: 'go' }));
-  assert.equal(srvInstances._idleHub.hasSubscriber(instForSession(srvInstances, targetId).id), true,
+  // Drive the target's single turn: the send records ownership and the turn start
+  // arms the wake, then turn_end fires while the bg task is live (deferred), then
+  // task_updated + task_notification arrive at idle and the stream goes silent —
+  // the orphan repro.
+  await driveTurn(srvInstances, targetId,
+    () => callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId }));
+  assert.equal(srvInstances._idleHub.hasArmedWake(instForSession(srvInstances, targetId).id), true,
     'deferred at turn_end (bg task still live)');
 
   const caller = instForSession(srvInstances, callerId);
@@ -515,7 +529,7 @@ test('e2e orphan: bg task drains at idle with no re-invocation → settle wakes 
   assert.equal(stubs.length, 1, 'exactly one wake delivered');
   assert.ok(stubs[0].text.startsWith(WAKE_CALLBACK_MARKER), 'idle caller gets the folded stub');
   assert.ok(stubs[0].text.includes(WAKE_BODY_SEP), 'folded stub carries the payload fold');
-  assert.equal(srvInstances._idleHub.hasSubscriber(instForSession(srvInstances, targetId).id), false, 'subscription consumed');
+  assert.equal(srvInstances._idleHub.hasArmedWake(instForSession(srvInstances, targetId).id), false, 'subscription consumed');
 
   // Proves the wake came from the settle: the worker's stream ended at ONE
   // turn_end (no re-invocation turn ever ran).
@@ -528,8 +542,8 @@ test('e2e trap: idle completion WITH a re-invocation turn → no early wake, sin
   const callerId = await spawnReadyWithScenario('p');
   const targetId = await spawnReadyWithScenario('p', SCENARIO_IDLE_REINVOKE);
 
-  await callTool('subscribe_to_idle', { sessionId: targetId }, { caller: callerId });
-  await driveTurn(srvInstances, targetId, () => callTool('send_prompt', { sessionId: targetId, text: 'go' }));
+  await driveTurn(srvInstances, targetId,
+    () => callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId }));
 
   const caller = instForSession(srvInstances, callerId);
   const target = instForSession(srvInstances, targetId);
@@ -548,13 +562,13 @@ test('e2e trap: idle completion WITH a re-invocation turn → no early wake, sin
   }
   assert.equal(wakeStubs(caller, targetId).length, 0,
     'no wake during the notification → re-invocation window');
-  assert.equal(srvInstances._idleHub.hasSubscriber(instForSession(srvInstances, targetId).id), true, 'one-shot not consumed early');
+  assert.equal(srvInstances._idleHub.hasArmedWake(instForSession(srvInstances, targetId).id), true, 'one-shot not consumed early');
 
   // The re-invocation turn's turn_end delivers — exactly once.
   await waitFor(() => wakeStubs(caller, targetId).length > 0);
   await sleep(SETTLE_MS + 250); // past any straggler settle
   assert.equal(wakeStubs(caller, targetId).length, 1, 'exactly one wake, no settle double-fire');
-  assert.equal(srvInstances._idleHub.hasSubscriber(instForSession(srvInstances, targetId).id), false);
+  assert.equal(srvInstances._idleHub.hasArmedWake(instForSession(srvInstances, targetId).id), false);
   assert.equal(target.ringSnapshot().filter(ev => ev.kind === 'turn_end').length, 2,
     'the wake corresponds to the re-invocation turn completing');
 });

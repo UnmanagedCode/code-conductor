@@ -196,7 +196,7 @@ function describeToolInput(input: Record<string, unknown> | null | undefined): {
 // Cap a block's large field for inline inclusion in the metadata block.
 //
 // `verbatim` is the caller's includeToolCalls. FALSE (the default read, and the
-// idle-subscription wake fold) emits a per-ARGUMENT descriptor: pointers ride
+// idle-wake fold) emits a per-ARGUMENT descriptor: pointers ride
 // whole, oversized arguments become `[omitted: …]` markers, and the block
 // carries inputTruncated:true. TRUE emits the whole input, capped as one unit at
 // MSG_TEXT_CAP exactly as before.

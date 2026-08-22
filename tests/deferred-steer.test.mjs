@@ -103,7 +103,7 @@ async function busyMidTextBlock(opts) {
 }
 
 const send = (inst, text, extra = {}) =>
-  sendPrompt({ sessionId: inst.sessionId, text, subscribe: false, ...extra }, { instances });
+  sendPrompt({ sessionId: inst.sessionId, text, ...extra }, { instances });
 
 // ── the send_prompt fallback ────────────────────────────────────────────────
 

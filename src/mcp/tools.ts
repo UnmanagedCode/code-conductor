@@ -8,6 +8,9 @@ import { EFFORT_LEVELS, DEFAULT_EFFORT } from '../effortLevels.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 import { MODES as VALID_MODES } from '../sessionModes.ts';
+// The heartbeat window's single source: its default IS the schema ceiling, so
+// `idleTimeoutMs`/`timeoutMs` can only ever shorten it.
+import { DEFAULT_SUBSCRIBE_TIMEOUT_MS } from '../idleSubscriptions.ts';
 // The summary structure has ONE home (src/sessionRenew.ts) — the request prompt a
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
@@ -67,7 +70,7 @@ export function buildTools(): Tool[] {
         'backend, model, contextWindowTokens, pid, worktree, temp, conducted, debug, ' +
         'firstPrompt, title, lastRotatedAt, rotationReason, segmentCount, createdAt, ' +
         'lastResponseAt, queuedCount, autoResumeAt, ' +
-        'overageActive, overageResetsAt, hasIdleSubscriber, playbook, stage}. ' +
+        'overageActive, overageResetsAt, awaitingWake, playbook, stage}. ' +
         'Live rows lead their group, marked LIVE; inactive sessions follow as one line each — ' +
         'sessionId, last-activity, playbook/stage, flags, title — newest first. Last-activity is the ' +
         'timestamp on the session\'s own last record, so it is when that session actually ran. ' +
@@ -90,7 +93,7 @@ export function buildTools(): Tool[] {
         '**`resumes-hot` means resuming that session comes up in bypassPermissions** — either it was ' +
         'recorded in that mode, or it has no recorded mode and therefore falls back to it. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
-        '`hasIdleSubscriber`, `playbook` and `stage`.',
+        '`awaitingWake`, `playbook` and `stage`.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -263,20 +266,17 @@ export function buildTools(): Tool[] {
       description:
         'Send a user turn to a running instance. ' +
         'A mid-turn send_prompt steers a worker in flight rather than waiting out its turn. ' +
-        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`. ' +
         'PLAYBOOKS: always carry `stage` — it is what makes send_prompt the default transition driver.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           text: { type: 'string' },
-          subscribe: {
-            type: 'boolean', default: true,
-            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true. Pass false for mid-turn steers / fire-and-forget.",
-          },
-          subscribeTimeoutMs: {
-            type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+          idleTimeoutMs: {
+            type: 'number',
+            minimum: 1,
+            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
           },
           stage: {
             type: 'string',
@@ -316,20 +316,17 @@ export function buildTools(): Tool[] {
       description:
         'Approve a worker\'s plan: flips the instance to bypassPermissions and sends the canonical approval ' +
         'prompt as a normal user turn. Mirrors the UI\'s Approve & Implement button — use this rather than ' +
-        'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message. ' +
-        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`.',
+        'driving set_mode + send_prompt by hand. Optional `feedback` is appended to the approval message.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re approving.' },
           feedback: { type: 'string', description: 'Optional additional notes appended to the approval message.' },
-          subscribe: {
-            type: 'boolean', default: true,
-            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true.",
-          },
-          subscribeTimeoutMs: {
-            type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+          idleTimeoutMs: {
+            type: 'number',
+            minimum: 1,
+            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
           },
         },
         required: ['sessionId'],
@@ -341,20 +338,17 @@ export function buildTools(): Tool[] {
       description:
         'Reject a worker\'s plan and ask for refinement. The instance stays in plan mode; the worker will ' +
         'produce a revised plan in its next turn. `feedback` is recommended — without it the worker has no ' +
-        'guidance for what to change. Also auto-subscribes to the worker\'s idle callback by default ' +
-        '(dispatch-and-wake) — see `subscribe`.',
+        'guidance for what to change.',
       inputSchema: {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re rejecting.' },
           feedback: { type: 'string', description: 'What you want the worker to change. Strongly recommended.' },
-          subscribe: {
-            type: 'boolean', default: true,
-            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true.",
-          },
-          subscribeTimeoutMs: {
-            type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+          idleTimeoutMs: {
+            type: 'number',
+            minimum: 1,
+            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
           },
         },
         required: ['sessionId'],
@@ -370,8 +364,7 @@ export function buildTools(): Tool[] {
         'rendered in that message\'s body, fenced with "--- questions ---" and 1-based numbered). `answers` is ' +
         'aligned by index to those SAME server-side pending questions — 0-based, so body question N is answers[N-1] ' +
         '— each entry is { option } for single-choice, { options: [...] } for multiSelect, ' +
-        '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options. ' +
-        'Also auto-subscribes to the worker\'s idle callback by default (dispatch-and-wake) — see `subscribe`.',
+        '{ text } for a custom typed answer, or {} to skip — with an optional `note` on option/options.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -390,13 +383,11 @@ export function buildTools(): Tool[] {
               },
             },
           },
-          subscribe: {
-            type: 'boolean', default: true,
-            description: "Also register a one-shot idle callback (dispatch-and-wake) so you're re-woken on the worker's next turn_end. Default true.",
-          },
-          subscribeTimeoutMs: {
-            type: 'integer',
-            description: 'Watchdog: wake with a non-completion "did NOT finish" stub if the worker+subagents-done state is never reached (hang/crash). Defaults to ORCH_SUBSCRIBE_TIMEOUT_MS when omitted; an explicit value overrides. Same semantics as subscribe_to_idle timeoutMs.',
+          idleTimeoutMs: {
+            type: 'number',
+            minimum: 1,
+            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
+            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
           },
         },
         required: ['sessionId', 'answers'],
@@ -404,52 +395,35 @@ export function buildTools(): Tool[] {
       handler: h.answerQuestion,
     },
     {
-      name: 'subscribe_to_idle',
+      name: 'set_idle_timeout',
       description:
-        'Register a one-shot callback: when the target instance next ends a turn WITH no live background ' +
-        'subagents (its own backgrounded Agent-tool calls all finished), the orchestrator injects a short ' +
-        'stub user prompt into the *calling* instance pointing at get_recent_messages. The wake thus means ' +
-        'the worker AND all its subagents are done — a turn_end while a subagent is still running defers the ' +
-        'wake until the follow-up turn_end after that subagent completes. ' +
-        'Use this right after send_prompt so you can hand control back to the user but still ' +
-        'be re-woken when the worker finishes. The subscription is consumed on fire — call again to watch ' +
-        'further turns. Caller identity is taken from the MCP URL (?caller=<sessionId>), so this only works for ' +
-        'orchestrator-spawned instances. ' +
-        'A timeoutMs watchdog is ALWAYS armed (default ORCH_SUBSCRIBE_TIMEOUT_MS; an explicit value ' +
-        'overrides): if the agent+subagents-done state is not reached in time, the subscription fires with a ' +
-        'timeout-flagged stub that says the worker did NOT finish, so a hung/crashed worker (or a stuck ' +
-        'subagent) still wakes you. Whichever fires first (completion or timeout) consumes the subscription ' +
-        'and cancels the other.',
+        'Shorten the HEARTBEAT window on one of your sessions. There is nothing to register: you are woken ' +
+        'when a session you spawned or have ever prompted ends a turn, automatically and with no opt-out. ' +
+        'While such a session is mid-turn you are also pinged every ORCH_SUBSCRIBE_TIMEOUT_MS with a stub ' +
+        'labelled "did NOT finish" — meaning still running, not finished — and that ping repeats until the ' +
+        'turn ends without ever consuming the real turn-end wake. This tool changes only how often that ping ' +
+        'arrives. It re-arms a heartbeat that is already running, so mid-turn is its use case; `armed:true` ' +
+        'in the result means the target was mid-turn and its live heartbeat was re-armed. The ceiling is the ' +
+        'default, so this can only shorten. Caller identity is taken from the MCP URL (?caller=<sessionId>), ' +
+        'so this only works for orchestrator-spawned instances.',
       inputSchema: {
         type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Worker sessionId to watch for turn_end.' },
+          sessionId: { type: 'string', description: 'Worker sessionId.' },
           timeoutMs: {
             type: 'number',
             minimum: 1,
+            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
             description:
-              'Watchdog override: fire the subscription after this many ms even if the agent+subagents-done ' +
-              'state has not been reached. Must be a positive finite number; omitted/invalid falls back to ' +
-              'the default (ORCH_SUBSCRIBE_TIMEOUT_MS). The stub injected on timeout is clearly ' +
-              'labelled as a timeout (not a completion) so the conductor can distinguish a timed-out worker ' +
-              'from a finished one.',
+              'Heartbeat window in ms. Must be a positive finite number no greater than ' +
+              'ORCH_SUBSCRIBE_TIMEOUT_MS (the default), which is why this can only shorten. The stub each ' +
+              'ping injects is clearly labelled as a non-completion so it can never be mistaken for a ' +
+              'finished worker.',
           },
         },
-        required: ['sessionId'],
+        required: ['sessionId', 'timeoutMs'],
       },
-      handler: h.subscribeToIdle,
-    },
-    {
-      name: 'unsubscribe_from_idle',
-      description:
-        'Cancel a pending subscribe_to_idle registration. Idempotent — returns removed:false if no ' +
-        'subscription was active for this caller/target pair.',
-      inputSchema: {
-        type: 'object',
-        properties: { sessionId: { type: 'string', description: 'Worker sessionId.' } },
-        required: ['sessionId'],
-      },
-      handler: h.unsubscribeFromIdle,
+      handler: h.setIdleTimeout,
       annotations: { idempotentHint: true },
     },
     {
@@ -535,7 +509,7 @@ export function buildTools(): Tool[] {
     },
     {
       name: 'interrupt_turn',
-      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped; subscribe_to_idle to be woken when the turn actually ends. Pass force:true to abort immediately, discarding in-progress work.',
+      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped, and the boundary wait is UNBOUNDED — a long-running tool call defers it indefinitely, which is why the soft tier leaves your wake armed and the heartbeat keeps pinging until the turn really ends. Pass force:true to abort immediately, discarding in-progress work: that also CLEARS your pending wake on the target and delivers none, since the turn_end it produces is one you caused rather than the worker finishing.',
       inputSchema: {
         type: 'object',
         properties: {

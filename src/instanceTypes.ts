@@ -116,8 +116,8 @@ export interface InstanceLike {
   consumePrefill(): string | null;
   clearContext(): void;
   // Rotation window (a managed `/clear` renewal, or a prune). IdleSubscriptionHub
-  // defers its one-shot while `rotationPending`, and the two mechanisms refuse to
-  // interleave on it. See src/instances.ts for the comesUpIdle contract.
+  // defers the armed wake while `rotationPending`, and the two mechanisms refuse
+  // to interleave on it. See src/instances.ts for the comesUpIdle contract.
   readonly rotationPending: boolean;
   readonly rotationInFlight: 'renew' | 'prune' | null;
   // Wider than rotationPending: covers the reseed window the rotation flag
@@ -218,7 +218,7 @@ export interface InstanceManagerLike {
     worktree: string | null;
     status: string;
   }>;
-  idleSubscriptionsOf(instanceId: string): string[];
+  ownedWakeTargetsOf(instanceId: string): string[];
   // A conductor-requested renewal expired unconsumed — the worker declined.
   // Recorded for the REQUESTING conductor's wake stub (`requestedBy` is its
   // sessionId), and called synchronously from SessionRenewController's turn_end
@@ -241,7 +241,7 @@ export interface InstanceManagerLike {
   liveCountForProject(project: string): number;
   // MCP transport surface (src/mcp/server.ts): the sessionId-prefix resolver.
   resolveSessionRef(input: string): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
-  list(): Array<InstanceSummary & { hasIdleSubscriber: boolean }>;
+  list(): Array<InstanceSummary & { awaitingWake: boolean }>;
   liveForSession(sessionId: string): InstanceLike | null;
   // THE liveness authority for a public sessionId — see src/instances.ts. Every
   // consumer of worker liveness (playbook policy, MCP read surfaces) reads this,
@@ -249,8 +249,9 @@ export interface InstanceManagerLike {
   isSessionLive(sessionId: string): boolean;
   remove(id: string): Promise<unknown>;
   respawn(id: string): Promise<InstanceLike>;
-  subscribeIdle(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean };
-  unsubscribeIdle(callerSessionId: string, targetSessionId: string): { removed: boolean };
+  noteDispatch(callerSessionId: string, targetSessionId: string, timeoutMs?: number): void;
+  setIdleTimeout(callerSessionId: string, targetSessionId: string, timeoutMs: number): { armed: boolean };
+  disarmIdleSilently(targetInstanceId: string): void;
   armSessionRenew(instanceId: string, opts: { summary: string; followUp?: string | null }): void;
   requestSessionRenew(instanceId: string, opts: { followUp?: string | null; requestedBy?: string | null }): { requested: boolean; rerequested: boolean };
   dropSessionRenewRequest(instanceId: string): void;

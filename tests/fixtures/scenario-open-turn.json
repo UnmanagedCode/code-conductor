@@ -1,0 +1,84 @@
+{
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "$SID",
+      "cwd": "$CWD",
+      "model": "claude-sonnet-4-6",
+      "permissionMode": "$MODE",
+      "tools": [
+        "Bash"
+      ]
+    }
+  ],
+  "turns": [
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": [
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "message_start",
+            "message": {
+              "id": "msg_open",
+              "role": "assistant"
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+              "type": "text",
+              "text": ""
+            }
+          }
+        },
+        {
+          "type": "stream_event",
+          "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+              "type": "text_delta",
+              "text": "working"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "control",
+        "subtype": "interrupt"
+      },
+      "emit": [
+        {
+          "type": "result",
+          "subtype": "success",
+          "stop_reason": "end_turn",
+          "duration_ms": 10,
+          "total_cost_usd": 0.0001,
+          "is_error": false
+        }
+      ]
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": []
+    },
+    {
+      "on": {
+        "type": "prompt"
+      },
+      "emit": []
+    }
+  ]
+}

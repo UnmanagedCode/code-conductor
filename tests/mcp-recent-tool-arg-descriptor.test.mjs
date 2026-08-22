@@ -4,7 +4,7 @@
 // conductor's context is built from. Three groups:
 //   A — capBlockInput unit tests (no server)
 //   B — end-to-end through the real MCP transport (retired-session read)
-//   C — the idle-subscription wake fold inherits the slim default
+//   C — the idle wake fold inherits the slim default
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,6 +21,15 @@ const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
 // ---------------------------------------------------------------------------
 // Group A — capBlockInput unit tests
 // ---------------------------------------------------------------------------
+
+// Ownership + the turn that arms it. `noteDispatch` records the ownership edge;
+// the ARM happens when the target enters a turn — in production that is
+// Instance._setStatus's 'turn_start' emit, which these injected fakes never run,
+// so the test drives onTurnStart directly.
+function armWake(instances, callerSid, targetSid, timeoutMs) {
+  instances.noteDispatch(callerSid, targetSid, timeoutMs);
+  instances._idleHub.onTurnStart(instances.liveForSession(targetSid).id);
+}
 
 test('A1: default — an oversized string argument becomes an omitted-marker and the block is flagged', () => {
   const out = capBlockInput({ type: 'tool_use', name: 'Write', toolUseId: 't', input: { file_path: '/p/plan.md', content: 'P'.repeat(15699) } }, false);
@@ -267,7 +276,7 @@ test('B7: a 40 KB argument is marked on the default read and still MSG_TEXT_CAP-
 });
 
 // ---------------------------------------------------------------------------
-// Group C — the idle-subscription wake fold inherits the slim default
+// Group C — the idle wake fold inherits the slim default
 // ---------------------------------------------------------------------------
 
 function makeFake({ id, sessionId }) {
@@ -294,14 +303,14 @@ function emitTurnEnd(instances, id) {
 }
 const tick = () => new Promise(r => setTimeout(r, 20));
 
-test('C1: the idle-subscription wake fold inherits the slim default — a worker\'s big Write never reaches the conductor\'s prompt', async () => {
+test('C1: the idle-wake fold inherits the slim default — a worker\'s big Write never reaches the conductor\'s prompt', async () => {
   const instances = new InstanceManager();
   try {
     const cond = makeFake({ id: 'c1', sessionId: 'cs1' });
     const work = makeFake({ id: 'w1', sessionId: 'ws1' });
     instances.byId.set(cond.id, cond);
     instances.byId.set(work.id, work);
-    instances.subscribeIdle('cs1', 'ws1');
+    armWake(instances, 'cs1', 'ws1');
 
     emitTurnEnd(instances, 'w1');
     await tick();
@@ -320,7 +329,7 @@ test('C2: the folded wake still carries the plan path and the omitted-marker', a
     const work = makeFake({ id: 'w2', sessionId: 'ws2' });
     instances.byId.set(cond.id, cond);
     instances.byId.set(work.id, work);
-    instances.subscribeIdle('cs2', 'ws2');
+    armWake(instances, 'cs2', 'ws2');
 
     emitTurnEnd(instances, 'w2');
     await tick();

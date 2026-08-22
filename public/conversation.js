@@ -290,7 +290,7 @@ export class Conversation {
         // Guard: only call markAnswered() during replay (_replayMode=true) or
         // when the card was already submitted by the user (live path, no-op).
         // Without this guard an unrelated live echo — such as an idle-callback
-        // prompt injected by subscribe_to_idle — would incorrectly lock an
+        // prompt injected by the idle wake — would incorrectly lock an
         // unanswered card.
         // Second guard: the echo must actually be in the answer format
         // formatUserQuestionAnswers() emits. During replay an unrelated echo

@@ -1,4 +1,4 @@
-// Shared (server + client) marker format for the idle-subscription wake stub.
+// Shared (server + client) marker format for the idle-wake stub.
 //
 // When a subscribed worker finishes a turn while its conductor is idle, the
 // orchestrator folds the worker's recent-message content (the SAME payload a

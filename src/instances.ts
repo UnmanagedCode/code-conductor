@@ -475,14 +475,14 @@ export class Instance extends EventEmitter implements InstanceLike {
   _lineageError: Error | null;
   // Non-null while a context rotation is IN FLIGHT on this instance — a managed
   // `/clear` renewal or a prune. ONE field answers "is a rotation happening here",
-  // for both mechanisms and both readers: IdleSubscriptionHub defers its one-shot
+  // for both mechanisms and both readers: IdleSubscriptionHub defers its armed wake
   // on it (so a conductor's wake cannot be spent a turn early), and each mechanism
   // refuses to start while the other holds it (SESSION_ROTATING).
   //
   // It lives on the Instance rather than in either controller precisely so the
   // hub's defer does not depend on listener registration order — the hub's
   // listener is registered BEFORE the renew controller's, which is why the
-  // pre-card code consumed the one-shot on the ARMED turn_end, a turn early.
+  // pre-card code consumed the wake on the ARMED turn_end, a turn early.
   _rotation: { reason: RotationMechanism; startedAt: number } | null;
   // TRUE for the whole renewal sequence: from `arm()` until the reseed prompt()
   // has actually been accepted. A SECOND flag rather than a wider `_rotation`,
@@ -495,7 +495,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   //   the reseed landing, `_rotation` is null, `_mutating` is false and status is
   //   'idle' — every guard a prune or a rewind checks. A request landing in that
   //   window kills the proc, and the reseed then 409s in prompt(): context
-  //   cleared, handoff summary lost, conductor silent until the watchdog. Which is
+  //   cleared, handoff summary lost, conductor hearing only heartbeats. Which is
   //   exactly the outcome the interlock exists to prevent.
   _renewing: boolean;
   // TRUE while this instance is between an old proc (killed, or already dead)
@@ -1234,7 +1234,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     // The process is gone: a parked steer can never be delivered. Reject each
     // waiter and clear the queue — leaving `steerPending` true on a dead instance
-    // would wedge IdleSubscriptionHub's defer until its watchdog.
+    // would wedge IdleSubscriptionHub's defer indefinitely.
     if (isDeadStatus(next) && this._pendingSteers.length) {
       const entries = this._pendingSteers.splice(0);
       this._emitUi({ kind: 'system', subtype: 'stderr',
@@ -1264,6 +1264,12 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._turnEvicted = 0;
       // NOTE: _prevTurnPrefix and _prefixBaselineInvalid intentionally persist
       // across the turn boundary — they are cross-turn state.
+      // …and this is the ARM point for the idle wake: IdleSubscriptionHub arms
+      // one entry per owner here, so prompted and unprompted turns re-arm
+      // identically (an auto-approved plan rolling into implementation needs no
+      // conductor call) and so the arm is synchronous inside prompt() — there is
+      // no window for a fast turn_end to land in.
+      this.emit('turn_start');
     }
     this.emit('status', this.summary());
   }
@@ -1725,7 +1731,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // is set on the orchestrator (the URL comes through as null).
     if (this.mcpServerUrl) {
       // Bake THIS worker's own stable INSTANCE id into ?caller= so the MCP server
-      // can identify it when it calls caller-dependent tools (subscribe_to_idle,
+      // can identify it when it calls caller-dependent tools (set_idle_timeout,
       // renew_session). The instanceId (NOT the sessionId) is used deliberately,
       // though no longer for the original reason — a baked PUBLIC sessionId would
       // now stay valid, since a rotation cannot move it. What the instanceId buys
@@ -2014,11 +2020,11 @@ export class Instance extends EventEmitter implements InstanceLike {
       // right after the deny and the SAME turn keeps running for as long as the
       // conductor keeps working, so an answer clicked in that window lands
       // mid-turn (Instance.prompt annotates it with MID_TURN_NOTE). Either way
-      // the drive-forward path is unchanged: subscribe_to_idle wakes on the
+      // the drive-forward path is unchanged: the conductor's wake fires on the
       // eventual turn_end, and approvals/answers are sent unconditionally rather
       // than waiting for idle. Holding the request open for an in-turn answer
-      // would break that contract — no turn_end, so a conductor's
-      // subscribe_to_idle never wakes. Any OTHER tool arriving here (rare —
+      // would break that contract — no turn_end, so the conductor's wake never
+      // fires. Any OTHER tool arriving here (rare —
       // --allow-dangerously-skip-permissions auto-allows normal tools, so they
       // don't reach can_use_tool) is allowed through unchanged.
       if (ev.kind === 'system' && ev.subtype === 'control_request') {
@@ -2088,7 +2094,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       // deliberately started long-lived process (a server via a promoted
       // `./start.sh`) never emits a terminal event — counting it would pin
       // displayStatus:'running' and defer the idle wake / session renewal
-      // until their watchdogs. Unknown task_types stay tracked (same
+      // indefinitely. Unknown task_types stay tracked (same
       // over-report-running polarity as TERMINAL_TASK_STATUSES). A completed
       // Bash task that owes a re-invocation turn is still deferred correctly
       // by _taskNotificationPending, which is task-type-agnostic on purpose.
@@ -2164,7 +2170,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._emitUi(ev);
       if (autoApproveFire) this._fireAutoApprovePlan();
       // Action on overage: detect the trip here, but route it centrally. The
-      // Instance has no reference to the manager / idle-subscription graph, so
+      // Instance has no reference to the manager / idle-wake graph, so
       // it can't make a conductor-aware stop decision — it just SIGNALS the
       // manager (`overage` emit), which owns the global one-shot flag and the
       // routing (see InstanceManager._handleOverageTrip). `_overageHandled`
@@ -2385,7 +2391,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     // A genuine (user/MCP-driven) prompt cancels a pending overage auto-resume —
     // the session is being driven again. Orchestrator-injected prompts
-    // (`internal:true` — the idle-subscription wake stub, the conductor overage
+    // (`internal:true` — the idle-wake stub, the conductor overage
     // steer, and the auto-resume's own send) must NOT cancel it and must skip the
     // global queue intercept above: the auto-resume already tore down its own
     // deadline via cancel() before sending, and the global window may still be
@@ -2528,7 +2534,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   // Close the rotation window and announce it. EVERY abandonment path must reach
-  // this too, or the hub's defer wedges until the watchdog fires and reports "did
+  // this too, or the hub's defer wedges and the heartbeat reports "did
   // NOT finish" for a rotation that merely gave up.
   //
   // `comesUpIdle` is declared by the MECHANISM, never inferred from status:
@@ -2554,7 +2560,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // with `comesUpIdle:false` on the promise that a reseed turn was coming; when
   // that promise breaks, re-announce with `comesUpIdle:true` so a conductor
   // waiting on this worker is woken NOW. Without it the wake waits out the full
-  // idle-subscription watchdog and then reports that a perfectly healthy worker
+  // idle-wake heartbeat and then reports that a perfectly healthy worker
   // "did NOT finish" — the same reasoning that makes every ABANDONMENT path
   // declare comesUpIdle, applied to the one failure that happens after the window
   // has already closed. Same event the hub already consumes; no hub change.
@@ -2781,7 +2787,7 @@ export class Instance extends EventEmitter implements InstanceLike {
 
   // True while at least one steer is parked waiting for a block-edge stop. Read
   // by IdleSubscriptionHub: the turn_end an armed stop produces must not consume
-  // a one-shot idle subscription (the worker was cut off, it did not finish), and
+  // an armed idle wake (the worker was cut off, it did not finish), and
   // a deferred wake must not race the steer's own prompt().
   get steerPending(): boolean { return this._pendingSteers.length > 0; }
 
@@ -2818,9 +2824,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   //
   // NOT async, and the live branch returns prompt()'s OWN promise rather than a
   // wrapper: callers must be able to await the send and run in the SAME microtask
-  // its completion lands in. maybeSubscribeIdle is why — it registers a one-shot
-  // AFTER the send, so even two extra microtasks let a fast turn_end land first and
-  // lose the wake (tests/mcp-subscribe-to-idle.test.mjs catches exactly that).
+  // its completion lands in: the idle wake ARMS inside prompt() → _setStatus, so a
+  // caller that resumed a tick later could not observe the turn it just started.
   promptOrQueueSteer(text: string, attachments: unknown[] = []): Promise<void> {
     if (this.needsPostStopSteer) {
       void this.queueSteerAfterStop(text, { attachments }).catch(() => {});
@@ -3118,7 +3123,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   //     nothing here calls prompt().
   //
   // The instanceId AND the public sessionId are both preserved (only the backing
-  // id rotates), so the idle-subscription graph, overage timers, the renew
+  // id rotates), so the idle-wake graph, overage timers, the renew
   // controller, every `?caller=<instanceId>` MCP handle and every id a conductor
   // holds stay valid with no migration.
   async pruneSession({ cutTurnIndex, keepLatestTurns, pruneThinking = false, inputMode = 'truncate' }: { cutTurnIndex?: unknown; keepLatestTurns?: unknown; pruneThinking?: unknown; inputMode?: unknown } = {}): Promise<Record<string, unknown>> {
@@ -3233,7 +3238,7 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._mutating = false;
       // Prune comes up IDLE with no turn, so the completion event is the ONLY wake
       // point — including on the failure path, where the recovery relaunch also
-      // lands idle and a subscriber must not be left hanging until the watchdog.
+      // lands idle and an owner must not be left hanging on heartbeats.
       this.endRotation({ ok: rotationOk, comesUpIdle: true });
     }
   }
@@ -3348,7 +3353,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // headless/tests working. Awaited in _doCreate and frozen on each Instance.
     this._claudePluginDirsResolver = async () => [];
     // Two self-contained subsystems composed as collaborators. Each owns its
-    // backing state (the idle-subscription graph map / the auto-resume timer
+    // backing state (the idle-wake graph map / the auto-resume timer
     // map) and resolves cross-instance lookups + event emission back through
     // `this`. The manager keeps thin delegating methods (and live-map getters)
     // so every external caller sees an unchanged surface.
@@ -3369,7 +3374,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this.on('event', (e: { id: string; ev: UiEvent | null }) => this._idleHub.onEvent(e));
     this.on('event', (e: { id: string; ev: UiEvent | null }) => this._sessionRenew.onEvent(e));
     // Global overage auto-stop state. The decision moved off the per-Instance
-    // handler (which can't reach the idle-subscription graph) up to here:
+    // handler (which can't reach the idle-wake graph) up to here:
     // `_overageActive` is a one-shot guard held from the first trip until the
     // rate-limit window resets (or a manual resume), so routing runs exactly
     // once per window. `_overageResetsAt` is the window reset (epoch secs) used
@@ -3389,26 +3394,28 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   get _idleSubscribers() { return this._idleHub.subscribers; }
   get _autoResumeTimers() { return this._overageResume.timers; }
 
-  // Idle-subscription graph — see src/idleSubscriptions.ts. The manager keeps
-  // these names/signatures and forwards to the hub so MCP handlers, wsHub, the
-  // resume path, and tests see an unchanged surface.
-  subscribeIdle(callerSessionId: string, targetSessionId: string, timeoutMs?: number): { already: boolean } {
-    return this._idleHub.subscribe(callerSessionId, targetSessionId, timeoutMs);
+  // Idle-wake graph — see src/idleSubscriptions.ts. The manager forwards to the
+  // hub so MCP handlers, wsHub, the resume path, and tests all reach one surface.
+  noteDispatch(callerSessionId: string, targetSessionId: string, timeoutMs?: number): void {
+    return this._idleHub.noteDispatch(callerSessionId, targetSessionId, timeoutMs);
   }
-  unsubscribeIdle(callerSessionId: string, targetSessionId: string): { removed: boolean } {
-    return this._idleHub.unsubscribe(callerSessionId, targetSessionId);
+  setIdleTimeout(callerSessionId: string, targetSessionId: string, timeoutMs: number): { armed: boolean } {
+    return this._idleHub.setIdleTimeout(callerSessionId, targetSessionId, timeoutMs);
+  }
+  disarmIdleSilently(targetInstanceId: string): void {
+    return this._idleHub.disarmSilently(targetInstanceId);
   }
   _idleSubscriberSnapshot(): Record<string, string[]> { return this._idleHub.snapshot(); }
   _purgeIdleFor(instanceId: string): void { return this._idleHub.purge(instanceId); }
   // Sibling to _idleSubscriberSnapshot, but caller-indexed and sessionId-shaped
-  // — which targets THIS instanceId (as caller) currently watches. Used by the
-  // renewal state block (src/sessionRenew.ts) to enumerate the caller's own
-  // pending idle subscriptions.
-  idleSubscriptionsOf(instanceId: string): string[] { return this._idleHub.subscriptionsOf(instanceId); }
+  // — which targets THIS instanceId OWNS, i.e. whose next turn will wake it.
+  // Used by the renewal state block (src/sessionRenew.ts) to enumerate the
+  // caller's own live orchestration.
+  ownedWakeTargetsOf(instanceId: string): string[] { return this._idleHub.ownedWakeTargetsOf(instanceId); }
 
   // Managed session renewal — see src/sessionRenew.ts. Arm a `/clear`+reseed
   // on the given instance; the controller fires at the instance's next turn_end.
-  // No sessionId-rotation bookkeeping is needed: the idle-subscription graph and
+  // No sessionId-rotation bookkeeping is needed: the idle-wake graph and
   // overage timers are keyed by the stable instanceId, which `/clear` preserves.
   armSessionRenew(instanceId: string, opts: RenewalOpts): { armed: true; rearmed: boolean } { return this._sessionRenew.arm(instanceId, opts); }
 
@@ -3427,12 +3434,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 
   // Returns true when a turn_notification for instanceId should be suppressed:
-  //   Condition 1 — session is a conductor mid-orchestration (subscribed as caller
-  //                 to a worker); isCaller() is reliable here because the caller's
-  //                 subscription is only consumed when the TARGET finishes (its
-  //                 turn_end or the idle task-drain settle) or times out.
-  //   Condition 2 — session is a worker whose turn_end fired with a subscribed
-  //                 conductor watching (whether it woke the conductor now or was
+  //   Condition 1 — session is a conductor mid-orchestration (it holds an armed
+  //                 wake on a worker); isCaller() is reliable here because an armed
+  //                 wake is consumed only when the TARGET finishes (its turn_end,
+  //                 the idle task-drain settle, or a rotation that comes up idle) —
+  //                 the heartbeat reports without consuming, so a hung worker keeps
+  //                 the conductor's ping suppressed rather than un-suppressing it.
+  //   Condition 2 — session is a worker whose turn_end fired with an owner watching (whether it woke the conductor now or was
   //                 deferred pending the worker's background subagents);
   //                 wasConsumed() reads _justConsumed, populated in
   //                 IdleSubscriptionHub._onTurnEnd() before the defer check /
@@ -3468,7 +3476,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // Auto-registered orchestrator MCP server URL. Returns the BASE URL (no
   // ?caller=) — Instance.spawn() appends the worker's own sessionId as the
   // caller suffix once it's known, so the MCP server can identify which worker
-  // is calling (needed by subscribe_to_idle to route the turn_end callback).
+  // is calling (it is the ownership edge the turn_end wake is routed along).
   // Honours ORCH_DISABLE_MCP_AUTOREGISTER at call time.
   mcpServerUrl(): string | null {
     if (!this.serverPort) return null;
@@ -3488,16 +3496,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this.byId.get(handle)?.sessionId ?? null;
   }
 
-  hasIdleSubscriber(instanceId: string): boolean { return this._idleHub.hasSubscriber(instanceId); }
+  hasArmedWake(instanceId: string): boolean { return this._idleHub.hasArmedWake(instanceId); }
 
-  // Returns true when instanceId is the *caller* (conductor) in any pending
-  // subscription — i.e. this instance is actively waiting for a worker to finish.
+  // Returns true when instanceId is the *caller* (conductor) of any armed wake —
+  // i.e. one of its sessions is mid-turn and it is due a report at that turn's end.
   isIdleCaller(instanceId: string): boolean { return this._idleHub.isCaller(instanceId); }
 
-  list(): Array<InstanceSummary & { hasIdleSubscriber: boolean }> {
+  // `awaitingWake` is the CALLER side (isIdleCaller — "this instance is waiting on
+  // someone"), never the target side. The sidebar's accent idle dot and
+  // list_sessions' `awaiting-wake` column both read it.
+  list(): Array<InstanceSummary & { awaitingWake: boolean }> {
     return [...this.byId.values()].map(i => ({
       ...i.summary(),
-      hasIdleSubscriber: this.isIdleCaller(i.id),
+      awaitingWake: this.isIdleCaller(i.id),
     }));
   }
 
@@ -4038,7 +4049,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
     inst.on('event', (ev: UiEvent) => this.emit('event', { id, ev }));
     // The Instance signals (rather than self-handles) an overage trip — central
-    // routing lives on the manager where the idle-subscription graph is reachable.
+    // routing lives on the manager where the idle-wake graph is reachable.
     inst.on('overage', (info: { resetsAt: number | null }) => this._handleOverageTrip(inst, info));
     // Live GLOBAL-overage gate, injected as a small callback (not a manager ref).
     // active ⇒ this session must queue every non-internal send. SAFETY RAIL: only
@@ -4061,11 +4072,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // immediately — it has no mid-turn→idle transition for the status handler to
     // arm on.
     inst.on('overage_queued', (info: { resetsAt: number | null }) => this._armQueuedOnly(inst, info?.resetsAt));
+    // A turn began on this session — arm the idle wake for each of its owners.
+    // Emitted from _setStatus's into-`turn` branch, so it covers prompted and
+    // unprompted turns alike. See src/idleSubscriptions.ts.
+    inst.on('turn_start', () => this._idleHub.onTurnStart(inst.id));
     // A user/MCP-driven turn cancels any pending overage auto-resume. If the
     // turn is a manual takeover of an overage-stopped session, it also clears
     // the global overage flag so the stop can trip again. Capture the flag
     // BEFORE cancel (which resets it). Orchestrator-injected prompts
-    // (`internal` — idle-subscription wake, conductor overage steer) skip this:
+    // (`internal` — idle-wake, conductor overage steer) skip this:
     // they must not discard a pending resume armed for an overage-stopped
     // session (the auto-resume's own fire sends a non-internal prompt, so its
     // teardown still runs).
@@ -4365,7 +4380,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // by a model that cannot take a mid-turn injection, so Pass 3 stops those
   // workers directly instead and nothing here needs to be TOLD anything.
   // Idle+subscribed → inject a fresh prompt (there is no turn to interrupt), same
-  // shape as the idle-subscription wake stub; that branch alone carries
+  // shape as the idle-wake stub; that branch alone carries
   // `steered:true`. For `stop-resume` BOTH branches arm the conductor's resume:
   // it is the orchestrating brain, so resuming it after the window resets
   // re-drives its workers (which are stopped un-armed). Resume is armed via the
@@ -4376,13 +4391,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // stops, so a conductor waiting on a STOPPED session is covered there — including
   // one waiting on a session it does not own. The idle branch below needs its own
   // sever, because it never calls `_directOverageStop` and Pass 3 only stops
-  // `status === 'turn'`: a one-shot this conductor holds on a target that is ALREADY
-  // IDLE at trip time survives both. That is ordinary, not exotic —
-  // `subscribe_to_idle` re-arms without sending a prompt, and `_onTurnEnd` keeps the
-  // one-shot while a target's subagents drain. Left armed, the watchdog
+  // `status === 'turn'`: an armed wake this conductor holds on a target that Pass 3
+  // leaves alone survives both. That is ordinary, not exotic — `_onTurnEnd` keeps
+  // the wake armed while a target's subagents drain, so the target reads as idle
+  // while the wake is live. Left armed, the heartbeat
   // (DEFAULT_SUBSCRIBE_TIMEOUT_MS, well inside a five-hour window) fires mid-lockout
-  // and delivers an `internal:true` wake stub the overage queue intercept does not
-  // hold — starting a fresh turn on the conductor we just stopped.
+  // — repeatedly — and delivers an `internal:true` wake stub the overage queue
+  // intercept does not hold, starting a fresh turn on the conductor we just stopped.
   _steerConductor(conductor: Instance, { resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
     if (conductor.status === 'turn') {
       this._directOverageStop(conductor, { resume, resetsAt });

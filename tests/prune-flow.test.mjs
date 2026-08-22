@@ -422,10 +422,14 @@ test('a subscriber woken by a prune does not hang, and is not told the worker fa
     const cInst = ctx.instances.get(caller.body.id);
     await waitFor(() => tInst.status === 'idle' && cInst.status === 'idle');
 
-    // A generous watchdog: if this test ever passes by TIMING OUT rather than by
-    // the rotation trigger, it would have to wait this out, so it cannot.
-    ctx.instances.subscribeIdle(cInst.sessionId, tInst.sessionId, 600_000);
-    assert.equal(ctx.instances._idleHub.hasSubscriber(tInst.id), true);
+    // A generous heartbeat window: if this test ever passes by a HEARTBEAT rather
+    // than by the rotation trigger, it would have to wait this out, so it cannot.
+    // The arm itself is the real path — ownership recorded, then the target's turn
+    // start — driven directly here because these instances came up over REST with
+    // no conductor to dispatch from.
+    ctx.instances.noteDispatch(cInst.sessionId, tInst.sessionId, 600_000);
+    ctx.instances._idleHub.onTurnStart(tInst.id);
+    assert.equal(ctx.instances._idleHub.hasArmedWake(tInst.id), true);
 
     const pr = await api(ctx.baseUrl, 'POST', `/api/instances/${target.body.id}/prune`, { cutTurnIndex: 1 });
     assert.equal(pr.status, 200);
@@ -438,7 +442,7 @@ test('a subscriber woken by a prune does not hang, and is not told the worker fa
     assert.ok(stub.text.includes(tInst.sessionId), `the wake must name the public id: ${stub.text}`);
     assert.ok(!stub.text.includes(tInst.backingSessionId),
       `and never the rotated backing id: ${stub.text}`);
-    assert.equal(ctx.instances._idleHub.hasSubscriber(tInst.id), false, 'one-shot consumed');
+    assert.equal(ctx.instances._idleHub.hasArmedWake(tInst.id), false, 'the wake was consumed');
     // …and the target really did come up idle with no turn of its own.
     assert.equal(tInst.status, 'idle');
     assert.equal(tInst.rotationPending, false, 'the rotation window is closed');
