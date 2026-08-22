@@ -102,28 +102,45 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
 
   const slow = of('slow'), medium = of('medium'), fast = of('fast');
 
-  // (1) ORDER-INDEPENDENCE. fast finishes ~35ms in but is listed after slow, so
-  // its summary is held for ~1.2s. Measured: ~1240ms unfixed, 33-38ms fixed.
-  assert.ok(fast < 400,
-    `fast.fixture.mjs does ~35ms of work but was reported as ${fast}ms — its figure is ` +
+  // EVERY ASSERTION BELOW IS A RATIO OR AN ORDERING, NOT AN ABSOLUTE ms BOUND, AND
+  // THAT IS DELIBERATE — do not "tighten" one back into an absolute. Load adds a
+  // roughly COMMON spawn+import cost to all three figures, so absolutes drift with
+  // it while ratios hold. Measured quiet: slow 1237 / medium 635 / fast 37. Measured
+  // under 16-spinner starvation (load 22-29, ~2.3x): 1398 / 972 / 142 — an earlier
+  // revision of this test asserted `medium <= 900` and went red on that 972.
+  // Unfixed, every figure collapses onto the held wall: ~1237 / ~1199 / ~1237.
+
+  // (1) A TRIVIAL FILE IS NOT CHARGED A WORKING FILE'S WALL. The primary
+  // bug-catcher: unfixed, fast is charged the ~1.2s it spent WAITING for slow's
+  // summary, so this fails by ~3x at any load. Fixed margin is ~17x quiet, ~7x
+  // starved.
+  assert.ok(fast * 3 < medium,
+    `fast.fixture.mjs (~35ms of work, reported ${fast}ms) should be far cheaper than ` +
+    `medium.fixture.mjs (~600ms of work, reported ${medium}ms); a near-tie means fast is ` +
     `inheriting the wall of an earlier-listed file that was still running:\n${diag}`);
 
-  // (2) THE FIGURE TRACKS EACH FILE'S OWN WALL. Two-sided on purpose: medium's real
-  // wall is neither extreme, so neither inflation (unfixed: ~1200ms) nor a collapse
-  // to a small constant satisfies it. Measured 633-635ms fixed.
-  assert.ok(medium >= 450 && medium <= 900,
-    `medium.fixture.mjs does ~600ms of work but was reported as ${medium}ms — the figure ` +
-    `does not track this file's own wall:\n${diag}`);
+  // (2) THE FIGURE RESOLVES TWO FILES THAT BOTH DID REAL BUT DIFFERENT WORK. This is
+  // precisely what the old plateau hid — four trivial files reading within ~600ms of
+  // the one real culprit. Holds until the common spawn cost reaches ~1.8s (observed
+  // ~370ms at 2.3x slowdown, so ~4.8x headroom).
+  assert.ok(medium * 1.25 < slow,
+    `medium.fixture.mjs (~600ms of work, reported ${medium}ms) should be clearly cheaper ` +
+    `than slow.fixture.mjs (~1200ms, reported ${slow}ms); the figure is not resolving ` +
+    `their real walls:\n${diag}`);
 
-  // (3) THE RANKING ORDERS BY WALL ACTUALLY SPENT. This is what the line exists to
-  // publish, and it is asserted with a MARGIN rather than by position alone:
-  // unfixed, every figure collapses to within ~1ms, so which name sorts first is a
-  // coin flip (measured: the correct one won 4 of 5 runs). A bare position check
-  // would therefore pass against the broken reporter most of the time. The margin
-  // is ~33x once fixed, and position follows from the reporter's own sort.
-  assert.ok(slow >= 2 * fast,
-    `slow.fixture.mjs (${slow}ms) should dominate fast.fixture.mjs (${fast}ms) by a wide ` +
-    `margin; a near-tie means every file is being charged the same held wall:\n${diag}`);
-  assert.equal(ranking[0].name, 'slow.fixture.mjs',
-    `the file that actually spent the wall must rank first:\n${diag}`);
+  // (3) THE PUBLISHED RANKING IS THE TRUE ORDER. Asserted as the WHOLE sequence, not
+  // "slow is first": unfixed, medium is always LAST (its dequeue is the latest, so it
+  // is charged the least of the held wall) while slow and fast tie to within ~1ms and
+  // trade first place at random — measured, the correct file won first place in 4 of 5
+  // runs, so a first-place-only check would pass against the broken reporter most of
+  // the time. The full sequence never matches unfixed, and always matches fixed.
+  assert.deepEqual(ranking.map(r => r.name),
+    ['slow.fixture.mjs', 'medium.fixture.mjs', 'fast.fixture.mjs'],
+    `the ranking must order files by the wall they actually spent:\n${diag}`);
+
+  // (4) Control, not a discriminator — it also passes against the unfixed reporter.
+  // slow.fixture.mjs sleeps 1200ms, so dispatch→child-done can never be below that
+  // at any load. Kills a mutant that collapses the figure to a small constant.
+  assert.ok(slow >= 1200,
+    `slow.fixture.mjs sleeps 1200ms, so it cannot legitimately report ${slow}ms:\n${diag}`);
 });
