@@ -763,15 +763,17 @@ test('appSwitcher: renders Conductor + plugins, navigates into the hash space, s
 });
 
 // ── app.js wiring: switcher selection after a round-trip ──────────────────
-// app.js wires `installPluginView({ onClosed: () => appSwitcher.sync() })`
-// and every explicit `pluginView.close()` call site (the switcher's own
-// Conductor entry, sidebar Commits) must update location.hash BEFORE
-// calling close() — otherwise sync() reads the still-stale '#plugin/...'
-// hash and re-selects the plugin instead of Conductor. These tests wire the
-// two real modules together (not app.js itself, which is DOM/fetch-heavy
-// bootstrap) and replay each call site's fixed statement order.
+// app.js wires `installPluginView({ onClosed: () => appSwitcher.sync() })`.
+// Extracting that bootstrap into a testable module is out of scope, so these
+// tests wire the two REAL modules together and pin the contract app.js's
+// callbacks rely on: close() fires onClosed, onClosed runs sync(), and
+// sync() re-selects from whatever location.hash is LIVE at that moment — so
+// a caller that has already moved the hash off '#plugin/…' lands on
+// Conductor. The tests author their own callbacks, which means app.js's
+// statement order at each call site (hash write before close()) is NOT
+// exercised here.
 
-test('appSwitcher + pluginView: exiting to Conductor (replaceState-based) re-syncs to conductor, not the stale plugin', async () => {
+test('appSwitcher + pluginView: after the hash moves to a session anchor, close() → onClosed → sync() re-syncs to Conductor, not the stale plugin', async () => {
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   const { select } = buildSwitcherDom(window.document);
@@ -784,9 +786,10 @@ test('appSwitcher + pluginView: exiting to Conductor (replaceState-based) re-syn
   const pluginView = installPluginView({ onClosed: () => appSwitcher?.sync() });
   appSwitcher = installAppSwitcher({
     onExitToConductor: () => {
-      // Fixed order (app.js onExitToConductor): write the destination hash
-      // FIRST, close() second — matches the writeSessionAnchor/pluginView.close()
-      // order in public/app.js.
+      // Test-authored callback: the hash write before close() is this test's
+      // setup, not app.js's statement order (which stays unexercised here).
+      // What runs for real is the module chain — close() → onClosed →
+      // sync(), with sync() reading the live hash.
       window.history.replaceState(null, '', '/#session=abc123');
       pluginView.close();
     },
@@ -803,11 +806,11 @@ test('appSwitcher + pluginView: exiting to Conductor (replaceState-based) re-syn
 
   select.value = 'conductor';
   select.dispatchEvent(new window.Event('change', { bubbles: true }));
-  assert.equal(window.location.hash, '#session=abc123', 'exit path already wrote the destination hash');
+  assert.equal(window.location.hash, '#session=abc123', 'hash moved off the plugin space before close()');
   assert.equal(select.value, 'conductor', 'switcher reflects Conductor, not the torn-down plugin');
 });
 
-test('appSwitcher + pluginView: opening Commits (pushState-based) while a plugin is active re-syncs to conductor', async () => {
+test('appSwitcher + pluginView: after the hash moves to Commits, close() → onClosed → sync() re-syncs to Conductor, not the stale plugin', async () => {
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   const { select } = buildSwitcherDom(window.document);
@@ -829,43 +832,54 @@ test('appSwitcher + pluginView: opening Commits (pushState-based) while a plugin
   await new Promise(r => setTimeout(r, 0));
   assert.equal(select.value, 'fake-plugin');
 
-  // Fixed order (app.js sidebar.onShowCommits): open Commits (pushState)
-  // FIRST, close() second.
+  // Test-authored order (hash write, then close()): app.js's statement order
+  // is not what's under test — the real chain close() → onClosed → sync()
+  // reading the live hash is.
   window.history.pushState(null, '', '/#commits');
   pluginView.close();
   assert.equal(select.value, 'conductor', 'switcher reflects Conductor once Commits owns the hash');
 });
 
 // ── app.js wiring: mobile sidebar collapse on plugin enter/exit ───────────
-// app.js's closeSidebarOnMobile() gates setSidebarOpen(false) behind the
-// same `(max-width: 720px)` query the CSS drawer uses; entering a plugin
-// (pluginView's onShown) and exiting back to Conductor (onExitToConductor)
-// both call it so the drawer reveals the destination view on mobile, while
-// leaving the always-visible desktop column untouched. Mirrors app.js's own
-// setSidebarOpen/closeSidebarOnMobile exactly (not a divergent stub) so the
-// test proves the real contract, not a stand-in for it.
+// app.js routes these navigations through sidebarChrome's REAL
+// closeSidebarOnMobile() (public/sidebarChrome.js), which gates
+// setSidebarOpen(false) behind the same `(max-width: 720px)` query the CSS
+// drawer uses; entering a plugin (pluginView's onShown) and exiting back to
+// Conductor (onExitToConductor) are two of its call sites. These tests drive
+// that real module — installed via installSidebarChrome exactly as
+// tests/sidebar-chrome.test.mjs does, matchMedia pinned the same way — so
+// the actual media-query gate and class mutation execute; what they add
+// over sidebar-chrome is the trigger timing: plugin entry, a direct
+// plugin→plugin switch, and exit to Conductor.
 function buildSidebarDom(document) {
-  const sidebar = document.createElement('aside');
-  sidebar.id = 'sidebar';
-  document.body.appendChild(sidebar);
-  return sidebar;
+  const mk = (tag, id) => { const el = document.createElement(tag); if (id) el.id = id; return el; };
+  const dom = {
+    sidebar: mk('aside', 'sidebar'),
+    sidebarScrim: mk('div', 'sidebar-scrim'),
+    sidebarToggle: mk('button', 'sidebar-toggle'),
+    sidebarOverflowToggle: mk('button', 'sidebar-overflow-toggle'),
+    sidebarOverflowPanel: mk('div', 'sidebar-overflow-panel'),
+    // No sidebarResizeHandle: sidebarChrome guards on it, and the drag
+    // gesture is explicitly unpinned (see tests/sidebar-chrome.test.mjs).
+  };
+  document.body.append(dom.sidebar, dom.sidebarScrim, dom.sidebarToggle,
+    dom.sidebarOverflowToggle, dom.sidebarOverflowPanel);
+  return dom;
 }
-function wireSidebarMobileGate(window, sidebar, { mobile }) {
-  window.matchMedia = () => ({ matches: mobile });
-  function setSidebarOpen(open) { sidebar.classList.toggle('open', open); }
-  function closeSidebarOnMobile() {
-    if (window.matchMedia('(max-width: 720px)').matches) setSidebarOpen(false);
-  }
-  return { setSidebarOpen, closeSidebarOnMobile };
+async function wireSidebarMobileGate(window, dom, { mobile }) {
+  window.matchMedia = (q) => ({ matches: mobile && q === '(max-width: 720px)', media: q });
+  const { installSidebarChrome } = await freshImport('sidebarChrome.js');
+  return installSidebarChrome({ dom });
 }
 
 test('appSwitcher + pluginView: entering a plugin collapses the mobile drawer', async () => {
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   buildSwitcherDom(window.document);
-  const sidebar = buildSidebarDom(window.document);
+  const dom = buildSidebarDom(window.document);
+  const sidebar = dom.sidebar;
   sidebar.classList.add('open'); // drawer open before the switch
-  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: true });
+  const { closeSidebarOnMobile } = await wireSidebarMobileGate(window, dom, { mobile: true });
   stubPluginViewApi({ state: 'ready' });
   await freshImport('hashView.js');
   const { installPluginView } = await freshImport('pluginView.js');
@@ -881,9 +895,10 @@ test('appSwitcher + pluginView: entering a plugin leaves the desktop sidebar ope
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   buildSwitcherDom(window.document);
-  const sidebar = buildSidebarDom(window.document);
+  const dom = buildSidebarDom(window.document);
+  const sidebar = dom.sidebar;
   sidebar.classList.add('open');
-  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: false });
+  const { closeSidebarOnMobile } = await wireSidebarMobileGate(window, dom, { mobile: false });
   stubPluginViewApi({ state: 'ready' });
   await freshImport('hashView.js');
   const { installPluginView } = await freshImport('pluginView.js');
@@ -899,8 +914,9 @@ test('pluginView: switching directly from one plugin to another collapses the mo
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   buildSwitcherDom(window.document);
-  const sidebar = buildSidebarDom(window.document);
-  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: true });
+  const dom = buildSidebarDom(window.document);
+  const sidebar = dom.sidebar;
+  const { closeSidebarOnMobile } = await wireSidebarMobileGate(window, dom, { mobile: true });
   stubPluginViewApi({ state: 'ready' });
   await freshImport('hashView.js');
   const { installPluginView } = await freshImport('pluginView.js');
@@ -922,9 +938,10 @@ test('pluginView: switching directly from one plugin to another leaves the deskt
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   buildSwitcherDom(window.document);
-  const sidebar = buildSidebarDom(window.document);
+  const dom = buildSidebarDom(window.document);
+  const sidebar = dom.sidebar;
   sidebar.classList.add('open');
-  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: false });
+  const { closeSidebarOnMobile } = await wireSidebarMobileGate(window, dom, { mobile: false });
   stubPluginViewApi({ state: 'ready' });
   await freshImport('hashView.js');
   const { installPluginView } = await freshImport('pluginView.js');
@@ -943,8 +960,9 @@ test('appSwitcher + pluginView: returning to Conductor collapses the mobile draw
   const window = makeWindow('http://localhost/#');
   buildViewDom(window.document);
   const { select } = buildSwitcherDom(window.document);
-  const sidebar = buildSidebarDom(window.document);
-  const { closeSidebarOnMobile } = wireSidebarMobileGate(window, sidebar, { mobile: true });
+  const dom = buildSidebarDom(window.document);
+  const sidebar = dom.sidebar;
+  const { closeSidebarOnMobile } = await wireSidebarMobileGate(window, dom, { mobile: true });
   stubPluginViewApi({ state: 'ready' });
   await freshImport('hashView.js');
   const { installPluginView } = await freshImport('pluginView.js');
