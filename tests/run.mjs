@@ -364,11 +364,15 @@ stream.on('test:summary', (d) => {
 // (measured). Preferred over test:summary's own duration_ms, which is measured
 // inside the child and so excludes spawn+import: dispatch->child-done keeps this
 // figure comparable to FILE_KILL_MS, which is a process-lifetime deadline.
-// MEASURED on a quiet 16-core box at the default concurrency, 45 real test files:
-// summary.duration_ms runs 32-295ms LOWER (median 219, mean 179, never higher).
-// The spread is the excluded work itself, so it tracks the file's IMPORT weight —
-// the cheapest files sit at 32-34ms while express+ws importers reach ~295ms — and
-// it widens with concurrency. Do not re-narrow this to a tight range.
+// MEASURED on a 16-core box at the default concurrency, 45 real test files, two
+// samples taken at different ambient loads (idle, and again under a concurrent
+// mutation campaign): summary.duration_ms runs 31-297ms LOWER, median 219-234,
+// mean 179-181, never higher in 90 file observations. The two samples agree
+// closely, so this is not a load artefact. The SPREAD is the excluded work itself,
+// so it tracks the file's IMPORT weight — the cheapest files sit at ~31-35ms while
+// express+ws importers reach ~297ms. Do not re-narrow this to a tight range; an
+// earlier "consistently 25-50ms" claim was ~5x low and described only the cheapest
+// files.
 //
 // Inner tests emit test:complete too (measured: 11 events for tests/diff.test.mjs).
 // The FILE-level one carries name === file, which is the exact discriminator, so
