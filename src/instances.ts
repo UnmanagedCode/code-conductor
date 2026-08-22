@@ -209,7 +209,7 @@ export function isDeadStatus(status: unknown): boolean {
   return status === 'exited' || status === 'crashed';
 }
 
-// Steering message injected into an IDLE subscribed CONDUCTOR when an overage
+// Steering message injected into an IDLE CONDUCTOR AWAITING A WAKE when an overage
 // auto-stop fires (a mid-turn one is soft-interrupted instead — a steer it may
 // silently drop cannot be load-bearing). INSTRUCTION ONLY: it deliberately does not
 // describe what was stopped or which callbacks were dropped. The steer is sent from
@@ -4265,8 +4265,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // gets a direct soft-interrupt, including a conductor and the workers it owns:
   // the steer that used to ask a conductor to halt its own workers is silently
   // dropped by a model that cannot take a mid-turn injection, so nothing may
-  // depend on the conductor acting on it. An IDLE subscribed conductor still gets
-  // the steer as a fresh prompt (nothing to interrupt).
+  // depend on the conductor acting on it. An IDLE conductor awaiting a wake still
+  // gets the steer as a fresh prompt (nothing to interrupt).
   _routeOverageStop({ resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
     // Exempt instances whose agent tree is purely in an unmonitored usage-window
     // domain (e.g. ollama-only): they consume no monitored account window, so
@@ -4318,7 +4318,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         const unarmed = protectedWorkers.has(inst.id);
         this._directOverageStop(inst, { resume, resetsAt, armResume: resume && !unarmed });
         // ASSIGNED, never latched: a later trip can find this worker un-protected
-        // (its conductor gone or idle-unsubscribed), and a stale `true` then refuses
+        // (its conductor gone, or idle with no wake armed), and a stale `true` then refuses
         // every send to an ordinary session that `Stop & resume` says should queue —
         // while the only thing that would clear it is the send it refuses. Worse, a
         // later trip can ARM it, leaving the refusal contradicting a resume timer
@@ -4379,7 +4379,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // session gets: a steer asking it to halt its own workers is silently dropped
   // by a model that cannot take a mid-turn injection, so Pass 3 stops those
   // workers directly instead and nothing here needs to be TOLD anything.
-  // Idle+subscribed → inject a fresh prompt (there is no turn to interrupt), same
+  // Idle+awaiting a wake → inject a fresh prompt (no turn to interrupt), same
   // shape as the idle-wake stub; that branch alone carries
   // `steered:true`. For `stop-resume` BOTH branches arm the conductor's resume:
   // it is the orchestrating brain, so resuming it after the window resets
