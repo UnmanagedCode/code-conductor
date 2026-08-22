@@ -928,7 +928,7 @@ test('project_status on a non-git project returns isGitRepo:false but still list
   await fs.writeFile(path.join(projectsRoot, 'a', 'CLAUDE.md'), '@../CLAUDE.md\n');
   const st = text(await callTool(baseUrl, 'project_status', { project: 'a' }));
   assert.match(st, /^! not a git repo$/m);
-  // The CLAUDE.md seeded by createProject should be there, and as a file (no
+  // The CLAUDE.md the fixture above wrote should be there, and as a file (no
   // trailing slash — that is how the rendering encodes files[].kind).
   assert.match(st, /(^| )CLAUDE\.md( |$)/m);
   // git sections omitted on a non-repo
