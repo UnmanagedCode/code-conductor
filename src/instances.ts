@@ -1241,11 +1241,13 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._interruptArmed = false;
       this._interruptFired = false;
     }
-    // NOT cleared alongside those: the wake this flag qualifies is delivered from
-    // the turn_end that FOLLOWS this transition, and a deferred one from a later
-    // turn_end still belonging to the same abort. A turn START is the only point
-    // at which it is certainly stale.
-    if (next === 'turn') this._turnForceAborted = false;
+    // _turnForceAborted is deliberately NOT cleared here. A turn START looked like
+    // the safe point, but it is not: _onTurnEnd defers an abort's wake while a
+    // subagent is live or a task notification is queued, and the CLI resolves that
+    // by opening an UNPROMPTED re-invocation turn — whose start would have wiped
+    // the qualifier before the wake it qualifies was ever delivered. It is cleared
+    // in prompt() (a genuinely new instruction makes the old abort irrelevant) and
+    // consumed by whichever hub path resolves the wake (consumeTurnForceAborted).
     // The process is gone: a parked steer can never be delivered. Reject each
     // waiter and clear the queue — leaving `steerPending` true on a dead instance
     // would wedge IdleSubscriptionHub's defer indefinitely.
@@ -2478,6 +2480,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // starting. Closing here covers that; the close at the top of prompt()
     // stands for the ordinary post-abort case.
     this._closeDrainWindow();
+    // A new instruction supersedes any earlier force-abort: the wake this turn
+    // arms is a report about THIS turn, so it must not inherit the previous one's
+    // INTERRUPTED qualifier. This is also the only clear that runs when an abort
+    // left nobody armed, so the flag can never latch true indefinitely.
+    this._turnForceAborted = false;
     this._setStatus('turn');
   }
 
@@ -2730,10 +2737,23 @@ export class Instance extends EventEmitter implements InstanceLike {
       // Also disarms any pending deferred fire: the abort is happening now, so a
       // later boundary must not send a second control_request.
       this._interruptFired = true;
-      // The turn_end this abort produces reports an INTERRUPTED turn, not a
-      // finished one — whichever door called us. See _turnForceAborted.
+      // Set BEFORE the await, and rolled back if the abort is never confirmed.
+      // Before is forced by ordering: the CLI's control_response ACK and the
+      // abort's own `result` can arrive in the SAME stdout chunk, and stdout lines
+      // are handled synchronously in a loop — so turn_end can be processed before
+      // the microtask resuming this await ever runs. Setting it afterwards left
+      // that turn_end reading `false` and reporting a killed turn as finished.
+      // The rollback is what makes set-before safe: _controlRequest rejects on
+      // timeout with no retry, and a flag latched on an abort that never landed
+      // would tell every owner their finished work had been discarded, inviting
+      // them to re-drive it.
       this._turnForceAborted = true;
-      await this._controlRequest({ subtype: 'interrupt' });
+      try {
+        await this._controlRequest({ subtype: 'interrupt' });
+      } catch (e) {
+        this._turnForceAborted = false;
+        throw e;
+      }
       this._releaseParkedPermissions();
       // Open the drain window synchronously in the same microtask as the ACK.
       // Any system/init that follows (the CLI dequeuing its leftover input queue)
@@ -2814,8 +2834,18 @@ export class Instance extends EventEmitter implements InstanceLike {
   // resume deadline, and the queue is flushed only by a fired deadline while
   // cancel() discards it. THE ONE PLACE this is tested — prompt() throws on it and
   // the MCP handlers turn it into a soft `OVERAGE_STOPPED_UNARMED` refusal.
-  // Read by IdleSubscriptionHub at turn_end — see _turnForceAborted.
+  // Read by IdleSubscriptionHub on every wake-consuming path — see _turnForceAborted.
   get turnForceAborted(): boolean { return this._turnForceAborted; }
+
+  // Read-and-clear, called once by whichever hub path RESOLVES the aborted turn's
+  // wake. Without it the flag would outlive its wake: an unprompted re-invocation
+  // turn following a consumed abort arms a fresh wake, and that one is about the
+  // new turn, not the abort.
+  consumeTurnForceAborted(): boolean {
+    const was = this._turnForceAborted;
+    this._turnForceAborted = false;
+    return was;
+  }
 
   get overageSendRefused(): boolean {
     if (!this._overageStoppedUnarmed) return false;

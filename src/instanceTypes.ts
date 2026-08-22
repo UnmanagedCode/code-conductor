@@ -107,9 +107,12 @@ export interface InstanceLike {
   readonly autoApprovePlan: boolean;
   readonly playbookEnforcement: PlaybookEnforcement;
   readonly interrupting: boolean;
-  // The CURRENT/just-ended turn was force-aborted. Read by IdleSubscriptionHub at
-  // turn_end so an owner hears "interrupted", not "finished". See src/instances.ts.
+  // The CURRENT/just-ended turn was force-aborted. Read by IdleSubscriptionHub on
+  // every wake-consuming path so an owner hears "interrupted", not "finished", no
+  // matter which path resolves the wake. See src/instances.ts.
   readonly turnForceAborted: boolean;
+  // Read-and-clear of the above, called once by the path that resolves the wake.
+  consumeTurnForceAborted(): boolean;
   readonly liveThinkingTokens: number | null;
   readonly lastContextUsage: unknown;
   readonly ring: { trimmedBefore: number; nextSeq: number };

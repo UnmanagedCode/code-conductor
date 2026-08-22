@@ -53,7 +53,7 @@ const pastSettle = () => sleep(SETTLE_MS + 250);
 const instances = new InstanceManager();
 after(() => instances.shutdown().catch(() => {}));
 
-function makeFake({ id, sessionId, activeAgentTaskCount = 0, taskNotificationPending = false, idleWindowDirty = false }) {
+function makeFake({ id, sessionId, activeAgentTaskCount = 0, taskNotificationPending = false, idleWindowDirty = false, turnForceAborted = false }) {
   const _promptCalls = [];
   const inst = {
     id,
@@ -70,6 +70,10 @@ function makeFake({ id, sessionId, activeAgentTaskCount = 0, taskNotificationPen
     // arrived after the arm" by bumping nextSeq directly.
     ring: { trimmedBefore: 0, nextSeq: 0 },
     ringSnapshot() { return []; },
+    // The force-abort qualifier the hub reads on EVERY consuming path, and its
+    // read-and-clear. Mirrors Instance's real pair.
+    turnForceAborted,
+    consumeTurnForceAborted() { const was = inst.turnForceAborted; inst.turnForceAborted = false; return was; },
     async prompt(text, _atts, opts) { _promptCalls.push({ text, opts }); },
   };
   inst._promptCalls = _promptCalls;
@@ -392,6 +396,90 @@ test('housekeeping: turn_end / purge / disarmSilently cancel a pending settle; a
   instances._idleSubscribers.clear();
   instances._idleHub._cancelAllSettles();
   for (const id of ['c9', 'w9a', 'w9b', 'w9c', 'w9d', 'w9e']) instances.byId.delete(id);
+});
+
+test('a FORCE-ABORTED turn resolved by the settle reports INTERRUPTED, not finished', async () => {
+  // Which path resolves an armed wake is an accident of what the worker was
+  // doing, and the report must not change with it. The reachable shape is
+  // ordinary: worker mid-turn with a backgrounded Agent, someone forces the abort,
+  // the abort's turn_end defers on activeAgentTaskCount > 0, the subagent drains,
+  // and the SETTLE delivers. Before the qualifier was read here, that owner was
+  // told "finished its turn" AND handed the partial aborted output folded in as
+  // the result — the exact misreport the interrupted variant exists to prevent.
+  const cond = makeFake({ id: 'cA', sessionId: 'csA' });
+  const work = makeFake({ id: 'wA', sessionId: 'wsA', turnForceAborted: true });
+  inject(cond, work);
+  armWake('csA', 'wsA');
+
+  emitTaskEvent('wA', 'task_notification');
+  assert.equal(pendingSettles().has('wA'), true);
+  await pastSettle();
+
+  assert.equal(pendingSettles().has('wA'), false, 'the settle fired');
+  assert.equal(cond._promptCalls.length, 1, 'exactly one wake');
+  const text = cond._promptCalls[0].text;
+  assert.match(text, /was INTERRUPTED/, 'the settle path carries the abort qualifier');
+  assert.doesNotMatch(text, /finished its turn/);
+  assert.ok(!text.includes(WAKE_BODY_SEP),
+    'and is never folded — partial aborted output must not read as a result');
+  assert.equal(work.turnForceAborted, false, 'the qualifier is consumed by the path that used it');
+
+  instances._idleSubscribers.clear();
+  instances._idleHub._cancelAllSettles();
+  for (const id of ['cA', 'wA']) instances.byId.delete(id);
+});
+
+test('a FORCE-ABORTED turn resolved by rotation completion reports INTERRUPTED too', async () => {
+  // A prune resolves the same deferred wake through _onRotationComplete. Third
+  // consuming path, same requirement.
+  const cond = makeFake({ id: 'cB', sessionId: 'csB' });
+  const work = makeFake({ id: 'wB', sessionId: 'wsB', turnForceAborted: true });
+  inject(cond, work);
+  armWake('csB', 'wsB');
+
+  instances.emit('event', { id: 'wB', ev: {
+    kind: 'system', subtype: 'rotation_complete', data: { comesUpIdle: true },
+  } });
+  await tick();
+
+  assert.equal(cond._promptCalls.length, 1);
+  assert.match(cond._promptCalls[0].text, /was INTERRUPTED/);
+  assert.doesNotMatch(cond._promptCalls[0].text, /finished its turn/);
+  assert.equal(work.turnForceAborted, false);
+
+  instances._idleSubscribers.clear();
+  for (const id of ['cB', 'wB']) instances.byId.delete(id);
+});
+
+test('a caller-scoped disarm leaves a pending settle standing while another owner remains', async () => {
+  // The housekeeping test above disarms the LAST watcher, so it cannot tell a
+  // correctly-conditional cancel from an unconditional one. With two owners the
+  // settle is still owed to the survivor: cancelling it here would strand the one
+  // wake point a drained-at-idle worker will ever offer.
+  const a = makeFake({ id: 'cC1', sessionId: 'csC1' });
+  const b = makeFake({ id: 'cC2', sessionId: 'csC2' });
+  const work = makeFake({ id: 'wC', sessionId: 'wsC' });
+  instances.byId.set('cC1', a); instances.byId.set('cC2', b); instances.byId.set('wC', work);
+  armWake('csC1', 'wsC');
+  armWake('csC2', 'wsC');
+  assert.equal(instances._idleSubscribers.get('wC').size, 2, 'precondition: two owners armed');
+
+  emitTaskEvent('wC', 'task_notification');
+  assert.equal(pendingSettles().has('wC'), true);
+
+  instances.disarmIdleSilently('csC1', 'wC'); // A forces an abort; B did not ask
+  assert.equal(pendingSettles().has('wC'), true,
+    'the settle survives — it is still owed to the other owner');
+  assert.equal(instances._idleSubscribers.get('wC').size, 1);
+
+  await pastSettle();
+  assert.equal(a._promptCalls.length, 0, 'the disarmed owner hears nothing');
+  assert.equal(b._promptCalls.length, 1, 'the survivor gets its wake from the settle');
+  assert.match(b._promptCalls[0].text, /finished its turn/);
+
+  instances._idleSubscribers.clear();
+  instances._idleHub._cancelAllSettles();
+  for (const id of ['cC1', 'cC2', 'wC']) instances.byId.delete(id);
 });
 
 // ---------------------------------------------------------------------------

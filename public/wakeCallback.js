@@ -32,9 +32,13 @@ export function buildWakeStub({ targetSessionId, payloadText, note = null }) {
   return `${WAKE_CALLBACK_MARKER}${summary}${WAKE_BODY_SEP}${payloadText}`;
 }
 
-// Wrap a body-less wake stub (the timeout-watchdog and live mid-turn steering
-// pointers) with the marker so the UI renders it as a wake bubble WITHOUT a
-// collapsible body — no WAKE_BODY_SEP, nothing to fold. parseWakeCallback
+// Wrap a body-less wake stub — the heartbeat pointer, the live mid-turn steering
+// pointer, and the force-abort INTERRUPTED pointer — with the marker so the UI
+// renders it as a wake bubble WITHOUT a collapsible body: no WAKE_BODY_SEP,
+// nothing to fold. For the interrupted stub that is load-bearing rather than
+// incidental: the separator's presence is this module's "finished result" signal,
+// so folding partial aborted output would make it indistinguishable from a
+// completion at a glance. parseWakeCallback
 // degrades the separator-less result to { summary, body:'' }, which the client
 // uses to pick a plain summary line over a <details>.
 export function markPlainStub(summary) {

@@ -50,7 +50,7 @@
 import { buildRecentMessages } from './mcp/handlers.ts';
 import { flattenPayload } from './mcp/content.ts';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
-import type { InstanceManagerLike } from './instanceTypes.ts';
+import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 
 // The heartbeat interval for EVERY armed wake, AND the ceiling `set_idle_timeout`
@@ -283,17 +283,32 @@ export class IdleSubscriptionHub {
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
-    // A force-aborted turn is reported as INTERRUPTED, not finished. The owner who
-    // called for the abort has already had its own entry silently disarmed
-    // (disarmSilently), so the owners still here are the ones that did not ask for
-    // it — and telling them a killed turn "finished" is the misreport this exists
-    // to prevent. The UI's stop button has no interrupter at all, so on that door
-    // every owner takes this path.
-    const interrupted = target.turnForceAborted === true;
+    const abort = this._takeAbort(target);
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId); // stop the heartbeat — turn_end arrived
-      this.deliver(callerInstanceId, targetInstanceId, interrupted ? { interrupted } : undefined);
+      this.deliver(callerInstanceId, targetInstanceId, abort);
     }
+  }
+
+  // The INTERRUPTED qualifier, or undefined for an ordinary resolution. Read by
+  // EVERY consuming path, not just turn_end: which path happens to resolve an
+  // armed wake is an accident of what the worker was doing, and the report must
+  // not change with it. A force-abort whose turn_end defers on a live subagent is
+  // resolved by the idle-drain settle instead; a prune resolves the same deferred
+  // wake through rotation completion. Both would otherwise say "finished its turn"
+  // AND fold the partial aborted output in as the result.
+  //
+  // The owner that called for the abort has already had its own entry silently
+  // disarmed (disarmSilently), so whoever is still armed did not ask for it — and
+  // the UI's stop button has no interrupter at all, so on that door every owner
+  // takes this path.
+  // Read-and-CLEAR: the qualifier belongs to the one wake this path is resolving.
+  // Leaving it set would let the next turn's wake inherit it (an unprompted
+  // re-invocation following a consumed abort arms a fresh one).
+  _takeAbort(target: InstanceLike | null | undefined): DeliverOpts | undefined {
+    if (target?.turnForceAborted !== true) return undefined;
+    target.consumeTurnForceAborted?.(); // injected test fakes omit the method
+    return { interrupted: true };
   }
 
   // The idle task-drain settle path. Called on every task_updated /
@@ -366,9 +381,10 @@ export class IdleSubscriptionHub {
     subs.clear();
     this.subscribers.delete(targetInstanceId);
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+    const abort = this._takeAbort(inst);
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId); // stop the heartbeat — the settle won
-      this.deliver(callerInstanceId, targetInstanceId);
+      this.deliver(callerInstanceId, targetInstanceId, abort);
     }
   }
 
@@ -393,9 +409,10 @@ export class IdleSubscriptionHub {
     // No watchers left, so any pending idle-drain settle has nothing to deliver to.
     this._cancelSettle(targetInstanceId);
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
+    const abort = this._takeAbort(this.manager.byId.get(targetInstanceId));
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId); // stop the heartbeat — the rotation won
-      this.deliver(callerInstanceId, targetInstanceId);
+      this.deliver(callerInstanceId, targetInstanceId, abort);
     }
   }
 
@@ -592,14 +609,23 @@ export class IdleSubscriptionHub {
   }
 
   // Is this target past every possible wake point — no subprocess AND nothing in
-  // flight that will bring one back? A removed instance qualifies; a live one in
-  // the kill→relaunch gap of a prune/rewind/respawn (or holding `_mutating` around
-  // a destructive rewrite) explicitly does not.
+  // flight that will bring one back? A live instance in the kill→relaunch gap of a
+  // prune/rewind/respawn, or holding `_mutating` around a destructive rewrite,
+  // explicitly is NOT: its wake is still owed.
+  //
+  // The absent-instance case is defensive totality, not a behaviour choice: every
+  // `byId.delete` in InstanceManager is paired with `_purgeIdleFor` in the same
+  // breath, and purge clears this very interval, so a beat cannot outlive its
+  // target's registration. Written as optional chaining rather than an explicit
+  // `if (!t)` branch precisely so it makes no untestable claim — undefined falls
+  // through to `true` (retire), which is the only safe answer if that pairing ever
+  // breaks. `rotationPending` covers the whole rotation window; `rotationInFlight`
+  // is the same `_rotation` field read for its reason, so testing both was one
+  // predicate spelled twice.
   _goneForGood(targetInstanceId: string): boolean {
     const t = this.manager.byId.get(targetInstanceId);
-    if (!t) return true;
-    if (t.proc) return false;
-    return !t.relaunching && t.rotationInFlight == null && !t.rotationPending && !t._mutating;
+    if (t?.proc) return false;
+    return !t?.relaunching && !t?.rotationPending && !t?._mutating;
   }
 
   // Remove one armed entry (clearing its heartbeat) and tidy the maps behind it.
