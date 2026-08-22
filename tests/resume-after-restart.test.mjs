@@ -461,19 +461,31 @@ test('restoreFromResumeManifest prompts busy sessions but not idle sessions', as
     const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
     assert.equal(restored, 2, 'both sessions restored');
 
-    // Poll until the busy session's prompt has arrived.
-    await waitFor(async () => {
-      try { return (await fs.readFile(transcript, 'utf8')).includes(busySid) || (await fs.readFile(transcript, 'utf8')).includes(RESUME_TEXT); }
-      catch { return false; }
-    }, 5000);
+    // RESUME_TEXT carries no session id (neither do stdin lines), so a transcript
+    // count alone proves a COUNT, not a TARGET. Attribute the re-prompt to the
+    // busy session directly: its own ring must carry it as a user echo.
+    const SNIPPET = RESUME_TEXT.slice(0, 40);
+    const echoesWithSnippet = (inst) => inst.ring.toArray()
+      .filter(e => e.kind === 'user_echo' && String(e.text ?? '').includes(SNIPPET));
+    const busyInst = instances.liveForSession(busySid);
+    const idleInst = instances.liveForSession(idleSid);
+    assert.ok(busyInst && idleInst, 'both restored instances are live');
+
+    await waitFor(() => echoesWithSnippet(busyInst).length === 1, 5000);
 
     // Give a short extra window to catch any spurious prompt to the idle session.
     await new Promise(r => setTimeout(r, 300));
 
+    assert.equal(echoesWithSnippet(busyInst).length, 1,
+      'exactly one resume prompt on the BUSY session');
+    assert.equal(echoesWithSnippet(idleInst).length, 0,
+      'the IDLE session was resurrected silently — no resume prompt');
+
+    // Wire-level cross-check over the SHARED fake-claude stdin transcript (both
+    // restored sessions append to one file): exactly one delivered prompt line.
     const dump = await fs.readFile(transcript, 'utf8');
-    // Count how many times the RESUME_TEXT appears — only the busy session should receive it.
-    const promptCount = (dump.match(new RegExp(RESUME_TEXT.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-    assert.equal(promptCount, 1, 'exactly one resume prompt sent (to the busy session)');
+    const promptCount = (dump.match(new RegExp(SNIPPET.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    assert.equal(promptCount, 1, 'exactly one resume prompt sent on the wire overall');
   } finally {
     if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
