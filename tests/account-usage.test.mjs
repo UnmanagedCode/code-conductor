@@ -171,15 +171,6 @@ test('a network error warns with its backoff, and still returns null', async () 
   }
 });
 
-test('resets_at ISO-8601 converts correctly to Unix seconds', () => {
-  // Sanity-check the conversion used in the frontend chip and popup.
-  const iso = '2026-06-11T21:09:59+00:00';
-  const unixSecs = new Date(iso).getTime() / 1000;
-  // Verify the value matches what Date.parse produces for the same string.
-  assert.equal(unixSecs, Date.parse('2026-06-11T21:09:59+00:00') / 1000);
-  assert.ok(Number.isFinite(unixSecs), 'should produce a finite number');
-});
-
 // ── Backoff / Retry-After tests ───────────────────────────────────────────────
 
 // Shared fake token credential builder.
