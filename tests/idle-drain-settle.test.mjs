@@ -407,9 +407,10 @@ test('a FORCE-ABORTED turn resolved by the settle reports INTERRUPTED, not finis
   // told "finished its turn" AND handed the partial aborted output folded in as
   // the result — the exact misreport the interrupted variant exists to prevent.
   const cond = makeFake({ id: 'cA', sessionId: 'csA' });
-  const work = makeFake({ id: 'wA', sessionId: 'wsA', turnForceAborted: true });
+  const work = makeFake({ id: 'wA', sessionId: 'wsA' });
   inject(cond, work);
-  armWake('csA', 'wsA');
+  armWake('csA', 'wsA');       // the turn armed the wake…
+  work.turnForceAborted = true; // …and then it was force-aborted mid-turn
 
   emitTaskEvent('wA', 'task_notification');
   assert.equal(pendingSettles().has('wA'), true);
@@ -422,7 +423,6 @@ test('a FORCE-ABORTED turn resolved by the settle reports INTERRUPTED, not finis
   assert.doesNotMatch(text, /finished its turn/);
   assert.ok(!text.includes(WAKE_BODY_SEP),
     'and is never folded — partial aborted output must not read as a result');
-  assert.equal(work.turnForceAborted, false, 'the qualifier is consumed by the path that used it');
 
   instances._idleSubscribers.clear();
   instances._idleHub._cancelAllSettles();
@@ -433,9 +433,10 @@ test('a FORCE-ABORTED turn resolved by rotation completion reports INTERRUPTED t
   // A prune resolves the same deferred wake through _onRotationComplete. Third
   // consuming path, same requirement.
   const cond = makeFake({ id: 'cB', sessionId: 'csB' });
-  const work = makeFake({ id: 'wB', sessionId: 'wsB', turnForceAborted: true });
+  const work = makeFake({ id: 'wB', sessionId: 'wsB' });
   inject(cond, work);
   armWake('csB', 'wsB');
+  work.turnForceAborted = true;
 
   instances.emit('event', { id: 'wB', ev: {
     kind: 'system', subtype: 'rotation_complete', data: { comesUpIdle: true },
@@ -445,7 +446,6 @@ test('a FORCE-ABORTED turn resolved by rotation completion reports INTERRUPTED t
   assert.equal(cond._promptCalls.length, 1);
   assert.match(cond._promptCalls[0].text, /was INTERRUPTED/);
   assert.doesNotMatch(cond._promptCalls[0].text, /finished its turn/);
-  assert.equal(work.turnForceAborted, false);
 
   instances._idleSubscribers.clear();
   for (const id of ['cB', 'wB']) instances.byId.delete(id);

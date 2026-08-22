@@ -32,6 +32,16 @@ const SCENARIO_BG_CONSUMED = path.join(__dirname, 'fixtures', 'scenario-bg-task-
 // A turn that stays open ~1s and then ends on its own (delay_ms spaces every
 // event), so a short heartbeat can fire several times inside one real turn.
 const SCENARIO_PACED = path.join(__dirname, 'fixtures', 'scenario-paced-turn.json');
+// Same turn, 800ms between events, so the mid-turn span is ~4s. Used where the
+// assertion needs SEVERAL heartbeats inside one turn: with a bounded span the
+// budget for them is the span itself, not waitFor's timeout, and a starved event
+// loop coalesces missed setInterval fires rather than replaying them — so a wide
+// SPAN is the only thing that buys schedule tolerance. A window count does not:
+// halving the interval doubles the windows but survives no longer a stall.
+const SCENARIO_LONG = path.join(__dirname, 'fixtures', 'scenario-long-turn.json');
+// The paced turn, but the fake swallows `interrupt` control_requests instead of
+// auto-ACKing — the only way to stage a REAL _controlRequest timeout end to end.
+const SCENARIO_NO_ACK = path.join(__dirname, 'fixtures', 'scenario-no-interrupt-ack.json');
 // A turn parked mid-text-block that never ends on its own — a SOFT interrupt
 // never reaches an output boundary on it — plus an interrupt turn, so a FORCED
 // interrupt produces the turn_end a real forced abort produces.
@@ -42,6 +52,10 @@ const SCENARIO_UNPROMPTED = path.join(__dirname, 'fixtures', 'scenario-unprompte
 // turn_end therefore DEFERS, the task drains, and an UNPROMPTED re-invocation
 // turn's turn_end is where the deferred wake finally resolves.
 const SCENARIO_ABORT_DEFER = path.join(__dirname, 'fixtures', 'scenario-abort-defer-reinvoke.json');
+// Same open turn, but the abort's turn_end STAYS deferred — the drain and the
+// following turn are gated behind a fresh 'again' prompt, so a new instruction is
+// what moves the deferred wake on.
+const SCENARIO_ABORT_DEFER_THEN_PROMPT = path.join(__dirname, 'fixtures', 'scenario-abort-defer-then-prompt.json');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_WS }); ({ baseUrl, instances } = ctx); });
@@ -698,11 +712,20 @@ test('a SOFT interrupt leaves the wake armed, and the heartbeat keeps firing', a
 
   const soft = unwrap(await callTool('interrupt_turn', { sessionId: targetId }));
   assert.equal(soft.interrupting, true, 'ARMED, not stopped');
-
-  await waitFor(() => countUserEchoes(caller,
-    ev => ev.text?.includes(targetId) && ev.text?.includes('did NOT finish')) >= 2);
+  // Immediate and schedule-free: a disarm would show here with nothing to wait for.
   assert.equal(instances._idleHub.hasArmedWake(target.id), true,
     'a soft interrupt must not clear the wake it is waiting on');
+
+  // A beat strictly AFTER the interrupt — "two in total" could be satisfied by two
+  // that both preceded it, asserting nothing about the interrupt at all.
+  const beats = watchBeats(instances._idleHub, target.id);
+  try {
+    await waitFor(() => beats.n > 0, { timeout: 20000 });
+  } finally {
+    beats.restore();
+  }
+  assert.equal(instances._idleHub.hasArmedWake(target.id), true,
+    'and the beat consumed nothing');
 });
 
 // ── REQUIRED PIN 2: one wake per session across a dispatch + a mid-turn steer ──
@@ -796,6 +819,24 @@ test('a dispatch with no idleTimeoutMs preserves an earlier set_idle_timeout pre
 
 // ── heartbeat tests ──────────────────────────────────────────────────────────
 
+// Count heartbeat deliveries for one target AT THE HUB. "The heartbeat keeps
+// firing" is a statement about the interval, and routing that observation through
+// the caller's fake subprocess (deliver → prompt → stdin → user_echo → ring) puts
+// four contention-sensitive hops between the fact and the assertion — measured:
+// two of eight concurrent copies of this file timed out at 20s waiting for an echo
+// whose beat had almost certainly fired. Where the assertion is about the timer,
+// watch the timer. Where it is about the conductor actually being TOLD (the
+// repeat pin), the echo is the point and stays.
+function watchBeats(hub, targetInstanceId) {
+  const real = hub.deliver.bind(hub);
+  const state = { n: 0, restore() { hub.deliver = real; } };
+  hub.deliver = (callerId, tid, opts) => {
+    if (tid === targetInstanceId && opts?.timedOut) state.n++;
+    return real(callerId, tid, opts);
+  };
+  return state;
+}
+
 // A COMPLETION stub specifically — findStubFor matches any wake naming the
 // target, heartbeat pings included.
 function findCompletionStubFor(inst, targetId) {
@@ -835,7 +876,11 @@ test('the heartbeat repeats without consuming, and the real turn_end wake still 
   // the interval stops.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
-  const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
+  // ~4s of mid-turn span at a 150ms window. The two beats this needs must both
+  // land BEFORE the turn ends, so the span is the real budget — 150ms × 2 inside
+  // 4000ms tolerates a stall of nearly 2s per beat. On the old ~1s span it was
+  // ~350ms, and that is the margin that flaked under a loaded machine.
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_LONG);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
 
@@ -845,7 +890,7 @@ test('the heartbeat repeats without consuming, and the real turn_end wake still 
 
   const beats = () => countUserEchoes(caller,
     ev => ev.text?.includes(targetId) && ev.text?.includes('did NOT finish'));
-  await waitFor(() => beats() >= 2);
+  await waitFor(() => beats() >= 2, { timeout: 20000 });
   const stub = findTimeoutStubFor(caller, targetId);
   assert.match(stub.text, /did NOT finish/);
   assert.match(stub.text, /timed out after 150ms/);
@@ -1014,9 +1059,6 @@ test('a soft interrupt by an IDENTIFIED caller disarms nothing — the heartbeat
   const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
-  const beats = () => countUserEchoes(caller,
-    ev => ev.text?.includes(targetId) && ev.text?.includes('did NOT finish'));
-
   await callTool('send_prompt',
     { sessionId: targetId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
@@ -1025,43 +1067,106 @@ test('a soft interrupt by an IDENTIFIED caller disarms nothing — the heartbeat
   const res = unwrap(await callTool('interrupt_turn',
     { sessionId: targetId }, { caller: callerId }));
   assert.equal(res.interrupting, true, 'ARMED, not stopped');
-  // The fixture parks mid-text-block, so no output boundary ever arrives and the
-  // soft tier never fires — the unbounded wait the heartbeat exists to surface.
-  await waitFor(() => beats() >= 2);
+  // The C2 mutant (`force && callerId` → `callerId`) disarms right here, so this
+  // single assertion kills it with nothing scheduled at all.
   assert.equal(instances._idleHub.hasArmedWake(target.id), true,
     'the caller\'s own soft interrupt must NOT disarm its wake');
-  assert.equal(target.status, 'turn', 'and the turn is still running');
+
+  // The fixture parks mid-text-block, so no output boundary ever arrives and the
+  // soft tier never fires — the unbounded wait the heartbeat exists to surface.
+  const beats = watchBeats(instances._idleHub, target.id);
+  try {
+    await waitFor(() => beats.n > 0, { timeout: 20000 });
+  } finally {
+    beats.restore();
+  }
+  assert.equal(instances._idleHub.hasArmedWake(target.id), true, 'and consumed nothing');
+  assert.equal(target.status, 'turn', 'the turn is still running');
 });
 
-test('an abort the CLI never ACKs leaves no INTERRUPTED qualifier behind', async () => {
-  // The qualifier is latched BEFORE the control_request await, because the ACK and
-  // the abort's own `result` can arrive in one stdout chunk and stdout lines are
-  // handled synchronously — set it afterwards and that turn_end reads false. The
-  // rollback is what makes set-before safe: _controlRequest rejects after 5s with
-  // no retry, and a flag latched on an abort that never landed tells every owner
-  // their FINISHED work was discarded, inviting them to re-drive it.
-  // The fake CLI auto-ACKs every control_request regardless of scenario turns, so
-  // there is no wire-level way to stage a non-ACK here — the rejection is injected
-  // at _controlRequest, which is exactly the seam the real 5s timeout rejects at.
+// The qualifier is latched BEFORE the control_request await, because the ACK and
+// the abort's own `result` can arrive in one stdout chunk and node:readline
+// dispatches every line of a chunk synchronously — set it afterwards and that
+// turn_end reads false. The rollback is what makes set-before safe, but it must
+// distinguish the rejection modes: only some of them mean "the abort did not
+// land". The fake CLI auto-ACKs every control_request regardless of scenario
+// turns, so the rejection is injected at _controlRequest — exactly the seam the
+// real timer rejects at.
+for (const mode of [
+  {
+    name: 'an explicit REFUSAL rolls the qualifier back — the abort provably did not land',
+    // What `ok:false`, dead stdin and `subprocess exited` all produce: no
+    // `timedOut` marker, and a definite negative.
+    err: () => new Error('control_request failed'),
+    expectFlag: false,
+    expectStub: /finished its turn/,
+    rejectStub: /was INTERRUPTED/,
+    why: 'the turn ran on and finished, so that is what the owner is told',
+  },
+  {
+    name: 'a TIMEOUT leaves the qualifier set — the outcome is unknown, not negative',
+    // The 5s timer deletes _pending before rejecting, so a CLI that honours the
+    // interrupt and ACKs at 6s is silently dropped: we do not know. The two error
+    // directions are not symmetric — a false INTERRUPTED costs some re-driving of
+    // good work, a false "finished" hands the conductor partial output as a
+    // complete result — so an unknown outcome reports pessimistically.
+    err: () => Object.assign(new Error('control_request timeout'), { timedOut: true }),
+    expectFlag: true,
+    expectStub: /was INTERRUPTED/,
+    rejectStub: /finished its turn/,
+    why: 'unknown resolves to the pessimistic report, not the dangerous one',
+  },
+]) {
+  test(mode.name, async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const callerId = await spawnReady('p');
+    const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
+    const target = instForSession(instances, targetId);
+    const caller = instForSession(instances, callerId);
+
+    await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId });
+    await waitFor(() => target.status === 'turn');
+
+    const real = target._controlRequest;
+    target._controlRequest = async () => { throw mode.err(); };
+    await assert.rejects(() => target.interrupt({ force: true }));
+    target._controlRequest = real;
+    assert.equal(target.turnForceAborted, mode.expectFlag, mode.why);
+
+    // The paced turn was never actually aborted, so it runs to completion — and
+    // whichever way the flag went is what its wake reports.
+    const stub = await waitFor(() => findStubFor(caller, targetId));
+    assert.match(stub.text, mode.expectStub);
+    assert.doesNotMatch(stub.text, mode.rejectStub);
+    // Either way the pessimism is BOUNDED to that one turn: the turn start that
+    // follows finds no surviving wake and clears.
+    await driveTurn(instances, targetId,
+      () => callTool('send_prompt', { sessionId: targetId, text: 'next' }, { caller: callerId }));
+    assert.equal(target.turnForceAborted, false, 'never leaks into a later turn');
+  });
+}
+
+test('a REAL unanswered interrupt times out and still leaves the qualifier set', async () => {
+  // The two cases above inject the rejection at _controlRequest, so neither
+  // exercises the marker's SOURCE: drop `timedOut` from the real 5s timer and they
+  // both still pass while a genuine timeout silently rolls back. This one goes
+  // through the wire — the fixture's `swallow_control` makes the fake never ACK —
+  // and so pins the whole chain: timer fires → marker set → rollback declines.
+  // It costs one real 5s wait, which is why it is the only test that pays it.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
-  const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_NO_ACK);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
 
   await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
-  const realControlRequest = target._controlRequest;
-  target._controlRequest = async () => { throw new Error('control request timeout'); };
   await assert.rejects(() => target.interrupt({ force: true }), /timeout/i);
-  target._controlRequest = realControlRequest;
-  assert.equal(target.turnForceAborted, false,
-    'an unconfirmed abort must leave no qualifier — the turn may still finish normally');
+  assert.equal(target.turnForceAborted, true,
+    'a real timeout is an UNKNOWN outcome — it must not roll back to "not aborted"');
 
-  // …and it does: the paced turn runs to completion and is reported as finished.
   const stub = await waitFor(() => findStubFor(caller, targetId));
-  assert.match(stub.text, /finished its turn/);
-  assert.doesNotMatch(stub.text, /was INTERRUPTED/);
+  assert.match(stub.text, /was INTERRUPTED/);
 });
 
 // ── the abort qualifier's LIFETIME: cleared too early vs never cleared ────────
@@ -1105,32 +1210,70 @@ test('the abort qualifier survives an UNPROMPTED re-invocation turn that resolve
     ev => ev.text?.includes(targetId) && ev.text?.includes('get_recent_messages')), 1);
 });
 
-test('a NEW prompt clears the abort qualifier, even when the abort woke nobody', async () => {
-  // The other half of the pair. A forced interrupt by the sole owner leaves
-  // NOBODY armed, so no consuming path ever reads the qualifier — without a clear
-  // it latches true and the next turn's wake wrongly reports INTERRUPTED. A
-  // genuinely new instruction is what makes the old abort irrelevant, so prompt()
-  // is where the clear lives.
+test('an unprompted turn after a DISARMED abort is reported on its own terms', async () => {
+  // The hole neither of the other two clears reaches. A SOLE owner forces the
+  // abort, so its own entry is silently disarmed and nothing is left armed; the
+  // abort is confirmed, so the qualifier is latched; no consuming path ever runs
+  // (nothing to consume) and no prompt() ever runs. The CLI still owes the queued
+  // task notification, so it opens an UNPROMPTED re-invocation turn — real work,
+  // which finishes fine — whose turn_start re-arms the owner (ownership surviving
+  // a disarm is by design). Without the survived-a-wake check that turn's wake
+  // said "was INTERRUPTED … do not treat this as a result" about a completed turn.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
-  const targetId = await spawnReadyWithScenario('p', SCENARIO_OPEN);
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_ABORT_DEFER);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
 
   await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
-  await callTool('interrupt_turn', { sessionId: targetId, force: true }, { caller: callerId });
-  await waitFor(() => target.status === 'idle');
-  await settle();
-  assert.equal(findStubFor(caller, targetId), undefined, 'nobody was armed, so nothing was told');
-  assert.equal(target.turnForceAborted, true, 'and the qualifier is still latched');
+  await waitFor(() => target.activeAgentTaskCount > 0);
+  await waitFor(() => instances._idleHub.hasArmedWake(target.id));
 
-  // A fresh dispatch: the wake it arms is about THIS turn.
-  await driveTurn(instances, targetId,
-    () => callTool('send_prompt', { sessionId: targetId, text: 'again' }, { caller: callerId }));
+  // The MCP door WITH a caller: the sole owner is the interrupter, so it is
+  // silently disarmed and nobody is left armed.
+  await callTool('interrupt_turn', { sessionId: targetId, force: true }, { caller: callerId });
+  await waitFor(() => target.turnForceAborted === true);
+  assert.equal(instances._idleHub.hasArmedWake(target.id), false,
+    'precondition: the disarm left nothing armed, so no path can consume the flag');
+
+  // The unprompted re-invocation turn re-arms and completes.
+  await waitFor(() => target.ringSnapshot().filter(ev => ev.kind === 'turn_end').length >= 2);
   const stub = await waitFor(() => findStubFor(caller, targetId));
   assert.match(stub.text, /finished its turn/,
-    'the new turn is reported on its own terms, not the previous abort\'s');
+    'a turn that finished must not inherit the previous abort\'s qualifier');
+  assert.doesNotMatch(stub.text, /was INTERRUPTED/);
+});
+
+test('a NEW prompt clears the abort qualifier even while the aborted wake is still ARMED', async () => {
+  // The case the hub's survived-a-wake check deliberately does NOT clear, so it is
+  // prompt()'s alone: the abort's turn_end deferred on a live background task, so
+  // a wake IS still armed at the next turn start. Left uncleared, the conductor's
+  // own re-drive would come back reported as the previous abort. A new instruction
+  // is what makes that abort irrelevant.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+  const callerId = await spawnReady('p');
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_ABORT_DEFER_THEN_PROMPT);
+  const target = instForSession(instances, targetId);
+  const caller = instForSession(instances, callerId);
+
+  await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId });
+  await waitFor(() => target.status === 'turn');
+  await waitFor(() => target.activeAgentTaskCount > 0);
+  // The UI door, so the owner is NOT disarmed and its wake survives the abort.
+  await target.interrupt({ force: true });
+  await waitFor(() => target.status === 'idle');
+  await settle();
+  assert.equal(instances._idleHub.hasArmedWake(target.id), true,
+    'precondition: the abort\'s turn_end deferred, so a wake survived it');
+  assert.equal(target.turnForceAborted, true, 'and the qualifier is still latched');
+  assert.equal(findStubFor(caller, targetId), undefined, 'nothing delivered yet');
+
+  // A fresh dispatch: the wake it arms is about THIS turn.
+  await callTool('send_prompt', { sessionId: targetId, text: 'again' }, { caller: callerId });
+  const stub = await waitFor(() => findStubFor(caller, targetId));
+  assert.match(stub.text, /finished its turn/,
+    'the re-drive is reported on its own terms, not the previous abort\'s');
   assert.doesNotMatch(stub.text, /was INTERRUPTED/);
 });
 

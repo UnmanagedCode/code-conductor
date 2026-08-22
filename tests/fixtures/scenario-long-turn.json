@@ -17,7 +17,7 @@
    "on": {
     "type": "prompt"
    },
-   "delay_ms": 200,
+   "delay_ms": 800,
    "emit": [
     {
      "type": "stream_event",

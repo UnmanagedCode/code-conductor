@@ -111,7 +111,8 @@ export interface InstanceLike {
   // every wake-consuming path so an owner hears "interrupted", not "finished", no
   // matter which path resolves the wake. See src/instances.ts.
   readonly turnForceAborted: boolean;
-  // Read-and-clear of the above, called once by the path that resolves the wake.
+  // Read-and-clear of the above; the hub calls it at a turn start that no armed
+  // wake survived into, i.e. when the qualifier can no longer describe anything.
   consumeTurnForceAborted(): boolean;
   readonly liveThinkingTokens: number | null;
   readonly lastContextUsage: unknown;

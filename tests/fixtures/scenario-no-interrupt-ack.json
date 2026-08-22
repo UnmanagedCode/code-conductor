@@ -147,5 +147,8 @@
    },
    "emit": []
   }
+ ],
+ "swallow_control": [
+  "interrupt"
  ]
 }

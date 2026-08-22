@@ -283,7 +283,7 @@ export class IdleSubscriptionHub {
     const entries = [...subs.entries()];
     subs.clear();
     this.subscribers.delete(targetInstanceId);
-    const abort = this._takeAbort(target);
+    const abort = this._abortQualifier(target);
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId); // stop the heartbeat — turn_end arrived
       this.deliver(callerInstanceId, targetInstanceId, abort);
@@ -302,13 +302,13 @@ export class IdleSubscriptionHub {
   // disarmed (disarmSilently), so whoever is still armed did not ask for it — and
   // the UI's stop button has no interrupter at all, so on that door every owner
   // takes this path.
-  // Read-and-CLEAR: the qualifier belongs to the one wake this path is resolving.
-  // Leaving it set would let the next turn's wake inherit it (an unprompted
-  // re-invocation following a consumed abort arms a fresh one).
-  _takeAbort(target: InstanceLike | null | undefined): DeliverOpts | undefined {
-    if (target?.turnForceAborted !== true) return undefined;
-    target.consumeTurnForceAborted?.(); // injected test fakes omit the method
-    return { interrupted: true };
+  // Pure READ. It used to clear here too, but onTurnStart's survived-a-wake check
+  // now owns the qualifier's whole lifetime: every consuming path empties this
+  // target's `subscribers` entry, so the next turn start necessarily sees
+  // survived === false and clears. Clearing in both places left a line no test
+  // could distinguish — one responsibility, one home.
+  _abortQualifier(target: InstanceLike | null | undefined): DeliverOpts | undefined {
+    return target?.turnForceAborted === true ? { interrupted: true } : undefined;
   }
 
   // The idle task-drain settle path. Called on every task_updated /
@@ -381,7 +381,7 @@ export class IdleSubscriptionHub {
     subs.clear();
     this.subscribers.delete(targetInstanceId);
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
-    const abort = this._takeAbort(inst);
+    const abort = this._abortQualifier(inst);
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId); // stop the heartbeat — the settle won
       this.deliver(callerInstanceId, targetInstanceId, abort);
@@ -409,7 +409,7 @@ export class IdleSubscriptionHub {
     // No watchers left, so any pending idle-drain settle has nothing to deliver to.
     this._cancelSettle(targetInstanceId);
     this.manager.emit('subscription_changed', { targetId: targetInstanceId });
-    const abort = this._takeAbort(this.manager.byId.get(targetInstanceId));
+    const abort = this._abortQualifier(this.manager.byId.get(targetInstanceId));
     for (const [callerInstanceId, { timerId }] of entries) {
       clearInterval(timerId); // stop the heartbeat — the rotation won
       this.deliver(callerInstanceId, targetInstanceId, abort);
@@ -512,10 +512,25 @@ export class IdleSubscriptionHub {
   // one wake per live owner; owners already armed are left alone, which is what
   // makes a mid-turn steer deliver ONE wake rather than two.
   onTurnStart(targetInstanceId: string): void {
+    // Read BEFORE arming: did a wake survive from the previous turn into this
+    // transition? That is the discriminator for the abort qualifier's third and
+    // last hole. If something WAS armed, it is the deferred wake of the aborted
+    // turn and the qualifier still belongs to it (the CLI resolves a deferred
+    // wake by opening exactly this kind of unprompted re-invocation turn). If
+    // nothing was armed, no wake survived that the qualifier could describe — so a
+    // flag still set here is stale, and the only way to get one is the case
+    // neither other clear reaches: a SOLE owner forced the abort, its own entry
+    // was silently disarmed, so no consuming path ever ran consumeTurnForceAborted
+    // and no prompt() ever ran either, while the CLI still owed a queued
+    // notification and opened an unprompted turn that does real work and finishes
+    // fine. Without this, that turn's wake reported "was INTERRUPTED … do not
+    // treat this as a result" about a completed turn.
+    const survived = (this.subscribers.get(targetInstanceId)?.size ?? 0) > 0;
     let armed = false;
     for (const callerInstanceId of this.ownersOf(targetInstanceId)) {
       if (this._arm(targetInstanceId, callerInstanceId)) armed = true;
     }
+    if (!survived) this.manager.byId.get(targetInstanceId)?.consumeTurnForceAborted?.();
     if (armed) this.manager.emit('subscription_changed', { targetId: targetInstanceId });
   }
 

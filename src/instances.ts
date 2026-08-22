@@ -2480,10 +2480,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // starting. Closing here covers that; the close at the top of prompt()
     // stands for the ordinary post-abort case.
     this._closeDrainWindow();
-    // A new instruction supersedes any earlier force-abort: the wake this turn
-    // arms is a report about THIS turn, so it must not inherit the previous one's
-    // INTERRUPTED qualifier. This is also the only clear that runs when an abort
-    // left nobody armed, so the flag can never latch true indefinitely.
+    // A new instruction supersedes any earlier force-abort, INCLUDING one whose
+    // wake is still armed and deferred: the conductor has re-driven the worker, so
+    // the wake this turn arms is a report about THIS turn. That armed-and-deferred
+    // case is the one the hub's survived-a-wake check deliberately does not clear,
+    // which is why this clear is not redundant with it.
     this._turnForceAborted = false;
     this._setStatus('turn');
   }
@@ -2638,8 +2639,15 @@ export class Instance extends EventEmitter implements InstanceLike {
     const requestId = randomUUID();
     const p = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
+        // `timedOut` distinguishes the ONE rejection mode that does not mean "the
+        // request did not land". Deleting _pending here makes a later
+        // control_response unroutable, so a CLI that honours the interrupt and
+        // ACKs at 6s rejects us and is then silently dropped: the outcome is
+        // genuinely UNKNOWN, not negative. The other modes (an explicit
+        // `ok:false` refusal, a dead-stdin throw, `subprocess exited`) do mean it
+        // did not land. Interrupt's abort-qualifier rollback keys off this.
         this._pending.delete(requestId);
-        reject(new Error('control_request timeout'));
+        reject(Object.assign(new Error('control_request timeout'), { timedOut: true }));
       }, timeout);
       this._pending.set(requestId, { resolve, reject, timer });
     });
@@ -2743,15 +2751,25 @@ export class Instance extends EventEmitter implements InstanceLike {
       // are handled synchronously in a loop — so turn_end can be processed before
       // the microtask resuming this await ever runs. Setting it afterwards left
       // that turn_end reading `false` and reporting a killed turn as finished.
-      // The rollback is what makes set-before safe: _controlRequest rejects on
-      // timeout with no retry, and a flag latched on an abort that never landed
-      // would tell every owner their finished work had been discarded, inviting
-      // them to re-drive it.
+      // The rollback is what makes set-before safe: a flag latched on an abort
+      // that never landed would tell every owner their finished work had been
+      // discarded, inviting them to re-drive it.
+      //
+      // But it rolls back ONLY on the modes that mean "it did not land" — an
+      // explicit refusal, dead stdin, `subprocess exited`. A TIMEOUT means the
+      // outcome is unknown (the 5s timer deletes _pending, so a CLI that honours
+      // the interrupt and ACKs late is dropped), and the two error directions are
+      // not symmetric: a false INTERRUPTED costs a conductor some re-driving of
+      // good work, while a false "finished its turn" hands it partial output as a
+      // complete result — the failure this whole variant exists to prevent. On an
+      // unknown outcome the honest report is the pessimistic one, and the cost is
+      // bounded to exactly the one turn in doubt because whichever path resolves
+      // that turn's wake consumes the flag.
       this._turnForceAborted = true;
       try {
         await this._controlRequest({ subtype: 'interrupt' });
       } catch (e) {
-        this._turnForceAborted = false;
+        if (!(e as { timedOut?: boolean })?.timedOut) this._turnForceAborted = false;
         throw e;
       }
       this._releaseParkedPermissions();
@@ -2837,10 +2855,11 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Read by IdleSubscriptionHub on every wake-consuming path — see _turnForceAborted.
   get turnForceAborted(): boolean { return this._turnForceAborted; }
 
-  // Read-and-clear, called once by whichever hub path RESOLVES the aborted turn's
-  // wake. Without it the flag would outlive its wake: an unprompted re-invocation
-  // turn following a consumed abort arms a fresh wake, and that one is about the
-  // new turn, not the abort.
+  // Read-and-clear, called by IdleSubscriptionHub.onTurnStart when NO armed wake
+  // survived into this turn — i.e. nothing is left that the qualifier could
+  // describe. That is the hub's single home for the qualifier's lifetime; the only
+  // other clear is in prompt(), for the case a wake DID survive but a new
+  // instruction superseded the abort anyway.
   consumeTurnForceAborted(): boolean {
     const was = this._turnForceAborted;
     this._turnForceAborted = false;
