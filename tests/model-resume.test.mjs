@@ -397,9 +397,13 @@ for (const c of BARE_REPORT_CASES) {
   });
 }
 
-// A genuine interactive switch on the IDENTITY backend must still fire
-// model_changed — the suppression above must not have swallowed the real signal.
-test('claude backend: a genuinely different model report still emits model_changed', async () => {
+// The suppression guard's positive branch, pinned directly at the _trackModel
+// seam: on a non-identity backend, a report DIFFERING from the current model
+// must still fire model_changed — suppression may only swallow reports that
+// canonicalize back to the model already running. (The wire-level positive path
+// — an actual stream report switching models mid-session — is covered by the
+// system/init flip test above.)
+test('claude backend: _trackModel suppression does not fire when the reported model differs on a non-identity backend', async () => {
   const ctx = await bootServer({ scenarioPath: BARE_MODEL_SCENARIO });
   try {
     await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
@@ -415,8 +419,8 @@ test('claude backend: a genuinely different model report still emits model_chang
     inst.on('event', (ev) => {
       if (ev.kind === 'system' && ev.subtype === 'model_changed') seen.push(ev);
     });
-    // The fixture reports 'qwen2.5-coder' — on the claude backend that is a
-    // genuinely different id, so it IS a switch.
+    // Driven straight through _trackModel with an id different from the current
+    // one — exactly the input the suppression must pass through unfiltered.
     inst._trackModel('claude-haiku-4-5');
     assert.equal(seen.length, 1, 'model_changed fires for a real switch on the claude backend');
     assert.equal(seen[0].data.from, 'claude-opus-4-8');

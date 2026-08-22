@@ -1033,16 +1033,52 @@ test('stop-resume: an internal prompt during the wait window is NOT queued and d
 
 test('stop-resume: queued attachments are concatenated into the single resume prompt', async () => {
   await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
-  const inst = await spawnIdle();
-  inst.prompt('go');
-  await waitFor(() => inst.autoResumeAt != null);
+  // Capture what actually reaches the CLI: the queue contents alone don't prove
+  // the delivery ever fired (pattern: ws-deferred-steer E-T4 reads the fake's
+  // stdin transcript for the delivered text).
+  const transcriptPath = path.join(home, 'resume-flush-stdin.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  try {
+    const inst = await spawnIdle();
+    inst.prompt('go');
+    await waitFor(() => inst.autoResumeAt != null);
 
-  const att = (name) => ({ name, mediaType: 'text/plain', dataBase64: Buffer.from(name).toString('base64') });
-  await inst.prompt('with file A', [att('a.txt')]);
-  await inst.prompt('with file B', [att('b.txt')]);
-  await waitFor(() => inst._overageQueue.length === 2);
-  // Both queued entries retain their attachment for the combined delivery.
-  assert.equal(inst._overageQueue.flatMap(e => e.attachments).length, 2, 'two attachments queued for one send');
+    const att = (name) => ({ name, mediaType: 'text/plain', dataBase64: Buffer.from(name).toString('base64') });
+    await inst.prompt('with file A', [att('a.txt')]);
+    await inst.prompt('with file B', [att('b.txt')]);
+    await waitFor(() => inst._overageQueue.length === 2);
+    // Both queued entries retain their attachment for the combined delivery.
+    assert.equal(inst._overageQueue.flatMap(e => e.attachments).length, 2, 'two attachments queued for one send');
+
+    // Fire the armed resume deterministically and read the DELIVERED prompt.
+    assert.equal(ctx.instances._fireAutoResumeNow(inst.id), true, 'pending resume fired');
+
+    const stdinTextsOfUserLines = async () => {
+      const dump = await fs.readFile(transcriptPath, 'utf8').catch(() => '');
+      return dump.split('\n').filter(Boolean).map(l => JSON.parse(l))
+        .filter(l => l.type === 'user')
+        .map(u => (u.message?.content ?? [])
+          .filter(p => typeof p?.text === 'string').map(p => p.text).join('\n'))
+        .filter(t => t.includes(AUTO_RESUME_TEXT));
+    };
+    await waitFor(async () => (await stdinTextsOfUserLines()).length === 1, { timeout: 10000 });
+    await new Promise(r => setTimeout(r, 200)); // settle — catch any duplicate send
+
+    const delivered = await stdinTextsOfUserLines();
+    assert.equal(delivered.length, 1, 'exactly ONE resume prompt reached the CLI stdin');
+    for (const frag of ['with file A', 'with file B']) {
+      assert.ok(delivered[0].includes(frag),
+        `queued text "${frag}" is in the single resume prompt; got ${JSON.stringify(delivered[0])}`);
+    }
+    // Each queued attachment rode along as its own `Attached file:` block.
+    assert.match(delivered[0], /^Attached file: `.*a\.txt`$/m,
+      `a.txt reached the single resume prompt; got ${JSON.stringify(delivered[0])}`);
+    assert.match(delivered[0], /^Attached file: `.*b\.txt`$/m,
+      `b.txt reached the single resume prompt; got ${JSON.stringify(delivered[0])}`);
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    await fs.rm(transcriptPath, { force: true });
+  }
 });
 
 // ── GLOBAL stop-and-queue lockout ──────────────────────────────────────────

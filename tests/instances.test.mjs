@@ -318,6 +318,10 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
   const rp = await bootServer({ scenarioPath: SCENARIO, realProcess: true });
   const transcriptPath = path.join(rp.tmpHome, 'transcript.log');
   process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  // The fake engine overwrites this per launch (one argv per line), so after the
+  // respawn the file holds exactly the respawn's own argv.
+  const argvPath = path.join(rp.tmpHome, 'argv.txt');
+  process.env.FAKE_CLAUDE_ARGV_DUMP = argvPath;
   try {
     await api(rp.baseUrl, 'POST', '/api/projects', { name: 'demo' });
     const r = await api(rp.baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
@@ -325,6 +329,7 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
     const inst = rp.instances.get(id);
     await waitFor(() => inst.status === 'idle' && inst.sessionId);
     const sid = inst.sessionId;
+    const backingSid = inst.backingSessionId;
     const originalPid = inst.pid;
     inst.prompt('initial');
     await waitFor(() => inst.status === 'idle' && inst.ring.toArray().some(e => e.kind === 'turn_end'));
@@ -341,14 +346,26 @@ test('crash + respawn preserves sessionId, ring buffer, and uses --resume', asyn
     await waitFor(() => inst.status === 'idle' && inst.pid && inst.sessionId === sid);
     assert.notEqual(inst.pid, originalPid);
 
-    // Inspect fake-claude transcripts to confirm the respawn used --resume.
-    // The transcript only captures stdin from instance → fake-claude; argv is verified by
-    // checking process.argv in fake-claude... but we don't capture argv. Instead, assert
-    // that sessionId is unchanged after respawn (only --resume preserves it across the
-    // restart; --session-id would have rolled a fresh one).
+    // sessionId stability alone cannot pin the resume flag: launch() passes the
+    // SAME backingSessionId under `--resume` OR `--session-id` (src/instances.ts),
+    // so a flip between the flags would still report an unchanged sessionId. Read
+    // the captured argv instead — the dump was overwritten by this respawn's own
+    // launch, and it must carry `--resume <backing id>`.
+    await waitFor(async () => {
+      try { return (await fs.readFile(argvPath, 'utf8')).includes('--resume'); }
+      catch { return false; }
+    });
+    const argv = (await fs.readFile(argvPath, 'utf8')).split('\n').filter(Boolean);
     assert.equal(inst.sessionId, sid, 'sessionId unchanged after respawn');
+    const rm = argv.indexOf('--resume');
+    assert.ok(rm >= 0, `respawn argv must carry --resume; argv was: ${argv.join(' ')}`);
+    assert.equal(argv[rm + 1], backingSid,
+      '--resume targets the PRE-CRASH backing session (public id is not what reaches argv)');
+    assert.equal(argv.includes('--session-id'), false,
+      `respawn must not fall back to minting a fresh session; argv was: ${argv.join(' ')}`);
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    delete process.env.FAKE_CLAUDE_ARGV_DUMP;
     await rp.close();
   }
 });

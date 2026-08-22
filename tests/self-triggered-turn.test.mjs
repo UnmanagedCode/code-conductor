@@ -92,12 +92,34 @@ test('turn_end returns a self-triggered turn to idle', async () => {
   assert.equal(inst.status, 'idle', 'turn_end restores idle after a self-triggered turn');
 });
 
-test('multiple message_start events within a turn are idempotent (stay turn)', async () => {
+// A background-task completion mid-turn — the shape that sets
+// _taskNotificationPending (the CLI owes an unprompted re-invocation turn).
+function injectTaskNotification(inst) {
+  inst._handleStdoutLine(JSON.stringify({
+    type: 'system', subtype: 'task_notification', task_id: 't1', tool_use_id: 'tu_1',
+    status: 'completed', output_file: '',
+  }));
+}
+
+test('repeated message_start within a turn stays turn and does NOT consume taskNotificationPending', async () => {
   const { inst } = await setupInstance();
 
   injectMessageStart(inst, 'msg_step1');
+  assert.equal(inst.status, 'turn');
+
+  // A subagent completed mid-turn with no top-level tool_result after it: the
+  // notification is queued and an unprompted re-invocation turn is owed.
+  injectTaskNotification(inst);
+  assert.equal(inst.taskNotificationPending, true, 'mid-turn completion flags the owed turn');
+
   injectMessageStart(inst, 'msg_step2'); // next agent-loop step
   assert.equal(inst.status, 'turn', 'repeated message_start is a no-op while already turn');
+  // The guard's real consequence: the second message_start must not re-run the
+  // idle→turn transition's side effects — an unguarded _setStatus('turn') clears
+  // _taskNotificationPending at every real transition INTO turn, which would
+  // consume the owed re-invocation here.
+  assert.equal(inst.taskNotificationPending, true,
+    'a mid-turn message_start did not consume the pending notification');
 
   injectResult(inst);
   assert.equal(inst.status, 'idle');

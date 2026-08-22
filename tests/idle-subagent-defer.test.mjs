@@ -22,7 +22,17 @@
 
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { InstanceManager, Instance } from '../src/instances.ts';
+
+// The default watchdog length is a module-load-time constant
+// (src/idleSubscriptions.ts DEFAULT_SUBSCRIBE_TIMEOUT_MS ←
+// ORCH_SUBSCRIBE_TIMEOUT_MS), so the short test value must be set BEFORE
+// src/instances.ts is imported — hence the dynamic import below (same pattern
+// as idle-drain-settle.test.mjs).
+process.env.ORCH_SUBSCRIBE_TIMEOUT_MS = '400';
+const DEFAULT_WATCHDOG_MS = 400;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const { InstanceManager, Instance } = await import('../src/instances.ts');
 
 const instances = new InstanceManager();
 after(() => instances.shutdown().catch(() => {}));
@@ -152,20 +162,28 @@ test('(e) regression: a normal no-subagent turn_end delivers immediately', async
   cleanup(cond, work);
 });
 
-test('every subscription arms a watchdog by default (no explicit timeoutMs)', () => {
+test('every subscription arms a watchdog by default — the default deadline fires the timeout stub', async () => {
   const cond = makeFake({ id: 'c4', sessionId: 'cs4' });
   const work = makeFake({ id: 'w4', sessionId: 'ws4' });
   inject(cond, work);
-  instances.subscribeIdle('cs4', 'ws4'); // no timeoutMs
+  instances.subscribeIdle('cs4', 'ws4'); // no timeoutMs → DEFAULT_SUBSCRIBE_TIMEOUT_MS
 
   const entry = instances._idleSubscribers.get('w4')?.get('c4');
   assert.ok(entry, 'subscription registered');
   assert.notEqual(entry.timerId, null,
     'a default watchdog timer is armed even with no explicit timeoutMs');
 
-  instances.unsubscribeIdle('cs4', 'ws4'); // clears the timer
-  instances.byId.delete('c4');
-  instances.byId.delete('w4');
+  // No turn_end ever arrives, so ONLY the default-length watchdog can deliver:
+  // wait past that deadline and observe the non-completion stub actually arrive.
+  await sleep(DEFAULT_WATCHDOG_MS + 250);
+  assert.equal(cond._promptCalls.length, 1, 'the default watchdog fired exactly once');
+  assert.match(cond._promptCalls[0].text, /did NOT finish/,
+    'the stub is the non-completion "did NOT finish" wording');
+  assert.match(cond._promptCalls[0].text, new RegExp(`timed out after ${DEFAULT_WATCHDOG_MS}ms`),
+    'the stub names the DEFAULT deadline, not an explicit one');
+  assert.equal(instances._idleHub.hasSubscriber('w4'), false, 'watchdog consumed the subscription');
+
+  cleanup(cond, work);
 });
 
 test('(d) watchdog still fires across a deferral when a subagent never completes', async () => {
