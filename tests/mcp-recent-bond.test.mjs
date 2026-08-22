@@ -147,16 +147,18 @@ test('get_recent_messages: default call bonds a split AskUserQuestion + trailing
   assert.ok(!Object.hasOwn(res.messages[1], 'questionCount'));
 });
 
-test('get_recent_messages: bonding never walks back more than one message', async () => {
+test('get_recent_messages: bonding stops at the turn boundary even when the immediate predecessor carries no plan/question', async () => {
   const sessionId = await spawnWithScenario(SCENARIO_QUESTION, 'a');
   await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'ask me' }));
   // Second turn: a further pure-prose message. Its immediate predecessor
-  // ("Waiting for your response.") is pure prose too, so the question two
-  // messages back must NOT be pulled in.
+  // ("Waiting for your response.") is pure prose too, but it closed the
+  // PREVIOUS turn — the walk must stop at the turn boundary rather than pull
+  // the question two messages back. (Within one turn the walk DOES span
+  // several prose messages — see the multi-trailing case above.)
   await driveTurn(instances, sessionId, () => callTool(baseUrl, 'send_prompt', { sessionId, text: 'continue' }));
 
   const res = unwrapMessages(await callTool(baseUrl, 'get_recent_messages', { sessionId }));
-  assert.equal(res.messages.length, 1, 'no bonding when the immediate predecessor has no plan/questions');
+  assert.equal(res.messages.length, 1, 'no bonding across the turn boundary');
   assert.equal(res.messages[0].text, 'got it');
 });
 

@@ -14,6 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { RateLimitTracker, RL_BUCKET_KEYS } from '../public/usage.js';
+import { installAccountUsage } from '../public/accountUsage.js';
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,26 @@ function makeFetchEvent(accountUsage) {
       // isUsingOverage intentionally absent — fetch never knows this
     }},
   };
+}
+
+// Real-module harness (the tests/client-account-usage.test.mjs idiom): a
+// stubbed global fetch serving one scripted /api/usage reply, plus an
+// installAccountUsage handle wired to a fresh tracker. The two fetch-fallback
+// tests below drive THIS, so the bucket-priority and 0-100 → 0-1 conversions
+// they assert are production's, not makeFetchEvent's test-local mirror.
+function stubFetch(reply) {
+  globalThis.fetch = () => reply();
+}
+const ok = (body) => () => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+
+function setupRealModule() {
+  const tracker = new RateLimitTracker();
+  const handle = installAccountUsage({
+    globalRLTracker: tracker,
+    getActiveId: () => 'inst-1',
+    headerUpdate: () => {},
+  });
+  return { handle, tracker };
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────
@@ -147,21 +168,26 @@ test('non-rate-limit events are silently ignored', () => {
   assert.equal(tracker.info, null, 'info stays null for unrelated events');
 });
 
-test('fetch skips all-null buckets and falls back to next priority', () => {
-  const accountUsage = {
+test('fetch skips all-null buckets and falls back to the next priority', async () => {
+  stubFetch(ok({ usage: {
     five_hour: null,
     seven_day: null,
     seven_day_sonnet: { utilization: 20, resets_at: '2026-06-21T00:00:00.000Z' },
     seven_day_opus: null,
-  };
-  const ev = makeFetchEvent(accountUsage);
-  assert.ok(ev, 'should produce a synthetic event for the next non-null bucket');
-  assert.equal(ev.data.rate_limit_info.rateLimitType, 'seven_day_sonnet');
-  assert.ok(Math.abs(ev.data.rate_limit_info.utilization - 0.20) < 0.001);
+  }}));
+  const { handle, tracker } = setupRealModule();
+  await handle.refresh();
+  assert.equal(tracker.info.rateLimitType, 'seven_day_sonnet',
+    'the first non-null bucket in RL_BUCKET_KEYS order wins');
+  assert.ok(Math.abs(tracker.info.utilization - 0.20) < 0.001, 'normalises 0-100 → 0-1');
+  assert.ok(Number.isFinite(tracker.info.resetsAt), 'resets_at converted to epoch seconds');
 });
 
-test('fetch returns null when all buckets are null', () => {
-  const accountUsage = { five_hour: null, seven_day: null, seven_day_sonnet: null, seven_day_opus: null };
-  const ev = makeFetchEvent(accountUsage);
-  assert.equal(ev, null, 'no synthetic event when no non-null bucket exists');
+test('fetch applies no synthetic event when all buckets are null', async () => {
+  const usage = { five_hour: null, seven_day: null, seven_day_sonnet: null, seven_day_opus: null };
+  stubFetch(ok({ usage }));
+  const { handle, tracker } = setupRealModule();
+  await handle.refresh();
+  assert.equal(tracker.info, null, 'no non-null bucket → no synthetic rate_limit_event');
+  assert.deepEqual(handle.get(), usage, 'the payload itself is still stored as last-good');
 });
