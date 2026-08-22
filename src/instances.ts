@@ -1247,7 +1247,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // by opening an UNPROMPTED re-invocation turn — whose start would have wiped
     // the qualifier before the wake it qualifies was ever delivered. It is cleared
     // in prompt() (a genuinely new instruction makes the old abort irrelevant) and
-    // consumed by whichever hub path resolves the wake (consumeTurnForceAborted).
+    // by IdleSubscriptionHub.onTurnStart on a turn start that no armed wake survived
+    // into — which is the same "turn START" point, minus exactly the case above.
     // The process is gone: a parked steer can never be delivered. Reject each
     // waiter and clear the queue — leaving `steerPending` true on a dead instance
     // would wedge IdleSubscriptionHub's defer indefinitely.
@@ -2763,8 +2764,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       // good work, while a false "finished its turn" hands it partial output as a
       // complete result — the failure this whole variant exists to prevent. On an
       // unknown outcome the honest report is the pessimistic one, and the cost is
-      // bounded to exactly the one turn in doubt because whichever path resolves
-      // that turn's wake consumes the flag.
+      // bounded to exactly the one turn in doubt: the next turn start finds no
+      // surviving wake and clears the flag, so it never reaches a later turn.
       this._turnForceAborted = true;
       try {
         await this._controlRequest({ subtype: 'interrupt' });

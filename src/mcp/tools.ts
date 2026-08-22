@@ -509,7 +509,7 @@ export function buildTools(): Tool[] {
     },
     {
       name: 'interrupt_turn',
-      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped, and the boundary wait is UNBOUNDED — a long-running tool call defers it indefinitely, which is why the soft tier leaves your wake armed and the heartbeat keeps pinging until the turn really ends. Pass force:true to abort immediately, discarding in-progress work: that also CLEARS your pending wake on the target and delivers none, since the turn_end it produces is one you caused rather than the worker finishing.',
+      description: 'Stop the current turn of a running instance. Default (soft) arms a deferred abort: it fires at the next output boundary — nothing mid-stream, every dispatched tool returned — so partial output and finished tool work are preserved. Returns interrupting:true meaning ARMED, not stopped, and the boundary wait is UNBOUNDED — a long-running tool call defers it indefinitely, which is why the soft tier leaves your wake armed and the heartbeat keeps pinging until the turn really ends. Pass force:true to abort immediately, discarding in-progress work: that also CLEARS your pending wake on the target and delivers none, since the turn_end it produces is one you caused rather than the worker finishing Only YOURS: a worker can have several owners, and any other conductor waiting on it is woken at that turn_end and told the turn was INTERRUPTED with partial output.',
       inputSchema: {
         type: 'object',
         properties: {

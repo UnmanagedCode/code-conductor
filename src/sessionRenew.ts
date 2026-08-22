@@ -218,7 +218,7 @@ export class SessionRenewController {
     // Open the rotation window HERE — mid-turn, when the tool is called — not at
     // the clear. The idle hub's listener runs before this controller's, so a
     // window opened any later would already have let the ARMED turn_end consume a
-    // waiting conductor's one-shot a turn early. beginRotation is idempotent for
+    // waiting conductor's wake a turn early. beginRotation is idempotent for
     // the same mechanism, so a re-arm does not restart it.
     const armed = this.manager.byId.get(instanceId);
     armed?.beginRotation('renew');
