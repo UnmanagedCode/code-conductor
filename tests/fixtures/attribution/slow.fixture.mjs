@@ -6,8 +6,9 @@
 // up during a normal suite run — same reason tests/fixtures/hang/ uses the suffix.
 import test from 'node:test';
 
-// ~1200ms: long enough that a held summary charges the other two fixtures an
-// unmistakable ~1.2s, short enough to keep the whole regression file at ~1.3s.
-test('slow fixture: occupies ~1200ms of wall', async () => {
-  await new Promise(r => setTimeout(r, 1200));
+// 1700ms, and PAIRED WITH medium.fixture.mjs's 1200ms — the two sleeps are chosen
+// together, so changing one alone weakens an assertion. See the threshold algebra
+// at the top of tests/summary-attribution.test.mjs before touching either.
+test('slow fixture: occupies ~1700ms of wall', async () => {
+  await new Promise(r => setTimeout(r, 1700));
 });

@@ -12,8 +12,12 @@
 // would satisfy. A file whose real wall is neither extreme cannot be faked by
 // either direction of error. It also costs no wall time: it runs inside the window
 // slow.fixture.mjs is already holding open.
+// 1200ms, PAIRED WITH slow.fixture.mjs's 1700ms — see the threshold algebra at the
+// top of tests/summary-attribution.test.mjs. Raising this sleep alone widens
+// assertion (1)'s tolerance but NARROWS assertion (2)'s; the two move in opposite
+// directions and were solved together.
 import test from 'node:test';
 
-test('medium fixture: occupies ~600ms of wall', async () => {
-  await new Promise(r => setTimeout(r, 600));
+test('medium fixture: occupies ~1200ms of wall', async () => {
+  await new Promise(r => setTimeout(r, 1200));
 });

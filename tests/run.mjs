@@ -52,11 +52,15 @@ try {
 // Half the cores, capped at 8. Override with TEST_CONCURRENCY (1 restores the
 // old fully-serial behavior).
 //
-// THE CAP WAS 4, AND THE `cores / 2` TERM IS UNCHANGED — only the ceiling moved,
-// so nothing below 16 cores changes at all (an 8-core box still gets 4, a 4-core
-// box still gets 2). Measured on a 16-core box, where both terms bind at once and
-// every figure below is therefore the literal output of this expression, not an
-// extrapolation from a different core count:
+// THE CAP WAS 4, AND THE `cores / 2` TERM IS UNCHANGED — only the ceiling moved.
+// BE PRECISE ABOUT WHERE THAT BITES: the two expressions agree only while
+// floor(cores / 2) <= 4, i.e. at **9 cores or fewer** (an 8-core box still gets 4,
+// a 4-core box still gets 2). From 10 cores up the cap is no longer what binds and
+// the result rises with the core count — 10 cores now gets 5, 12 gets 6, 14 gets 7,
+// 16+ gets 8. A 12-core CI machine therefore DOES change behaviour here.
+// Measured on a 16-core box, where both terms bind at once and every figure below
+// is therefore the literal output of this expression, not an extrapolation from a
+// different core count:
 //   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
 //     double the ambient load, and cannot go below the floor named next.
 //   * the floor is one file, tests/hang-guard.test.mjs, at ~30.0s — DEADLINE-bound,
@@ -358,9 +362,13 @@ stream.on('test:summary', (d) => {
 //
 // test:complete fires at the file's real completion and is order-independent
 // (measured). Preferred over test:summary's own duration_ms, which is measured
-// inside the child and excludes spawn+import (consistently 25-50ms lower):
-// dispatch->child-done keeps this figure comparable to FILE_KILL_MS, which is a
-// process-lifetime deadline.
+// inside the child and so excludes spawn+import: dispatch->child-done keeps this
+// figure comparable to FILE_KILL_MS, which is a process-lifetime deadline.
+// MEASURED on a quiet 16-core box at the default concurrency, 45 real test files:
+// summary.duration_ms runs 32-295ms LOWER (median 219, mean 179, never higher).
+// The spread is the excluded work itself, so it tracks the file's IMPORT weight —
+// the cheapest files sit at 32-34ms while express+ws importers reach ~295ms — and
+// it widens with concurrency. Do not re-narrow this to a tight range.
 //
 // Inner tests emit test:complete too (measured: 11 events for tests/diff.test.mjs).
 // The FILE-level one carries name === file, which is the exact discriminator, so
