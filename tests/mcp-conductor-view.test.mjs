@@ -136,14 +136,39 @@ test('every conductor-facing projection emits exactly the allowlist', async () =
 
 });
 
+test('respawn_instance returns exactly the allowlist over the wire', async () => {
+  // respawn_instance's success path needs an EXITED-but-still-in-memory
+  // instance, and no MCP-spawned session can ever be in that state:
+  // spawn_instance always spawns temp, and a temp worker is dropped from byId
+  // the moment its process exits. So arrange that state over REST instead —
+  // create NON-temp (byId retains non-temps indefinitely) and kill the
+  // instance directly on the Instance object; DELETE /api/instances/:id would
+  // remove it from byId and turn the call into the SESSION_NOT_LIVE refusal.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'demo4' });
+  const created = await api(baseUrl, 'POST', '/api/instances',
+    { project: 'demo4', temp: false, mode: 'bypassPermissions' });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const inst = instances.get(created.body.id);
+  assert.ok(inst, 'REST-created instance must be in byId');
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const sessionId = inst.sessionId;
+  await inst.kill({ graceMs: 50 });
+  await waitFor(() => !inst.proc && (inst.status === 'exited' || inst.status === 'crashed'));
+
+  const view = await callTool('respawn_instance', { sessionId });
+  assert.equal(view.sessionId, sessionId,
+    'the respawned session is returned — anything else here is a soft refusal body');
+  assert.deepEqual(sorted(Object.keys(view)), sorted(CONDUCTOR_VIEW_KEYS),
+    'respawn_instance must emit exactly the allowlist, same as spawn_instance');
+});
+
 test('every worker-summary handler routes through the single projection', async () => {
-  // respawn_instance's success path needs a CRASHED-but-still-in-memory
-  // instance, which this harness can't arrange cleanly (kill removes it, and a
-  // live one is refused with SESSION_NOT_LIVE / "still running"). The
-  // lifecycle-verified call site above plus this source-level check together
-  // cover every handler that projects a worker summary: nothing may hand-roll
-  // its own worker projection, because a second projection is exactly how a
-  // field escapes the documented list.
+  // Defense-in-depth behind the wire checks above (spawn_instance and
+  // respawn_instance both have one now). This scrape pins what a key-set check
+  // cannot: that every worker-summary handler routes through the ONE shared
+  // projection. A handler that hand-rolled its own projection emitting exactly
+  // CONDUCTOR_VIEW_KEYS would pass its wire check but fail here — a second
+  // projection is exactly how a field escapes the documented list.
   const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts'), 'utf8');
   for (const fn of ['listSessions', 'spawnInstance', 'respawnInstance']) {
     const at = src.indexOf(`export async function ${fn}(`);
