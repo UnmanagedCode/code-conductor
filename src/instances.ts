@@ -812,10 +812,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // persisted across a resume-restart.
     this._overageWasIdleParked = false;
     // Set for the duration of the auto-resume's OWN send: that prompt is the one turn
-    // that MUST start inside a still-active lockout, and prompt() reaches
-    // _setStatus('turn') → turn_start synchronously, before the controller can release
-    // the global lock (and the release no-ops while any other session is still
-    // parked). Exempts exactly that turn from _guardOverageTurnStart.
+    // allowed to start inside a still-active lockout, so it is exempted from
+    // _guardOverageTurnStart. The FLAG is the mechanism, deliberately — whether the
+    // lockout is still live at that turn_start depends on the interleaving (see
+    // OverageResumeController.run), so a check on the gate or the parked count would
+    // pass only sometimes.
     this._overageResumeFiring = false;
     // Two INDEPENDENT facts a stopped conductor's resume prompt must carry, each
     // gated on its own flag because either can hold without the other: a callback
@@ -4508,9 +4509,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // (so a domain-exempt session is out).
   _guardOverageTurnStart(inst: Instance): void {
     if (!(inst._overageGate ? inst._overageGate().active : false)) return;
-    // The auto-resume's own fire is the one turn that MUST run: prompt() reaches
-    // turn_start synchronously, before the controller can release the global lock —
-    // and that release no-ops while any other session is still parked.
+    // The auto-resume's own fire is the one turn that MUST run. Tested by FLAG, not
+    // by re-deriving whether the lockout is still live at this instant: it may or may
+    // not be, depending on the interleaving (see OverageResumeController.run).
     if (inst._overageResumeFiring) return;
     inst._emitUi({ kind: 'system', subtype: 'soft_interrupted', data: { text: OVERAGE_TURN_BLOCKED_TEXT } });
     this._severOverageWakes(inst);

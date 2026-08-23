@@ -358,11 +358,15 @@ export class OverageResumeController {
       if (queue.length) {
         inst._emitUi({ kind: 'system', subtype: 'auto_resume', data: { count: queue.length } });
       }
-      // Exempt THIS send's turn from the overage turn-start guard: the lockout can
-      // still be active here (the global gate only lifts once the LAST parked session
-      // resolves), and prompt() reaches turn_start synchronously — before
-      // _resolveDue's _maybeReleaseOverageLock can run. Cleared in .finally(), which
-      // by construction runs after that synchronous turn_start.
+      // Exempt THIS send's turn from the overage turn-start guard. The lockout can
+      // still be active when that turn starts: with an EMPTY queue prompt() has no
+      // `await` before _setStatus('turn'), so turn_start fires inside this frame —
+      // before _resolveDue calls _maybeReleaseOverageLock at all. With QUEUED
+      // ATTACHMENTS it yields at each `await saveAttachment(...)` first, and we do not
+      // await this prompt, so the release can interleave and lift the gate before
+      // turn_start. The flag covers BOTH: it is set before the call and cleared in
+      // .finally(), which runs when the prompt resolves — hence always after the
+      // _setStatus('turn') inside it, whichever way the interleaving fell.
       inst._overageResumeFiring = true;
       inst.prompt(text, attachments, { internal: true })
         .catch(() => {})
