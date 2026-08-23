@@ -4361,8 +4361,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 
   // True iff the instance's ROOT agent tree touches a domain with an ACTIVE
-  // usage-window monitor — the single predicate the overage stop/resume flow
-  // consults. ROOT-SCOPED (card 2026-0212): the unit of stopping is the TREE, so
+  // usage-window monitor — the single predicate every STOP-SIDE decision consults
+  // (routing's `live` filter, the per-instance gate, and everything the gate feeds).
+  // ROOT-SCOPED (card 2026-0212): the unit of stopping is the TREE, so
   // membership is resolved from the tree's root, not from the session. A tree with
   // no Claude agent → e.g. {ollama} → unmonitored → EXEMPT (never auto-stopped,
   // queued, or armed). A tree with any Claude agent → {anthropic} → in-flow — which
@@ -4398,8 +4399,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     //     its conductor is Claude.
     // Strictly narrower than `_inUsageWindowFlow`: a claude-backed session is always a
     // member of its own root's tree, so this cannot admit a trip the root-scoped
-    // predicate would reject. The poll monitor passes inst=null (account-global) and
-    // is unaffected.
+    // predicate would reject. The narrowing also refuses a TRUE trip, not just false
+    // ones: a custom backend that actually PROXIES the Anthropic endpoint gets a
+    // namespaced `backend:<id>` domain, so its own `rate_limit_event` can no longer
+    // trip the flow even in a mixed tree where a Claude ancestor previously admitted
+    // it. Accepted — a proxy row is indistinguishable from any other custom backend
+    // here, and the real window is still caught by identity-`claude` sessions' own
+    // events and by the account-global poll path. The poll monitor passes inst=null
+    // (account-global) and is unaffected by either predicate.
     if (inst && !isMonitoredDomain(usageDomainOfBackend(inst.backend))) return;
     if (this._overageActive) return;        // one-shot while active
     this._overageActive = true;
