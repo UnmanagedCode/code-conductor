@@ -209,19 +209,14 @@ export function isDeadStatus(status: unknown): boolean {
   return status === 'exited' || status === 'crashed';
 }
 
-// Steering message injected into an IDLE CONDUCTOR AWAITING A WAKE when an overage
-// auto-stop fires (a mid-turn one is soft-interrupted instead — a steer it may
-// silently drop cannot be load-bearing). INSTRUCTION ONLY: it deliberately does not
-// describe what was stopped or which callbacks were dropped. The steer is sent from
-// Pass 2, BEFORE Pass 3 decides either — and Pass 3 skips a worker that is already
-// idle — so any such claim can be false on arrival, and nothing the conductor does
-// depends on being told who stopped what. The resume prompt is where the observed
-// outcome is reported, per-fact (buildConductorResumePreamble).
-const OVERAGE_CONDUCTOR_STEER_TEXT =
-  '⚠️ An overage auto-stop just fired: the account has crossed its rate-limit ' +
-  'threshold. STOP dispatching work: do not message your workers and do not wait to ' +
-  'be woken; end your own turn. Do not start new workers until the rate-limit window ' +
-  'has reset.';
+// Annotation on the `soft_interrupted` event the turn-start guard emits when a
+// turn begins during an overage lockout. Rendered by public/blocks.js as
+// `⏸ Turn interrupted: <text>` — the observed defect was that such a turn was cut
+// SILENTLY, so naming the lockout as the cause is the point. Not sent to the CLI:
+// nothing may be written to a session during the window.
+const OVERAGE_TURN_BLOCKED_TEXT =
+  'the overage lockout is still active — this turn was stopped rather than run ' +
+  'against the throttled account.';
 
 // Prepended to user messages delivered while the worker is mid-turn. Keeps
 // the user's text verbatim but gives the worker timing context: the message
@@ -557,6 +552,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   _overageResetsAt: number | null;
   _overageHandled: boolean;
   _overageWasStopped: boolean;
+  _overageWasIdleParked: boolean;
+  _overageResumeFiring: boolean;
   _overageDroppedCallbacks: boolean;
   _overageUnarmedWorkers: boolean;
   _overageStoppedUnarmed: boolean;
@@ -801,12 +798,26 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.autoResumeAt = null;
     this._overageResetsAt = null;
     this._overageHandled = false;
-    // True when this session was genuinely stopped MID-WORK (direct interrupt /
-    // conductor steer) vs. queued-only (idle/new session that queued while the
-    // global window was active). Softens the resume preamble for queued-only —
-    // buildCombinedResumeText drops "continue where you left off". Reset on
-    // (re)spawn; persisted across a resume-restart.
+    // True when this session was genuinely stopped MID-WORK by a direct interrupt.
+    // FIRST of the three resume-preamble selectors resolved by `overageResumeKind`
+    // (src/overageResume.ts): this flag → AUTO_RESUME_TEXT ("continue where you left
+    // off"); `_overageWasIdleParked` below → IDLE_PARKED_RESUME_TEXT; neither →
+    // the softened queued-only line. Reset on (re)spawn; persisted across a
+    // resume-restart.
     this._overageWasStopped = false;
+    // True when the overage stop found this session ALREADY IDLE: nothing of its own
+    // was interrupted, so neither "continue where you left off" nor the queued-only
+    // line is true for it — it gets IDLE_PARKED_RESUME_TEXT. Third selector of the
+    // resume preamble (src/overageResume.ts → overageResumeKind). Reset on (re)spawn;
+    // persisted across a resume-restart.
+    this._overageWasIdleParked = false;
+    // Set for the duration of the auto-resume's OWN send: that prompt is the one turn
+    // allowed to start inside a still-active lockout, so it is exempted from
+    // _guardOverageTurnStart. The FLAG is the mechanism, deliberately — whether the
+    // lockout is still live at that turn_start depends on the interleaving (see
+    // OverageResumeController.run), so a check on the gate or the parked count would
+    // pass only sometimes.
+    this._overageResumeFiring = false;
     // Two INDEPENDENT facts a stopped conductor's resume prompt must carry, each
     // gated on its own flag because either can hold without the other: a callback
     // can be severed with no un-armed worker (it was waiting on a session it does
@@ -1602,6 +1613,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._overageResetsAt = null;
     this._overageHandled = false;
     this._overageWasStopped = false;
+    this._overageWasIdleParked = false;
+    this._overageResumeFiring = false;
     this._overageDroppedCallbacks = false;
     this._overageUnarmedWorkers = false;
     this._overageStoppedUnarmed = false;
@@ -2365,9 +2378,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (idle/never-stopped/brand-new session sending during the window). The gate
     // enforces the safety rail (only a valid FUTURE resetsAt engages it) — see
     // InstanceManager._overageGate. Return BEFORE emitting `user_prompt` so the
-    // manager's resume-cancel handler never runs. Internal prompts (idle-wake
-    // stub, conductor steer, and the auto-resume's own send — which first clears
-    // these flags via cancel) fall through and resume normally.
+    // manager's resume-cancel handler never runs. `internal:true` is the WHOLE
+    // condition for falling through here — no site list gates it — so this stays
+    // true as senders come and go. Today's senders, as examples: the idle-wake
+    // stub, the renewal reseed (sessionRenew.ts), and the auto-resume's own send
+    // (which first clears these flags via cancel).
     const gate = this._overageGate ? this._overageGate() : { active: false, resetsAt: null };
     // A worker the overage stop left UN-ARMED has no resume deadline and must never
     // get one: its conductor is the sole driver, and arming it would have the
@@ -2407,13 +2422,13 @@ export class Instance extends EventEmitter implements InstanceLike {
       this.emit('status', this.summary()); // push queuedCount → badges
       return;
     }
-    // A genuine (user/MCP-driven) prompt cancels a pending overage auto-resume —
-    // the session is being driven again. Orchestrator-injected prompts
-    // (`internal:true` — the idle-wake stub, the conductor overage
-    // steer, and the auto-resume's own send) must NOT cancel it and must skip the
-    // global queue intercept above: the auto-resume already tore down its own
-    // deadline via cancel() before sending, and the global window may still be
-    // active when it fires.
+    // A prompt cancels a pending overage auto-resume IFF it is not `internal` —
+    // the flag is the whole test, and the manager's `user_prompt` handler reads
+    // nothing else. `internal:true` senders today, as examples: the idle-wake stub,
+    // the renewal reseed (sessionRenew.ts), and the auto-resume's own send. The
+    // last is why the carve-out also has to skip the global queue intercept above:
+    // it already tore down its own deadline via cancel() before sending, and the
+    // global window may still be active when it fires.
     this.emit('user_prompt', { internal });
     const safeText = typeof text === 'string' ? text : '';
     const atts = Array.isArray(attachments) ? attachments : [];
@@ -4146,19 +4161,26 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // A queued-only (idle/new) session signals it needs a resume deadline armed
     // immediately — it has no mid-turn→idle transition for the status handler to
     // arm on.
-    inst.on('overage_queued', (info: { resetsAt: number | null }) => this._armQueuedOnly(inst, info?.resetsAt));
+    inst.on('overage_queued', (info: { resetsAt: number | null }) => this._armResumeNow(inst, info?.resetsAt));
     // A turn began on this session — arm the idle wake for each of its owners.
     // Emitted from _setStatus's into-`turn` branch, so it covers prompted and
     // unprompted turns alike. See src/idleSubscriptions.ts.
-    inst.on('turn_start', () => this._idleHub.onTurnStart(inst.id));
+    //
+    // The overage guard runs AFTER onTurnStart, deliberately: onTurnStart owns the
+    // survived-a-wake / consumeTurnForceAborted bookkeeping, and severing before it
+    // would make `survived` read false and change the abort qualifier's lifetime.
+    inst.on('turn_start', () => {
+      this._idleHub.onTurnStart(inst.id);
+      this._guardOverageTurnStart(inst);
+    });
     // A user/MCP-driven turn cancels any pending overage auto-resume. If the
     // turn is a manual takeover of an overage-stopped session, it also clears
     // the global overage flag so the stop can trip again. Capture the flag
     // BEFORE cancel (which resets it). Orchestrator-injected prompts
-    // (`internal` — idle-wake, conductor overage steer) skip this:
-    // they must not discard a pending resume armed for an overage-stopped
-    // session (the auto-resume's own fire sends a non-internal prompt, so its
-    // teardown still runs).
+    // (`internal` — e.g. the idle-wake stub) skip this: they must not discard a
+    // pending resume armed for an overage-stopped session. The auto-resume's own
+    // fire is `internal:true` too and tears its deadline down by calling cancel()
+    // directly (src/overageResume.ts → run()).
     inst.on('user_prompt', (meta: { internal: boolean }) => {
       if (meta?.internal) return;
       const wasOverageStopped = inst.autoStoppedForOverage;
@@ -4233,11 +4255,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // keeps these names/signatures and forwards to the controller (internal
   // callers + the overage tests reach for them on the manager).
   _armAutoResume(inst: Instance): void { return this._overageResume.arm(inst); }
-  // Arm a resume deadline for a queued-only session (idle/new — it queued a send
-  // while the global window was active but was never stopped mid-work). The
-  // status→idle arm path can't fire for it, so arm here off the window reset.
-  // Leaves `_overageWasStopped` false so the resume preamble stays softened.
-  _armQueuedOnly(inst: Instance, resetsAt: number | null): void {
+  // Arm a resume deadline IMMEDIATELY, for a session with no turn→idle transition
+  // for the status handler to arm on. Two callers, two reasons:
+  //   - a QUEUED-ONLY session (idle/new — it queued a send while the window was
+  //     active but was never stopped mid-work): it may already be idle;
+  //   - an IDLE-PARKED conductor (`_directOverageStop` with midTurn false): it is
+  //     never prompted and never interrupted, so it never transitions at all.
+  // Deliberately touches NO preamble selector — `_overageWasStopped` /
+  // `_overageWasIdleParked` are the caller's to set (queued-only leaves both false).
+  _armResumeNow(inst: Instance, resetsAt: number | null): void {
     if (inst.autoResumeAt || this._autoResumeTimers.has(inst.id)) return; // already armed
     // A worker the stop left un-armed stays un-armed: its conductor is the sole
     // driver. Backstop — prompt() refuses such a send before it can queue, so this
@@ -4336,75 +4362,70 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     this._armOverageClear(this._overageResetsAt);
   }
 
-  // Route a single overage stop across all live instances. Every mid-turn session
-  // gets a direct soft-interrupt, including a conductor and the workers it owns:
-  // the steer that used to ask a conductor to halt its own workers is silently
-  // dropped by a model that cannot take a mid-turn injection, so nothing may
-  // depend on the conductor acting on it. An IDLE conductor awaiting a wake still
-  // gets the steer as a fresh prompt (nothing to interrupt).
+  // Route a single overage stop across all live instances. EVERY session it
+  // touches gets `_directOverageStop` — nothing is sent to anything: the account is
+  // throttled, so a message into it is exactly the burn the stop exists to prevent
+  // (card 2026-0203). A mid-turn session is soft-interrupted; an idle one has no
+  // turn to interrupt and is instead severed, marked, and armed for resume on the
+  // spot.
   _routeOverageStop({ resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
     // Exempt instances whose agent tree is purely in an unmonitored usage-window
     // domain (e.g. ollama-only): they consume no monitored account window, so
-    // they are never stopped/steered/marked. A Claude conductor with an
+    // they are never stopped/marked. A Claude conductor with an
     // ollama-only worker keeps the worker running and stops the conductor.
     const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
-    // Pass 1: resolve which conductors to steer and which workers they protect.
-    const steerConductors = new Map<string, Instance>();  // conductor id → conductor instance
-    const protectedWorkers = new Set<string>(); // worker ids owned by a steered conductor
+    // Pass 1: resolve which conductors are in control and which workers they protect.
+    const inControlConductors = new Map<string, Instance>();  // conductor id → conductor instance
+    const protectedWorkers = new Set<string>(); // worker ids owned by an in-control conductor
     for (const inst of live) {
       if (!inst.conducted) continue;
       const conductor = this._ownerConductor(inst);
       const inControl = conductor && conductor.proc &&
         (conductor.status === 'turn' || this.isIdleCaller(conductor.id));
       if (inControl) {
-        steerConductors.set(conductor.id, conductor);
+        inControlConductors.set(conductor.id, conductor);
         protectedWorkers.add(inst.id);
       }
     }
-    // Pass 2: steer each in-control conductor once (it owns ≥1 protected worker).
-    for (const conductor of steerConductors.values()) {
-      this._steerConductor(conductor, { resume, resetsAt });
+    // Pass 2: stop each in-control conductor once (it owns ≥1 protected worker).
+    // Mid-turn OR idle — `_directOverageStop` handles both, and the idle case is
+    // reachable ONLY from here (Pass 3 skips anything not `status === 'turn'`).
+    for (const conductor of inControlConductors.values()) {
+      this._directOverageStop(conductor, { resume, resetsAt });
     }
     // Pass 3: stop every other mid-turn instance — plain sessions, conducted
     // workers (with or without an in-control conductor), and the Conduct
     // orchestrator when it has no in-control workers (it tripped itself, or its
     // workers were momentarily idle). Only Pass 2's conductors are skipped; their
-    // workers are NOT, because the steer that used to stop them can be dropped by
-    // the model.
+    // workers are NOT: the conductor is not asked to halt them, so they are stopped
+    // directly.
     //
-    // This loop only runs for `status === 'turn'`, so its `_steerConductor` call
-    // reaches only that function's mid-turn delegation to `_directOverageStop` — the
-    // orchestrator gets the SAME soft interrupt as everything else. Collapsing the
-    // steer to an instruction-only constant removed the last reader of `hasWorkers`,
-    // so this branch is now behaviourally identical to its `else` for a `.conduct`
-    // session (never `conducted`, so never a protected worker); collapsing the two
-    // is card 2026-0189. _steerConductor's idle branch is reachable from Pass 2 only.
+    // ONE branch (card 2026-0189): a `.conduct` orchestrator is never `conducted`,
+    // so it is never a protected worker ⇒ `unarmed` is false for it ⇒ it takes
+    // exactly the arming the old conductor branch gave it, and `if (!unarmed)
+    // continue` skips the owner-marking that does not apply.
     for (const inst of live) {
-      if (steerConductors.has(inst.id)) continue;
+      if (inControlConductors.has(inst.id)) continue;
       if (inst.status !== 'turn') continue;
-      if (isConductorInstance(inst)) {
-        this._steerConductor(inst, { resume, resetsAt });
-      } else {
-        // A worker owned by an in-control conductor is stopped but deliberately
-        // left UN-ARMED: its conductor is the sole driver on resume (told so by
-        // UNARMED_WORKERS_CLAUSE, src/overageResume.ts). Arming it too would have the
-        // conductor's re-drive land mid-turn on a worker that just self-resumed —
-        // the very mid-turn injection this whole path exists to avoid.
-        const unarmed = protectedWorkers.has(inst.id);
-        this._directOverageStop(inst, { resume, resetsAt, armResume: resume && !unarmed });
-        // ASSIGNED, never latched: a later trip can find this worker un-protected
-        // (its conductor gone, or idle with no wake armed), and a stale `true` then refuses
-        // every send to an ordinary session that `Stop & resume` says should queue —
-        // while the only thing that would clear it is the send it refuses. Worse, a
-        // later trip can ARM it, leaving the refusal contradicting a resume timer
-        // that demonstrably will fire.
-        inst._overageStoppedUnarmed = unarmed;
-        if (!unarmed) continue;
-        // Its conductor is marked too: severForOverageStop only reports a severed
-        // CALLBACK, and a conductor can own workers while holding no subscription.
-        const owner = this._ownerConductor(inst);
-        if (owner) owner._overageUnarmedWorkers = true;
-      }
+      // A worker owned by an in-control conductor is stopped but deliberately
+      // left UN-ARMED: its conductor is the sole driver on resume (told so by
+      // UNARMED_WORKERS_CLAUSE, src/overageResume.ts). Arming it too would have the
+      // conductor's re-drive land mid-turn on a worker that just self-resumed —
+      // the very mid-turn injection this whole path exists to avoid.
+      const unarmed = protectedWorkers.has(inst.id);
+      this._directOverageStop(inst, { resume, resetsAt, armResume: resume && !unarmed });
+      // ASSIGNED, never latched: a later trip can find this worker un-protected
+      // (its conductor gone, or idle with no wake armed), and a stale `true` then refuses
+      // every send to an ordinary session that `Stop & resume` says should queue —
+      // while the only thing that would clear it is the send it refuses. Worse, a
+      // later trip can ARM it, leaving the refusal contradicting a resume timer
+      // that demonstrably will fire.
+      inst._overageStoppedUnarmed = unarmed;
+      if (!unarmed) continue;
+      // Its conductor is marked too: severForOverageStop only reports a severed
+      // CALLBACK, and a conductor can own workers while holding no subscription.
+      const owner = this._ownerConductor(inst);
+      if (owner) owner._overageUnarmedWorkers = true;
     }
   }
 
@@ -4417,84 +4438,84 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return this.byId.get(callerId) ?? null;
   }
 
-  // Direct soft-interrupt path (the preserved pre-refactor behavior). For
-  // stop-resume, mark the instance so the status handler arms its per-session
-  // resume timer on the resulting turn→idle transition. `armResume` defaults to
-  // `resume` and splits off only for a conductor's own worker, which is stopped
-  // un-armed.
+  // The ONE stop path, for every session routing touches — mid-turn or idle.
+  // NOTHING is sent here: the account is throttled, so a message into it is the
+  // burn the stop exists to prevent (card 2026-0203). For stop-resume, mark the
+  // instance so its resume arms. `armResume` defaults to `resume` and splits off
+  // only for a conductor's own worker, which is stopped un-armed.
   //
   // The event carries `armResume`, NOT the routing mode: `public/blocks.js` renders
   // `resume:true` as "auto-resuming at ⟨time⟩", which for an un-armed worker names
   // a resume that will never happen — and contradicts its own null `autoResumeAt`
   // badge.
   _directOverageStop(inst: Instance, { resume, resetsAt, armResume = resume }: { resume: boolean; resetsAt: number | null; armResume?: boolean }): void {
+    // Read BEFORE the interrupt — which is the SOFT tier and changes no status
+    // synchronously, but reading first makes that independent of the tier.
+    const midTurn = inst.status === 'turn';
     if (armResume) {
       inst.autoStoppedForOverage = true;
-      inst._overageWasStopped = true; // genuinely stopped mid-work → full preamble
+      // The preamble selector: stopped mid-work gets "continue where you left off";
+      // an already-idle session had nothing of its own interrupted and must not be
+      // told otherwise (src/overageResume.ts → overageResumeKind).
+      inst._overageWasStopped = midTurn;
+      inst._overageWasIdleParked = !midTurn;
       inst._overageResetsAt = resetsAt;
     }
     inst._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume: armResume, resetsAt } });
-    // Sever the subscription graph around a session being stopped, and MARK every
-    // caller that loses a wait — marked, not notified: the mark only reaches a
-    // caller that has a resume prompt of its own to carry it, which an un-armed or
-    // plain-`stop` caller does not. Why sever at all: its turn_end must wake nobody
-    // (the wake is
-    // `internal:true`, which the overage queue intercept deliberately does not
-    // hold, so it would start a fresh turn inside the lockout) and nothing may
-    // later wake it. Done here rather than per-conductor because THIS is the one
-    // place a session is stopped, and the hazard belongs to the stop.
+    this._severOverageWakes(inst);
+    // Harmless no-op when the session is already idle: interrupt() returns
+    // immediately on `status !== 'turn'`, so nothing reaches stdin and no status
+    // frame is emitted. Pinned by tests/overage-action.test.mjs.
+    inst.interrupt().catch(() => {});
+    // An idle session makes no turn→idle transition for the status handler to arm
+    // on — and now that it is never prompted either, this is its ONLY arming. Armed
+    // through the same controller entry point a queued-only session uses.
+    if (armResume && !midTurn) this._armResumeNow(inst, resetsAt);
+  }
+
+  // Sever the idle-wake graph around a session, and MARK every caller that loses a
+  // wait — marked, not notified: the mark only reaches a caller that has a resume
+  // prompt of its own to carry it, which an un-armed or plain-`stop` caller does
+  // not. The purge is bidirectional, so a third session waiting ON this one loses
+  // its wait too and is marked as well.
+  //
+  // Why sever at all: a wake is an `internal:true` prompt, which the overage queue
+  // intercept deliberately does NOT hold, so it would start a fresh turn inside the
+  // lockout. TWO callers, both of which need it for a different reason:
+  //   - `_directOverageStop` — the stopped session's own turn_end must wake nobody,
+  //     and nothing may later wake it (including via the heartbeat, well inside a
+  //     five-hour window, on a target Pass 3 left running).
+  //   - `_guardOverageTurnStart` — spawn ownership SURVIVES purge(): `ownersOf`
+  //     re-adds the parent from `callerInstanceId` on every call, so a severed
+  //     worker whose turn starts again re-arms its conductor's wake at
+  //     `onTurnStart`. Without severing here, the guard's own interrupt then wakes
+  //     that conductor with an `internal:true` stub — violating 2026-0203 from
+  //     inside 2026-0204.
+  _severOverageWakes(inst: Instance): void {
     for (const callerId of this._idleHub.severForOverageStop(inst.id)) {
       const caller = this.byId.get(callerId);
       if (caller) caller._overageDroppedCallbacks = true;
     }
-    inst.interrupt().catch(() => {});
   }
 
-  // Stop a conductor. Mid-turn → the SAME direct soft-interrupt every other
-  // session gets: a steer asking it to halt its own workers is silently dropped
-  // by a model that cannot take a mid-turn injection, so Pass 3 stops those
-  // workers directly instead and nothing here needs to be TOLD anything.
-  // Idle+awaiting a wake → inject a fresh prompt (no turn to interrupt), same
-  // shape as the idle-wake stub; that branch alone carries
-  // `steered:true`. For `stop-resume` BOTH branches arm the conductor's resume:
-  // it is the orchestrating brain, so resuming it after the window resets
-  // re-drives its workers (which are stopped un-armed). Resume is armed via the
-  // autoStoppedForOverage flag, which the status→idle handler turns into a
-  // per-session timer.
+  // Turn-start lockout guard (card 2026-0204). A turn that begins during an overage
+  // stop-resume lockout is stopped rather than run against the throttled account —
+  // wired at the turn-START seam rather than per send site, because the observed
+  // defect was workers re-invoked by a path the enumerated sites did not cover.
   //
-  // `_directOverageStop` severs the subscription graph around every session it
-  // stops, so a conductor waiting on a STOPPED session is covered there — including
-  // one waiting on a session it does not own. The idle branch below needs its own
-  // sever, because it never calls `_directOverageStop` and Pass 3 only stops
-  // `status === 'turn'`: an armed wake this conductor holds on a target that Pass 3
-  // leaves alone survives both. That is ordinary, not exotic — `_onTurnEnd` keeps
-  // the wake armed while a target's subagents drain, so the target reads as idle
-  // while the wake is live. Left armed, the heartbeat
-  // (DEFAULT_SUBSCRIBE_TIMEOUT_MS, well inside a five-hour window) fires mid-lockout
-  // — repeatedly — and delivers an `internal:true` wake stub the overage queue
-  // intercept does not hold, starting a fresh turn on the conductor we just stopped.
-  _steerConductor(conductor: Instance, { resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
-    if (conductor.status === 'turn') {
-      this._directOverageStop(conductor, { resume, resetsAt });
-      return;
-    }
-    // Same loop shape as _directOverageStop: the sever purges BOTH directions, so a
-    // third session waiting ON this conductor loses its wait too and must be marked
-    // as well. Marking only the conductor dropped those silently.
-    for (const callerId of this._idleHub.severForOverageStop(conductor.id)) {
-      const caller = this.byId.get(callerId);
-      if (caller) caller._overageDroppedCallbacks = true;
-    }
-    // `internal:true` so the steer's user_prompt doesn't cancel the resume we arm
-    // next; set the flags AFTER the call regardless, so the steer turn's turn→idle
-    // transition arms the timer.
-    conductor.prompt(OVERAGE_CONDUCTOR_STEER_TEXT, [], { internal: true }).catch(() => {});
-    if (resume) {
-      conductor.autoStoppedForOverage = true;
-      conductor._overageWasStopped = true; // stopped mid-work → full preamble
-      conductor._overageResetsAt = resetsAt;
-    }
-    conductor._emitUi({ kind: 'system', subtype: 'auto_stop_overage', data: { resume, resetsAt, steered: true } });
+  // Every scope condition falls out of `_overageGate().active`, which is the single
+  // owner of them: it ANDs `_overageActive`, `_overageResumeMode` (so plain `Stop` is
+  // out), a FUTURE finite `resetsAt` (the safety rail), and `_inUsageWindowFlow`
+  // (so a domain-exempt session is out).
+  _guardOverageTurnStart(inst: Instance): void {
+    if (!(inst._overageGate ? inst._overageGate().active : false)) return;
+    // The auto-resume's own fire is the one turn that MUST run. Tested by FLAG, not
+    // by re-deriving whether the lockout is still live at this instant: it may or may
+    // not be, depending on the interleaving (see OverageResumeController.run).
+    if (inst._overageResumeFiring) return;
+    inst._emitUi({ kind: 'system', subtype: 'soft_interrupted', data: { text: OVERAGE_TURN_BLOCKED_TEXT } });
+    this._severOverageWakes(inst);
+    inst.interrupt().catch(() => {}); // SOFT tier — never force:true
   }
 
   // Arm the global clear: release `_overageActive` when the rate-limit window

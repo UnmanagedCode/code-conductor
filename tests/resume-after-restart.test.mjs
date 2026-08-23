@@ -778,6 +778,65 @@ test('drainToManifest persists a pending overage auto-resume (overageResumeAt/ov
   clearResumeManifest();
 });
 
+// Card 2026-0203 (REGRESSION) — the THIRD preamble selector, both directions in one
+// test. An idle-parked conductor (the overage stop found it idle, so nothing of its
+// own was interrupted) must not come back resuming on "continue where you left off".
+// Mutant: dropping `overageIdleParked` from the manifest writer or the reader — the
+// restored conductor then reads `false` for both selectors and resumes queued-only,
+// promising messages it never queued.
+test('the idle-parked preamble selector round-trips through the resume manifest', async () => {
+  const prevSweep = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+  process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
+  try {
+    // ── writer ──
+    await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-park' });
+    const res = await api(baseUrl, 'POST', '/api/instances', { project: 'ovg-park' });
+    const inst = instances.get(res.body.id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    const dir = path.join(claudeProjectsRoot, encodeCwd(inst.cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${inst.backingSessionId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+    inst.autoStoppedForOverage = true;
+    inst._overageWasStopped = false;      // it was NOT stopped mid-work…
+    inst._overageWasIdleParked = true;    // …it was idle when the stop fired
+    inst._overageResetsAt = nowSec() + 100;
+    instances._armAutoResume(inst);
+
+    const entries = await drainToManifest({ server: null, wss: null, instances, log: { warn() {}, log() {}, error() {} }, graceMs: 100 });
+    const e = entries.find(x => x.sessionId === inst.sessionId);
+    assert.ok(e, 'session captured in manifest');
+    assert.equal(e.overageIdleParked, true, 'the idle-parked selector persisted');
+    assert.equal(e.overageWasStopped, false, 'and it is distinct from the mid-work one');
+    await waitFor(() => inst.proc === null, { timeout: 20000 });
+    clearResumeManifest();
+
+    // ── reader ──
+    const sid = randomUUID();
+    const cwd = path.join(projectsRoot, 'ovg-park');
+    const rdir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(rdir, { recursive: true });
+    await fs.writeFile(path.join(rdir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    writeResumeManifest([{
+      ...e, sessionId: sid, cwd, project: 'ovg-park', group: 'conductor', wasBusy: true,
+      overageResumeAt: nowSec() + 3600, overageStopped: true,
+      overageWasStopped: false, overageIdleParked: true,
+      overageResetsAt: nowSec() + 3600, overageQueue: [],
+    }]);
+    await restoreFromResumeManifest({ instances, log: { warn() {}, log() {}, error() {} } });
+    const revived = await waitFor(() => [...instances.byId.values()].find(i => i.sessionId === sid));
+    // The re-arm is fire-and-forget after live+idle and is what reads the restored
+    // flags — wait on the deadline, then read them.
+    await waitFor(() => instances._autoResumeTimers.has(revived.id), { timeout: 20000 });
+    assert.equal(revived._overageWasIdleParked, true, 'the selector survived the restart');
+    assert.equal(revived._overageWasStopped, false, 'and did not become the mid-work one');
+    clearResumeManifest();
+  } finally {
+    if (prevSweep === undefined) delete process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
+    else process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = prevSweep;
+  }
+});
+
 // REGRESSION — the RESTORE half of the same field. drainToManifest writing it is
 // worthless if boot drops it, and the two live in different files.
 test('restoreFromResumeManifest restores overageStoppedWorkers onto the revived session', async () => {

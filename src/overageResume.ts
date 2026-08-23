@@ -29,6 +29,34 @@ export const AUTO_RESUME_TEXT =
 const QUEUED_ONLY_RESUME_TEXT =
   'The rate-limit window has reset. Delivering the messages you queued while paused:';
 
+// Preamble for a session the overage stop found ALREADY IDLE — e.g. a conductor
+// parked awaiting a worker's wake. Nothing of its own was interrupted, so
+// AUTO_RESUME_TEXT's "continue where you left off" would be false; and it queued
+// nothing, so QUEUED_ONLY_RESUME_TEXT's promise of queued messages would be too.
+// Its conductor clauses still ride along — an idle-parked conductor held ≥1 armed
+// wake by construction (that is what made it in-control), so the stop severed it.
+export const IDLE_PARKED_RESUME_TEXT =
+  'The rate-limit window has reset. You were idle when the overage stop fired, so none '
+  + 'of your own work was interrupted.';
+
+// The ONE mapping from the persisted overage flags to which preamble a resume
+// carries. Three mutually exclusive states; `_overageWasStopped` wins if both
+// selectors are somehow set (a mid-turn stop is the stronger claim).
+export function overageResumeKind(inst: InstanceLike): ResumeKind {
+  if (inst._overageWasStopped) return 'stopped';
+  if (inst._overageWasIdleParked) return 'idle-parked';
+  return 'queued-only';
+}
+
+export type ResumeKind = 'stopped' | 'idle-parked' | 'queued-only';
+
+// The base line each kind resumes on, before the conductor clauses. Queued-only
+// shares the stopped base for the EMPTY-queue short-circuit only (see
+// buildCombinedResumeText) — its own softened line names messages that exist.
+function baseFor(kind: ResumeKind): string {
+  return kind === 'idle-parked' ? IDLE_PARKED_RESUME_TEXT : AUTO_RESUME_TEXT;
+}
+
 // The two facts a stopped CONDUCTOR must ACT on, appended to AUTO_RESUME_TEXT.
 // Each is gated on its OWN flag because either can hold without the other — a
 // callback can be severed with no un-armed worker (the conductor was waiting on a
@@ -58,12 +86,14 @@ function appendConductorClauses(
   return clauses.length ? `${base}\n\n${clauses.join(' ')}` : base;
 }
 
-// AUTO_RESUME_TEXT plus whichever conductor clauses actually apply; the plain text
-// when neither does.
+// The kind's base line plus whichever conductor clauses actually apply; the plain
+// base when neither does. Both clauses ride ALL THREE kinds — they are the facts
+// the conductor must act on, and gating either on a kind would have it go back to
+// waiting for a wake nothing will send. `kind` defaults to 'stopped'.
 export function buildConductorResumePreamble(
-  flags: { droppedCallbacks?: boolean; unarmedWorkers?: boolean } = {},
+  flags: { droppedCallbacks?: boolean; unarmedWorkers?: boolean; kind?: ResumeKind } = {},
 ): string {
-  return appendConductorClauses(AUTO_RESUME_TEXT, flags);
+  return appendConductorClauses(baseFor(flags.kind ?? 'stopped'), flags);
 }
 
 // A message the user queued while the session was paused — the shape
@@ -75,27 +105,29 @@ interface OverageQueueItem {
   ts: number;
 }
 
-// Build the single prompt the resume delivers. With no queued messages it is
-// just AUTO_RESUME_TEXT (the unchanged single-resume behavior). With queued
+// Build the single prompt the resume delivers. With no queued messages it is just
+// the kind's base preamble (the unchanged single-resume behavior). With queued
 // messages it prepends the reset preamble, then lists each queued message as a
 // short numbered, clock-stamped item so the model sees what the user typed
-// while the session was paused. `wasStopped` picks the preamble: a session
-// stopped mid-work resumes with "continue where you left off"; a queued-only
-// session gets the softened line. `conductor` adds whichever conductor clauses
-// apply (see buildConductorResumePreamble).
+// while the session was paused. `kind` picks the preamble (see overageResumeKind);
+// `conductor` adds whichever conductor clauses apply.
 function buildCombinedResumeText(
-  queue: OverageQueueItem[], wasStopped = true,
+  queue: OverageQueueItem[], kind: ResumeKind = 'stopped',
   conductor: { droppedCallbacks?: boolean; unarmedWorkers?: boolean } = {},
 ): string {
-  const stopped = buildConductorResumePreamble(conductor);
-  if (!queue.length) return stopped;
-  // The conductor clauses ride BOTH branches. A queued-only session is one the
+  // The empty-queue short-circuit selects between the stopped and idle-parked bases
+  // only: a 'queued-only' kind with an empty queue is unreachable (the kind is only
+  // ever reached via `overage_queued`, emitted after the push), and the stopped text
+  // is the safer of the two if it ever happened — today's behaviour, unchanged.
+  const base = buildConductorResumePreamble({ ...conductor, kind });
+  if (!queue.length) return base;
+  // The conductor clauses ride EVERY branch. A queued-only session is one the
   // human typed into while it was paused — including a stopped conductor, which
   // would otherwise lose the notice that its callbacks are gone and its workers are
   // un-armed and go back to waiting for a wake nothing will send.
-  const preamble = wasStopped
-    ? stopped
-    : appendConductorClauses(QUEUED_ONLY_RESUME_TEXT, conductor);
+  const preamble = kind === 'queued-only'
+    ? appendConductorClauses(QUEUED_ONLY_RESUME_TEXT, conductor)
+    : base;
   const fmt = (ts: number): string => {
     try { return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
     catch { return ''; }
@@ -318,7 +350,7 @@ export class OverageResumeController {
       const queue = inst._overageQueue.slice() as OverageQueueItem[];
       inst._overageQueue = [];
       const attachments: unknown[] = queue.flatMap(e => Array.isArray(e.attachments) ? e.attachments as unknown[] : []);
-      const text = buildCombinedResumeText(queue, inst._overageWasStopped, {
+      const text = buildCombinedResumeText(queue, overageResumeKind(inst), {
         droppedCallbacks: inst._overageDroppedCallbacks,
         unarmedWorkers: inst._overageUnarmedWorkers,
       });
@@ -326,7 +358,19 @@ export class OverageResumeController {
       if (queue.length) {
         inst._emitUi({ kind: 'system', subtype: 'auto_resume', data: { count: queue.length } });
       }
-      inst.prompt(text, attachments, { internal: true }).catch(() => {});
+      // Exempt THIS send's turn from the overage turn-start guard. The lockout can
+      // still be active when that turn starts: with an EMPTY queue prompt() has no
+      // `await` before _setStatus('turn'), so turn_start fires inside this frame —
+      // before _resolveDue calls _maybeReleaseOverageLock at all. With QUEUED
+      // ATTACHMENTS it yields at each `await saveAttachment(...)` first, and we do not
+      // await this prompt, so the release can interleave and lift the gate before
+      // turn_start. The flag covers BOTH: it is set before the call and cleared in
+      // .finally(), which runs when the prompt resolves — hence always after the
+      // _setStatus('turn') inside it, whichever way the interleaving fell.
+      inst._overageResumeFiring = true;
+      inst.prompt(text, attachments, { internal: true })
+        .catch(() => {})
+        .finally(() => { inst._overageResumeFiring = false; });
     } else {
       // Process gone (crashed / killed externally) — no send means no
       // user_prompt, so tear down explicitly. Keep it simple: no respawn.
@@ -380,6 +424,7 @@ export class OverageResumeController {
       inst.autoResumeAt = null;
       inst.autoStoppedForOverage = false;
       inst._overageWasStopped = false;
+      inst._overageWasIdleParked = false;
       inst._overageDroppedCallbacks = false;
       inst._overageUnarmedWorkers = false;
       inst._overageStoppedUnarmed = false;

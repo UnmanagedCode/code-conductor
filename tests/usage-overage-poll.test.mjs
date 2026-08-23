@@ -20,6 +20,7 @@ import os from 'node:os';
 import { bootServer, api, waitFor } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
+import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -295,14 +296,14 @@ test('poll stop-resume: arms a timer off five_hour reset and delivers the resume
   assert.equal(inst.proc != null, true, 'never killed/respawned');
 });
 
-// ── Routing parity: conductor steered, worker untouched (same as the stream) ──
+// ── Routing parity: conductor + worker both stopped (same as the stream) ──
 
 test('poll routing parity: in-control conductor AND its worker are both soft-interrupted', async () => {
   // Card 2026-0183 Parts A/A2: the poll path shares _routeOverageStop with the
   // stream path, so it inherits both changes — a mid-turn in-control conductor is
-  // soft-interrupted rather than steered (`steered` is now the idle branch's marker
-  // alone), and the worker it owns is stopped too instead of being left to a steer
-  // the model may silently drop.
+  // soft-interrupted rather than steered, and the worker it owns is stopped too
+  // instead of being left to a steer the model may silently drop. Card 2026-0203
+  // then deleted the steer outright, so `steered` no longer exists at all.
   await boot('stop', { enabled: true, value: 25 });
   const conductor = await createInst({});
   const worker = await createInst({ conducted: true, callerInstanceId: conductor.id });
@@ -322,7 +323,7 @@ test('poll routing parity: in-control conductor AND its worker are both soft-int
   await ctx.instances._usageMonitor._tick();
 
   await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0);
-  assert.notEqual(sub(cEvs, 'auto_stop_overage')[0].data.steered, true,
+  assert.equal('steered' in sub(cEvs, 'auto_stop_overage')[0].data, false,
     'a mid-turn conductor is stopped, not steered');
   await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
   await waitFor(() => armed.has(conductor.id) && armed.has(worker.id));
@@ -332,4 +333,31 @@ test('poll routing parity: in-control conductor AND its worker are both soft-int
   // still in flight rejects it against an exiting subprocess.
   await waitFor(() => conductor.status === 'idle' && worker.status === 'idle', { timeout: 10000 });
   ctx.instances.off('status', onStatus);
+});
+
+// Card 2026-0189 (PIN) — Invariant: collapsing Pass 3's `isConductorInstance`
+// branch into its `else` is behaviour-identical for a mid-turn `.conduct`
+// orchestrator with no in-control workers. A `.conduct` instance is never
+// `conducted`, so it is never a protected worker ⇒ `unarmed === false` ⇒ it gets
+// `armResume: resume` (exactly what the deleted branch passed), the new
+// `_overageStoppedUnarmed = false` assignment is the correct value, and
+// `if (!unarmed) continue` skips the owner-marking that never applied. Driven
+// through the POLL path, which shares `_routeOverageStop` with the stream.
+test('poll routing parity: 2026-0189 — a mid-turn no-workers orchestrator is armed, not marked un-armed', async () => {
+  await boot('stop-resume', { enabled: true, value: 25 });
+  await ensureConductProject();
+  const orch = await ctx.instances.create({ project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions' });
+  await waitFor(() => orch.status === 'idle');
+  const evs = collect(orch);
+  await midTurn(orch);
+
+  ctx.instances._usageMonitor.fetchUsage = async () => usagePayload(99, nowSec() + 3600);
+  await ctx.instances._usageMonitor._tick();
+
+  const notice = await waitFor(() => sub(evs, 'auto_stop_overage')[0]);
+  assert.equal(notice.data.resume, true, 'the orchestrator is armed for resume');
+  assert.equal(orch.autoStoppedForOverage, true, 'flagged auto-stopped');
+  assert.equal(orch._overageStoppedUnarmed, false, 'and NOT marked un-armed by the collapse');
+  assert.equal(orch._overageWasStopped, true, 'stopped mid-work ⇒ the full preamble');
+  await waitFor(() => orch.status === 'idle', { timeout: 10000 });
 });
