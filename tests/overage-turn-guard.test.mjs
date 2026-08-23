@@ -354,16 +354,21 @@ test('G-T7 a past resetsAt means the lockout is over — no guard', async () => 
 });
 
 // ── The one turn that MUST run ─────────────────────────────────────────────
-// REGRESSION — Invariant: the auto-resume's own fire is exempt. prompt() reaches
-// `_setStatus('turn')` → `turn_start` SYNCHRONOUSLY, before `_resolveDue`'s
-// `_maybeReleaseOverageLock()` can run — and that release is a no-op while any other
-// session is still parked. So the gate is genuinely still active when the resume's
-// own turn starts, and without `_overageResumeFiring` the guard would interrupt the
-// very resume it exists to protect.
+// REGRESSION — Invariant: the auto-resume's own fire is exempt. THE ORDERING IS THE
+// MECHANISM: `run()`'s `prompt()` reaches `_setStatus('turn')` → `turn_start`
+// SYNCHRONOUSLY, with no `await` in between, while `_resolveDue` only calls
+// `_maybeReleaseOverageLock()` after `run()` has returned. So the gate is still active
+// when the resume's own turn starts no matter how many sessions are parked, and
+// without `_overageResumeFiring` the guard would interrupt the very resume it exists
+// to protect. Mutant: deleting the `_overageResumeFiring` set in
+// OverageResumeController.run — it dies with one parked session too.
 //
-// The SECOND parked session is load-bearing: with only one, the lock lifts on its own
-// and this test would pass with the exemption deleted.
-// Mutant: deleting the `_overageResumeFiring` set in OverageResumeController.run.
+// KEEP THE SECOND PARKED SESSION ANYWAY. It does not create the window; it keeps the
+// window OBSERVABLE after the fact, which is what the post-fire
+// `_overageActive` / `gate.active` preconditions below assert. With only one session
+// the lock lifts as soon as `run()` returns, those two assertions become false, and
+// the test can no longer state on its own evidence that the exempted turn started
+// inside a live lockout.
 test('G-T8 the auto-resume\'s own fire is NOT guarded', async () => {
   await boot('stop-resume');
   const a = await createInst({}, 'g8-a');

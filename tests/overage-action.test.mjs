@@ -19,7 +19,7 @@ import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { buildConductorResumePreamble, IDLE_PARKED_RESUME_TEXT } from '../src/overageResume.ts';
 import { sendPrompt, approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
 import { getAccountUsage } from '../src/accountUsage.ts';
-import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
+import { ensureConductProject, CONDUCT_PROJECT_NAME, isConductorInstance } from '../src/conduct.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 // The live `rate_limit_event` delivers the window reset as the camelCase
@@ -1396,16 +1396,48 @@ test('routing stop-resume: fallback worker direct-stop arms a resume timer', asy
 // still separates it from a leaf worker is what happens on RESUME, which these two
 // pin. Identified durably by project === '.conduct', not the (opposite) `conducted`
 // worker flag.
-async function createConductor(name) {
+async function createConductor(name, opts = {}) {
   await ensureConductProject();
   const transcript = name ? path.join(home, `stdin-${name}.jsonl`) : null;
   if (transcript) process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
   try {
-    const inst = await ctx.instances.create({ project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions' });
+    const inst = await ctx.instances.create({ project: CONDUCT_PROJECT_NAME, mode: 'bypassPermissions', ...opts });
     await waitFor(() => inst.status === 'idle');
     return { inst, transcript };
   } finally { delete process.env.FAKE_CLAUDE_TRANSCRIPT; }
 }
+
+// Card 2026-0189 — PIN of the ONE case the branch collapse is NOT behaviour-identical
+// for, so the next reader finds it decided rather than accidental. A `.conduct`
+// session spawned through MCP `spawn_instance` carries `conducted:true` +
+// `callerInstanceId` (src/mcp/handlers.ts), so mid-turn under an in-control owner the
+// collapsed Pass 3 treats it as a PROTECTED WORKER — stopped un-armed, owner marked —
+// where the deleted `isConductorInstance` branch armed it. That is the intended
+// reading of "protected worker" (its owner is the sole driver on resume), so the
+// behaviour is kept deliberately. Mutant: re-introducing an `isConductorInstance`
+// escape hatch in Pass 3 to arm it again.
+test('2026-0189: a CONDUCTED .conduct orchestrator is stopped un-armed like any other protected worker', async () => {
+  await boot(resumeRoutingScenario(), 'stop-resume');
+  const owner = await createInst({});
+  const { inst: orch } = await createConductor('conduct-conducted',
+    { conducted: true, callerInstanceId: owner.id });
+  assert.equal(isConductorInstance(orch), true, 'precondition: it IS a .conduct session');
+  assert.equal(orch.conducted, true, 'and it is ALSO a conducted worker (the MCP spawn shape)');
+  const oEvs = collect(orch);
+
+  // The owner is in control (mid-turn), which is what makes the orchestrator a
+  // protected worker in Pass 1.
+  owner.prompt('STAY');
+  await waitFor(() => owner.status === 'turn');
+  orch.prompt('TRIP go');
+
+  const notice = await waitFor(() => sub(oEvs, 'auto_stop_overage')[0]);
+  assert.equal(notice.data.resume, false, 'un-armed: no resume is named for it');
+  assert.equal(orch.autoStoppedForOverage, false, 'and none is armed');
+  assert.equal(orch._overageStoppedUnarmed, true, 'it is marked un-armed');
+  assert.equal(owner._overageUnarmedWorkers, true, 'and its owner is told to re-drive it');
+  await waitFor(() => orch.status === 'idle', { timeout: 10000 });
+});
 
 // REGRESSION — Invariant: a mid-turn no-workers orchestrator is soft-interrupted
 // with EXACTLY ONE control_request and NO steer text on its stdin, identical to

@@ -375,8 +375,10 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       }
       // Only re-prompt sessions that were mid-turn when the drain began.
       // Idle sessions are resurrected silently — they have nothing to resume.
-      // Skip overage-stopped sessions: the sweep delivers AUTO_RESUME_TEXT once
-      // the window resets, so a RESUME_TEXT here would double-prompt.
+      // Skip overage-stopped sessions: the sweep delivers the resume preamble their
+      // restored selectors resolve to (overageResumeKind — an idle-parked entry gets
+      // IDLE_PARKED_RESUME_TEXT, not AUTO_RESUME_TEXT) once the window resets, so a
+      // RESUME_TEXT here would double-prompt.
       if (e.wasBusy !== false && !e.overageStopped) {
         const text = e.group === 'conductor' ? buildConductorResumeText(e.workers) : RESUME_TEXT;
         try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
