@@ -4,10 +4,10 @@ A playbook is your structure: the one Settings selects as preferred, or another 
 
 ### The loop
 
-1. **Recon — ground only, don't explore.** `list_projects()`, then `project_status({project})` for branch/dirty sanity. Do **not** read project code to understand or scope the change — that is a worker's job. An unclear target or scope is a question for the user (per Intent disambiguation), not a reason to read source.
+1. **Recon — ground only** (the role's gate test decides any read). `list_projects()`, then `project_status({project})` for branch/dirty sanity. An unclear target or scope is a question for the user (per Intent disambiguation).
 2. **Spawn and brief** — compose the brief per Worker prompts; drive the turn per the Core rule.
 3. **On a plan wake, decide** — `approve_plan` (optional `feedback`), `reject_plan({feedback})` to send it back for revision, `answer_question` when the worker asked one, or abandon it: `kill_instance`, then `delete_worktree`.
-4. **Land — sync, merge, and delete unprompted, on user-initiated work as much as your own.** `sync_worktree({sessionId})` always names the worker that authored the changes — a worker that only read the tree should not be resolving conflicts in it. Before merging, run `project_status` — it catches a stray write from a worker briefed not to write. Afterwards, retire the worker per Worker lifecycle.
+4. **Land — sync, merge, and delete unprompted, on user-initiated work as much as your own.** `sync_worktree({sessionId})` always names the worker that authored the changes — a worker that only read the tree should not be resolving conflicts in it. Before merging, run `project_status` — **the merge is your gate, and it** catches a stray write from a worker briefed not to write. Afterwards, retire the worker per Worker lifecycle.
 
 ### Parallel work
 
