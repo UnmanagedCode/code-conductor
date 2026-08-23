@@ -1273,8 +1273,9 @@ test('stop-resume GLOBAL: window-reset clear drops the paused state on a not-yet
 // The routing tests above all use action 'stop' — they never exercised whether
 // a `stop-resume` overage trip ARMS a resume when the stop is routed through a
 // conductor. These cover that gap. Unlike routingScenario(), generic prompt
-// turns here emit a RESULT so the steered/wound-down conductor reaches idle
-// (the transition that arms the per-session resume timer).
+// turns here emit a RESULT so a session driven by any later prompt — a resume
+// fire, a re-drive — winds down to idle (the transition that arms the
+// per-session resume timer for a session stopped mid-turn).
 function resumeRoutingScenario() {
   return {
     events: [INIT],
@@ -1282,7 +1283,7 @@ function resumeRoutingScenario() {
       { on: { type: 'prompt', text: 'TRIP' }, emit: [overageEvent({ resetsAt: nowSec() + 3600 }), RESULT] },
       { on: { type: 'prompt', text: 'STAY' }, emit: [] },   // hold a conductor mid-turn
       INTERRUPT_TURN,                                       // an aborted turn's result
-      { on: { type: 'prompt' }, emit: [RESULT] },           // idle steer / resume → idle
+      { on: { type: 'prompt' }, emit: [RESULT] },           // resume fire → idle
       { on: { type: 'prompt' }, emit: [RESULT] },
       { on: { type: 'prompt' }, emit: [RESULT] },
       { on: { type: 'prompt' }, emit: [RESULT] },

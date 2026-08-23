@@ -354,21 +354,28 @@ test('G-T7 a past resetsAt means the lockout is over — no guard', async () => 
 });
 
 // ── The one turn that MUST run ─────────────────────────────────────────────
-// REGRESSION — Invariant: the auto-resume's own fire is exempt. THE ORDERING IS THE
-// MECHANISM: `run()`'s `prompt()` reaches `_setStatus('turn')` → `turn_start`
-// SYNCHRONOUSLY, with no `await` in between, while `_resolveDue` only calls
-// `_maybeReleaseOverageLock()` after `run()` has returned. So the gate is still active
-// when the resume's own turn starts no matter how many sessions are parked, and
-// without `_overageResumeFiring` the guard would interrupt the very resume it exists
-// to protect. Mutant: deleting the `_overageResumeFiring` set in
-// OverageResumeController.run — it dies with one parked session too.
+// REGRESSION — Invariant: the auto-resume's own fire is exempt. THE EXEMPTION RESTS
+// ON THE FLAG, not on any ordering — `_overageResumeFiring` is set before the send and
+// cleared in `.finally()`, so it covers every interleaving. Mutant: deleting that set
+// in OverageResumeController.run.
 //
-// KEEP THE SECOND PARKED SESSION ANYWAY. It does not create the window; it keeps the
-// window OBSERVABLE after the fact, which is what the post-fire
-// `_overageActive` / `gate.active` preconditions below assert. With only one session
-// the lock lifts as soon as `run()` returns, those two assertions become false, and
-// the test can no longer state on its own evidence that the exempted turn started
-// inside a live lockout.
+// The ordering explains only why the gate is OBSERVABLY live at `turn_start` in the
+// case pinned here — an EMPTY-QUEUE resume. `prompt()`'s only `await` sits in its
+// attachment loop, so with no attachments the whole synchronous body (including
+// `_setStatus('turn')` → `turn_start`) completes inside `run()`'s frame, while
+// `_resolveDue` calls `_maybeReleaseOverageLock()` only after `run()` returns. With
+// QUEUED ATTACHMENTS that no longer holds: each `await saveAttachment(...)` precedes
+// `_setStatus('turn')` and `run()` does not await its own prompt, so the release can
+// interleave first and — with nothing else parked — lift the gate before `turn_start`.
+// That case is still safe, but only because of the flag. Which is exactly why the flag
+// is the mechanism and the ordering is not.
+//
+// KEEP THE SECOND PARKED SESSION. It is not what creates the window; it keeps the
+// window OBSERVABLE after the fire, which is what the post-fire `_overageActive` /
+// `gate.active` preconditions below assert. With only one session the lock lifts as
+// soon as `run()` returns, those two assertions become false, and the test can no
+// longer state on its own evidence that the exempted turn started inside a live
+// lockout.
 test('G-T8 the auto-resume\'s own fire is NOT guarded', async () => {
   await boot('stop-resume');
   const a = await createInst({}, 'g8-a');

@@ -798,11 +798,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.autoResumeAt = null;
     this._overageResetsAt = null;
     this._overageHandled = false;
-    // True when this session was genuinely stopped MID-WORK (direct interrupt /
-    // conductor steer) vs. queued-only (idle/new session that queued while the
-    // global window was active). Softens the resume preamble for queued-only —
-    // buildCombinedResumeText drops "continue where you left off". Reset on
-    // (re)spawn; persisted across a resume-restart.
+    // True when this session was genuinely stopped MID-WORK by a direct interrupt.
+    // FIRST of the three resume-preamble selectors resolved by `overageResumeKind`
+    // (src/overageResume.ts): this flag → AUTO_RESUME_TEXT ("continue where you left
+    // off"); `_overageWasIdleParked` below → IDLE_PARKED_RESUME_TEXT; neither →
+    // the softened queued-only line. Reset on (re)spawn; persisted across a
+    // resume-restart.
     this._overageWasStopped = false;
     // True when the overage stop found this session ALREADY IDLE: nothing of its own
     // was interrupted, so neither "continue where you left off" nor the queued-only
@@ -2376,9 +2377,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (idle/never-stopped/brand-new session sending during the window). The gate
     // enforces the safety rail (only a valid FUTURE resetsAt engages it) — see
     // InstanceManager._overageGate. Return BEFORE emitting `user_prompt` so the
-    // manager's resume-cancel handler never runs. Internal prompts (idle-wake
-    // stub, conductor steer, and the auto-resume's own send — which first clears
-    // these flags via cancel) fall through and resume normally.
+    // manager's resume-cancel handler never runs. `internal:true` is the WHOLE
+    // condition for falling through here — no site list gates it — so this stays
+    // true as senders come and go. Today's senders, as examples: the idle-wake
+    // stub, the renewal reseed (sessionRenew.ts), and the auto-resume's own send
+    // (which first clears these flags via cancel).
     const gate = this._overageGate ? this._overageGate() : { active: false, resetsAt: null };
     // A worker the overage stop left UN-ARMED has no resume deadline and must never
     // get one: its conductor is the sole driver, and arming it would have the
@@ -2418,13 +2421,13 @@ export class Instance extends EventEmitter implements InstanceLike {
       this.emit('status', this.summary()); // push queuedCount → badges
       return;
     }
-    // A genuine (user/MCP-driven) prompt cancels a pending overage auto-resume —
-    // the session is being driven again. Orchestrator-injected prompts
-    // (`internal:true` — the idle-wake stub, the conductor overage
-    // steer, and the auto-resume's own send) must NOT cancel it and must skip the
-    // global queue intercept above: the auto-resume already tore down its own
-    // deadline via cancel() before sending, and the global window may still be
-    // active when it fires.
+    // A prompt cancels a pending overage auto-resume IFF it is not `internal` —
+    // the flag is the whole test, and the manager's `user_prompt` handler reads
+    // nothing else. `internal:true` senders today, as examples: the idle-wake stub,
+    // the renewal reseed (sessionRenew.ts), and the auto-resume's own send. The
+    // last is why the carve-out also has to skip the global queue intercept above:
+    // it already tore down its own deadline via cancel() before sending, and the
+    // global window may still be active when it fires.
     this.emit('user_prompt', { internal });
     const safeText = typeof text === 'string' ? text : '';
     const atts = Array.isArray(attachments) ? attachments : [];
