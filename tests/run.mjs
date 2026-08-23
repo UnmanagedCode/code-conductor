@@ -49,10 +49,39 @@ try {
 // default), and the suite is already isolated: bootServer binds an ephemeral
 // port (listen(0)) and mkdtemp's a unique home per server, so files don't
 // contend over ports or paths. That lets us run multiple files concurrently.
-// Default to half the cores (capped at 4) to leave headroom for each file's
-// express+ws boot and the timing-sensitive waits (control-request 5s, waitFor
-// 4s) that contention could otherwise trip. Override with TEST_CONCURRENCY
-// (1 restores the old fully-serial behavior).
+// Half the cores, capped at 8. Override with TEST_CONCURRENCY (1 restores the
+// old fully-serial behavior).
+//
+// THE CAP WAS 4, AND THE `cores / 2` TERM IS UNCHANGED — only the ceiling moved.
+// BE PRECISE ABOUT WHERE THAT BITES: the two expressions agree only while
+// floor(cores / 2) <= 4, i.e. at **9 cores or fewer** (an 8-core box still gets 4,
+// a 4-core box still gets 2). From 10 cores up the cap is no longer what binds and
+// the result rises with the core count — 10 cores now gets 5, 12 gets 6, 14 gets 7,
+// 16+ gets 8. A 12-core CI machine therefore DOES change behaviour here.
+// Measured on a 16-core box, where both terms bind at once and every figure below
+// is therefore the literal output of this expression, not an extrapolation from a
+// different core count:
+//   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
+//     double the ambient load, and cannot go below the floor named next.
+//   * the floor is a SINGLE FILE, and since this card landed it is no longer the
+//     same one: measured quiet at HEAD, tests/idle-wake-ownership.test.mjs 32.9s is
+//     first and tests/hang-guard.test.mjs 30.0s second, in a 38.7-39.5s suite over
+//     two runs — so hang-guard is ~76-78% of the critical path, not ~80% and not
+//     the sole floor.
+//     Both are DEADLINE-bound rather than CPU-bound; hang-guard grows only 0.8%
+//     from concurrency 4 to 16 and 0.5% under 8-spinner contention, which is why
+//     more slots cannot get below it. Card 2026-0198 splits hang-guard, but that
+//     alone no longer sets the floor.
+//   * contention does NOT argue for backing off: under 8 spinners, concurrency 8
+//     was both FASTER than 4 (79.2s vs 87.6s) and had a marginally BETTER per-file
+//     kill margin (3.00x vs 2.92x). Both runs green.
+//   * the fake-claude subprocess guardrail below stayed at peak 3-4 of a budget of
+//     12 at every concurrency measured (4/8/16, quiet and contended) — and the one
+//     reading above 3 at concurrency 4 was CONTENDED, i.e. the lower slot count, so
+//     it is not concurrency-driven.
+// The timing-sensitive waits (control-request 5s, waitFor 4s) were the original
+// reason for 4; they were re-measured across 11 concurrency-8 whole-suite runs and
+// none of them tripped.
 function resolveConcurrency() {
   const env = process.env.TEST_CONCURRENCY;
   if (env !== undefined) {
@@ -60,7 +89,7 @@ function resolveConcurrency() {
     if (Number.isInteger(n) && n >= 1) return n;
   }
   const cores = os.availableParallelism ? os.availableParallelism() : os.cpus().length;
-  return Math.max(1, Math.min(4, Math.floor(cores / 2)));
+  return Math.max(1, Math.min(8, Math.floor(cores / 2)));
 }
 
 async function discover() {
@@ -118,7 +147,7 @@ let samplerTicks = 0;       // ticks that ran at all
 const discovered = new Set(files);
 const reported = new Set();
 const fileStartedAt = new Map(); // file -> ms at first sighting
-const fileDurations = new Map(); // file -> dispatch→report ms
+const fileDurations = new Map(); // file -> dispatch→child-done ms (see test:complete)
 
 // A2 — per-file process watchdog. Maps live direct children to the test file
 // named as the LAST element of their argv (verified: node:test's per-file child
@@ -313,6 +342,16 @@ const stream = run({
   execArgv: ['--import', tripwireUrl, '--import', leakGuardUrl],
 });
 let failed = 0;
+// A KILLED FILE'S RED OUTCOME IS GUARDED TWICE, AND NO TEST COVERS EITHER GUARD
+// ALONE. This handler is one path: when the watchdog SIGKILLs a child, node
+// synthesizes a file-level test:fail, counted here. The other is the completeness
+// ledger's `unreported` loop near the end of this file, which also increments
+// `failed` because a killed child never emits its summary. Either one alone still
+// fails the run, so disabling just one is invisible to
+// tests/summary-attribution.test.mjs (its killed-file case asserts only that the run
+// is red) — verified: a mutant disabling either single site SURVIVES, while one
+// disabling both is killed. If you remove one, you are removing the redundancy, not
+// dead code, and nothing will tell you.
 stream.on('test:fail', (data) => {
   // Skip the implicit top-level pass/fail summary entries; only count real failures.
   if (data.details?.type === 'suite') return;
@@ -327,6 +366,40 @@ stream.on('test:dequeue', (d) => {
 stream.on('test:summary', (d) => {
   if (!d.file) { nodeFinished = true; return; } // the single run-level summary
   reported.add(d.file);
+});
+// DURATION COMES FROM test:complete, NOT test:summary — do not fold this back
+// into the handler above. Per-file summaries are emitted in `files` order, so a
+// file that finishes ahead of an earlier-listed one has its summary HELD until
+// that one reports, and then `Date.now()` charges it the earlier file's wall.
+// Measured, same two files, order swapped: parser.test.mjs reported 1172ms in one
+// order and 108ms in the other, and in the first it RANKED ABOVE the file that
+// actually spent the time. That inflation is what made the slowest-5 line read as
+// a plateau.
+//
+// test:complete fires at the file's real completion and is order-independent
+// (measured). Preferred over test:summary's own duration_ms, which is measured
+// inside the child and so excludes spawn+import: dispatch->child-done keeps this
+// figure comparable to FILE_KILL_MS, which is a process-lifetime deadline.
+// MEASURED on a 16-core box at the default concurrency: summary.duration_ms runs
+// 31-297ms LOWER, never higher, across 90 file observations. SAMPLE: every 6th name
+// of the sorted tests/*.test.mjs list (45 of 266 files), skipping the two files that
+// spawn nested runners of their own (hang-guard, summary-attribution); two runs, one
+// idle and one under a concurrent mutation campaign, which agreed closely — so the
+// range is not a load artefact.
+//
+// THE RANGE IS THE PORTABLE PART; THE CENTRE IS NOT. Median 219-234ms and mean
+// 179-181ms describe THAT sample. The excluded work IS spawn+import, so the centre
+// tracks the import weight of whichever files you pick: the cheapest files here sit
+// at ~31-35ms and express+ws importers reach ~297ms, and a lighter-weight subset of
+// the suite medians near 87ms. Quote the population with the number, and do not
+// re-narrow it to a tight range — an earlier "consistently 25-50ms" claim was ~5x
+// low because it described only the cheapest files.
+//
+// Inner tests emit test:complete too (measured: 11 events for tests/diff.test.mjs).
+// The FILE-level one carries name === file, which is the exact discriminator, so
+// this does not rely on it being last.
+stream.on('test:complete', (d) => {
+  if (!d.file || d.name !== d.file) return; // only the file-level test
   const startedAt = fileStartedAt.get(d.file);
   if (startedAt !== undefined) fileDurations.set(d.file, Date.now() - startedAt);
 });
@@ -431,7 +504,10 @@ if (slowest.length > 0) {
 for (const file of unreported) {
   // Never silently absent — whatever the cause (wedged child, a truncated
   // report, a process.exit before any test registered), the file is named and
-  // the run goes red.
+  // the run goes red. This is the SECOND of the two independent guards on a killed
+  // file's red outcome (the other is the test:fail handler above, which sees the
+  // synthesized file-level failure). Removing either alone keeps the run red and is
+  // therefore caught by no test — see the note on that handler.
   console.error(`hang-guard: NO REPORT from ${file} — the file never emitted a summary.`);
   failed++;
 }
