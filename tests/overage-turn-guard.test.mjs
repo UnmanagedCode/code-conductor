@@ -307,6 +307,11 @@ test('G-T5 plain Stop does not guard a later turn', async () => {
 // PIN — Invariant: a domain-EXEMPT session (an ollama-only agent tree consumes no
 // monitored account window) is never guarded. Mutant: restating the condition as
 // `_overageActive && _overageResumeMode` without `_inUsageWindowFlow`.
+//
+// `ex` is deliberately STANDALONE (no `callerInstanceId`), which is what keeps it
+// exempt now that `_inUsageWindowFlow` is root-scoped (card 2026-0212): making it a
+// conducted worker of `claude` would put its root tree in the flow and it WOULD be
+// guarded.
 test('G-T6 a domain-exempt session is never guarded', async () => {
   await boot('stop-resume');
   const claude = await createInst({}, 'g6-claude'); // keeps the account in flow

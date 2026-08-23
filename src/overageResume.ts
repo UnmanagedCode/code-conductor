@@ -72,7 +72,7 @@ const DROPPED_CALLBACKS_CLAUSE =
 const UNARMED_WORKERS_CLAUSE =
   'Any worker of yours that was stopped is un-armed — it will NOT resume itself, so ' +
   're-prompt the ones you still need. Check each before sending: a worker that was ' +
-  'never stopped (an exempt backend, or one already idle) may still be running.';
+  'never stopped (one already idle when the window tripped) may still be running.';
 
 // `base` plus whichever conductor clauses actually apply; `base` unchanged when
 // neither does. Shared by both preamble branches so a queued-only session cannot

@@ -787,50 +787,73 @@ test('cancelling a session\'s overage state clears its un-armed flag mid-window'
 // `internal:true` wake the queue intercept does not hold and starting a fresh turn
 // on the conductor just stopped.
 //
-// The reachable shape of "a target Pass 3 leaves running" is a backend-EXEMPT one
-// (an ollama-only tree consumes no monitored window). `claudeWorker` is what makes
-// the conductor in-control — Pass 1 only sees instances in the flow — and it is
-// also what Pass 3 does stop, so the exempt worker is the load-bearing half: with
-// the sever call deleted from the stop, its wake survives.
+// WHY THE TARGET IS NON-OWNED — do NOT "simplify" this back to a conducted worker.
+// This test used to stage a CONDUCTED ollama worker under the Claude conductor. Card
+// 2026-0212 root-scoped `_inUsageWindowFlow`, so such a worker is now IN the flow and
+// Pass 3 stops it — that staging no longer produces a target Pass 3 leaves running.
+// The only remaining reachable shape is a NON-OWNED one: `IdleSubscriptionHub`
+// imposes no ownership check, so a conductor can hold a wake (via `noteDispatch`) on
+// a standalone session it never spawned, which has no `callerInstanceId` for the root
+// walk to climb and so stays exempt. That non-owned wake edge is **card 2026-0213**
+// and is deliberately NOT fixed here.
+//
+// NOT FIX-DEPENDENT, and it never was: root-scoping changes nothing for a parentless
+// session, so this staging behaves identically either side of card 2026-0212. What
+// the card made unreachable was the OLD staging, not the invariant. The mutant this
+// test exists to kill is unchanged — delete `this._severOverageWakes(inst)` from
+// `_directOverageStop`.
+//
+// `claudeWorker` is what makes the conductor in-control (Pass 1 only sees instances
+// in the flow), which is what gets the conductor stopped in Pass 2 — and the stop is
+// what runs the sever. Without it there is no sever to observe.
 //
 // The both-directions half of the sever (a THIRD session waiting ON this conductor
 // also loses its wait and is marked) is pinned at the hub layer, by
 // tests/deferred-wake.test.mjs → 'stopping a session drops a subscription held by a
 // caller that does not OWN it'; it cannot be staged here, because a wake on the
 // conductor would require the conductor to be mid-turn.
-test('an idle conductor\'s wake on a worker Pass 3 leaves running is severed by the stop', async () => {
+test('an idle conductor\'s wake on a NON-OWNED target Pass 3 leaves running is severed by the stop', async () => {
   await boot(resumeRoutingScenario(), 'stop-resume');
   const conductor = await createInst({});
   const claudeWorker = await createInst({ conducted: true, callerInstanceId: conductor.id });
-  const exemptWorker = await createInst({ conducted: true, callerInstanceId: conductor.id });
+  const standalone = await createInst({});   // NOT conducted, NO callerInstanceId
   const tripper = await createInst({});
   const cEvs = collect(conductor);
 
-  exemptWorker.backend = 'ollama';
-  exemptWorker.model = 'deepseek-v4-flash:0731-cloud';
-  exemptWorker._refreshModelCapabilities();
-  assert.equal(instances._inUsageWindowFlow(exemptWorker), false,
-    'precondition: an ollama-only tree is outside the usage-window flow');
+  standalone.backend = 'ollama';
+  standalone.model = 'deepseek-v4-flash:0731-cloud';
+  standalone._refreshModelCapabilities();
+  // No `callerInstanceId`, so the root walk has nothing to climb and this session is
+  // its own root — which is exactly why it is exempt under BOTH the old downward
+  // predicate and the new root-scoped one. Deliberately asserted through
+  // `_inUsageWindowFlow` alone (not `agentTreeRoot`) so this test stays runnable, and
+  // fix-independent, either side of card 2026-0212.
+  assert.equal(instances._inUsageWindowFlow(standalone), false,
+    'precondition: an ollama-only root tree is outside the usage-window flow');
 
-  // Both owned workers go mid-turn, which is what arms the conductor's two wakes.
+  // The owned Claude worker going mid-turn arms the conductor's spawn-ownership wake.
   claudeWorker.prompt('STAY');
-  exemptWorker.prompt('STAY');
-  await waitFor(() => claudeWorker.status === 'turn' && exemptWorker.status === 'turn');
+  // The non-owned wake: noteDispatch arms immediately when the target is already
+  // mid-turn, so drive the standalone session first.
+  standalone.prompt('STAY');
+  await waitFor(() => claudeWorker.status === 'turn' && standalone.status === 'turn');
+  instances.noteDispatch(conductor.sessionId, standalone.sessionId);
+  assert.equal(instances.hasArmedWake(standalone.id), true, 'precondition: the non-owned wake is armed');
   assert.equal(instances.isIdleCaller(conductor.id), true, 'precondition: two armed wakes');
   assert.equal(conductor.status, 'idle', 'precondition: the conductor takes the IDLE branch');
 
   tripper.prompt('TRIP go');
   await waitFor(() => sub(cEvs, 'auto_stop_overage').length > 0, { timeout: 10000 });
 
-  assert.equal(exemptWorker.status, 'turn',
-    'Pass 3 leaves the exempt worker running — so only the stop\'s sever can drop its wake');
-  assert.equal(instances.hasArmedWake(exemptWorker.id), false,
-    'the wake on the still-running exempt worker is severed');
+  assert.equal(standalone.status, 'turn',
+    'Pass 3 leaves the non-owned exempt target running — so only the stop\'s sever can drop its wake');
+  assert.equal(instances.hasArmedWake(standalone.id), false,
+    'the wake on the still-running target is severed');
   assert.equal(instances.isIdleCaller(conductor.id), false, 'the conductor holds no wait');
   assert.equal(conductor._overageDroppedCallbacks, true,
     'and it is marked, so its resume prompt says the callbacks are gone');
-  // The severed wait cannot fire: that worker reaching turn_end wakes nobody.
-  instances.emit('event', { id: exemptWorker.id, ev: { kind: 'turn_end', isError: false } });
+  // The severed wait cannot fire: that target reaching turn_end wakes nobody.
+  instances.emit('event', { id: standalone.id, ev: { kind: 'turn_end', isError: false } });
   await new Promise(r => setTimeout(r, 50));
   assert.equal(cEvs.some(e => e.kind === 'user_echo' && /finished its turn/.test(e.text || '')), false,
     'no wake reaches the stopped conductor');
