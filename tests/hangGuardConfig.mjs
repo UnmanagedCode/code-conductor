@@ -22,12 +22,20 @@ function ms(envName, fallback) {
 // Parent-side, per test file: SIGKILL a child process that has outlived this.
 // MUST stay above the 60s per-test `timeout` passed to run() in run.mjs, so it
 // can never pre-empt a test that node itself would still cancel and report.
-// MEASURED slowest whole file: ~30.0s quiet, **~38.6s under 24-way CPU
-// starvation** — a ~2.3x margin against the 90s limit at the worst observation.
-// There is ONE culprit, tests/hang-guard.test.mjs, which serially spawns a dozen
-// nested runners, some CPU-burning. It is DEADLINE-bound rather than CPU-bound:
-// ~29.9s at concurrency 4, ~30.1s at 8, ~30.1s at 16, ~30.0s under 8-spinner
-// contention — 0.8% across a 4x concurrency range.
+// MEASURED slowest whole file: **~32.9s quiet** (a ~2.7x margin against the 90s
+// limit), and **~38.6s under 24-way CPU starvation** — ~2.3x at the worst
+// observation. RE-ANCHOR THIS WHEN THE TOP FILE CHANGES: the quiet figure used to
+// read ~30.0s against tests/hang-guard.test.mjs, and as of the merge that landed
+// tests/idle-wake-ownership.test.mjs the top of the ranking is no longer that file.
+//
+// THERE ARE NOW TWO DEADLINE-BOUND FILES AT THE TOP, not one culprit. Measured quiet
+// at HEAD: tests/idle-wake-ownership.test.mjs 32.9s, then tests/hang-guard.test.mjs
+// 30.0s, in a 38.7-39.5s suite over two runs — so hang-guard is ~76-78% of the
+// critical path and splitting
+// it (card 2026-0198) no longer recovers the floor by itself. hang-guard serially
+// spawns a dozen nested runners, some CPU-burning, and is deadline- rather than
+// CPU-bound: ~29.9s at concurrency 4, ~30.1s at 8, ~30.1s at 16, ~30.0s under
+// 8-spinner contention — 0.8% across a 4x concurrency range.
 //
 // DO NOT READ THE TOP FIVE AS A PLATEAU. This comment used to, on the strength of
 // the top five sitting "within ~600ms of each other" quiet and ~2.7s starved. That
@@ -37,9 +45,9 @@ function ms(envName, fallback) {
 // summary HELD and was then charged that file's wall. The four files trailing
 // hang-guard.test.mjs in the old ranking were inheriting its ~30s; their real
 // durations were 8ms, 344ms, 386ms and ~100ms. Card 2026-0206 moved the figure to
-// `test:complete` (order-independent). The ranking is now steep — measured at
-// concurrency 8: 29 953 / 15 251 / 13 126 / 11 326 / 10 362 ms — so a flat top five
-// reappearing is itself the signal that the metric regressed.
+// `test:complete` (order-independent). The ranking is now steep — measured quiet at
+// HEAD: 32 924 / 30 002 / 16 571 / 10 422 / 9 159 ms — so a flat top five reappearing
+// is itself the signal that the metric regressed.
 //
 // Card 2026-0198's evidence quotes the old plateau reading and its "before"
 // figures were taken with the broken metric; restate them against the fixed one
@@ -49,8 +57,9 @@ function ms(envName, fallback) {
 // slowest-file figure went 19.4s -> 28.8s -> 38.6s (margin 4.6x -> 3.1x -> 2.3x),
 // driven almost
 // entirely by cases added to tests/hang-guard.test.mjs plus the bounded
-// wall-clock windows in tests/mcp-subscribe-to-idle.test.mjs. It is still safe,
-// but the next few additions to either file should either split
+// wall-clock windows that now live in tests/idle-wake-ownership.test.mjs (which
+// replaced tests/mcp-subscribe-to-idle.test.mjs and carried those windows over).
+// It is still safe, but the next few additions to either file should either split
 // tests/hang-guard.test.mjs (its cases are independent subprocess runs, so
 // splitting recovers concurrency) or raise this constant — deliberately, with a
 // fresh measurement, not reactively after a false KILL.

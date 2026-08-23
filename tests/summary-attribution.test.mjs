@@ -13,13 +13,24 @@
 // keep all three:
 //   1. `the verdict line charges each file its OWN wall` — the ordering bug itself,
 //      plus SUB-SECOND RESOLUTION in its assertion (5). Fails against the pre-fix
-//      `test:summary` source, and (5) alone fails against a reporter that coarsens
-//      the figure to whole seconds — which every other assertion here survives.
+//      `test:summary` source. Against a reporter that coarsens the figure to whole
+//      seconds, MORE than (5) fires — see (5)'s own comment for which, per
+//      convention — but (5) is the only one that fires for EVERY convention and the
+//      only one whose catch does not depend on load.
 //   2. `a KILLED file keeps its figure` — a file with NO summary and NO inner
 //      completion. Fails against the pre-fix source AND against sourcing the
 //      duration from the last INNER `test:complete`.
 //   3. `post-test teardown is inside the figure` — fails against the INNER-complete
 //      source (the pre-fix source passes it, since node emits a summary at exit).
+//      DELIBERATE CO-GUARD, NOT A UNIQUE DISCRIMINATOR — do not delete it for
+//      lacking a unique killer. A mutation catalog finds unique killers for 1 and 2
+//      but none for 3: every kill it scores co-fires with 1 or 2, and STRUCTURALLY
+//      so, because a single-site duration mutation applies one formula to every file
+//      and therefore trips the fixtures that measure the most wall first. It is kept
+//      for a case a catalog of single-site mutants cannot express: a REFACTOR onto a
+//      completion event whose duration excludes `after()` hooks would leave 1 green
+//      (its fixtures have no hooks) and plausibly 2 as well, and 3 is the only
+//      assertion here that states teardown inclusion POSITIVELY, on a green run.
 //
 // Like tests/hang-guard.test.mjs, this spawns the REAL tests/run.mjs against
 // fixtures and reads its output. Nothing here re-implements the reporting rule: the
@@ -36,10 +47,17 @@
 // THE SPAWN COST IS PER FILE, NOT COMMON. This is the trap: an earlier revision did
 // the algebra with a single shared C and concluded assertion (2) had 800ms of slack,
 // when it had 200ms — and (2) was then MEASURED FAILING 1 run in 20 under starvation
-// (slow 1788 / medium 1431, margin -1ms). The costs differ SYSTEMATICALLY, not
-// randomly: slow.fixture.mjs is dispatched at t=0 into a free slot, while medium
-// waits for the slot fast vacates and pays a contended spawn. So C_medium > C_slow
-// as a rule, and the difference is what the bounds have to absorb.
+// (slow 1788 / medium 1431, margin -1ms).
+//
+// The mechanism is a TENDENCY, not a rule: at concurrency 2, slow and fast take the
+// two slots TOGETHER at t=0 (so slow's own spawn is already contended) while medium
+// waits for the one fast vacates, so medium more often pays the worse spawn.
+// Measured, it is only a lean — C_medium > C_slow in 6 of 20 starved runs at S=1700
+// and 12 of 20 at S=2100. It is the lean that drives the TIGHT end (the worst run in
+// each campaign had C_medium 231 vs C_slow 88, and 254 vs 120), while at the slack
+// end C_slow was the larger (115 vs 265, and 89 vs 140). So do not reason from an
+// assumed ordering: the bounds below hold because they treat C_medium and C_slow
+// SEPARATELY, which is the whole point of writing them per file.
 //
 // With medium's sleep M=1200 and slow's S=2100 (fast = C_f, medium = M + C_m,
 // slow = S + C_s, subsecond = 550 + C_sub), each assertion tolerates:
@@ -48,14 +66,17 @@
 //   (4) slow >= 2100             unconditional — it is a control, not a bound
 //   (5) 0 < medium - subsecond < 1000  while  C_sub - C_m < 650  and
 //                                            C_m - C_sub < 350
-// Measured spawn costs: ~37ms quiet. Under 16 CPU spinners, over 20 runs, the
-// per-file maxima were C_f 323ms, C_m 271ms, C_s 264ms, C_sub 236ms — but the MAXIMA
-// are not the risk, the SPREAD between two files in one run is: (2)'s binding
-// quantity 1.25*C_m - C_s ranged -29..198ms, peaking within 2ms of the 200ms that
-// S=1700 allowed. That is why S moved to 2100, buying 600ms. Verified after the
-// change over 20 starved runs: 0 assertions would fail, and the raw margins were
-// (1) min 425ms, (2) min 402ms, (4) min 70ms, (5) gap 569-849ms inside its 0-1000
-// band.
+// Measured spawn costs: ~37ms quiet. TWO SEPARATE 20-RUN CAMPAIGNS under 16 CPU
+// spinners, which must not be quoted as one — the failure came from the first and the
+// verification from the second:
+//   * S=1700 (the campaign that FAILED): (2)'s binding quantity 1.25*C_m - C_s ranged
+//     -121..201ms against the 200ms that S=1700 allowed, so the one run at 201ms is
+//     exactly the margin -1ms failure above.
+//   * S=2100 (the campaign that VERIFIED the fix): binding quantity -29..198ms
+//     against 600ms; 0 assertions would fail, raw margins (1) min 425ms, (2) min
+//     402ms, (4) min 70ms, (5) gap 569-849ms inside its 0-1000 band. Per-file maxima
+//     in this campaign: C_f 323ms, C_m 271ms, C_s 264ms, C_sub 236ms.
+// The MAXIMA are not the risk; the SPREAD between two files in one run is.
 //
 // Two standing warnings. Raising M widens (1) but NARROWS (2), so the sleeps are
 // solved together, never tuned one at a time. And do not re-derive these bounds with
@@ -204,10 +225,34 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
   //     tie the two (difference 0, violating the lower bound) or split them across
   //     adjacent buckets (difference exactly 1000, violating the upper). That is why
   //     it does not matter WHERE the buckets happen to fall.
-  // NOTHING ELSE HERE CATCHES THAT. Quantized, the four figures become 2000 / 1000 /
-  // 1000 / 0, on which assertions (1)-(4) all pass and even the ranking sequence in
-  // (3) still matches, because the sort is stable and the tie preserves insertion
-  // order. Measured true gap: 650ms quiet.
+  // IT IS NOT THE ONLY ASSERTION THAT FIRES — IT IS THE ONLY RELIABLE ONE. An earlier
+  // revision of this comment claimed "(1)-(4) all pass", which was true when slow
+  // slept 1700ms (quantized 2000 cleared (4)'s floor) and became false when the
+  // C-algebra fix moved that sleep to 2100. Measured quiet — slow 2138 / medium 1237 /
+  // subsecond 586 / fast 34 — and evaluated per convention:
+  //   round: figures 2000/1000/1000/0. (4) fires FIRST (2000 >= 2100 is false), (5)
+  //          also fires (gap 0). (1)(2)(3) pass — the ranking still matches, because
+  //          the sort is stable and the tie preserves insertion order.
+  //   floor: 2000/1000/0/0. (3) fires (subsecond and fast tie at 0, so the sequence
+  //          inverts), plus (4) and (5) (gap 1000).
+  //   ceil:  3000/2000/1000/1000. (1) fires, plus (3) and (5). (4) PASSES here.
+  // So (4)'s catch is real but LOAD-DEPENDENT: q(slow) = round((2100+C_s)/1000)*1000
+  // clears the 2100 floor as soon as C_s >= 400ms, and the measured C_s maximum over
+  // 20 starved runs was 264ms — 136ms of headroom, not a guarantee.
+  //
+  // (5) IS THE LOAD-INDEPENDENT ONE, and structurally so: under any mapping onto a
+  // 1000ms lattice both figures become multiples of 1000, so their difference is a
+  // multiple of 1000 — and no multiple of 1000 lies strictly inside (0, 1000). One
+  // side of the bound must fire wherever the buckets land, at any load. Neither side
+  // is dead weight: round trips the lower one, floor and ceil the upper.
+  //
+  // THE ENVELOPE, stated honestly rather than as totality. A 500ms lattice escapes
+  // (5) — gap 500 sits inside the band — and is caught instead by (4) under
+  // round/floor, or by (1) under ceil (fast 500, medium 1500, so 3*500 < 1500 is
+  // false). A 100ms lattice and a uniform x1.5 scaling pass all five, because they
+  // violate no invariant these tests state: order, ratio and sub-second resolution
+  // all survive them. That is the boundary of what this file claims, not a hole in it.
+  // Measured true gap: 650ms quiet.
   const gap = medium - sub;
   assert.ok(gap > 0 && gap < 1000,
     `medium.fixture.mjs (1200ms sleep, reported ${medium}ms) and subsecond.fixture.mjs ` +
@@ -231,6 +276,13 @@ test('a KILLED file keeps its figure and its place in the ranking', async () => 
   // The run MUST go red — a killed file is a real failure, and the completeness
   // ledger additionally names it as never having reported. Asserting green here
   // would be asserting the bug.
+  //
+  // THIS ASSERTION IS DELIBERATELY WEAK ABOUT *WHY* IT IS RED, and that has a known
+  // consequence: run.mjs guards the red outcome twice (the synthesized test:fail
+  // handler, and the ledger's unreported path), either of which alone suffices, so
+  // disabling ONE of them is invisible here. Both call sites in tests/run.mjs carry
+  // a note saying so. Strengthening this to pin a specific cause would close that,
+  // at the price of coupling the test to which guard fires first.
   assert.notEqual(code, 0, `a killed file must fail the run:\n${diag}`);
   // Vacuity guard: without this the test would pass if the fixture simply finished
   // fast and was never killed at all.

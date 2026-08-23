@@ -63,16 +63,22 @@ try {
 // different core count:
 //   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
 //     double the ambient load, and cannot go below the floor named next.
-//   * the floor is one file, tests/hang-guard.test.mjs, at ~30.0s — DEADLINE-bound,
-//     not CPU-bound, so it grows only 0.8% from concurrency 4 to 16 and 0.5% under
-//     8-spinner contention. Post-bump it is ~80% of the critical path (card
-//     2026-0198 splits it).
+//   * the floor is a SINGLE FILE, and since this card landed it is no longer the
+//     same one: measured quiet at HEAD, tests/idle-wake-ownership.test.mjs 32.9s is
+//     first and tests/hang-guard.test.mjs 30.0s second, in a 38.7-39.5s suite over
+//     two runs — so hang-guard is ~76-78% of the critical path, not ~80% and not
+//     the sole floor.
+//     Both are DEADLINE-bound rather than CPU-bound; hang-guard grows only 0.8%
+//     from concurrency 4 to 16 and 0.5% under 8-spinner contention, which is why
+//     more slots cannot get below it. Card 2026-0198 splits hang-guard, but that
+//     alone no longer sets the floor.
 //   * contention does NOT argue for backing off: under 8 spinners, concurrency 8
 //     was both FASTER than 4 (79.2s vs 87.6s) and had a marginally BETTER per-file
 //     kill margin (3.00x vs 2.92x). Both runs green.
-//   * the fake-claude subprocess guardrail below stayed at peak 3 of a budget of
-//     12 at every concurrency measured (4/8/16, quiet and contended), so it is not
-//     concurrency-driven.
+//   * the fake-claude subprocess guardrail below stayed at peak 3-4 of a budget of
+//     12 at every concurrency measured (4/8/16, quiet and contended) — and the one
+//     reading above 3 at concurrency 4 was CONTENDED, i.e. the lower slot count, so
+//     it is not concurrency-driven.
 // The timing-sensitive waits (control-request 5s, waitFor 4s) were the original
 // reason for 4; they were re-measured across 11 concurrency-8 whole-suite runs and
 // none of them tripped.
@@ -336,6 +342,16 @@ const stream = run({
   execArgv: ['--import', tripwireUrl, '--import', leakGuardUrl],
 });
 let failed = 0;
+// A KILLED FILE'S RED OUTCOME IS GUARDED TWICE, AND NO TEST COVERS EITHER GUARD
+// ALONE. This handler is one path: when the watchdog SIGKILLs a child, node
+// synthesizes a file-level test:fail, counted here. The other is the completeness
+// ledger's `unreported` loop near the end of this file, which also increments
+// `failed` because a killed child never emits its summary. Either one alone still
+// fails the run, so disabling just one is invisible to
+// tests/summary-attribution.test.mjs (its killed-file case asserts only that the run
+// is red) — verified: a mutant disabling either single site SURVIVES, while one
+// disabling both is killed. If you remove one, you are removing the redundancy, not
+// dead code, and nothing will tell you.
 stream.on('test:fail', (data) => {
   // Skip the implicit top-level pass/fail summary entries; only count real failures.
   if (data.details?.type === 'suite') return;
@@ -488,7 +504,10 @@ if (slowest.length > 0) {
 for (const file of unreported) {
   // Never silently absent — whatever the cause (wedged child, a truncated
   // report, a process.exit before any test registered), the file is named and
-  // the run goes red.
+  // the run goes red. This is the SECOND of the two independent guards on a killed
+  // file's red outcome (the other is the test:fail handler above, which sees the
+  // synthesized file-level failure). Removing either alone keeps the run red and is
+  // therefore caught by no test — see the note on that handler.
   console.error(`hang-guard: NO REPORT from ${file} — the file never emitted a summary.`);
   failed++;
 }
