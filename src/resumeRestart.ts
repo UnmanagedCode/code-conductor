@@ -226,6 +226,12 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       // queued-only (softened preamble)? Carried so the resume text is right
       // after a restart.
       overageWasStopped: !!inst._overageWasStopped,
+      // The third preamble selector (the stop found the session already idle),
+      // carried for the same reason: losing it resumes an idle-parked conductor on
+      // "continue where you left off", which was never true for it. ADDITIVE — a
+      // pre-upgrade manifest reads `false`, which is the TRUE value: the old code
+      // prompted an idle conductor instead, so no session was ever idle-parked.
+      overageIdleParked: !!inst._overageWasIdleParked,
       // The two conductor resume-text selectors, carried for the same reason as
       // overageWasStopped: losing either delivers a resume prompt missing a fact the
       // conductor must act on — it then waits forever for a wake nothing will send,
@@ -358,6 +364,7 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       if (e.overageStopped && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
         inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
+        inst._overageWasIdleParked = !!e.overageIdleParked;
         inst._overageDroppedCallbacks = !!e.overageStoppedWorkers; // pre-rename key, see the writer
         inst._overageUnarmedWorkers = !!e.overageUnarmedWorkers;
         // Restore queued messages BEFORE re-arming so armRestored's status emit
@@ -408,6 +415,7 @@ interface ResumeEntry {
   overageResumeAt: number | null;
   overageStopped: boolean;
   overageWasStopped: boolean;
+  overageIdleParked: boolean;
   overageStoppedWorkers: boolean;
   overageUnarmedWorkers: boolean;
   overageResetsAt: number | null;

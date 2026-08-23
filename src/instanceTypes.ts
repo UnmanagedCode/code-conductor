@@ -83,6 +83,12 @@ export interface InstanceLike {
   autoResumeAt: number | null;
   autoStoppedForOverage: boolean;
   _overageWasStopped: boolean;
+  // The overage stop found this session already idle — the third resume-preamble
+  // selector (see overageResumeKind).
+  _overageWasIdleParked: boolean;
+  // Set for the duration of the auto-resume's own send, exempting exactly that turn
+  // from the overage turn-start guard.
+  _overageResumeFiring: boolean;
   // Two independent facts a stopped conductor's resume prompt carries (see
   // buildConductorResumePreamble): a pending idle callback was severed, and/or a
   // worker of its was stopped un-armed.
