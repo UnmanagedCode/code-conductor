@@ -13,11 +13,18 @@
 // against a window it never touches. Namespacing makes that collision impossible by
 // construction, so no id needs reserving.
 //
-// The flow is domain-scoped rather than hardcoded per provider: it acts on an
-// instance only if the instance's agent tree touches a domain that CURRENTLY has
-// an active monitor. Today that's just 'anthropic'. When some other backend's
-// usage window becomes monitorable, add its domain to MONITORED_DOMAINS — no
-// exemption logic elsewhere changes.
+// The flow is domain-scoped rather than hardcoded per provider: it STOPS an
+// instance only if the instance's ROOT agent tree touches a domain that CURRENTLY
+// has an active monitor (the unit of stopping is the tree, so membership is
+// resolved from the root — `InstanceManager.agentTreeRoot`). Today the only
+// monitored domain is 'anthropic'. When some other backend's usage window becomes
+// monitorable, add its domain to MONITORED_DOMAINS — no exemption logic elsewhere
+// changes.
+//
+// ONE consumer asks a different question of this module: `_handleOverageTrip` tests
+// the EMITTING session's OWN backend (`isMonitoredDomain(usageDomainOfBackend(
+// inst.backend))`), because only that backend can say which account's window a
+// `rate_limit_event` reports.
 
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 

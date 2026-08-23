@@ -4150,8 +4150,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     inst._overageGate = () => {
       const resetsAt = this._overageResetsAt;
       const atMs = Number(resetsAt) * 1000;
-      // `_inUsageWindowFlow(inst)` keeps an exempt (e.g. ollama-only) session out
-      // of the gate: its sends flow normally AND its summary reports
+      // `_inUsageWindowFlow(inst)` keeps a ROOT-exempt (e.g. ollama-only tree)
+      // session out of the gate: its sends flow normally AND its summary reports
       // overageActive:false, so no overage/queued badge shows (summary() derives
       // overageActive/overageResetsAt from this same gate).
       const active = this._overageActive && this._overageResumeMode &&
@@ -4299,12 +4299,42 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   forceUsageTick(): Promise<unknown> { return this._usageMonitor.forceTick(); }
 
   // ---- Usage-window domain resolution (overage exemption seam) -------------
+  // The ROOT of an instance's agent tree: walk `callerInstanceId` UPWARD through the
+  // live registry until there is no parent to follow. The stop's unit is the TREE, so
+  // membership must be asked of the whole tree — and `agentTreeBackends` only walks
+  // DOWNWARD, which would answer for a subtree.
+  //
+  // Terminates in every degenerate shape rather than looping or throwing:
+  //   - no `callerInstanceId`      → this instance IS the root (the common case);
+  //   - a parent no longer in byId → stop at the deepest instance we can still see
+  //     (a dead conductor's tree is not reconstructible, and its own gate is gone);
+  //   - a cycle                    → the `seen` set breaks at the first repeat. Which
+  //     member it lands on does not matter: `agentTreeBackends` is itself cycle-safe
+  //     and reaches every member of a cycle from any of them, so all members get the
+  //     same verdict.
+  agentTreeRoot(inst: Instance): Instance {
+    const seen = new Set<string>();
+    let cur = inst;
+    while (!seen.has(cur.id)) {
+      seen.add(cur.id);
+      if (!cur.callerInstanceId) break;
+      const parent = this.byId.get(cur.callerInstanceId);
+      if (!parent) break;
+      cur = parent;
+    }
+    return cur;
+  }
+
   // The set of backend IDS used across an instance's AGENT TREE: its own backend
   // plus every conducted-worker descendant (separate Instances linked by
   // `callerInstanceId`, each with its own backend). In-process Agent-tool
   // subagents run inside the parent CLI process — the backend (endpoint + auth)
   // is fixed at launch time, so they share the parent's backend and add nothing
   // new. Cycle-safe.
+  //
+  // DOWNWARD only, deliberately: it answers for the argument's own subtree. What
+  // makes the exemption predicate tree-WIDE is `agentTreeRoot` above, applied at the
+  // one call site in `_inUsageWindowFlow`.
   agentTreeBackends(inst: Instance): Set<string> {
     const backends = new Set<string>();
     const seen = new Set<string>();
@@ -4321,19 +4351,28 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     return backends;
   }
 
-  // The usage-window domains an instance's agent tree belongs to.
+  // The usage-window domains the argument's OWN SUBTREE belongs to (it inherits
+  // `agentTreeBackends`' downward-only walk). Root resolution lives in
+  // `_inUsageWindowFlow`, not here — pushing it down would make
+  // `usageWindowDomainsOf(worker)` report its conductor's domains, a lie about the
+  // argument.
   usageWindowDomainsOf(inst: Instance): Set<string> {
     return new Set([...this.agentTreeBackends(inst)].map(usageDomainOfBackend));
   }
 
-  // True iff the instance's agent tree touches a domain with an ACTIVE
+  // True iff the instance's ROOT agent tree touches a domain with an ACTIVE
   // usage-window monitor — the single predicate the overage stop/resume flow
-  // consults. A tree with no Claude agent → e.g. {ollama} → unmonitored → EXEMPT
-  // (never auto-stopped, queued, or armed). A tree with any Claude agent →
-  // {anthropic} → in-flow (holds even for a non-Claude conductor whose workers
-  // are Claude).
+  // consults. ROOT-SCOPED (card 2026-0212): the unit of stopping is the TREE, so
+  // membership is resolved from the tree's root, not from the session. A tree with
+  // no Claude agent → e.g. {ollama} → unmonitored → EXEMPT (never auto-stopped,
+  // queued, or armed). A tree with any Claude agent → {anthropic} → in-flow — which
+  // holds for a non-Claude conductor whose workers are Claude AND, because of the
+  // root walk, for a non-Claude WORKER under a Claude conductor.
+  //
+  // Not the predicate for "did the monitored account emit this 429?" — see the
+  // stop-vs-trip split at `_handleOverageTrip`.
   _inUsageWindowFlow(inst: Instance): boolean {
-    for (const d of this.usageWindowDomainsOf(inst)) {
+    for (const d of this.usageWindowDomainsOf(this.agentTreeRoot(inst))) {
       if (isMonitoredDomain(d)) return true;
     }
     return false;
@@ -4348,10 +4387,20 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _handleOverageTrip(inst: Instance | null, info: { resetsAt: number | null } | null | undefined): void {
     const action = getOnOverageAction();
     if (action === 'none') return;          // no flag flip, no routing
-    // Domain scoping: a stream `rate_limit_event` from a session on an unmonitored
-    // backend belongs to that backend's own domain and must NOT trip the anthropic
-    // flow. The poll monitor passes inst=null (account-global) and is unaffected.
-    if (inst && !this._inUsageWindowFlow(inst)) return;
+    // STOPPING is a TREE fact; TRIPPING is a per-session BACKEND fact. Do not unify
+    // these two predicates — they answer different questions:
+    //   - `_inUsageWindowFlow` (root-scoped) asks "is this session a member of a tree
+    //     the stop must halt?" — the tree is the unit of stopping (card 2026-0212);
+    //   - HERE we ask "did the monitored account emit this 429?", which only the
+    //     EMITTING session's own backend can answer. An ollama-backed worker talks to
+    //     the ollama endpoint, so its `rate_limit_event` reports ollama's window — it
+    //     must not flip an anthropic lockout, even though its tree is in-flow because
+    //     its conductor is Claude.
+    // Strictly narrower than `_inUsageWindowFlow`: a claude-backed session is always a
+    // member of its own root's tree, so this cannot admit a trip the root-scoped
+    // predicate would reject. The poll monitor passes inst=null (account-global) and
+    // is unaffected.
+    if (inst && !isMonitoredDomain(usageDomainOfBackend(inst.backend))) return;
     if (this._overageActive) return;        // one-shot while active
     this._overageActive = true;
     this._overageResetsAt = info?.resetsAt ?? null;
@@ -4369,10 +4418,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // turn to interrupt and is instead severed, marked, and armed for resume on the
   // spot.
   _routeOverageStop({ resume, resetsAt }: { resume: boolean; resetsAt: number | null }): void {
-    // Exempt instances whose agent tree is purely in an unmonitored usage-window
-    // domain (e.g. ollama-only): they consume no monitored account window, so
-    // they are never stopped/marked. A Claude conductor with an
-    // ollama-only worker keeps the worker running and stops the conductor.
+    // Exempt instances whose ROOT agent tree is purely in an unmonitored
+    // usage-window domain (e.g. ollama-only): they consume no monitored account
+    // window, so they are never stopped/marked. A Claude conductor's ollama-only
+    // worker is NOT such a case — its root tree contains the conductor's `claude`,
+    // so it is stopped along with the conductor (card 2026-0212).
     const live = [...this.byId.values()].filter(i => i.proc && this._inUsageWindowFlow(i));
     // Pass 1: resolve which conductors are in control and which workers they protect.
     const inControlConductors = new Map<string, Instance>();  // conductor id → conductor instance
@@ -4505,8 +4555,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //
   // Every scope condition falls out of `_overageGate().active`, which is the single
   // owner of them: it ANDs `_overageActive`, `_overageResumeMode` (so plain `Stop` is
-  // out), a FUTURE finite `resetsAt` (the safety rail), and `_inUsageWindowFlow`
-  // (so a domain-exempt session is out).
+  // out), a FUTURE finite `resetsAt` (the safety rail), and the root-scoped
+  // `_inUsageWindowFlow` (so a ROOT-exempt session is out — a non-Claude worker under
+  // a Claude conductor is in, and this guard is its backstop).
   _guardOverageTurnStart(inst: Instance): void {
     if (!(inst._overageGate ? inst._overageGate().active : false)) return;
     // The auto-resume's own fire is the one turn that MUST run. Tested by FLAG, not

@@ -120,9 +120,10 @@ The consequences of being a substitution backend:
   monitored `anthropic` domain and every other backend to `backend:<its id>`. The
   namespace is load-bearing: ids are user-chosen, so an un-namespaced map would let a
   row named `anthropic` land in the monitored domain and be auto-stopped against a
-  window it never touches. Only `anthropic` has a monitor, so a tree with no Claude
-  agent is exempt from the overage stop/resume flow. Adding a monitor later is one
-  `Set` entry (`src/usageWindowDomains.ts`).
+  window it never touches. Only `anthropic` has a monitor, so a **root** tree with no
+  Claude agent is exempt from the overage stop/resume flow — membership is resolved
+  from the tree's root, so every member of a tree containing any Claude agent is in.
+  Adding a monitor later is one `Set` entry (`src/usageWindowDomains.ts`).
 - **The session sidecar records it** — `<store>/session-backends.json` maps
   `sid → {backend, model, contextWindowTokens?}`. Two things the CLI jsonl can't
   carry: which backend ran the session, and the model id in full. Absence of a record

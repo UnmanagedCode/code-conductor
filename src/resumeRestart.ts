@@ -360,7 +360,10 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // already elapsed during the restart.
       // `_inUsageWindowFlow(inst)` guards against re-arming an auto-resume onto a
       // now-exempt (e.g. ollama-only) restored session — such a session never
-      // persisted overageStopped:true, so this is belt-and-braces.
+      // persisted overageStopped:true, so this is belt-and-braces. Its root scoping
+      // (card 2026-0212) cannot change the answer here: restored entries are created
+      // with `callerInstanceId: null` and worker-group entries are skipped above, so
+      // the root of a restored instance is always itself.
       if (e.overageStopped && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
         inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
