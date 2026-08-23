@@ -4363,6 +4363,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // True iff the instance's ROOT agent tree touches a domain with an ACTIVE
   // usage-window monitor — the single predicate every STOP-SIDE decision consults
   // (routing's `live` filter, the per-instance gate, and everything the gate feeds).
+  // That list is stop-side only, deliberately — the one RESUME-side consumer,
+  // `resumeRestart.ts`'s restored-deadline re-arm, is excluded from it and carries
+  // its own root-scoping note there.
+  //
   // ROOT-SCOPED (card 2026-0212): the unit of stopping is the TREE, so
   // membership is resolved from the tree's root, not from the session. A tree with
   // no Claude agent → e.g. {ollama} → unmonitored → EXEMPT (never auto-stopped,
@@ -4403,10 +4407,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // ones: a custom backend that actually PROXIES the Anthropic endpoint gets a
     // namespaced `backend:<id>` domain, so its own `rate_limit_event` can no longer
     // trip the flow even in a mixed tree where a Claude ancestor previously admitted
-    // it. Accepted — a proxy row is indistinguishable from any other custom backend
-    // here, and the real window is still caught by identity-`claude` sessions' own
-    // events and by the account-global poll path. The poll monitor passes inst=null
-    // (account-global) and is unaffected by either predicate.
+    // it. Accepted because a proxy row is indistinguishable from any other custom
+    // backend HERE: nothing at this site can tell which endpoint a launch template
+    // dials. The other backstops are real but CONDITIONAL — do not read them as
+    // cover. Identity-`claude` sessions' own events require such a session to exist,
+    // which a pure-proxy fleet has none of. The account-global poll requires BOTH
+    // the usage threshold to be ENABLED (strictly opt-in, `enabled:false` when
+    // unset — `getOverageThreshold`, and `UsageOverageMonitor._tick` bails on it)
+    // AND the proxy to drain the SAME account the poll watches (`getAccountUsage`
+    // reads one fixed `~/.claude/.credentials.json` OAuth token, and a proxy row
+    // often exists precisely to drain a different org). Default settings + an
+    // all-proxy fleet ⇒ nothing trips at all.
+    // The poll monitor passes inst=null (account-global) and is unaffected by either
+    // predicate.
     if (inst && !isMonitoredDomain(usageDomainOfBackend(inst.backend))) return;
     if (this._overageActive) return;        // one-shot while active
     this._overageActive = true;
