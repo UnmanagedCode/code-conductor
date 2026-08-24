@@ -51,7 +51,8 @@ function ms(envName, fallback) {
 // hang-guard.test.mjs in the old ranking were inheriting its ~30s; their real
 // durations were 8ms, 344ms, 386ms and ~100ms. Card 2026-0206 moved the figure to
 // `test:complete` (order-independent). The ranking is now steep. Measured on a
-// QUIET 16-core box at 39ec94a (2026-08-24), post-split:
+// QUIET 16-core box at a23fbbb (2026-08-24), post-split. RE-POINT THIS SHA IF THE
+// BRANCH IS REBASED — a rebase rewrites it and the anchor silently dangles:
 //   idle-wake-ownership 33 036 / idle-drain-settle 16 618 /
 //   header-playbook-enforcement 10 442 / server-restart 9 175 /
 //   hang-guard-file-kill 8 507 ms
