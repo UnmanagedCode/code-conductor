@@ -40,14 +40,14 @@ const FOOTER_FILE = path.join(CONVENTIONS_DIR, 'footer.md');
 // as a non-toggleable row so users see what can't be turned off.
 export const CORE_META = {
   name: 'Core (always on)',
-  description: 'Role, hard boundary, dispatch-and-wake, MCP toolbelt, project-conventions on creation, safety, talking to the user',
+  description: 'Role, hard boundary, dispatch-and-wake, your own plan mode, MCP toolbelt, project-conventions on creation, safety, talking to the user',
 };
 
 // Built-in convention metadata (order = order they appear in the composed doc).
 // Bodies live in conventions/conductor/<slug>.md.
 export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: string }> = [
   { slug: 'intent-disambiguation', name: 'Intent disambiguation',
-    description: "Ground ambiguous asks in list_projects(); use MCP not shell to enumerate; ask before creating" },
+    description: "Ground ambiguous asks in list_projects(); ask before creating a project" },
   { slug: 'canonical-workflow', name: 'Canonical workflow',
     description: 'The recon→spawn→brief→wake→review→land loop, single and N-parallel' },
   { slug: 'worker-lifecycle', name: 'Worker lifecycle',
