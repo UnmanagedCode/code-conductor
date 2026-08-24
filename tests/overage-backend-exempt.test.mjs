@@ -25,7 +25,7 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, addBackend, addCustomModel } from '../src/appSettings.ts';
-import { getAccountUsage } from '../src/accountUsage.ts';
+import { installUsageSeamTripwire, assertUsageSeamInjected } from './overageUsageSeam.mjs';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',
@@ -68,7 +68,7 @@ async function writeScenario(obj) {
   return p;
 }
 
-let ctx, instances, home;
+let ctx, instances, home, seam;
 before(async () => {
   ctx = await bootServer({});
   instances = ctx.instances;
@@ -80,12 +80,15 @@ beforeEach(async () => {
   // Reset shared global overage state so nothing leaks between tests.
   instances._clearOverage();
   instances._overageResume.clearAll();
-  instances._overageResume.fetchUsage = getAccountUsage;
-  instances._usageMonitor.fetchUsage = getAccountUsage;
+  seam = installUsageSeamTripwire(instances);
   await setOnOverageAction('stop-resume');
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
 });
-afterEach(async () => { await instances.shutdown(); await rmrf(home); });
+afterEach(async () => {
+  await instances.shutdown();
+  await rmrf(home);
+  assertUsageSeamInjected(seam);
+});
 
 // create() directly (not the REST route) so we can pass callerInstanceId /
 // conducted — the MCP-only fields the /api/instances route doesn't expose.
