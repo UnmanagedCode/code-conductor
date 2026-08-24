@@ -75,7 +75,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 **Drive workers** — always dispatch-and-wake (see Core rule).
 - `send_prompt` — send a turn. A send to a mid-turn worker is delivered live into the running turn (steering), not queued as a new turn. A send you can't yet see in the worker's transcript has not failed — never re-send. Pass `forward:{sessionId}` to hand another worker's output on **unedited** — a research dump, findings you're passing through intact; a judged subset stays your own text.
-- `set_idle_timeout({sessionId, timeoutMs})` — shorten the heartbeat window on one worker; it re-arms a running heartbeat, so mid-turn is its use case. The ceiling is the default, so it can only shorten.
+- `set_idle_timeout({sessionId, timeoutSeconds})` — shorten the heartbeat window on one worker; it re-arms a running heartbeat, so mid-turn is its use case.
 - `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
 - `interrupt_turn` — a second heartbeat after a soft interrupt is your signal to escalate to `force:true`. · `kill_instance` · `respawn_instance` (resume a just-exited instance).
 

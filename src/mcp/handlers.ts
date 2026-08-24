@@ -949,12 +949,14 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
 // it cannot opt out, and it is woken either way once the edge exists — and a
 // failure to record (e.g. the caller died in between) must never turn a
 // successful prompt-send into an error.
-function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleTimeoutMs?: number): void {
+// The seconds→ms boundary conversion for all four turn-starting tools: the MCP
+// param is whole seconds, everything below this line is ms.
+function noteOwnership({ instances, callerId }: McpCtx, sessionId: string, idleTimeoutSeconds?: number): void {
   if (!callerId) return;                  // no ?caller= — a UI/REST-shaped call
   if (callerId === sessionId) return;     // a session cannot wait on its own turn
   if (!instances) return;                 // unreachable (getInst threw)
   try {
-    instances.noteDispatch(callerId, sessionId, idleTimeoutMs);
+    instances.noteDispatch(callerId, sessionId, idleTimeoutSeconds == null ? undefined : idleTimeoutSeconds * 1000);
   } catch { /* soft: a lost wake must not fail the send */ }
 }
 
@@ -983,8 +985,8 @@ function forwardSourceRefusal(soft: SoftRefusal, forwardSessionId: string): Soft
 }
 
 export async function sendPrompt(
-  { sessionId, text, idleTimeoutMs, forward }: {
-    sessionId: string; text: string; idleTimeoutMs?: number;
+  { sessionId, text, idleTimeoutSeconds, forward }: {
+    sessionId: string; text: string; idleTimeoutSeconds?: number;
     // Unlike `stage`/`provenance` below, this handler consumes `forward`
     // itself, so it IS destructured. `sessionId` is `unknown` here because the
     // schema declares `forward` as a bare object — validateArgs does no
@@ -1043,7 +1045,7 @@ export async function sendPrompt(
   }
   const forwardedField = forwarded !== undefined ? { forwarded } : {};
 
-  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   await inst.promptOrQueueSteer(composedText);
   return { sessionId: inst.sessionId, status: inst.status, ...forwardedField };
 }
@@ -1063,7 +1065,7 @@ export async function setMode({ sessionId, mode }: { sessionId: string; mode: st
 // identity comes from the MCP URL's ?caller=<id> query string (baked in at spawn
 // time by InstanceManager.mcpServerUrl). `armed` says whether a live heartbeat
 // was re-armed, i.e. whether the target is mid-turn right now.
-export async function setIdleTimeout({ sessionId, timeoutMs }: { sessionId: string; timeoutMs: number }, { instances, callerId }: McpCtx) {
+export async function setIdleTimeout({ sessionId, timeoutSeconds }: { sessionId: string; timeoutSeconds: number }, { instances, callerId }: McpCtx) {
   if (!instances) throw new Error('orchestrator has no InstanceManager');
   if (!callerId) {
     throw new Error(
@@ -1075,7 +1077,7 @@ export async function setIdleTimeout({ sessionId, timeoutMs }: { sessionId: stri
   // as a raw throw out of the hub's boundary translation.
   const r = await getInst(instances, sessionId);
   if ('soft' in r) return r.soft;
-  const res = instances.setIdleTimeout(callerId, sessionId, timeoutMs);
+  const res = instances.setIdleTimeout(callerId, sessionId, timeoutSeconds * 1000);
   return { sessionId, armed: res.armed };
 }
 
@@ -1335,8 +1337,8 @@ function overageUnarmedRefusal(inst: { overageSendRefused: boolean; sessionId: u
 }
 
 export async function approvePlan(
-  { sessionId, feedback, idleTimeoutMs }: {
-    sessionId: string; feedback?: string; idleTimeoutMs?: number;
+  { sessionId, feedback, idleTimeoutSeconds }: {
+    sessionId: string; feedback?: string; idleTimeoutSeconds?: number;
   },
   { instances, callerId }: McpCtx,
 ) {
@@ -1352,7 +1354,7 @@ export async function approvePlan(
   const refused = overageUnarmedRefusal(inst);
   if (refused) return refused;
   const text = buildApprovePrompt(feedback);
-  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   await inst.promptOrQueueSteer(text);
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
@@ -1361,8 +1363,8 @@ export async function approvePlan(
 // The worker will produce a revised plan; the conductor loops back to
 // reviewing get_recent_messages and either approves or rejects again.
 export async function rejectPlan(
-  { sessionId, feedback, idleTimeoutMs }: {
-    sessionId: string; feedback?: string; idleTimeoutMs?: number;
+  { sessionId, feedback, idleTimeoutSeconds }: {
+    sessionId: string; feedback?: string; idleTimeoutSeconds?: number;
   },
   { instances, callerId }: McpCtx,
 ) {
@@ -1372,7 +1374,7 @@ export async function rejectPlan(
   const refused = overageUnarmedRefusal(inst);
   if (refused) return refused;
   const text = buildRejectPrompt(feedback);
-  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   await inst.promptOrQueueSteer(text);
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }
@@ -1405,8 +1407,8 @@ interface AnswerEntry {
 // the SAME source get_recent_messages uses — so we format against exactly what
 // the conductor saw. Soft-refuses (never throws) on mismatch.
 export async function answerQuestion(
-  { sessionId, answers, idleTimeoutMs }: {
-    sessionId: string; answers: AnswerEntry[]; idleTimeoutMs?: number;
+  { sessionId, answers, idleTimeoutSeconds }: {
+    sessionId: string; answers: AnswerEntry[]; idleTimeoutSeconds?: number;
   },
   { instances, callerId }: McpCtx,
 ) {
@@ -1471,7 +1473,7 @@ export async function answerQuestion(
   }
 
   const text = formatUserQuestionAnswers(questions, states);
-  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutMs);
+  noteOwnership({ instances, callerId }, inst.sessionId as string, idleTimeoutSeconds);
   await inst.promptOrQueueSteer(text);
   return { sessionId: inst.sessionId, mode: inst.mode, sentText: text };
 }

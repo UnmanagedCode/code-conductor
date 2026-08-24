@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn, settle } from './helpers.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
-import { DEFAULT_SUBSCRIBE_TIMEOUT_MS } from '../src/idleSubscriptions.ts';
+import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../src/idleSubscriptions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -539,7 +539,7 @@ test('a self-directed set_idle_timeout is rejected with a clear error', async ()
   const aId = await spawnReady('p');
 
   const result = await callTool('set_idle_timeout',
-    { sessionId: aId, timeoutMs: 1000 }, { caller: aId });
+    { sessionId: aId, timeoutSeconds: 1 }, { caller: aId });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /wait on self/);
 });
@@ -549,7 +549,7 @@ test('missing ?caller= surfaces a clear isError result', async () => {
   const targetId = await spawnReady('p');
 
   const { body } = await rpc(baseUrl, 'tools/call', {
-    name: 'set_idle_timeout', arguments: { sessionId: targetId, timeoutMs: 1000 },
+    name: 'set_idle_timeout', arguments: { sessionId: targetId, timeoutSeconds: 1 },
   });
   assert.equal(body.result.isError, true);
   assert.match(body.result.content[0].text, /caller identity missing/);
@@ -707,7 +707,7 @@ test('a SOFT interrupt leaves the wake armed, and the heartbeat keeps firing', a
   const caller = instForSession(instances, callerId);
 
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
 
   const soft = unwrap(await callTool('interrupt_turn', { sessionId: targetId }));
@@ -773,11 +773,11 @@ test('idempotency is ONE INTERVAL, not one map entry: no beat survives the turn_
     ev => ev.text?.includes(targetId) && ev.text?.includes('did NOT finish'));
 
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'one', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: targetId, text: 'one', idleTimeoutSeconds: 1 }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
   // The mid-turn steer is the second arm attempt for the same pair.
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'two', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: targetId, text: 'two', idleTimeoutSeconds: 1 }, { caller: callerId });
   assert.equal(instances._idleSubscribers.get(target.id).size, 1, 'one entry for the pair');
 
   // BARRIER: the paced fixture ends the turn on its own, and that turn_end is what
@@ -788,14 +788,14 @@ test('idempotency is ONE INTERVAL, not one map entry: no beat survives the turn_
   const atEnd = beats();
 
   // A second, orphaned interval would fire several more times in this window.
-  await new Promise(r => setTimeout(r, 150 * 5));
+  await new Promise(r => setTimeout(r, 2000)); // two windows of the 1s heartbeat
   await settle();
   assert.equal(beats(), atEnd,
     'the turn_end cleared EVERY interval for the pair — a leaked second one keeps pinging');
   assert.equal(instances._idleHub.hasArmedWake(target.id), false);
 });
 
-test('a dispatch with no idleTimeoutMs preserves an earlier set_idle_timeout preference', async () => {
+test('a dispatch with no idleTimeoutSeconds preserves an earlier set_idle_timeout preference', async () => {
   // The docblock on _recordOwner promises this: an absent/invalid timeoutMs leaves
   // the owner's stored window intact rather than silently resetting it to the
   // default. Without the intervening dispatch the fallback is never exercised.
@@ -806,10 +806,10 @@ test('a dispatch with no idleTimeoutMs preserves an earlier set_idle_timeout pre
   const caller = instForSession(instances, callerId);
 
   const set = unwrap(await callTool('set_idle_timeout',
-    { sessionId: targetId, timeoutMs: 5_000 }, { caller: callerId }));
+    { sessionId: targetId, timeoutSeconds: 5 }, { caller: callerId }));
   assert.equal(set.armed, false, 'target idle, so nothing to re-arm — preference only');
 
-  // A plain dispatch, carrying NO idleTimeoutMs.
+  // A plain dispatch, carrying NO idleTimeoutSeconds.
   await callTool('send_prompt', { sessionId: targetId, text: 'go' }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
   await waitFor(() => instances._idleHub.hasArmedWake(target.id));
@@ -876,16 +876,16 @@ test('the heartbeat repeats without consuming, and the real turn_end wake still 
   // the interval stops.
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
-  // ~4s of mid-turn span at a 150ms window. The two beats this needs must both
-  // land BEFORE the turn ends, so the span is the real budget — 150ms × 2 inside
-  // 4000ms tolerates a stall of nearly 2s per beat. On the old ~1s span it was
-  // ~350ms, and that is the margin that flaked under a loaded machine.
+  // ~4s of mid-turn span at the 1s window (the MCP minimum). The two beats this
+  // needs must both land BEFORE the turn ends, so the span is the real budget —
+  // 1s × 2 inside ~4s tolerates a stall of nearly 1s per beat. On the old ~1s
+  // span the margin was ~350ms, and that is what flaked under a loaded machine.
   const targetId = await spawnReadyWithScenario('p', SCENARIO_LONG);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
 
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
 
   const beats = () => countUserEchoes(caller,
@@ -893,7 +893,7 @@ test('the heartbeat repeats without consuming, and the real turn_end wake still 
   await waitFor(() => beats() >= 2, { timeout: 20000 });
   const stub = findTimeoutStubFor(caller, targetId);
   assert.match(stub.text, /did NOT finish/);
-  assert.match(stub.text, /timed out after 150ms/);
+  assert.match(stub.text, /timed out after 1s/);
   assert.match(stub.text, /get_recent_messages/);
   // Carve-out: a heartbeat stub is marked as a wake bubble but never folded.
   assert.ok(stub.text.startsWith(WAKE_CALLBACK_MARKER),
@@ -909,7 +909,7 @@ test('the heartbeat repeats without consuming, and the real turn_end wake still 
 
   // …and the interval really stopped: several more windows produce no further ping.
   const atEnd = beats();
-  await new Promise(r => setTimeout(r, 150 * 4));
+  await new Promise(r => setTimeout(r, 2000)); // two windows of the 1s heartbeat
   await settle();
   assert.equal(beats(), atEnd, 'the turn_end must have cleared the interval');
 });
@@ -925,7 +925,7 @@ test('turn_end before the first heartbeat wins: exactly one stub, and it is the 
   // itself is pinned by the bounded-window negative below, not here — with a 600s
   // window an uncleared interval is indistinguishable from a cleared one.
   await driveTurn(instances, targetId, () => callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: 600_000 }, { caller: callerId }));
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: 600 }, { caller: callerId }));
 
   const caller = instForSession(instances, callerId);
   await waitFor(() => !!findStubFor(caller, targetId));
@@ -952,11 +952,13 @@ test('turn_end before the first heartbeat wins: exactly one stub, and it is the 
 // A wall-clock window is unavoidable here without a fake clock (an src/ change):
 // the assertion is "the timer did not fire", which requires giving it a real
 // chance to. 1500ms against a MEASURED worst-case 47ms turn round-trip under
-// 24-way starvation is a ~32x margin. Re-measure before shrinking it.
-const HEARTBEAT_MS = 1500;
+// 24-way starvation is a ~42x margin. Re-measure before shrinking it. (The MCP
+// param is whole seconds, so 2 is the smallest window above the 1s minimum that
+// still leaves that margin.)
+const HEARTBEAT_SECONDS = 2;
 // Strictly greater than the window, so it provably elapses: an uncleared interval
 // has necessarily fired by the time we assert.
-const OBSERVE_MS = HEARTBEAT_MS + 600;
+const OBSERVE_MS = HEARTBEAT_SECONDS * 1000 + 600;
 
 test('a turn_end DELIVERY clears the interval — no spurious heartbeat follows', async () => {
   // The interval callback delivers UNCONDITIONALLY, without re-checking that the
@@ -972,7 +974,7 @@ test('a turn_end DELIVERY clears the interval — no spurious heartbeat follows'
 
   const caller = instForSession(instances, callerId);
   await driveTurn(instances, targetId, () => callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: HEARTBEAT_MS }, { caller: callerId }));
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: HEARTBEAT_SECONDS }, { caller: callerId }));
   await waitFor(() => !!findStubFor(caller, targetId));
   assert.doesNotMatch(findStubFor(caller, targetId).text, /did NOT finish/,
     'the delivered stub must be the completion one — if this fails a heartbeat beat ' +
@@ -999,7 +1001,7 @@ test('control — an armed heartbeat DOES fire inside the same window', async ()
   const caller = instForSession(instances, callerId);
 
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: HEARTBEAT_MS }, { caller: callerId });
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: HEARTBEAT_SECONDS }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
   // Bounded by the SAME window the negative waits out, not waitFor's 10s default:
   // the claim being controlled is "a stub arrives inside that window".
@@ -1019,16 +1021,17 @@ test('set_idle_timeout re-arms a RUNNING heartbeat', async () => {
   const caller = instForSession(instances, callerId);
 
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: 30_000 }, { caller: callerId });
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: 30 }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
   await waitFor(() => instances._idleHub.hasArmedWake(target.id));
   assert.equal(instances._idleSubscribers.get(target.id).get(caller.id).timeoutMs, 30_000);
 
   const res = unwrap(await callTool('set_idle_timeout',
-    { sessionId: targetId, timeoutMs: 120 }, { caller: callerId }));
+    { sessionId: targetId, timeoutSeconds: 1 }, { caller: callerId }));
   assert.equal(res.armed, true, 'a live heartbeat was re-armed, not just recorded');
-  assert.equal(instances._idleSubscribers.get(target.id).get(caller.id).timeoutMs, 120);
-  await waitFor(() => !!findTimeoutStubFor(caller, targetId), { timeout: 3000 });
+  assert.equal(instances._idleSubscribers.get(target.id).get(caller.id).timeoutMs, 1_000,
+    'seconds at the MCP boundary, ms in the hub');
+  await waitFor(() => !!findTimeoutStubFor(caller, targetId), { timeout: 5000 });
 });
 
 test('set_idle_timeout on an idle target records the preference and reports armed:false', async () => {
@@ -1037,7 +1040,7 @@ test('set_idle_timeout on an idle target records the preference and reports arme
   const targetId = await spawnReady('p');
 
   const res = unwrap(await callTool('set_idle_timeout',
-    { sessionId: targetId, timeoutMs: 5_000 }, { caller: callerId }));
+    { sessionId: targetId, timeoutSeconds: 5 }, { caller: callerId }));
   assert.equal(res.sessionId, targetId);
   assert.equal(res.armed, false, 'nothing is armed while the target is idle');
   assert.deepEqual(instances._idleSubscriberSnapshot(), {});
@@ -1060,7 +1063,7 @@ test('a soft interrupt by an IDENTIFIED caller disarms nothing — the heartbeat
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
   await waitFor(() => instances._idleHub.hasArmedWake(target.id));
 
@@ -1307,7 +1310,7 @@ test('a heartbeat on a target that is GONE FOR GOOD retires itself after one pin
     ev => ev.text?.includes(worker.sessionId) && ev.text?.includes('did NOT finish'));
 
   await callTool('send_prompt',
-    { sessionId: worker.sessionId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: worker.sessionId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
   await waitFor(() => worker.status === 'turn');
   await waitFor(() => instances._idleHub.hasArmedWake(worker.id));
 
@@ -1321,7 +1324,7 @@ test('a heartbeat on a target that is GONE FOR GOOD retires itself after one pin
   assert.equal(instances._idleHub.hasArmedWake(worker.id), false,
     'that ping was the last one — the entry retired');
   const atRetire = beats();
-  await new Promise(r => setTimeout(r, 150 * 5));
+  await new Promise(r => setTimeout(r, 2000)); // two windows of the 1s heartbeat
   await settle();
   assert.equal(beats(), atRetire, 'and no further ping arrives');
 });
@@ -1340,7 +1343,7 @@ test('a heartbeat inside a rotation gap does NOT retire — the wake is still ow
     ev => ev.text?.includes(worker.sessionId) && ev.text?.includes('did NOT finish'));
 
   await callTool('send_prompt',
-    { sessionId: worker.sessionId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: worker.sessionId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
   await waitFor(() => worker.status === 'turn');
   await waitFor(() => instances._idleHub.hasArmedWake(worker.id));
 
@@ -1381,7 +1384,7 @@ for (const gap of [
       ev => ev.text?.includes(worker.sessionId) && ev.text?.includes('did NOT finish'));
 
     await callTool('send_prompt',
-      { sessionId: worker.sessionId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+      { sessionId: worker.sessionId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
     await waitFor(() => worker.status === 'turn');
     await waitFor(() => instances._idleHub.hasArmedWake(worker.id));
 
@@ -1408,25 +1411,35 @@ test('the heartbeat window is clamped: above the default is refused, zero is ref
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
   const targetId = await spawnReady('p');
-  const over = DEFAULT_SUBSCRIBE_TIMEOUT_MS + 1;
+  const over = DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS + 1;
 
   for (const [tool, args] of [
-    ['set_idle_timeout', { sessionId: targetId, timeoutMs: over }],
-    ['send_prompt', { sessionId: targetId, text: 'go', idleTimeoutMs: over }],
+    ['set_idle_timeout', { sessionId: targetId, timeoutSeconds: over }],
+    ['send_prompt', { sessionId: targetId, text: 'go', idleTimeoutSeconds: over }],
   ]) {
     const res = await callTool(tool, args, { caller: callerId });
     assert.equal(res.isError, true, `${tool} must refuse a window above the default`);
-    assert.match(res.content[0].text, new RegExp(`must be <= ${DEFAULT_SUBSCRIBE_TIMEOUT_MS}`));
+    assert.match(res.content[0].text, new RegExp(`must be <= ${DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS}`));
   }
   for (const [tool, args] of [
-    ['set_idle_timeout', { sessionId: targetId, timeoutMs: 0 }],
+    ['set_idle_timeout', { sessionId: targetId, timeoutSeconds: 0 }],
     // The pre-existing hole this closes: `integer` with no minimum let
-    // idleTimeoutMs:-5 through, to be silently swallowed by the default fallback.
-    ['send_prompt', { sessionId: targetId, text: 'go', idleTimeoutMs: -5 }],
+    // idleTimeoutSeconds:-5 through, to be silently swallowed by the default fallback.
+    ['send_prompt', { sessionId: targetId, text: 'go', idleTimeoutSeconds: -5 }],
   ]) {
     const res = await callTool(tool, args, { caller: callerId });
     assert.equal(res.isError, true, `${tool} must refuse a non-positive window`);
     assert.match(res.content[0].text, /must be >= 1/);
+  }
+  // Seconds are WHOLE seconds: a fractional window is refused by the schema too,
+  // not floored into something the caller did not ask for.
+  for (const [tool, args] of [
+    ['set_idle_timeout', { sessionId: targetId, timeoutSeconds: 2.5 }],
+    ['send_prompt', { sessionId: targetId, text: 'go', idleTimeoutSeconds: 2.5 }],
+  ]) {
+    const res = await callTool(tool, args, { caller: callerId });
+    assert.equal(res.isError, true, `${tool} must refuse a fractional window`);
+    assert.match(res.content[0].text, /must be integer/);
   }
   // Every refusal fired before any handler work: no turn, no ownership recorded.
   assert.equal(instForSession(instances, targetId).status, 'idle');
@@ -1501,7 +1514,10 @@ test('an UNPROMPTED turn re-arms: the auto-approved-plan gap', async () => {
 test('awaitingWake tracks the TURN, not a registration', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
   const callerId = await spawnReady('p');
-  const targetId = await spawnReadyWithScenario('p', SCENARIO_PACED);
+  // The LONG fixture, not the paced one: this test must observe a heartbeat while
+  // the turn is still running, and the 1s window (the MCP minimum) does not fit
+  // inside the paced turn's ~1.2s span with room to read the flag afterwards.
+  const targetId = await spawnReadyWithScenario('p', SCENARIO_LONG);
   const target = instForSession(instances, targetId);
   const caller = instForSession(instances, callerId);
   const flag = (sid) => instances.list().find(i => i.sessionId === sid)?.awaitingWake;
@@ -1513,7 +1529,7 @@ test('awaitingWake tracks the TURN, not a registration', async () => {
   // caller-side ("I am waiting on someone"), which is what makes an idle
   // conductor's dot distinguishable from a finished one.
   await callTool('send_prompt',
-    { sessionId: targetId, text: 'go', idleTimeoutMs: 150 }, { caller: callerId });
+    { sessionId: targetId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
   await waitFor(() => target.status === 'turn');
   assert.equal(flag(callerId), true, 'the owner is awaiting while its worker runs');
   assert.equal(flag(targetId), false, 'the worker itself is not awaiting anything');

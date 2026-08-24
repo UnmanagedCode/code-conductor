@@ -49,12 +49,14 @@
 
 import { buildRecentMessages } from './mcp/handlers.ts';
 import { flattenPayload } from './mcp/content.ts';
+import { humanizeDuration } from './duration.ts';
 import { buildWakeStub, markPlainStub } from '../public/wakeCallback.js';
 import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 import type { UiEvent } from './parser.ts';
 
 // The heartbeat interval for EVERY armed wake, AND the ceiling `set_idle_timeout`
-// / `idleTimeoutMs` will accept (src/mcp/tools.ts reads this constant for the
+// / `idleTimeoutSeconds` will accept (seconds at the MCP boundary, ms here —
+// src/mcp/tools.ts reads DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS below for the
 // schemas' `maximum`), so those inputs can in practice only SHORTEN the window.
 // One number, two uses, deliberately: it means "the longest a mid-turn session
 // may go without telling its owner it is still running", so raising
@@ -63,6 +65,15 @@ import type { UiEvent } from './parser.ts';
 // background subagents have finished (see _onTurnEnd / _onTaskEvent), so without
 // the heartbeat a stuck subagent would leave the owner silent indefinitely.
 export const DEFAULT_SUBSCRIBE_TIMEOUT_MS = Number(process.env.ORCH_SUBSCRIBE_TIMEOUT_MS) || 1_800_000;
+
+// The same ceiling in the unit the MCP params take. FLOOR, not round: it is what
+// makes "can only shorten" survive the unit change — every accepted integer
+// v ∈ [1, this] satisfies v*1000 ≤ DEFAULT_SUBSCRIBE_TIMEOUT_MS.
+// Degenerate corner, deliberate: a sub-second ORCH_SUBSCRIBE_TIMEOUT_MS makes
+// this 0 while the schemas' `minimum` is 1, so every value is refused. At a
+// sub-second heartbeat there is nothing a second-precision knob can shorten,
+// and a Math.max(1, …) floor would let a 1s value LENGTHEN a 400ms window.
+export const DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS = Math.floor(DEFAULT_SUBSCRIBE_TIMEOUT_MS / 1000);
 
 // Settle window for the idle task-drain wake path. When a terminal task event
 // drains an ALREADY-IDLE worker to zero background tasks, the CLI either opens
@@ -855,7 +866,7 @@ export class IdleSubscriptionHub {
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to see how far it got, then re-drive it or escalate — do not treat this as a result.`
       : opts?.timedOut
-      ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${opts.timeoutMs}ms; ` +
+      ? `Worker \`${targetSessionId}\` did NOT finish — timed out after ${humanizeDuration(opts.timeoutMs ?? 0)}; ` +
         `it may still be busy or stuck. ` +
         `Call \`mcp__code-conductor__get_recent_messages({sessionId:"${targetSessionId}"})\` ` +
         `to check its current state, then decide whether to wait, ` +

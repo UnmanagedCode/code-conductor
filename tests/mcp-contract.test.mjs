@@ -14,7 +14,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
-import { DEFAULT_SUBSCRIBE_TIMEOUT_MS } from '../src/idleSubscriptions.ts';
+import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../src/idleSubscriptions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -166,7 +166,7 @@ test('send_prompt no longer accepts wait — refused as an unknown argument, and
   });
   const rendered = JSON.stringify(body);
   assert.match(rendered, /unexpected argument 'wait'/);
-  assert.match(rendered, /Allowed:.*idleTimeoutMs/, 'the refusal names the surviving parameter set');
+  assert.match(rendered, /Allowed:.*idleTimeoutSeconds/, 'the refusal names the surviving parameter set');
 
   // The refusal fires before any handler work: no turn, no echo.
   await new Promise(r => setTimeout(r, 100));
@@ -481,7 +481,7 @@ test('tools/list emits readOnly / destructive / idempotent annotations', async (
 
 // ---------- idle-wake heartbeat schema (the four turn-starting tools + set_idle_timeout) ----------
 
-test('the turn-starting tools expose idleTimeoutMs and NO subscribe knob', async () => {
+test('the turn-starting tools expose idleTimeoutSeconds and NO subscribe knob', async () => {
   const { body } = await rpc('tools/list');
   const byName = Object.fromEntries(body.result.tools.map(t => [t.name, t.inputSchema.properties]));
   for (const name of ['send_prompt', 'approve_plan', 'reject_plan', 'answer_question']) {
@@ -490,25 +490,35 @@ test('the turn-starting tools expose idleTimeoutMs and NO subscribe knob', async
     // The wake is a property of ownership — there is nothing to opt into or out of.
     assert.equal(props.subscribe, undefined, `${name} must expose no subscribe knob`);
     assert.equal(props.subscribeTimeoutMs, undefined, `${name} must not keep the old timeout param name`);
-    assert.equal(props.idleTimeoutMs?.type, 'number', `${name}.idleTimeoutMs should be number`);
-    // `number` + minimum + maximum together: `integer` with no bounds let
-    // idleTimeoutMs:-5 through, to be silently swallowed by the default fallback.
-    assert.equal(props.idleTimeoutMs?.minimum, 1, `${name}.idleTimeoutMs needs a floor`);
-    assert.equal(props.idleTimeoutMs?.maximum, DEFAULT_SUBSCRIBE_TIMEOUT_MS,
-      `${name}.idleTimeoutMs ceiling must be the default, so it can only shorten`);
+    assert.equal(props.idleTimeoutMs, undefined, `${name} must not keep the old ms param name`);
+    // `integer`: the window is whole seconds, so 2.5 is refused rather than floored.
+    assert.equal(props.idleTimeoutSeconds?.type, 'integer', `${name}.idleTimeoutSeconds should be integer`);
+    // minimum + maximum together: bounds are what stopped idleTimeout:-5 going
+    // through, to be silently swallowed by the default fallback.
+    assert.equal(props.idleTimeoutSeconds?.minimum, 1, `${name}.idleTimeoutSeconds needs a floor`);
+    assert.equal(props.idleTimeoutSeconds?.maximum, DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS,
+      `${name}.idleTimeoutSeconds ceiling must be the floored default, so it can only shorten`);
     const required = body.result.tools.find(t => t.name === name).inputSchema.required ?? [];
-    assert.ok(!required.includes('idleTimeoutMs'), `${name}.idleTimeoutMs must not be required`);
+    assert.ok(!required.includes('idleTimeoutSeconds'), `${name}.idleTimeoutSeconds must not be required`);
   }
 });
 
-test('set_idle_timeout requires a bounded timeoutMs', async () => {
+test('set_idle_timeout requires a bounded, whole-second timeoutSeconds', async () => {
   const { body } = await rpc('tools/list');
   const tool = body.result.tools.find(t => t.name === 'set_idle_timeout');
   assert.ok(tool, 'set_idle_timeout is registered');
-  assert.equal(tool.inputSchema.properties.timeoutMs.type, 'number');
-  assert.equal(tool.inputSchema.properties.timeoutMs.minimum, 1);
-  assert.equal(tool.inputSchema.properties.timeoutMs.maximum, DEFAULT_SUBSCRIBE_TIMEOUT_MS);
-  assert.deepEqual([...tool.inputSchema.required].sort(), ['sessionId', 'timeoutMs']);
+  assert.equal(tool.inputSchema.properties.timeoutMs, undefined, 'the ms param name is gone');
+  assert.equal(tool.inputSchema.properties.timeoutSeconds.type, 'integer');
+  assert.equal(tool.inputSchema.properties.timeoutSeconds.minimum, 1);
+  assert.equal(tool.inputSchema.properties.timeoutSeconds.maximum, DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS);
+  assert.deepEqual([...tool.inputSchema.required].sort(), ['sessionId', 'timeoutSeconds']);
+
+  // `integer` is new on this param: a fractional window must be REFUSED at the
+  // schema, not floored into a window the caller never asked for.
+  const { body: call } = await rpc('tools/call', {
+    name: 'set_idle_timeout', arguments: { sessionId: 'nope', timeoutSeconds: 2.5 },
+  });
+  assert.match(JSON.stringify(call), /must be integer/);
 });
 
 // ---------- send_prompt({forward}) schema ----------
