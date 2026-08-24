@@ -50,9 +50,19 @@ function ms(envName, fallback) {
 // summary HELD and was then charged that file's wall. The four files trailing
 // hang-guard.test.mjs in the old ranking were inheriting its ~30s; their real
 // durations were 8ms, 344ms, 386ms and ~100ms. Card 2026-0206 moved the figure to
-// `test:complete` (order-independent). The ranking is now steep — measured quiet at
-// HEAD, post-split: 33 036 / 16 618 / 10 442 / 9 175 / 8 507 ms — so a flat top
-// five reappearing is itself the signal that the metric regressed.
+// `test:complete` (order-independent). The ranking is now steep. Measured on a
+// QUIET 16-core box at 39ec94a (2026-08-24), post-split:
+//   idle-wake-ownership 33 036 / idle-drain-settle 16 618 /
+//   header-playbook-enforcement 10 442 / server-restart 9 175 /
+//   hang-guard-file-kill 8 507 ms
+// so a flat top five reappearing is itself the signal that the metric regressed.
+//
+// ONLY THE HEAD OF THAT LIST IS STABLE. The 3rd-5th entries sit within ~2s of
+// several other files and the tail RE-ORDERS UNDER AMBIENT LOAD — observed:
+// worktree-feature-branch and worktrees overtaking server-restart and pushing
+// hang-guard-file-kill out of the top five entirely. A fresh verdict line that
+// disagrees with the tail above is not evidence of a regression; a fresh one that
+// disagrees about the FIRST entry, or that is flat, is.
 //
 // WATCH THE TREND, BUT NOT VIA THE OLD ONE. An earlier revision tracked a starved
 // slowest-file trend of 19.4s -> 28.8s -> 38.6s (4.6x -> 3.1x -> 2.3x). Every one
@@ -62,8 +72,18 @@ function ms(envName, fallback) {
 //
 // THE BINDING CONSTRAINT IS NOT THE HEALTHY-RUN FIGURE. What actually governs
 // whether the regression suite can be silenced by the regressions it catches is
-// the BROKEN-GUARD figure: cases whose guard is regressed fall back to their inner
-// 12s run cap. Measured with the stall trigger disabled: the single file took
+// the BROKEN-GUARD figure: a case whose guard is regressed stops being bounded by
+// that guard and rides to whichever inner deadline still bounds it. WHICH ONE
+// DIFFERS PER RECIPE — do not assume the 12s cap when extending this:
+//   * stall trigger (SWEEP): orphan-grandchild and fast-orphan ride to the 12s
+//     RUN CAP. Only those two of the four stall-dependent cases — detached-orphan
+//     aborts in ~3ms on its `SWEEP * 4 < HOLDER_LIFETIME` precondition, which
+//     reads the same mutated constant, and stall-grace keeps its own local 2500ms
+//     CC_TEST_ORPHAN_SWEEP_MS override and is untouched;
+//   * Layer B exit (LEAK_GRACE): the leaking files fall through to Layer A's
+//     inner 8s FILE_KILL (~8.13s each), NOT to the cap;
+//   * Layer A kill (FILE_KILL): busyloop rides to the 12s RUN CAP.
+// Measured with the stall trigger disabled: the single file took
 // **47 408ms (1.90x)**; the worst of the five files takes **24 720ms (3.64x)**.
 // Per induced regression, worst file: stall trigger 24 225ms, Layer B exit
 // 24 720ms, Layer A per-file kill 12 405ms — and in all three the run stayed
