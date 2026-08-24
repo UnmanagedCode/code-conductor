@@ -195,7 +195,7 @@ default. A fresh spawn that names no model/tier/role resolves through
 **default effort** — on both fresh-spawn surfaces (MCP `spawn_instance`, and `POST /api/instances` when
 neither `model` nor `backend` is given; absence is judged on the **trimmed** value, so `model: ""` counts
 as absent). Total by construction: both halves revert on their own, so the result never has a null model.
-A **resume** is excluded — it recovers the model it last ran.
+A **resume** is excluded — it recovers the model **and backend** it last ran.
 
 <a id="same-row"></a>
 **Same-row guarantee (`POST /api/instances`).** A fresh model-less spawn that *does* name a row uses
