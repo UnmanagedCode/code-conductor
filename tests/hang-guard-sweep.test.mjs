@@ -134,11 +134,14 @@ test('killPids re-verifies pid identity before signalling', () => {
   const signalled = [];
   const kill = pid => signalled.push(pid);
   // 1 and 7777 MUST map to their recorded ident, or the two sentinel rows below
-  // prove nothing. With them unmapped, identOf returns null, the identity
-  // re-check rejects both rows first, and the `pid === self || pid <= 1` guard is
-  // never reached — so deleting either conjunct leaves this test green
-  // (measured). Mapping them makes each sentinel guard the ONLY thing standing
-  // between the row and a SIGKILL, which is the invariant this case exists for.
+  // prove nothing. killPids checks the `pid === self || pid <= 1` sentinel FIRST
+  // and re-verifies identity SECOND (tests/procTree.mjs:173 then :179), so the
+  // identity re-check is a fallback that MASKS a deleted sentinel conjunct: with
+  // 1 and 7777 unmapped, identOf returned null, a row that got past the deleted
+  // conjunct was then rejected by `identFn(pid) !== ident` anyway, and the test
+  // stayed green (measured, both conjuncts). Mapping them makes the re-check pass
+  // the row through, leaving each sentinel guard as the ONLY thing between it and
+  // a SIGKILL — which is the invariant this case exists for.
   const identOf = pid => ({
     5001: 'same', 5002: 'DIFFERENT-NOW', 5003: null, 1: 'same', 7777: 'same',
   }[pid] ?? null);
