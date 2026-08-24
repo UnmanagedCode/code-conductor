@@ -794,7 +794,7 @@ export function resolveSpawnModel(
   input: string | null | undefined,
   { resume }: { resume?: string | null } = {},
 ): {
-  model: string | null | undefined; backend: string; tier?: string; role?: string;
+  model: string | null | undefined; backend: string | undefined; tier?: string; role?: string;
 } {
   // Resolve `input` to a concrete {model, backend} pair:
   //   - a capability tier (fast/balanced/powerful/frontier) → its bound
@@ -809,9 +809,15 @@ export function resolveSpawnModel(
   //     backend (robustness);
   //   - a Claude model id (claude-…, incl. future ones) → pass-through claude;
   //   - omitted on a FRESH spawn → the Settings default tier's binding;
+  //   - omitted on a RESUME → nothing at all: both stay undefined, deferring to
+  //     _doCreate's sidecar recovery — an asserted 'claude' here would make
+  //     explicitBackend truthy and suppress it;
   //   - anything else → reject, rather than silently spawn a broken claude.
   let model: string | null | undefined = input;
-  let backend = CLAUDE_BACKEND_ID;
+  // A backend is asserted only when the caller NAMED something that resolves to
+  // one, mirroring `model`. Initialising to 'claude' unconditionally made every
+  // bare MCP resume forward backend:'claude' as if the caller had named it.
+  let backend: string | undefined = input ? CLAUDE_BACKEND_ID : undefined;
   // Which tier/role the model was resolved THROUGH, forwarded to create() so its
   // stored default effort applies when the caller passed no `effort`. Exactly one
   // of the two is ever set (a name is a tier or a role, never both); a family

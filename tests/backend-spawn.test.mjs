@@ -3,7 +3,8 @@
 // — confirmed harmless), the backend's env injection, the sid→{backend,model}
 // sidecar written at spawn + the tagged model recovered on resume (over the CLI's
 // bare jsonl report), the setModel live-switch gate, tier/role→{backend,model} MCP
-// resolution, the launch_failed crash signal, and the null-model guards.
+// resolution, the launch_failed crash signal, the null-model guards, and the bare
+// MCP resume restoring the recorded backend (the one surface that alone dropped it).
 //
 // Every case runs on the built-in `ollama` row AND — where the generalization is
 // what's under test — on a USER-DEFINED backend, since a rule keyed on the id
@@ -18,7 +19,7 @@ import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settledSessionBackend, settle } from './helpers.mjs';
 import { addCustomModel, setTierBackend, setRoleBinding, addCustomRole, addBackend,
   setPluginRolesProvider, getTierBackend, getDefaultSpawnTier, setDefaultSpawnTier, setTierEffort,
   removeBackend, removeCustomModel, isKnownBackend } from '../src/appSettings.ts';
@@ -895,5 +896,218 @@ describe('resume recovers the tagged model from the backend store', () => {
       delete process.env.FAKE_CLAUDE_ARGV_DUMP;
       await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
     }
+  });
+});
+
+// ── MCP resume restores the recorded backend ────────────────────────────────
+// REST leaves `backend` null on a resume, so _doCreateResolved's sidecar
+// recovery runs there — every describe above pins it through instances.create().
+// The MCP surface alone did NOT: resolveSpawnModel initialised `backend` to
+// 'claude' unconditionally, so a bare spawn_instance({resume}) forwarded
+// backend:'claude' as if the caller had named it, explicitBackend was truthy,
+// the whole sidecar block was skipped, and the session came back on the real
+// Anthropic CLI keeping its foreign --model. These tests drive BOTH spawns
+// through the real /mcp transport — nothing here may go through
+// instances.create(), which is the surface that already worked.
+describe('MCP resume restores the recorded backend', () => {
+  let rpcId = 1;
+  async function callTool(name, args) {
+    const res = await fetch(baseUrl + '/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    const body = await res.json();
+    assert.ok(body.result, `tools/call ${name} returned no result; body=${JSON.stringify(body)}`);
+    return body.result;
+  }
+  const meta = (result) => JSON.parse(result.content[0].text);
+  // The decoy model written into the seeded jsonl — deliberately different
+  // from the sidecar's `stealth/ox-alpha` so the sidecar-over-jsonl precedence
+  // pins can discriminate. The fixture guard in spawnThenResume asserts both
+  // halves of that "deliberately".
+  const DECOY_JSONL_MODEL = 'claude-opus-4-8';
+  // The LIVE instance for a session — idsForSession also matches the killed
+  // predecessor, which stays tracked, so [0] is not necessarily the live one.
+  const liveForSession = (sid) =>
+    instances.idsForSession(sid).map(id => instances.get(id)).find(i => i?.proc) ?? null;
+
+  // Shared fixture: spawn on a USER-DEFINED row through the MCP tool (not the
+  // managed `ollama` — per this file's stated policy, a rule keyed on that id
+  // rather than on "not the identity backend" would pass the managed row and
+  // fail this one), kill the worker, then resume it through the same tool
+  // (`resumeArgs` overrides the otherwise-bare resume arguments). Returns both
+  // tool summaries. The context window (321_000) matches NO Claude model, so no
+  // assertion below can pass by coincidence through a claude resolution of the
+  // id (which returns null); every expected value is a literal seeded into the
+  // registry, never re-derived from the code's own resolvers.
+  async function spawnThenResume({ argvDump, resumeArgs } = {}) {
+    const prevDump = process.env.FAKE_CLAUDE_ARGV_DUMP;
+    try {
+      await addBackend({
+        id: 'openrouter-test', label: 'OpenRouter Test',
+        template: 'orproxy claude --model {model} --',
+      });
+      await addCustomModel({ label: 'OX', model: 'stealth/ox-alpha', backend: 'openrouter-test', contextWindow: 321_000 });
+      await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+
+      const first = meta(await callTool('spawn_instance', { project: 'p', mode: 'bypassPermissions', model: 'stealth/ox-alpha' }));
+      const sid = first.sessionId; // the PUBLIC id — the conductor's only handle
+      await waitFor(() => liveForSession(sid)?.status === 'idle');
+      // The sidecar and the transcript are keyed by the BACKING id (the CLI-
+      // minted one), not the public handle; resolve it off the tracked instance.
+      const inst0 = instances.get(instances.idsForSession(sid)[0]);
+      const backing = inst0.backingSessionId;
+      const rec = await settledSessionBackend(backing); // spawn()'s write is fire-and-forget
+
+      // The fake engine writes no transcript, so seed the resumable jsonl by
+      // hand (hasResumableConversation gates the resume at _doCreateResolved);
+      // the file is named by the backing id, like every real transcript. Its
+      // assistant line reports a DIFFERENT model than the sidecar carries, so
+      // the resume assertions below also pin sidecar-over-jsonl precedence —
+      // they fail if that ordering is ever inverted.
+      const cwd = path.join(projectsRoot, 'p');
+      const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, `${backing}.jsonl`),
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: backing }) + '\n' +
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: DECOY_JSONL_MODEL, content: [] }, sessionId: backing }) + '\n');
+
+      // FIXTURE GUARD: the sidecar-over-jsonl precedence pins below are only
+      // discriminating while the two recovery sources DISAGREE — if this seed
+      // ever decays into agreement with the sidecar, dropping the sidecar's
+      // model recovery would turn those assertions green. Fail loudly here
+      // instead of proving nothing.
+      const seededLines = (await fs.readFile(path.join(dir, `${backing}.jsonl`), 'utf8'))
+        .trim().split('\n').map(l => JSON.parse(l));
+      const seededModel = seededLines.find(l => l.type === 'assistant')?.message?.model;
+      assert.equal(seededModel, DECOY_JSONL_MODEL, 'the decoy assistant line landed in the seeded jsonl');
+      assert.notEqual(seededModel, rec?.model,
+        'fixture decayed: the seeded jsonl agrees with the sidecar model, so the sidecar-over-jsonl assertions below are vacuous');
+
+      // REQUIRED before resuming: create() REFUSES a resume whose session is
+      // still attached to a running instance (409, src/instances.ts create()),
+      // so without the kill-and-wait the tool call errors and these tests die
+      // as a JSON.parse crash on the error prose instead of through their
+      // assertions. Coalescing is NOT what blocks it here — that path covers
+      // only a not-yet-spawned in-flight create. Wait until nothing is
+      // attached, not just for kill() to return.
+      await inst0.kill({ graceMs: 5 });
+      await waitFor(() => !liveForSession(sid));
+
+      if (argvDump) process.env.FAKE_CLAUDE_ARGV_DUMP = argvDump;
+      // Resume by the PUBLIC handle — the exact call the card reported. Bare
+      // unless the caller overrides: no model, no backend, everything recovered
+      // from the sidecar.
+      const resumed = meta(await callTool('spawn_instance', { project: 'p', resume: sid, ...resumeArgs }));
+      await waitFor(() => liveForSession(sid)?.status === 'idle');
+      return { first, sid, resumed };
+    } finally {
+      if (prevDump === undefined) delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      else process.env.FAKE_CLAUDE_ARGV_DUMP = prevDump;
+    }
+  }
+
+  test('a bare MCP resume comes back on the recorded backend, not claude', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-resume-backend-'));
+    try {
+      const argvDump = path.join(tmp, 'argv-resume.txt');
+      const { first, sid, resumed } = await spawnThenResume({ argvDump });
+
+      // The first spawn's own returned view — literally the surface the card
+      // reported against.
+      assert.equal(first.backend, 'openrouter-test');
+      assert.equal(first.model, 'stealth/ox-alpha');
+      assert.equal(first.contextWindowTokens, 321_000);
+
+      // The bare resume recovers all three from the sidecar.
+      assert.equal(resumed.sessionId, sid);
+      assert.equal(resumed.backend, 'openrouter-test', 'the recorded backend, not claude');
+      assert.equal(resumed.model, 'stealth/ox-alpha',
+        "the sidecar's exact model, not the jsonl's claude-opus-4-8 report");
+      assert.equal(resumed.contextWindowTokens, 321_000);
+
+      // The real launch, not just the summary field: the resumed worker actually
+      // went to the substitution backend's template (its prefix after token 0),
+      // rather than a cosmetically-correct field over a real `claude` launch.
+      await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+      const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+      assert.deepEqual(argv.slice(0, 4), ['claude', '--model', 'stealth/ox-alpha', '--']);
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  test('list_sessions renders a resumed worker on its recorded backend', async () => {
+    const { resumed } = await spawnThenResume();
+    // Precondition, not the render under test: the resume itself restored the row.
+    assert.equal(resumed.backend, 'openrouter-test');
+    const rendered = (await callTool('list_sessions', { project: 'p' })).content[0].text;
+    assert.ok(rendered.includes('model openrouter-test/stealth/ox-alpha'),
+      `expected the live row to render the recorded backend/model:\n${rendered}`);
+    // The exact string the card reported must never come back.
+    assert.ok(!rendered.includes('model claude/stealth/ox-alpha'),
+      `resumed worker rendered as claude/<foreign-model>:\n${rendered}`);
+  });
+
+  // The other half of the recovery contract, pinned nowhere else in the suite:
+  // an EXPLICITLY named model on a resume wins over the session's sidecar
+  // record — both axes, because naming a model whose registry row binds
+  // elsewhere names its backend through resolveSpawnModel (spawn_instance has
+  // no `backend` argument). The chosen model therefore belongs to a DIFFERENT
+  // backend than the sidecar's, so losing the override is observable in which
+  // launch template fires — not just in the summary field.
+  test('an MCP resume with an explicitly named model beats the sidecar pair', async () => {
+    // gemma4:cloud → ollama: resuming with it names backend 'ollama' while the
+    // sidecar still says openrouter-test/stealth/ox-alpha.
+    await addCustomModel({ label: 'G', model: 'gemma4:cloud', backend: 'ollama', contextWindow: 111_000 });
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-resume-explicit-'));
+    try {
+      const argvDump = path.join(tmp, 'argv-explicit.txt');
+      const { resumed } = await spawnThenResume({ argvDump, resumeArgs: { model: 'gemma4:cloud' } });
+
+      assert.equal(resumed.model, 'gemma4:cloud');
+      assert.equal(resumed.backend, 'ollama',
+        'the explicitly resolved backend wins — the sidecar record must not overwrite it');
+
+      // The override reaches the real launch: ollama's template prefix (after
+      // token 0), not openrouter-test's.
+      await waitFor(async () => { try { await fs.stat(argvDump); return true; } catch { return false; } });
+      const argv = (await fs.readFile(argvDump, 'utf8')).split('\n').filter(Boolean);
+      assert.deepEqual(argv.slice(0, 6), ['launch', 'claude', '--model', 'gemma4:cloud', '--yes', '--']);
+    } finally {
+      delete process.env.FAKE_CLAUDE_ARGV_DUMP;
+      await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  // The sidecar BACKEND_GONE door (_doCreateResolved, claimed by docs/models.md
+  // "Missing backends are refused") was dead code from MCP before the fix: the
+  // asserted 'claude' bypassed it and such a resume launched real
+  // `claude --model <foreign-id>` — billed. Mirrors the REST-side test in
+  // "resume onto a since-removed backend".
+  test('an MCP resume of a session on a removed backend refuses BACKEND_GONE', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const cwd = path.join(projectsRoot, 'p');
+    const sid = 'dededede-0000-0000-0000-000000000000';
+    const dir = path.join(claudeProjectsRoot(), encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, `${sid}.jsonl`),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, sessionId: sid }) + '\n');
+    // A genuinely resumable session whose sidecar names a never-registered
+    // (equivalently: removed) backend.
+    await markSessionBackend(sid, 'gone-proxy', 'mine:v1');
+
+    const result = await callTool('spawn_instance', { project: 'p', resume: sid }); // no model, no backend
+    assert.equal(result.isError, true, JSON.stringify(result));
+    assert.match(result.content[0].text, /gone-proxy/, 'the prose names the dead backend');
+    const structured = JSON.parse(result.content[1].text);
+    assert.equal(structured.code, 'BACKEND_GONE');
+    assert.equal(structured.statusCode, 422);
+    // It REFUSED instead of launching: flush anything queued behind the error,
+    // then confirm no instance exists for the session.
+    await settle();
+    assert.equal(instances.idsForSession(sid).length, 0);
   });
 });
