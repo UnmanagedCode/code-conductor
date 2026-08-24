@@ -63,15 +63,15 @@ try {
 // different core count:
 //   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
 //     double the ambient load, and cannot go below the floor named next.
-//   * the floor is a SINGLE FILE, and since this card landed it is no longer the
-//     same one: measured quiet at HEAD, tests/idle-wake-ownership.test.mjs 32.9s is
-//     first and tests/hang-guard.test.mjs 30.0s second, in a 38.7-39.5s suite over
-//     two runs — so hang-guard is ~76-78% of the critical path, not ~80% and not
-//     the sole floor.
-//     Both are DEADLINE-bound rather than CPU-bound; hang-guard grows only 0.8%
-//     from concurrency 4 to 16 and 0.5% under 8-spinner contention, which is why
-//     more slots cannot get below it. Card 2026-0198 splits hang-guard, but that
-//     alone no longer sets the floor.
+//   * the floor is a SINGLE FILE, and it is tests/idle-wake-ownership.test.mjs:
+//     measured quiet at HEAD, 33.0s in a ~38.5s suite. It is DEADLINE-bound
+//     (bounded real wall-clock windows) rather than CPU-bound, which is why more
+//     slots cannot get below it; card 2026-0211 owns that figure.
+//     tests/hang-guard.test.mjs used to be a near-second at 30.0s. Card 2026-0198
+//     split it into five tests/hang-guard-*.test.mjs files — its cases are
+//     independent subprocess runs, so the file's cost went from the SUM of their
+//     squeezed deadlines to the MAX (30 183ms -> 8 493ms quiet), and it is now
+//     fifth in the ranking rather than second.
 //   * contention does NOT argue for backing off: under 8 spinners, concurrency 8
 //     was both FASTER than 4 (79.2s vs 87.6s) and had a marginally BETTER per-file
 //     kill margin (3.00x vs 2.92x). Both runs green.
@@ -382,8 +382,9 @@ stream.on('test:summary', (d) => {
 // figure comparable to FILE_KILL_MS, which is a process-lifetime deadline.
 // MEASURED on a 16-core box at the default concurrency: summary.duration_ms runs
 // 31-297ms LOWER, never higher, across 90 file observations. SAMPLE: every 6th name
-// of the sorted tests/*.test.mjs list (45 of 266 files), skipping the two files that
-// spawn nested runners of their own (hang-guard, summary-attribution); two runs, one
+// of the sorted tests/*.test.mjs list (45 of 266 files), skipping the files that
+// spawn nested runners of their own (then hang-guard + summary-attribution; now the
+// five hang-guard-*.test.mjs + summary-attribution); two runs, one
 // idle and one under a concurrent mutation campaign, which agreed closely — so the
 // range is not a load artefact.
 //
@@ -420,8 +421,8 @@ reporter.pipe(process.stdout);
 //
 // Disclosed gap: no test discriminates ref'd from unref'd, because inducing a
 // drained loop with a pending stream requires something holding the stream open,
-// and everything that does also holds a handle. tests/hang-guard.test.mjs pins
-// the cap's observable behaviour instead (fires / fails / prints the verdict /
+// and everything that does also holds a handle. tests/hang-guard-run-cap.test.mjs
+// pins the cap's observable behaviour instead (fires / fails / prints the verdict /
 // bounds the wall) with a child still alive — a state an unref'd timer would also
 // fire in. The `finally` below is what stops it outliving a clean run.
 let capTripped = false;
