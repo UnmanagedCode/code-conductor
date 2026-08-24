@@ -32,7 +32,7 @@
 //      (its fixtures have no hooks) and plausibly 2 as well, and 3 is the only
 //      assertion here that states teardown inclusion POSITIVELY, on a green run.
 //
-// Like tests/hang-guard.test.mjs, this spawns the REAL tests/run.mjs against
+// Like the tests/hang-guard-*.test.mjs suite, this spawns the REAL tests/run.mjs against
 // fixtures and reads its output. Nothing here re-implements the reporting rule: the
 // shipped reporter is the thing under test, and a second copy of the rule here could
 // agree with itself while the shipped one was broken.
@@ -151,7 +151,7 @@ async function runFixtures(names, extraEnv = {}) {
   // Quote ONLY `hang-guard:` lines in assertion messages. The inner runner emits a
   // full spec report including `ℹ tests/pass/fail` count lines, and this suite is
   // read by count-based parsers — folding the inner run's totals into ours is the
-  // exact hazard tests/hang-guard.test.mjs's redactTotals exists for. Selecting the
+  // exact hazard tests/hangGuardCase.mjs's redactTotals exists for. Selecting the
   // diagnostic lines we want is cheaper than redacting the ones we don't.
   const guardLines = out.split('\n').filter(l => /^hang-guard:/.test(l));
   const diag = guardLines.join('\n') || '(no hang-guard: lines in output)';
