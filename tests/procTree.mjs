@@ -129,7 +129,9 @@ export function descendants(pid, snap = snapshot()) {
 // NOTE on the marker choice: PROJECTS_ROOT looks like a ready-made marker and is
 // NOT usable. bootServer reassigns it per server to a path outside the run root,
 // so a grandchild spawned mid-test inherits the reassigned value (measured).
-// CC_TEST_RUN_ID exists precisely because nothing else mutates it.
+// CC_TEST_RUN_ID exists precisely because nothing else OVERWRITES it: run.mjs
+// exports it per run, and tests/safeStoreRoot.mjs mints one (with `??=`) only for
+// a standalone file run that inherited none.
 //
 // Pure over `snap`: pass a synthesised snapshot to test it without processes.
 export function processesWithMarker(marker, snap = snapshot({ environ: true })) {

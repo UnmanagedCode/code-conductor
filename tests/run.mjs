@@ -29,7 +29,9 @@ process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
 // than heuristically — see processesWithMarker in tests/procTree.mjs. It gets its
 // own variable because PROJECTS_ROOT (the obvious candidate) is reassigned by
 // bootServer per server, so a grandchild spawned mid-test would not carry the
-// run root. Nothing else writes CC_TEST_RUN_ID.
+// run root. The ONLY other writer is markRun() in tests/safeStoreRoot.mjs, and
+// it uses `??=` — it mints a marker for a STANDALONE file run and never replaces
+// the one exported here, so a value seen by a child is always its own run's.
 const RUN_MARKER = path.basename(safeRoot.root); // mkdtemp'd, so unique per run
 process.env.CC_TEST_RUN_ID = RUN_MARKER;
 
