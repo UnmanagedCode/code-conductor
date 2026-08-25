@@ -119,6 +119,19 @@ function armWake(callerSid, targetSid, timeoutMs) {
   instances._idleHub.onTurnStart(instForSession(instances, targetSid).id);
 }
 
+// Both soft-interrupt pins need the target PARKED MID-TEXT-BLOCK, not merely in a
+// turn. prompt() flips status to `turn` synchronously at stdin-write time, while
+// QuiescenceScan only opens a block on the first text_delta — so `status === 'turn'`
+// alone admits an EMPTY quiescence, and a soft interrupt arriving in that window is
+// fired IMMEDIATELY by _maybeFireArmedInterrupt. SCENARIO_OPEN answers that
+// control_request with a `result`, so the turn ends, the turn_end consumes the wake
+// and clears the heartbeat, and the pin fails — as `hasArmedWake === false` if the
+// result is parsed in time, or as a 20s `beats.n > 0` timeout if it is not.
+// Same barrier as tests/mcp.test.mjs:305.
+function waitParkedMidBlock(target) {
+  return waitFor(() => target.status === 'turn' && !target._quiescence.empty);
+}
+
 async function spawnReadyWithScenario(project, scenarioPath) {
   const prev = process.env.FAKE_CLAUDE_SCENARIO;
   process.env.FAKE_CLAUDE_SCENARIO = scenarioPath;
@@ -708,10 +721,12 @@ test('a SOFT interrupt leaves the wake armed, and the heartbeat keeps firing', a
 
   await callTool('send_prompt',
     { sessionId: targetId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
-  await waitFor(() => target.status === 'turn');
+  await waitParkedMidBlock(target);
 
   const soft = unwrap(await callTool('interrupt_turn', { sessionId: targetId }));
   assert.equal(soft.interrupting, true, 'ARMED, not stopped');
+  assert.equal(target._interruptFired, false,
+    'ARMED means nothing was sent: a control_request here ends the turn and consumes the wake');
   // Immediate and schedule-free: a disarm would show here with nothing to wait for.
   assert.equal(instances._idleHub.hasArmedWake(target.id), true,
     'a soft interrupt must not clear the wake it is waiting on');
@@ -1064,12 +1079,14 @@ test('a soft interrupt by an IDENTIFIED caller disarms nothing — the heartbeat
   const caller = instForSession(instances, callerId);
   await callTool('send_prompt',
     { sessionId: targetId, text: 'go', idleTimeoutSeconds: 1 }, { caller: callerId });
-  await waitFor(() => target.status === 'turn');
+  await waitParkedMidBlock(target);
   await waitFor(() => instances._idleHub.hasArmedWake(target.id));
 
   const res = unwrap(await callTool('interrupt_turn',
     { sessionId: targetId }, { caller: callerId }));
   assert.equal(res.interrupting, true, 'ARMED, not stopped');
+  assert.equal(target._interruptFired, false,
+    'ARMED means nothing was sent: a control_request here ends the turn and consumes the wake');
   // The C2 mutant (`force && callerId` → `callerId`) disarms right here, so this
   // single assertion kills it with nothing scheduled at all.
   assert.equal(instances._idleHub.hasArmedWake(target.id), true,
