@@ -181,7 +181,7 @@ test('deleteCustomConvention drops the slug from the enabled selection', async (
   assert.ok(!(await getCatalog()).some(c => c.slug === 'temp-mod'));
 });
 
-// ── Composed doc reflects selection (injected at spawn, no on-disk file) ──────
+// ── Composed doc reflects selection (delivered as .conduct/CONVENTIONS.md) ────
 
 test('PUT selection changes what composeCurrentConduct() produces; no file is written', async () => {
   await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
