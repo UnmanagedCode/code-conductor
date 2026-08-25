@@ -146,7 +146,17 @@ function fakeSpawn(scripts) {
   const fn = () => {
     const script = scripts[Math.min(spawned.length, scripts.length - 1)];
     const proc = new EventEmitter();
-    proc.pid = 900001 + spawned.length; // never signalled — these tests never stop()
+    // A SYNTHETIC pid — an array index, not a kernel allocation. What keeps it
+    // from being signalled is the hasMarker/pgid licence in stopAndWait, NOT
+    // anything about these tests: startAndSettle registers teardown for EVERY
+    // caller, unconditionally, so a stop IS attempted for these children and
+    // refused on identity. The comment here used to say "these tests never
+    // stop()", which stopped being true when that teardown became unconditional
+    // (card 2026-0226) — and a false reason sitting on this line is how the
+    // licence gets deleted as redundant. If you remove the licence, this line
+    // becomes process.kill(-900001, 'SIGTERM') against a stranger's process
+    // group.
+    proc.pid = 900001 + spawned.length;
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
     spawned.push(proc);
