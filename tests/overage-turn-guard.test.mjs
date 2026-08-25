@@ -24,7 +24,7 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction } from '../src/appSettings.ts';
-import { getAccountUsage } from '../src/accountUsage.ts';
+import { installUsageSeamTripwire, assertUsageSeamInjected, assertUsageSeamsInstalled } from './overageUsageSeam.mjs';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 
@@ -68,7 +68,7 @@ async function writeScenario(obj) {
 }
 
 let savedBuf, savedSweep, savedRecheck;
-let ctx, instances, home;
+let ctx, instances, home, seam;
 before(async () => {
   savedBuf = process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
   process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = '0';
@@ -93,12 +93,12 @@ beforeEach(async () => {
   ({ home } = await freshProjectsRoot());
   instances._clearOverage();
   instances._overageResume.clearAll();
-  instances._overageResume.fetchUsage = getAccountUsage;
-  instances._usageMonitor.fetchUsage = getAccountUsage;
+  seam = installUsageSeamTripwire(instances);
 });
 afterEach(async () => {
   await instances.shutdown();
   await rmrf(home);
+  assertUsageSeamInjected(seam);
 });
 
 async function boot(action) {
@@ -106,6 +106,14 @@ async function boot(action) {
   await setOnOverageAction(action);
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
 }
+
+// Card 2026-0208. This file's own wiring pin — every overage test file needs one,
+// because each file's `beforeEach` is independently editable and a sibling file's
+// assertion cannot see this one being reverted to the live `getAccountUsage` default.
+// Discriminating assertion: the `strictEqual` inside assertUsageSeamsInstalled.
+test('HARNESS (2026-0208): this file\'s beforeEach installs the usage-seam tripwire on both seams', async () => {
+  await assertUsageSeamsInstalled(instances, seam);
+});
 
 // One stdin capture per instance: fake-claude appends to whatever
 // FAKE_CLAUDE_TRANSCRIPT names at ITS spawn.

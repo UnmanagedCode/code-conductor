@@ -13,12 +13,13 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bootServer, api, waitFor, freshProjectsRoot, rmrf, settle } from './helpers.mjs';
 import { setOnOverageAction, setOverageThreshold } from '../src/appSettings.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { buildConductorResumePreamble, IDLE_PARKED_RESUME_TEXT } from '../src/overageResume.ts';
 import { sendPrompt, approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
 import { getAccountUsage } from '../src/accountUsage.ts';
+import { installUsageSeamTripwire, assertUsageSeamInjected, assertUsageSeamsInstalled } from './overageUsageSeam.mjs';
 import { ensureConductProject, CONDUCT_PROJECT_NAME, isConductorInstance } from '../src/conduct.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -90,7 +91,7 @@ async function writeScenario(obj) {
 // calls otherwise dominate the wall-clock under the concurrent runner on a
 // throttled Termux box and blow the 60s per-file ceiling.
 let savedBuf, savedSweep, savedRecheck;
-let ctx, instances, home;
+let ctx, instances, home, seam;
 before(async () => {
   savedBuf = process.env.ORCH_OVERAGE_RESUME_BUFFER_MS;
   process.env.ORCH_OVERAGE_RESUME_BUFFER_MS = '0';
@@ -126,17 +127,17 @@ beforeEach(async () => {
   ({ home } = await freshProjectsRoot());
   // Reset the shared manager's GLOBAL overage state so nothing leaks between tests.
   // _clearOverage() resets _overageActive/_overageResumeMode/_overageResetsAt + the
-  // clear timer; clearAll() drops the deadline map/sweep/checking/failCount. Restoring
-  // the injected fetchUsage seams to the real getAccountUsage reproduces exactly the
-  // fresh-manager-per-test default this file used to get from a per-test reboot.
+  // clear timer; clearAll() drops the deadline map/sweep/checking/failCount. The
+  // fetchUsage seams reset to a counting NON-NETWORK tripwire, not the real
+  // getAccountUsage — see tests/overageUsageSeam.mjs (card 2026-0208).
   instances._clearOverage();
   instances._overageResume.clearAll();
-  instances._overageResume.fetchUsage = getAccountUsage;
-  instances._usageMonitor.fetchUsage = getAccountUsage;
+  seam = installUsageSeamTripwire(instances);
 });
 afterEach(async () => {
   await instances.shutdown();
   await rmrf(home);
+  assertUsageSeamInjected(seam);
 });
 
 async function boot(scenarioObj, action) {
@@ -1149,6 +1150,68 @@ test('stop-resume: queued attachments are concatenated into the single resume pr
   } finally {
     delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     await fs.rm(transcriptPath, { force: true });
+  }
+});
+
+// ── Card 2026-0208: the harness + the mechanism behind it ──────────────────
+// The card's failure was NOT a duplicate resume delivery. It was the fire-time usage
+// verify running against the REAL getAccountUsage because the test forgot to inject —
+// a live request bounded by a 10 000 ms AbortSignal racing this file's own 10 000 ms
+// waitFor. These two tests pin the two facts that together make that possible.
+
+// Pins: the seam default installed by beforeEach is a non-network tripwire, never the
+// live fetcher. Discriminating assertions are the two `notStrictEqual`s — reverting
+// beforeEach to `= getAccountUsage` fires the first one directly, not via a timeout.
+test('HARNESS (2026-0208): the usage seam default is a tripwire, not the live fetcher', async () => {
+  assert.notStrictEqual(instances._overageResume.fetchUsage, getAccountUsage,
+    'resume seam default must not be the live getAccountUsage (card 2026-0208)');
+  assert.notStrictEqual(instances._usageMonitor.fetchUsage, getAccountUsage,
+    'monitor seam default must not be the live getAccountUsage (card 2026-0208)');
+  // …and it is positively THIS file's tripwire: non-network, counting, null-returning.
+  await assertUsageSeamsInstalled(instances, seam);
+});
+
+// Pins: resume delivery is strictly downstream of the fire-time usage verify — there is
+// no optimistic send. That is why a slow verify became a late resume became a red test.
+// Discriminating assertion: 'no resume delivered while the usage verify is outstanding'.
+test('MECHANISM (2026-0208): resume delivery is gated on the fire-time usage verify', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  // Magnitude is load-bearing: any hang SHORTER than the 10 000 ms AbortSignal ceiling
+  // (src/accountUsage.ts) would let even the live fetcher resume inside the budget, so a
+  // bounded sleep would not discriminate. Unresolved-until-released is strictly longer
+  // than that ceiling AND costs zero wall clock.
+  let release;
+  const hung = new Promise((r) => { release = r; });
+  ctx.instances._overageResume.fetchUsage = async () => {
+    await hung;
+    return usagePayload(UNDER, nowSec() + 3600);
+  };
+  try {
+    inst.prompt('go');
+    await waitFor(() => inst.autoResumeAt != null);
+    await inst.prompt('queued while paused');
+    await waitFor(() => inst._overageQueue.length === 1);
+
+    assert.equal(ctx.instances._fireAutoResumeNow(inst.id), true, 'pending resume fired');
+    // The deadline is already gone — fireNow deletes it synchronously, before its await —
+    // yet nothing is delivered. The delivery clock is the usage fetch's, not ours.
+    await waitFor(() => !ctx.instances._autoResumeTimers.has(inst.id));
+    // Negative assertion: fixed sleep for margin, then `settle()` to drain whatever it
+    // scheduled (docs/architecture.md → Testing). The sleep alone is the weak half —
+    // `settle()` is what makes the kill load-independent.
+    await new Promise((r) => setTimeout(r, 200));
+    await settle();
+    assert.equal(evs.some(e => e.kind === 'user_echo' && e.text.includes(AUTO_RESUME_TEXT)), false,
+      'no resume delivered while the usage verify is outstanding');
+    assert.equal(inst._overageQueue.length, 1, 'queue still held');
+
+    release(); // releasing the verify — and only that — lands the resume
+    await waitFor(() => evs.some(e => e.kind === 'user_echo' && e.text.includes(AUTO_RESUME_TEXT)));
+    assert.equal(inst._overageQueue.length, 0, 'queue drained once the verify resolved');
+  } finally {
+    release(); // never leak the pending promise / _checking entry
   }
 });
 

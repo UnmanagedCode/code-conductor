@@ -25,7 +25,7 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, addBackend, addCustomModel } from '../src/appSettings.ts';
-import { getAccountUsage } from '../src/accountUsage.ts';
+import { installUsageSeamTripwire, assertUsageSeamInjected, assertUsageSeamsInstalled } from './overageUsageSeam.mjs';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',
@@ -68,7 +68,7 @@ async function writeScenario(obj) {
   return p;
 }
 
-let ctx, instances, home;
+let ctx, instances, home, seam;
 before(async () => {
   ctx = await bootServer({});
   instances = ctx.instances;
@@ -80,12 +80,15 @@ beforeEach(async () => {
   // Reset shared global overage state so nothing leaks between tests.
   instances._clearOverage();
   instances._overageResume.clearAll();
-  instances._overageResume.fetchUsage = getAccountUsage;
-  instances._usageMonitor.fetchUsage = getAccountUsage;
+  seam = installUsageSeamTripwire(instances);
   await setOnOverageAction('stop-resume');
   await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
 });
-afterEach(async () => { await instances.shutdown(); await rmrf(home); });
+afterEach(async () => {
+  await instances.shutdown();
+  await rmrf(home);
+  assertUsageSeamInjected(seam);
+});
 
 // create() directly (not the REST route) so we can pass callerInstanceId /
 // conducted — the MCP-only fields the /api/instances route doesn't expose.
@@ -104,6 +107,16 @@ async function spawn({ scenario = HOLD, backend = 'claude', model, callerInstanc
 
 const sysEvents = (inst) => { const evs = []; inst.on('event', e => evs.push(e)); return evs; };
 const sub = (evs, subtype) => evs.filter(e => e.kind === 'system' && e.subtype === subtype);
+
+// Card 2026-0208. This file's own wiring pin — every overage test file needs one,
+// because each file's `beforeEach` is independently editable and a sibling file's
+// assertion cannot see this one being reverted to the live `getAccountUsage` default.
+// It matters here even though no test below touches the seams: `beforeEach` sets
+// `stop-resume` for every test, so a reverted default arms the live fetcher behind
+// each one. Discriminating assertion: the `strictEqual` inside assertUsageSeamsInstalled.
+test('HARNESS (2026-0208): this file\'s beforeEach installs the usage-seam tripwire on both seams', async () => {
+  await assertUsageSeamsInstalled(instances, seam);
+});
 
 test('_inUsageWindowFlow: a session on a substitution backend is exempt; a Claude session is in-flow', async () => {
   const claude = await spawn({});
