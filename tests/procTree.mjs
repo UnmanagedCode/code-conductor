@@ -157,6 +157,54 @@ export function processesWithMarker(marker, snap = snapshot({ environ: true })) 
   return out;
 }
 
+// The ONE expression of what a CC_TEST_RUN_ID entry looks like in a
+// /proc/<pid>/environ blob, anchored at BOTH ends.
+//
+// environ is a sequence of NUL-terminated entries, so:
+//   * `(?:^|\0)` rules out a variable whose NAME merely ENDS with ours —
+//     `PREV_CC_TEST_RUN_ID=<marker>` would otherwise match, and a licence to kill
+//     must not be granted by a name collision;
+//   * the trailing `\0` rules out a marker that merely STARTS WITH the one asked
+//     about, the cross-run fratricide case (see processesWithMarker above).
+// Both written as escapes, never literal NUL bytes: a literal renders every diff
+// of this file binary. No `g` flag, so `exec` is stateless and the constant is
+// safe to share across callers (tests/reapOrphans.mjs imports it rather than
+// re-declaring the anchoring).
+export const MARKER_RE = /(?:^|\0)CC_TEST_RUN_ID=([^\0]*)\0/;
+
+// processesWithMarker's identity, asked about ONE pid — same question, one
+// /proc/<pid>/environ read instead of a whole /proc walk. It answers exactly
+// what `processesWithMarker(marker).some(p => p.pid === pid)` would, including
+// the pid <= 1 and self sentinels, so a caller cannot get a different verdict by
+// choosing the cheaper call.
+//
+// IT EXISTS TO BE A LICENCE TO KILL. A test that reaps its own child in a
+// teardown hook must first establish the child IS its own: fake/injected
+// `spawn` stand-ins carry synthetic pids (tests/plugins-supervisor.test.mjs uses
+// 900001 + n), and this box has pid_max 4194304 with live pids near 3.99M and one
+// at 1089935 — pids have wrapped well past 900001, so signalling such a number,
+// or the process GROUP -900001, hits a stranger. The alternative — a
+// caller-supplied "this one is fake" flag — relocates kill authority to the
+// caller instead of closing the class, so it is not offered.
+//
+// FAILS CLOSED: a vanished pid, an unreadable environ, an absent or empty marker
+// all answer false. `read` is injectable so the licence table can be driven
+// without real processes.
+export function hasMarker(pid, marker, read = p => readFileSync(`/proc/${p}/environ`, 'utf8')) {
+  if (!marker) return false;
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
+  let env = '';
+  try { env = read(pid); } catch { return false; }
+  if (typeof env !== 'string') return false;
+  // MARKER_RE, so the anchoring lives in one place. This makes hasMarker
+  // STRICTLY TIGHTER than processesWithMarker on one input: a variable whose name
+  // ends with ours (`PREV_CC_TEST_RUN_ID=<marker>`) satisfies that predicate's
+  // plain `includes` and is refused here. Tighter is the only safe direction for
+  // a licence to kill, and the divergence is pinned by a case in
+  // tests/orphan-reaper.test.mjs rather than left to be discovered.
+  return MARKER_RE.exec(env)?.[1] === marker;
+}
+
 // SIGKILL an explicit, already-ordered list. Entries may be a bare pid or
 // `{pid, ident}`; when `ident` is present it is RE-VERIFIED against the live
 // process immediately before signalling. Returns the pids actually signalled.
