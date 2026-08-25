@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import { createSupervisor } from '../src/plugins/supervisor.ts';
-import { pidAlive } from '../src/plugins/ports.ts';
+import { allocatePort, pidAlive, waitForPort } from '../src/plugins/ports.ts';
 import { FAKE_PLUGIN_DIR, waitFor } from './plugin-helpers.mjs';
 
 const manifest = (backend) => ({ id: 'fake-plugin', name: 'Fake', version: '1', pluginApi: 1, backend });
@@ -50,6 +50,18 @@ async function squat() {
   return {
     port,
     accepts: () => state.accepts,
+    close: () => new Promise((res) => { for (const s of live) s.destroy(); srv.close(res); }),
+  };
+}
+
+// A plain listener on a CHOSEN port that accepts and holds. Unlike squat() it
+// does not destroy on accept, because its callers need `tcpOpen` to observe a
+// clean successful connect; the socket set is the fail-path release valve.
+function holdPort(port) {
+  const live = new Set();
+  const srv = net.createServer((sock) => { live.add(sock); sock.once('close', () => live.delete(sock)); });
+  return {
+    listen: () => new Promise((res) => srv.listen(port, '127.0.0.1', res)),
     close: () => new Promise((res) => { for (const s of live) s.destroy(); srv.close(res); }),
   };
 }
@@ -132,6 +144,39 @@ test('readiness via bare TCP probe, with a slow-binding child', async () => {
     assert.equal(rt.status, 'ready');
   } finally {
     await stopAndWait(sup, 'fake-plugin', rec);
+  }
+});
+
+test('bare-TCP readiness does not fire before the port is actually bound', async () => {
+  // With no readyWhen and no healthPath, `tcpOpen` IS the readiness oracle, and
+  // its FAILURE POLARITY is the whole contract: a refused connect must read as
+  // not-ready. Invert it and every bare-TCP plugin is declared ready on its
+  // first poll tick — before it has bound anything, and permanently if it stays
+  // alive without ever binding. The registry persists that `ready`, the proxy
+  // routes to a dead port, and the UI shows it healthy. "Reaches ready
+  // eventually" (the slow-binding test below) cannot see any of that.
+  const port = await allocatePort(); // allocated, then released: refuses connects
+  const sup = createSupervisor({ _settleMs: 0, _allocatePort: () => Promise.resolve(port) });
+  const rec = await sup.start({
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'sleep 30' }), // alive throughout, binds nothing
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  const listener = holdPort(port);
+  try {
+    // PROBE_WINDOW is 6x the poll interval, so this is not the "hasn't ticked
+    // yet" case: several connects have been refused and reported by now.
+    await sleep(PROBE_WINDOW);
+    assert.equal(sup.runtime('fake-plugin').status, 'starting',
+      'declared ready while the child was alive but had bound nothing');
+    // Non-vacuity: the SAME poll on the SAME port must still fire once the port
+    // really is listening. So the negative above is about the polarity, not
+    // about a poll that was never running.
+    await listener.listen();
+    await waitFor(() => sup.runtime('fake-plugin').status === 'ready');
+  } finally {
+    await stopAndWait(sup, 'fake-plugin', rec);
+    await listener.close();
   }
 });
 
@@ -306,6 +351,45 @@ test('readiness probing continues while the child is still alive', async () => {
   } finally {
     await stopAndWait(sup, 'fake-plugin', rec);
     await sq.close();
+  }
+});
+
+// ── waitForPort's retry loop ─────────────────────────────────────────────────
+// Card 2026-0219 re-pointed supervisor readiness off `waitForPort` onto
+// `poll(tcpOpen)`, which left its MULTI-ATTEMPT contract with no test driving
+// it — the old slow-binding readiness test used to, via SLOW_READY_MS. The
+// remaining production caller is `probeAnswers` in src/plugins/registry.ts
+// (adopted-child liveness for manifests with no healthPath), where giving up on
+// the first refused connect reports a still-booting adopted plugin as
+// not-answering instantly instead of within its 1 s probe window. Both halves
+// live here rather than in a new file: this is where the coverage was lost.
+
+test('waitForPort keeps probing until its deadline before rejecting', async () => {
+  const port = await allocatePort(); // refuses connects
+  const t0 = Date.now();
+  await assert.rejects(
+    () => waitForPort(port, { timeoutMs: 300, intervalMs: 20 }),
+    new RegExp(`port ${port} not listening within 300ms`));
+  const elapsed = Date.now() - t0;
+  // Bailing on the first refusal returns in ~1 ms. Load-sensitive only in the
+  // SAFE direction — contention can push this up, never down.
+  assert.ok(elapsed >= 300, `gave up after ${elapsed}ms instead of probing for 300ms`);
+});
+
+test('waitForPort resolves on a port bound after earlier probes were refused', async () => {
+  const port = await allocatePort();
+  const settled = waitForPort(port, { timeoutMs: 5000, intervalMs: 20 })
+    .then(() => 'resolved', (e) => `rejected: ${e.message}`);
+  // Barrier: still unsettled after a window in which ~15 connects were refused,
+  // so whatever happens next cannot be the FIRST probe latching an answer.
+  assert.equal(await Promise.race([settled, sleep(300).then(() => 'pending')]), 'pending');
+  const listener = holdPort(port);
+  try {
+    await listener.listen();
+    // Re-probed rather than latching its earlier refusals.
+    assert.equal(await settled, 'resolved');
+  } finally {
+    await listener.close();
   }
 });
 
