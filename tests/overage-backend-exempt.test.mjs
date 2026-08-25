@@ -25,7 +25,7 @@ import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { setOnOverageAction, addBackend, addCustomModel } from '../src/appSettings.ts';
-import { installUsageSeamTripwire, assertUsageSeamInjected } from './overageUsageSeam.mjs';
+import { installUsageSeamTripwire, assertUsageSeamInjected, assertUsageSeamsInstalled } from './overageUsageSeam.mjs';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const INIT = { type: 'system', subtype: 'init', session_id: '$SID', cwd: '$CWD',
@@ -107,6 +107,16 @@ async function spawn({ scenario = HOLD, backend = 'claude', model, callerInstanc
 
 const sysEvents = (inst) => { const evs = []; inst.on('event', e => evs.push(e)); return evs; };
 const sub = (evs, subtype) => evs.filter(e => e.kind === 'system' && e.subtype === subtype);
+
+// Card 2026-0208. This file's own wiring pin — every overage test file needs one,
+// because each file's `beforeEach` is independently editable and a sibling file's
+// assertion cannot see this one being reverted to the live `getAccountUsage` default.
+// It matters here even though no test below touches the seams: `beforeEach` sets
+// `stop-resume` for every test, so a reverted default arms the live fetcher behind
+// each one. Discriminating assertion: the `strictEqual` inside assertUsageSeamsInstalled.
+test('HARNESS (2026-0208): this file\'s beforeEach installs the usage-seam tripwire on both seams', async () => {
+  await assertUsageSeamsInstalled(instances, seam);
+});
 
 test('_inUsageWindowFlow: a session on a substitution backend is exempt; a Claude session is in-flow', async () => {
   const claude = await spawn({});

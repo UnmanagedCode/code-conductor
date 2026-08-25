@@ -19,7 +19,7 @@ import { AUTO_RESUME_TEXT } from '../src/instances.ts';
 import { buildConductorResumePreamble, IDLE_PARKED_RESUME_TEXT } from '../src/overageResume.ts';
 import { sendPrompt, approvePlan, rejectPlan, answerQuestion } from '../src/mcp/handlers.ts';
 import { getAccountUsage } from '../src/accountUsage.ts';
-import { installUsageSeamTripwire, assertUsageSeamInjected } from './overageUsageSeam.mjs';
+import { installUsageSeamTripwire, assertUsageSeamInjected, assertUsageSeamsInstalled } from './overageUsageSeam.mjs';
 import { ensureConductProject, CONDUCT_PROJECT_NAME, isConductorInstance } from '../src/conduct.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -1167,10 +1167,8 @@ test('HARNESS (2026-0208): the usage seam default is a tripwire, not the live fe
     'resume seam default must not be the live getAccountUsage (card 2026-0208)');
   assert.notStrictEqual(instances._usageMonitor.fetchUsage, getAccountUsage,
     'monitor seam default must not be the live getAccountUsage (card 2026-0208)');
-  // And it is genuinely non-network + maps to the existing "can't confirm" branch.
-  assert.equal(await instances._overageResume.fetchUsage(), null, 'tripwire returns null');
-  assert.equal(seam.calls, 1, 'the tripwire counts its calls — that is what afterEach asserts on');
-  seam.calls = 0; // consume this deliberate call so afterEach stays green
+  // …and it is positively THIS file's tripwire: non-network, counting, null-returning.
+  await assertUsageSeamsInstalled(instances, seam);
 });
 
 // Pins: resume delivery is strictly downstream of the fire-time usage verify — there is
