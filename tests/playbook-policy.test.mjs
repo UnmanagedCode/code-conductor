@@ -849,8 +849,8 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
   const scope = pb({
     id: 'scopereq', name: 'ScopeReq', description: 'require scope', entryStages: ['a'],
     stages: {
-      a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { idleTimeoutMs: 1000 } } } },
-      b: { tools: { send_prompt: { pin: { idleTimeoutMs: 2000 } } } },
+      a: { tools: { spawn_instance: 'allow', send_prompt: { pin: { idleTimeoutSeconds: 10 } } } },
+      b: { tools: { send_prompt: { pin: { idleTimeoutSeconds: 20 } } } },
     },
     transitions: [{ from: 'a', to: 'b' }],
   });
@@ -861,10 +861,10 @@ test('SCOPE RULE 2: `require` is read from the RESULTING stage, not the current 
   const res = allowed(decide({
     toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b' }, projection, playbooks: pbs(scope), isLive,
   }));
-  assert.equal(res.patchedArgs.idleTimeoutMs, 2000, "`require` must come from the RESULTING stage 'b'");
+  assert.equal(res.patchedArgs.idleTimeoutSeconds, 20, "`require` must come from the RESULTING stage 'b'");
   // And supplying a's value explicitly now conflicts with b's constraint.
   refusal(decide({
-    toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b', idleTimeoutMs: 1000 },
+    toolName: 'send_prompt', args: { sessionId: 'w-scopeq-1', text: 'go', stage: 'b', idleTimeoutSeconds: 10 },
     projection, playbooks: pbs(scope), isLive,
   }), 'ARG_PIN_CONFLICT');
 });

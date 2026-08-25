@@ -192,8 +192,9 @@ test('every armed wake heartbeats at the DEFAULT window, and the beat consumes n
   assert.match(cond._promptCalls[0].text, /did NOT finish/,
     'the stub is the non-completion "did NOT finish" wording');
   assert.match(cond._promptCalls[0].text,
-    new RegExp(`timed out after ${DEFAULT_SUBSCRIBE_TIMEOUT_MS}ms`),
-    'the stub names the DEFAULT window, not an explicit one');
+    /timed out after <1s/,
+    'the stub names the DEFAULT window (400ms here), rendered by humanizeDuration; '
+    + 'asserted literally rather than through the helper, which would be tautological');
   // …and unlike the one-shot watchdog it replaced, the beat consumes NOTHING:
   // the turn-end wake this target still owes its owner is untouched.
   assert.equal(instances._idleHub.hasArmedWake('w4'), true,

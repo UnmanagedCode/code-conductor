@@ -17,6 +17,7 @@
 // Additive to that contract: a success body may use {text, meta?} instead
 // of {result} to get raw, UNESCAPED text blocks (see makeHandler below).
 import { httpError } from '../httpError.ts';
+import { humanizeDuration } from '../duration.ts';
 import { textPayload } from '../mcp/content.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { PluginMcp } from './manifest.ts';
@@ -84,7 +85,7 @@ export function createMcpBridge({ instances, listMcpPlugins, ensureStarted, port
       } catch (e) {
         const err = e as { name?: unknown };
         if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-          throw httpError(504, `plugin '${pluginId}' tool '${toolName}' timed out after ${mcp.timeoutMs}ms`);
+          throw httpError(504, `plugin '${pluginId}' tool '${toolName}' timed out after ${humanizeDuration(mcp.timeoutMs)}`);
         }
         reportUpstreamFailure(pluginId);
         throw httpError(502, `plugin '${pluginId}' unreachable: ${(e as Error).message}`);

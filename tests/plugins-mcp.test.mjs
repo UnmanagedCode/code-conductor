@@ -156,7 +156,7 @@ test('timeout: a slow tool aborts at the manifest timeoutMs', async () => {
     const t0 = Date.now();
     const r = await callTool(boot.baseUrl, 'slowplug__sleep', { ms: 30000 });
     assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /timed out after 1000ms/);
+    assert.match(r.content[0].text, /timed out after 1s/);
     assert.equal(JSON.parse(r.content[1].text).statusCode, 504);
     assert.ok(Date.now() - t0 < 15000, 'aborted well before the 30s sleep');
   } finally { await boot.close(); }

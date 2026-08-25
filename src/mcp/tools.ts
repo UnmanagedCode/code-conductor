@@ -9,13 +9,23 @@ import type { InstanceManagerLike } from '../instanceTypes.ts';
 
 import { MODES as VALID_MODES } from '../sessionModes.ts';
 // The heartbeat window's single source: its default IS the schema ceiling, so
-// `idleTimeoutMs`/`timeoutMs` can only ever shorten it.
-import { DEFAULT_SUBSCRIBE_TIMEOUT_MS } from '../idleSubscriptions.ts';
+// `idleTimeoutSeconds`/`timeoutSeconds` can only ever shorten it.
+import { DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS } from '../idleSubscriptions.ts';
 // The summary structure has ONE home (src/sessionRenew.ts) — the request prompt a
 // conductor-triggered renewal sends carries the same text.
 import { RENEW_SUMMARY_TEMPLATE } from '../sessionRenew.ts';
 
 const VALID_THINKING = ['adaptive', 'enabled', 'disabled'];
+
+// The per-dispatch heartbeat override, shared verbatim by the four turn-starting
+// tools so their schemas cannot drift. The semantics live once, in
+// set_idle_timeout's own description (same tools list); this cross-references it.
+const IDLE_TIMEOUT_SECONDS_PROP = {
+  type: 'integer',
+  minimum: 1,
+  maximum: DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS,
+  description: 'Heartbeat override for this dispatch, in whole seconds — same semantics as set_idle_timeout\'s timeoutSeconds.',
+};
 
 // The per-call context the MCP server injects next to the args (mcp/server.ts).
 interface ToolCtx {
@@ -272,12 +282,7 @@ export function buildTools(): Tool[] {
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
           text: { type: 'string' },
-          idleTimeoutMs: {
-            type: 'number',
-            minimum: 1,
-            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
-            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
-          },
+          idleTimeoutSeconds: { ...IDLE_TIMEOUT_SECONDS_PROP },
           stage: {
             type: 'string',
             description: 'The playbook stage this prompt puts the worker in — always carry it. Equal to the worker\'s current stage ⇒ a self-edge (an ordinary follow-up prompt), always legal, and ledgered only where the playbook declares that self-loop. Different ⇒ a transition, checked against the playbook\'s edge set: TRANSITION_ILLEGAL if there is no such edge, or if the edge\'s `via` (describe_playbook) names a tool other than send_prompt, which must drive it instead.',
@@ -322,12 +327,7 @@ export function buildTools(): Tool[] {
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re approving.' },
           feedback: { type: 'string', description: 'Optional additional notes appended to the approval message.' },
-          idleTimeoutMs: {
-            type: 'number',
-            minimum: 1,
-            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
-            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
-          },
+          idleTimeoutSeconds: { ...IDLE_TIMEOUT_SECONDS_PROP },
         },
         required: ['sessionId'],
       },
@@ -344,12 +344,7 @@ export function buildTools(): Tool[] {
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId of the worker whose plan you\'re rejecting.' },
           feedback: { type: 'string', description: 'What you want the worker to change. Strongly recommended.' },
-          idleTimeoutMs: {
-            type: 'number',
-            minimum: 1,
-            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
-            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
-          },
+          idleTimeoutSeconds: { ...IDLE_TIMEOUT_SECONDS_PROP },
         },
         required: ['sessionId'],
       },
@@ -383,12 +378,7 @@ export function buildTools(): Tool[] {
               },
             },
           },
-          idleTimeoutMs: {
-            type: 'number',
-            minimum: 1,
-            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
-            description: 'Heartbeat override, in ms: while this session is mid-turn you are pinged this often with a non-completion "did NOT finish" stub (still running, not finished), until the turn ends. Defaults to — and is capped at — ORCH_SUBSCRIBE_TIMEOUT_MS, so this can only SHORTEN the window. Same semantics as set_idle_timeout timeoutMs.',
-          },
+          idleTimeoutSeconds: { ...IDLE_TIMEOUT_SECONDS_PROP },
         },
         required: ['sessionId', 'answers'],
       },
@@ -410,18 +400,14 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           sessionId: { type: 'string', description: 'Worker sessionId.' },
-          timeoutMs: {
-            type: 'number',
+          timeoutSeconds: {
+            type: 'integer',
             minimum: 1,
-            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_MS,
-            description:
-              'Heartbeat window in ms. Must be a positive finite number no greater than ' +
-              'ORCH_SUBSCRIBE_TIMEOUT_MS (the default), which is why this can only shorten. The stub each ' +
-              'ping injects is clearly labelled as a non-completion so it can never be mistaken for a ' +
-              'finished worker.',
+            maximum: DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS,
+            description: 'Heartbeat window in whole seconds.',
           },
         },
-        required: ['sessionId', 'timeoutMs'],
+        required: ['sessionId', 'timeoutSeconds'],
       },
       handler: h.setIdleTimeout,
       annotations: { idempotentHint: true },
