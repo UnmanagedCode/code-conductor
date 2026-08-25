@@ -11,6 +11,10 @@
 // blind watchdog that claims the property is worse than one that says it
 // couldn't look.
 //
+// One function here is async — settleResidual, which re-asks a liveness question
+// over a bounded interval. Everything else is synchronous and side-effect-free
+// apart from killPids/reapResidual, which signal.
+//
 // Everything is built on ONE snapshot() per sampling tick. The watchdog asks
 // several questions each tick (peak fake-claude count, which children are
 // alive, what they have spawned); answering each with its own /proc walk would
@@ -249,6 +253,75 @@ export function killDescendants(pid, snap = snapshot()) {
 // killDescendants + `pid` itself, last.
 export function killTree(pid, snap = snapshot()) {
   return [...killDescendants(pid, snap), ...killPids([{ pid, ident: snap.byPid.get(pid)?.ident ?? null }])];
+}
+
+// Of `hits`, the entries STILL carrying `marker` after a bounded settle. Used by
+// tests/run.mjs's run-end residual check, which asks it about the set a fresh
+// /proc walk just produced.
+//
+// WHY A LIVE RE-VERIFY AND NOT THE WALK'S OWN ANSWER. `hits` comes from
+// processesWithMarker, i.e. from a snapshot, and a snapshot is not evidence of
+// liveness: that walk's readdirSync('/proc') samples the pid list microseconds
+// after the sweep's kills, so a pid landing early in a ~2700-pid iteration is
+// read INSIDE its own death window and reported as alive. Observed at load 25 as
+// a false RESIDUAL, with SWEPT naming the same pid on an otherwise healthy run;
+// reproducible deterministically (walk, SIGKILL, wait 50ms — the cached environ
+// still names it, a live read refuses it). So each candidate is asked again,
+// directly.
+//
+// The re-verify cannot fail the same way round. The stale-snapshot bug produced a
+// false ALIVE; a false answer here would need environ to stop answering while the
+// process lives, which on Linux means it is gone.
+//
+// THE BOUND IS THE SECOND CONCERN, not the fix: it only decides how long a
+// genuinely-signalled process may take to die. RESIDUAL_SETTLE_MS
+// (tests/hangGuardConfig.mjs) owns that number and the reason it is a choice
+// rather than a guarantee.
+//
+// `hasMarker` / `now` / `sleep` are injected so the loop is table-testable with no
+// /proc and no real waiting — see tests/orphan-reaper.test.mjs. The production
+// path takes every default.
+export async function settleResidual(hits, marker, {
+  hasMarker: hasMarkerFn = hasMarker,
+  settleMs = 0,
+  stepMs = 10,
+  now = () => Date.now(),
+  sleep = (ms) => new Promise(r => setTimeout(r, ms)),
+} = {}) {
+  // The healthy path pays NOTHING — not a sleep, not even a clock read. This is
+  // why the settle is free on the overwhelming majority of runs, and it is
+  // asserted rather than assumed.
+  if (hits.length === 0) return hits;
+  const deadline = now() + settleMs;
+  for (;;) {
+    hits = hits.filter(h => hasMarkerFn(h.pid, marker));
+    // Both exits matter: empty means they died, the deadline means one did not
+    // and must be REPORTED rather than waited out forever.
+    if (hits.length === 0 || now() >= deadline) return hits;
+    await sleep(stepMs);
+  }
+}
+
+// Reap a residual set and describe what happened. Every entry is already licensed
+// — it matched this run's marker on a live re-read — so this is the step that
+// turns "detected" into "HELD": without it the caller prints its diagnostic, reds
+// the run, and then lets teardown remove the run root out from under a live
+// process, which is the (deleted)-cwd state the whole ordering exists to prevent.
+//
+// It is a named unit rather than two inline lines because inline it was
+// UNTESTABLE: deleting the kill left every test in the suite green, since the
+// diagnostic still printed and the run still went red. Returning `reaped`
+// alongside the message puts the action in a return value, so removing or
+// short-circuiting it fails a test. The message embeds both counts, so a reap
+// that silently signals nothing reads as `RESIDUAL 1 … SIGKILLed 0`.
+export function reapResidual(residual, { kill = killPids } = {}) {
+  const reaped = kill(residual);
+  return {
+    reaped,
+    message:
+      `RESIDUAL ${residual.length} marked process(es) still alive at teardown ` +
+      `(pids ${residual.map(r => r.pid).join(',')}); SIGKILLed ${reaped.length}.`,
+  };
 }
 
 // How many processes anywhere on the box have `substr` in their cmdline.

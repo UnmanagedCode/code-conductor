@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSafeRoot, assertStoreIsolated, removeSafeRoot } from './safeStoreRoot.mjs';
 import { snapshot, countMatching, liveChildren, descendants, killTree, killDescendants, killPids,
-         processesWithMarker, hasMarker } from './procTree.mjs';
+         processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -344,33 +344,6 @@ for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
   });
 }
 
-// The marked set still alive at teardown, given a bounded moment to settle.
-//
-// A pid the snapshot reported is RE-VERIFIED LIVE (hasMarker: one read of
-// /proc/<pid>/environ) instead of being trusted from the walk's cached environ.
-// That cached value can have been read inside the pid's own death window — the
-// walk's readdirSync('/proc') samples the pid list microseconds after the sweep's
-// kills, so a pid early in a ~2700-pid iteration is still answering. Measured
-// once at load 25: SWEPT and RESIDUAL naming the same pid on an otherwise healthy
-// run. See RESIDUAL_SETTLE_MS in tests/hangGuardConfig.mjs for the figures.
-//
-// A zombie's environ reads EMPTY, so hasMarker already answers false for one;
-// this covers the narrower window before the task has actually died.
-//
-// The healthy path pays NOTHING: with an empty first snapshot it returns without
-// sleeping. It also cannot mask a real leak — a process that outlives its own
-// SIGKILL by the whole bound is still returned and still fails the run.
-async function settleResidual() {
-  let hits = processesWithMarker(RUN_MARKER, snapshot({ environ: true }));
-  if (hits.length === 0) return hits;
-  const deadline = Date.now() + RESIDUAL_SETTLE_MS;
-  for (;;) {
-    hits = hits.filter(h => hasMarker(h.pid, RUN_MARKER));
-    if (hits.length === 0 || Date.now() >= deadline) return hits;
-    await new Promise(r => setTimeout(r, 10));
-  }
-}
-
 procSampler.unref?.();
 
 const concurrency = resolveConcurrency();
@@ -531,13 +504,18 @@ sweepOrphans(snapshot(), 'run end');
 // the diagnostic and then let removeSafeRoot run anyway, leaving a live process
 // with a (deleted) cwd inside a deleted root: exactly the state the order exists
 // to prevent. The reap does not soften the verdict — the run still goes red.
-const residual = await settleResidual();
+//
+// Both halves live in tests/procTree.mjs so they are pinned by return value
+// rather than only by whole-run behaviour: inline, deleting the reap left the
+// entire suite green (the diagnostic still printed, the run still reddened), and
+// the settle loop's stale-snapshot filter had no discriminating test at all.
+const residual = await settleResidual(
+  processesWithMarker(RUN_MARKER, snapshot({ environ: true })),
+  RUN_MARKER,
+  { settleMs: RESIDUAL_SETTLE_MS },
+);
 if (residual.length > 0) {
-  const reaped = killPids(residual);
-  console.error(
-    `\nhang-guard: RESIDUAL ${residual.length} marked process(es) still alive at teardown ` +
-    `(pids ${residual.map(r => r.pid).join(',')}); SIGKILLed ${reaped.length}.`,
-  );
+  console.error(`\nhang-guard: ${reapResidual(residual).message}`);
   failed++;
 }
 

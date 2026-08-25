@@ -13,7 +13,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
-import { hasMarker, processesWithMarker } from './procTree.mjs';
+import { hasMarker, processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { staleRunTargets } from './reapOrphans.mjs';
 
 const MARK = 'cc-testrun-Abc123';
@@ -194,4 +194,132 @@ test('staleRunTargets treats every OTHER run as live when scoped to one id', () 
   const scoped = marker => marker !== DEAD;
   assert.deepEqual(staleRunTargets(rowsToSnap(rows), scoped).map(t => t.pid), [5001]);
   assert.deepEqual(staleRunTargets(rowsToSnap(rows), marker => marker !== 'cc-testrun-Typo00'), []);
+});
+
+// --- settleResidual: the bounded liveness re-check ---------------------------
+//
+// This loop is what turned a false RESIDUAL (observed at load 25, failing an
+// otherwise healthy run) into a correct one, and it decides which pids get
+// SIGKILLed at teardown. Before these cases its coverage was purely
+// STATISTICAL — every nested-runner sweep exercises it, but nothing
+// discriminated a regression, so inverting the filter or dropping the deadline
+// left the whole suite green.
+//
+// The clock and sleep are injected, so every case below is deterministic and
+// costs no real time. CONVENTIONS.md's "no long real sleeps" is satisfied by
+// construction rather than by choosing small numbers.
+
+// `sleep` ADVANCES the clock, so the bound is exercised without waiting, and it
+// THROWS past `cap` iterations — a deleted deadline check then fails by name
+// instead of hanging the file until the per-file watchdog SIGKILLs it.
+function fakeClock({ cap = 60, t0 = 1000 } = {}) {
+  let t = t0;
+  const c = { nowCalls: 0, sleeps: [] };
+  c.now = () => { c.nowCalls++; return t; };
+  c.sleep = (ms) => {
+    c.sleeps.push(ms);
+    if (c.sleeps.length > cap) {
+      throw new Error(`settleResidual looped ${c.sleeps.length}x — its deadline exit is gone`);
+    }
+    t += ms;
+    return Promise.resolve();
+  };
+  return c;
+}
+const entry = (pid) => ({ pid, ident: `i${pid}`, argv: ['node', 'holder.mjs'] });
+
+test('settleResidual returns a candidate that stays marked for the whole bound', () => {
+  // The genuine survivor: something the sweep failed to kill. It must reach the
+  // caller so it is reaped and the run goes red.
+  const clock = fakeClock();
+  return settleResidual([entry(5001), entry(5002)], MARK, {
+    hasMarker: () => true, settleMs: 100, stepMs: 10, now: clock.now, sleep: clock.sleep,
+  }).then((out) => {
+    assert.deepEqual(out.map(h => h.pid), [5001, 5002]);
+    // The ENTRIES survive intact, not just the pids: killPids re-verifies each
+    // `ident` against the live process before signalling, and an entry stripped
+    // to a bare pid silently downgrades that to a best-effort kill.
+    assert.deepEqual(out.map(h => h.ident), ['i5001', 'i5002']);
+    assert.equal(clock.sleeps.length, 10, '100ms bound / 10ms step');
+  });
+});
+
+test('settleResidual drops a candidate the live re-verify says is gone', async () => {
+  // THE FALSE-RESIDUAL CASE — the whole reason the loop exists. The input is
+  // deliberately POPULATED with an entry the caller's snapshot claimed was alive;
+  // with an empty list this case passes with the filter deleted.
+  const clock = fakeClock();
+  const asked = [];
+  const out = await settleResidual([entry(5001)], MARK, {
+    hasMarker: (pid, m) => { asked.push([pid, m]); return false; },
+    settleMs: 250, now: clock.now, sleep: clock.sleep,
+  });
+  assert.deepEqual(out, [], 'a stale snapshot entry must not survive the re-verify');
+  assert.deepEqual(asked, [[5001, MARK]], 'the pid AND this run\'s marker must be re-asked');
+  assert.deepEqual(clock.sleeps, [], 'nothing left to wait for — must not sleep out the bound');
+});
+
+test('settleResidual stops at the moment a candidate flips to gone', async () => {
+  // The realistic shape: the process needed a couple of milliseconds to die.
+  // Pins that the loop neither gives up early nor spins out the full bound.
+  const clock = fakeClock();
+  let calls = 0;
+  const out = await settleResidual([entry(5001)], MARK, {
+    hasMarker: () => ++calls < 3,      // marked on 1 and 2, gone on 3
+    settleMs: 250, stepMs: 10, now: clock.now, sleep: clock.sleep,
+  });
+  assert.deepEqual(out, []);
+  assert.equal(calls, 3, 'it must keep re-asking while the answer is still "marked"');
+  assert.deepEqual(clock.sleeps, [10, 10], 'stopped at the flip, did not ride out the bound');
+});
+
+test('settleResidual terminates on its deadline and reports the survivor', async () => {
+  // The DEADLINE itself. Without it this loop never returns for a process that
+  // outlives the bound, and the run hangs at teardown instead of reddening —
+  // trading a leak for the hang this whole guard exists to prevent. The injected
+  // sleep throws past its cap, so that regression fails by name.
+  const clock = fakeClock({ cap: 40 });
+  const out = await settleResidual([entry(5001)], MARK, {
+    hasMarker: () => true, settleMs: 250, stepMs: 10, now: clock.now, sleep: clock.sleep,
+  });
+  assert.deepEqual(out.map(h => h.pid), [5001],
+    'still marked at the bound: must be REPORTED, never silently dropped');
+  assert.equal(clock.sleeps.length, 25, '250ms bound / 10ms step, then it gives up');
+});
+
+test('settleResidual returns on an empty set without touching the clock', async () => {
+  // What keeps the healthy path free. Every green run takes this branch, so it
+  // must cost nothing — not a sleep, and not even a Date.now(). Asserting
+  // nowCalls is what makes the early return killable: without it the loop still
+  // returns [], correctly, having read the clock.
+  const clock = fakeClock();
+  const out = await settleResidual([], MARK, {
+    hasMarker: () => { throw new Error('an empty set must not be re-verified'); },
+    settleMs: 250, now: clock.now, sleep: clock.sleep,
+  });
+  assert.deepEqual(out, []);
+  assert.equal(clock.nowCalls, 0, 'the healthy path must not compute a deadline at all');
+  assert.deepEqual(clock.sleeps, []);
+});
+
+test('reapResidual SIGKILLs the licensed set and reports both counts', async () => {
+  // THE STEP THAT TURNS "DETECTED" INTO "HELD". Deleting it is invisible from
+  // outside: the diagnostic still prints and the run still goes red, while
+  // removeSafeRoot then pulls the run root out from under a live process. So the
+  // action is asserted as a RETURN VALUE.
+  const residual = [entry(5001), entry(5002)];
+  const seen = [];
+  const got = reapResidual(residual, { kill: (e) => { seen.push(...e); return e.map(x => x.pid); } });
+
+  assert.deepEqual(seen, residual, 'the whole licensed set must be handed to the reaper, entries intact');
+  assert.deepEqual(got.reaped, [5001, 5002], 'the reaped pids must reach the caller');
+  assert.match(got.message, /^RESIDUAL 2 marked process\(es\) still alive at teardown \(pids 5001,5002\); SIGKILLed 2\.$/);
+
+  // A reap that SIGNALS NOTHING must not read as a clean one. This is the
+  // short-circuit shape — killPids legitimately returns fewer pids than it was
+  // given when an identity re-check rejects one — and the message has to stay
+  // honest about it rather than echoing the input count twice.
+  const none = reapResidual(residual, { kill: () => [] });
+  assert.deepEqual(none.reaped, []);
+  assert.match(none.message, /RESIDUAL 2 .*; SIGKILLed 0\.$/);
 });
