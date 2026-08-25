@@ -114,9 +114,8 @@ test('an unknown sessionId reads not-live', () => {
 // ── the actual wiring: rewindToUserMessage / InstanceManager.respawn ────────
 //
 // Real bootServer + fake-claude launcher (no real subprocess). Neither method
-// has a genuine multi-tick async gap for a plain worker (no custom
-// `_appendSystemPromptFileProvider`, so `launch()` -> `spawn()` runs
-// synchronously once reached) — respawn's own body before `launch()` is
+// has a genuine multi-tick async gap for a plain worker (no conductor doc to
+// materialize, so `launch()` -> `spawn()` runs synchronously once reached) — respawn's own body before `launch()` is
 // entirely synchronous too, so a bare "call without awaiting, check
 // immediately" trick would observe the whole relaunch already having run to
 // completion (or, for rewind, would observe the OLD proc still attached,

@@ -18,7 +18,7 @@ after(async () => { await ctx.close(); });
 beforeEach(async () => { ({ home, projectsRoot } = await freshProjectsRoot()); });
 afterEach(async () => { await instances.shutdown(); await rmrf(home); });
 
-test('ensureConductProject creates a bare .conduct/ dir — no CONDUCT.md, no seeded CLAUDE.md', async () => {
+test('ensureConductProject creates .conduct/ with a CLAUDE.md importing the role doc — but does NOT write the doc', async () => {
   const r = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
@@ -29,30 +29,80 @@ test('ensureConductProject creates a bare .conduct/ dir — no CONDUCT.md, no se
   const stat = await fs.stat(conductDir);
   assert.ok(stat.isDirectory());
 
-  // The role prompt is composed fresh per spawn/resume, written to
-  // <store>/conductor-prompt.md, and passed via --append-system-prompt-file —
-  // it never lands in the project tree, so no CONDUCT.md and no seeded
-  // CLAUDE.md are written here. Workspace conventions still reach the
-  // conductor via the ancestor walk-up to the projects-root CLAUDE.md.
+  // The import line is what carries the composed role doc into the session.
+  const claudeMd = await fs.readFile(path.join(conductDir, 'CLAUDE.md'), 'utf8');
+  assert.ok(claudeMd.split('\n').some(l => l.trim() === '@CONVENTIONS.md'),
+    'CLAUDE.md carries the @CONVENTIONS.md import line');
+
+  // The pre-spawn materializer is the SOLE writer of CONVENTIONS.md. This
+  // assertion kills a mutant that moves materialization into
+  // ensureConductProject() — which would re-land migration 0022's drift bug,
+  // an ensure-time copy going stale against the live convention selection.
+  await assert.rejects(fs.stat(path.join(conductDir, 'CONVENTIONS.md')),
+    'ensure must not write the role doc');
+  // The 0003 → 0010 → 0022 lineage stays dead.
   await assert.rejects(fs.stat(path.join(conductDir, 'CONDUCT.md')), 'no CONDUCT.md written');
-  await assert.rejects(fs.stat(path.join(conductDir, 'CLAUDE.md')), 'no CLAUDE.md seeded');
 });
 
-test('ensureConductProject is idempotent — second call reports created:false and leaves a user CLAUDE.md alone', async () => {
+test('import detection is LINE-level: prose merely mentioning @CONVENTIONS.md still gains a standalone import', async () => {
+  // The bug this pins is the exact failure the card exists to fix. With a
+  // substring check, a user line that only MENTIONS the filename reads as
+  // already-imported, the real import line is never prepended, and the
+  // conductor boots with NO role doc — while typecheck, health and the whole
+  // suite stay green. The fixture line therefore has to be one a substring
+  // check WOULD match (it contains `@CONVENTIONS.md`) while no line's trim()
+  // equals it; anything else never reaches the disagreement state.
+  const conductDir = path.join(projectsRoot, '.conduct');
+  await fs.mkdir(conductDir, { recursive: true });
+  const claudeMdPath = path.join(conductDir, 'CLAUDE.md');
+  const prose = 'see @CONVENTIONS.md notes';
+  const userContent = `# custom\n\n${prose}\n`;
+  await fs.writeFile(claudeMdPath, userContent);
+  // Fixture guard: the two checks must actually disagree here, else this test
+  // would pass for a reason unrelated to the invariant.
+  assert.ok(userContent.includes('@CONVENTIONS.md'), 'fixture: a substring check matches');
+  assert.ok(!userContent.split('\n').some(l => l.trim() === '@CONVENTIONS.md'),
+    'fixture: no standalone import line exists yet');
+
+  const r = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  assert.equal(r.status, 200);
+
+  const after = await fs.readFile(claudeMdPath, 'utf8');
+  assert.ok(after.split('\n').some(l => l.trim() === '@CONVENTIONS.md'),
+    'a standalone import line was added despite the prose mention');
+  // And the prose survives byte-for-byte, in place.
+  assert.ok(after.endsWith(userContent), 'every user byte survives below the import');
+  assert.equal(after.split('\n').filter(l => l === prose).length, 1,
+    'the prose line is kept verbatim and not rewritten');
+});
+
+test('ensureConductProject preserves a user CLAUDE.md verbatim, and a second call is byte-identical', async () => {
+  // A user may own .conduct/CLAUDE.md before the app ever ensures. Every line
+  // must survive, in order, with only the import gained.
+  const conductDir = path.join(projectsRoot, '.conduct');
+  await fs.mkdir(conductDir, { recursive: true });
+  const claudeMdPath = path.join(conductDir, 'CLAUDE.md');
+  const userContent = '# custom\n\n## Shorthand\n- keep me\n';
+  await fs.writeFile(claudeMdPath, userContent);
+
   const r1 = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
-  assert.equal(r1.body.created, true);
+  assert.equal(r1.status, 200);
 
-  // A user may drop their own CLAUDE.md into .conduct — ensure never touches it.
-  const customContent = '# custom\n\nuser edits should survive\n';
-  const claudeMdPath = path.join(projectsRoot, '.conduct', 'CLAUDE.md');
-  await fs.writeFile(claudeMdPath, customContent);
+  const afterFirst = await fs.readFile(claudeMdPath, 'utf8');
+  assert.ok(afterFirst.endsWith(userContent), 'every user byte survives, in order, below the import');
+  assert.ok(afterFirst.split('\n').some(l => l.trim() === '@CONVENTIONS.md'), 'import added');
 
+  // Second ensure: no duplicate import line AND no write at all (the same
+  // bytes back). One assertion covers both the already-imported branch and the
+  // no-mtime-churn requirement that makes ensure safe on boot, on the Conduct
+  // tap, and on resume-restart.
   const r2 = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
   assert.equal(r2.status, 200);
   assert.equal(r2.body.created, false);
 
-  const after = await fs.readFile(claudeMdPath, 'utf8');
-  assert.equal(after, customContent, 'user CLAUDE.md preserved');
+  const afterSecond = await fs.readFile(claudeMdPath, 'utf8');
+  assert.equal(afterSecond, afterFirst, 'second ensure is byte-identical — no duplicate import, no rewrite');
+  assert.equal(afterSecond.split('\n').filter(l => l.trim() === '@CONVENTIONS.md').length, 1);
 });
 
 test('listProjects() excludes .conduct from /api/projects', async () => {

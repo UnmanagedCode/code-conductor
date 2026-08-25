@@ -7,12 +7,12 @@
 import * as m0001 from './0001-centralize-orchestrator-state.mjs';
 import * as m0002 from './0002-rename-group-to-workspace.mjs';
 // 0003-conduct-md-symlink is intentionally NOT registered: it created a
-// .conduct/CONDUCT.md symlink. That path later became a fully-owned generated
-// file (0010) and is now removed entirely (0022) — the conductor role prompt
-// lives in the app store at <root>/.code-conductor/conductor-prompt.md and is
-// passed at spawn via --append-system-prompt-file, so nothing conductor-owned
-// belongs in the project tree. Leaving 0003 in the chain would make it
-// recreate the symlink / warn every boot.
+// .conduct/CONDUCT.md symlink pointing at a repo-root CONDUCT.md that no longer
+// exists (that path became a generated file in 0010 and was removed in 0022),
+// so leaving it in the chain would make it recreate a dangling symlink / warn
+// every boot. The conductor role doc IS in the project tree again as of 0031 —
+// but as `.conduct/CONVENTIONS.md`, written by the pre-spawn materializer, not
+// by a migration.
 import * as m0004 from './0004-relocate-av-installs.mjs';
 import * as m0005 from './0005-rename-conducted-marker.mjs';
 import * as m0006 from './0006-init-cost-tracking.mjs';
@@ -59,6 +59,7 @@ import * as m0027 from './0027-rename-default-playbook-ids.mjs';
 import * as m0028 from './0028-tri-state-default-playbook.mjs';
 import * as m0029 from './0029-enable-playbooks-conductor-convention.mjs';
 import * as m0030 from './0030-backfill-mid-turn-steering.mjs';
+import * as m0031 from './0031-conduct-conventions-import.mjs';
 
 // Ordered list. Numeric (lexicographic) order IS execution order — keep it that
 // way: append to the end, or letter-suffix (`0018b`) when a migration must slot
@@ -69,7 +70,7 @@ import * as m0030 from './0030-backfill-mid-turn-steering.mjs';
 // must consume `models.sonnetContextWindow` before 0019 deletes it, but 0026
 // later drops the `window` key that proves it did, so asserting on the
 // end state alone would pass even with the two reordered.
-export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028, m0029, m0030];
+export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028, m0029, m0030, m0031];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

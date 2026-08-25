@@ -17,10 +17,9 @@ then the caller appends the SAME claude args uniformly. Three callers share it:
 `Instance.spawn()`, `generateSummary()` (`src/summarize.ts`), `generateBundle()`
 (`src/claudeShellEnv.ts`).
 
-**A template that passes host paths must share our filesystem view.** Two of the
-uniformly-appended claude args are *host paths*: `--plugin-dir` (one per entry,
-only when the session has plugin dirs) and, for conductor sessions,
-`--append-system-prompt-file` pointing at `<store>/conductor-prompt.md`.
+**A template that passes host paths must share our filesystem view.** One of the
+uniformly-appended claude args is a *host path*: `--plugin-dir` (one per entry,
+only when the session has plugin dirs).
 (`--settings` and `--mcp-config` are not — they carry inline JSON built by
 `buildSettingsJSON`/`buildMcpConfigJSON` in `src/settings.ts`.) A template that
 wraps `claude` in a container or over ssh without mounting those paths will

@@ -1,4 +1,4 @@
-// Renders a playbook definition as the conductor-prompt section for the
+// Renders a playbook definition as the conductor role-doc section for the
 // PREFERRED playbook (Settings → Conductor conventions → Preferred playbook).
 // Composed into the role prompt by src/conductorConventions.ts.
 //
