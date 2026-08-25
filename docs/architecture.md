@@ -390,7 +390,7 @@ Three non-obvious mechanics, each of which cost a wrong first cut:
 
 **Register the teardown AT SPAWN TIME, not after the helper returns** (card 2026-0226). A `try/finally` in the caller cannot cover a helper that spawns and *then* awaits readiness: the handle does not reach the caller until after the wait, so a timeout there leaks a child the `finally` never learns about. `startAndSettle` in `tests/plugins-supervisor.test.mjs` is the pattern — `t.after(...)` on the line after `sup.start(...)`, before anything that can throw.
 
-**A teardown that signals needs a LICENCE, and identity is the only safe one.** Once teardown is unconditional it also runs for tests using a fake/injected `spawn`, whose stand-in children carry synthetic pids (`900001 + n`) — and `sup.stop` signals a process *group*, so an unguarded hook calls `process.kill(-900001, …)`. On this box `pid_max` is 4194304, live pids reach ~3.99M and one sits at 1089935, so that group belongs to a stranger. Guard with **`hasMarker(pid, marker)`** (`tests/procTree.mjs`) — `processesWithMarker`'s identity asked about one pid, failing closed on a vanished or unreadable `environ` — never a caller-supplied "this one is fake" flag, which relocates kill authority to the caller instead of closing the class. Match by identity only: **never** by name, process group, ppid, or start time.
+**A teardown that signals needs a LICENCE, and identity is the only safe one.** Once teardown is unconditional it also runs for tests using a fake/injected `spawn`, whose stand-in children carry synthetic pids (`900001 + n`) — and `sup.stop` signals a process *group*, so an unguarded hook calls `process.kill(-900001, …)`. The hazard is the **wrap**, not any one census: `pid_max` here is 4194304 and allocation has long since passed the synthetic band, so a literal `900001` is a *real* pid — an unrelated live process sat at **1089935** while this was written (2026-08-25; the live ceiling moved 3.99M → 4.10M during that one card, which is why the figure is dated and the property is what you should rely on). So that group belongs to a stranger. Guard with **`hasMarker(pid, marker)`** (`tests/procTree.mjs`) — `processesWithMarker`'s identity asked about one pid, failing closed on a vanished or unreadable `environ` — never a caller-supplied "this one is fake" flag, which relocates kill authority to the caller instead of closing the class. Match by identity only: **never** by name, process group, ppid, or start time.
 
 **Regression suite:** five files — `tests/hang-guard-file-kill.test.mjs`, `-run-cap`, `-layer-b`, `-sweep`, `-stall` — over a shared harness in `tests/hangGuardCase.mjs` (`RUNNER`, `fixture()`, the squeezed deadlines, `FAST`, `redactTotals()`, `runGuard()`; not named `*.test.mjs`, so `discover()` ignores it). Each runs the **real** `tests/run.mjs` as a subprocess against `tests/fixtures/hang/*.fixture.mjs`, with the deadlines squeezed via the `CC_TEST_*` overrides.
 
@@ -447,7 +447,7 @@ Several deadlines and flake rates in this repo are quoted "under 24-way CPU star
 produced. Use the **self-limiting** form:
 
 ```bash
-N=16; SECS=600
+N=24; SECS=600          # 24 = the ONLY width any figure in this repo is quoted at
 for i in $(seq $N); do timeout --signal=KILL "$SECS" sh -c 'while :; do :; done' & done
 trap 'kill $(jobs -p) 2>/dev/null' EXIT INT TERM
 wait
@@ -458,5 +458,8 @@ wait
   `trap`-only version does — and a leaked spinner is far more expensive than a leaked idle timer.
 - **The agent shell here is zsh, where bare `kill $pids` silently leaks spinners.** When killing by
   hand rather than letting `timeout` do it, use `xargs` with an anchored `pgrep`.
-- `N` is the starvation width quoted in the figures, not a core count; `SECS` bounds the whole
-  campaign.
+- **`N` is a starvation WIDTH, not a core count.** Every starved figure in this repo — `FILE_KILL_MS` in `tests/hangGuardConfig.mjs`, and the three test comments above — is quoted at
+  **24-way**, so the example is 24. A run at a different `N` is a different measurement and must
+  say which. (Do not confuse this with the *8-core* / *16-core* device figures elsewhere in this
+  section: those are hardware, not induced load.)
+- `SECS` bounds the whole campaign, and is what makes the recipe self-limiting.
