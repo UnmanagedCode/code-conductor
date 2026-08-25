@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { killPids, processesWithMarker } from './procTree.mjs';
-import { redactTotals, runGuard } from './hangGuardCase.mjs';
+import { FAST, redactTotals, runGuard } from './hangGuardCase.mjs';
 
 // --- the harness's own count-line redaction ---------------------------------
 //
@@ -250,4 +250,37 @@ test('the run-end sweep runs BEFORE the run root is removed', async () => {
   const r = await runGuard('silent-orphan');
   assert.doesNotMatch(r.out, /hang-guard: RESIDUAL/,
     `a marked process was still alive at teardown:\n${r.out}`);
+});
+
+test('SIGTERM mid-run sweeps this run\'s processes and exits 143', async () => {
+  // An INTERRUPTED run is the one path the run-end sweep cannot cover, and it is
+  // the one an interrupted campaign actually takes. A `detached` child sits in
+  // its own process group, so a terminal SIGINT/SIGTERM to the runner's group
+  // never reaches it — pre-fix the runner died on node's default handling and the
+  // holder was left alive on the box with nothing having looked.
+  //
+  // CC_TEST_DWELL_MS keeps the fixture's test body open so the runner is still
+  // mid-run when the signal lands: 4000ms, comfortably inside FILE_KILL (8000)
+  // so the per-file watchdog is not what ends this, and the signal at 1200ms is
+  // well clear of process start-up on a starved box. SIGKILL is deliberately not
+  // tested — no in-process handler can run for it, which is what
+  // tests/reapOrphans.mjs exists for.
+  const r = await runGuard('silent-orphan',
+    { ...FAST, CC_TEST_DWELL_MS: '4000' },
+    { signalAfterMs: 1200 });
+  const holder = holderPidFrom(r.out);
+
+  assert.match(r.out, /hang-guard: SIGTERM — sweeping this run's processes before exiting\./,
+    `the interrupt path never swept:\n${r.out}`);
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: sigterm\)/);
+  // 143 is 128+SIGTERM — node's OWN default status, restated by the handler
+  // because installing any listener for a signal REMOVES that default. A run
+  // that exits some other status has changed what every caller sees.
+  assert.equal(r.code, 143, `expected 128+SIGTERM=143, got code=${r.code} signal=${r.signal}:\n${r.out}`);
+  assert.equal(r.signal, null, 'the runner must exit under its own control, not die from the signal');
+
+  const deadline = Date.now() + 3000;
+  while (pidAlive(holder) && Date.now() < deadline) await new Promise(r2 => setTimeout(r2, 25));
+  assert.equal(pidAlive(holder), false,
+    `holder ${holder} survived an interrupted run — this is the leak an interrupted campaign leaves`);
 });

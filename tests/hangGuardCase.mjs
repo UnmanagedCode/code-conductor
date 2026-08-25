@@ -33,8 +33,11 @@ export const fixture = name => path.join(__dirname, 'fixtures', 'hang', `${name}
 export const LEAK_GRACE = 1500;
 export const FILE_KILL = 8000;   // deliberately >> LEAK_GRACE, so the two are separable
 export const SWEEP = 1500;
-// The holder lifetime in detached-orphan.fixture.mjs, single-sourced here
-// because that fixture is only valid while SWEEP is far below it.
+// The holder lifetime in detached-orphan.fixture.mjs and
+// silent-orphan.fixture.mjs, single-sourced here because each is only valid
+// while the holder outlives something: detached-orphan needs it far above SWEEP,
+// silent-orphan needs it above a whole healthy inner run. Both fixtures document
+// their own inequality.
 export const HOLDER_LIFETIME = 60_000;
 // 12s, NOT 30s. The largest legitimate inner wait is FILE_KILL (8000), so 12s
 // leaves headroom while bounding a run whose guard is BROKEN. Measured with a
@@ -68,7 +71,12 @@ export function redactTotals(out) {
 // its own cap, and TWO such cases at 45s sum past the outer 90s per-file watchdog
 // — which would SIGKILL this file and truncate exactly the diagnostics naming
 // which guard broke. 20s keeps two comfortably under the deadline.
-export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPauseMs = 0, discardStdout = false } = {}) {
+// `signalAfterMs` sends ONE signal to the nested runner that long after spawn —
+// the only way to exercise its interrupt path, since an interrupt is by
+// definition not something a fixture can do to itself. It targets `child.pid`
+// alone, never a process group: the runner shares OUR group (spawn without
+// `detached`), so a group signal would hit this test file too.
+export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPauseMs = 0, discardStdout = false, signalAfterMs = 0, signal = 'SIGTERM' } = {}) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     // NODE_TEST_CONTEXT must not reach the child. node:test sets it in every
@@ -98,6 +106,12 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     } else {
       child.stdout.on('data', keep);
     }
+    let signalTimer;
+    if (signalAfterMs > 0) {
+      signalTimer = setTimeout(() => {
+        try { child.kill(signal); } catch { /* already gone */ }
+      }, signalAfterMs);
+    }
     // Backstop so a guard regression surfaces as a failed assertion here rather
     // than as a stalled test. killDescendants FIRST: several fixtures leak a
     // busy-looping or interval-holding process, and SIGKILLing only the nested
@@ -107,10 +121,13 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
       try { killDescendants(child.pid); } catch { /* best effort */ }
       child.kill('SIGKILL');
     }, hardTimeoutMs);
-    child.on('error', err => { clearTimeout(bail); reject(err); });
-    child.on('close', (code, signal) => {
+    // Clear on BOTH paths: a still-armed signal timer would hold this file's loop
+    // open past its teardown and Layer B (preloaded here) would fail it as a leak.
+    child.on('error', err => { clearTimeout(bail); clearTimeout(signalTimer); reject(err); });
+    child.on('close', (code, sig) => {
       clearTimeout(bail);
-      resolve({ code, signal, out: redactTotals(out), wallMs: Date.now() - startedAt });
+      clearTimeout(signalTimer);
+      resolve({ code, signal: sig, out: redactTotals(out), wallMs: Date.now() - startedAt });
     });
   });
 }

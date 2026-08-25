@@ -320,6 +320,28 @@ function sweepOrphans(snap, why) {
     `(pids ${orphans.join(',')}; trigger: ${why}).`,
   );
 }
+// Sweep on an INTERRUPTED run too. A `detached` child is in its OWN process
+// group, so a terminal SIGINT to the runner's group never reaches it — which is
+// why an interrupted campaign leaks where a completed one (now) does not.
+// Registered here, immediately after sweepOrphans' definition, because
+// RUN_MARKER and sweepOrphans are `const`/function bindings this closure reads.
+//
+// SIGKILL stays uncoverable BY CONSTRUCTION — no in-process handler can run for
+// it. tests/reapOrphans.mjs exists for that residue.
+for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.once(sig, () => {
+    console.error(`\nhang-guard: ${sig} — sweeping this run's processes before exiting.`);
+    sweepOrphans(snapshot(), sig.toLowerCase());
+    // Restate 128+signo explicitly: installing ANY listener for a signal removes
+    // node's own default handling, exit status included, so without this the
+    // runner would fall through to a natural exit and every caller would see a
+    // different status than before. The normal-exit path (`process.exit(failed
+    // === 0 && !guardrailFailed ? 0 : 1)`) is untouched — `process.once` never
+    // fires on it.
+    process.exit(code);
+  });
+}
+
 procSampler.unref?.();
 
 const concurrency = resolveConcurrency();
