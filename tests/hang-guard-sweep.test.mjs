@@ -103,6 +103,12 @@ test('processesWithMarker matches this run\'s descendants and nothing else', () 
     // matches it and one run's sweep SIGKILLs another run's processes (measured
     // with a truncated marker: an inner runner killed the outer run's).
     { pid: 4007, env: envWith(MARK + 'XY') },
+    // NAME SHARING — the other half of the anchor, and the direction a plain
+    // `includes` on the needle gets WRONG: this variable's NAME ends with ours,
+    // so `CC_TEST_RUN_ID=<marker>\0` appears verbatim inside it. This predicate
+    // holds the kill authority for all four sweep triggers, so it is the one
+    // that must refuse (card 2026-0226 round 1).
+    { pid: 4008, env: `PATH=/usr/bin\0PREV_CC_TEST_RUN_ID=${MARK}\0` },
   ];
   const hits = processesWithMarker(MARK, snapOf(rows)).map(h => h.pid).sort((a, b) => a - b);
   assert.deepEqual(hits, [4001, 4002],

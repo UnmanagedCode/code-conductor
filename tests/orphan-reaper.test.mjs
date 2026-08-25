@@ -72,18 +72,26 @@ test('hasMarker licences exactly this run\'s processes, and nothing else', () =>
   }
 });
 
-test('hasMarker is never more permissive than processesWithMarker', () => {
+test('hasMarker and processesWithMarker agree on every pid', () => {
   // The two are the SAME identity at different granularity — one pid vs a /proc
-  // walk — and the contract that matters is DIRECTIONAL: a caller must not be
-  // able to get a more permissive answer by choosing the cheaper call. Pinning it
-  // is what stops them drifting; without this, widening one leaves the other's
-  // table green. The one deliberate divergence is pinned by the case below.
+  // walk — and both read it through MARKER_RE, so they agree on every input. A
+  // caller must not be able to get a looser verdict by choosing the cheaper call,
+  // and the loose one would be the DANGEROUS one: processesWithMarker is what
+  // feeds sweepOrphans -> killPids on all four sweep triggers. Pinning the
+  // equivalence is what stops one of them being widened alone; without it,
+  // widening either leaves the other's table green.
   const envs = {
     4001: envWith(MARK),
     4002: envWith(MARK + 'XY'),
     4003: envWith('cc-testrun-Other99'),
     4004: 'PATH=/usr/bin\0',
     4005: '',
+    // THE ROW THAT USED TO DIVERGE. processesWithMarker matched this by plain
+    // `includes` while hasMarker refused it, so the loose predicate held the kill
+    // authority and the tight one guarded a single narrow caller. Both now read
+    // MARKER_RE; this row is here so a regression to `includes` breaks the
+    // equivalence instead of quietly restoring the asymmetry.
+    4006: `PATH=/usr/bin\0PREV_CC_TEST_RUN_ID=${MARK}\0`,
     1: envWith(MARK),
     [process.pid]: envWith(MARK),
   };
@@ -101,23 +109,6 @@ test('hasMarker is never more permissive than processesWithMarker', () => {
   // Non-vacuity: the agreement above is worthless if both sides said "no" to
   // everything.
   assert.deepEqual([...walked].sort((a, b) => a - b), [4001]);
-});
-
-test('hasMarker is STRICTLY tighter on a variable-name collision', () => {
-  // The one input on which the two deliberately disagree, pinned so the
-  // divergence is a decision rather than a discovery. processesWithMarker asks
-  // `env.includes('CC_TEST_RUN_ID=<marker>\0')`, which a variable whose NAME ENDS
-  // with ours satisfies; hasMarker anchors the entry's start and refuses. Tighter
-  // is the only safe direction for a licence to kill, and this is why the
-  // equivalence above is stated directionally.
-  const env = `PATH=/usr/bin\0PREV_CC_TEST_RUN_ID=${MARK}\0`;
-  assert.equal(hasMarker(4001, MARK, () => env), false);
-  const snap = {
-    available: true, byParent: new Map(),
-    byPid: new Map([[4001, { pid: 4001, ident: '1', argv: [], env }]]),
-  };
-  assert.deepEqual(processesWithMarker(MARK, snap).map(h => h.pid), [4001],
-    'if this ever refuses too, delete this case — the two have converged');
 });
 
 // --- staleRunTargets: the reaper's licence ------------------------------------

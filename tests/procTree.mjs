@@ -105,6 +105,33 @@ export function descendants(pid, snap = snapshot()) {
   return out;
 }
 
+// The ONE expression of what a CC_TEST_RUN_ID entry looks like in a
+// /proc/<pid>/environ blob, anchored at BOTH ends. Every predicate below reads it
+// from here, and tests/reapOrphans.mjs imports it, so the suite has exactly one
+// answer to "is this pid ours" and one licence to kill.
+//
+// environ is a sequence of NUL-terminated entries (verified: the final entry is
+// terminated too), so:
+//   * `(?:^|\0)` rules out a variable whose NAME merely ENDS with ours —
+//     `PREV_CC_TEST_RUN_ID=<marker>` satisfies a plain `includes` on the needle,
+//     and a licence to kill must not be granted by a name collision;
+//   * the trailing `\0` rules out a marker that merely STARTS WITH the one asked
+//     about. Without it an inner runner's sweep matches an OUTER runner's marker
+//     and SIGKILLs the outer run's processes — measured with an 8-char marker:
+//     the outer file died at 3.8s having reported 5 of 16 cases. Nothing here
+//     depends on mkdtemp's fixed-width suffix, which is a fact of
+//     tests/safeStoreRoot.mjs and not of this predicate.
+// Both written as escapes, never literal NUL bytes: a literal renders every diff
+// of this file binary. No `g` flag, so `exec` is stateless and the constant is
+// safe to share across callers.
+export const MARKER_RE = /(?:^|\0)CC_TEST_RUN_ID=([^\0]*)\0/;
+
+// The marker carried by `env`, or null. The single place either predicate below
+// decides what a blob says about itself.
+function markerIn(env) {
+  return typeof env === 'string' ? (MARKER_RE.exec(env)?.[1] ?? null) : null;
+}
+
 // Every process carrying THIS run's marker in its environment — i.e. every
 // descendant of this runner at any depth, however it was spawned.
 //
@@ -136,56 +163,38 @@ export function descendants(pid, snap = snapshot()) {
 // Pure over `snap`: pass a synthesised snapshot to test it without processes.
 export function processesWithMarker(marker, snap = snapshot({ environ: true })) {
   if (!marker || !snap.available) return [];
-  // The trailing '\0' ANCHORS the needle. /proc/<pid>/environ is a sequence of
-  // NUL-terminated entries (verified: the final entry is terminated too), so this
-  // makes the match exact for free. Without it, one marker being a strict prefix
-  // of another means an inner runner's sweep matches an OUTER runner's marker and
-  // SIGKILLs the outer run's processes — measured with an 8-char marker: the outer
-  // file died at 3.8s having reported 5 of 16 cases. Nothing here should depend on
-  // mkdtemp's fixed-width suffix, which is a fact of tests/safeStoreRoot.mjs and
-  // not of this predicate.
-  //
-  // Write it as the ESCAPE '\0', never a literal NUL byte: a literal would make
-  // git render every diff of this file as binary.
-  const needle = `CC_TEST_RUN_ID=${marker}\0`;
+  // MARKER_RE, not a plain `includes` on the needle. THIS is the predicate that
+  // holds the kill authority — it feeds sweepOrphans on all four of its triggers
+  // — so it is the one that must carry the tighter anchoring, not merely share it
+  // with a narrower caller. An earlier revision anchored only the single-pid
+  // variant below, which left the loose predicate doing the killing.
   const out = [];
   for (const info of snap.byPid.values()) {
     if (info.pid === process.pid || info.pid <= 1) continue;
-    if (!info.env || !info.env.includes(needle)) continue;
+    if (markerIn(info.env) !== marker) continue;
     out.push({ pid: info.pid, ident: info.ident, argv: info.argv });
   }
   return out;
 }
 
-// The ONE expression of what a CC_TEST_RUN_ID entry looks like in a
-// /proc/<pid>/environ blob, anchored at BOTH ends.
-//
-// environ is a sequence of NUL-terminated entries, so:
-//   * `(?:^|\0)` rules out a variable whose NAME merely ENDS with ours —
-//     `PREV_CC_TEST_RUN_ID=<marker>` would otherwise match, and a licence to kill
-//     must not be granted by a name collision;
-//   * the trailing `\0` rules out a marker that merely STARTS WITH the one asked
-//     about, the cross-run fratricide case (see processesWithMarker above).
-// Both written as escapes, never literal NUL bytes: a literal renders every diff
-// of this file binary. No `g` flag, so `exec` is stateless and the constant is
-// safe to share across callers (tests/reapOrphans.mjs imports it rather than
-// re-declaring the anchoring).
-export const MARKER_RE = /(?:^|\0)CC_TEST_RUN_ID=([^\0]*)\0/;
 
-// processesWithMarker's identity, asked about ONE pid — same question, one
-// /proc/<pid>/environ read instead of a whole /proc walk. It answers exactly
-// what `processesWithMarker(marker).some(p => p.pid === pid)` would, including
-// the pid <= 1 and self sentinels, so a caller cannot get a different verdict by
-// choosing the cheaper call.
+// processesWithMarker's identity, asked about ONE pid — the same question over
+// one /proc/<pid>/environ read instead of a whole /proc walk. Both go through
+// markerIn/MARKER_RE and apply the same pid <= 1 and self sentinels, so
+// `hasMarker(pid, m)` and `processesWithMarker(m).some(p => p.pid === pid)` agree
+// on every input; a caller cannot get a looser verdict by choosing the cheaper
+// call. That equivalence is pinned in tests/orphan-reaper.test.mjs — keep it, it
+// is what stops one of the two being widened alone.
 //
 // IT EXISTS TO BE A LICENCE TO KILL. A test that reaps its own child in a
-// teardown hook must first establish the child IS its own: fake/injected
-// `spawn` stand-ins carry synthetic pids (tests/plugins-supervisor.test.mjs uses
-// 900001 + n), and this box has pid_max 4194304 with live pids near 3.99M and one
-// at 1089935 — pids have wrapped well past 900001, so signalling such a number,
-// or the process GROUP -900001, hits a stranger. The alternative — a
-// caller-supplied "this one is fake" flag — relocates kill authority to the
-// caller instead of closing the class, so it is not offered.
+// teardown hook must first establish the child IS its own: fake/injected `spawn`
+// stand-ins carry synthetic pids (tests/plugins-supervisor.test.mjs uses
+// 900001 + n). pid_max here is 4194304 and live pids have long since wrapped past
+// that band — one unrelated live process sat at 1089935 while this was written —
+// so a synthetic pid, or the process GROUP -900001, names a stranger. Do not
+// re-derive that from a pid census: the point is the WRAP, not any one figure.
+// The alternative — a caller-supplied "this one is fake" flag — relocates kill
+// authority to the caller instead of closing the class, so it is not offered.
 //
 // FAILS CLOSED: a vanished pid, an unreadable environ, an absent or empty marker
 // all answer false. `read` is injectable so the licence table can be driven
@@ -193,16 +202,9 @@ export const MARKER_RE = /(?:^|\0)CC_TEST_RUN_ID=([^\0]*)\0/;
 export function hasMarker(pid, marker, read = p => readFileSync(`/proc/${p}/environ`, 'utf8')) {
   if (!marker) return false;
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
-  let env = '';
+  let env;
   try { env = read(pid); } catch { return false; }
-  if (typeof env !== 'string') return false;
-  // MARKER_RE, so the anchoring lives in one place. This makes hasMarker
-  // STRICTLY TIGHTER than processesWithMarker on one input: a variable whose name
-  // ends with ours (`PREV_CC_TEST_RUN_ID=<marker>`) satisfies that predicate's
-  // plain `includes` and is refused here. Tighter is the only safe direction for
-  // a licence to kill, and the divergence is pinned by a case in
-  // tests/orphan-reaper.test.mjs rather than left to be discovered.
-  return MARKER_RE.exec(env)?.[1] === marker;
+  return markerIn(env) === marker;
 }
 
 // SIGKILL an explicit, already-ordered list. Entries may be a bare pid or
