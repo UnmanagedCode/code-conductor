@@ -96,6 +96,30 @@ test('an already-imported CLAUDE.md gains no duplicate line and is not rewritten
   assert.equal(after.split('\n').filter(l => l.trim() === '@CONVENTIONS.md').length, 1);
 });
 
+test('import detection is LINE-level: prose mentioning @CONVENTIONS.md still gains a standalone import', async () => {
+  // Same invariant as src/conduct.ts's ensureConductClaudeMd, pinned again here
+  // because the migration DUPLICATES that logic (built-ins only — it cannot
+  // import the TS), so it carries the same exposure independently. A substring
+  // check would read the prose as already-imported and leave a migrated install
+  // with no import line at all.
+  const root = await mkTempRoot();
+  const claudeMd = path.join(root, '.conduct', 'CLAUDE.md');
+  await fs.mkdir(path.join(root, '.conduct'), { recursive: true });
+  const prose = 'see @CONVENTIONS.md notes';
+  const userContent = `# custom\n\n${prose}\n`;
+  await fs.writeFile(claudeMd, userContent);
+  assert.ok(userContent.includes('@CONVENTIONS.md'), 'fixture: a substring check matches');
+  assert.ok(!IMPORTED(userContent), 'fixture: no standalone import line yet');
+
+  const r = await m0031.run({ root, log() {} });
+  assert.equal(r.applied, true);
+  assert.equal(r.summary.claudeMd, 'prepended');
+
+  const after = await fs.readFile(claudeMd, 'utf8');
+  assert.ok(IMPORTED(after), 'a standalone import line was added despite the prose mention');
+  assert.ok(after.endsWith(userContent), 'the prose survives byte-for-byte');
+});
+
 test('idempotent: a second run is applied:false and leaves both files byte-identical', async () => {
   const root = await mkTempRoot();
   const claudeMd = path.join(root, '.conduct', 'CLAUDE.md');

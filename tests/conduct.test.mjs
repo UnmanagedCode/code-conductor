@@ -44,6 +44,38 @@ test('ensureConductProject creates .conduct/ with a CLAUDE.md importing the role
   await assert.rejects(fs.stat(path.join(conductDir, 'CONDUCT.md')), 'no CONDUCT.md written');
 });
 
+test('import detection is LINE-level: prose merely mentioning @CONVENTIONS.md still gains a standalone import', async () => {
+  // The bug this pins is the exact failure the card exists to fix. With a
+  // substring check, a user line that only MENTIONS the filename reads as
+  // already-imported, the real import line is never prepended, and the
+  // conductor boots with NO role doc — while typecheck, health and the whole
+  // suite stay green. The fixture line therefore has to be one a substring
+  // check WOULD match (it contains `@CONVENTIONS.md`) while no line's trim()
+  // equals it; anything else never reaches the disagreement state.
+  const conductDir = path.join(projectsRoot, '.conduct');
+  await fs.mkdir(conductDir, { recursive: true });
+  const claudeMdPath = path.join(conductDir, 'CLAUDE.md');
+  const prose = 'see @CONVENTIONS.md notes';
+  const userContent = `# custom\n\n${prose}\n`;
+  await fs.writeFile(claudeMdPath, userContent);
+  // Fixture guard: the two checks must actually disagree here, else this test
+  // would pass for a reason unrelated to the invariant.
+  assert.ok(userContent.includes('@CONVENTIONS.md'), 'fixture: a substring check matches');
+  assert.ok(!userContent.split('\n').some(l => l.trim() === '@CONVENTIONS.md'),
+    'fixture: no standalone import line exists yet');
+
+  const r = await api(baseUrl, 'POST', '/api/projects/.conduct/ensure');
+  assert.equal(r.status, 200);
+
+  const after = await fs.readFile(claudeMdPath, 'utf8');
+  assert.ok(after.split('\n').some(l => l.trim() === '@CONVENTIONS.md'),
+    'a standalone import line was added despite the prose mention');
+  // And the prose survives byte-for-byte, in place.
+  assert.ok(after.endsWith(userContent), 'every user byte survives below the import');
+  assert.equal(after.split('\n').filter(l => l === prose).length, 1,
+    'the prose line is kept verbatim and not rewritten');
+});
+
 test('ensureConductProject preserves a user CLAUDE.md verbatim, and a second call is byte-identical', async () => {
   // A user may own .conduct/CLAUDE.md before the app ever ensures. Every line
   // must survive, in order, with only the import gained.

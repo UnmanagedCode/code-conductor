@@ -131,6 +131,29 @@ test('~/.claude missing flags both claude_dir_missing and not_authenticated', as
 
 // --- version probe: reported, never gated ---
 
+test('a parseable version well below the retired floor produces NO issues', async () => {
+  // The positive pin on the version-gate retirement. The old gate's floor was
+  // 2.1.223 and it SKIPPED unparseable strings — so neither the happy path (at
+  // the floor) nor the wrapper case below can tell "gate retired" from "gate
+  // present". A parseable SUB-floor version is the only input that can: the old
+  // gate flagged claude_version_too_old here, the retirement must not.
+  //
+  // No version floor is enforced anywhere. If someone re-adds one, this test
+  // fails and makes that a deliberate decision rather than an accident — which
+  // is what the retirement was about: the old number was an observed, never
+  // bisected floor, so a warning built on it was unverified.
+  const home = await mkTmp();
+  await seedClaudeDir(home, { credentials: true });
+  const bin = await writeFake(home, `process.stdout.write('2.1.100 (Claude Code)\\n');`);
+  await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
+    const r = await checkClaudeReadiness({ home, timeoutMs: 2000 });
+    assert.equal(r.claudeBin.found, true);
+    assert.equal(r.claudeBin.version, '2.1.100');
+    assert.deepEqual(r.issues, [], 'no version floor is enforced');
+    assert.equal(r.ok, true);
+  });
+});
+
 test('a non-N.N.N version string is still found:true with no issues', async () => {
   const home = await mkTmp();
   await seedClaudeDir(home, { credentials: true });
