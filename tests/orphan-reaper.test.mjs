@@ -38,6 +38,14 @@ test('hasMarker licences exactly this run\'s processes, and nothing else', () =>
     4006: null,                                // environ read THREW
     4007: `CC_TEST_RUN_IDX=${MARK}\0`,         // near-miss variable NAME (suffix)
     4010: `PREV_CC_TEST_RUN_ID=${MARK}\0`,     // near-miss variable NAME (PREFIX)
+    // DUPLICATE entries, ours SECOND. markerIn reads the FIRST anchored entry, so
+    // this answers with the other run's marker and the pid is refused. Not
+    // reachable for a real process — execve builds one entry per name — and
+    // recorded for its DIRECTION: a duplicate refuses a kill, it never grants
+    // one. 4012 is the same blob with ours FIRST, so the row above is pinned as
+    // "first-entry semantics", not as "any blob with two markers is refused".
+    4011: `CC_TEST_RUN_ID=cc-testrun-Other99\0CC_TEST_RUN_ID=${MARK}\0`,
+    4012: `CC_TEST_RUN_ID=${MARK}\0CC_TEST_RUN_ID=cc-testrun-Other99\0`,
     4008: `CC_TEST_RUN_ID=${MARK}`,            // marker present but UNTERMINATED
     900001: 'PATH=/usr/bin\0',                 // the fakeSpawn pid: no environ of ours
     1: envWith(MARK),                          // init, marked
@@ -57,6 +65,8 @@ test('hasMarker licences exactly this run\'s processes, and nothing else', () =>
     // `includes` on the needle, so without `(?:^|\0)` a licence to kill is
     // granted by a name collision.
     [4010, MARK, false, 'PREV_CC_TEST_RUN_ID is a different variable'],
+    [4011, MARK, false, 'duplicate markers, ours second: first-entry semantics REFUSE the kill'],
+    [4012, MARK, true, 'duplicate markers, ours first: still ours — the rule is position, not count'],
     [4008, MARK, false, 'an unterminated final entry is not an anchored match'],
     [900001, MARK, false, 'THE TRAP: a fakeSpawn pid is an array index, not our process'],
     [1, MARK, false, 'init, even carrying our marker'],

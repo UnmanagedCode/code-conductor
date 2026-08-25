@@ -132,6 +132,21 @@ export const MARKER_RE = /(?:^|\0)CC_TEST_RUN_ID=([^\0]*)\0/;
 
 // The marker carried by `env`, or null. The single place either predicate below
 // decides what a blob says about itself.
+//
+// FIRST anchored entry only — `exec`, not a scan. A blob carrying CC_TEST_RUN_ID
+// TWICE therefore answers with the first one, so ours being the SECOND yields
+// null and the pid is refused. That cannot happen to a real process (execve
+// builds one entry per name, and nothing here writes the variable twice), and it
+// is recorded because the direction is worth knowing rather than because it needs
+// fixing: duplicates make this REFUSE a kill, never grant one. If a future caller
+// ever needs last-wins or any-match, note that it is trading that safety away.
+//
+// AND IT IS NOT A ONE-WORD CHANGE, because MARKER_RE CONSUMES its trailing '\0'.
+// Two entries are adjacent — one's terminator is the next one's `(?:^|\0)` — so a
+// `g`-flag scan matches the first, leaves lastIndex past the NUL the second needs,
+// and finds nothing further. Measured: swapping `exec` for `matchAll` + last-wins
+// changes NOTHING, which is a silently vacuous edit. Real alternative semantics
+// need a non-consuming lookaround, `(?<=^|\0)…(?=\0)`.
 function markerIn(env) {
   return typeof env === 'string' ? (MARKER_RE.exec(env)?.[1] ?? null) : null;
 }
