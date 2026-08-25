@@ -45,7 +45,9 @@ export function assertStoreIsolated(storeRoot) {
 }
 
 const REAL_TMP = realpathSync(os.tmpdir());
-const RUN_ROOT_SHAPE = /^cc-testrun-[A-Za-z0-9]{6}$/;
+// Exported so tests/reapOrphans.mjs licences a marker against THIS shape rather
+// than re-declaring the regex — a second copy could widen while this one did not.
+export const RUN_ROOT_SHAPE = /^cc-testrun-[A-Za-z0-9]{6}$/;
 
 // Realpath the nearest EXISTING ancestor of `p` (p itself may not exist yet —
 // e.g. PROJECTS_ROOT points at a "project" subdir nothing has mkdir'd yet).

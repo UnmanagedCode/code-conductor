@@ -14,6 +14,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { hasMarker, processesWithMarker } from './procTree.mjs';
+import { staleRunTargets } from './reapOrphans.mjs';
 
 const MARK = 'cc-testrun-Abc123';
 const envWith = id => `PATH=/usr/bin\0CC_TEST_RUN_ID=${id}\0HOME=/root\0`;
@@ -117,4 +118,89 @@ test('hasMarker is STRICTLY tighter on a variable-name collision', () => {
   };
   assert.deepEqual(processesWithMarker(MARK, snap).map(h => h.pid), [4001],
     'if this ever refuses too, delete this case — the two have converged');
+});
+
+// --- staleRunTargets: the reaper's licence ------------------------------------
+//
+// Pure over its snapshot and its `rootExists` oracle, so the whole licence is a
+// table. Asserted on the RETURN VALUE for the same reason as above: killPids
+// downstream refuses `pid <= 1` and `process.pid`, so testing the effect instead
+// would let a self-matching or init-matching predicate pass.
+
+const DEAD = 'cc-testrun-Abc123';   // owning run finished: its root is gone
+const LIVE = 'cc-testrun-Live99';   // owning run still going: its root exists
+const rootExists = marker => marker === LIVE;
+
+const rowsToSnap = (rows, { available = true } = {}) => ({
+  available,
+  byParent: new Map(),
+  byPid: new Map(rows.map(r => [r.pid, { ident: '1', argv: ['node', 'server.mjs'], env: '', ...r }])),
+});
+
+test('staleRunTargets licences only processes of a PROVABLY finished run', () => {
+  const rows = [
+    // MATCHES.
+    { pid: 5001, env: envWith(DEAD) },                    // plain descendant of a dead run
+    // A depth-2 detached grandchild. staleRunTargets never consults lineage, so
+    // this is expressed as a row whose parent is not even in the snapshot — which
+    // is precisely the reparented-to-init state every measured orphan was in, and
+    // the state no /proc walk can reach.
+    { pid: 5002, ppid: 999999, env: envWith(DEAD) },
+
+    // REFUSALS, one per conjunct.
+    { pid: 5003, env: envWith(LIVE) },                    // the owning run is STILL RUNNING
+    { pid: 1, env: envWith(DEAD) },                       // init, marked
+    { pid: process.pid, env: envWith(DEAD) },             // ourselves, marked
+    { pid: 5004, env: 'PATH=/usr/bin\0HOME=/root\0' },    // a stranger, no marker
+    { pid: 5005, env: '' },                               // environ unreadable
+    // Marker present, WRONG SHAPE: an ad-hoc value some other tool exported under
+    // the same variable name. Without RUN_ROOT_SHAPE this is a licence to kill
+    // anything that sets CC_TEST_RUN_ID at all.
+    { pid: 5006, env: envWith('repro-1234-orphan-probe') },
+    // PREFIX SHARER: its marker STARTS WITH the dead run's. The capture is
+    // anchored at both ends, so the captured value is the whole entry and cannot
+    // be confused with the shorter one.
+    { pid: 5007, env: envWith(DEAD + 'XY') },
+    // Near-miss variable NAMES. 5008 is excluded by `CC_TEST_RUN_ID` simply not
+    // being followed by `=`; 5010 is the one the LEADING `(?:^|\0)` anchor exists
+    // for — a name ENDING with ours satisfies an unanchored search, so without it
+    // an unrelated process is licensed by a name collision.
+    { pid: 5008, env: `CC_TEST_RUN_IDX=${DEAD}\0` },
+    { pid: 5010, env: `PREV_CC_TEST_RUN_ID=${DEAD}\0` },
+    // Marker present but the entry is UNTERMINATED: fail closed.
+    { pid: 5009, env: `PATH=/usr/bin\0CC_TEST_RUN_ID=${DEAD}` },
+  ];
+  const got = staleRunTargets(rowsToSnap(rows), rootExists);
+  assert.deepEqual(got.map(t => t.pid), [5002, 5001],
+    'exactly the two dead-run processes, and DESCENDING by pid');
+  assert.deepEqual(got.map(t => t.marker), [DEAD, DEAD]);
+  // The entry must carry the starttime ident through, or killPids' recycled-pid
+  // re-check silently degrades to "no identity recorded" and kills best-effort.
+  assert.deepEqual(got.map(t => t.ident), ['1', '1']);
+});
+
+test('staleRunTargets yields nothing when /proc could not be read', () => {
+  // DELIBERATELY POPULATED with a row that WOULD match. With an empty byPid this
+  // passes with the `!snap.available` guard deleted, since the loop returns []
+  // either way — and a partially populated unavailable snapshot is exactly what a
+  // /proc partial read yields, the one case where that guard is all that stands
+  // between "I cannot see" and a kill list.
+  const rows = [{ pid: 5001, env: envWith(DEAD) }];
+  assert.deepEqual(staleRunTargets(rowsToSnap(rows, { available: false }), rootExists), []);
+  // Non-vacuity: the same row DOES match once /proc is readable.
+  assert.deepEqual(staleRunTargets(rowsToSnap(rows), rootExists).map(t => t.pid), [5001]);
+});
+
+test('staleRunTargets treats every OTHER run as live when scoped to one id', () => {
+  // How --id works: `rootExists` becomes `marker !== onlyId`, so naming a run
+  // whose root survived a SIGKILL narrows the list to that run instead of
+  // widening it to every run whose root happens to be missing. A typo therefore
+  // selects nothing.
+  const rows = [
+    { pid: 5001, env: envWith(DEAD) },
+    { pid: 5002, env: envWith('cc-testrun-Other9') },
+  ];
+  const scoped = marker => marker !== DEAD;
+  assert.deepEqual(staleRunTargets(rowsToSnap(rows), scoped).map(t => t.pid), [5001]);
+  assert.deepEqual(staleRunTargets(rowsToSnap(rows), marker => marker !== 'cc-testrun-Typo00'), []);
 });
