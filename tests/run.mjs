@@ -461,6 +461,28 @@ if (capTripped) {
   failed++;
 }
 
+// The sweep on the NORMAL end of a run. Every other trigger sits on a path that
+// is already failing (stream stall, run cap), and a leak reaches neither: a
+// leaked process only wedges the stream if it holds stdio inherited from US, and
+// a plugin child holds pipes to the TEST FILE's child instead. So the stream ends
+// cleanly, the cap is never reached, nothing looks, and the process survives on
+// the box forever (measured: 21 such orphans across 9 runs, every one of whose
+// run roots had been removed — i.e. every owning run exited normally).
+sweepOrphans(snapshot(), 'run end');
+// Reap BEFORE the run root is removed, so a live process can never be left with a
+// (deleted) cwd inside it. This check is what PINS that order: it sits between
+// the sweep and removeSafeRoot below, so moving the sweep after teardown makes it
+// fire. A SIGKILLed target is briefly a zombie whose /proc/<pid>/environ reads
+// empty, so processesWithMarker skips it and this fails CLOSED toward clean.
+const residual = processesWithMarker(RUN_MARKER, snapshot({ environ: true }));
+if (residual.length > 0) {
+  console.error(
+    `\nhang-guard: RESIDUAL ${residual.length} marked process(es) still alive at teardown ` +
+    `(pids ${residual.map(r => r.pid).join(',')}).`,
+  );
+  failed++;
+}
+
 // A2b — the verdict line, printed UNCONDITIONALLY (green or red). A green run
 // must STATE the property rather than merely not violate it, and a red run needs
 // it just as much: the slowest-file figure is the standing evidence that
@@ -475,10 +497,12 @@ const slowest = [...fileDurations.entries()].sort((a, b) => b[1] - a[1]).slice(0
 // hang for a silent green, the very class this card names as worse than a hang.
 // Counted as ONE defect regardless of how many processes it left behind: the
 // stall and the sweep are two symptoms of the same leak, and `failed` feeds a
-// count-based parser that this card exists to keep honest. Every sweep today
-// happens on a path that is already failing (stall or cap), so this branch is
-// belt-and-braces rather than the sole cause of a red run; it stays because a
-// future sweep trigger must not be able to pass silently.
+// count-based parser that this card exists to keep honest. This branch is now the
+// SOLE cause of a red run for a leak that wedges nothing — the run-end sweep
+// above reaches a process that neither the stall trigger nor the cap can see, and
+// on that path `sweptOrphans > 0` is the only signal there is. It was
+// belt-and-braces while every sweep sat on an already-failing path (card
+// 2026-0226 ended that); deleting it now buys a silent green.
 if (streamStalled || sweptOrphans > 0) failed++;
 console.log(
   `\nhang-guard: ${reported.size}/${discovered.size} files reported, ` +

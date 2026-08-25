@@ -191,3 +191,63 @@ test('a leak from a file too fast to be sampled is still found and killed', asyn
     'a sub-tick orphan must still be identified and SIGKILLed');
   assert.ok(r.wallMs < 20_000, `run took ${r.wallMs}ms — it fell through to the absolute run cap`);
 });
+
+// A live pid, asked the cheapest way there is. Signal 0 checks for existence
+// without delivering anything; ESRCH is "gone", EPERM is "alive but not ours".
+const pidAlive = (pid) => {
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }
+};
+
+const holderPidFrom = (out) => {
+  const m = /silent-orphan: holder pid=(\d+)/.exec(out);
+  assert.ok(m, `the fixture never printed its holder pid:\n${out}`);
+  return Number(m[1]);
+};
+
+test('a leak that wedges nothing is still swept, at the END of a healthy run', async () => {
+  // THE CASE THIS WHOLE CARD EXISTS FOR, and the only behavioural proof that the
+  // class is closed. Every other sweep case leaks a holder of the runner's own
+  // stdio, so the STREAM STALL trigger reaches it; this holder has
+  // `stdio: 'ignore'` and holds nothing, so before card 2026-0226 the stream
+  // ended cleanly, the cap was never reached, NOTHING looked, and the run exited
+  // 0 with a live process left on the box. Measured pre-fix: exit 0,
+  // `0 leaked process(es) swept`, holder still alive after the run.
+  const r = await runGuard('silent-orphan');
+  const holder = holderPidFrom(r.out);
+
+  // NON-VACUITY, and it is load-bearing: without this pair someone could satisfy
+  // the case by making the fixture stall, and it would pass through the OLD
+  // trigger while proving nothing about the new one. Both must hold — the run
+  // must have ended the healthy way AND still gone red.
+  assert.match(r.out, /stream ended cleanly/,
+    'the fixture wedged the stream, so this proves the stall trigger, not the run-end sweep');
+  assert.match(r.out, /run cap not reached/);
+
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: run end\)/,
+    'the sweep must fire on the run-end trigger specifically');
+  assert.equal(r.code, 1, `a leaked live process must fail the run:\n${r.out}`);
+
+  // `SWEPT` printed is NOT proof of death — killPids reports what it signalled,
+  // and a bad ident re-check or a wrong pid would print the same line. Ask the
+  // kernel. Bounded poll: the holder's parent is already gone, so init reaps it
+  // at once; this tolerates that latency without tolerating survival.
+  const deadline = Date.now() + 3000;
+  while (pidAlive(holder) && Date.now() < deadline) await new Promise(r2 => setTimeout(r2, 25));
+  assert.equal(pidAlive(holder), false,
+    `holder ${holder} survived the sweep — SWEPT was printed but nothing died`);
+});
+
+test('the run-end sweep runs BEFORE the run root is removed', async () => {
+  // ORDER, pinned by a check that can only be satisfied one way round. run.mjs
+  // re-reads its own marker AFTER sweeping and BEFORE removeSafeRoot; move the
+  // sweep past teardown and a live process is left with a (deleted) cwd inside a
+  // removed run root — the state all 21 measured orphans were found in — and the
+  // RESIDUAL line fires. This also guards the other direction: a sweep whose
+  // SIGKILL had not landed by the time the check reads /proc would print it too,
+  // which is why the check reads `environ` (empty for a zombie) and so fails
+  // closed toward clean.
+  const r = await runGuard('silent-orphan');
+  assert.doesNotMatch(r.out, /hang-guard: RESIDUAL/,
+    `a marked process was still alive at teardown:\n${r.out}`);
+});
