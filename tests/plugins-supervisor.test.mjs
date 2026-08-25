@@ -1,11 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { EventEmitter } from 'node:events';
 import { createSupervisor } from '../src/plugins/supervisor.ts';
-import { allocatePort, pidAlive } from '../src/plugins/ports.ts';
+import { pidAlive } from '../src/plugins/ports.ts';
 import { FAKE_PLUGIN_DIR, waitFor } from './plugin-helpers.mjs';
 
 const manifest = (backend) => ({ id: 'fake-plugin', name: 'Fake', version: '1', pluginApi: 1, backend });
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The window over which a readiness-probe RATE is measured. Shared by the
+// cancellation test and its live-child control so the two can never drift into
+// a gap where both pass: one asserts `<= base + 1`, the other `> base + 1`, and
+// 1200ms is 6x the supervisor's 200ms poll interval, so a live poll clears the
+// second bound with room to spare even on a starved box.
+const PROBE_WINDOW = 1200;
 
 async function startAndSettle(sup, opts) {
   const rec = await sup.start(opts);
@@ -20,6 +30,61 @@ function stopAndWait(sup, id, rec) {
   sup.stop({ id, pgid: rec.pgid });
   return waitFor(() => !pidAlive(rec.pid));
 }
+
+// A held listener on a real port. It ACCEPTS and immediately destroys, so a
+// readiness probe aimed at it completes a connect (countable) yet answers
+// nothing (the supervisor's poll keeps ticking) — that pair is what makes
+// "probing stopped" observable at all. Teardown destroys accepted sockets:
+// `server.close()` alone cannot release an ESTABLISHED connection, which is
+// half of why the deleted settle-window test leaked a Socket on its fail path.
+async function squat() {
+  const state = { accepts: 0 };
+  const live = new Set();
+  const srv = net.createServer((sock) => {
+    state.accepts++;
+    live.add(sock);
+    sock.once('close', () => live.delete(sock));
+    sock.destroy();
+  });
+  const port = await new Promise((res) => srv.listen(0, '127.0.0.1', () => res(srv.address().port)));
+  return {
+    port,
+    accepts: () => state.accepts,
+    close: () => new Promise((res) => { for (const s of live) s.destroy(); srv.close(res); }),
+  };
+}
+
+// A `spawn()` stand-in for the settle-window branch. Everything a fake child
+// emits lands on `process.nextTick` — i.e. before ANY timer can run — so
+// `raceSettle`'s first 20ms tick is guaranteed to observe an already-finished
+// child. That makes "the crash was seen INSIDE the settle window" true by
+// ORDERING, on an arbitrarily starved box. Racing a real `bash -lc node` boot
+// against the 400ms wall clock instead is what made the old version of this
+// test fail ~78% of the time at load1 ~75 (card 2026-0219).
+// `scripts` is one entry per attempt; the last entry repeats.
+function fakeSpawn(scripts) {
+  const spawned = [];
+  const fn = () => {
+    const script = scripts[Math.min(spawned.length, scripts.length - 1)];
+    const proc = new EventEmitter();
+    proc.pid = 900001 + spawned.length; // never signalled — these tests never stop()
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    spawned.push(proc);
+    process.nextTick(() => {
+      if (script.stderr) proc.stderr.emit('data', Buffer.from(script.stderr));
+      if (script.stdout) proc.stdout.emit('data', Buffer.from(script.stdout));
+      if (script.exitCode !== undefined) proc.emit('exit', script.exitCode, null);
+    });
+    return proc;
+  };
+  fn.spawned = spawned;
+  return fn;
+}
+
+// Node's own text, so the fake stays faithful to what T2 proves the real child prints.
+const EADDRINUSE_STDERR = (port) =>
+  `Error: listen EADDRINUSE: address already in use 127.0.0.1:${port}\n`;
 
 test('readiness via healthPath; child gets $PORT and reaches ready', async () => {
   const sup = createSupervisor();
@@ -103,29 +168,144 @@ test('never-ready child → crashed after the readiness bound', async () => {
   }
 });
 
-test('EADDRINUSE settle-window retry lands on a fresh port', async () => {
-  // Squat a port, then hand it to the supervisor as the first allocation.
-  const squatter = net.createServer();
-  const squattedPort = await new Promise((res) => squatter.listen(0, '127.0.0.1', () => res(squatter.address().port)));
+// ── the settle window (card 2026-0219) ──────────────────────────────────────
+// The 400ms window is a bound on how fast a crash must be OBSERVED, not a
+// promise that a child boots that fast; it is a property of the host. So the
+// two branches are tested separately and each is made unreachable-by-the-other
+// rather than raced: T1/T1b decide "inside the window" by nextTick ordering,
+// T2 decides "outside the window" by setting the window to zero.
+
+test('EADDRINUSE inside the settle window retries on a fresh port', async () => {
+  const PORT_A = 45111, PORT_B = 45222; // never bound — the fake children do no I/O
+  const spawnFake = fakeSpawn([
+    { stderr: EADDRINUSE_STDERR(PORT_A), exitCode: 1 },
+    { stdout: 'fake-plugin listening on 45222\n' }, // no exit: stays 'starting', then goes ready
+  ]);
   let calls = 0;
   const sup = createSupervisor({
-    _allocatePort: () => { calls++; return calls === 1 ? Promise.resolve(squattedPort) : allocatePort(); },
+    _spawn: spawnFake,
+    _allocatePort: () => { calls++; return Promise.resolve(calls === 1 ? PORT_A : PORT_B); },
+  });
+  const { rec, rt } = await startAndSettle(sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'irrelevant — _spawn is faked', readyWhen: 'listening on \\d+' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  assert.equal(rt.status, 'ready');
+  assert.equal(spawnFake.spawned.length, 2, 'the lost-port child was respawned');
+  assert.equal(calls, 2, 'the retry re-allocated instead of reusing the lost port');
+  // The persisted record must describe the RETRY child, not the dead first one —
+  // registry.ts writes it straight to the store.
+  assert.equal(rec.port, PORT_B);
+  assert.equal(rec.pid, spawnFake.spawned[1].pid);
+  assert.equal(rec.pgid, spawnFake.spawned[1].pid);
+});
+
+test('EADDRINUSE retries are bounded, then it gives up', async () => {
+  const spawnFake = fakeSpawn([{ stderr: EADDRINUSE_STDERR(45111), exitCode: 1 }]); // repeats
+  let calls = 0;
+  const sup = createSupervisor({
+    _spawn: spawnFake,
+    _allocatePort: () => { calls++; return Promise.resolve(45100 + calls); },
+  });
+  const { rt } = await startAndSettle(sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'irrelevant — _spawn is faked', readyWhen: 'listening on \\d+' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  assert.equal(rt.status, 'crashed');
+  assert.match(rt.error, /EADDRINUSE/);
+  // 1 initial attempt + EADDRINUSE_RETRIES (3, src/plugins/supervisor.ts). The
+  // literal is deliberate: importing the constant would let a mutant that
+  // widens the bound carry this expectation along with it.
+  assert.equal(spawnFake.spawned.length, 4);
+  assert.equal(calls, 4);
+});
+
+test('a real child that loses the port race after the window reports EADDRINUSE', async () => {
+  const sq = await squat();
+  let calls = 0;
+  const sup = createSupervisor({
+    // The window has already expired when raceSettle's first tick runs, so
+    // "the crash was seen AFTER the window" is the only reachable branch — no
+    // competing clock, whatever the box is doing.
+    _settleMs: 0,
+    _allocatePort: () => { calls++; return Promise.resolve(sq.port); },
   });
   try {
     const { rec, rt } = await startAndSettle(sup, {
       id: 'fake-plugin',
-      manifest: manifest({ start: 'node server.mjs', healthPath: '/health' }),
+      // Readiness can never match, so the child's own exit is what settles the
+      // record and rt.error carries node's real bind-failure text.
+      manifest: manifest({ start: 'node server.mjs', readyWhen: 'WILL_NEVER_MATCH' }),
       cwd: FAKE_PLUGIN_DIR,
     });
-    try {
-      assert.equal(rt.status, 'ready');
-      assert.notEqual(rec.port, squattedPort);
-      assert.ok(calls >= 2, 'retried on a second allocated port');
-    } finally {
-      await stopAndWait(sup, 'fake-plugin', rec);
-    }
+    assert.equal(rt.status, 'crashed');
+    // Node's ACTUAL text is what the supervisor's /EADDRINUSE/ predicate reads.
+    assert.match(rt.error, /EADDRINUSE/);
+    // …and it is byte-identical to what T1/T1b's fake children claim the race
+    // with. This is the only guard against those fakes drifting out of sync
+    // with reality and pinning a race the product no longer detects.
+    assert.ok(rt.error.includes(EADDRINUSE_STDERR(sq.port).trim()),
+      `fixture drift — real child said: ${rt.error}`);
+    // A crash observed after the window is COMMITTED to, not retried — the
+    // documented bound, asserted directly instead of raced across.
+    assert.equal(rec.port, sq.port);
+    assert.equal(calls, 1);
   } finally {
-    squatter.close();
+    await sq.close();
+  }
+});
+
+test('a child that dies before readiness stops the readiness probing', async () => {
+  const sq = await squat();
+  const sup = createSupervisor({ _settleMs: 0, _allocatePort: () => Promise.resolve(sq.port) });
+  await sup.start({
+    id: 'fake-plugin',
+    // healthPath aimed at the squatter: the child dies after the window (0ms)
+    // without ever binding, so every probe from here on is aimed at a port this
+    // child never owned — exactly what allocatePort() may already have reissued.
+    manifest: manifest({ start: 'node crash.mjs', healthPath: '/health' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  try {
+    // Two barriers, both causally downstream of the decision under test: the
+    // death has been OBSERVED, and probing was demonstrably LIVE (without the
+    // second, a zero-probe run would pass this vacuously).
+    await waitFor(() => sup.runtime('fake-plugin')?.status === 'crashed');
+    await waitFor(() => sq.accepts() >= 1);
+    const base = sq.accepts();
+    await sleep(PROBE_WINDOW);
+    // +1 tolerates the single probe that can already be in flight when the
+    // barrier trips, and no more: a poll that ignored the death would land ~6
+    // in this window (see the control below, which requires >1).
+    assert.ok(sq.accepts() <= base + 1,
+      `probing continued after the child died: ${base} → ${sq.accepts()} accepts`);
+  } finally {
+    await sq.close();
+  }
+});
+
+test('readiness probing continues while the child is still alive', async () => {
+  // The non-vacuous control for the test above: same squatter, same branch,
+  // same PROBE_WINDOW — only the child differs (never binds, never exits).
+  // Without it an `abort` stuck at true would make that test green for free.
+  const sq = await squat();
+  const sup = createSupervisor({ _settleMs: 0, _allocatePort: () => Promise.resolve(sq.port) });
+  const rec = await sup.start({
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'sleep 30', healthPath: '/health' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  try {
+    await waitFor(() => sq.accepts() >= 1);
+    const base = sq.accepts();
+    await sleep(PROBE_WINDOW);
+    assert.ok(sq.accepts() > base + 1,
+      `probing stalled while the child was alive: ${base} → ${sq.accepts()} accepts`);
+  } finally {
+    await stopAndWait(sup, 'fake-plugin', rec);
+    await sq.close();
   }
 });
 
