@@ -275,35 +275,47 @@ test('the run-end sweep runs BEFORE the run root is removed', async () => {
     `a marked process was still alive at teardown:\n${r.out}`);
 });
 
-test('SIGTERM mid-run sweeps this run\'s processes and exits 143', async () => {
-  // An INTERRUPTED run is the one path the run-end sweep cannot cover, and it is
-  // the one an interrupted campaign actually takes. A `detached` child sits in
-  // its own process group, so a terminal SIGINT/SIGTERM to the runner's group
-  // never reaches it — pre-fix the runner died on node's default handling and the
-  // holder was left alive on the box with nothing having looked.
-  //
-  // CC_TEST_DWELL_MS keeps the fixture's test body open so the runner is still
-  // mid-run when the signal lands: 4000ms, comfortably inside FILE_KILL (8000)
-  // so the per-file watchdog is not what ends this, and the signal at 1200ms is
-  // well clear of process start-up on a starved box. SIGKILL is deliberately not
-  // tested — no in-process handler can run for it, which is what
-  // tests/reapOrphans.mjs exists for.
-  const r = await runGuard('silent-orphan',
-    { ...FAST, CC_TEST_DWELL_MS: '4000' },
-    { signalAfterMs: 1200 });
-  const holder = holderPidFrom(r.out);
+// BOTH signal legs, because run.mjs pairs each with its OWN exit status and a
+// single-signal test lets the other one float: mutating
+// `[['SIGINT', 130], ['SIGTERM', 143]]` to `[['SIGINT', 143], ...]` survived the
+// whole suite while only SIGTERM was sent. The sweep ACTION is shared, so it is
+// pinned by either leg; what needs both is the CODE PAIRING.
+for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
+  test(`${signal} mid-run sweeps this run's processes and exits ${code}`, async () => {
+    // An INTERRUPTED run is the one path the run-end sweep cannot cover, and it is
+    // the one an interrupted campaign actually takes. A `detached` child sits in
+    // its own process group, so a terminal SIGINT/SIGTERM to the runner's group
+    // never reaches it — pre-fix the runner died on node's default handling and the
+    // holder was left alive on the box with nothing having looked.
+    //
+    // CC_TEST_DWELL_MS keeps the fixture's test body open so the runner is still
+    // mid-run when the signal lands: 4000ms, comfortably inside FILE_KILL (8000)
+    // so the per-file watchdog is not what ends this, and the signal at 1200ms is
+    // well clear of process start-up on a starved box. SIGKILL is deliberately not
+    // tested — no in-process handler can run for it, which is what
+    // tests/reapOrphans.mjs exists for.
+    const r = await runGuard('silent-orphan',
+      { ...FAST, CC_TEST_DWELL_MS: '4000' },
+      { signalAfterMs: 1200, signal });
+    const holder = holderPidFrom(r.out);
 
-  assert.match(r.out, /hang-guard: SIGTERM — sweeping this run's processes before exiting\./,
-    `the interrupt path never swept:\n${r.out}`);
-  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: sigterm\)/);
-  // 143 is 128+SIGTERM — node's OWN default status, restated by the handler
-  // because installing any listener for a signal REMOVES that default. A run
-  // that exits some other status has changed what every caller sees.
-  assert.equal(r.code, 143, `expected 128+SIGTERM=143, got code=${r.code} signal=${r.signal}:\n${r.out}`);
-  assert.equal(r.signal, null, 'the runner must exit under its own control, not die from the signal');
+    assert.match(r.out, new RegExp(`hang-guard: ${signal} — sweeping this run's processes before exiting\\.`),
+      `the interrupt path never swept:\n${r.out}`);
+    // The trigger string is the signal's own name, so a handler wired to the
+    // wrong signal cannot pass by sweeping under the other one's label.
+    assert.match(r.out,
+      new RegExp(`hang-guard: SWEPT \\d+ leaked process\\(es\\) \\(pids [\\d,]+; trigger: ${signal.toLowerCase()}\\)`));
+    // 128+signo — node's OWN default status, restated by the handler because
+    // installing any listener for a signal REMOVES that default. A run that exits
+    // some other status has changed what every caller sees, and the two legs carry
+    // DIFFERENT numbers, so asserting one proves nothing about the other.
+    assert.equal(r.code, code,
+      `expected 128+${signal}=${code}, got code=${r.code} signal=${r.signal}:\n${r.out}`);
+    assert.equal(r.signal, null, 'the runner must exit under its own control, not die from the signal');
 
-  const deadline = Date.now() + 3000;
-  while (pidAlive(holder) && Date.now() < deadline) await new Promise(r2 => setTimeout(r2, 25));
-  assert.equal(pidAlive(holder), false,
-    `holder ${holder} survived an interrupted run — this is the leak an interrupted campaign leaves`);
-});
+    const deadline = Date.now() + 3000;
+    while (pidAlive(holder) && Date.now() < deadline) await new Promise(r2 => setTimeout(r2, 25));
+    assert.equal(pidAlive(holder), false,
+      `holder ${holder} survived an interrupted run — this is the leak an interrupted campaign leaves`);
+  });
+}
