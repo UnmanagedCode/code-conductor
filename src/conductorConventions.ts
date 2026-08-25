@@ -1,7 +1,8 @@
 // Conductor conventions — the toggleable sections composed alongside the
-// always-on core into the conductor's role prompt, injected at spawn via
-// `--append-system-prompt-file` (materialized by materializeCurrentConduct in
-// src/conduct.ts; see Instance.launch/spawn in src/instances.ts).
+// always-on core into the conductor's role prompt, delivered as the
+// `.conduct/CONVENTIONS.md` CLAUDE.md import (materialized by
+// materializeCurrentConduct in src/conduct.ts; see Instance.launch in
+// src/instances.ts).
 //
 // CORE (conventions/conductor/core.md) + a footer note
 // (conventions/conductor/footer.md) are always present. The built-in
@@ -193,8 +194,9 @@ export async function playbookListing(): Promise<string> {
 // GLOBAL, like the convention selection above and for the same reason: the
 // conductor is a singleton, and this value is consumed by composeCurrentConduct()
 // — which takes no instance argument and runs BEFORE the instance exists (see
-// materializeCurrentConduct in conduct.ts). It rides the same store as a sibling
-// key, so there is no second state file and no second Settings surface.
+// materializeCurrentConduct in conduct.ts, which writes `.conduct/CONVENTIONS.md`).
+// It rides the same store as a sibling key, so there is no second state file
+// and no second Settings surface.
 //
 // THREE states, and they are not interchangeable: never having chosen is not the
 // same as having chosen nothing. Unset resolves to DEFAULT_PLAYBOOK_ID so a fresh

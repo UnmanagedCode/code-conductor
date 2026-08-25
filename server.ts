@@ -179,9 +179,9 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   try { await ensureRootClaudeMd({ log: console }); }
   catch (e) { console.warn('root CLAUDE.md regenerate failed:', e); }
   // Ensure the hidden `.conduct` project dir exists (the cwd of every conductor
-  // session). The conductor's role doc is composed fresh and written to
-  // <store>/conductor-prompt.md at spawn (not here, and not into this dir),
-  // so there is no file to (re)generate at boot.
+  // session) and that its CLAUDE.md imports the role doc. The doc ITSELF is
+  // composed fresh and written by the pre-spawn materializer, not here, so
+  // there is nothing to regenerate at boot.
   // Strictly non-fatal — the Conduct-dialog-open path re-ensures anyway.
   try { await ensureConductProject(); }
   catch (e) { console.warn('.conduct project ensure failed:', e); }

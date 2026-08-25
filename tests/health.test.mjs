@@ -3,15 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { checkClaudeReadiness, formatReadiness, MIN_CLAUDE_VERSION } from '../src/health.ts';
-
-// One below MIN_CLAUDE_VERSION, derived so a bump to the constant can't leave
-// these cases silently asserting the wrong side of the boundary.
-function belowMin() {
-  const parts = MIN_CLAUDE_VERSION.split('.').map(Number);
-  parts[parts.length - 1] -= 1;
-  return parts.join('.');
-}
+import { checkClaudeReadiness, formatReadiness } from '../src/health.ts';
 
 async function mkTmp(prefix = 'cc-health-') {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -48,13 +40,13 @@ async function seedClaudeDir(home, { credentials = false } = {}) {
 test('happy path: bin works + credentials.json present', async () => {
   const home = await mkTmp();
   await seedClaudeDir(home, { credentials: true });
-  const bin = await writeFake(home, `process.stdout.write('${MIN_CLAUDE_VERSION} (Claude Code)\\n');`);
+  const bin = await writeFake(home, `process.stdout.write('2.1.223 (Claude Code)\\n');`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
     const r = await checkClaudeReadiness({ home, timeoutMs: 2000 });
     assert.equal(r.ok, true);
     assert.deepEqual(r.issues, []);
     assert.equal(r.claudeBin.found, true);
-    assert.equal(r.claudeBin.version, MIN_CLAUDE_VERSION);
+    assert.equal(r.claudeBin.version, '2.1.223');
     assert.equal(r.claudeDir.exists, true);
     assert.equal(r.authenticated.ok, true);
     assert.equal(r.authenticated.source, 'credentials');
@@ -137,45 +129,22 @@ test('~/.claude missing flags both claude_dir_missing and not_authenticated', as
   });
 });
 
-// --- MIN_CLAUDE_VERSION gate (conductor spawns need --append-system-prompt-file) ---
+// --- version probe: reported, never gated ---
 
-test('a CLI below MIN_CLAUDE_VERSION flags claude_version_too_old', async () => {
-  const home = await mkTmp();
-  await seedClaudeDir(home, { credentials: true });
-  const old = belowMin();
-  const bin = await writeFake(home, `process.stdout.write('${old} (Claude Code)\\n');`);
-  await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ home, timeoutMs: 2000 });
-    assert.ok(r.issues.some(i => i.code === 'claude_version_too_old'),
-      `expected claude_version_too_old for v${old}`);
-    // Non-fatal by design: it is a warning, so the readiness result is not ok
-    // but the server still boots (server.ts prints and continues).
-    assert.equal(r.ok, false);
-  });
-});
-
-test('a CLI at exactly MIN_CLAUDE_VERSION does not flag claude_version_too_old', async () => {
-  const home = await mkTmp();
-  await seedClaudeDir(home, { credentials: true });
-  const bin = await writeFake(home, `process.stdout.write('${MIN_CLAUDE_VERSION} (Claude Code)\\n');`);
-  await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
-    const r = await checkClaudeReadiness({ home, timeoutMs: 2000 });
-    assert.ok(!r.issues.some(i => i.code === 'claude_version_too_old'),
-      'boundary is inclusive — equal version is supported');
-  });
-});
-
-test('an unparseable version string is SKIPPED, not warned on', async () => {
+test('a non-N.N.N version string is still found:true with no issues', async () => {
   const home = await mkTmp();
   await seedClaudeDir(home, { credentials: true });
   // CLAUDE_BIN can point at a wrapper whose --version output is not N.N.N.
+  // There is no version floor to judge it against — the probe only reports the
+  // string for the `claude OK — v…` line. Kills any gate that would treat an
+  // unjudgeable version as a problem, and pins that the string reaches
+  // claudeBin.version verbatim.
   const bin = await writeFake(home, `process.stdout.write('ollama-wrapper-v3 (custom)\\n');`);
   await withEnv({ CLAUDE_BIN: bin, ANTHROPIC_API_KEY: undefined }, async () => {
     const r = await checkClaudeReadiness({ home, timeoutMs: 2000 });
     assert.equal(r.claudeBin.found, true);
-    assert.ok(!r.issues.some(i => i.code === 'claude_version_too_old'),
-      'unparseable version must not produce a spurious too-old warning');
-    assert.deepEqual(r.issues, [], 'no other issue either — the bin ran fine');
+    assert.equal(r.claudeBin.version, 'ollama-wrapper-v3');
+    assert.deepEqual(r.issues, [], 'the bin ran fine — no issue of any kind');
   });
 });
 

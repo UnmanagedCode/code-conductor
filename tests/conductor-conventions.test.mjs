@@ -199,10 +199,12 @@ test('PUT selection changes what composeCurrentConduct() produces; no file is wr
   assert.ok(content.startsWith('# Conductor role'));
   assert.match(content, /generated from `conventions\/conductor\/core\.md`/);
 
-  // The selection change never touches the PROJECT tree — the doc is written
-  // to <store>/conductor-prompt.md at spawn and passed via
-  // --append-system-prompt-file, so `.conduct/` stays bare.
-  await assert.rejects(fs.stat(path.join(projectsRoot, '.conduct', 'CONDUCT.md')));
+  // A selection change only mutates the convention store — delivery happens at
+  // spawn (src/routes.ts has nothing to regenerate here), so the doc itself is
+  // still absent. Kills a mutant that writes it from the PUT handler, which
+  // would put a second writer on the file the pre-spawn materializer owns.
+  await assert.rejects(fs.stat(path.join(projectsRoot, '.conduct', 'CONVENTIONS.md')),
+    'PUT selection must not write the role doc');
 });
 
 // ── REST API ───────────────────────────────────────────────────────────────

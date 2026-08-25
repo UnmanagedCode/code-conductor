@@ -93,6 +93,9 @@ test('a store with no custom models (or no store at all) is a silent no-op', asy
   });
 });
 
-test('0030 is registered, last in the chain', () => {
-  assert.equal(ALL.at(-1), m0030);
+test('0030 is registered, after 0029', () => {
+  const i = ALL.indexOf(m0030);
+  assert.ok(i > 0, '0030 is in the chain');
+  assert.equal(ALL[i - 1].name, '0029-enable-playbooks-conductor-convention',
+    '0030 runs directly after 0029');
 });
