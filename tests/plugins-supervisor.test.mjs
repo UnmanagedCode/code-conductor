@@ -17,6 +17,29 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // second bound with room to spare even on a starved box.
 const PROBE_WINDOW = 1200;
 
+// Fail, don't hang. A promise that becomes unresolvable must surface as a named
+// assertion failure, never as a file that finishes its tests and then sits on
+// the event loop — that shape reports as `NO REPORT` / a lost file, which reads
+// like a killed process rather than a failed test, and misreading it is what
+// made card 2026-0219 expensive to diagnose in the first place.
+//
+// NOT a tight timeout — a budget near the operation's real duration would just
+// be a new load-sensitive test, i.e. this card's own defect. The only caller
+// wraps `waitForPort(…, {timeoutMs: 5000})`, whose deadline is WALL-CLOCK
+// (`Date.now() >= deadline`), not a tick count, so it does not stretch under
+// contention: in every non-broken world that promise settles — resolve or
+// reject — within 5000ms plus one 20ms interval. 3x that, and still well under
+// node:test's 60s per-test timeout, so the verdict stays ours to name.
+// `finally` clears the timer on BOTH paths; leaving it armed on the success
+// path would itself hold the loop open and trip the leak guard.
+const SETTLE_DEADLINE = 15000;
+
+function withDeadline(promise, ms, onTimeout) {
+  let timer;
+  const expiry = new Promise((res) => { timer = setTimeout(() => res(onTimeout), ms); });
+  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
+}
+
 async function startAndSettle(sup, opts) {
   const rec = await sup.start(opts);
   const rt = await waitFor(() => {
@@ -387,7 +410,7 @@ test('waitForPort resolves on a port bound after earlier probes were refused', a
   try {
     await listener.listen();
     // Re-probed rather than latching its earlier refusals.
-    assert.equal(await settled, 'resolved');
+    assert.equal(await withDeadline(settled, SETTLE_DEADLINE, 'never settled'), 'resolved');
   } finally {
     await listener.close();
   }
