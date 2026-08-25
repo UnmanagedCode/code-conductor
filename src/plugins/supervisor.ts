@@ -1,6 +1,6 @@
 import { spawn, execFile } from 'node:child_process';
 import http from 'node:http';
-import { allocatePort, waitForPort } from './ports.ts';
+import { allocatePort, tcpOpen } from './ports.ts';
 import { killProcessGroup, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import type { PluginBackend } from './manifest.ts';
 
@@ -49,17 +49,23 @@ export interface StartedChild {
 }
 
 // Factory (not module state) so each plugin host — and each test — gets an
-// isolated child table. Options beyond onExit exist only for test speed.
+// isolated child table. Options beyond onExit exist only for test speed and
+// determinism: `_spawn` lets a test stand in a child that settles on
+// `process.nextTick`, so the settle-window branch under test is decided by
+// ORDERING rather than by racing a real `bash -lc node` boot against a wall
+// clock (see docs/architecture.md → "Testing" on the 400 ms window).
 export function createSupervisor({
   onExit,
   _allocatePort = allocatePort,
   _readyTimeoutMs = READY_TIMEOUT_MS,
   _settleMs = SPAWN_SETTLE_MS,
+  _spawn = spawn,
 }: {
   onExit?: (id: string, runtime: ChildRuntime) => void;
   _allocatePort?: () => Promise<number>;
   _readyTimeoutMs?: number;
   _settleMs?: number;
+  _spawn?: typeof spawn;
 } = {}) {
   // id → { proc, pgid, status, error, output }. Children adopted after a
   // conductor restart have no entry here (their stdout can't be recaptured);
@@ -84,7 +90,7 @@ export function createSupervisor({
   }
 
   function spawnChild({ id, manifest, cwd, env }: SupervisorStartInput, port: number): ChildRecord {
-    const proc = spawn('bash', ['-lc', manifest.backend.start], {
+    const proc = _spawn('bash', ['-lc', manifest.backend.start], {
       cwd,
       env: { ...process.env, ...env, PORT: String(port), CONDUCTOR_PLUGIN_ID: id },
       detached: true,
@@ -158,22 +164,28 @@ export function createSupervisor({
     }
   }
 
+  // ONE poll for all three readiness modes — the branch picks the predicate,
+  // not the loop. Single-sourcing the loop is what single-sources the abort
+  // below: there is no per-branch cancellation to forget.
   function detectReady(manifest: { backend: PluginBackend }, port: number, c: ChildRecord): Promise<void> {
     const { readyWhen, healthPath } = manifest.backend;
-    if (readyWhen) {
-      const re = new RegExp(readyWhen);
-      return poll(() => re.test(c.output));
-    }
-    if (healthPath) {
-      return poll(() => httpOk(port, healthPath));
-    }
-    return waitForPort(port, { timeoutMs: _readyTimeoutMs });
+    const re = readyWhen ? new RegExp(readyWhen) : null;
+    const pred = re ? () => re.test(c.output)
+      : healthPath ? () => httpOk(port, healthPath)
+      : () => tcpOpen(port);
+    // A child that dies before readiness ends the probing — the deadline is NOT
+    // the only exit. Without this, a crash after the settle window leaves up to
+    // `_readyTimeoutMs` of HTTP GETs / connects aimed at a port this child
+    // never owned and `allocatePort()` may already have reissued. The predicate
+    // is `settle()`'s own guard, so liveness has exactly one authority.
+    return poll(pred, { abort: () => c.status !== 'starting' });
   }
 
-  function poll(pred: () => boolean | Promise<boolean>, { timeoutMs = _readyTimeoutMs, intervalMs = 200 }: { timeoutMs?: number; intervalMs?: number } = {}): Promise<void> {
+  function poll(pred: () => boolean | Promise<boolean>, { timeoutMs = _readyTimeoutMs, intervalMs = 200, abort }: { timeoutMs?: number; intervalMs?: number; abort?: () => boolean } = {}): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve, reject) => {
       const tick = async () => {
+        if (abort?.()) return reject(new Error('child exited before readiness'));
         let ok = false;
         try { ok = await pred(); } catch { ok = false; }
         if (ok) return resolve();
