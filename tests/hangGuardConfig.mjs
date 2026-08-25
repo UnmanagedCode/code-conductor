@@ -144,6 +144,34 @@ export const LEAK_GRACE_MS = ms('CC_TEST_LEAK_GRACE_MS', 15_000);
 // to settle, rather than compounding per file.
 export const ORPHAN_SWEEP_MS = ms('CC_TEST_ORPHAN_SWEEP_MS', 5_000);
 
+// Parent-side, at TEARDOWN: how long the run-end residual check gives a
+// just-signalled process to actually leave the process table before calling it a
+// survivor. NOT a tolerance on anything a test asserts, and not a deadline any
+// guard rides to — it exists because "is it alive?" cannot be decided
+// instantaneously about a process we signalled microseconds ago.
+//
+// THIS CONSTANT IS NOT THE FIX FOR THE FALSE RESIDUAL — do not read it as one.
+// That was a STALE SNAPSHOT, not slow signal delivery, and the fix is the LIVE
+// hasMarker re-verify in settleResidual (tests/run.mjs). Demonstrated
+// deterministically: take a /proc walk, SIGKILL the holder, wait 50ms, and the
+// walk's CACHED environ still names it while a live re-read does not.
+// processesWithMarker's readdirSync('/proc') samples the pid list microseconds
+// after the sweep's kills, so a pid early in a ~2700-pid iteration is read inside
+// its own death window. Observed once at load 25 with SWEPT and RESIDUAL naming
+// the same pid on an otherwise healthy run.
+//
+// SIGKILL delivery itself is fast even under contention, which is why a bound
+// this small suffices. MEASURED on a 16-core box at load ~25, 30 SIGKILLs of a
+// marked detached orphan: p50 **1.4ms**, p90 **3.6ms**, max **5.3ms** from
+// process.kill() to /proc/<pid>/environ no longer answering. 250ms is ~47x that
+// maximum, and is only ever paid when the first snapshot found something — a
+// healthy run returns without sleeping at all.
+//
+// It cannot mask a real leak in either direction: a process that outlives its own
+// SIGKILL by the whole bound is still returned and still fails the run, and one
+// that exits inside the window did not survive the run.
+export const RESIDUAL_SETTLE_MS = ms('CC_TEST_RESIDUAL_SETTLE_MS', 250);
+
 // Parent-side, absolute: the whole run may not exceed this. LAST-RESORT
 // BACKSTOP ONLY — it exists to make an unbounded hang finite, not to bound a
 // slow box. The layers that actually produce a timely verdict are the per-file
