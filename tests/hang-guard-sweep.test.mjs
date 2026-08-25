@@ -117,8 +117,25 @@ test('processesWithMarker matches this run\'s descendants and nothing else', () 
 
 test('processesWithMarker refuses to match when it cannot see', () => {
   // No marker and no /proc are both "I cannot tell" — and must never be read as
-  // "everything matches", which would SIGKILL the box.
-  assert.deepEqual(processesWithMarker('', snapOf([{ pid: 4001, env: envWith(MARK) }])), []);
+  // "everything matches", which would SIGKILL the box. THIS predicate is the one
+  // holding kill authority: it feeds sweepOrphans -> killPids on all four sweep
+  // triggers, so its falsy-marker guard matters more than its single-pid twin's.
+  //
+  // The box below is POPULATED with the two rows a falsy marker can actually
+  // match, because the obvious assertion is vacuous: asking `''` about a snapshot
+  // of normally-marked rows passes with `!marker` deleted, since strict equality
+  // rejects them anyway. A row only pins the guard if markerIn's answer for it can
+  // EQUAL the falsy marker.
+  const falsyBox = snapOf([
+    { pid: 4001, env: envWith(MARK) },                  // normal — rejected either way
+    { pid: 4004, env: 'PATH=/usr/bin\0HOME=/root\0' },  // no entry: markerIn -> null
+    { pid: 4013, env: 'PATH=/usr/bin\0CC_TEST_RUN_ID=\0' }, // empty VALUE: markerIn -> ''
+  ]);
+  assert.deepEqual(processesWithMarker('', falsyBox), [],
+    'an empty marker matched the empty-valued entry — that is a licence to SIGKILL it');
+  assert.deepEqual(processesWithMarker(null, falsyBox), [],
+    'a null marker matched every unmarked process on the box');
+  assert.deepEqual(processesWithMarker(undefined, falsyBox), []);
   // The unavailable snapshot is deliberately POPULATED with a row that WOULD
   // match. An empty byPid makes this pass with the `!snap.available` guard
   // deleted, since the loop returns [] either way — and a partially populated

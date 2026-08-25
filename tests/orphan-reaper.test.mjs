@@ -47,6 +47,10 @@ test('hasMarker licences exactly this run\'s processes, and nothing else', () =>
     4011: `CC_TEST_RUN_ID=cc-testrun-Other99\0CC_TEST_RUN_ID=${MARK}\0`,
     4012: `CC_TEST_RUN_ID=${MARK}\0CC_TEST_RUN_ID=cc-testrun-Other99\0`,
     4008: `CC_TEST_RUN_ID=${MARK}`,            // marker present but UNTERMINATED
+    // An anchored entry whose VALUE is empty. Real enough (`CC_TEST_RUN_ID= node
+    // …` produces it) and it is the only input on which markerIn can return '',
+    // which is what makes the falsy-marker rows below discriminate at all.
+    4013: 'PATH=/usr/bin\0CC_TEST_RUN_ID=\0',
     900001: 'PATH=/usr/bin\0',                 // the fakeSpawn pid: no environ of ours
     1: envWith(MARK),                          // init, marked
     [process.pid]: envWith(MARK),              // ourselves, marked
@@ -73,8 +77,24 @@ test('hasMarker licences exactly this run\'s processes, and nothing else', () =>
     [process.pid, MARK, false, 'ourselves, even carrying our marker'],
     [0, MARK, false, 'pid 0 is the process-group sentinel'],
     [-4001, MARK, false, 'a negative pid signals a GROUP — never licensable here'],
-    [4001, '', false, 'no marker means "I cannot tell", not "everything matches"'],
-    [4001, undefined, false, 'an unset CC_TEST_RUN_ID must not licence the box'],
+    // A FALSY MARKER IS "I CANNOT TELL", NEVER "EVERYTHING MATCHES". These
+    // REPLACE two earlier rows that carried these same names and pinned nothing:
+    // both asked about pid 4001, whose marker is MARK, so strict equality
+    // co-guarded them and `if (!marker) return false;` could be deleted with the
+    // whole suite green. A row only pins this guard if markerIn's answer for its
+    // pid can EQUAL the falsy marker being passed.
+    //
+    // '' needs the empty-valued entry above. `null` needs a pid with NO entry —
+    // markerIn returns null there, so `null === null` licences every unmarked
+    // process on the box, which is the worse of the two directions.
+    [4013, '', false, 'an empty marker must not match an empty-VALUED entry'],
+    [4004, null, false, 'a null marker must not licence every unmarked process on the box'],
+    // Not a discriminator, and labelled so rather than left to imply otherwise:
+    // markerIn returns `null`, never `undefined`, so with the guard deleted this
+    // still answers false. It is a TRIPWIRE on that — if markerIn is ever changed
+    // to return undefined, this row starts carrying the same weight as the one
+    // above. `undefined` is the realistic value, being an unset env var.
+    [4004, undefined, false, 'an unset CC_TEST_RUN_ID must not licence the box'],
     [4.5, MARK, false, 'a non-integer pid is not a pid'],
   ];
   for (const [pid, marker, expected, why] of rows) {
@@ -158,6 +178,10 @@ test('staleRunTargets licences only processes of a PROVABLY finished run', () =>
     // the same variable name. Without RUN_ROOT_SHAPE this is a licence to kill
     // anything that sets CC_TEST_RUN_ID at all.
     { pid: 5006, env: envWith('repro-1234-orphan-probe') },
+    // An anchored entry with an EMPTY value: captures '', which is not run-root
+    // shaped. Refused by the same conjunct, and worth its line because '' is the
+    // one value that slips past a truthiness check.
+    { pid: 5010, env: 'PATH=/usr/bin\0CC_TEST_RUN_ID=\0' },
     // PREFIX SHARER: its marker STARTS WITH the dead run's. The capture is
     // anchored at both ends, so the captured value is the whole entry and cannot
     // be confused with the shorter one.
