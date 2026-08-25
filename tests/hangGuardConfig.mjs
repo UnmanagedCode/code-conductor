@@ -31,6 +31,10 @@ function ms(envName, fallback) {
 // which is why the split remedy below does not transfer to it.
 // RE-ANCHOR THIS WHEN THE TOP FILE CHANGES.
 //
+// HOW TO REPRODUCE THE STARVED CONDITION: docs/architecture.md -> "Reproducing CPU
+// starvation". It is recorded once, there — every starved figure in this repo cites
+// the same recipe and a second copy would drift.
+//
 // hang-guard is no longer at the top, and is no longer one file. Card 2026-0198
 // split tests/hang-guard.test.mjs into five tests/hang-guard-*.test.mjs files
 // (file-kill / run-cap / layer-b / sweep / stall) over the shared harness in
