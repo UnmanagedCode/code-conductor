@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { encodeCwd } from '../src/projects.ts';
 import { pageInstanceEvents } from '../src/eventArchive.ts';
+import { snapStartToQuiescent } from '../src/parser.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -501,4 +502,73 @@ test('snapshotTail backstop backs off to the quiescent cut, not the raw window s
     if (prevTail === undefined) delete process.env.ORCH_SNAPSHOT_TAIL;
     else process.env.ORCH_SNAPSHOT_TAIL = prevTail;
   }
+});
+
+
+// ── Card 2026-0230: the shared repair must be INERT for this consumer ──────
+//
+// QuiescenceScan gained a second discharge path for the live abort (the
+// appearance of a different `${msgId}:${blockIdx}` key retires a stale block).
+// It MARKS rather than deletes, precisely so `empty` — the question paging asks
+// — keeps its original meaning: a block that never closes is unfinished
+// permanently, so a cut after it would end the preceding page ON a dangling
+// block, which is the whole thing the snap exists to prevent.
+//
+// These are the guard that keeps that honest. The indices are the values the
+// PRE-change parser produced, captured by running the same arrays against it.
+// The third case is the one that matters most: a delete-instead-of-mark
+// implementation passes the first two and fails this one (it yields
+// [0,1,2,6] — an extra cut once the stale block's successor closes normally).
+const quiescentCuts = (arr) =>
+  [...arr.keys()].filter(i => snapStartToQuiescent(arr, i, arr.length) === i);
+const U = (kind, o = {}) => ({ kind, parentToolUseId: null, ...o });
+
+test('2026-0230: quiescent cut indices are unchanged on a WELL-FORMED event array', () => {
+  const arr = [
+    U('user_echo', { text: 'go' }),
+    U('message_start', { msgId: 'm1' }),
+    U('text_delta', { msgId: 'm1', blockIdx: 0, text: 'a' }),
+    U('text_end', { msgId: 'm1', blockIdx: 0 }),
+    U('thinking_start', { msgId: 'm1', blockIdx: 1 }),
+    U('thinking_delta', { msgId: 'm1', blockIdx: 1, text: 't' }),
+    U('thinking_end', { msgId: 'm1', blockIdx: 1 }),
+    U('tool_use_start', { msgId: 'm1', blockIdx: 2, toolUseId: 'tu1' }),
+    U('tool_use', { msgId: 'm1', blockIdx: 2, toolUseId: 'tu1' }),
+    U('tool_result', { toolUseId: 'tu1' }),
+    U('message_start', { msgId: 'm2' }),
+    U('text_delta', { msgId: 'm2', blockIdx: 0, text: 'b' }),
+    U('text_end', { msgId: 'm2', blockIdx: 0 }),
+    U('turn_end', {}),
+  ];
+  assert.deepEqual(quiescentCuts(arr), [0, 1, 2, 4, 7, 10, 11, 13]);
+});
+
+test('2026-0230: quiescent cut indices are unchanged on a MALFORMED (never-closed) array', () => {
+  const arr = [
+    U('user_echo', { text: 'go' }),
+    U('message_start', { msgId: 'm1' }),
+    U('text_delta', { msgId: 'm1', blockIdx: 0, text: 'a' }),
+    U('text_delta', { msgId: 'm1', blockIdx: 0, text: 'b' }),
+    U('text_delta', { msgId: 'm1', blockIdx: 1, text: 'c' }),
+    U('text_delta', { msgId: 'm1', blockIdx: 1, text: 'd' }),
+    U('system', { subtype: 'x' }),
+    U('text_delta', { msgId: 'm2', blockIdx: 0, text: 'e' }),
+    U('turn_end', {}),
+  ];
+  assert.deepEqual(quiescentCuts(arr), [0, 1, 2]);
+});
+
+test('2026-0230: a stale block followed by one that CLOSES normally still yields no new cut', () => {
+  const arr = [
+    U('user_echo', { text: 'go' }),
+    U('message_start', { msgId: 'm1' }),
+    U('text_delta', { msgId: 'm1', blockIdx: 0, text: 'a' }), // never closes
+    U('thinking_start', { msgId: 'm1', blockIdx: 1 }),
+    U('thinking_delta', { msgId: 'm1', blockIdx: 1, text: 't' }),
+    U('thinking_end', { msgId: 'm1', blockIdx: 1 }),          // closes properly
+    U('text_delta', { msgId: 'm1', blockIdx: 2, text: 'z' }),
+    U('turn_end', {}),
+  ];
+  assert.deepEqual(quiescentCuts(arr), [0, 1, 2],
+    'index 6 must NOT be a cut: block 0 is still unfinished and always will be');
 });

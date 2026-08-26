@@ -196,6 +196,25 @@ const POST_ABORT_DRAIN_WINDOW_MS = 3000;
 // misbehaving subprocess that emits system/init in a tight loop.
 const POST_ABORT_DRAIN_MAX = 20;
 
+// Bounded terminal outcome for an ARMED soft interrupt, for the three callers
+// that have no human behind them (the overage direct stop, the overage
+// turn-start guard, the resume-restart drain). An arm normally discharges at
+// the next block boundary; when the turn never ends at all — a genuinely wedged
+// tool, or a gateway that withholds both a block close and any later block key
+// (QuiescenceScan's R1/R2 residuals) — nothing else would ever release it, and
+// these callers cannot wait forever. Manual ⏸ / interrupt_turn stay UNBOUNDED:
+// a human and a conductor both already have the ⏹ escalate affordance.
+//
+// Exceptional, not load-bearing: it fires only for a turn that never ends.
+// ORCH_SOFT_INTERRUPT_DEADLINE_MS is the test seam (same idiom as
+// ORCH_OVERAGE_RESUME_BUFFER_MS) so tests never sleep out a real clock; read at
+// call time, not at module load, so a test can set it after import.
+const SOFT_INTERRUPT_DEADLINE_MS = 120_000;
+export function softInterruptDeadlineMs(): number {
+  const env = Number(process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS);
+  return Number.isFinite(env) ? env : SOFT_INTERRUPT_DEADLINE_MS;
+}
+
 // The two terminal statuses. Exported because "is this worker dead?" is asked
 // on two MCP surfaces that MUST agree — list_projects' `live N`
 // (liveCountForProject) and whether a worker lands in list_sessions' live rows
@@ -529,6 +548,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   _quiescence: QuiescenceScan;
   _interruptArmed: boolean;
   _interruptFired: boolean;
+  _interruptArmSeq: number;
+  _interruptDeadline: ReturnType<typeof setTimeout> | null;
   // This turn was FORCE-aborted (partial output, work discarded). Read by
   // IdleSubscriptionHub at turn_end so an owner is told the turn was interrupted
   // rather than finished. Set in interrupt({force:true}) — the one chokepoint both
@@ -751,6 +772,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._quiescence = new QuiescenceScan();
     this._interruptArmed = false;
     this._interruptFired = false;
+    // Arm-time snapshot of _quiescence.boundarySeq. The fire predicate reads
+    // boundaries crossed SINCE the arm, which is the only way an abort can
+    // notice a block being retired by the next block's key (parser.ts, path 2)
+    // — that retire is the same event that opens the next block, so `empty`
+    // never reads true on such a stream.
+    this._interruptArmSeq = 0;
+    this._interruptDeadline = null;
     this._turnForceAborted = false;
     // Fork drops the dropped user prompt here so it can ride the new
     // instance's first `snapshot` frame as `droppedText` — the inline
@@ -1234,8 +1262,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // armed interrupt can leak into the next turn.
     if (next !== 'turn') {
       this.interrupting = false;
-      this._interruptArmed = false;
-      this._interruptFired = false;
+      this._clearInterruptArm();
     }
     // _turnForceAborted is deliberately NOT cleared here. A turn START looked like
     // the safe point, but it is not: _onTurnEnd defers an abort's wake while a
@@ -1617,8 +1644,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // unreturned tools died with its process, so a stale non-empty state must
     // not hold the next run's first armed interrupt.
     this._quiescence = new QuiescenceScan();
-    this._interruptArmed = false;
-    this._interruptFired = false;
+    this._clearInterruptArm();
     this._turnForceAborted = false;
     this._taskNotificationPending = false;
     this._idleWindowDirty = false;
@@ -2737,7 +2763,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // so partial output and finished tool work survive and the model is never
   // asked to acknowledge anything — no extra request/response round-trip is
   // paid. `interrupting:true` therefore means ARMED, not stopped.
-  async interrupt({ force = false }: { force?: boolean } = {}): Promise<void> {
+  async interrupt({ force = false, deadlineMs = 0 }: { force?: boolean; deadlineMs?: number } = {}): Promise<void> {
     if (this.status !== 'turn') return;
     if (force) {
       // Also disarms any pending deferred fire: the abort is happening now, so a
@@ -2783,8 +2809,46 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (this.interrupting) return;
     this.interrupting = true;
     this._interruptArmed = true;
+    // Snapshot BEFORE the fire attempt: "a boundary crossed since the arm" is
+    // measured from here (see _maybeFireArmedInterrupt).
+    this._interruptArmSeq = this._quiescence.boundarySeq;
+    if (deadlineMs > 0) this._armInterruptDeadline(deadlineMs);
     this.emit('status', this.summary());
     this._maybeFireArmedInterrupt(); // fires right here if already quiescent
+  }
+
+  // Clear every piece of arm state as one unit — the two flags, the arm-time
+  // boundary snapshot, and the deadline timer. Called from every place an arm
+  // ends: exit from `turn`, a (re)spawn, a resume wipe, and a failed fire.
+  _clearInterruptArm(): void {
+    this._interruptArmed = false;
+    this._interruptFired = false;
+    this._interruptArmSeq = 0;
+    if (this._interruptDeadline) { clearTimeout(this._interruptDeadline); this._interruptDeadline = null; }
+  }
+
+  // The bounded terminal outcome (see SOFT_INTERRUPT_DEADLINE_MS). On expiry the
+  // arm is still undischarged, so escalate to the FORCED tier — and annotate
+  // first, naming exactly what withheld the boundary (the held block keys and
+  // unreturned toolUseIds), so the next report is a one-line diagnosis instead
+  // of a silent run-to-completion.
+  _armInterruptDeadline(deadlineMs: number): void {
+    if (this._interruptDeadline) clearTimeout(this._interruptDeadline);
+    this._interruptDeadline = setTimeout(() => {
+      this._interruptDeadline = null;
+      // Fired already ⇒ the request DID leave; an ACKed-but-not-honoured stop is
+      // a different defect with a different flag (card 2026-0207), not this one.
+      if (!this._interruptArmed || this._interruptFired) return;
+      if (this.status !== 'turn' || !this.proc) return;
+      const blocks = [...this._quiescence.openBlocks.keys()];
+      const tools = [...this._quiescence.pendingTools];
+      this._emitUi({ kind: 'system', subtype: 'stderr', data: { line:
+        `interrupt deadline (${deadlineMs}ms) elapsed with the stop undelivered — forcing. `
+        + `blocks still open: [${blocks.join(', ')}]; tools still unreturned: [${tools.join(', ')}]` } });
+      this.interrupt({ force: true }).catch(() => {});
+    }, deadlineMs);
+    // Never hold the event loop open for a stop that is only a backstop.
+    this._interruptDeadline.unref?.();
   }
 
   // True while a tool sits at an unanswered ask-mode permission card. Such a
@@ -2793,6 +2857,25 @@ export class Instance extends EventEmitter implements InstanceLike {
   // clear. No timer and no max-defer knob: a genuinely wedged tool is what the
   // forced tier is for.
   _blockedOnPermission(): boolean { return this._hooks.pendingCount > 0; }
+
+  // The armed abort's boundary test. Two clauses, and they are NOT symmetric:
+  //
+  //   pendingTools empty  — STRICT. A dispatched tool must have returned its
+  //     result; nothing retires a span but its own tool_result or a turn
+  //     boundary (parser.ts). This is what keeps finished tool work from being
+  //     discarded, and it is why S1/S2/S3/D hold indefinitely rather than firing.
+  //   openBlocks empty OR a boundary crossed since the arm — the added path. On
+  //     a well-formed stream a block's close is its own event, so `empty` reads
+  //     true there and this reduces to exactly today's behaviour. On a stream
+  //     whose closes never arrive, the block is retired by the NEXT block's key
+  //     — the same event that opens that next block, so `empty` never reads
+  //     true and only the counter can see it. Cost: the abort lands one block
+  //     late instead of never.
+  _atInterruptBoundary(): boolean {
+    const q = this._quiescence;
+    if (q.pendingTools.size > 0) return false;
+    return q.openBlocks.size === 0 || q.boundarySeq > this._interruptArmSeq;
+  }
 
   // Called once an interrupt has been ACKED: the turn is severed, so a tool
   // still parked at a permission card will never run. Deny it — freeing the
@@ -2817,7 +2900,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _maybeFireArmedInterrupt(): void {
     if (!this._interruptArmed || this._interruptFired) return;
     if (this.status !== 'turn' || !this.proc) return;
-    if (!this._quiescence.empty && !this._blockedOnPermission()) return;
+    if (!this._atInterruptBoundary() && !this._blockedOnPermission()) return;
     this._interruptFired = true;
     this._controlRequest({ subtype: 'interrupt' }).then(
       () => this._releaseParkedPermissions(),
@@ -2829,8 +2912,7 @@ export class Instance extends EventEmitter implements InstanceLike {
         // the annotation is emitted — _emitUi's tail re-runs this method, and an
         // armed-and-unfired state there would spin failed retries.
         this.interrupting = false;
-        this._interruptArmed = false;
-        this._interruptFired = false;
+        this._clearInterruptArm();
         this._emitUi({ kind: 'system', subtype: 'stderr',
           data: { line: `interrupt failed: ${e.message}` } });
         this.emit('status', this.summary());
@@ -3324,8 +3406,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // The replay about to run feeds _emitUi, so the live quiescence scan must
     // start from the same blank state the ring does.
     this._quiescence = new QuiescenceScan();
-    this._interruptArmed = false;
-    this._interruptFired = false;
+    this._clearInterruptArm();
     this._turnForceAborted = false;
     // A rewind/respawn rewrites the CLI's prefix, so the pre-wipe context reading
     // must not leak into the replayed session (it would over-report a rewound
@@ -4541,7 +4622,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Harmless no-op when the session is already idle: interrupt() returns
     // immediately on `status !== 'turn'`, so nothing reaches stdin and no status
     // frame is emitted. Pinned by tests/overage-action.test.mjs.
-    inst.interrupt().catch(() => {});
+    // BOUNDED (see softInterruptDeadlineMs): no human is behind this stop, so an
+    // arm that never reaches a boundary escalates instead of latching for the turn.
+    inst.interrupt({ deadlineMs: softInterruptDeadlineMs() }).catch(() => {});
     // An idle session makes no turn→idle transition for the status handler to arm
     // on — and now that it is never prompted either, this is its ONLY arming. Armed
     // through the same controller entry point a queued-only session uses.
@@ -4591,7 +4674,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (inst._overageResumeFiring) return;
     inst._emitUi({ kind: 'system', subtype: 'soft_interrupted', data: { text: OVERAGE_TURN_BLOCKED_TEXT } });
     this._severOverageWakes(inst);
-    inst.interrupt().catch(() => {}); // SOFT tier — never force:true
+    // SOFT tier — never force:true up front, but BOUNDED: this caller is automatic.
+    inst.interrupt({ deadlineMs: softInterruptDeadlineMs() }).catch(() => {});
   }
 
   // Arm the global clear: release `_overageActive` when the rate-limit window

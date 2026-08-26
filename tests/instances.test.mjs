@@ -309,6 +309,40 @@ test('soft interrupt is a no-op when not in a turn', async () => {
   }
 });
 
+// The FORCED half of the same gate. `docs/protocol.md` commits BOTH tiers to
+// `if (status !== 'turn') return`, and callers rely on it: the resume-restart
+// drain's grace-loop escalation forces every straggler without checking status
+// first, precisely because the callee owns that. The soft half is pinned above;
+// this is the half nothing exercised. The mutation it exists to catch is moving
+// the gate BELOW the `if (force)` split — the only way to break the forced tier
+// without also failing the soft test above.
+test('forced interrupt is a no-op when not in a turn', async () => {
+  await setupWithProject();
+  const transcriptPath = path.join(home, 'forced-noop-stdin.log');
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcriptPath;
+  try {
+    const events = collectEvents(instances);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'demo', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    const inst = instances.get(id);
+    await waitFor(() => inst.status === 'idle' && inst.sessionId);
+    inst.prompt('first turn');
+    await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'turn_end'));
+    assert.equal(inst.status, 'idle');
+
+    await inst.interrupt({ force: true }); // idle — the shared guard returns
+    const stdin = (await fs.readFile(transcriptPath, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+    assert.equal(stdin.filter(l => l.type === 'control_request' && l.request?.subtype === 'interrupt').length, 0,
+      'nothing written to the subprocess when idle');
+    // The forced tier's own side effect: a turn that was never severed must not
+    // be reported as force-aborted to the next owner reading turn_end.
+    assert.equal(inst.turnForceAborted, false, 'no turn was aborted, so nothing is marked aborted');
+    assert.equal(inst.interrupting, false);
+  } finally {
+    delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+  }
+});
+
 test('crash + respawn preserves sessionId, ring buffer, and uses --resume', async () => {
   // REAL OS PROCESS required: this test SIGKILLs the subprocess via
   // process.kill(pid) to simulate an external crash, so it boots a dedicated

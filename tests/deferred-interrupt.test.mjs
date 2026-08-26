@@ -19,6 +19,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { Parser, QuiescenceScan } from '../src/parser.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-deferred-interrupt.json');
@@ -433,4 +434,35 @@ test('real capture: the armed interrupt fires at the last tool_result, before th
     `fired at fixture index ${firedAt} (capture line ${firedAt + 4}), expected the last tool_result at capture line 56`);
   await waitInterrupts(1);
   inst._closeDrainWindow(); // the fire opened one; don't leave it armed for teardown
+});
+
+// Card 2026-0230 — the added block-progression discharge path must not move the
+// fire on a WELL-FORMED stream. Replays the same real capture through the scan
+// directly, in PARSER-EVENT space (56 UiEvents, vs the 63 jsonl lines the test
+// above indexes), and reproduces both halves of the live predicate:
+// `pendingTools` empty AND (nothing open OR a boundary crossed since the arm).
+// Measured before the change and after: 48 both times. A fire that moves here is
+// the progression path leaking into streams that close their blocks properly.
+test('real capture: the repaired scan still fires at parser-event 48', async () => {
+  const parser = new Parser();
+  const evs = [];
+  for (const line of (await fs.readFile(TRACE, 'utf8')).split('\n').filter(Boolean)) {
+    for (const ev of parser.handleLine(line)) evs.push(ev);
+  }
+  assert.equal(evs.length, 56, 'parser-event count of the capture');
+
+  const ARM_AT = 28; // the first tool_use envelope, in parser-event space
+  const scan = new QuiescenceScan();
+  let armSeq = null, firedAt = null;
+  const fireable = () => scan.pendingTools.size === 0
+    && (scan.openBlocks.size === 0 || scan.boundarySeq > armSeq);
+  for (let i = 0; i < evs.length && firedAt === null; i++) {
+    if (i === ARM_AT) { armSeq = scan.boundarySeq; if (fireable()) { firedAt = i; break; } }
+    // Production clears the arm in _setStatus BEFORE turn_end reaches the scan,
+    // so a turn boundary can never be the thing that fires it.
+    if (evs[i].kind === 'turn_end') break;
+    scan.apply(evs[i]);
+    if (armSeq !== null && fireable()) firedAt = i;
+  }
+  assert.equal(firedAt, 48, 'unchanged by the repair');
 });

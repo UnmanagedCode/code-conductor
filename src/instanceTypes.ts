@@ -165,7 +165,7 @@ export interface InstanceLike {
   promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
-  interrupt(opts?: { force?: boolean }): Promise<unknown>;
+  interrupt(opts?: { force?: boolean; deadlineMs?: number }): Promise<unknown>;
   kill(opts?: { graceMs?: number }): Promise<unknown>;
   setAutoApprovePlan(enabled: boolean): void;
   setPlaybookEnforcement(mode: PlaybookEnforcement): void;

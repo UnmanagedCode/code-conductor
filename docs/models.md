@@ -111,6 +111,17 @@ The consequences of being a substitution backend:
   substitution↔substitution) is rejected `409 BACKEND_LOCKED`.
 - **`launch_failed`** is emitted when the subprocess dies on its own (binary
   missing, daemon gone, cloud-auth 401) — see [protocol.md](protocol.md#websocket-protocol).
+- **Off-spec stream framing is coded for, not assumed away.** A gateway may frame a
+  content block so its close never reaches the parser — `content_block_start` with no
+  `content_block.type`, or a `type` of `"output_text"`: the block opens on its first
+  `text_delta` and its `content_block_stop` emits nothing. That is what made the soft
+  interrupt appear to be a no-op against these backends (card 2026-0230), and why
+  `QuiescenceScan` retires a block on the next `${msgId}:${blockIdx}` key as well as on
+  its own close — see [protocol.md](protocol.md) → Two-tier interrupt. Third coded-for
+  off-spec trait alongside the all-zero `message_start.usage` block (above) and the
+  wrapper-crash `launch_failed`. There is still **no** per-backend adapter: every
+  backend runs the same `claude` CLI, so each such trait is handled once, in the shared
+  parser/instance path.
 - **No `cost_usd`** is persisted for its turns (`src/costTracking.ts`): the CLI's
   `total_cost_usd` is Anthropic list pricing applied to someone else's model. The
   *absence* of `cost_usd` is the canonical "tokens not countable" marker the cost

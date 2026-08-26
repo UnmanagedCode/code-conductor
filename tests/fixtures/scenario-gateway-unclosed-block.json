@@ -1,0 +1,31 @@
+{
+  "events": [
+    { "type": "system", "subtype": "init", "session_id": "$SID", "cwd": "$CWD", "model": "gemma4:cloud", "permissionMode": "$MODE", "tools": ["Bash"], "uuid": "gw-init-1" }
+  ],
+  "turns": [
+    {
+      "on": { "type": "prompt", "text": "gw-text" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_gw1", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "text": "" } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "thinking about it..." } } }
+      ]
+    },
+    {
+      "on": { "type": "prompt", "text": "gw-tool" },
+      "emit": [
+        { "type": "stream_event", "event": { "type": "message_start", "message": { "id": "msg_gw2", "role": "assistant" } } },
+        { "type": "stream_event", "event": { "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "tu_gw_bash", "name": "Bash", "input": {} } } },
+        { "type": "stream_event", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"command\":\"ls\"}" } } }
+      ]
+    },
+    {
+      "on": { "type": "control", "subtype": "interrupt" },
+      "emit": [
+        { "type": "user", "message": { "role": "user", "content": [ { "type": "text", "text": "[Request interrupted by user]" } ] }, "parent_tool_use_id": null },
+        { "type": "result", "subtype": "error_during_execution", "stop_reason": "interrupted", "duration_ms": 20, "total_cost_usd": 0.0001, "is_error": true }
+      ]
+    }
+  ],
+  "_comment": "SUBSTITUTION-GATEWAY framing, card 2026-0230. The 'gateway' turn's content_block_start omits content_block.type entirely (latch class B) — the block therefore opens on its first text_delta and its content_block_stop falls through every branch of the parser's content_block_stop handler, emitting nothing. So the block has NO close event, ever. Bind an instance created with a non-Claude backend row (backend:'ollama') to this scenario: the framing is what a substitution gateway produces, and the identity backend's own CLI never emits it. The turns stop mid-block on purpose — the test drives everything after the arm via inst._handleStdoutLine so nothing depends on subprocess timing."
+}
