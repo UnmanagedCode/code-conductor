@@ -359,6 +359,59 @@ test('a non-ENOENT stat failure on an already-resolved target rethrows, and ENOE
   assert.equal((await getProject('ext')).path, real);
 });
 
+test('a symlink CYCLE under .external/ reads as no-such-project, not an internal error', async () => {
+  // `fs.realpath` throws ELOOP — not ENOENT — on a link cycle, so ELOOP has to
+  // be named in resolveProjectDir's miss list explicitly. Without it every
+  // name-addressed entry point rejects with a raw ELOOP: a 500 where the whole
+  // surface claims a clean 404.
+  await makeInRootRepo('inroot');
+  await fs.mkdir(externalDir(), { recursive: true });
+  await fs.symlink(externalLinkPath('loop-b'), externalLinkPath('loop-a'));
+  await fs.symlink(externalLinkPath('loop-a'), externalLinkPath('loop-b'));
+  // Guard the fixture: if this ever stopped being a cycle the test would pass
+  // for the wrong reason.
+  await assert.rejects(() => fs.realpath(externalLinkPath('loop-a')), (e) => e.code === 'ELOOP',
+    'the fixture really is a cycle, and realpath really does report ELOOP');
+
+  // The 404 CLASS, and no raw errno leaking through it.
+  await assert.rejects(() => getProject('loop-a'), (e) => {
+    assert.equal(e.statusCode, 404, `expected a 404, got statusCode=${e.statusCode} code=${e.code}`);
+    assert.equal(e.code, undefined, 'a raw ELOOP must not surface as the error');
+    return true;
+  });
+  // deleteProject reaches the same resolver, and must not explode on the way
+  // through either. It NO-OPS rather than 404s — its `fs.rm` passes force:true,
+  // and the route validates with getProject before ever calling it — so the
+  // property here is that no raw errno escapes, not that it refuses.
+  await deleteProject('loop-a');
+
+  // And the cycle does not take the rest of the listing down with it.
+  assert.deepEqual((await listProjects()).map(p => p.name), ['inroot']);
+});
+
+test('a .external/ symlink pointing at a plain FILE is not a project on either surface', async () => {
+  // The isDirectory() guard on the RESOLVED target. realpath succeeds here — the
+  // file exists — so nothing upstream refuses it. Without the guard getProject
+  // answers the file as a project while listProjects (which checks separately)
+  // never lists it: the by-name and by-list surfaces disagree, and a
+  // directory-assuming consumer like createWorktree gets handed a file path.
+  await makeInRootRepo('inroot');
+  const plainFile = path.join(home, 'not-a-project.txt');
+  await fs.writeFile(plainFile, 'just a file\n');
+  await fs.mkdir(externalDir(), { recursive: true });
+  await fs.symlink(plainFile, externalLinkPath('afile'));
+  // Guard the fixture: the link must genuinely resolve, or this would be
+  // testing the dangling-link path instead.
+  assert.equal(await fs.realpath(externalLinkPath('afile')), await fs.realpath(plainFile));
+
+  await assert.rejects(() => getProject('afile'), (e) => {
+    assert.equal(e.statusCode, 404, `expected a 404, got statusCode=${e.statusCode}`);
+    return true;
+  });
+  // Both surfaces agree it is not a project — that agreement IS the invariant.
+  assert.deepEqual((await listProjects()).map(p => p.name), ['inroot']);
+});
+
 test('PROJECT_EXISTS names what actually holds the name, not a project that does not exist', async () => {
   // Both of these refuse safely, but "project already exists" would send the
   // caller off to pick a new name and leave the real blocker sitting there.
