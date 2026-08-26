@@ -45,6 +45,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+// A SYNC DIR IS SINGLE-RUN. NEVER REUSE ONE ACROSS ITERATIONS — the markers hold pids
+// of processes that are by then DEAD, so every successor reads a stale pid, gets an
+// instant ESRCH and starts its increment before this run's predecessor even exists.
+// Reproduced: sharing one dir collapses medium-fast to 656 and slow-medium to 251.
+// tests/summary-attribution.test.mjs mints one per runFixtures() call with mkdtemp;
+// any ad-hoc probe loop must do the same, per iteration.
 const DIR = process.env.CC_ATTR_SYNC_DIR;
 const WAIT_CAP_MS = 10_000;   // < the 30s inner run cap and the 30s outer bail: a broken
                               // chain fails LOUDLY and fast, it does not ride a deadline.
@@ -98,10 +104,19 @@ async function waitForPredecessorExit(name) {
   }
 }
 
-// Signal 0 probes for existence without delivering anything. EPERM means the process
-// is alive and owned by someone else, which cannot happen for a sibling fixture — but
-// treat it as ALIVE regardless, so a surprise can only ever make the chain wait longer
-// and trip the loud cap above, never release a link early.
+// Signal 0 probes for existence without delivering anything.
+//
+// WHY "POLL UNTIL ESRCH" IS SAFE AGAINST PID REUSE, even though that reads like the
+// classically unlucky pattern. The failure that would matter is releasing a link EARLY,
+// and it is UNREACHABLE: the kernel cannot hand a live process's pid to a new one, so
+// ESRCH is only ever observed after the predecessor is genuinely gone. Reuse can only
+// go the other way — some unrelated process inherits the pid after the predecessor
+// exits, `hasExited` keeps returning false, and the successor waits LONGER, ending at
+// the loud WAIT_CAP_MS cap. Every error mode is late-and-loud, never early-and-silent.
+// DO NOT "harden" this into anything that can return true before an ESRCH.
+//
+// EPERM means the process is alive and owned by someone else, which cannot happen for a
+// sibling fixture — but treat it as ALIVE regardless, same direction.
 function hasExited(pid) {
   try { process.kill(pid, 0); return false; } catch (err) { return err.code === 'ESRCH'; }
 }

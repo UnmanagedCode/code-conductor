@@ -37,9 +37,13 @@
 // agree with itself while the shipped one was broken.
 //
 // ── THE CHAIN — read before changing a fixture increment or an argv order ─────────
-// NO BOUND IN TEST 1 CONTAINS A MACHINE-SPEED TERM. That is the whole design, and it
+// NO BOUND IN TEST 1 CONTAINS A CHILD-LIFECYCLE TERM. That is the design, and it
 // replaces an earlier revision's "threshold algebra", which tolerated a per-file
-// spawn+import cost C by RATIO. A ratio MULTIPLIES C instead of cancelling it:
+// spawn+import cost C by RATIO. Read that sentence precisely: ONE machine-speed term
+// survives, it is PARENT-side, and it is quantified below under "THE ONE RESIDUAL".
+// This banner used to claim no machine-speed term at all, which was false — and a
+// test artifact that overstates its own load-independence is the exact disease this
+// card treats. A ratio MULTIPLIES C instead of cancelling it:
 // `fast * 3 < medium` reduces to an absolute cap of C < 600ms, and C was measured at
 // 772ms at 72-way starvation (vs ~320ms at the repo's standard 24-way width). That
 // assertion went red 42% of the time on a completely correct reporter — card
@@ -64,9 +68,14 @@
 //   * `done_a - done_b >=` the designed increment, because a does not begin its own
 //     increment until b's PROCESS HAS EXITED.
 //
-// Both terms non-negative, so every bound below is a LOWER bound that no load can
-// violate. This is not a widened tolerance — it is a tighter claim that stopped
-// being probabilistic.
+// BOTH OF THOSE TERMS ARE NON-NEGATIVE. But `done` is stamped in the inner runner's
+// `test:complete` HANDLER, not at the child's exit, so the identity carries a third,
+// PARENT-side term — the delivery lag of each event, `J_a - J_b`. It is mean-zero and
+// small (measured buffers over the floors: +12..+53ms quiet, +46..+539ms at 72-way),
+// but it is not structurally zero. So the honest claim is: every bound below is a
+// lower bound that no CHILD-SIDE cost can violate, and the multiplied-C term that made
+// this file flake is gone. It is not a widened tolerance — it is a far tighter claim
+// than the ratios were — but it is not literally unconditional either.
 //
 // TWO LOAD-BEARING CHOICES, both commented at their call site: `TEST_CONCURRENCY: 4`
 // (fewer slots than chained fixtures DEADLOCKS the chain — loudly, via chain.mjs's
@@ -81,12 +90,26 @@
 // numbers and the correlation that isolated the term. Waiting for the process to be
 // GONE removes it and turns `exitCost_successor` into a positive buffer.
 //
-// THE ONE RESIDUAL MACHINE-SPEED TERM, stated honestly. What is left is
-// `J_successor - J_predecessor`, the PARENT's event-delivery jitter for the two
-// file-level `test:complete` events. To break a bound the parent's loop would have to
-// stall long enough to deliver both events a whole designed increment closer together
-// than they occurred — a parent-side quantity, not the child-lifecycle cost that
-// reaches 770ms here, and buffered by `exitCost_successor`. IF IT EVER EXCURSES, THE
+// THE ONE RESIDUAL MACHINE-SPEED TERM, stated honestly, because the banner above is
+// deliberately narrow about it. What is left is `J_successor - J_predecessor`, the
+// PARENT's delivery lag for the two file-level `test:complete` events. ONE CONTIGUOUS
+// STALL OF THE PARENT'S EVENT LOOP SPANNING BOTH COMPLETIONS compresses their reported
+// difference toward zero — that is the branch that is still reachable by MARGIN rather
+// than by construction, and it is why this file cannot claim totality.
+//
+// The stall has to be roughly the size of the designed increment it is attacking:
+// ~600ms to break (2b), ~850ms for (2), ~1150ms for (1). Not theoretical — the runner
+// self-inflicts stalls of this shape via procSampler's synchronous whole-/proc
+// snapshot (~2900 pids on this box), and Termux has documented multi-hundred-ms
+// throttle events.
+//
+// CONSEQUENCE FOR ANYONE TUNING THE INCREMENTS: 550ms, the SMALLEST link, is what sets
+// the stall size that breaks this suite. DO NOT SHRINK IT WITHOUT RE-MEASURING — every
+// ms off it is a ms off the parent-stall the file can absorb.
+//
+// The exposure is vastly smaller than the multiplied-C term it replaced (which reached
+// 770ms of CHILD cost per file and fired 42% of the time), and it fails LOUD — a
+// compressed difference goes red, never silently green. IF IT EVER EXCURSES, THE
 // REMEDY IS NEVER TO LOOSEN A BOUND.
 //
 // WHAT THIS FILE DOES NOT CLAIM, stated as a boundary rather than as totality: a
@@ -170,7 +193,26 @@ async function runFixtures(names, extraEnv = {}) {
   // exact hazard tests/hangGuardCase.mjs's redactTotals exists for. Selecting the
   // diagnostic lines we want is cheaper than redacting the ones we don't.
   const guardLines = out.split('\n').filter(l => /^hang-guard:/.test(l));
-  const diag = guardLines.join('\n') || '(no hang-guard: lines in output)';
+
+  // ON A RED INNER RUN, ALSO QUOTE ITS ERROR LINES. `hang-guard:` lines alone say a
+  // file failed but never WHY, so a broken chain used to surface here as the generic
+  // "the fixture run should be green" while chain.mjs's specific diagnostic ("predecessor
+  // 'X' did not publish a pid and exit within 10000ms … TEST_CONCURRENCY was below the
+  // number of chained fixtures") sat in `buf` and was discarded. Loud is not enough —
+  // a failure has to be DIAGNOSABLE from this file's own output.
+  //
+  // The selection stays narrow on purpose: Error-bearing lines only, never the inner
+  // run's `ℹ tests/pass/fail` counts. Folding those into our output is the exact hazard
+  // tests/hangGuardCase.mjs's redactTotals exists for, and this suite is read by
+  // count-based parsers. The `ℹ`/`#` drop is belt-and-braces on top of that.
+  const errorLines = code === 0 ? [] : out.split('\n')
+    .filter(l => /\b[A-Za-z]*Error\b/.test(l) && !/^\s*[ℹ#]/.test(l))
+    .map(l => l.trim())
+    .slice(0, 6);
+  const diag = [
+    guardLines.join('\n') || '(no hang-guard: lines in output)',
+    ...(errorLines.length ? ['inner run errors:', ...errorLines] : []),
+  ].join('\n');
 
   const line = guardLines.find(l => l.startsWith('hang-guard: slowest files'));
   assert.ok(line, `no slowest-files line was printed:\n${diag}`);
