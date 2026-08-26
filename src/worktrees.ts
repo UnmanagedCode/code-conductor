@@ -1,5 +1,8 @@
-// Git worktree operations for isolated agent runs. Each worktree lives as
-// a sibling directory at `<projectsRoot>/<project>_worktree_<short-id>/`.
+// Git worktree operations for isolated agent runs. A worktree dir lives beside
+// the project's RECORD, inside cc's own tree: `<projectsRoot>/<project>_worktree_<short-id>/`
+// for an in-root project, `<projectsRoot>/.external/<project>_worktree_<short-id>/`
+// for an adopted one — whose `path` is the target's realpath, so a literal
+// sibling would put a cc-owned, cc-deleted directory in the user's own parent dir.
 // All orchestrator-owned metadata for the worktree (worktree.json,
 // attachments/, debug/) lives in the central store under
 // `<projectsRoot>/.code-conductor/projects/<project>/worktrees/<worktreeDir>/`
@@ -13,6 +16,7 @@ import { httpError } from './httpError.ts';
 import { runGroupedCommand } from './groupedCommand.ts';
 import {
   projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects,
+  EXTERNAL_DIRNAME,
   type ProjectInfo,
 } from './projects.ts';
 
@@ -374,7 +378,12 @@ export async function createWorktree(
     id = shortId();
   }
   const dirName = worktreeDirName(projectName, id);
-  const worktreePath = path.join(projectsRoot(), dirName);
+  // See this file's header comment for why an external project's worktrees land
+  // under `.external/` rather than beside the target repo.
+  const worktreePath = path.join(
+    proj.external ? path.join(projectsRoot(), EXTERNAL_DIRNAME) : projectsRoot(),
+    dirName,
+  );
   const branch = worktreeBranchName(id);
 
   // Collision pre-check. A random short id realistically never collides, but a

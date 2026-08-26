@@ -161,6 +161,7 @@ test('tools/list returns the full expected tool catalog', async () => {
   assert.ok(Array.isArray(body.result.tools));
   const names = body.result.tools.map(t => t.name).sort();
   const expected = [
+    'adopt_project',
     'answer_question',
     'approve_plan',
     'create_project', 'create_workspace', 'create_worktree',
@@ -201,6 +202,66 @@ test('unknown tool returns an isError tool-call result (not a transport error)',
   const { body } = await rpc(baseUrl, 'tools/call', { name: 'nope', arguments: {} });
   assert.ok(body.result, 'still a successful JSON-RPC response');
   assert.equal(body.result.isError, true);
+});
+
+test('adopt_project registers an out-of-root repo and returns its realpath as JSON', async () => {
+  // The repo lives under `home`, not under projectsRoot (`home/project`).
+  const repoPath = await makeRealRepo(home, 'outside-repo');
+  const res = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'ext', path: repoPath }));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.external, true);
+  assert.equal(res.path, await fs.realpath(repoPath));
+
+  // Discovery rides the existing text-rendered list_projects, which now marks it.
+  const out = text(await callTool(baseUrl, 'list_projects', {}));
+  assert.match(out, new RegExp(`^▸ ext {2}${res.path}$`, 'm'));
+  assert.match(out, /^ {2}external$/m, 'the external deviant reaches the rendering');
+});
+
+test('an ADOPTED repo with no commits carries both deviants and refuses a worktree by name', async () => {
+  // The cross-feature seam: `external` and `unbornHead` were built against each
+  // other's absence — the unborn-HEAD suite knows nothing about adopted
+  // projects, and the external-projects suite only ever adopts repos that have
+  // a commit. They meet here because an unborn repo is still a repo ROOT, so
+  // adopt_project accepts it, and because `unbornHead` is computed off the
+  // project's REALPATH, which for an adopted project is the target.
+  // makeUnbornRepo takes its root as a parameter, so pointing it at `home`
+  // puts the repo OUTSIDE projectsRoot (`<home>/project`) with no new fixture.
+  const repoPath = await makeUnbornRepo(home, 'unborn-outside');
+  const adopted = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'unborn', path: repoPath }));
+  assert.equal(adopted.ok, true, `an unborn repo is still a repo root: ${JSON.stringify(adopted)}`);
+
+  // Both deviant lines, on the SAME project block — projectBlock isolates one
+  // block, so neither line can be satisfied by some other project's row.
+  const block = projectBlock(text(await callTool(baseUrl, 'list_projects', {})), 'unborn');
+  assert.match(block, /^ {2}! no commits yet — a worktree needs a first commit$/m);
+  assert.match(block, /^ {2}external$/m);
+
+  // The REST row agrees, and says isGitRepo:true — the flag is not the
+  // not-a-repo one wearing a different label.
+  const row = (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === 'unborn');
+  assert.deepEqual(
+    { external: row.external, isGitRepo: row.isGitRepo, unbornHead: row.unbornHead },
+    { external: true, isGitRepo: true, unbornHead: true },
+  );
+
+  // And the refusal names the real cause rather than failing deeper in git.
+  const { body } = await rpc(baseUrl, 'tools/call', {
+    name: 'create_worktree', arguments: { project: 'unborn' },
+  });
+  assert.equal(body.result.isError, true);
+  assert.match(body.result.content[0].text, /no commits yet/);
+});
+
+test('an adopt_project refusal keeps its machine-readable code through the MCP envelope', async () => {
+  // JSON, not textResult: a `code` cannot survive the text-only rendered-read
+  // channel, and the conductor is told to act on this one.
+  const plain = path.join(home, 'not-a-repo');
+  await fs.mkdir(plain, { recursive: true });
+  const res = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'nope', path: plain }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'TARGET_NOT_A_REPO', JSON.stringify(res));
+  assert.ok(typeof res.reason === 'string' && res.reason.length > 0);
 });
 
 test('list_projects sees projects created via REST', async () => {

@@ -64,6 +64,12 @@ test('createWorktree creates a sibling directory with metadata and a fresh branc
   const wt = wts[0];
   assert.match(wt.worktreeName, /^demo_worktree_[a-f0-9]{6}$/);
   assert.equal(path.dirname(wt.worktreePath), projectsRoot);
+  // The other half of the external-project placement branch: an IN-ROOT
+  // project's worktrees must NOT move under `.external/`. Every external test
+  // in tests/external-projects.test.mjs passes if the branch is dropped and
+  // `.external/` is used unconditionally — this is what kills that.
+  assert.notEqual(path.dirname(wt.worktreePath), path.join(projectsRoot, '.external'));
+  await assert.rejects(() => fs.stat(path.join(projectsRoot, '.external', wt.worktreeName)));
   const wtBranch = (await git(wt.worktreePath, 'symbolic-ref', '--short', 'HEAD')).stdout.trim();
   assert.equal(wtBranch, wt.branch);
 

@@ -184,6 +184,33 @@ describe('renderProjects', () => {
     assert.ok(!out.includes('COLD_PARENT'), 'parentProject/parentPath are dropped here — the project header carries them');
   });
 
+  test('an adopted project is tagged external; an in-root one is byte-identical to today', () => {
+    const row = (extra) => ({
+      name: 'p', path: '/anywhere/p', workspace: null, liveCount: 0, isGitRepo: true,
+      worktrees: [], sessions: { count: 0, archivedCount: 0, lastActivity: 0 }, ...extra,
+    });
+    const baseline = [
+      'PROJECTS (1)',
+      '',
+      '▸ p  /anywhere/p',
+      '  sessions 0   last —',
+      '  live 0',
+      '  worktrees 0',
+    ].join('\n');
+    // A deviant declared with the wrong default would tag every project.
+    assert.equal(renderProjects([row({ external: false })]), baseline);
+    assert.equal(renderProjects([row({})]), baseline, 'an absent field is still no news');
+    assert.equal(renderProjects([row({ external: true })]), [
+      'PROJECTS (1)',
+      '',
+      '▸ p  /anywhere/p',
+      '  external',
+      '  sessions 0   last —',
+      '  live 0',
+      '  worktrees 0',
+    ].join('\n'));
+  });
+
   test('an empty root still names itself', () => {
     assert.equal(renderProjects([]), 'PROJECTS (none)');
   });

@@ -10,6 +10,7 @@ import {
   encodeCwd, findSessionLocation,
   readProjectMeta, writeProjectMeta, listWorkspaces,
   findSelfProject, ensureSelfProjectWorkspace,
+  adoptProject, listProjects, externalDir, EXTERNAL_DIRNAME,
 } from '../src/projects.ts';
 import { markArchived } from '../src/archivedSessions.ts';
 
@@ -691,6 +692,48 @@ test('findSelfProject matches the listProjects() entry whose path is the injecte
   const selfDir = path.join(projectsRoot, 'imself');
   const found = await findSelfProject(selfDir);
   assert.equal(found?.name, 'imself');
+});
+
+test('findSelfProject still finds the in-root self project while an external one exists', async () => {
+  // Both branches of listProjects() now feed the realpath comparison. External
+  // entries already carry a realpath and realpath is idempotent, so the match
+  // must be unaffected — this pins that conclusion.
+  const outside = path.join(home, 'outside-self');
+  await fs.mkdir(outside, { recursive: true });
+  await git(outside, 'init', '-q', '-b', 'main');
+  assert.equal((await adoptProject('ext', outside)).ok, true);
+  await api(baseUrl, 'POST', '/api/projects', { name: 'imself' });
+  const found = await findSelfProject(path.join(projectsRoot, 'imself'));
+  assert.equal(found?.name, 'imself');
+  assert.equal(found?.external, false);
+});
+
+test('createProject refuses a name already held by an external project', async () => {
+  const outside = path.join(home, 'outside-dupe');
+  await fs.mkdir(outside, { recursive: true });
+  await git(outside, 'init', '-q', '-b', 'main');
+  assert.equal((await adoptProject('dupe', outside)).ok, true);
+
+  // Both surfaces: a one-sided (in-root only) name check would mint a second
+  // identity for one name, sharing one store entry and one encoded session dir.
+  await assert.rejects(() => createProject('dupe'), /already exists/);
+  const r = await api(baseUrl, 'POST', '/api/projects', { name: 'dupe' });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  // And the adopted project is still the only record for that name.
+  assert.deepEqual((await listProjects()).map(p => p.name), ['dupe']);
+});
+
+test('listProjects lists only the symlinks in .external/, not external worktree dirs', async () => {
+  const outside = path.join(home, 'outside-wt');
+  await fs.mkdir(outside, { recursive: true });
+  await git(outside, 'init', '-q', '-b', 'main');
+  assert.equal((await adoptProject('foo', outside)).ok, true);
+  // A real directory beside the symlink, shaped like an external worktree dir.
+  await fs.mkdir(path.join(externalDir(), 'foo_worktree_ab12'), { recursive: true });
+
+  const names = (await listProjects()).map(p => p.name);
+  assert.deepEqual(names, ['foo'], 'a worktree dir under .external/ is not a project');
+  assert.equal(EXTERNAL_DIRNAME, '.external');
 });
 
 test('findSelfProject returns null when nothing matches (no guessing)', async () => {
