@@ -226,10 +226,25 @@ test('S5: msgId-less events retire nothing — system, tool_result and a bare as
 });
 
 // ── TOOL SPANS STAY STRICT (S1, S2, S3, S6, S7, S8) ───────────────────────
+//
+// WHICH TEST PINS WHAT — these are two different invariants and only one of them
+// is the pin for "progression never discharges a span":
+//   S8 IS THAT PIN. It is the only case here where the progression mark loop
+//     actually runs with a span open (a display block is open AND a new key
+//     arrives), so it is what fails if progression is ever extended to
+//     `pendingTools`. Do not weaken it.
+//   S1 pins something narrower: an unreturned span holds the arm across events
+//     that name no new block. Its own display block was already closed by
+//     `tool_use` before the arm, so the mark loop is a no-op here and this case
+//     would survive a progression-clears-spans mutation. Stated, and asserted
+//     below, so the distinction is not re-attributed by a later reader.
 
 test('S1: a dispatched tool with no result holds the arm indefinitely', async () => {
   const { inst } = await armedWithToolInFlight();
-  // Every later event that would retire a DISPLAY block changes nothing here.
+  // The tool's own display block closed at `tool_use`, so nothing is open here…
+  assert.equal(inst._quiescence.openBlocks.size, 0, 'no display block open — see the note above');
+  // …and a later block key therefore retires nothing. What holds the arm is the
+  // span alone. (This is NOT the tool-span-strictness pin — S8 is.)
   inject(inst, openTypeless(1));
   inject(inst, textDelta(1, 'while the tool runs'));
   assert.equal(inst._interruptFired, false, 'the span, not the block, is what holds');
@@ -266,6 +281,9 @@ test('S6: a NEW msgId while a tool is genuinely in flight ⇒ still held', async
   assert.equal(await interruptCount(), 0);
 });
 
+// THE tool-span-strictness pin (see the note above): the only case whose
+// progression mark loop runs with a span open. Its `pendingTools.size === 1`
+// assertion is what fails if progression is ever extended to tool spans.
 test('S8: a new BLOCK KEY while a tool is in flight retires the display block, not the span', async () => {
   const { inst } = await armedWithToolInFlight();
   // A gateway-framed text block streams alongside the still-open span…
@@ -293,6 +311,45 @@ test('S7: once the tool_result lands the hold is released — it was a lag, not 
   inject(inst, openTypeless(2));
   inject(inst, textDelta(2, 'the next block'));
   assert.equal(inst._interruptFired, true, 'fires at the next boundary');
+  await waitInterrupts(1);
+});
+
+// ── THE ARM-TIME SNAPSHOT ─────────────────────────────────────────────────
+//
+// INVARIANT: arming after at least one block has ALREADY been retired must still
+// require a boundary crossing AFTER the arm. Every other test in this file arms
+// while `boundarySeq` is still 0, where snapshotting the real value and
+// snapshotting a constant 0 are indistinguishable — so this is the only case
+// here that reads `_interruptArmSeq` as a value rather than as a zero. With the
+// snapshot stuck at 0 the already-elapsed crossings look like post-arm ones and
+// the abort fires immediately, mid-block, discarding the block being streamed.
+test('arm-time snapshot: crossings BEFORE the arm do not count toward it', async () => {
+  const inst = await setupInstance();
+  const evs = collect(inst);
+  inst.prompt('gw-text');
+  await waitFor(() => evs.some(e => e.kind === 'text_delta'));
+
+  // Retire a block BEFORE arming, so the counter is non-zero at arm time — the
+  // one condition no other test in this file creates.
+  inject(inst, openTypeless(1));
+  inject(inst, textDelta(1, 'block two'));
+  const atArm = inst._quiescence.boundarySeq;
+  assert.ok(atArm > 0, 'a block has already been retired in this turn');
+  assert.equal(inst._quiescence.pendingTools.size, 0, 'no tool is holding anything');
+
+  await inst.interrupt();
+  // BEHAVIOUR first: with the snapshot stuck at 0 the pre-arm crossing looks
+  // post-arm and this fires synchronously inside interrupt(), cutting the block
+  // that is streaming right now.
+  assert.equal(inst._interruptFired, false,
+    'a crossing that happened BEFORE the arm must not discharge it');
+  assert.equal(await interruptCount(), 0, 'nothing reached the CLI mid-block');
+  assert.equal(inst._interruptArmSeq, atArm, 'and the arm snapshotted the CURRENT count, not 0');
+
+  // Only a crossing AFTER the arm does.
+  inject(inst, openTypeless(2));
+  inject(inst, textDelta(2, 'block three'));
+  assert.equal(inst._interruptFired, true, 'fired on the post-arm crossing');
   await waitInterrupts(1);
 });
 

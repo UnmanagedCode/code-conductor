@@ -155,3 +155,71 @@ test('drain backstop: a stop that discharges normally is never escalated', async
     && /interrupt deadline/.test(e.data?.line ?? '')).length, 0, 'no deadline annotation');
   assert.equal(interruptsIn(await stdinLines()).length, 1, 'the soft stop only');
 });
+
+
+// ── The drain's OWN escalation (step 3's grace loop) ───────────────────────
+//
+// The soft deadline above is one of two escalation paths; this is the other, and
+// it is the one that runs when the drain's grace window is the shorter fuse.
+// INVARIANT: a straggler that outlives the grace window is force-aborted exactly
+// once, and a straggler that discharges normally is never escalated. Unfixed
+// (the loop only warned and re-armed the grace), the drain never returns and
+// this fails on the ceiling.
+
+test('drain grace loop: a straggler outliving the grace window is force-aborted exactly once', async () => {
+  // Long soft deadline ⇒ the grace loop, not the deadline, is what escalates.
+  process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS = '10000';
+  const { inst, evs } = await latchedMidTurn();
+
+  await withCeiling(
+    drainToManifest({ server: null, wss: null, instances, log: QUIET, graceMs: 100 }),
+    8000, 'drainToManifest',
+  );
+
+  assert.equal(inst.status, 'idle', 'the straggler was stopped');
+  assert.equal(inst.turnForceAborted, true, 'by the grace loop\'s forced escalation');
+  assert.equal(evs.filter(e => e.kind === 'system' && e.subtype === 'stderr'
+    && /interrupt deadline/.test(e.data?.line ?? '')).length, 0,
+    'the soft deadline never fired — this path is the grace loop\'s alone');
+  assert.equal(interruptsIn(await stdinLines()).length, 1,
+    'EXACTLY one interrupt: the soft arm never discharged, and the loop forces once');
+});
+
+test('drain grace loop: a straggler that discharges within the grace window is never escalated', async () => {
+  process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS = '10000';
+  const { inst, evs } = await latchedMidTurn();
+
+  // Start the drain WITHOUT awaiting, so the soft arm it places can be given a
+  // block boundary before the (long) grace window expires.
+  const drain = drainToManifest({ server: null, wss: null, instances, log: QUIET, graceMs: 3000 });
+  await waitFor(() => inst.interrupting === true);
+  inst._handleStdoutLine(JSON.stringify(
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { text: '' } } }));
+  inst._handleStdoutLine(JSON.stringify(
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'x' } } }));
+  assert.equal(inst._interruptFired, true, 'the soft tier discharged on the next block key');
+
+  await withCeiling(drain, 8000, 'drainToManifest');
+  assert.equal(inst.turnForceAborted, false, 'never escalated — it stopped on its own boundary');
+  assert.equal(evs.filter(e => e.kind === 'system' && e.subtype === 'stderr'
+    && /interrupt deadline/.test(e.data?.line ?? '')).length, 0, 'no deadline annotation either');
+  assert.equal(interruptsIn(await stdinLines()).length, 1, 'the soft stop only');
+});
+
+// The two escalation paths must not BOTH fire. With the fuses set equal, the
+// deadline's force sets `_turnForceAborted`, which is what the grace loop skips
+// on — so the CLI still sees exactly one interrupt rather than a second abort
+// aimed at a turn that is already severed.
+test('drain: the deadline and the grace loop never double-force one straggler', async () => {
+  process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS = '100';
+  const { inst } = await latchedMidTurn();
+
+  await withCeiling(
+    drainToManifest({ server: null, wss: null, instances, log: QUIET, graceMs: 100 }),
+    8000, 'drainToManifest',
+  );
+
+  assert.equal(inst.status, 'idle');
+  assert.equal(inst.turnForceAborted, true);
+  assert.equal(interruptsIn(await stdinLines()).length, 1, 'one interrupt, not two');
+});
