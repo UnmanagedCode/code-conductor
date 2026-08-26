@@ -57,9 +57,11 @@
 // so the chain still sums to 2100ms, but as CUMULATIVE separations rather than as
 // four independent races against spawn cost.
 //
-// WHY EACH BOUND HOLDS AT ANY LOAD. run.mjs reports `done - dequeue` (dequeue is
-// stamped at `test:dequeue`, i.e. at DISPATCH, before the child boots — which is why
-// a fixture doing no work at all can still report 772ms). So for any two files:
+// WHY EACH BOUND HOLDS AGAINST ANY CHILD-SIDE COST. (Not "at any load" — see the
+// third term below and THE ONE RESIDUAL further down.) run.mjs reports
+// `done - dequeue`, where dequeue is stamped at `test:dequeue`, i.e. at DISPATCH,
+// before the child boots — which is why a fixture doing no work at all can still
+// report 772ms. So for any two files:
 //
 //     reported_a - reported_b = (done_a - done_b) + (dequeue_b - dequeue_a)
 //
@@ -256,7 +258,11 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
   // unfixed, fast is charged the wall it spent WAITING for slow's summary, so this
   // difference collapses toward ~0 (measured unfixed, every figure lands within a few
   // ms of slow's completion instant). medium's link ends 550 + 650 = 1200ms after
-  // fast's, and medium is dequeued no later than fast, so 1200 is a floor at ANY load.
+  // fast's, and medium is dequeued no later than fast, so 1200 is a floor that no
+  // CHILD-side cost can breach. It is NOT unconditional: a contiguous parent-loop stall
+  // of ~1150ms spanning both completions compresses this difference — see "THE ONE
+  // RESIDUAL" in the header. That is the only way this line goes red on a correct
+  // reporter, and it goes RED, never silently green.
   assert.ok(medium - fast >= 1200,
     `medium.fixture.mjs completes 1200ms of chain after fast.fixture.mjs, so their ` +
     `reported figures must differ by at least that — got medium ${medium}ms, fast ` +
@@ -310,7 +316,10 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
   // It is also STRICTLY STRONGER. Any whole-second lattice makes every figure
   // ≡ 0 (mod 1000) hence ≡ 0 (mod 100), so every mutant the band caught still dies —
   // and the 100ms and 500ms lattices the old header admits (as "the boundary of what
-  // this file claims") now die too. False-positive probability with four independent
+  // this file claims") now die too. THE GUARANTEE COVERS 100ms-MULTIPLE QUANTA ONLY:
+  // (5) fires only when ALL FOUR figures land on the 100ms lattice, so a 50ms quantum
+  // escapes ~15 runs in 16 (~(1/2)^4 caught; measured 0 kills in 16). Do not read this
+  // as "catches any lattice". False-positive probability with four independent
   // millisecond figures is ~1e-8.
   //
   // The band's LOWER half — medium and subsecond strictly ordered — is not lost:
