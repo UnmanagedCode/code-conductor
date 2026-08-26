@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import { FAST, SWEEP, runGuard } from './hangGuardCase.mjs';
 
-// The two diagnostics the slow-consumer case below asserts the ABSENCE of,
+// The diagnostics the slow-consumer case below asserts the ABSENCE of,
 // shared with the pin that proves they REACH that case's accumulator — so the
 // pattern proved observable is the same object the absence is asserted against
 // (the `HOLDER_LINE` idiom, card 2026-0228).
@@ -52,7 +52,8 @@ test('the discarded-stdout shape carries stderr diagnostics and drops stdout one
   // of STALL and SWEPT against an accumulator that — stdout being discarded —
   // receives stderr only. Absence proves nothing unless presence is reachable,
   // so this runs the SAME discarding shape against a fixture that genuinely
-  // trips both and asserts they ARRIVE. Cheapest such run in the family (~1.7s).
+  // trips both and asserts they ARRIVE. detached-orphan is what lets one run
+  // cover both: it stalls the stream and is swept for it (~1.7s).
   //
   // WHAT THIS DOES *NOT* BUY: it does not rescue detection. Moving either
   // writer to console.log still reddens the case below via its `code === 0`
@@ -88,11 +89,12 @@ test('a healthy run whose stdout consumer stalls is NOT reported as a stall', as
   // The gate is `nodeFinished` (node's single run-level test:summary): emitted at
   // push time on a healthy run, never emitted in a genuine wedge.
   //
-  // stdout is DISCARDED here and the two assertions below are consequently
-  // STDERR-ONLY. That routing is a PRECONDITION of this shape, not an incidental
-  // choice, and it is pinned by the case above rather than asserted here: both
-  // patterns are console.error diagnostics of run.mjs, while the verdict line,
-  // the /proc WARNING and `slowest files` are console.log ones that never arrive.
+  // stdout is DISCARDED here, so every assertion below that reads `r.out` is
+  // consequently STDERR-ONLY. That routing is a PRECONDITION of this shape, not
+  // an incidental choice, and it is pinned by the case above rather than
+  // asserted here: both patterns are console.error diagnostics of run.mjs, and a
+  // console.log one would never arrive at all — see the routing rule at
+  // runGuard's stderr handler for which writer sends what where.
   // Capturing stdout instead does not remove the dependency — measured, with the
   // pause in place and no discard, this accumulator is STILL empty, because a
   // failing run's `close` fires at ~1.8s while the consumer stays paused to

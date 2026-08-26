@@ -134,12 +134,13 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     // even when stdout is deliberately stalled below. Its console.log ones do NOT
     // arrive until the pause releases — see the routing rule below.
     //
-    // `discardStdout`'s only caller is the slow-consumer case in
-    // tests/hang-guard-run-cap.test.mjs, whose assertions therefore read a
-    // stderr-only accumulator; that observability is PINNED there by `the
-    // discarded-stdout shape carries stderr diagnostics and drops stdout ones`,
-    // which runs the same discarding shape against detached-orphan and asserts
-    // both patterns arrive while the console.log verdict line does not.
+    // ANY case passing `discardStdout` therefore reads a STDERR-ONLY
+    // accumulator: its assertions can see only what a console.error writer
+    // emitted. That observability is not assumed — it is PINNED by `the
+    // discarded-stdout shape carries stderr diagnostics and drops stdout ones`
+    // in tests/hang-guard-run-cap.test.mjs, which runs a discarding shape
+    // against detached-orphan and asserts `STREAM STALLED` and `SWEPT` arrive
+    // while the console.log verdict line does not.
     // "Capture stdout instead of discarding it" was measured and REFUSED: with
     // the 4000ms pause in place and no discard, the accumulator is still empty,
     // because a failing run's `close` fires at ~1.8s and the parent never
