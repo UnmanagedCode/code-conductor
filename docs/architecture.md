@@ -434,10 +434,32 @@ pid's starttime identity immediately before signalling.
 real reds — and unrelated apps on a shared box. It is also what destroyed the `server.mjs` family's
 evidence during card 2026-0226's inventory.
 
-Stale `/tmp/cc-testrun-*` **directories** are a separate, structural leak — `ensureSafeStoreEnv()`
-mints a root via `createSafeRoot()` and `removeSafeRoot` has exactly one call site (`tests/run.mjs`),
-so every standalone file run leaks one by design gap (2072 found, 1669 of them empty). Tracked as
-card **2026-0227**; `reapOrphans.mjs` deliberately does not touch directories.
+Stale `/tmp/cc-testrun-*` **directories** are closed by teardown, not by a reaper. `createSafeRoot()`
+records every root it mints in a private set in `tests/safeStoreRoot.mjs`; `removeSafeRoot()` removes
+one on `tests/run.mjs`'s normal completion path, and a `process.on('exit')` backstop removes whatever
+is still registered on every other exit (`process.exit(128+signo)` from the signal handler, the
+store-isolation `exit(1)`, an uncaught throw, or a standalone file run that never had a removal at
+all). The ownership rule: **mint ⇒ own ⇒ remove at exit; inherit ⇒ never remove** — registration
+lives in `createSafeRoot()`, not `ensureSafeStoreEnv()`, so a root taken from the inherited branch
+can never enter the set, and a test file under `run.mjs` can never delete the whole run's store from
+under its siblings. The property — a standalone run of any test file, and a full suite run, each leave
+no `/tmp/cc-testrun-*` root behind — is pinned by tests in `tests/safeStoreRoot.test.mjs`, which also
+pin the inherited-root case and the deletion gate (`_forTesting.validateRootForDeletion` — a second
+check on a path already drawn from the set, never a selector): it refuses a symlink *pointing at* a
+valid run root, which `assertSafeTestRunRoot` alone would realpath into acceptance; it refuses a temp
+dir of the wrong shape; and because `lstat` runs before the shape gate it reports an already-removed
+root as `ENOENT`, so the backstop skips it instead of logging every cleanly-removed root as a
+failure.
+
+**No directory reaper exists, and one cannot be made safe.** The oracle it would need does not exist:
+`/proc/<pid>/environ` is the environment *as of exec*, and `tests/run.mjs` sets `CC_TEST_RUN_ID` after
+its own exec — so the process that **owns** a run root is invisible to `processesWithMarker`, and only
+its children carry the marker. A reaper keyed on "no live process carries this marker ⇒ orphaned" —
+the dual of `staleRunTargets`' licence — would therefore delete a **live** run's root during any
+moment no marked child happens to be running. The only other available oracle is mtime age, the
+name-plus-age heuristic card 2026-0190 removed from this suite. So `reapOrphans.mjs` stays
+process-only. SIGKILL remains uncovered (no in-process handler runs), which leaks a throwaway
+directory only.
 
 The subagent-aware idle wake deferral (`IdleSubscriptionHub._onTurnEnd` gating on `activeAgentTaskCount` **and** `taskNotificationPending`) is covered by `tests/idle-subagent-defer.test.mjs` (two layers: hub-gate tests with injected fake instances driving `manager.emit('event', turn_end)`, and Instance-lifecycle tests feeding captured-shape raw stdout lines to a real unspawned `Instance._handleStdoutLine` — sync-delivered result clears, attach-batch clears, nested tool_result does NOT clear, a queued notification survives turn_end until the re-invocation turn start, an idle notification never sets) and end-to-end in `tests/idle-wake-defer.test.mjs` via four fixtures — `scenario-bg-task-hang.json` (turn_end while a subagent is live, never completes → wake deferred), `scenario-bg-task-complete.json` (subagent completes *between* turns + follow-up turn_end → single delivery), `scenario-bg-task-midturn-complete.json` (mid-turn `task_notification` with no tool_result after it → wake deferred to the re-invocation turn's turn_end, single delivery), and `scenario-bg-task-midturn-consumed.json` (mid-turn `task_notification` followed by a top-level tool_result → consumed in-turn, wake fires at that same turn_end — regression for the indefinite-defer hang).
 
