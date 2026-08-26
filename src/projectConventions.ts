@@ -1,5 +1,5 @@
-// Project conventions — a catalog of named CLAUDE.md sections that can be
-// appended inline to a new project's CLAUDE.md at creation time.
+// Project conventions — a catalog of named sections a project selects at
+// creation, composed into (and regenerated in) its own CONVENTIONS.md.
 //
 // Seeds are read-only (builtin: true); their bodies live in committed `.md`
 // fragments under conventions/project/<slug>.md. Custom conventions

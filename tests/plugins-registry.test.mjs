@@ -647,7 +647,7 @@ test('conventions(): a vanished fragment file does NOT degrade the catalog — t
 
     // The slug is already gone from the catalog at this point, so simulate a
     // project committed BEFORE the fragment vanished (a hand-written stale
-    // marker + body), same fixture pattern as the other never-blanks tests.
+    // marker + body), same fixture pattern as the degraded-catalog freeze test.
     setPluginConventionsProvider(async () => (await host.conventions()).project);
     await createProject('referencer2');
     const target = conventionsTargetPath(path.join(env.root, 'referencer2'));

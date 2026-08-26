@@ -98,7 +98,7 @@ See [docs/features.md](docs/features.md) for the exhaustive feature and UI-eleme
 - [docs/plugins.md](docs/plugins.md) — plugin manifest schema, reverse proxy, bridge protocol, `/api/plugins` REST, child MCP wire contract, Plugin Library, compliance checklist
 - [conventions/conductor/](conventions/conductor/) (`core.md` + `footer.md` + toggleable `<slug>.md`) — conductor role prompt / orchestration contract; composed (core + enabled toggleable conventions + footer) into `.conduct/CONVENTIONS.md` before every Conduct session's spawn/resume, loaded via that dir's `CLAUDE.md` `@CONVENTIONS.md` import (configurable in Settings → Conventions → Conductor)
 - [conventions/workspace/](conventions/workspace/) (`core.md` + toggleable `<slug>.md`) — workspace conventions; composed (core + enabled conventions) into every project's app-owned in-tree `CONVENTIONS.md` and into `.conduct/CONVENTIONS.md` (configurable in Settings → Conventions → Workspace)
-- [conventions/project/](conventions/project/) — project conventions; a catalog of `<slug>.md` sections composed into a new project's app-owned, regenerated in-project `CONVENTIONS.md` (imported via `@CONVENTIONS.md`; self-describing line-1 marker, never-blanks regeneration — `src/projectClaudeMd.ts`), configurable in Settings → Conventions → Project
+- [conventions/project/](conventions/project/) — project conventions; a catalog of `<slug>.md` sections composed into a new project's app-owned, regenerated in-project `CONVENTIONS.md` (imported via `@CONVENTIONS.md`; self-describing line-1 marker, app-owned and overwritten on every regeneration except a transient degraded-catalog freeze — `src/projectClaudeMd.ts`), configurable in Settings → Conventions → Project
 
 ## License
 

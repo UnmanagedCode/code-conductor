@@ -302,9 +302,9 @@
             <details class="conventions-block">
               <summary class="conventions-summary">Workspace conventions</summary>
               <p class="settings-desc">
-                Composed into the app-owned projects-root <code>CLAUDE.md</code> — the file every project
-                imports via <code>@../CLAUDE.md</code>. Global; changes regenerate that file immediately
-                (it is fully owned by code-conductor, overwritten on boot and on change).
+                Composed into every project's own <code>CONVENTIONS.md</code> (above that project's own
+                conventions) and into the conductor's role doc. Global; a change regenerates every one of
+                those files immediately (they are fully owned by code-conductor and overwritten).
               </p>
               <div id="wk-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="wk-convention-list" class="cc-convention-list"></ul>
@@ -373,9 +373,9 @@
             <details class="conventions-block">
               <summary class="conventions-summary">Project conventions</summary>
               <p class="settings-desc">
-                Named <code>CLAUDE.md</code> sections selectable per project at creation (snapshotted into
-                that project's <code>CLAUDE.md</code>). Built-in seeds are read-only; custom conventions
-                can be added, edited, and deleted here.
+                Named sections selectable per project at creation, composed into that project's
+                <code>CONVENTIONS.md</code> and regenerated there. Built-in seeds are read-only; custom
+                conventions can be added, edited, and deleted here.
               </p>
               <div id="pc-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="pc-convention-list" class="or-rule-list"></ul>
@@ -383,7 +383,7 @@
                 <input id="pc-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
                 <input id="pc-add-name" type="text" placeholder="Short name" />
                 <input id="pc-add-desc" type="text" placeholder="One-line description" />
-                <textarea id="pc-add-body" rows="6" placeholder="Markdown body appended to a new project's CLAUDE.md"></textarea>
+                <textarea id="pc-add-body" rows="6" placeholder="Markdown body composed into a project's CONVENTIONS.md"></textarea>
                 <div class="or-add-actions">
                   <button id="pc-add-save" type="button">Save</button>
                   <button id="pc-add-cancel" type="button">Cancel</button>
