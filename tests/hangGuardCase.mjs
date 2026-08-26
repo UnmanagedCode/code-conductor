@@ -80,13 +80,14 @@ export function redactTotals(out) {
 // across a machine-speed window (card 2026-0228). The fixed `signalAfterMs:
 // 1200` this replaced required the whole nested boot chain to fit in 1200 ms:
 // measured spawn→marker 759-1585 ms at 72-way starvation vs 87-115 ms idle, so
-// the sweep file went red 6/14 runs / 8/28 interrupt legs there and never once
-// quiet.
+// the sweep file went red 5-6/14 runs / 6-8/28 interrupt legs there (two
+// independent campaigns) and never once quiet.
 // There is deliberately NO fallback timer. "Wait N ms, then signal anyway" is
 // `signalAfterMs` under a new name, and the run is already bounded three times
 // over — the fixture's own dwell, then CC_TEST_RUN_CAP_MS, then hardTimeoutMs
 // below — so a fourth bound would be a second source of truth. A marker that
-// never arrives is a fast, loud red (measured 4.9-5.6 s), not a hang.
+// never arrives is a fast, loud red (measured 5.0-5.8 s per leg at 72-way),
+// not a hang.
 // It targets `child.pid` alone, never a process group: the runner shares OUR
 // group (spawn without `detached`), so a group signal would hit this test file
 // too.
