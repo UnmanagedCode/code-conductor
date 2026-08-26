@@ -18,6 +18,7 @@ import type { WebSocketServer } from 'ws';
 import { spawnReplacementAndExit } from './restart.ts';
 import { waitFor } from './waitFor.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
+import { getOnOverageAction } from './appSettings.ts';
 import {
   writeResumeManifest,
   readResumeManifest,
@@ -364,7 +365,13 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // (card 2026-0212) cannot change the answer here: restored entries are created
       // with `callerInstanceId: null` and worker-group entries are skipped above, so
       // the root of a restored instance is always itself.
-      if (e.overageStopped && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
+      //
+      // Policy beats a persisted mark: pending-resume.json records the MARK,
+      // settings.json records the POLICY. If the operator moved off stop-resume, the
+      // mark is dead — do not revive it (card 2026-0231). Under 'stop-resume'
+      // honourMark === e.overageStopped, so behaviour is byte-identical to before.
+      const honourMark = !!e.overageStopped && getOnOverageAction() === 'stop-resume';
+      if (honourMark && typeof e.overageResumeAt === 'number' && Number.isFinite(e.overageResumeAt) && instances._inUsageWindowFlow(inst)) {
         inst._overageResetsAt = e.overageResetsAt ?? null;
         inst._overageWasStopped = !!e.overageWasStopped; // preamble select survives restart
         inst._overageWasIdleParked = !!e.overageIdleParked;
@@ -381,8 +388,10 @@ export async function restoreFromResumeManifest({ instances, log = console, stag
       // Skip overage-stopped sessions: the sweep delivers the resume preamble their
       // restored selectors resolve to (overageResumeKind — an idle-parked entry gets
       // IDLE_PARKED_RESUME_TEXT, not AUTO_RESUME_TEXT) once the window resets, so a
-      // RESUME_TEXT here would double-prompt.
-      if (e.wasBusy !== false && !e.overageStopped) {
+      // RESUME_TEXT here would double-prompt. A mark DECLINED by the policy gate above
+      // is not skipped: it falls back to the ordinary restart path, which is exactly
+      // what a plain-`stop` session gets.
+      if (e.wasBusy !== false && !honourMark) {
         const text = e.group === 'conductor' ? buildConductorResumeText(e.workers) : RESUME_TEXT;
         try { await inst.prompt(text); } catch (err) { log.warn?.('resume-restart: notify failed', errMsg(err)); }
       }

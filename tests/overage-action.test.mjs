@@ -1793,3 +1793,208 @@ test('D5 the three resume kinds each get their own base, and both clauses ride a
   assert.equal(buildConductorResumePreamble({ kind: 'idle-parked' }), IDLE_PARKED_RESUME_TEXT,
     'no clauses ⇒ the bare base');
 });
+
+// ── Card 2026-0231: the policy is LIVE authority, not just trip-time input ──
+// Switching Settings → Account → Action on overage OFF `Stop & resume` must unmark
+// every session already marked under the old policy — badge, deadline, flags, and
+// the queue — fleet-wide. Before this, the marks survived the switch and the
+// wall-clock sweep still fired them: the operator's change applied to future trips only.
+
+// Spawn an idle session in an arbitrary project (spawnIdle hardcodes 'demo').
+async function spawnIdleIn(project) {
+  const r = await api(ctx.baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
+  assert.equal(r.status, 201);
+  const inst = ctx.instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  return inst;
+}
+
+test('policy switch stop-resume → stop unmarks every marked session, across projects', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo2' });
+  const a = await spawnIdle();                 // project 'demo' — stopped mid-turn
+  const b = await spawnIdleIn('demo2');        // project 'demo2' — queued-only
+
+  const aEvs = collect(a), bEvs = collect(b);
+  a.prompt('go');
+  await waitFor(() => sub(aEvs, 'auto_stop_overage').length > 0);
+  await waitFor(() => a.autoResumeAt != null);   // armed on the mid-turn→idle transition
+
+  // B never tripped anything: it queues behind the global lockout and arms on the spot.
+  await b.prompt('queued while paused');
+  await waitFor(() => bEvs.some(e => e.kind === 'overage_message_queued'));
+  await waitFor(() => b.autoResumeAt != null);
+  assert.equal(b._overageQueue.length, 1, 'B has a queued message to lose');
+
+  // Capture the badge-drop pushes the sweep must emit.
+  const statuses = [];
+  ctx.instances.on('status', (s) => statuses.push(s));
+
+  const res = await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
+  assert.equal(res.status, 200);
+
+  for (const [name, inst] of [['A', a], ['B', b]]) {
+    assert.equal(inst.autoResumeAt, null, `${name}: badge cleared`);
+    assert.equal(inst.autoStoppedForOverage, false, `${name}: stop mark cleared`);
+    assert.equal(inst._overageQueue.length, 0, `${name}: queue emptied`);
+    assert.equal(ctx.instances._autoResumeTimers.has(inst.id), false, `${name}: deadline cancelled`);
+    assert.equal(statuses.some(s => s.id === inst.id && s.autoResumeAt === null), true,
+      `${name}: badge-drop status emitted`);
+  }
+  assert.equal(ctx.instances._autoResumeTimers.size, 0, 'no deadline left anywhere');
+  assert.equal(ctx.instances._overageResumeMode, false, 'queue gate disengaged');
+  // The dropped queue is announced, not silent — reuses blocks.js' existing renderer.
+  const skipped = sub(bEvs, 'auto_resume_skipped');
+  assert.equal(skipped.length, 1, 'B told its queued message was dropped');
+  assert.match(skipped[0].data.reason, /overage handling changed — 1 queued message\(s\) dropped/);
+  assert.equal(sub(aEvs, 'auto_resume_skipped').length, 0, 'A had no queue ⇒ no notice');
+  // D4: the global lockout is deliberately left alone — the fleet lands exactly
+  // where a NATIVE plain-`stop` trip leaves it, and the window lifts on its own.
+  assert.equal(ctx.instances._overageActive, true, 'window lockout untouched by the sweep');
+});
+
+test('policy switch while a resume verify is IN FLIGHT does not resume', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop-resume');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => inst.autoResumeAt != null);
+
+  // Park the fire-time usage verify mid-flight. fireNow deletes the timers entry
+  // BEFORE awaiting fetchUsage, so this session has no timer but is still marked —
+  // which is why the sweep iterates byId, not timers.
+  let release;
+  ctx.instances._overageResume.fetchUsage = () => new Promise((r) => {
+    release = () => r(usagePayload(UNDER, nowSec() + 3600));
+  });
+  assert.equal(ctx.instances._fireAutoResumeNow(inst.id), true, 'pending resume picked up');
+  await waitFor(() => release !== undefined, { timeout: 5000 });
+  assert.equal(ctx.instances._autoResumeTimers.has(inst.id), false, 'timer already gone (mid-verify)');
+
+  await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
+  assert.equal(inst.autoStoppedForOverage, false, 'the sweep found it despite having no timer');
+
+  release();                       // the in-flight verify now resolves "window clear"
+  await settle();
+  assert.equal(evs.some(e => e.kind === 'user_echo' && e.text === AUTO_RESUME_TEXT), false,
+    'no resume prompt into a session the operator just unmarked');
+  assert.equal(inst.autoResumeAt, null, 'still unmarked');
+  assert.equal(inst.autoStoppedForOverage, false);
+});
+
+// CHARACTERIZATION (passes before the fix too): the reverse direction is
+// deliberately inert. `stop` records nothing identifying which sessions it halted,
+// and flipping _overageResumeMode mid-window would start queueing sends into
+// sessions with no deadline to flush them — stranded forever. Next trip, not now.
+test('policy switch stop → stop-resume mid-lockout marks nothing and engages no queueing', async () => {
+  await boot(scenario([overageEvent({ resetsAt: nowSec() + 3600 }), RESULT]), 'stop');
+  const inst = await spawnIdle();
+  const evs = collect(inst);
+  inst.prompt('go');
+  await waitFor(() => sub(evs, 'auto_stop_overage').length > 0);
+  await waitFor(() => inst.status === 'idle');
+  assert.equal(inst.autoResumeAt, null, 'plain stop armed nothing');
+
+  await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop-resume' });
+  assert.equal(inst.autoResumeAt, null, 'no retro-mark');
+  assert.equal(ctx.instances._autoResumeTimers.size, 0, 'no deadline armed');
+  assert.equal(ctx.instances._overageResumeMode, false, 'queue gate stays disengaged');
+
+  // …and the operator can still send by hand: nothing is stranded.
+  await inst.prompt('hi');
+  assert.equal(evs.some(e => e.kind === 'overage_message_queued'), false, 'send not queued');
+  assert.equal(inst._overageQueue.length, 0, 'nothing stranded in the queue');
+});
+
+// The sweep's skip predicate has FIVE disjuncts because a marked session can carry
+// any ONE of them alone. The two tests below construct the two such states that are
+// reachable and observable at sweep time, each through the production path that
+// creates it — neither is reachable by the T1 fixture, which waits for a fully
+// armed session before switching the policy.
+
+// F1 — Invariant: a session tripped MID-TURN carries `autoStoppedForOverage` with
+// NO badge, NO deadline and NO queue until it reaches idle (_directOverageStop sets
+// the flag; `if (armResume && !midTurn)` defers the arming to the status handler's
+// idle transition). The sweep must reach it on that flag alone — otherwise the
+// status handler arms a resume a moment later, under a policy that no longer
+// stop-resumes. Only the `!inst.autoStoppedForOverage` disjunct can find it.
+function unarmedMidTurnScenario() {
+  return {
+    events: [INIT],
+    turns: [
+      { on: { type: 'prompt', text: 'TRIP' }, emit: [overageEvent({ resetsAt: nowSec() + 3600 }), RESULT] },
+      { on: { type: 'prompt', text: 'STAY' }, emit: [] },
+      // The routing stop's own interrupt is auto-acked but answered with NO result,
+      // so the STAY session stays mid-turn: marked, not yet armed.
+      { on: { type: 'control', subtype: 'interrupt' }, emit: [] },
+      // A SECOND interrupt — issued by the test AFTER the policy switch — is what
+      // winds it to idle, so the status handler's arming branch really runs.
+      INTERRUPT_TURN,
+      { on: { type: 'prompt' }, emit: [RESULT] },
+      { on: { type: 'prompt' }, emit: [RESULT] },
+    ],
+  };
+}
+
+test('policy switch unmarks a session tripped mid-turn that has NOT armed yet', async () => {
+  await boot(unarmedMidTurnScenario(), 'stop-resume');
+  const stuck = await spawnIdle();     // held mid-turn across the whole trip
+  const tripper = await spawnIdle();   // emits the overage event, then goes idle
+  const sEvs = collect(stuck);
+
+  stuck.prompt('STAY');
+  await waitFor(() => stuck.status === 'turn');
+  tripper.prompt('TRIP go');
+  await waitFor(() => sub(sEvs, 'auto_stop_overage').length > 0);
+
+  // The state the sweep must handle: flagged, but nothing else set.
+  assert.equal(stuck.status, 'turn', 'still mid-turn — no idle transition yet');
+  assert.equal(stuck.autoStoppedForOverage, true, 'marked by the stop');
+  assert.equal(stuck.autoResumeAt, null, 'but no badge');
+  assert.equal(instances._autoResumeTimers.has(stuck.id), false, 'and no deadline');
+  assert.equal(stuck._overageQueue.length, 0, 'and no queue');
+  assert.equal(stuck._overageStoppedUnarmed, false, 'not an un-armed worker either');
+  // Paired positive: the tripper DID arm, so a failure below can't be the whole
+  // stop-resume path being broken.
+  await waitFor(() => tripper.autoResumeAt != null);
+
+  await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
+  assert.equal(stuck.autoStoppedForOverage, false, 'the sweep reached it on that flag alone');
+
+  // The consequence: wind it to idle for real — the status handler's arming branch
+  // now runs and finds nothing to arm. The FORCED tier is only the test's lever for
+  // producing that transition: the soft tier is idempotent per turn (`interrupting`
+  // is already armed from the routing stop), so a second soft call sends nothing.
+  // How idle is reached is irrelevant to the branch under test, which reads only
+  // `inst.autoStoppedForOverage && summary.status === 'idle'`.
+  await stuck.interrupt({ force: true });
+  await waitFor(() => stuck.status === 'idle', { timeout: 10000 });
+  assert.equal(stuck.autoResumeAt, null, 'no resume armed after the policy switch');
+  assert.equal(instances._autoResumeTimers.has(stuck.id), false, 'no deadline armed on the idle transition');
+  assert.equal(instances._autoResumeTimers.size, 0, 'nothing armed anywhere');
+});
+
+// F2 — Invariant: a conducted worker protected by an in-control conductor is
+// stopped with `armResume:false`, so it gets NO `autoStoppedForOverage`, NO badge,
+// NO deadline and NO queue — it is marked SOLELY by `_overageStoppedUnarmed`, the
+// flag that makes it REFUSE sends instead of queueing them. Only the
+// `!inst._overageStoppedUnarmed` disjunct can find it; left set under a policy that
+// no longer stop-resumes, the refusal outlives its meaning on a surface
+// (`summary().overageStoppedUnarmed`) the human cannot clear by hand.
+test('policy switch unmarks a conducted worker the stop left UN-ARMED', async () => {
+  const { worker, wEvs } = await tripMidTurnConductor(
+    { flagged: false, action: 'stop-resume', scenarioObj: resumeRoutingScenario() });
+  await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0);
+  await waitFor(() => worker._overageStoppedUnarmed === true);
+
+  // The state the sweep must handle: the un-armed mark is the ONLY one set.
+  assert.equal(worker.autoStoppedForOverage, false, 'stopped un-armed ⇒ not flagged auto-stopped');
+  assert.equal(worker.autoResumeAt, null, 'no badge');
+  assert.equal(instances._autoResumeTimers.has(worker.id), false, 'no deadline');
+  assert.equal(worker._overageQueue.length, 0, 'no queue');
+  assert.equal(worker.summary().overageStoppedUnarmed, true, 'and the refusal is surfaced');
+
+  await api(ctx.baseUrl, 'POST', '/api/settings/models/prefs', { onOverage: 'stop' });
+  assert.equal(worker._overageStoppedUnarmed, false, 'the sweep reached it on that flag alone');
+  assert.equal(worker.summary().overageStoppedUnarmed, false, 'refusal no longer surfaced');
+});

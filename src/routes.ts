@@ -1509,6 +1509,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // itself is already persisted above regardless of outcome here.
       try {
         if (instances && (onOverage !== undefined || overageThreshold !== undefined)) {
+          instances.syncOveragePolicy();             // policy direction: a switch off stop-resume unmarks now
           await instances.forceUsageTick();          // stop direction: lower threshold trips now
           instances.reevaluateOverageResumes();      // release direction: raised/disabled threshold resumes now
         }

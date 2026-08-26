@@ -22,7 +22,7 @@ import {
 } from '../src/resumeRestart.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from '../src/conduct.ts';
 import { AUTO_RESUME_TEXT } from '../src/instances.ts';
-import { addBackend, addCustomModel } from '../src/appSettings.ts';
+import { addBackend, addCustomModel, setOnOverageAction } from '../src/appSettings.ts';
 import { getDefaultPlaybookEnforcement, setDefaultPlaybookEnforcement } from '../src/conductorConventions.ts';
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -788,6 +788,11 @@ test('the idle-parked preamble selector round-trips through the resume manifest'
   const prevSweep = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
   process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
   try {
+    // The boot re-arm is gated on the LIVE policy (card 2026-0231): these tests
+    // exercise the manifest mechanism, not the policy, so state it explicitly
+    // instead of inheriting the default 'none'.
+    await setOnOverageAction('stop-resume');
+
     // ── writer ──
     await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-park' });
     const res = await api(baseUrl, 'POST', '/api/instances', { project: 'ovg-park' });
@@ -843,6 +848,11 @@ test('restoreFromResumeManifest restores overageStoppedWorkers onto the revived 
   const prevSweep = process.env.ORCH_OVERAGE_RESUME_SWEEP_MS;
   process.env.ORCH_OVERAGE_RESUME_SWEEP_MS = '40';
   try {
+    // The boot re-arm is gated on the LIVE policy (card 2026-0231): these tests
+    // exercise the manifest mechanism, not the policy, so state it explicitly
+    // instead of inheriting the default 'none'.
+    await setOnOverageAction('stop-resume');
+
     await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-swk' });
     const sid = randomUUID();
     const cwd = path.join(projectsRoot, 'ovg-swk');
@@ -916,6 +926,11 @@ test('restoreFromResumeManifest fires a PAST-DUE overage resume promptly on boot
       overageStopped: true, overageResumeAt: nowSec() - 10, overageResetsAt: nowSec() - 15,
     }]);
 
+    // The boot re-arm is gated on the LIVE policy (card 2026-0231) — this test
+    // exercises the manifest mechanism, not the policy, so state it explicitly
+    // instead of inheriting the default 'none'.
+    await setOnOverageAction('stop-resume');
+
     // Fire-time verify sees the window clear (util 10 < 100) ⇒ the restored resume
     // actually fires rather than parking for a recheck.
     instances._overageResume.fetchUsage = async () => ({
@@ -977,6 +992,8 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
       { ...base, sessionId: plainSid, wasBusy: true }, // no overage fields
     ]);
 
+    await setOnOverageAction('stop-resume'); // live-policy gate on the re-arm — see above
+
     const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
     assert.equal(restored, 2, 'both restored');
 
@@ -999,6 +1016,74 @@ test('restoreFromResumeManifest arms a FUTURE overage deadline without firing; l
     assert.ok(!dump.includes(AUTO_RESUME_TEXT), 'future overage deadline did NOT fire');
     const plainInst = [...instances.byId.values()].find(i => i.sessionId === plainSid);
     assert.ok(!instances._autoResumeTimers.has(plainInst.id), 'non-overage session has no resume timer');
+  } finally {
+    if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
+    else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
+    await fs.rm(transcript, { force: true });
+  }
+});
+
+
+// --- 15b. Card 2026-0231: a manifest mark cannot outlive the policy ---------
+// pending-resume.json records the MARK; settings.json records the POLICY. If the
+// operator moved off `stop-resume` before the restart (or between drain and boot),
+// the persisted mark is dead: restoring it would revive an auto-resume the operator
+// just switched off — the one disk→memory seam the settings-write sweep can't reach.
+// A declined mark falls back to the ORDINARY restart path: RESUME_TEXT iff wasBusy,
+// which is exactly what a plain-`stop` session gets.
+
+test('restoreFromResumeManifest refuses a persisted overage mark when the policy is no longer stop-resume', async () => {
+  const transcript = path.join(os.tmpdir(), `cc-ovg-policy-${randomUUID()}.log`);
+  const prevTranscript = process.env.FAKE_CLAUDE_TRANSCRIPT;
+  process.env.FAKE_CLAUDE_TRANSCRIPT = transcript;
+  try {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'ovg-pol' });
+    const idleSid = randomUUID();
+    const busySid = randomUUID();
+    const cwd = path.join(projectsRoot, 'ovg-pol');
+    const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+    await fs.mkdir(dir, { recursive: true });
+    for (const sid of [idleSid, busySid]) {
+      await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+    }
+
+    const futureAt = nowSec() + 3600;
+    const base = { project: 'ovg-pol', cwd, mode: 'plan', effort: 'high', thinking: 'adaptive', model: null, worktreeName: null, temp: false, conducted: false, debug: false, title: null, autoApprovePlan: false, group: 'other' };
+    const mark = { overageStopped: true, overageResumeAt: futureAt, overageResetsAt: futureAt - 5,
+      overageQueue: [{ text: 'queued while paused', attachments: [], ts: Date.now() }] };
+    await fs.mkdir(orchStoreRoot(), { recursive: true });
+    writeResumeManifest([
+      { ...base, sessionId: idleSid, wasBusy: false, ...mark },
+      { ...base, sessionId: busySid, wasBusy: true, ...mark },
+    ]);
+
+    // The operator switched OFF stop-resume before this boot.
+    await setOnOverageAction('stop');
+
+    const { restored } = await restoreFromResumeManifest({ instances, log: { log() {}, warn() {} }, staggerMs: 0 });
+    assert.equal(restored, 2, 'both restored');
+
+    for (const [name, sid] of [['idle', idleSid], ['busy', busySid]]) {
+      const inst = [...instances.byId.values()].find(i => i.sessionId === sid);
+      assert.ok(inst, `${name} session restored`);
+      assert.equal(instances._autoResumeTimers.has(inst.id), false, `${name}: no deadline re-armed`);
+      assert.equal(inst.autoResumeAt, null, `${name}: no badge`);
+      assert.equal(inst.autoStoppedForOverage, false, `${name}: not marked auto-stopped`);
+      assert.equal(inst._overageQueue.length, 0, `${name}: persisted queue dropped with the mark`);
+    }
+    assert.equal(instances._autoResumeTimers.size, 0, 'nothing armed anywhere');
+
+    // The declined mark falls back to the ordinary restart path: the wasBusy entry
+    // is re-prompted with RESUME_TEXT (not skipped as an overage session), and
+    // NOTHING gets the auto-resume prompt.
+    await waitFor(async () => {
+      try { return (await fs.readFile(transcript, 'utf8')).includes(RESUME_TEXT); }
+      catch { return false; }
+    });
+    await new Promise(r => setTimeout(r, 300)); // let any stray prompt surface
+    const dump = await fs.readFile(transcript, 'utf8');
+    assert.ok(dump.includes(RESUME_TEXT), 'the wasBusy entry took the ordinary re-prompt path');
+    assert.ok(!dump.includes(AUTO_RESUME_TEXT), 'a policy-refused mark never delivers AUTO_RESUME_TEXT');
   } finally {
     if (prevTranscript === undefined) delete process.env.FAKE_CLAUDE_TRANSCRIPT;
     else process.env.FAKE_CLAUDE_TRANSCRIPT = prevTranscript;
