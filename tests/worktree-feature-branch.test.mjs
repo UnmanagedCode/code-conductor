@@ -700,6 +700,13 @@ test('T22: create strips one <project>_worktree_ prefix before slugifying', asyn
   //    (an empty remainder still 400s rather than returning the unstripped name).
   const dashed = await createWorktree('demo', { name: 'demo-worktree-y' });
   assert.equal(dashed.worktreeName, 'demo_worktree_demo-worktree-y');
+
+  // 5. EXACTLY once, not greedily. A doubled prefix strips one level only, so
+  //    the remaining `_` slugifies to `-`. A strip-every-occurrence
+  //    implementation would yield demo_worktree_x — a different worktree.
+  const doubled = await createWorktree('demo', { name: 'demo_worktree_demo_worktree_z' });
+  assert.equal(doubled.worktreeName, 'demo_worktree_demo-worktree-z');
+  assert.equal(doubled.branch, 'code-conductor/demo-worktree-z');
   await assert.rejects(
     () => createWorktree('demo', { name: 'demo_worktree_' }),
     (e) => { assert.equal(e.statusCode, 400); assert.match(e.message, /no usable characters/); return true; },

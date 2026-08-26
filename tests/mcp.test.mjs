@@ -1700,7 +1700,10 @@ test('project_read scoped by a bare slug reads the worktree copy, not the projec
 // spelling the caller happened to address the worktree with. Without it a
 // conductor keying a card / wiki page / UI state off the returned name gets two
 // different strings for one worktree depending on how it asked.
-test('project_diff / project_status / project_bash echo the canonical worktree name for a bare slug', async () => {
+// project_bash's three exit paths carry the same invariant, but live in
+// mcp-inspect-tools.test.mjs where the fake-CLAUDE_BIN shell-env fixture that
+// keeps them off a live `claude -p` already exists.
+test('project_diff / project_status echo the canonical worktree name for a bare slug', async () => {
   await makeRealRepo(projectsRoot, 'demo');
   const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo', name: 'echoalias' }));
   assert.equal(wt.worktree, 'demo_worktree_echoalias');
@@ -1729,33 +1732,9 @@ test('project_diff / project_status / project_bash echo the canonical worktree n
   assert.match(st, /worktree demo_worktree_echoalias/);
   assert.ok(!/worktree echoalias\b/.test(st), 'the caller\'s spelling must not be what is reported');
 
-  // project_bash, the normal-exit path.
-  const bash = unwrapPayload(await callTool(baseUrl, 'project_bash', {
-    project: 'demo', worktree: 'echoalias', command: 'echo hi',
-  }));
-  assert.equal(bash.meta.worktree, 'demo_worktree_echoalias');
-  assert.equal(bash.meta.exitCode, 0);
-
-  // project_bash's spawn-error / non-zero path carries its own metadata object.
-  const failed = unwrapPayload(await callTool(baseUrl, 'project_bash', {
-    project: 'demo', worktree: 'echoalias', command: 'exit 3',
-  }));
-  assert.equal(failed.meta.worktree, 'demo_worktree_echoalias');
-  assert.equal(failed.meta.exitCode, 3);
-
   // The full spelling is unchanged — this is a canonicalization, not a rename.
-  const full = unwrapPayload(await callTool(baseUrl, 'project_bash', {
-    project: 'demo', worktree: 'demo_worktree_echoalias', command: 'echo hi',
+  const full = unwrapPayload(await callTool(baseUrl, 'project_diff', {
+    project: 'demo', worktree: 'demo_worktree_echoalias', summary: true,
   }));
   assert.equal(full.meta.worktree, 'demo_worktree_echoalias');
-
-  // project_bash's spawn-`error` path builds a THIRD, separate metadata object.
-  // Reached by removing the checkout while its git registration + store record
-  // survive: getWorktree still resolves, but the cwd spawn ENOENTs.
-  await fs.rm(wtPath, { recursive: true, force: true });
-  const errored = unwrapPayload(await callTool(baseUrl, 'project_bash', {
-    project: 'demo', worktree: 'echoalias', command: 'echo hi',
-  }));
-  assert.equal(errored.meta.error, true, 'the spawn-error path is the one exercised');
-  assert.equal(errored.meta.worktree, 'demo_worktree_echoalias');
 });

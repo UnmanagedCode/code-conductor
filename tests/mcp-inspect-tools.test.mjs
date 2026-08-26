@@ -84,6 +84,11 @@ async function makeWorktree(project) {
   const result = await callTool('create_worktree', { project });
   return JSON.parse(result.content[0].text);
 }
+// Same, with a slug — so the worktree can also be addressed by its bare name.
+async function makeWorktreeNamed(project, name) {
+  const result = await callTool('create_worktree', { project, name });
+  return JSON.parse(result.content[0].text);
+}
 
 // ---- project_bash ----
 //
@@ -242,6 +247,67 @@ describe('project_bash', () => {
     }));
     assert.match(r.output, /still-sync/);
     assert.equal(r.exitCode, 0);
+  });
+
+  // The canonical-echo invariant (docs/protocol.md -> Input params): a response
+  // reports the full `<project>_worktree_<slug>` name, never the spelling the
+  // caller addressed the worktree with. project_bash builds THREE separate
+  // metadata objects — normal close, spawn-`error`, and the synchronous
+  // spawn-throw catch — so each is pinned on its own below. Homed here rather
+  // than in mcp.test.mjs because these need the fake-CLAUDE_BIN shell-env
+  // fixture above; without it the bundle generation shells out to a live
+  // `claude -p`, which is both slow and red on a proxy-auth host.
+  test('project_bash echoes the canonical worktree name on the normal-exit path', async () => {
+    await makeRealRepo('demo');
+    const wt = await makeWorktreeNamed('demo', 'echoalias');
+    assert.equal(wt.worktree, 'demo_worktree_echoalias');
+
+    const ok = unwrapBash(await callTool('project_bash', {
+      project: 'demo', worktree: 'echoalias', command: 'echo hi',
+    }));
+    assert.equal(ok.exitCode, 0);
+    assert.equal(ok.worktree, 'demo_worktree_echoalias');
+
+    // A non-zero exit takes the same close handler, and the full spelling is
+    // unchanged — this is a canonicalization, not a rename.
+    const failed = unwrapBash(await callTool('project_bash', {
+      project: 'demo', worktree: 'demo_worktree_echoalias', command: 'exit 3',
+    }));
+    assert.equal(failed.exitCode, 3);
+    assert.equal(failed.worktree, 'demo_worktree_echoalias');
+  });
+
+  // The async `error` event: reached by removing the checkout while its git
+  // registration + store record survive, so getWorktree still resolves but the
+  // cwd ENOENTs on spawn.
+  test('project_bash echoes the canonical worktree name on the spawn-error path', async () => {
+    await makeRealRepo('demo');
+    const wt = await makeWorktreeNamed('demo', 'erroralias');
+    await fs.rm(path.join(projectsRoot, wt.worktree), { recursive: true, force: true });
+
+    const errored = unwrapBash(await callTool('project_bash', {
+      project: 'demo', worktree: 'erroralias', command: 'echo hi',
+    }));
+    assert.equal(errored.error, true, 'the spawn-error path is the one exercised');
+    assert.equal(errored.worktree, 'demo_worktree_erroralias');
+  });
+
+  // The SYNCHRONOUS spawn-throw catch. `wrapped` interpolates the raw caller
+  // `command` into spawnArgs, and Node rejects a NUL byte in a spawn argument
+  // with a synchronous ERR_INVALID_ARG_VALUE — unlike a missing binary or a bad
+  // cwd, which surface asynchronously via the `error` event above. So this is
+  // the one input that reaches the catch, and the echo there is observable.
+  test('project_bash echoes the canonical worktree name on the synchronous spawn-throw path', async () => {
+    await makeRealRepo('demo');
+    const wt = await makeWorktreeNamed('demo', 'nulalias');
+    assert.equal(wt.worktree, 'demo_worktree_nulalias');
+
+    const thrown = unwrapBash(await callTool('project_bash', {
+      project: 'demo', worktree: 'nulalias', command: 'echo a\u0000b',
+    }));
+    assert.equal(thrown.error, true, 'the synchronous spawn-throw path is the one exercised');
+    assert.equal(thrown.exitCode, null);
+    assert.equal(thrown.worktree, 'demo_worktree_nulalias');
   });
 });
 

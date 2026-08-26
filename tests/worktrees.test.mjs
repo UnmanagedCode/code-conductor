@@ -839,3 +839,33 @@ test('removeWorktree by bare slug removes the worktree AND its store dir', async
     'the central-store entry must be gone too');
   assert.deepEqual(await listWorktrees('demo'), []);
 });
+
+// The REST delete guard under an alias. idsForWorktree is an exact in-memory
+// compare, so an un-canonicalized :wt segment reports no attached instances and
+// skips the live-instance refusal entirely — then, under ?force=1, yanks the
+// directory without ever killing them. The MCP mirror of this assertion lives in
+// mcp.test.mjs; this is the REST surface the sidebar's × actually drives.
+test('DELETE worktree by bare slug still refuses (409) with a live instance attached', async () => {
+  await makeRealRepo('demo');
+  // Named via the service: the REST spawn route takes no `name`, and it is the
+  // DELETE that is under test here, so the instance attaches by the full name.
+  const wt = await createWorktree('demo', { name: 'restalias' });
+  assert.equal(wt.worktreeName, 'demo_worktree_restalias');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: 'demo_worktree_restalias',
+  });
+  assert.equal(created.status, 201);
+  const wtName = created.body.worktree.worktreeName;
+  assert.equal(wtName, 'demo_worktree_restalias');
+  const wtPath = wt.worktreePath;
+  const id = created.body.id;
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  const blocked = await api(baseUrl, 'DELETE', '/api/projects/demo/worktrees/restalias');
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.body.error, /running instance/i);
+  assert.ok(instances.get(id), 'the instance survives the refused delete');
+  assert.equal(await fs.access(wtPath).then(() => true, () => false), true,
+    'the worktree directory must still exist');
+  assert.ok(await getWorktree('demo', wtName), 'the record survives too');
+});
