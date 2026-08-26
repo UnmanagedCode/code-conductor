@@ -986,35 +986,132 @@ export function snapStartToGroupBoundary(arr: UiEvent[], start: number, end: num
 // density across every background-task region while adding nothing the group
 // snap already guarantees.
 
-function blockKey(ev: UiEvent, type: string): string { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:${type}`; }
+// The `${msgId}:${blockIdx}` half of a block key — the identity the client's
+// renderer also keys blocks by, and what the progression retire below compares.
+function blockOwner(ev: UiEvent): string { return `${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}`; }
+function blockKey(ev: UiEvent, type: string): string { return `${blockOwner(ev)}:${type}`; }
 
 // An outer turn_end also force-resets (see header comment above).
 function isOuterTurnEnd(ev: UiEvent): boolean {
   return ev?.kind === 'turn_end' && !ev.parentToolUseId;
 }
 
+// Null unless the event carries BOTH a msgId and a numeric blockIdx — see the
+// guard note in the class comment below.
+function namedBlock(ev: UiEvent): string | null {
+  if (typeof ev.blockIdx !== 'number' || ev.msgId == null || ev.msgId === '') return null;
+  return blockOwner(ev);
+}
+
+// TWO DISCHARGE PATHS, and the second one is why this class is not just a
+// close-event bookkeeper:
+//
+//   1. a block's own close event (text_end / thinking_end / tool_use), plus the
+//      outer user_echo / turn_end force-reset;
+//   2. PROGRESSION — the appearance of a DIFFERENT `${msgId}:${blockIdx}` key
+//      retires every open block that is not that key.
+//
+// Path 2 exists because path 1 is withholdable. A substitution backend's
+// gateway can frame a stream so a close never arrives at all — a
+// `content_block_start` with no `content_block.type` (the block then opens on
+// its first text_delta), or a `type` of `"output_text"`: either way
+// content_block_stop falls through every branch above and emits nothing, so
+// the block stays open for the rest of the turn. With only path 1 that latches
+// the live consumer's armed interrupt forever and the turn runs to completion
+// silently. Path 2 retires such a block one block late, which is the renderer's
+// own keying — a new key means the previous block is no longer streaming.
+//
+// PATH 2 MARKS, IT DOES NOT DELETE — and that is a statement about what a
+// never-closed block IS, not a compatibility shim. Such a block is UNFINISHED,
+// permanently: no close is coming, so it can never be rendered whole. A
+// consumer that must show whole blocks (paging) is therefore right to keep
+// counting it — a cut placed after it would end the preceding page ON a
+// dangling block, which is the exact thing the snap exists to prevent. So a
+// retired block stays in `openBlocks`, `empty` keeps its original meaning, and
+// paging's quiescent cut indices are identical BY CONSTRUCTION on every stream.
+// (Deleting instead is not a free simplification: it hands paging extra cuts
+// wherever a stale block is followed by one that closes normally — measured,
+// old [0,1,2] vs [0,1,2,6] on such an array. Do not "clean this up".)
+// What path 2 actually publishes is `boundarySeq`, which is all the abort needs.
+//
+// THE GUARD IS LOAD-BEARING: the retire reads ONLY events that carry BOTH a
+// msgId and a numeric blockIdx. An event that names no block — `system`,
+// `tool_result`, a bare `assistant_message` — must retire nothing. A candidate
+// that read progression from any event fired at index 35 of
+// tests/fixtures/trace-quiescent-boundary.jsonl while Bash `3iXWNctP` ran until
+// index 47. Removing the guard is how this regresses.
+//
+// TOOL SPANS ARE STRICT AND STAY STRICT: `pendingTools` is discharged only by a
+// matching `tool_result` or a turn boundary — never by progression. Measured on
+// 68,431 real outer tool spans across the identity backend and six substitution
+// backends: a msgId change with a span open occurs 85 times, and all 85 spans
+// are dangling (0 late-resolving), so progression would buy nothing while
+// risking the one failure that discards live work. The renamed-tool-id class it
+// would have covered is unattested — 0 orphan `tool_result` ids in that corpus —
+// and routes to the caller-side deadline backstop instead. If it is ever seen in
+// the wild, re-run the orphan-`tool_result` scan rather than re-deriving this.
+//
+// THE TWO CONSUMERS ASK DIFFERENT QUESTIONS, which is why only one of them
+// needs `boundarySeq`. Paging asks "is state empty AT index i", evaluated
+// BEFORE applying event i — and the retiring event is the same event that opens
+// the next block, so no new empty index appears and quiescent cut indices are
+// bit-identical with and without path 2 (measured on both a well-formed and a
+// never-closed-block array). The live abort asks "has a boundary been crossed
+// SINCE I ARMED", which no empty-state reading can answer — hence the counter.
+// One open block: which `${msgId}:${blockIdx}` owns it, and whether it has
+// already been counted as retired by path 2 (`stale`) — a stale block is still
+// unfinished for `empty`'s purposes, but must not be counted a second time.
+interface OpenBlock { owner: string; stale: boolean }
+
 export class QuiescenceScan {
-  openBlocks = new Set<string>();   // `${msgId}:${blockIdx}:${type}` mid-stream
-  pendingTools = new Set<string>(); // toolUseId awaiting its tool_result
+  openBlocks = new Map<string, OpenBlock>(); // `${msgId}:${blockIdx}:${type}` mid-stream
+  pendingTools = new Set<string>();          // toolUseId awaiting its tool_result
+  // Monotonic count of block retirements — its own close, a progression mark, or
+  // a turn-boundary clear over blocks not already marked. THE ONLY THING PATH 2
+  // PUBLISHES: read against an arm-time snapshot by
+  // Instance._maybeFireArmedInterrupt, and never reset except with the whole scan.
+  boundarySeq = 0;
   get empty(): boolean { return this.openBlocks.size === 0 && this.pendingTools.size === 0; }
+  _open(key: string, ev: UiEvent): void {
+    this.openBlocks.set(key, { owner: blockOwner(ev), stale: false });
+  }
+  // Path 1: a block's own close. Counts once — a block already marked stale by
+  // path 2 was counted there.
+  _close(key: string): void {
+    const open = this.openBlocks.get(key);
+    if (!open) return;
+    this.openBlocks.delete(key);
+    if (!open.stale) this.boundarySeq += 1;
+  }
   apply(ev: UiEvent): void {
     if (!ev || ev.parentToolUseId) return; // nested — group integrity covers these
+    // Path 2. Before the switch, so an event that opens a block first marks
+    // whatever block it displaced and then adds its own.
+    const named = namedBlock(ev);
+    if (named !== null) {
+      for (const open of this.openBlocks.values()) {
+        if (open.stale || open.owner === named) continue;
+        open.stale = true;
+        this.boundarySeq += 1;
+      }
+    }
     switch (ev.kind) {
       case 'user_echo':
       case 'turn_end':
+        for (const open of this.openBlocks.values()) if (!open.stale) this.boundarySeq += 1;
         this.openBlocks.clear(); this.pendingTools.clear(); break;
-      case 'text_delta':     this.openBlocks.add(blockKey(ev, 'text')); break;
-      case 'text_end':       this.openBlocks.delete(blockKey(ev, 'text')); break;
+      case 'text_delta':     this._open(blockKey(ev, 'text'), ev); break;
+      case 'text_end':       this._close(blockKey(ev, 'text')); break;
       case 'thinking_start':
-      case 'thinking_delta': this.openBlocks.add(blockKey(ev, 'thinking')); break;
-      case 'thinking_end':   this.openBlocks.delete(blockKey(ev, 'thinking')); break;
+      case 'thinking_delta': this._open(blockKey(ev, 'thinking'), ev); break;
+      case 'thinking_end':   this._close(blockKey(ev, 'thinking')); break;
       case 'tool_use_start':
       case 'tool_use_input_delta':
-        this.openBlocks.add(blockKey(ev, 'tool'));
+        this._open(blockKey(ev, 'tool'), ev);
         if (typeof ev.toolUseId === 'string') this.pendingTools.add(ev.toolUseId);
         break;
       case 'tool_use': // block finalized; the SPAN stays open until tool_result
-        this.openBlocks.delete(blockKey(ev, 'tool'));
+        this._close(blockKey(ev, 'tool'));
         if (typeof ev.toolUseId === 'string') this.pendingTools.add(ev.toolUseId);
         break;
       case 'tool_result':

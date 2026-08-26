@@ -19,6 +19,7 @@ import { spawnReplacementAndExit } from './restart.ts';
 import { waitFor } from './waitFor.ts';
 import { CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { getOnOverageAction } from './appSettings.ts';
+import { softInterruptDeadlineMs } from './instances.ts';
 import {
   writeResumeManifest,
   readResumeManifest,
@@ -29,10 +30,11 @@ import { normalizePlaybookEnforcement, type PlaybookEnforcement } from './playbo
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from './instanceTypes.ts';
 
 // Wait-and-retry grace: after the drain's soft interrupts, wait this long (`RESUME_DRAIN_GRACE_MS`) for every live
-// instance to leave its turn on its own. If the grace elapses, log a warning
-// and keep waiting (re-arming the grace) — it never force-interrupts. If an
-// agent is wedged and won't finish its turn, the user can manually interrupt
-// that turn (e.g. via the UI's interrupt control) to unblock the drain.
+// instance to leave its turn on its own. If the grace elapses, log a warning,
+// ESCALATE any straggler still in turn to the forced tier, and keep waiting.
+// (The soft arms themselves are also bounded — see softInterruptDeadlineMs —
+// so a stop that never reaches a block boundary escalates on its own deadline;
+// this loop is the outer backstop for a turn that is running fine but long.)
 export const RESUME_DRAIN_GRACE_MS = 60000;
 // Gap between staggered respawns on boot — N concurrent claude spawns is a
 // resource spike on Termux/Android.
@@ -151,7 +153,10 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   // buildConductorResumeText, which is its durable owner either way.
   for (const inst of live) {
     if (inst.status !== 'turn') continue;
-    inst.interrupt().catch((e: unknown) => log.warn?.('resume-restart: interrupt failed', errMsg(e)));
+    // BOUNDED: nothing here is watching the arm, so an undischargeable one must
+    // escalate on its own rather than hold the drain open forever.
+    inst.interrupt({ deadlineMs: softInterruptDeadlineMs() })
+      .catch((e: unknown) => log.warn?.('resume-restart: interrupt failed', errMsg(e)));
   }
 
   // (3) Wait for all-idle. Step 2's stop is the armed SOFT tier — it lands at the
@@ -160,7 +165,14 @@ export async function drainToManifest({ server, wss, instances, log = console, g
   // all instances finish their turns on their own.
   { let { timedOut, stragglers } = await waitAllIdle(instances, graceMs);
     while (timedOut) {
-      log.warn?.(`resume-restart: drain grace (${graceMs}ms) elapsed; ${stragglers.length} straggler(s) still in turn — waiting without forcing`);
+      log.warn?.(`resume-restart: drain grace (${graceMs}ms) elapsed; ${stragglers.length} straggler(s) still in turn — escalating`);
+      for (const inst of live) {
+        // Already forced once ⇒ leave it alone; a second control_request buys
+        // nothing and the turn is already severed as far as we can sever it.
+        if (inst.status !== 'turn' || inst.turnForceAborted) continue;
+        inst.interrupt({ force: true })
+          .catch((e: unknown) => log.warn?.('resume-restart: forced interrupt failed', errMsg(e)));
+      }
       ({ timedOut, stragglers } = await waitAllIdle(instances, graceMs));
     }
   }

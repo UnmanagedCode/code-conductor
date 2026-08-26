@@ -1998,3 +1998,70 @@ test('policy switch unmarks a conducted worker the stop left UN-ARMED', async ()
   assert.equal(worker._overageStoppedUnarmed, false, 'the sweep reached it on that flag alone');
   assert.equal(worker.summary().overageStoppedUnarmed, false, 'refusal no longer surfaced');
 });
+
+// ── Card 2026-0230: the overage stop must actually STOP a latched-stream worker ──
+//
+// Card 2026-0212 fixed the MEMBERSHIP half — a non-Claude worker under a Claude
+// conductor is IN the usage-window flow (tests/overage-backend-exempt.test.mjs
+// pins that). What was never checked is whether the stop it issues is
+// EFFECTIVE. Against a substitution gateway that never closes its content block,
+// the armed soft stop has no boundary to fire at, so pre-fix it silently did
+// nothing and the throttled worker ran its turn to completion.
+//
+// This pins the other half: the stop reaches a real abort. Here it does so
+// through the deadline backstop — R2 (one block for the whole turn) is a
+// residual the block-progression path cannot discharge, which is exactly the
+// case the backstop exists for. `_directOverageStop` is the caller under test.
+const LATCHED_WORKER = {
+  events: [INIT],
+  turns: [
+    { on: { type: 'prompt', text: 'HOLD' }, emit: [
+      { type: 'stream_event', event: { type: 'message_start', message: { id: 'msg_lw1', role: 'assistant' } } },
+      // NO content_block.type ⇒ the block opens on its text_delta and its
+      // content_block_stop (never sent here anyway) would emit nothing.
+      { type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { text: '' } } },
+      { type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'streaming forever' } } },
+    ] },
+    INTERRUPT_TURN,
+    { on: { type: 'prompt' }, emit: [] },
+  ],
+};
+
+test('2026-0230: an overage stop against a latched-stream worker reaches a real abort', async () => {
+  const prevDeadline = process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS;
+  process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS = '150';
+  try {
+    await boot(routingScenario(), 'stop');
+    const c = await createInstCapturing({}, 'cond-latched');
+    // The worker runs on a substitution backend — the reported configuration.
+    process.env.FAKE_CLAUDE_SCENARIO = await writeScenario(LATCHED_WORKER);
+    const w = await createInstCapturing(
+      { conducted: true, callerInstanceId: c.inst.id, backend: 'ollama', model: 'gemma4:cloud' },
+      'work-latched');
+    const wEvs = collect(w.inst);
+
+    w.inst.prompt('HOLD');
+    await waitFor(() => wEvs.some(e => e.kind === 'text_delta'));
+    assert.equal(w.inst._quiescence.empty, false, 'the worker is latched inside an unclosed block');
+
+    c.inst.prompt('STAY');
+    await waitFor(() => c.inst.status === 'turn');
+    c.inst.prompt('TRIP go');
+    await waitFor(() => sub(wEvs, 'auto_stop_overage').length > 0, { timeout: 10000 });
+
+    // The stop lands for real — through the escalation, since the soft arm has
+    // no boundary to discharge at on this stream.
+    await waitFor(() => w.inst.status === 'idle', { timeout: 10000 });
+    assert.equal(w.inst.turnForceAborted, true,
+      'the soft arm latched; the deadline escalation is what stopped it');
+    const line = wEvs.filter(e => e.kind === 'system' && e.subtype === 'stderr')
+      .map(e => e.data?.line ?? '').find(l => /interrupt deadline/.test(l));
+    assert.ok(line, 'the escalation annotated WHY the boundary was never reached');
+    assert.match(line, /msg_lw1:0:text/, 'naming the held block key');
+    assert.equal(interruptsIn(await stdinOf(w.transcript)).length, 1,
+      'exactly one interrupt reached the worker\'s CLI');
+  } finally {
+    if (prevDeadline === undefined) delete process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS;
+    else process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS = prevDeadline;
+  }
+});
