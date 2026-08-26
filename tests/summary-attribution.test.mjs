@@ -389,9 +389,20 @@ test('post-test teardown is inside the reported figure', async () => {
   // Discriminates the FILE-level `test:complete` from the last INNER one: the inner
   // test completes ~1ms in and the hook then sleeps ~900ms. Measured 954ms from the
   // file-level event; the inner-complete source would report ~40ms. The 700ms floor
-  // sits between them and is load-safe in both directions — the sleep is wall-clock
-  // so load cannot shrink it, and the wrong source would need 700ms of pure
-  // spawn+import cost to sneak past.
+  // sits between them, and THE TWO DIRECTIONS ARE NOT EQUALLY SAFE — do not restate
+  // this as "load-safe in both directions", which it is not:
+  //   * FALSE-REDS: unconditional. The correct figure is dequeue→file-complete and
+  //     contains a 900ms wall-clock sleep that load can only inflate, so a correct
+  //     reporter can never fall under 700.
+  //   * THE ANTI-MUTANT MARGIN: conditional, and this card measured where it breaks.
+  //     The wrong-source figure is dequeue-relative too — it is spawn+import `C` plus
+  //     ~1ms — so load pushes it TOWARD the threshold, not away. Quiet, C ~40ms leaves
+  //     ~660ms of margin; at 72-way starvation C was measured at 772ms, i.e. ABOVE the
+  //     floor, where the inner-complete mutant survives this test.
+  // Benign in practice: mutation grading runs quiet, and test 3 is a deliberate
+  // co-guard whose kills co-fire with tests 1 and 2 (see the header). Fix it by
+  // grading quiet, never by moving the 700ms floor or the fixture's sleep — the floor
+  // is what sits between the two sources.
   const { code, diag, ranking, of } = await runFixtures(['teardown']);
   assert.equal(code, 0, `the teardown fixture run should be green:\n${diag}`);
   assert.equal(ranking.length, 1, `expected exactly the one fixture:\n${diag}`);
