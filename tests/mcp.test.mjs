@@ -218,6 +218,41 @@ test('adopt_project registers an out-of-root repo and returns its realpath as JS
   assert.match(out, /^ {2}external$/m, 'the external deviant reaches the rendering');
 });
 
+test('an ADOPTED repo with no commits carries both deviants and refuses a worktree by name', async () => {
+  // The cross-feature seam: `external` and `unbornHead` were built against each
+  // other's absence — the unborn-HEAD suite knows nothing about adopted
+  // projects, and the external-projects suite only ever adopts repos that have
+  // a commit. They meet here because an unborn repo is still a repo ROOT, so
+  // adopt_project accepts it, and because `unbornHead` is computed off the
+  // project's REALPATH, which for an adopted project is the target.
+  // makeUnbornRepo takes its root as a parameter, so pointing it at `home`
+  // puts the repo OUTSIDE projectsRoot (`<home>/project`) with no new fixture.
+  const repoPath = await makeUnbornRepo(home, 'unborn-outside');
+  const adopted = unwrap(await callTool(baseUrl, 'adopt_project', { name: 'unborn', path: repoPath }));
+  assert.equal(adopted.ok, true, `an unborn repo is still a repo root: ${JSON.stringify(adopted)}`);
+
+  // Both deviant lines, on the SAME project block — projectBlock isolates one
+  // block, so neither line can be satisfied by some other project's row.
+  const block = projectBlock(text(await callTool(baseUrl, 'list_projects', {})), 'unborn');
+  assert.match(block, /^ {2}! no commits yet — a worktree needs a first commit$/m);
+  assert.match(block, /^ {2}external$/m);
+
+  // The REST row agrees, and says isGitRepo:true — the flag is not the
+  // not-a-repo one wearing a different label.
+  const row = (await api(baseUrl, 'GET', '/api/projects')).body.find(p => p.name === 'unborn');
+  assert.deepEqual(
+    { external: row.external, isGitRepo: row.isGitRepo, unbornHead: row.unbornHead },
+    { external: true, isGitRepo: true, unbornHead: true },
+  );
+
+  // And the refusal names the real cause rather than failing deeper in git.
+  const { body } = await rpc(baseUrl, 'tools/call', {
+    name: 'create_worktree', arguments: { project: 'unborn' },
+  });
+  assert.equal(body.result.isError, true);
+  assert.match(body.result.content[0].text, /no commits yet/);
+});
+
 test('an adopt_project refusal keeps its machine-readable code through the MCP envelope', async () => {
   // JSON, not textResult: a `code` cannot survive the text-only rendered-read
   // channel, and the conductor is told to act on this one.
