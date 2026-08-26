@@ -136,7 +136,7 @@ for (const flagged of [false, true]) {
       await waitFor(() => inst.status === 'idle' && inst.sessionId);
       if (flagged) {
         inst.backend = 'ollama';
-        inst.model = 'deepseek-v4-flash:0731-cloud';
+        inst.model = 'deepseek-v4-flash:cloud';
         inst._refreshModelCapabilities();
         assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
       }

@@ -210,7 +210,7 @@ test('flag does not fire auto-approve when instance is not in plan mode', async 
 // ---------------------------------------------------------------------------
 
 const SCENARIO_MID_TURN = path.join(__dirname, 'fixtures', 'scenario-plan-mid-turn.json');
-const FLAGGED_MODEL = 'deepseek-v4-flash:0731-cloud';
+const FLAGGED_MODEL = 'deepseek-v4-flash:cloud';
 
 async function userStdin(transcriptPath) {
   try {

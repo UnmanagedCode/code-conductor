@@ -26,18 +26,17 @@ describe('resolveMidTurnSteering', () => {
   test('the identity backend is always steerable, whatever the model id says', () => {
     assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: 'claude-opus-5' }), true);
     // Even an id that a preset declares false for: the backend short-circuits.
-    assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: 'deepseek-v4-flash:0731-cloud' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: CLAUDE_BACKEND_ID, model: 'deepseek-v4-flash:cloud' }), true);
   });
 
   test('a curated preset declares the opt-out; its siblings stay steerable', () => {
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:0731-cloud' }), false);
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud' }), false);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'glm-5.2:cloud' }), true);
     assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'qwen3.5:cloud' }), true);
-    // Exactly one preset opts out — the flag is not accidentally set on the row
-    // next to it (they differ only by tag).
+    // Exactly one preset opts out.
     assert.deepEqual(
       OLLAMA_CLOUD_MODELS.filter(m => m.midTurnSteering === false).map(m => m.model),
-      ['deepseek-v4-flash:0731-cloud'],
+      ['deepseek-v4-flash:cloud'],
     );
   });
 
@@ -50,16 +49,16 @@ describe('resolveMidTurnSteering', () => {
   test('the match is EXACT: a stripped tag is a different model', () => {
     assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash' }), true,
       'the tagless id is not the flagged registry key');
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:0731-cloud ' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud ' }), true);
   });
 
   test('a custom row wins over a curated preset, in both directions', async () => {
     // Override the flagged preset back to steerable.
     await addCustomModel({
-      label: 'Mine', model: 'deepseek-v4-flash:0731-cloud', backend: 'ollama',
+      label: 'Mine', model: 'deepseek-v4-flash:cloud', backend: 'ollama',
       contextWindow: 1000, midTurnSteering: true,
     });
-    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:0731-cloud' }), true);
+    assert.equal(resolveMidTurnSteering({ backend: 'ollama', model: 'deepseek-v4-flash:cloud' }), true);
     // …and opt an unflagged preset out.
     await addCustomModel({
       label: 'Other', model: 'qwen3.5:cloud', backend: 'ollama',

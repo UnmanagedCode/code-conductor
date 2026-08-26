@@ -327,7 +327,7 @@ test('G-T6 a domain-exempt session is never guarded', async () => {
   await warm(claude.inst);
   await warm(ex.inst);
   ex.inst.backend = 'ollama';
-  ex.inst.model = 'deepseek-v4-flash:0731-cloud';
+  ex.inst.model = 'deepseek-v4-flash:cloud';
   ex.inst._refreshModelCapabilities();
   assert.equal(instances._inUsageWindowFlow(ex.inst), false, 'precondition: exempt');
   trip();
