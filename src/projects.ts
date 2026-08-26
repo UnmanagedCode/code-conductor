@@ -41,8 +41,11 @@ const NAME_RE = /^[a-zA-Z0-9._-]+$/;
 // The first character additionally excludes `.`, so `..`, `.` and `.hidden`
 // are refused — a dot-leading or dot-only name is exactly the path hazard
 // this regex exists to prevent. That's a deliberate deviation from NAME_RE
-// above, which has the same hole (`..` passes it) and is left alone as
-// pre-existing: do NOT "restore parity" with NAME_RE here, it reopens this.
+// above, which still admits `.hidden` because `.conduct` is a real project
+// name; the dot-ONLY half of the hazard (`.` / `..`) is closed in
+// validateName instead, since NAME_RE has no positional rules to close it in.
+// Do NOT "restore parity" by loosening this regex — it reopens the hazard for
+// workspaces, which have no `.conduct` case to accommodate.
 const WORKSPACE_RE = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]{0,39}$/;
 
 // All orchestrator-owned state lives under a single dotfolder at the
@@ -213,6 +216,16 @@ export function validateName(name: string): string {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     throw httpError(400, 'invalid project name (must match ^[a-zA-Z0-9._-]+$)');
   }
+  // `.` and `..` pass NAME_RE (it has no positional rules) but they are PATH
+  // TRAVERSAL, not names: `path.join(projectsRoot(), '..')` escapes the root
+  // entirely, and every caller that follows treats what it gets back as a
+  // project directory it may write into or REMOVE — deleteProject would
+  // recursively delete the projects root's parent. Refused here, in the one
+  // function every name-taking entry point already funnels through, rather
+  // than at each of them. Dot-LEADING names stay legal: `.conduct` is one.
+  if (name === '.' || name === '..') {
+    throw httpError(400, `invalid project name '${name}' (a dot-only name is a path traversal, not a project)`);
+  }
   return name;
 }
 
@@ -264,22 +277,45 @@ export async function resolveProjectDir(name: string): Promise<{ path: string; e
     if (!inRootStat.isDirectory()) throw httpError(404, `'${name}' is not a directory`);
     return { path: inRoot, external: false };
   }
-  // A broken link, a link loop, or no link at all: the name is simply unknown.
+  // A broken link, a link cycle, or no link at all: the name is simply unknown.
+  // Anything else — EACCES on `.external/`, ENOTDIR because `.external` is a
+  // file — is a broken installation, and letting it read as "no such project"
+  // at every call site would turn one fixable fault into a fleet of 404s.
+  // (The SILENT skip for a broken link lives in listProjects, which has to
+  // render the rest of the list either way; this is the addressed-by-name
+  // path, where the caller can be told.)
   let real: string;
   try { real = await fs.realpath(externalLinkPath(name)); }
-  catch { return null; }
-  try { if (!(await fs.stat(real)).isDirectory()) return null; }
-  catch { return null; }
+  catch (e) {
+    const code = errCode(e);
+    if (code === 'ENOENT' || code === 'ELOOP') return null;
+    throw e;
+  }
+  // realpath just resolved it, so an ENOENT here is a concurrent deletion.
+  let targetStat: Awaited<ReturnType<typeof fs.stat>>;
+  try { targetStat = await fs.stat(real); }
+  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
+  if (!targetStat.isDirectory()) return null; // a link to a file is not a project
   return { path: real, external: true };
 }
 
-// "Is this name already a project?" — the shared existing-name test for the two
-// creation paths (createProject, adoptProject). A non-directory sitting at the
-// in-root name counts as TAKEN: resolveProjectDir refuses it, and neither caller
-// has anything different to do about it.
-async function nameIsTaken(name: string): Promise<boolean> {
-  try { return (await resolveProjectDir(name)) !== null; }
-  catch { return true; }
+// "Is this name usable?" — the shared existing-name test for the two creation
+// paths (createProject, adoptProject). Returns null when the name is free, else
+// a reason naming what actually holds it. It returns a REASON rather than a
+// boolean because the two blockers need different recovery: an existing project
+// means pick another name, while a stray FILE at the in-root name means remove
+// it — a caller told "already exists" would leave that file sitting there
+// forever. createProject discards the text (its 409 wording is a fixed
+// contract); adoptProject surfaces it.
+async function heldNameReason(name: string): Promise<string | null> {
+  let held: { path: string; external: boolean } | null;
+  try { held = await resolveProjectDir(name); }
+  catch {
+    // The one thing resolveProjectDir refuses rather than misses: something is
+    // at the in-root path and it is not a directory.
+    return `'${path.join(projectsRoot(), name)}' exists but is not a directory — remove it, or pick another name.`;
+  }
+  return held ? `project '${name}' already exists at ${held.path}.` : null;
 }
 
 export async function listProjects(): Promise<ProjectInfo[]> {
@@ -594,7 +630,7 @@ export async function createProject(
   // too, and its `.external/` symlink is invisible to this mkdir — two records
   // for one name would share one store entry and one encoded session dir. The
   // EEXIST branch below stays as the race backstop.
-  if (await nameIsTaken(name)) {
+  if (await heldNameReason(name)) {
     throw httpError(409, `project '${name}' already exists`);
   }
   try {
@@ -711,11 +747,20 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   } catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` }; }
 
   // Already managed? One directory with two project identities would share one
-  // encodeCwd session dir and hold two store entries.
+  // encodeCwd session dir and hold two store entries. Tested in BOTH directions,
+  // and `startsWith` is anchored with a separator so a merely prefix-SHARING
+  // sibling (`<projectsRoot>-backup`) is not mistaken for a descendant:
+  //   - the target inside the root ⇒ it is (or is part of) a project already;
+  //   - the root inside the TARGET ⇒ adopting it would enclose the projects
+  //     root, cc's own checkout and `.external/` itself in one "project", which
+  //     the conductor's hard boundary then forbids anyone from working inside.
   let rootReal = projectsRoot();
   try { rootReal = await fs.realpath(rootReal); } catch { /* root may not exist yet */ }
   if (real === rootReal || real.startsWith(rootReal + path.sep)) {
     return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is inside the projects root — it is already managed by code-conductor.` };
+  }
+  if (rootReal.startsWith(real + path.sep)) {
+    return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' contains the projects root '${rootReal}' — adopting it would put every managed project inside one project.` };
   }
   for (const p of await listProjects()) {
     if (p.external && p.path === real) {
@@ -739,16 +784,20 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
     return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository ROOT — its toplevel is '${topReal}'. Adopt that instead.` };
   }
 
-  if (await nameIsTaken(name)) {
-    return { ok: false, code: 'PROJECT_EXISTS', reason: `project '${name}' already exists.` };
-  }
+  const held = await heldNameReason(name);
+  if (held) return { ok: false, code: 'PROJECT_EXISTS', reason: held };
 
   await fs.mkdir(externalDir(), { recursive: true });
   try { await fs.symlink(real, externalLinkPath(name)); }
   catch (e) {
-    // EEXIST closes the TOCTOU window between nameIsTaken and this symlink.
+    // EEXIST narrows the window between the name check above and this symlink —
+    // but only for a racing ADOPT. A concurrent createProject(name) can still
+    // mkdir the in-root dir in the same window and leave two records for one
+    // name. Accepted, not closed: it needs two callers racing on one name, and
+    // a lock here would be the only lock in this module. Do not read this catch
+    // as a general mutual exclusion.
     if (errCode(e) === 'EEXIST') {
-      return { ok: false, code: 'PROJECT_EXISTS', reason: `project '${name}' already exists.` };
+      return { ok: false, code: 'PROJECT_EXISTS', reason: `'${externalLinkPath(name)}' already exists — either a concurrent adopt won the race, or it is a stale link left by a removed project. Remove it, or pick another name.` };
     }
     throw httpError(500, `failed to adopt '${name}': ${errMsg(e)}`);
   }

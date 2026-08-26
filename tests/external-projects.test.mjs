@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   adoptProject, getProject, listProjects, deleteProject,
-  encodeCwd, findSessionLocation,
+  encodeCwd, findSessionLocation, validateName, projectStoreDir,
   externalLinkPath, externalDir, EXTERNAL_DIRNAME,
 } from '../src/projects.ts';
 import { createWorktree, syncWorktree, mergeWorktreeIntoParent, removeWorktree } from '../src/worktrees.ts';
@@ -213,6 +213,105 @@ test('every adopt refusal returns a code, is not 5xx, and leaves no symlink behi
   assert.equal(ok.body.path, second.real);
 });
 
+test('TARGET_ALREADY_MANAGED fires on containment in either direction, and not on a prefix-sharing sibling', async () => {
+  // The projects root is `<home>/project`. `<home>/project-backup` SHARES that
+  // prefix without being inside it, so an unanchored startsWith would refuse a
+  // perfectly adoptable repo. `<home>` CONTAINS the root, so adopting it would
+  // enclose every managed project — plus cc's own checkout and `.external/` —
+  // in one "project" the conductor is then forbidden to work inside.
+  const rootReal = await fs.realpath(projectsRoot);
+  const sibling = await makeExternalRepo('project-backup');
+  assert.ok(sibling.real.startsWith(rootReal), 'the sibling really does share the root prefix');
+  assert.ok(!sibling.real.startsWith(rootReal + path.sep), 'but is not inside it');
+
+  const ok = await adoptProject('sib', sibling.repoPath);
+  assert.equal(ok.ok, true, `a prefix-sharing sibling must be adoptable: ${JSON.stringify(ok)}`);
+  assert.equal(ok.path, sibling.real);
+
+  // The inverse direction: a target that CONTAINS the projects root.
+  await git(home, 'init', '-q', '-b', 'main');
+  await git(home, 'config', 'user.email', 'test@example.com');
+  await git(home, 'config', 'user.name', 'test');
+  const enclosing = await adoptProject('enclosing', home);
+  assert.equal(enclosing.ok, false, JSON.stringify(enclosing));
+  assert.equal(enclosing.code, 'TARGET_ALREADY_MANAGED');
+  assert.match(enclosing.reason, /contains the projects root/);
+  assert.ok(!(await fs.readdir(externalDir())).includes('enclosing'), 'and no symlink was written');
+});
+
+test('validateName refuses the dot-only names that would escape the projects root', async () => {
+  // Asserted at the FUNCTION level on purpose: `path.join(projectsRoot(), '..')`
+  // escapes the root, and every caller downstream treats the result as a dir it
+  // may write into or REMOVE — deleteProject would recursively delete the
+  // root's parent. Going through HTTP would instead be testing whether Express
+  // normalizes dot segments, which is not the property that protects this.
+  for (const bad of ['.', '..']) {
+    assert.throws(() => validateName(bad), /path traversal/, `validateName(${JSON.stringify(bad)})`);
+    await assert.rejects(() => getProject(bad), /path traversal/);
+    await assert.rejects(() => deleteProject(bad), /path traversal/);
+  }
+  // Dot-LEADING names stay legal — `.conduct` is one, and every project-
+  // addressing route resolves it by name.
+  assert.equal(validateName('.conduct'), '.conduct');
+
+  // The property that matters: the parent of the projects root survives, with
+  // its contents, after the refused delete.
+  const canary = path.join(home, 'canary.txt');
+  await fs.writeFile(canary, 'still here\n');
+  await assert.rejects(() => deleteProject('..'));
+  assert.equal(await fs.readFile(canary, 'utf8'), 'still here\n',
+    "the projects root's parent was not touched");
+});
+
+test('resolveProjectDir distinguishes a missing project from a broken .external/', async () => {
+  // ENOENT/ELOOP mean "no such project" and must stay a 404. Anything else is a
+  // broken installation, and swallowing it would report every project name as
+  // unknown while the real fault stayed invisible.
+  //
+  // ENOTDIR via `.external` as a FILE, not chmod: a suite running as root
+  // bypasses permission bits, so an EACCES fixture would be non-deterministic.
+  await makeInRootRepo('inroot');
+  await fs.writeFile(externalDir(), 'not a directory\n');
+  await assert.rejects(() => getProject('whatever'), (e) => e.code === 'ENOTDIR',
+    'a broken .external/ surfaces its real error, not a 404');
+  // The in-root branch is unaffected — it resolves before `.external/` is consulted.
+  assert.equal((await getProject('inroot')).external, false);
+
+  // And the fall-through half still holds: a genuinely broken LINK is a miss.
+  await fs.rm(externalDir());
+  await fs.mkdir(externalDir(), { recursive: true });
+  await fs.symlink(path.join(home, 'no-such-target'), externalLinkPath('dangling'));
+  await assert.rejects(() => getProject('dangling'), /not found/, 'a dangling link is a 404, not a 500');
+  assert.deepEqual((await listProjects()).map(p => p.name), ['inroot']);
+});
+
+test('PROJECT_EXISTS names what actually holds the name, not a project that does not exist', async () => {
+  // Both of these refuse safely, but "project already exists" would send the
+  // caller off to pick a new name and leave the real blocker sitting there.
+  const { repoPath } = await makeExternalRepo();
+
+  // (a) A plain FILE at the in-root name. No project exists; the name is
+  //     unusable until that file is removed.
+  await fs.mkdir(projectsRoot, { recursive: true });
+  await fs.writeFile(path.join(projectsRoot, 'strayfile'), 'x');
+  const stray = await adoptProject('strayfile', repoPath);
+  assert.equal(stray.ok, false);
+  assert.equal(stray.code, 'PROJECT_EXISTS');
+  assert.match(stray.reason, /is not a directory/, `reason must name the stray file: ${stray.reason}`);
+  assert.ok(stray.reason.includes(path.join(projectsRoot, 'strayfile')), 'and give its path');
+
+  // (b) A STALE broken `.external/` link, left by a target that was removed
+  //     outside cc. resolveProjectDir misses it, so the refusal comes from the
+  //     symlink's own EEXIST.
+  await fs.mkdir(externalDir(), { recursive: true });
+  await fs.symlink(path.join(home, 'long-gone'), externalLinkPath('stale'));
+  const staleRes = await adoptProject('stale', repoPath);
+  assert.equal(staleRes.ok, false);
+  assert.equal(staleRes.code, 'PROJECT_EXISTS');
+  assert.match(staleRes.reason, /stale link/, `reason must offer the removal path: ${staleRes.reason}`);
+  assert.ok(staleRes.reason.includes(externalLinkPath('stale')), 'and name the link to remove');
+});
+
 // ---------- 7.6 the irreversible failure mode, full route cascade ----------
 
 test('DELETE an external project unregisters it and never touches the repo', async () => {
@@ -242,8 +341,12 @@ test('DELETE an external project unregisters it and never touches the repo', asy
   assert.match(log, /payload/, 'history survives');
   assert.equal((await git(real, 'rev-parse', 'HEAD')).stdout.trim(), headBefore, 'HEAD unmoved');
 
-  // The record is gone, and so is the store entry.
+  // The record is gone, and so is the store entry. The store dir holds the
+  // project's worktree metadata, attachments and debug captures — left behind,
+  // it re-materializes stale worktree records for the next project to reuse
+  // the name.
   await assert.rejects(() => fs.lstat(externalLinkPath('ext')), 'the symlink is unlinked');
+  await assert.rejects(() => fs.stat(projectStoreDir('ext')), 'the central-store entry is removed');
   assert.deepEqual((await listProjects()).map(p => p.name), []);
 
   // The worktree dir was removed BEFORE the symlink — otherwise the cascade

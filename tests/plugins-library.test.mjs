@@ -6,8 +6,10 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createPluginLibrary } from '../src/plugins/library.ts';
-import { orchStoreRoot } from '../src/projects.ts';
+import { orchStoreRoot, adoptProject, listProjects, externalDir } from '../src/projects.ts';
 import { makePluginRoot } from './plugin-helpers.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+import { rmrf } from './rmrf.mjs';
 
 const run = promisify(execFile);
 async function git(cwd, ...args) { await run('git', ['-C', cwd, ...args]); }
@@ -271,6 +273,46 @@ test('install(): already-installed target dir -> 409', async () => {
     const lib = createPluginLibrary();
     await rejectsWithStatus(lib.install('code-share'), 409);
   } finally {
+    await env.restore();
+  }
+});
+
+test('install(): a name held by an ADOPTED project -> 409 before any clone', async () => {
+  // The gate's whole reason for going through resolveProjectDir rather than an
+  // in-root fs.stat: an adopted project holds its name without occupying
+  // `<projectsRoot>/<name>`, so an in-root-only probe sees "free", clones over
+  // it, and mints a SECOND record for one project name — two store entries and
+  // one shared encodeCwd session dir.
+  const env = await makePluginRoot();
+  const outside = await mkdtemp('adopted-cs-');
+  try {
+    await git(outside, 'init', '-q', '-b', 'main');
+    // `code-share`'s repo URL derives the project name `code-share`.
+    const adopted = await adoptProject('code-share', outside);
+    assert.equal(adopted.ok, true, JSON.stringify(adopted));
+
+    const cloneCalls = [];
+    let validated = 0;
+    const lib = createPluginLibrary({
+      _cloneImpl: async (url, destDir) => { cloneCalls.push({ url, destDir }); return { code: 0, stdout: '', stderr: '' }; },
+    });
+    await rejectsWithStatus(lib.install('code-share', { onValidated: () => { validated++; } }), 409);
+
+    // Refused during validation — nothing was cloned and the streaming switch
+    // never fired, so no partial dir can be left behind either.
+    assert.deepEqual(cloneCalls, [], 'the clone must not run');
+    assert.equal(validated, 0, 'onValidated never fires on a refused install');
+
+    // And exactly ONE record still answers to that name: the adopted one.
+    const rows = (await listProjects()).filter(p => p.name === 'code-share');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].external, true);
+    assert.equal(rows[0].path, await fs.realpath(outside));
+    await assert.rejects(() => fs.stat(path.join(env.root, 'code-share')),
+      'no in-root directory was created for a name already held');
+    assert.deepEqual(await fs.readdir(externalDir()), ['code-share']);
+  } finally {
+    await rmrf(outside);
     await env.restore();
   }
 });
