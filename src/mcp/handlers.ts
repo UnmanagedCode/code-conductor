@@ -30,7 +30,7 @@ import {
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
   worktreeDirtyLines, runGit,
-  listDependentWorktrees, dependentsRefusal,
+  listDependentWorktrees, dependentsRefusal, resolveWorktreeName,
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
@@ -444,7 +444,15 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   const scope = target ? [target] : [...await fsListProjects(), conductTarget];
   let targets = (await Promise.all(scope.map(sessionCwdsFor))).flat();
   if (worktreeArg !== null) {
-    targets = targets.filter(t => t.worktree === worktreeArg);
+    // The targets' names came straight out of listWorktrees, so resolving
+    // against them costs nothing extra and lets the bare slug filter too.
+    const wtName = resolveWorktreeName(
+      project as string, worktreeArg, targets.map(t => t.worktree).filter((n): n is string => n !== null),
+    );
+    // Guard the null: the project-root target carries `worktree: null`, so an
+    // unresolved name would otherwise filter down to the root and silently
+    // report the project's own sessions as the worktree's.
+    targets = wtName === null ? [] : targets.filter(t => t.worktree === wtName);
     if (!targets.length) throw new Error(`worktree '${worktreeArg}' not found under project '${project}'`);
   }
 
@@ -1656,9 +1664,17 @@ export async function createWorktree(
 }
 
 export async function deleteWorktree({ project, worktree, force = false }: { project: string; worktree: string; force?: boolean }, { instances }: McpCtx) {
+  // Resolve ONCE, up front, and thread the canonical name through every
+  // consumer below: idsForWorktree and listDependentWorktrees are exact
+  // in-memory compares, so a bare slug would silently see no attached
+  // instances and no dependents — skipping both guards, and under force
+  // yanking the directory out from under live workers. Reused for the dirty
+  // check further down, so this is one resolution, not two.
+  const wt = await getWorktree(project, worktree);
+  const wtName = wt?.worktreeName ?? worktree;
   let running: InstanceLike[] = [];
   if (instances) {
-    running = instances.idsForWorktree(project, worktree)
+    running = instances.idsForWorktree(project, wtName)
       .map(id => instances.get(id))
       .filter((i): i is InstanceLike => !!i && !!i.proc);
     // Expected business refusal (not a fault): attached live instance.
@@ -1676,9 +1692,8 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
   // called with force below, and is also what covers the REST delete path).
   if (!force) {
     // Dependents first: a clean tree does not unblock this one.
-    const dependents = await listDependentWorktrees(project, worktree);
+    const dependents = await listDependentWorktrees(project, wtName);
     if (dependents.length > 0) return dependentsRefusal(worktree, dependents, 'deleting');
-    const wt = await getWorktree(project, worktree);
     if (wt) {
       const dirty = await worktreeDirtyLines(wt.worktreePath);
       if (dirty.ok && dirty.lines.length > 0) {
@@ -1693,8 +1708,8 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
   if (force && running.length > 0) {
     await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
   }
-  await removeWorktree(project, worktree, { force });
-  return { project, worktree };
+  await removeWorktree(project, wtName, { force });
+  return { project, worktree: wtName };
 }
 
 export async function syncWorktree({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
@@ -1720,7 +1735,7 @@ export async function mergeWorktree({ project, worktree, allowDirty }: { project
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
-  const result = await mergeWorktreeIntoParent(project, worktree, { allowDirty: allowDirty === true });
+  const result = await mergeWorktreeIntoParent(project, wt.worktreeName, { allowDirty: allowDirty === true });
   if (!result.ok && result.code === 'WORKTREE_BEHIND') {
     return {
       ok: false,

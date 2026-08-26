@@ -1196,3 +1196,29 @@ test("two concurrent stops both persist runtime.json — neither steals the othe
     await env.restore();
   }
 });
+
+// The worktree name a caller pins is persisted into registry.json and matched
+// literally afterwards — by reconcileActiveVersion on load (a miss self-heals by
+// resetting to {type:'main'}) and by the GUI's `worktree:${worktreeName}` option
+// values. So the bare slug is accepted on the way in, and canonicalized on write.
+test('setActiveVersion accepts a worktree by bare slug and persists the canonical name', async () => {
+  const env = await makePluginRoot();
+  try {
+    await env.addPluginProject('aplug');
+    await fabricateWorktree(env, 'aplug', 'aplug_worktree_va');
+
+    const host = createPluginHost();
+    await host.enable('fake-plugin');
+    const set = await host.setActiveVersion('fake-plugin', { type: 'worktree', name: 'va' });
+    assert.deepEqual(set.activeVersion, { type: 'worktree', name: 'aplug_worktree_va' },
+      'the bare slug resolved, and the canonical name is what was stored');
+
+    // Read back through a fresh host — i.e. off registry.json, past
+    // reconcileActiveVersion, which would reset a non-canonical name to main.
+    const reread = createPluginHost();
+    const row = (await reread.list()).find(r => r.id === 'fake-plugin');
+    assert.deepEqual(row.activeVersion, { type: 'worktree', name: 'aplug_worktree_va' });
+  } finally {
+    await env.restore();
+  }
+});

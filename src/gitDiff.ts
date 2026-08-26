@@ -302,7 +302,7 @@ async function fileDiffForTarget(
 
 async function worktreeTarget(
   projectName: string, worktreeName: string, baseRef: string | undefined,
-): Promise<{ target: DiffTarget; ref: string }> {
+): Promise<{ target: DiffTarget; ref: string; name: string }> {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
@@ -318,7 +318,7 @@ async function worktreeTarget(
       ...(p.length ? ['--', ...p] : []),
     ],
   };
-  return { target, ref };
+  return { target, ref, name: meta.worktreeName };
 }
 
 // Return structured summary diff data for a worktree relative to its base
@@ -328,9 +328,11 @@ export async function getWorktreeDiff(
   worktreeName: string,
   { baseRef, contextLines = 3 }: { baseRef?: string; contextLines?: number } = {},
 ): Promise<{ project: string; worktreeName: string; baseRef: string; files: DiffFileSummary[]; totalAdds: number; totalDels: number; totalFiles: number }> {
-  const { target, ref } = await worktreeTarget(projectName, worktreeName, baseRef);
+  const { target, ref, name } = await worktreeTarget(projectName, worktreeName, baseRef);
   const { files, totalAdds, totalDels } = await summarizeTarget(target);
-  return { project: projectName, worktreeName, baseRef: ref, files, totalAdds, totalDels, totalFiles: files.length };
+  // Echo the canonical name, never the caller's spelling: responses always
+  // report the full dir name, as create_worktree / list_worktrees already do.
+  return { project: projectName, worktreeName: name, baseRef: ref, files, totalAdds, totalDels, totalFiles: files.length };
 }
 
 // Return the full hunks for one file in a worktree diff, fetched lazily when

@@ -584,7 +584,9 @@ export function createPluginHost(opts: {
       if (!result) throw httpError(400, `no conductor.plugin.json in worktree '${ver.name}'`);
       if ('errors' in result) throw httpError(400, `manifest in worktree '${ver.name}' is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in worktree '${ver.name}' does not match plugin '${id}'`);
-      next = { type: 'worktree', name: ver.name };
+      // Persist the canonical name: reconcileActiveVersion re-resolves this
+      // on load, and the GUI matches its option values on it.
+      next = { type: 'worktree', name: meta.worktreeName };
     } else {
       throw httpError(400, "version must be {type:'main'} or {type:'worktree', name}");
     }

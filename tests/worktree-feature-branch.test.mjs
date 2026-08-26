@@ -610,3 +610,98 @@ test('T12: a task rebases onto its feature, not onto main', async () => {
     'the feature branch is not an ancestor of the task branch after the rebase',
   );
 });
+
+
+// ---------------------------------------------------------------------------
+// T19-T22 — worktree name aliasing on the create / base / dependents paths.
+// ---------------------------------------------------------------------------
+
+// baseWorktree is the foreign key listDependentWorktrees matches on. Persisting
+// the caller's spelling would produce a record no dependents query can see.
+test('T19: a baseWorktree named by bare slug is persisted canonically', async () => {
+  await makeRealRepo('demo');
+  const feature = await createWorktree('demo', { name: 'auth' });
+  assert.equal(feature.worktreeName, 'demo_worktree_auth');
+
+  const task = await createWorktree('demo', { baseWorktree: 'auth' });
+  assert.equal(task.baseWorktree, 'demo_worktree_auth',
+    'the stored foreign key is canonical, not the caller\'s spelling');
+  assert.equal(task.parentPath, feature.worktreePath);
+
+  assert.deepEqual(await listDependentWorktrees('demo', 'demo_worktree_auth'), [task.worktreeName]);
+  assert.deepEqual(await listDependentWorktrees('demo', 'auth'), [task.worktreeName],
+    'listDependentWorktrees aliases too');
+});
+
+// THE safety test. removeWorktree feeds listDependentWorktrees; with a raw bare
+// slug that returns [], the dependents refusal is silently bypassed and the
+// base's branch is deleted out from under its child. Asserting the child
+// SURVIVES — not merely that it threw — is what makes this a safety assertion.
+test('T20: removeWorktree by bare slug still refuses a base that has dependents', async () => {
+  await makeRealRepo('demo');
+  const feature = await createWorktree('demo', { name: 'auth' });
+  const task = await createWorktree('demo', { baseWorktree: feature.worktreeName });
+
+  await assert.rejects(
+    () => removeWorktree('demo', 'auth'),
+    (e) => {
+      assert.equal(e.statusCode, 409);
+      assert.match(e.message, /WORKTREE_HAS_DEPENDENTS|is the base for/);
+      return true;
+    },
+  );
+
+  assert.equal(await exists(task.worktreePath), true, 'the CHILD must survive the refused delete');
+  assert.equal(await exists(feature.worktreePath), true);
+  assert.equal(await branchExists(path.join(projectsRoot, 'demo'), feature.branch), true);
+  assert.deepEqual(await listDependentWorktrees('demo', feature.worktreeName), [task.worktreeName]);
+});
+
+test('T21: syncWorktree by bare slug still returns the dependents refusal', async () => {
+  await makeRealRepo('demo');
+  const feature = await createWorktree('demo', { name: 'auth' });
+  await createWorktree('demo', { baseWorktree: feature.worktreeName });
+
+  const r = await syncWorktree('demo', 'auth');
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'WORKTREE_HAS_DEPENDENTS');
+  assert.deepEqual(r.dependents.length, 1);
+
+  const m = await mergeWorktreeIntoParent('demo', 'auth');
+  assert.equal(m.ok, false);
+  assert.equal(m.code, 'WORKTREE_HAS_DEPENDENTS');
+});
+
+// Create side: one exact `<project>_worktree_` prefix is stripped before
+// slugifying, so a caller echoing a full dir name back into create_worktree
+// names the worktree they meant rather than a mangled sibling.
+test('T22: create strips one <project>_worktree_ prefix before slugifying', async () => {
+  await makeRealRepo('demo');
+
+  // 1. Both "don't strip" and "slugify before stripping" would yield
+  //    demo_worktree_demo-worktree-x.
+  const prefixed = await createWorktree('demo', { name: 'demo_worktree_x' });
+  assert.equal(prefixed.worktreeName, 'demo_worktree_x');
+  assert.equal(prefixed.branch, 'code-conductor/x');
+
+  // 2. The two spellings collide — i.e. they name the same worktree.
+  await assert.rejects(
+    () => createWorktree('demo', { name: 'x' }),
+    (e) => { assert.equal(e.statusCode, 409); assert.match(e.message, /code-conductor\/x/); return true; },
+  );
+
+  // 3. The direct "same directory either way" assertion.
+  await removeWorktree('demo', 'demo_worktree_x');
+  const bare = await createWorktree('demo', { name: 'x' });
+  assert.equal(bare.worktreeName, prefixed.worktreeName);
+  assert.equal(bare.branch, prefixed.branch);
+
+  // 4. The bound: only the literal underscored prefix, and strip-then-validate
+  //    (an empty remainder still 400s rather than returning the unstripped name).
+  const dashed = await createWorktree('demo', { name: 'demo-worktree-y' });
+  assert.equal(dashed.worktreeName, 'demo_worktree_demo-worktree-y');
+  await assert.rejects(
+    () => createWorktree('demo', { name: 'demo_worktree_' }),
+    (e) => { assert.equal(e.statusCode, 400); assert.match(e.message, /no usable characters/); return true; },
+  );
+});

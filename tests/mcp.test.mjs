@@ -1599,3 +1599,97 @@ test('spawn_instance({resume}) recovers temp:true from the durable sidecar after
   const resumeSpawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', resume: survivedSid }));
   assert.equal(resumeSpawn.temp, true, 'temp recovered from the durable sidecar on resume, not forced or dropped');
 });
+
+
+// ---------- worktree name aliasing ----------
+// Every worktree-addressing argument accepts the full `<project>_worktree_<slug>`
+// dir name or the bare slug the GUI displays.
+
+test('spawn_instance attaches to an existing worktree by its bare slug', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  // The card verbatim: create by bare name, then address by bare name.
+  const first = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'demo', mode: 'bypassPermissions', createWorktree: true, name: 'unborn-head-hint',
+  }));
+  await waitFor(() => instForSession(instances, first.sessionId).sessionId);
+  const canonical = instForSession(instances, first.sessionId).worktree.worktreeName;
+  assert.equal(canonical, 'demo_worktree_unborn-head-hint');
+
+  const second = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'demo', mode: 'bypassPermissions', worktree: 'unborn-head-hint',
+  }));
+  await waitFor(() => instForSession(instances, second.sessionId).sessionId);
+  assert.equal(instForSession(instances, second.sessionId).worktree.worktreeName, canonical,
+    'the bare slug lands in the same worktree the full name does');
+});
+
+test('merge_worktree by bare slug reaches the same worktree as the full name', async () => {
+  const repoPath = await makeRealRepo(projectsRoot, 'demo');
+  const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo', name: 'mergealias' }));
+  assert.equal(wt.worktree, 'demo_worktree_mergealias');
+
+  // Move the parent branch forward so the worktree is "behind" — a deterministic
+  // outcome that could only be produced by actually resolving the record.
+  await fs.writeFile(path.join(repoPath, 'extra.txt'), 'after\n');
+  await git(repoPath, 'add', '.');
+  await git(repoPath, 'commit', '-q', '-m', 'second');
+
+  const byFull = unwrap(await callTool(baseUrl, 'merge_worktree', { project: 'demo', worktree: wt.worktree }));
+  const bySlug = unwrap(await callTool(baseUrl, 'merge_worktree', { project: 'demo', worktree: 'mergealias' }));
+  assert.equal(bySlug.ok, false);
+  assert.equal(bySlug.code, 'WORKTREE_BEHIND');
+  assert.deepEqual(bySlug, byFull, 'same outcome either spelling');
+});
+
+// The destructive-under-force path: idsForWorktree is an exact in-memory
+// compare, so an un-canonicalized bare slug sees no attached instances and
+// skips the WORKTREE_ATTACHED guard entirely.
+test('delete_worktree by bare slug still sees the attached instance', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'demo', mode: 'bypassPermissions', createWorktree: true, name: 'delalias',
+  }));
+  await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+  const wtPath = instForSession(instances, spawn.sessionId).worktree.worktreePath;
+
+  const refused = unwrap(await callTool(baseUrl, 'delete_worktree', {
+    project: 'demo', worktree: 'delalias',
+  }));
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'WORKTREE_ATTACHED');
+  assert.equal(await fs.access(wtPath).then(() => true, () => false), true,
+    'the worktree must survive the refused delete');
+});
+
+test('list_sessions filters by a worktree named with its bare slug', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'demo', mode: 'bypassPermissions', createWorktree: true, name: 'lsalias',
+  }));
+  await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+
+  const byFull = text(await callTool(baseUrl, 'list_sessions', {
+    project: 'demo', worktree: 'demo_worktree_lsalias',
+  }));
+  const bySlug = text(await callTool(baseUrl, 'list_sessions', { project: 'demo', worktree: 'lsalias' }));
+  assert.ok(bySlug.includes('lsalias'), 'the worktree group is the one rendered');
+  assert.equal(bySlug, byFull, 'same rendering either spelling');
+
+  const { body: miss } = await rpc(baseUrl, 'tools/call', {
+    name: 'list_sessions', arguments: { project: 'demo', worktree: 'nosuchslug' },
+  });
+  assert.equal(miss.result.isError, true);
+  assert.match(miss.result.content[0].text, /not found/);
+});
+
+test('project_read scoped by a bare slug reads the worktree copy, not the project root', async () => {
+  const repoPath = await makeRealRepo(projectsRoot, 'demo');
+  const wt = unwrap(await callTool(baseUrl, 'create_worktree', { project: 'demo', name: 'readalias' }));
+  await fs.writeFile(path.join(repoPath, 'shared.txt'), 'parent\n');
+  await fs.writeFile(path.join(projectsRoot, wt.worktree, 'shared.txt'), 'worktree\n');
+
+  const fromWt = unwrapFile(await callTool(baseUrl, 'project_read', {
+    project: 'demo', worktree: 'readalias', relativePath: 'shared.txt',
+  }));
+  assert.equal(fromWt.content, 'worktree\n', 'the alias scoped into the worktree, not the project root');
+});
