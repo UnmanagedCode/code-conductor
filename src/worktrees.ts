@@ -143,6 +143,16 @@ export async function isGitRepo(projectPath: string): Promise<boolean> {
   return r.code === 0;
 }
 
+// True when `projectPath`'s HEAD points at a branch with no commits yet — a
+// `git init`ed dir nothing has been committed to. `rev-parse --verify --quiet
+// HEAD` exits non-zero and silent there, 0 on any resolvable HEAD (detached
+// included). CALL ONLY WHEN isGitRepo() IS ALREADY TRUE: outside a repo it also
+// exits non-zero, which would read as "unborn" rather than "no repo".
+export async function hasUnbornHead(projectPath: string): Promise<boolean> {
+  const r = await runGit(projectPath, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  return r.code !== 0;
+}
+
 // `git status --porcelain` for a worktree path. Returns
 // { ok: boolean, lines: string[] }. Callers can decide whether a
 // non-empty `lines` means "refuse" or "fall back to the agent flow".
@@ -161,6 +171,22 @@ export async function getHeadBranchAndSha(projectPath: string): Promise<{ branch
   const branch = head.code === 0 ? head.stdout.trim() || null : null;
   const sha = await runGit(projectPath, ['rev-parse', 'HEAD']);
   if (sha.code !== 0) {
+    // `rev-parse HEAD` fails for more than one reason, and two of this
+    // function's callers hand it a path nothing has repo-validated: the
+    // `baseWorktree` branch of createWorktree (a path read straight out of a
+    // store record, which readMeta's own comment says can be stale) and
+    // mergeWorktreeIntoParent's `meta.parentPath`. A directory removed
+    // out-of-band or a corrupt repo lands here too, so PROVE the unborn case
+    // before naming it — an unborn HEAD is a symbolic ref whose target branch
+    // has no commits, which neither of those other failures satisfies.
+    const ref = await runGit(projectPath, ['symbolic-ref', '--quiet', 'HEAD']);
+    const unborn = ref.code === 0
+      && (await runGit(projectPath, ['show-ref', '--verify', '--quiet', ref.stdout.trim()])).code !== 0;
+    if (unborn) {
+      throw httpError(400, `${projectPath} has no commits yet — a worktree branches off HEAD, so make a first commit there first`);
+    }
+    // Anything else keeps git's own stderr, which is the only thing that names
+    // the actual cause (a missing dir, a corrupt object store).
     throw httpError(400, `unable to resolve HEAD in ${projectPath}: ${sha.stderr.trim()}`);
   }
   return { branch, sha: sha.stdout.trim() };

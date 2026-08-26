@@ -942,3 +942,53 @@ test('a synthetic session with no lastResponseAt (pre-first-turn) uses inst.crea
     Date.now = realNow;
   }
 });
+
+// ── The `no commits` pill ────────────────────────────────────────────────────
+// A project that is a git repo with an unborn HEAD (`git init`, no commit —
+// what create_project leaves) cannot take a worktree. The pill is the sidebar's
+// half of that signal; the spawn dialog's disabled checkbox is the other half.
+
+const proj = (over) => ({
+  name: 'demo', path: '/p/demo', sessionIds: [],
+  isGitRepo: true, worktrees: [],
+  sessions: { count: 0, lastActivity: 0 },
+  ...over,
+});
+
+test('an unborn-HEAD project row shows a no-commits pill', async () => {
+  const { root, sidebar } = await setupSidebar();
+  sidebar.setProjects([proj({ unbornHead: true })]);
+  const pill = root.querySelector('.no-commits-pill');
+  assert.ok(pill, 'the row must carry a .no-commits-pill');
+  assert.equal(pill.textContent, 'no commits');
+});
+
+test('the no-commits pill clears on the first commit without rebuilding the row', async () => {
+  const { root, sidebar } = await setupSidebar();
+  sidebar.setProjects([proj({ unbornHead: true })]);
+  const row = root.querySelector('.project-row');
+  assert.ok(root.querySelector('.no-commits-pill'));
+
+  sidebar.setProjects([proj({ unbornHead: false })]);
+  assertNull(root.querySelector('.no-commits-pill'),
+    'the pill must be removed at RENDER time, not only on row creation');
+  assert.equal(root.querySelector('.project-row'), row,
+    'the row itself must be reconciled in place, not torn down');
+});
+
+test('a normal repo and a non-repo show no no-commits pill', async () => {
+  const { root, sidebar } = await setupSidebar();
+  sidebar.setProjects([proj({ name: 'normal' }), proj({ name: 'plain', isGitRepo: false })]);
+  assertNull(root.querySelector('.no-commits-pill'));
+});
+
+test('the ahead/behind pill still renders alongside the no-commits pill', async () => {
+  const { root, sidebar } = await setupSidebar();
+  sidebar.setProjects([proj({
+    unbornHead: true,
+    mergeStatus: { ahead: 2, behind: 0, upstream: 'origin/main' },
+  })]);
+  const row = root.querySelector('.project-row');
+  assert.ok(row.querySelector('.wt-unmerged'), 'the merge pill keeps its slot');
+  assert.ok(row.querySelector('.no-commits-pill'), 'the new pill is strictly additive');
+});

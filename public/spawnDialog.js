@@ -14,7 +14,7 @@
 // Injected interface:
 //   - dom:                the spawn dialog els + conductBtn (see app.js dom map).
 //   - getProjects():      reads the live project list (state.projects in app.js)
-//                         for openSpawnDialog's git-repo lookup.
+//                         for openSpawnDialog's git-repo / unborn-HEAD lookup.
 //   - refreshProjects()/refreshInstances()/selectInstance(id): post-spawn refresh
 //                         + selection (drive app.js state/sidebar).
 //   - closeSidebarOverflow(): used by the Conduct button handler.
@@ -165,6 +165,10 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
 
     const proj = getProjects().find(p => p.name === projectName);
     const isGit = !!proj?.isGitRepo;
+    // A `git init`ed project with no commit yet IS a repo, but a worktree
+    // branches off HEAD — nothing to branch from until the first commit.
+    // Pre-empts the server's late refusal in src/worktrees.ts.
+    const unborn = !!proj?.unbornHead;
     if (pendingSpawnWorktreeIntent) {
       dom.sdWorktree.checked = true;
       dom.sdWorktree.disabled = true;
@@ -172,10 +176,12 @@ export function installSpawnDialog({ dom, getProjects, refreshProjects, refreshI
       dom.sdTemp.checked = false;
     } else {
       dom.sdWorktree.checked = false;
-      dom.sdWorktree.disabled = !isGit;
-      dom.sdWorktreeHint.textContent = isGit
-        ? 'creates a sibling worktree under ~/project/, branched off current HEAD'
-        : 'project is not a git repo — `git init` first to use worktrees';
+      dom.sdWorktree.disabled = !isGit || unborn;
+      dom.sdWorktreeHint.textContent = !isGit
+        ? 'project is not a git repo — `git init` first to use worktrees'
+        : unborn
+          ? 'project has no commits yet — make a first commit to use worktrees'
+          : 'creates a sibling worktree under ~/project/, branched off current HEAD';
       dom.sdTemp.checked = true;
     }
 

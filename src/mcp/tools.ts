@@ -62,7 +62,8 @@ export function buildTools(): Tool[] {
       description:
         'List every project under the projects root as PLAIN TEXT (this tool returns no JSON). ' +
         'One block per project: its absolute path, workspace when set, session counts, a ' +
-        'live-worker count, and each worktree with branch, base, ahead/behind and its path. ' +
+        'live-worker count, a no-commits-yet flag (an unborn HEAD cannot take a worktree), '
+        + 'and each worktree with branch, base, ahead/behind and its path. ' +
         'list_sessions names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
@@ -716,7 +717,8 @@ export function buildTools(): Tool[] {
       description:
         'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @CONVENTIONS.md and ' +
         'writes that CONVENTIONS.md, carrying the workspace-wide conventions. The new dir is initialized ' +
-        'as a git repo (no commits). ' +
+        'as a git repo with NO commit yet, so its HEAD is unborn: the first worker must be spawned '
+        + 'WITHOUT a worktree (worktrees branch off HEAD) until something is committed. ' +
         'Project conventions can be attached by passing their slugs — call list_project_conventions to ' +
         'discover available slugs. Each carries a fragment (composed into CONVENTIONS.md) and/or a one-time ' +
         'scaffold directive: a picked convention flagged hasScaffold:true composes a setup directive that is ' +
@@ -887,7 +889,8 @@ export function buildTools(): Tool[] {
       name: 'project_status',
       description:
         'Read-only introspection for a project (or one of its worktrees): top-level file ' +
-        'listing, git branch + HEAD subject, uncommitted lines (`git status --porcelain`), ' +
+        'listing, git branch + HEAD subject (or `no commits yet` on an unborn HEAD), '
+        + 'uncommitted lines (`git status --porcelain`), ' +
         'recent commits (`git log`), and — for worktrees — mergeStatus (ahead/behind) plus a ' +
         'diff-stat against the base branch. Useful for reviewing what an agent did without ' +
         'leaving MCP. Returns PLAIN TEXT (no JSON), in sections: header, FILES, DIRTY, ' +

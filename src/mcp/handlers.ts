@@ -25,7 +25,7 @@ import {
 } from '../projects.ts';
 import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import {
-  isGitRepo, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
+  isGitRepo, hasUnbornHead, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
   syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
   worktreeDirtyLines, runGit,
@@ -311,10 +311,12 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
       sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
       mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
     })));
+    const projIsGitRepo = await isGitRepo(p.path);
     return {
       ...p,
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
-      isGitRepo: await isGitRepo(p.path),
+      isGitRepo: projIsGitRepo,
+      unbornHead: projIsGitRepo ? await hasUnbornHead(p.path) : false,
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
@@ -2143,6 +2145,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     project: string; worktree: string | null; cwd: string;
     files: Array<{ name: string; kind: string }>;
     isGitRepo: boolean;
+    unbornHead: boolean;
     branch?: string | null;
     head?: { sha: string | null; subject: string | null } | null;
     dirty?: string[];
@@ -2159,11 +2162,13 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     cwd,
     files: await listTopLevelEntries(cwd),
     isGitRepo: false,
+    unbornHead: false,
   };
   if (!(await isGitRepo(cwd))) {
     return textResult(renderProjectStatus(out));
   }
   out.isGitRepo = true;
+  out.unbornHead = await hasUnbornHead(cwd);
   // Branch (may be null on detached HEAD).
   const branchR = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   out.branch = branchR.code === 0 ? branchR.stdout.trim() || null : null;
