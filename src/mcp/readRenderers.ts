@@ -97,6 +97,9 @@ const PROJECT_DEVIANT: DeviantSpec[] = [
   { key: 'workspace', default: null, label: 'workspace' },
   { key: 'isGitRepo', default: true, label: '! not a git repo' },
   { key: 'unbornHead', default: false, label: '! no commits yet — a worktree needs a first commit' },
+  // Adopted from outside the projects root. The real target path is already the
+  // `▸ <name>  <path>` header, so this only has to say WHICH kind it is.
+  { key: 'external', default: false, label: 'external' },
 ];
 
 export function renderProjects(projects: unknown): string {

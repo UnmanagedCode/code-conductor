@@ -60,10 +60,12 @@ export function buildTools(): Tool[] {
     {
       name: 'list_projects',
       description:
-        'List every project under the projects root as PLAIN TEXT (this tool returns no JSON). ' +
+        'List every project as PLAIN TEXT (this tool returns no JSON). ' +
         'One block per project: its absolute path, workspace when set, session counts, a ' +
         'live-worker count, a no-commits-yet flag (an unborn HEAD cannot take a worktree), '
         + 'and each worktree with branch, base, ahead/behind and its path. ' +
+        'A project adopted from OUTSIDE the projects root is marked `external`; its path is the real ' +
+        'target path, which is the one to pass to every other tool. ' +
         'list_sessions names those workers; this tool only counts them.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: h.listProjects,
@@ -737,6 +739,32 @@ export function buildTools(): Tool[] {
         required: ['name'],
       },
       handler: h.createProject,
+    },
+    {
+      name: 'adopt_project',
+      description:
+        'Adopt an EXISTING repo that already lives on disk OUTSIDE the projects root as a project, by ' +
+        'absolute path. Nothing is copied or moved: cc records a symlink and every project tool then works ' +
+        'on the repo in place. The target must be a git repository ROOT (not a subdirectory of one) and must ' +
+        'not already be managed. Afterwards the project\'s paths are the target\'s REAL path (symlinks ' +
+        'resolved), which is what list_projects reports. ' +
+        'WRITES INTO THE TARGET REPO: cc creates/overwrites `<target>/CONVENTIONS.md` (its own file, ' +
+        'carrying the workspace + project conventions) and ensures `<target>/CLAUDE.md` has an ' +
+        '`@CONVENTIONS.md` line, prepending it without touching existing content. Both land in the ' +
+        "target's working tree as changes to commit. " +
+        'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
+        'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_NOT_A_REPO, ' +
+        'PROJECT_EXISTS — not errors. ' +
+        'Deleting an adopted project only unregisters it; the repo itself is never touched.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name cc will know the repo by. Must match ^[a-zA-Z0-9._-]+$ and must not start with ".".' },
+          path: { type: 'string', description: 'Absolute path to the existing git repository root to adopt.' },
+        },
+        required: ['name', 'path'],
+      },
+      handler: h.adoptProject,
     },
     {
       name: 'list_project_conventions',

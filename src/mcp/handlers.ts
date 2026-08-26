@@ -13,6 +13,7 @@ import {
   listSessionsForCwdWithCounts,
   summarizeSessions,
   createProject as fsCreateProject,
+  adoptProject as fsAdoptProject,
   getProject,
   findSessionLocation,
   findOrphanedTranscript,
@@ -1782,6 +1783,10 @@ export async function createProject({ name, conventions = [] }: { name: string; 
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
+}
+
+export async function adoptProject({ name, path: targetPath }: { name: string; path: string }) {
+  return fsAdoptProject(name, targetPath);
 }
 
 export async function listProjectConventions() {

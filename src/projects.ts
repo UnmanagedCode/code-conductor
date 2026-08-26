@@ -72,6 +72,21 @@ export function orchStoreRoot(): string {
   return path.join(projectsRoot(), ORCH_STORE_DIRNAME);
 }
 
+// Out-of-root projects are adopted as symlinks under a single dotfolder at
+// `<projectsRoot>/.external/<name>`. The symlink IS the record — nothing else
+// is persisted — and `.external/` also hosts the worktree dirs of external
+// projects (see src/worktrees.ts). Dot-prefixed, so listProjects()' top-level
+// readdir never descends into it.
+export const EXTERNAL_DIRNAME = '.external';
+
+export function externalDir(): string {
+  return path.join(projectsRoot(), EXTERNAL_DIRNAME);
+}
+
+export function externalLinkPath(name: string): string {
+  return path.join(externalDir(), name);
+}
+
 export function projectStoreDir(name: string): string {
   return path.join(orchStoreRoot(), 'projects', name);
 }
@@ -225,6 +240,46 @@ export interface ProjectInfo {
   name: string;
   path: string;
   workspace: string | null;
+  // Adopted from outside the projects root — its record is a `.external/<name>`
+  // symlink and its `path` is the target's REALPATH (see resolveProjectDir).
+  external: boolean;
+}
+
+// THE resolver every project path in the app comes from: an in-root directory,
+// else a `.external/<name>` symlink, else null.
+//
+// For an external project the returned path is the target's REALPATH, never the
+// symlink. That is load-bearing, not tidiness: the Claude CLI encodes its
+// `~/.claude/projects/<encoded-cwd>/` session dir from `getcwd()`, which is
+// always the realpath, so cc's own encodeCwd() must be fed the same string or
+// every resume of an external project's session looks at the wrong directory.
+// Claude Code's `CLAUDE.md` upward walk follows the realpath for the same
+// reason, and neither has an env lever.
+export async function resolveProjectDir(name: string): Promise<{ path: string; external: boolean } | null> {
+  const inRoot = path.join(projectsRoot(), name);
+  let inRootStat: Awaited<ReturnType<typeof fs.stat>> | null = null;
+  try { inRootStat = await fs.stat(inRoot); }
+  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+  if (inRootStat) {
+    if (!inRootStat.isDirectory()) throw httpError(404, `'${name}' is not a directory`);
+    return { path: inRoot, external: false };
+  }
+  // A broken link, a link loop, or no link at all: the name is simply unknown.
+  let real: string;
+  try { real = await fs.realpath(externalLinkPath(name)); }
+  catch { return null; }
+  try { if (!(await fs.stat(real)).isDirectory()) return null; }
+  catch { return null; }
+  return { path: real, external: true };
+}
+
+// "Is this name already a project?" — the shared existing-name test for the two
+// creation paths (createProject, adoptProject). A non-directory sitting at the
+// in-root name counts as TAKEN: resolveProjectDir refuses it, and neither caller
+// has anything different to do about it.
+async function nameIsTaken(name: string): Promise<boolean> {
+  try { return (await resolveProjectDir(name)) !== null; }
+  catch { return true; }
 }
 
 export async function listProjects(): Promise<ProjectInfo[]> {
@@ -237,14 +292,33 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     if (!e.isDirectory()) continue;
     // Skip dotfile dirs — the central store itself sits at
     // `<root>/.code-conductor/` and would otherwise surface as a fake
-    // project named ".code-conductor".
+    // project named ".code-conductor". `.external/` is covered by the same
+    // skip; its contents are listed below.
     if (e.name.startsWith('.')) continue;
     // Skip orchestrator-owned worktree dirs — they're surfaced under
     // their parent project, not as top-level projects.
     if (worktreeDirs.has(e.name)) continue;
     const full = path.join(root, e.name);
     const meta = await readProjectMeta(e.name);
-    out.push({ name: e.name, path: full, workspace: meta.workspace });
+    out.push({ name: e.name, path: full, workspace: meta.workspace, external: false });
+  }
+  // Adopted out-of-root projects. Only SYMLINKS are projects here — which is
+  // also what excludes external projects' worktree dirs, real directories
+  // living in this same folder, without consulting worktreeDirs.
+  let externals: Dirent[] = [];
+  try { externals = await fs.readdir(externalDir(), { withFileTypes: true }); }
+  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+  for (const e of externals) {
+    if (!e.isSymbolicLink()) continue;
+    // A broken link (target unmounted, moved or deleted) is skipped, not fatal:
+    // the rest of the project list must still render.
+    let real: string;
+    try { real = await fs.realpath(externalLinkPath(e.name)); }
+    catch { continue; }
+    try { if (!(await fs.stat(real)).isDirectory()) continue; }
+    catch { continue; }
+    const meta = await readProjectMeta(e.name);
+    out.push({ name: e.name, path: real, workspace: meta.workspace, external: true });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
@@ -516,6 +590,13 @@ export async function createProject(
   validateName(name);
   const root = projectsRoot();
   const full = path.join(root, name);
+  // resolveProjectDir, not the mkdir alone: an ADOPTED project holds the name
+  // too, and its `.external/` symlink is invisible to this mkdir — two records
+  // for one name would share one store entry and one encoded session dir. The
+  // EEXIST branch below stays as the race backstop.
+  if (await nameIsTaken(name)) {
+    throw httpError(409, `project '${name}' already exists`);
+  }
   try {
     await fs.mkdir(full, { recursive: false });
   } catch (e) {
@@ -562,34 +643,128 @@ export async function createProject(
 // `claude --resume` outside the orchestrator.
 export async function deleteProject(name: string): Promise<{ name: string; path: string }> {
   validateName(name);
-  const full = path.join(projectsRoot(), name);
-  try {
-    await fs.rm(full, { recursive: true, force: true });
-  } catch (e) {
-    throw httpError(500, `failed to delete project '${name}': ${errMsg(e)}`);
+  const resolved = await resolveProjectDir(name);
+  if (resolved?.external) {
+    // DELETING AN EXTERNAL PROJECT UNREGISTERS IT. Do not "simplify" this back
+    // into the fs.rm below: `resolved.path` is the user's own repo (the
+    // realpath), and the realpath must never reach a removal call. fs.unlink
+    // can never follow a symlink; fs.rm's recursive path merely happens not to,
+    // and that is an implementation detail this must not depend on.
+    try { await fs.unlink(externalLinkPath(name)); }
+    catch (e) {
+      if (errCode(e) !== 'ENOENT') throw httpError(500, `failed to unregister project '${name}': ${errMsg(e)}`);
+    }
+  } else {
+    const full = path.join(projectsRoot(), name);
+    try {
+      await fs.rm(full, { recursive: true, force: true });
+    } catch (e) {
+      throw httpError(500, `failed to delete project '${name}': ${errMsg(e)}`);
+    }
   }
   // Central-store entry holds attachments, debug captures, worktree
   // metadata — all of it goes with the project.
   try { await fs.rm(projectStoreDir(name), { recursive: true, force: true }); }
   catch { /* best-effort */ }
-  return { name, path: full };
+  return { name, path: resolved?.path ?? path.join(projectsRoot(), name) };
 }
 
-export async function getProject(name: string): Promise<{ name: string; path: string }> {
+export async function getProject(name: string): Promise<{ name: string; path: string; external: boolean }> {
   validateName(name);
-  const full = path.join(projectsRoot(), name);
-  try {
-    const stat = await fs.stat(full);
-    if (!stat.isDirectory()) {
-      throw httpError(404, `'${name}' is not a directory`);
-    }
-    return { name, path: full };
-  } catch (e) {
-    if (errCode(e) === 'ENOENT') {
-      throw httpError(404, `project '${name}' not found`);
-    }
-    throw e;
+  const resolved = await resolveProjectDir(name);
+  if (!resolved) throw httpError(404, `project '${name}' not found`);
+  return { name, path: resolved.path, external: resolved.external };
+}
+
+export type AdoptResult =
+  | { ok: true; name: string; path: string; external: true }
+  | { ok: false; code: string; reason: string };
+
+// Adopt a repo that already exists OUTSIDE the projects root as the project
+// `name`, by writing a `.external/<name>` symlink to it. Shared by the REST and
+// MCP surfaces. Every refusal is RETURNED with a machine-readable `code`, never
+// thrown — same contract as syncWorktree / mergeWorktreeIntoParent.
+//
+// Every check runs BEFORE any filesystem mutation; the mkdir + symlink are the
+// last two statements, so a refused adopt leaves no link behind.
+export async function adoptProject(name: unknown, target: unknown): Promise<AdoptResult> {
+  if (typeof name !== 'string' || !NAME_RE.test(name)) {
+    return { ok: false, code: 'INVALID_NAME', reason: 'project name must match ^[a-zA-Z0-9._-]+$.' };
   }
+  // Dot-leading names are reserved for orchestrator-managed projects — this is
+  // what stops an adopted repo shadowing `.conduct`. (The create path enforces
+  // the same rule in routes.ts; this one lives in the shared function so both
+  // adopt surfaces are covered.)
+  if (name.startsWith('.')) {
+    return { ok: false, code: 'INVALID_NAME', reason: `project name '${name}' cannot start with "." — reserved for orchestrator-managed projects.` };
+  }
+  if (typeof target !== 'string' || target.trim() === '' || !path.isAbsolute(target)) {
+    return { ok: false, code: 'INVALID_TARGET_PATH', reason: 'path must be a non-empty absolute path.' };
+  }
+  let real: string;
+  try { real = await fs.realpath(target); }
+  catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot resolve '${target}': ${errMsg(e)}` }; }
+  try {
+    if (!(await fs.stat(real)).isDirectory()) {
+      return { ok: false, code: 'TARGET_NOT_A_DIRECTORY', reason: `'${real}' is not a directory.` };
+    }
+  } catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` }; }
+
+  // Already managed? One directory with two project identities would share one
+  // encodeCwd session dir and hold two store entries.
+  let rootReal = projectsRoot();
+  try { rootReal = await fs.realpath(rootReal); } catch { /* root may not exist yet */ }
+  if (real === rootReal || real.startsWith(rootReal + path.sep)) {
+    return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is inside the projects root — it is already managed by code-conductor.` };
+  }
+  for (const p of await listProjects()) {
+    if (p.external && p.path === real) {
+      return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is already adopted as project '${p.name}'.` };
+    }
+  }
+
+  // A git repo ROOT, not merely somewhere inside one. isGitRepo() is
+  // deliberately not reused: it walks UP, so it answers "yes" for any
+  // subdirectory of a repo, and adopting a subdirectory would give worktree
+  // creation and every diff the wrong toplevel. Dynamic import for the same
+  // reason as createProject's — worktrees.ts statically imports this module.
+  const { runGit } = await import('./worktrees.ts');
+  const top = await runGit(real, ['rev-parse', '--show-toplevel']);
+  if (top.code !== 0) {
+    return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository.` };
+  }
+  let topReal = top.stdout.trim();
+  try { topReal = await fs.realpath(topReal); } catch { /* compare what git printed */ }
+  if (topReal !== real) {
+    return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository ROOT — its toplevel is '${topReal}'. Adopt that instead.` };
+  }
+
+  if (await nameIsTaken(name)) {
+    return { ok: false, code: 'PROJECT_EXISTS', reason: `project '${name}' already exists.` };
+  }
+
+  await fs.mkdir(externalDir(), { recursive: true });
+  try { await fs.symlink(real, externalLinkPath(name)); }
+  catch (e) {
+    // EEXIST closes the TOCTOU window between nameIsTaken and this symlink.
+    if (errCode(e) === 'EEXIST') {
+      return { ok: false, code: 'PROJECT_EXISTS', reason: `project '${name}' already exists.` };
+    }
+    throw httpError(500, `failed to adopt '${name}': ${errMsg(e)}`);
+  }
+
+  // Deliver the conventions into the adopted repo NOW — symmetric with
+  // createProject, which seeds both files at creation. Without this the first
+  // write into the user's tree would happen silently at some later boot sweep
+  // instead of inside the call they authorised. Non-fatal: the symlink IS the
+  // record, so the adoption stands and the next boot sweep retries.
+  try {
+    const { ensureProjectConventionsMd } = await import('./projectClaudeMd.ts');
+    await ensureProjectConventionsMd(name);
+  } catch (e) {
+    console.warn(`adoptProject: CONVENTIONS.md not written into '${real}': ${errMsg(e)}`);
+  }
+  return { ok: true, name, path: real, external: true };
 }
 
 export async function readFirstPrompt(jsonlPath: string): Promise<string | null> {
@@ -816,7 +991,7 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   const conductPath = path.join(projectsRoot(), '.conduct');
   try {
     const s = await fs.stat(conductPath);
-    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null });
+    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null, external: false });
   } catch { /* .conduct doesn't exist yet — skip */ }
 
   const probe = async (id: string): Promise<{ project: string; worktreeName: string | null } | null> => {
@@ -932,7 +1107,7 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
   const conductPath = path.join(projectsRoot(), '.conduct');
   try {
     const s = await fs.stat(conductPath);
-    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null });
+    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null, external: false });
   } catch { /* .conduct doesn't exist yet — skip */ }
 
   const groups: { project: string; sessions: ArchivedSessionRow[] }[] = [];

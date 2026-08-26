@@ -5,7 +5,7 @@ import type { Server } from 'node:http';
 import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import {
-  listProjects, createProject, listSessions, listSessionsForCwd,
+  listProjects, createProject, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject,
   findSessionLocation, writeProjectMeta,
@@ -460,6 +460,20 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     } catch (e) { next(e); }
   });
 
+  // Adopt an existing out-of-root repo as a project. Body: {name, path}.
+  // Mounted before the `/projects/:name` param routes so `external` can't be
+  // read as a project name. Soft refusals return 200 with {ok:false, code,
+  // reason} — same contract as POST /instances/:id/merge — so a caller can
+  // render the reason inline instead of parsing a 4xx body. No
+  // broadcastProjects(), matching POST /projects.
+  r.post('/projects/external', async (req, res, next) => {
+    try {
+      const { name, path: targetPath } = jsonBody(req);
+      const result = await adoptProject(name, targetPath);
+      res.status(result.ok ? 201 : 200).json(result);
+    } catch (e) { next(e); }
+  });
+
   // Lazy-create the hidden `.conduct` project that hosts Conduct sessions.
   // Mounted at a literal path so the regular /projects/:name guards don't
   // need to special-case the name and so curl-ing this never spawns a
@@ -477,7 +491,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   //      inside worktrees of this project),
   //   3. remove every worktree (git worktree remove --force + branch
   //      delete + dir sweep for orphans),
-  //   4. rm -rf the project directory itself.
+  //   4. remove the project itself — `rm -rf` for an in-root project, but an
+  //      ADOPTED project is only UNREGISTERED (its `.external/` symlink is
+  //      unlinked; the user's repo is never touched — see deleteProject).
+  // Step 3 must precede step 4: everything after getProject uses proj.NAME,
+  // never proj.path, and unregistering first would turn listWorktrees into a
+  // 404 and orphan both the worktree dirs and the registrations in the repo.
   // Sessions under ~/.claude/projects/<encoded>/ are intentionally
   // left alone — they belong to the user's claude CLI history and
   // may still be referenced outside the orchestrator.

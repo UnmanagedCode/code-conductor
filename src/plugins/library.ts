@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { projectsRoot, orchStoreRoot, validateName } from '../projects.ts';
+import { projectsRoot, orchStoreRoot, validateName, resolveProjectDir } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
@@ -298,9 +298,12 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
     validateName(name);
 
     const target = path.join(projectsRoot(), name);
-    let exists = false;
-    try { await fs.stat(target); exists = true; } catch { /* absent — good */ }
-    if (exists) throw httpError(409, `'${name}' is already installed`);
+    // resolveProjectDir, not a bare stat on `target`: an ADOPTED project of the
+    // same name holds the name without occupying that in-root path, and cloning
+    // over it would mint a second identity for one project name.
+    let taken = false;
+    try { taken = (await resolveProjectDir(name)) !== null; } catch { taken = true; }
+    if (taken) throw httpError(409, `'${name}' is already installed`);
 
     // Past this point we're actually doing work (clone + hook) — the route
     // uses this as the signal to switch its response into streaming mode.
