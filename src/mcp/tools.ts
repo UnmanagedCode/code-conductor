@@ -120,8 +120,7 @@ export function buildTools(): Tool[] {
           },
           worktree: {
             type: 'string',
-            description: 'Narrow to one worktree of `project` (the sibling dir, e.g. '
-              + '"demo_worktree_abc123"). Requires `project`.',
+            description: 'Narrow to one worktree of `project`. Requires `project`.',
           },
           includeArchived: {
             type: 'boolean',
@@ -157,7 +156,8 @@ export function buildTools(): Tool[] {
         'List orchestrator-owned git worktrees for a project as PLAIN TEXT (this tool returns ' +
         'no JSON), oldest-first: the parent project and path as a header, then each worktree\'s ' +
         'name, branch, base branch@sha, creation time and absolute path. The name is the ' +
-        '`worktree` argument every other worktree tool takes.',
+        '`worktree` argument every other worktree tool takes — as printed, or as just the ' +
+        'part after `<project>_worktree_`.',
       inputSchema: {
         type: 'object',
         properties: { project: { type: 'string' } },
@@ -615,7 +615,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Parent project holding the worktree.' },
-          worktree: { type: 'string', description: 'Worktree dir name (as returned by list_worktrees / the worker\'s `worktree.worktreeName`).' },
+          worktree: { type: 'string', description: 'Worktree name (see list_worktrees).' },
           allowDirty: { type: 'boolean', description: 'Merge even though the worktree has uncommitted/untracked changes (they will not be included in the merge commit).' },
         },
         required: ['project', 'worktree'],

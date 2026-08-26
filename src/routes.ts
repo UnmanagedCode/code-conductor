@@ -805,8 +805,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.delete('/projects/:name/worktrees/:wt', async (req, res, next) => {
     try {
       const force = req.query.force === '1' || req.query.force === 'true';
+      // Canonicalize once before the guards: idsForWorktree is an exact
+      // in-memory compare, so a bare-slug delete would see no attached
+      // instances and skip the live-instance refusal entirely (and under
+      // force, never kill them before the directory is yanked).
+      const wtName = (await getWorktree(req.params.name, req.params.wt))?.worktreeName ?? req.params.wt;
       if (instances) {
-        const running = instances.idsForWorktree(req.params.name, req.params.wt)
+        const running = instances.idsForWorktree(req.params.name, wtName)
           .map(id => instances.get(id))
           .filter((i): i is InstanceLike => !!i && !!i.proc);
         if (running.length > 0 && !force) {
@@ -819,7 +824,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
         }
       }
-      await removeWorktree(req.params.name, req.params.wt, { force });
+      await removeWorktree(req.params.name, wtName, { force });
       invalidate(req.params.name);
       res.json({ ok: true });
     } catch (e) { next(e); }

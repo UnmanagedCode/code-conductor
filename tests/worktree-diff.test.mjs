@@ -292,6 +292,28 @@ test('GET /diff returns 404 for an unknown worktree', async () => {
   const r = await api(baseUrl, 'GET',
     '/api/projects/demo/worktrees/demo_worktree_nonexistent/diff');
   assert.equal(r.status, 404, `expected 404, got ${r.status}`);
+  // A bare nonexistent slug must 404 too — aliasing tolerates a spelling, it
+  // does not invent a record.
+  const bare = await api(baseUrl, 'GET', '/api/projects/demo/worktrees/nonexistent/diff');
+  assert.equal(bare.status, 404, `expected 404, got ${bare.status}`);
+});
+
+// REST :wt aliasing, plus the canonical-echo invariant: a response always
+// reports the full dir name, never the caller's spelling.
+test('GET /diff accepts the bare slug and echoes the canonical worktreeName', async () => {
+  await makeRealRepo(projectsRoot, 'demo');
+  const { createWorktree } = await import('../src/worktrees.ts');
+  const wt = await createWorktree('demo', { name: 'diffalias' });
+  assert.equal(wt.worktreeName, 'demo_worktree_diffalias');
+
+  const bySlug = await api(baseUrl, 'GET', '/api/projects/demo/worktrees/diffalias/diff');
+  assert.equal(bySlug.status, 200, `expected 200, got ${bySlug.status}`);
+  assert.equal(bySlug.body.worktreeName, 'demo_worktree_diffalias',
+    'the response reports the canonical name, not the alias the caller sent');
+
+  const byFull = await api(baseUrl, 'GET', '/api/projects/demo/worktrees/demo_worktree_diffalias/diff');
+  assert.equal(byFull.status, 200);
+  assert.deepEqual(bySlug.body, byFull.body);
 });
 
 test('GET /diff rejects baseRef starting with - (option injection)', async () => {

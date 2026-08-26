@@ -9,7 +9,10 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree } from '../src/worktrees.ts';
+import {
+  listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
+} from '../src/worktrees.ts';
+import { worktreeStoreDir } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -766,4 +769,103 @@ test('GET /api/projects reports null mergeStatus when the branch has no upstream
   const r = await api(baseUrl, 'GET', '/api/projects');
   const solo = r.body.find(p => p.name === 'solo');
   assert.deepEqual(solo.mergeStatus, { ahead: null, behind: null, upstream: null });
+});
+
+
+// ---------------------------------------------------------------------------
+// Worktree name aliasing: every worktree-addressing input accepts the full
+// `<project>_worktree_<slug>` dir name OR the bare slug the GUI displays.
+// ---------------------------------------------------------------------------
+
+test('getWorktree resolves the bare slug and the full name to the same record', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'alias-probe' });
+  assert.equal(wt.worktreeName, 'demo_worktree_alias-probe');
+
+  const byFull = await getWorktree('demo', 'demo_worktree_alias-probe');
+  const bySlug = await getWorktree('demo', 'alias-probe');
+  assert.ok(byFull, 'the full spelling still resolves');
+  assert.ok(bySlug, 'the bare slug resolves — the reported defect');
+  assert.equal(bySlug.worktreeName, byFull.worktreeName);
+  assert.equal(bySlug.worktreePath, byFull.worktreePath);
+});
+
+test('aliasing never fabricates a record: an unknown name misses in either spelling', async () => {
+  await makeRealRepo('demo');
+  await createWorktree('demo', { name: 'alias-probe' });
+  assert.equal(await getWorktree('demo', 'nope'), null);
+  assert.equal(await getWorktree('demo', 'demo_worktree_nope'), null);
+});
+
+// Step ordering: an exact match must win over the composed alias, so a record
+// whose name literally IS the bare form can never be shadowed. Swapping the two
+// lookups in resolveWorktreeName kills only this test.
+test('an exact match wins over the composed alias', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const real = await createWorktree('demo', { name: 'aliasclash' });
+  assert.equal(real.worktreeName, 'demo_worktree_aliasclash');
+
+  // Fabricate a second, non-cc-shaped worktree whose worktreeName is literally
+  // the bare slug. cc itself can't produce this (worktreeName is always
+  // worktreeDirName output) — hence the hand-written store record.
+  const clashPath = path.join(projectsRoot, 'aliasclash');
+  await git(repoPath, 'worktree', 'add', '-q', clashPath, '-b', 'clash-branch');
+  const metaFile = path.join(worktreeStoreDir('demo', 'aliasclash'), 'worktree.json');
+  await fs.mkdir(path.dirname(metaFile), { recursive: true });
+  await fs.writeFile(metaFile, JSON.stringify({
+    parentProject: 'demo', parentPath: repoPath, worktreeName: 'aliasclash',
+    worktreePath: clashPath, branch: 'clash-branch', baseBranch: 'main', baseSha: 'x',
+    createdAt: new Date().toISOString(),
+  }));
+
+  const hit = await getWorktree('demo', 'aliasclash');
+  assert.equal(hit.worktreeName, 'aliasclash', 'the literal record wins, not the composed alias');
+  assert.equal(hit.worktreePath, clashPath);
+});
+
+// removeWorktree's store cleanup must key off meta.worktreeName, not the
+// caller's spelling — otherwise a bare-slug delete leaks the store entry
+// (metadata + attachments + debug) behind the removed directory.
+test('removeWorktree by bare slug removes the worktree AND its store dir', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'store-probe' });
+  const storeDir = worktreeStoreDir('demo', 'demo_worktree_store-probe');
+  assert.equal(await fs.access(storeDir).then(() => true, () => false), true);
+
+  await removeWorktree('demo', 'store-probe');
+
+  assert.equal(await fs.access(wt.worktreePath).then(() => true, () => false), false);
+  assert.equal(await fs.access(storeDir).then(() => true, () => false), false,
+    'the central-store entry must be gone too');
+  assert.deepEqual(await listWorktrees('demo'), []);
+});
+
+// The REST delete guard under an alias. idsForWorktree is an exact in-memory
+// compare, so an un-canonicalized :wt segment reports no attached instances and
+// skips the live-instance refusal entirely — then, under ?force=1, yanks the
+// directory without ever killing them. The MCP mirror of this assertion lives in
+// mcp.test.mjs; this is the REST surface the sidebar's × actually drives.
+test('DELETE worktree by bare slug still refuses (409) with a live instance attached', async () => {
+  await makeRealRepo('demo');
+  // Named via the service: the REST spawn route takes no `name`, and it is the
+  // DELETE that is under test here, so the instance attaches by the full name.
+  const wt = await createWorktree('demo', { name: 'restalias' });
+  assert.equal(wt.worktreeName, 'demo_worktree_restalias');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: 'demo_worktree_restalias',
+  });
+  assert.equal(created.status, 201);
+  const wtName = created.body.worktree.worktreeName;
+  assert.equal(wtName, 'demo_worktree_restalias');
+  const wtPath = wt.worktreePath;
+  const id = created.body.id;
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  const blocked = await api(baseUrl, 'DELETE', '/api/projects/demo/worktrees/restalias');
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.body.error, /running instance/i);
+  assert.ok(instances.get(id), 'the instance survives the refused delete');
+  assert.equal(await fs.access(wtPath).then(() => true, () => false), true,
+    'the worktree directory must still exist');
+  assert.ok(await getWorktree('demo', wtName), 'the record survives too');
 });

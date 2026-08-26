@@ -118,6 +118,34 @@ function worktreeDirName(project: string, id: string): string {
   return `${project}_worktree_${id}`;
 }
 
+// A caller-supplied worktree name → the canonical worktreeName among `known`.
+// Accepts the full dir name or the bare slug the GUI displays (it strips the
+// `<project>_worktree_` prefix everywhere it renders one), so the string a user
+// reads is a string the API accepts. Exact match wins, so the full spelling can
+// never be shadowed. Composes the alias rather than stripping a prefix off the
+// input: that makes it a pure function of (project, input) which can match at
+// most one record, so no ambiguity — and no ambiguity refusal — is reachable.
+export function resolveWorktreeName(
+  project: string,
+  input: string,
+  known: Iterable<string>,
+): string | null {
+  const names = [...known];
+  if (names.includes(input)) return input;
+  const composed = worktreeDirName(project, input);
+  return names.includes(composed) ? composed : null;
+}
+
+// The create-side mirror of the read side: a caller echoing a full dir name
+// back into `create_worktree` names the worktree they meant, not a mangled
+// sibling. Strips at most one literal prefix, and must run BEFORE
+// slugifyWorktreeName — that maps `_` to `-`, destroying the prefix before it
+// could be recognised. An empty remainder falls through to the caller's refusal.
+function stripWorktreeDirPrefix(project: string, name: string): string {
+  const prefix = `${project}_worktree_`;
+  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
 interface GitResult {
   stdout: string;
   stderr: string;
@@ -343,6 +371,7 @@ export async function createWorktree(
   // it would happily resolve a worktree dir name.
   let basePath = proj.path;
   let baseLabel = `project '${projectName}'`;
+  let baseWorktreeName: string | undefined;
   if (baseWorktree !== undefined) {
     const base = await getWorktree(projectName, baseWorktree);
     if (!base) {
@@ -359,6 +388,7 @@ export async function createWorktree(
       );
     }
     basePath = base.worktreePath;
+    baseWorktreeName = base.worktreeName;
     baseLabel = `worktree '${baseWorktree}'`;
   }
   const head = await getHeadBranchAndSha(basePath);
@@ -370,7 +400,7 @@ export async function createWorktree(
 
   let id: string;
   if (name !== undefined) {
-    id = slugifyWorktreeName(name);
+    id = slugifyWorktreeName(stripWorktreeDirPrefix(projectName, name));
     if (!id) {
       throw httpError(400, `worktree name '${name}' has no usable characters — use letters or digits`);
     }
@@ -426,7 +456,9 @@ export async function createWorktree(
     baseBranch: head.branch,
     baseSha: head.sha,
     // Written only when set, so a root-based record keeps its existing shape.
-    ...(baseWorktree !== undefined ? { baseWorktree } : {}),
+    // Canonical, never the caller's spelling: this is the foreign key
+    // listDependentWorktrees matches on.
+    ...(baseWorktreeName !== undefined ? { baseWorktree: baseWorktreeName } : {}),
     createdAt: new Date().toISOString(),
   };
   await writeMeta(projectName, dirName, meta);
@@ -465,7 +497,8 @@ export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]
 
 export async function getWorktree(projectName: string, worktreeName: string): Promise<WorktreeMeta | null> {
   const all = await listWorktrees(projectName);
-  return all.find(w => w.worktreeName === worktreeName) ?? null;
+  const name = resolveWorktreeName(projectName, worktreeName, all.map(w => w.worktreeName));
+  return all.find(w => w.worktreeName === name) ?? null;
 }
 
 // Worktrees that name this one as their base. The predicate is over worktree
@@ -474,7 +507,11 @@ export async function getWorktree(projectName: string, worktreeName: string): Pr
 // worktree must actually be deleted before its base is allowed to move.
 export async function listDependentWorktrees(projectName: string, worktreeName: string): Promise<string[]> {
   const all = await listWorktrees(projectName);
-  return all.filter(w => w.baseWorktree === worktreeName).map(w => w.worktreeName);
+  // Alias here too, not just at getWorktree: the foreign key is matched
+  // literally below, so a bare slug would silently return [] and bypass every
+  // dependents refusal built on it.
+  const name = resolveWorktreeName(projectName, worktreeName, all.map(w => w.worktreeName)) ?? worktreeName;
+  return all.filter(w => w.baseWorktree === name).map(w => w.worktreeName);
 }
 
 // The shared refusal for "this worktree is somebody's base". Minted once here
@@ -529,7 +566,7 @@ export async function removeWorktree(
   if (!force) {
     // Dependents first: a clean tree does not unblock this one, so checking it
     // second would name a blocker the caller can clear and still be refused.
-    const dependents = await listDependentWorktrees(projectName, worktreeName);
+    const dependents = await listDependentWorktrees(projectName, meta.worktreeName);
     if (dependents.length > 0) {
       throw httpError(409, dependentsRefusal(worktreeName, dependents, 'deleting').reason);
     }
@@ -555,7 +592,7 @@ export async function removeWorktree(
   const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
   await runGit(parentPath, delArgs);
   // Drop the central-store entry (metadata + attachments + debug).
-  try { await fs.rm(worktreeStoreDir(projectName, worktreeName), { recursive: true, force: true }); }
+  try { await fs.rm(worktreeStoreDir(projectName, meta.worktreeName), { recursive: true, force: true }); }
   catch { /* best-effort */ }
   return meta;
 }
@@ -681,7 +718,7 @@ export async function mergeWorktreeIntoParent(
   //    send the caller to a sync_worktree that refuses for the real reason. This
   //    gate names the real blocker on the first call. Evaluated on the worktree
   //    being MERGED, never on the one being merged INTO — see dependentsRefusal.
-  const dependents = await listDependentWorktrees(projectName, worktreeName);
+  const dependents = await listDependentWorktrees(projectName, meta.worktreeName);
   if (dependents.length > 0) {
     return dependentsRefusal(worktreeName, dependents, 'merging');
   }
@@ -812,7 +849,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   // the base they were created from. Checked first, and unconditionally on
   // ahead/behind, so the outcome never depends on whether the base happened to
   // move — a caller must not learn this constraint only sometimes.
-  const dependents = await listDependentWorktrees(projectName, worktreeName);
+  const dependents = await listDependentWorktrees(projectName, meta.worktreeName);
   if (dependents.length > 0) {
     return dependentsRefusal(worktreeName, dependents, 'syncing');
   }
