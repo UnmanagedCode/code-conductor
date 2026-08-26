@@ -1557,7 +1557,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       project: string; worktree: string; baseRef: string; head: string | null;
       summary: boolean; ahead: number | null; totals: typeof totals; files: DiffFileRow[];
       uncommitted?: { totals: typeof totals; files: DiffFileRow[]; untracked: string[] };
-    } = { project, worktree, baseRef: ref, head, summary: true, ahead, totals, files };
+    } = { project, worktree: wt.worktreeName, baseRef: ref, head, summary: true, ahead, totals, files };
 
     // Staged + unstaged changes vs HEAD (does not include untracked files)
     const [rnu, rnsu] = await Promise.all([
@@ -1629,7 +1629,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     totalLines: number; totalBytes: number; hasUncommittedChanges: boolean; untracked: string[]; ahead: number | null;
     includedFiles?: string[]; omittedFiles?: string[];
   } = {
-    project, worktree, baseRef: ref, head,
+    project, worktree: wt.worktreeName, baseRef: ref, head,
     contextLines: ctx,
     offset: startLine,
     truncated,
@@ -2178,7 +2178,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     diffStat?: string;
   } = {
     project,
-    worktree: worktree ?? null,
+    worktree: worktreeMeta?.worktreeName ?? null,
     cwd,
     files: await listTopLevelEntries(cwd),
     isGitRepo: false,
@@ -2407,7 +2407,10 @@ export async function bashProject({ project, worktree, command, timeout }: {
     throw new Error('project_bash requires a non-empty command string');
   }
   const timeoutMs = clampBashTimeoutMs(timeout);
-  const { cwd } = await resolveProjectCwd(project, worktree);
+  const { cwd, worktreeMeta } = await resolveProjectCwd(project, worktree);
+  // Responses report the CANONICAL name, never the caller's spelling — see
+  // docs/protocol.md → Input params. All three exit paths below echo it.
+  const wtName = worktreeMeta?.worktreeName ?? null;
   const bundlePath = await getShellEnvBundlePath();
   const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
   const shell = bundleShellKind(bundlePath);
@@ -2431,7 +2434,7 @@ export async function bashProject({ project, worktree, command, timeout }: {
       });
     } catch (err) {
       resolve(textPayload(
-        { project, worktree: worktree ?? null, cwd, exitCode: null,
+        { project, worktree: wtName, cwd, exitCode: null,
           durationMs: Date.now() - start, error: true },
         errMsg(err),
       ));
@@ -2466,7 +2469,7 @@ export async function bashProject({ project, worktree, command, timeout }: {
         project: string; worktree: string | null; cwd: string;
         exitCode: number | null; durationMs: number; truncated?: boolean; timedOut?: boolean;
       } = {
-        project, worktree: worktree ?? null, cwd,
+        project, worktree: wtName, cwd,
         exitCode: timedOut ? null : (code ?? null),
         durationMs,
       };
@@ -2478,7 +2481,7 @@ export async function bashProject({ project, worktree, command, timeout }: {
     proc.on('error', (err) => {
       clearTimeout(timer);
       resolve(textPayload(
-        { project, worktree: worktree ?? null, cwd, exitCode: null,
+        { project, worktree: wtName, cwd, exitCode: null,
           durationMs: Date.now() - start, error: true },
         err.message,
       ));
