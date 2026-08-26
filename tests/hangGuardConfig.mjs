@@ -22,13 +22,74 @@ function ms(envName, fallback) {
 // Parent-side, per test file: SIGKILL a child process that has outlived this.
 // MUST stay above the 60s per-test `timeout` passed to run() in run.mjs, so it
 // can never pre-empt a test that node itself would still cancel and report.
-// THE SLOWEST FILE IS tests/idle-wake-ownership.test.mjs, AND IT IS NOW THE SOLE
-// OWNER OF THIS MARGIN. Measured at HEAD on a 16-core box: **33.0s quiet** (2.72x
-// against the 90s limit) and **37.3s under 24-way CPU starvation** — **2.41x**,
-// i.e. already past the 2.5x line at which this constant deserves a fresh look.
-// Those figures and that remedy belong to card 2026-0211; do not act on them here.
-// Its cost is bounded real wall-clock windows (paced turns, heartbeat intervals),
-// which is why the split remedy below does not transfer to it.
+// THE SLOWEST FILE WAS tests/idle-wake-ownership.test.mjs. Card 2026-0221 split it
+// into the tests/idle-wake-*.test.mjs family over the shared harness in
+// tests/idleWakeCase.mjs, and THE SPLIT REMEDY BELOW DID TRANSFER TO IT. An earlier
+// revision of this comment said it did not, because the file's cost was bounded real
+// wall-clock windows (paced turns, heartbeat intervals) rather than work. That is
+// true and it bounds the wrong quantity: it says the family's TOTAL cannot shrink,
+// while this deadline is charged the MAX. The windows sat in mutually INDEPENDENT
+// tests — measured: the per-test durations summed to 48 414ms inside a 48 640ms file
+// wall, i.e. the file was its tests plus ~0.2s of spawn+import — so one file was
+// charged their sum and the family is now charged its largest member.
+//
+// ONE RECORD. Before-figures at 44b0b60, after-figures at 692aead, both on a
+// 16-core box, 2026-08-26. RE-POINT THE SHAS ON A REBASE — a rebase rewrites them
+// and the anchor silently dangles. Re-derive rather than extrapolate:
+//
+//   node tests/run.mjs                 # healthy; read the hang-guard verdict line
+//
+//   margin of the family's worst file        BEFORE ->  AFTER
+//     healthy, whole-suite, quiet        48 865ms (1.84x) ->    9 861ms (9.13x)
+//     healthy, whole-suite, 72-way       58 153ms (1.55x) -> <=14 343ms (>=6.27x)
+//     BROKEN GUARD (recipe below)       149 002ms (0.60x) ->   31 932ms (2.82x)
+//   suite wall around them: 57 206ms -> 42 516ms quiet, 195 682ms -> 112 268ms at
+//   72-way.
+//
+// THE STARVED ROW IS A BOUND, NOT A POINT, and deliberately so: after the split no
+// idle-wake-* file reaches the starved verdict line's top five at all, so the only
+// figure that run supports is "AT OR below its 5th entry" (server-restart, 14 343ms)
+// — absent from a top five bounds you by the 5th entry, it does not put you under it.
+// Running the eight files ALONE at 72-way puts the worst at 11 328ms (7.94x), which
+// is a lighter condition than a 284-file run and so a lower bound. Quote whichever
+// you measure, with its width.
+//
+// EVERY BOUND IN THIS BLOCK ROUNDS AGAINST ITS OWN CLAIM, NOT TOWARD IT. 90 000 /
+// 14 343 = 6.2748, so the margin row says >=6.27x, not >6.3x; the growth ceiling
+// below says 46%, not the 45.45% it derives from. Point values round to nearest —
+// a bound rounded the convenient way asserts margin its own anchor never gave it,
+// in the one comment whose whole job is not to do that.
+//
+// WHAT DRIFTS: every millisecond figure, with the box and the ambient load. WHAT IS
+// ANCHORED: the ORDER of those three rows (broken worst, then starved, then quiet),
+// and that the BROKEN row is the one that decides this constant. Starvation moves
+// this family barely at all, because timers fire on schedule under load: BEFORE the
+// split, quiet to 72-way, the whole suite grew 242% while the file grew 19%; AFTER,
+// the suite grew 164% (42 516 -> 112 268ms) while the family's worst grew at most
+// 46%. CASE COUNT is the threat here, and it is additive: a new case adds to the max
+// only once it exceeds the largest existing file.
+//
+// THE BROKEN ROW WAS BELOW 1x BEFORE THE SPLIT, and this is what that cost: the
+// guard SIGKILLed the file at 90 077ms, the run reported 0/1 files, and the file
+// never emitted a summary — so node's own tests/pass/fail tally and every per-test
+// name went with it. Reached by a SINGLE ENVIRONMENT-ONLY regression, no edit
+// anywhere (ORCH_SUBSCRIBE_TIMEOUT_MS=999 collapses
+// DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS to 0, so every second-precision window is
+// refused and each affected test rides to waitFor's 10s default instead of to its
+// own window — 13 of them did):
+//
+//   ORCH_SUBSCRIBE_TIMEOUT_MS=999 node tests/run.mjs tests/idle-wake-*.test.mjs
+//   CC_TEST_FILE_KILL_MS=900000 CC_TEST_RUN_CAP_MS=1200000 \
+//     ORCH_SUBSCRIBE_TIMEOUT_MS=999 node tests/run.mjs tests/idle-wake-*.test.mjs
+//
+// The second form existed to see the wall the kill HID. Post-split there is no
+// longer one to hide: measured at 692aead, the FIRST form reports 8/8 files, 0
+// killed, with node's own 45/24/21 tally and every per-test name intact, and the
+// worst file's 31 932ms read straight off its verdict line. That is the whole point
+// of the split — keep the second form only for the day a new case pushes a file past
+// this constant again. A MARGIN COMMENT STATING ONLY THE HEALTHY NUMBER INVITES
+// RAISING THIS CONSTANT AFTER A FALSE KILL; the answer to a broken row is more
+// files, not a later deadline.
 // RE-ANCHOR THIS WHEN THE TOP FILE CHANGES.
 //
 // HOW TO REPRODUCE THE STARVED CONDITION: docs/architecture.md -> "Reproducing CPU
@@ -55,19 +116,27 @@ function ms(envName, fallback) {
 // hang-guard.test.mjs in the old ranking were inheriting its ~30s; their real
 // durations were 8ms, 344ms, 386ms and ~100ms. Card 2026-0206 moved the figure to
 // `test:complete` (order-independent). The ranking is now steep. Measured on a
-// QUIET 16-core box at a23fbbb (2026-08-24), post-split. RE-POINT THIS SHA IF THE
-// BRANCH IS REBASED — a rebase rewrites it and the anchor silently dangles:
-//   idle-wake-ownership 33 036 / idle-drain-settle 16 618 /
-//   header-playbook-enforcement 10 442 / server-restart 9 175 /
-//   hang-guard-file-kill 8 507 ms
+// QUIET 16-core box at 692aead (2026-08-26), post-split. RE-POINT THIS SHA IF
+// THE BRANCH IS REBASED — a rebase rewrites it and the anchor silently dangles:
+//   idle-drain-settle 16 582 / header-playbook-enforcement 10 375 /
+//   plugins-supervisor 9 902 / idle-wake-ownership 9 861 /
+//   idle-wake-abort-qualifier 9 759 ms
 // so a flat top five reappearing is itself the signal that the metric regressed.
 //
-// ONLY THE HEAD OF THAT LIST IS STABLE. The 3rd-5th entries sit within ~2s of
-// several other files and the tail RE-ORDERS UNDER AMBIENT LOAD — observed:
+// NO ENTRY IS CONDITION-STABLE, THE HEAD LEAST OF ALL — and an earlier revision of
+// this comment said the opposite ("only the head of that list is stable"), which
+// card 2026-0221's split made false. The head now depends on the CONDITION, because
+// the two kinds of slow file respond to load differently: a DEADLINE-BOUND file
+// (bounded wall-clock windows) leads a quiet run and barely moves under starvation,
+// while a CPU-BOUND one leads under load. Measured at 72-way in the same 284-file
+// run: the head becomes playbook-enforce (19 305ms), which is absent from the quiet
+// five entirely, the quiet head idle-drain-settle drops to second (17 649ms), and no
+// idle-wake-* file appears at all.
+// So compare a fresh verdict line only against one taken at the SAME load, and
+// expect the tail to re-order freely — observed even before the split,
 // worktree-feature-branch and worktrees overtaking server-restart and pushing
-// hang-guard-file-kill out of the top five entirely. A fresh verdict line that
-// disagrees with the tail above is not evidence of a regression; a fresh one that
-// disagrees about the FIRST entry, or that is flat, is.
+// hang-guard-file-kill out of the top five entirely. The standing signal is not a
+// re-order at all: it is a FLAT line, which is the 2026-0206 metric bug returning.
 //
 // WATCH THE TREND, BUT NOT VIA THE OLD ONE. An earlier revision tracked a starved
 // slowest-file trend of 19.4s -> 28.8s -> 38.6s (4.6x -> 3.1x -> 2.3x). Every one
@@ -203,10 +272,11 @@ export const RESIDUAL_SETTLE_MS = ms('CC_TEST_RESIDUAL_SETTLE_MS', 250);
 // is a handful of files, so they fire long before this does.
 //
 // MEASURED: a full 268-file run under 24-way CPU starvation (load avg ~30) takes
-// (the suite is 273 files as of card 2026-0198's split; the figure below has not
-// been re-taken since, and the margin is wide enough that it need not be)
 // ~157-170s — so the original 240s left only ~1.4x margin and would have gone red
-// on a merely-loaded box. A cap that fires on a slow box is a false red, and this
+// on a merely-loaded box. The file count has grown since (cards 2026-0198 and
+// 2026-0221 both split a file); read the live count off the verdict line's
+// `N/N files reported` rather than trusting a number minted here, and note the
+// margin is wide enough that the figure has not needed re-taking. A cap that fires on a slow box is a false red, and this
 // card exists to make the suite's cost BELIEVABLE.
 //
 // NOTE, because the plan said the opposite: 600s is ABOVE code-mutant's own

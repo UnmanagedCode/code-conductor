@@ -64,16 +64,22 @@ try {
 // is therefore the literal output of this expression, not an extrapolation from a
 // different core count:
 //   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
-//     double the ambient load, and cannot go below the floor named next.
-//   * the floor is a SINGLE FILE, and it is tests/idle-wake-ownership.test.mjs:
-//     measured quiet at HEAD, 33.0s in a ~38.5s suite. It is DEADLINE-bound
-//     (bounded real wall-clock windows) rather than CPU-bound, which is why more
-//     slots cannot get below it; card 2026-0211 owns that figure.
-//     tests/hang-guard.test.mjs used to be a near-second at 30.0s. Card 2026-0198
-//     split it into five tests/hang-guard-*.test.mjs files — its cases are
-//     independent subprocess runs, so the file's cost went from the SUM of their
-//     squeezed deadlines to the MAX (30 183ms -> 8 493ms quiet), and it is now
-//     fifth in the ranking rather than second.
+//     double the ambient load. Those two figures were taken while a single-file
+//     floor was what capped the gain — see the next bullet, which is why they are
+//     not comparable to a run taken today.
+//   * THERE IS NO LONGER A SINGLE-FILE FLOOR, so more slots help again. There
+//     was: tests/idle-wake-ownership.test.mjs cost 48.9s of a 57.2s quiet run at
+//     44b0b60, DEADLINE-bound (bounded real wall-clock windows) rather than
+//     CPU-bound, so no number of slots could get below it. Card 2026-0221 split
+//     it into eight tests/idle-wake-*.test.mjs files over tests/idleWakeCase.mjs
+//     — ~45 mutually independent windows, so the file's cost went from their SUM
+//     to the family's MAX — taking the quiet suite to 42.5s (692aead) with a
+//     largest member of 9.9s. tests/hang-guard.test.mjs was the same shape and
+//     the same fix: card 2026-0198 split it into five
+//     tests/hang-guard-*.test.mjs files, its cases being independent subprocess
+//     runs, so its cost went from the SUM of their squeezed deadlines to the MAX
+//     (30 183ms -> 8 493ms quiet). Past those two splits the suite is
+//     aggregate-work-bound at concurrency 8, not bound by any one file.
 //   * contention does NOT argue for backing off: under 8 spinners, concurrency 8
 //     was both FASTER than 4 (79.2s vs 87.6s) and had a marginally BETTER per-file
 //     kill margin (3.00x vs 2.92x). Both runs green.
