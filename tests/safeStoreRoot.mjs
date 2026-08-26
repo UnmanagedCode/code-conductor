@@ -16,8 +16,13 @@
 // inherited value" and running (and, worse, cleaning up) against a real project
 // tree. A value that fails this check aborts the whole run — it is never
 // "fixed up" by silently minting a new root over the top.
+//
+// Ownership rule for the roots themselves: a root is removed by the process that
+// MINTED it, at that process's exit. A process that merely INHERITED a root (via
+// ensureSafeStoreEnv's early return) never removes it — its siblings are still
+// running against it.
 
-import { mkdtempSync, realpathSync, lstatSync } from 'node:fs';
+import { mkdtempSync, realpathSync, lstatSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -109,11 +114,22 @@ export function assertVerified() {
   }
 }
 
+// Roots THIS process minted via createSafeRoot(). Exact paths only — never a
+// readdir/glob of /tmp, and never a root that was merely INHERITED:
+// ensureSafeStoreEnv's early-return branch reuses a root the PARENT run owns, and
+// removing that at a child's exit would pull the whole run's store out from under
+// its siblings. Mint => own => remove; inherit => never remove.
+const mintedRoots = new Set();
+
 // Make a fresh throwaway root under os.tmpdir() and the projects/claude sub-roots
-// under it. Sync so it's ready before any test-file child forks.
+// under it. Sync so it's ready before any test-file child forks. Registering
+// ownership HERE rather than in ensureSafeStoreEnv() is what makes the rule
+// structural: the inherited branch never calls this, so an inherited root can
+// never enter the set.
 export function createSafeRoot() {
   const root = mkdtempSync(path.join(REAL_TMP, 'cc-testrun-'));
   assertSafeTestRunRoot(root); // guaranteed to pass by construction; keeps one verification path
+  mintedRoots.add(root);
   return {
     root,
     projectsRoot: path.join(root, 'project'),
@@ -166,15 +182,58 @@ function markRun(root) {
 // refusal path without faking an entire process. Never used by production code.
 export const _forTesting = {
   resetVerified() { verified = false; },
+  validateRootForDeletion,
 };
+
+// Sync validation of a root ALREADY drawn from mintedRoots — shared by
+// removeSafeRoot() and the exit backstop, so the backstop can never delete
+// anything the async path would not have. Re-validates independently of module
+// state (never trusts a path on the strength of `verified` alone).
+//
+// lstat runs FIRST so an already-removed root surfaces as a clean ENOENT: left to
+// assertSafeTestRunRoot it degrades into "does not resolve under a cc-testrun-…
+// directory" (the ancestor walk falls back to the tmpdir once the dir is gone),
+// which would make the backstop log a false alarm instead of skipping. The
+// symlink check is the only gate that catches a symlink POINTING AT a valid run
+// root — assertSafeTestRunRoot realpaths, so that shape passes it.
+function validateRootForDeletion(root) {
+  const lst = lstatSync(root); // throws ENOENT if already removed
+  if (lst.isSymbolicLink()) {
+    throw new Error(`refusing to remove ${root}: it is a symlink`);
+  }
+  assertSafeTestRunRoot(root);
+  return root;
+}
 
 // Remove the per-run root minted by createSafeRoot(). Re-validates
 // independently of any prior verification (never trusts a caller-passed path
-// on the strength of module state alone).
+// on the strength of module state alone). The registry entry is dropped only
+// once removal is confirmed, so an rmrf that fails (EBUSY/EACCES under
+// contention) leaves the root registered for the exit backstop to retry.
 export async function removeSafeRoot(root) {
-  assertSafeTestRunRoot(root);
-  if (lstatSync(root).isSymbolicLink()) {
-    throw new Error(`refusing to remove ${root}: it is a symlink`);
-  }
+  validateRootForDeletion(root);
   await rmrf(root);
+  mintedRoots.delete(root); // only now is it actually gone
 }
+
+// Crash/interrupt backstop. `removeSafeRoot` sits on run.mjs's NORMAL completion
+// path only: the SIGINT/SIGTERM handler ends at process.exit(128+signo), the
+// store-isolation guard exits 1 before any file forks, and a standalone file run
+// never had a removal at all. Each of those runs 'exit' handlers, so one
+// registration point covers all of them. Sync by necessity — no async work runs
+// in an exit handler. Reuses the IDENTICAL validation gate as the async path, so
+// it can never delete anything that path would not have. Best-effort: logs rather
+// than throws, since an exit handler cannot usefully stop the process. SIGKILL
+// stays uncoverable (no handler runs), which only ever leaks a throwaway /tmp
+// dir; see tests/reapOrphans.mjs for why no directory reaper follows.
+process.on('exit', () => {
+  if (mintedRoots.size === 0) return;
+  for (const root of mintedRoots) {
+    try {
+      rmSync(validateRootForDeletion(root), { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    } catch (err) {
+      if (err.code === 'ENOENT') continue;
+      console.error(`safe-root cleanup backstop failed for ${root}: ${err.message}`);
+    }
+  }
+});

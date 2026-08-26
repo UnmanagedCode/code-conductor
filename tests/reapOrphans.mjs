@@ -15,9 +15,14 @@
 // as real reds — and unrelated apps on a shared box. It is also what destroyed
 // the evidence for the `server.mjs` family during this card's own inventory.
 //
-// This file reaps PROCESSES only. Stale /tmp/cc-testrun-* directories are a
-// separate, structural leak (ensureSafeStoreEnv mints a root that nothing
-// removes) tracked as card 2026-0227 — deliberately not folded in here.
+// This file reaps PROCESSES only, and stays that way. Stale /tmp/cc-testrun-*
+// directories are closed by teardown in tests/safeStoreRoot.mjs (a minted root is
+// removed by its owner, at that process's exit); a directory MODE here could not
+// be given a safe licence predicate, because /proc/<pid>/environ is the env as of
+// EXEC and run.mjs sets CC_TEST_RUN_ID after its own — so a root's owner carries
+// no visible marker, and "no live process carries this marker" would classify a
+// LIVE run's root as orphaned. The process licence below is sound for the
+// opposite reason: a live run's root IS still on disk.
 
 import { existsSync, realpathSync } from 'node:fs';
 import os from 'node:os';
