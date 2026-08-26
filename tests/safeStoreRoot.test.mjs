@@ -132,7 +132,11 @@ const MODULE_URL = pathToFileURL(path.join(__dirname, 'safeStoreRoot.mjs')).href
 
 // `safeStoreRoot.mjs` imports only .mjs (node:fs/os/path/url + ./rmrf.mjs), so a
 // bare `node --input-type=module -e` child needs no type-stripping loader.
-function runChild({ env: overrides, exitCode = null }) {
+// `body` is source spliced in AFTER the mint and BEFORE the `ROOT=` line, with
+// `root` in scope; anything else it prints is returned in `stdout` for the parent
+// to assert on. Top-level await is available (module input type), so a body may
+// await.
+function runChild({ env: overrides, body = '', exitCode = null }) {
   const env = { ...process.env, ...overrides };
   for (const [k, v] of Object.entries(overrides)) if (v === undefined) delete env[k];
   delete env.NODE_TEST_CONTEXT; // a child that inherits it misbehaves under node:test
@@ -141,19 +145,24 @@ function runChild({ env: overrides, exitCode = null }) {
   // marker leaves it inside this run's hang-guard sweep instead of orphaned under
   // a marker nobody tracks.
   const src =
-    `import { ensureSafeStoreEnv } from ${JSON.stringify(MODULE_URL)};\n` +
-    `const safe = ensureSafeStoreEnv();\n` +
-    `process.stdout.write('ROOT=' + safe.root + '\\n');\n` +
+    `import { ensureSafeStoreEnv, removeSafeRoot } from ${JSON.stringify(MODULE_URL)};\n` +
+    `import { mkdirSync, writeFileSync, chmodSync, rmSync } from 'node:fs';\n` +
+    `import path from 'node:path';\n` +
+    `const root = ensureSafeStoreEnv().root;\n` +
+    body +
+    `process.stdout.write('ROOT=' + root + '\\n');\n` +
     (exitCode === null ? '' : `process.exit(${exitCode});\n`);
   const res = spawnSync(process.execPath, ['--input-type=module', '-e', src],
     { env, encoding: 'utf8', timeout: 20_000 });
   const m = /^ROOT=(.+)$/m.exec(res.stdout ?? '');
   assert.ok(m, `child printed no ROOT line:\n${res.stdout}\n${res.stderr}`);
-  return { root: m[1], status: res.status, stderr: res.stderr };
+  return { root: m[1], status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
 
+const MINTING = { PROJECTS_ROOT: undefined, CLAUDE_PROJECTS_ROOT: undefined };
+
 test('a minted run root is gone once the minting process exits', () => {
-  const child = runChild({ env: { PROJECTS_ROOT: undefined, CLAUDE_PROJECTS_ROOT: undefined } });
+  const child = runChild({ env: MINTING });
   // Shape-check the child's root first: it proves the MINT branch ran, so a
   // vanished directory means "the owner removed it", not "nothing was created".
   assert.match(path.basename(child.root), RUN_ROOT_SHAPE);
@@ -182,10 +191,7 @@ test('the backstop removes a minted root on a non-zero process.exit()', () => {
   // The literal shape of run.mjs's signal path, which ends at
   // process.exit(128+signo) and so never reaches removeSafeRoot. Cleanup has to
   // be an 'exit' handler to cover it — 'beforeExit' does not fire here.
-  const child = runChild({
-    env: { PROJECTS_ROOT: undefined, CLAUDE_PROJECTS_ROOT: undefined },
-    exitCode: 143,
-  });
+  const child = runChild({ env: MINTING, exitCode: 143 });
   assert.equal(child.status, 143);
   assert.match(path.basename(child.root), RUN_ROOT_SHAPE);
   assert.equal(existsSync(child.root), false,
@@ -197,11 +203,20 @@ test('the backstop removes a minted root on a non-zero process.exit()', () => {
 // Second gate on a path ALREADY drawn from the minted-roots registry: it never
 // selects what to delete, it only vetoes an entry that doesn't look right.
 //
-// Disclosed gap: `mintedRoots.delete()` running only AFTER a successful rmrf is
-// untested. Its purpose is the retry case (an rmrf failing EBUSY/EACCES leaves
-// the entry registered for the exit backstop), and inducing a deterministic rmrf
-// failure would require faking the filesystem. Dropping the ordering is benign —
-// the backstop lstats, gets ENOENT and skips — so no test can distinguish it.
+// The ordering inside removeSafeRoot — drop the registry entry only AFTER rmrf
+// resolves — is pinned below by the retry test, because getting it backwards is
+// not benign: `delete` before a FAILING rmrf empties the registry while the root
+// is still on disk, so the backstop's emptiness guard returns early and the root
+// leaks with nothing left to retry it. That test is uid-dependent: it induces the
+// failure with a chmod, which does not constrain root, so it skips as root rather
+// than passing vacuously.
+//
+// Disclosed gap, scoped deliberately: removing the `mintedRoots.delete()` call
+// ALTOGETHER is a genuine no-op, and no test here distinguishes it. A root that
+// rmrf really removed leaves a stale entry the backstop then lstats, gets ENOENT
+// for, and skips — the same outcome as having dropped it. Pinning that would mean
+// asserting on private registry contents, which would tie a test to the shape of
+// state that is deliberately not part of this module's surface.
 
 test('the deletion gate refuses a symlink pointing at a valid run root', async () => {
   // Discriminating by construction: the realpath'd TARGET passes
@@ -226,13 +241,67 @@ test('the deletion gate reports an already-removed root as ENOENT, not as an unt
   // Why lstat runs before assertSafeTestRunRoot. Once the directory is gone the
   // ancestor walk falls back to the tmpdir, so the shape gate would reject it as
   // "does not resolve under a cc-testrun-… directory" — an error with no `code`,
-  // which the exit backstop would log as a failure on every root the normal path
-  // had already cleaned up, instead of skipping it.
+  // which the backstop cannot recognise as "already gone". This pins the gate's
+  // error CLASS; the backstop actually consuming it silently is pinned by the
+  // stderr test below.
   const root = createSafeRoot().root;
   await removeSafeRoot(root);
   assert.throws(
     () => storeRootTesting.validateRootForDeletion(root),
     (err) => err.code === 'ENOENT',
-    'an already-removed root must surface as ENOENT so the backstop skips it silently',
+    'an already-removed root must surface as ENOENT, the one error class meaning "already gone"',
   );
+});
+
+// --- the backstop under a failed removal, and under an already-gone root -----
+
+test('a root whose removal FAILED stays registered, so the exit backstop retries it', (t) => {
+  // The reason removeSafeRoot drops its registry entry only after rmrf resolves.
+  // The child blocks removal with a chmod (deterministic EACCES — not a class
+  // fs.rm retries), asserts removeSafeRoot rejected, restores the mode, then exits
+  // normally: the entry must still be registered for the backstop to finish the
+  // job. Get the ordering backwards and the registry is empty while the root is
+  // still on disk, so the backstop's emptiness guard returns early — a silent leak.
+  if (process.getuid?.() === 0) {
+    t.skip('runs as root: chmod does not constrain root, so the induced failure would not occur');
+    return;
+  }
+  const child = runChild({
+    env: MINTING,
+    body: `
+      const blocked = path.join(root, 'blocked');
+      mkdirSync(blocked, { recursive: true });
+      writeFileSync(path.join(blocked, 'held'), 'x');
+      chmodSync(blocked, 0o500);
+      let failure = 'NONE';
+      try { await removeSafeRoot(root); } catch (err) { failure = err.code ?? 'THREW'; }
+      chmodSync(blocked, 0o700);
+      process.stdout.write('REMOVE_FAILED=' + failure + '\\n');
+    `,
+  });
+  // Without a confirmed rejection the test is vacuous: a removal that SUCCEEDED
+  // would leave the root gone either way, and prove nothing about the registry.
+  assert.match(child.stdout, /^REMOVE_FAILED=EACCES$/m,
+    `removeSafeRoot did not fail as intended, so this run proves nothing:
+${child.stdout}${child.stderr}`);
+  assert.equal(child.status, 0);
+  assert.equal(existsSync(child.root), false,
+    `the failed removal dropped ${child.root} from the registry — the backstop had nothing to retry`);
+});
+
+test('the exit backstop treats an already-removed root as a clean skip, printing nothing', () => {
+  // The child removes its own root directly, BYPASSING removeSafeRoot, so the
+  // entry is still registered when the handler runs and the backstop meets a root
+  // that is already gone — the shape a stale entry always takes. That is a
+  // non-event: it must consume the ENOENT and stay quiet rather than reporting a
+  // cleanup failure for work the normal path already did.
+  const child = runChild({
+    env: MINTING,
+    body: `rmSync(root, { recursive: true, force: true });\n`,
+  });
+  assert.equal(child.status, 0);
+  assert.equal(existsSync(child.root), false);
+  assert.doesNotMatch(child.stderr, /safe-root cleanup backstop failed/,
+    `the backstop reported a failure for a root that was simply already gone:
+${child.stderr}`);
 });

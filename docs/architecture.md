@@ -444,12 +444,18 @@ lives in `createSafeRoot()`, not `ensureSafeStoreEnv()`, so a root taken from th
 can never enter the set, and a test file under `run.mjs` can never delete the whole run's store from
 under its siblings. The property — a standalone run of any test file, and a full suite run, each leave
 no `/tmp/cc-testrun-*` root behind — is pinned by tests in `tests/safeStoreRoot.test.mjs`, which also
-pin the inherited-root case and the deletion gate (`_forTesting.validateRootForDeletion` — a second
-check on a path already drawn from the set, never a selector): it refuses a symlink *pointing at* a
-valid run root, which `assertSafeTestRunRoot` alone would realpath into acceptance; it refuses a temp
-dir of the wrong shape; and because `lstat` runs before the shape gate it reports an already-removed
-root as `ENOENT`, so the backstop skips it instead of logging every cleanly-removed root as a
-failure.
+pin the inherited-root case, the deletion gate, and the backstop edges below. The gate
+(`_forTesting.validateRootForDeletion`) is a second check on a path already drawn from the set, never
+a selector: it refuses a symlink *pointing at* a valid run root, which `assertSafeTestRunRoot` alone
+would realpath into acceptance; it refuses a temp dir of the wrong shape; and because `lstat` runs
+before the shape gate it reports an already-removed root as `ENOENT` — the one error class the
+backstop can read as "already gone" — which the backstop then consumes silently rather than reporting
+a cleanup failure for work the normal path already did. The other edge is the ordering inside
+`removeSafeRoot`: the registry entry is dropped only after `rmrf` resolves, so a removal that FAILS
+leaves the root registered for the backstop to retry. Reversed, the registry empties while the root is
+still on disk and the backstop's emptiness guard returns early — a silent leak. The test induces that
+failure with a `chmod` (a deterministic `EACCES`, not a class `fs.rm` retries) and so is uid-dependent:
+it skips as root, where a `chmod` would not constrain removal, rather than passing vacuously.
 
 **No directory reaper exists, and one cannot be made safe.** The oracle it would need does not exist:
 `/proc/<pid>/environ` is the environment *as of exec*, and `tests/run.mjs` sets `CC_TEST_RUN_ID` after
