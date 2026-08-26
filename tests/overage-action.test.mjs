@@ -453,7 +453,7 @@ async function tripMidTurnConductor({ flagged, action = 'stop', scenarioObj }) {
   const conductor = c.inst;
   if (flagged) {
     conductor.backend = 'ollama';
-    conductor.model = 'deepseek-v4-flash:0731-cloud';
+    conductor.model = 'deepseek-v4-flash:cloud';
     conductor._refreshModelCapabilities();
     assert.equal(conductor.acceptsMidTurnSteering, false, 'the flagged preset resolved');
   }
@@ -822,7 +822,7 @@ test('an idle conductor\'s wake on a NON-OWNED target Pass 3 leaves running is s
   const cEvs = collect(conductor);
 
   standalone.backend = 'ollama';
-  standalone.model = 'deepseek-v4-flash:0731-cloud';
+  standalone.model = 'deepseek-v4-flash:cloud';
   standalone._refreshModelCapabilities();
   // No `callerInstanceId`, so the root walk has nothing to climb and this session is
   // its own root — which is exactly why it is exempt under BOTH the old downward

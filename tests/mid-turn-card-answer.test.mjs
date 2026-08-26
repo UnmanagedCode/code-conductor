@@ -199,7 +199,7 @@ test('a card answer on a model that cannot take a mid-turn injection is deferred
     const inst = ctx.instances.get(id);
     await waitFor(() => inst.status === 'idle');
     inst.backend = 'ollama';
-    inst.model = 'deepseek-v4-flash:0731-cloud';
+    inst.model = 'deepseek-v4-flash:cloud';
     inst._refreshModelCapabilities();
     assert.equal(inst.acceptsMidTurnSteering, false, 'the flagged preset resolved');
 

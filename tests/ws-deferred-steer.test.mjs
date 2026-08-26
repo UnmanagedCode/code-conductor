@@ -27,7 +27,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // result (without it the session never leaves 'turn' and the test dies on the
 // runner's per-file timeout, reading as a flake).
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-deferred-steer-sites.json');
-const FLAGGED_MODEL = 'deepseek-v4-flash:0731-cloud';
+const FLAGGED_MODEL = 'deepseek-v4-flash:cloud';
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
 let ctx, baseUrl, wsUrl, instances, home, transcriptPath;

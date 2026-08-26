@@ -95,7 +95,7 @@ test('ollamaCloudModels: 8-model catalog, tags verbatim, tier defaults, no globa
   assert.equal(OLLAMA_CLOUD_MODELS.length, 8);
   const tags = OLLAMA_CLOUD_MODELS.map(m => m.model);
   assert.ok(tags.includes('deepseek-v4-flash:cloud'));
-  assert.ok(tags.includes('deepseek-v4-flash:0731-cloud'), 'date-pinned DeepSeek V4 Flash snapshot added to the catalog');
+  assert.ok(tags.includes('glm-5.3-flash:cloud'), 'GLM-5.3 Flash added to the catalog');
   assert.ok(tags.includes('qwen3.5:cloud'));
   assert.ok(tags.includes('glm-5.2:cloud'));
   assert.ok(tags.includes('mistral-large-3:675b-cloud'), 'Mistral stays size-pinned, not normalized to :cloud');
@@ -161,9 +161,9 @@ test('GET /api/settings/models returns the registry, catalog, and {backend,model
     const ctxByTag = Object.fromEntries(r.body.ollamaCloudModels.map(m => [m.model, m.contextWindow]));
     assert.deepEqual(ctxByTag, {
       'deepseek-v4-flash:cloud':        1_000_000,
-      'deepseek-v4-flash:0731-cloud':   1_000_000,
       'deepseek-v4-pro:cloud':          1_000_000,
       'glm-5.2:cloud':                  1_000_000,
+      'glm-5.3-flash:cloud':            1_000_000,
       'minimax-m3:cloud':               1_000_000,
       'qwen3.5:cloud':                    256_000,
       'kimi-k2.7-code:cloud':             256_000,

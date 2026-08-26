@@ -30,7 +30,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../src/planApproval.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-deferred-steer-sites.json');
 // The curated preset that declares midTurnSteering:false.
-const FLAGGED_MODEL = 'deepseek-v4-flash:0731-cloud';
+const FLAGGED_MODEL = 'deepseek-v4-flash:cloud';
 const ANSWER_TEXT = 'Answer to "Pick a fruit": Apple';
 
 let ctx, baseUrl, instances, home, transcriptPath;
