@@ -294,10 +294,12 @@
           </div>
           <div id="settings-conventions" class="settings-group" hidden>
             <p class="settings-desc">
-              Markdown guidance composed into Claude sessions, at three scopes that cascade
-              <strong>Conductor → Workspace → Project</strong>. Each scope has an always-on
-              <strong>core</strong> plus toggleable built-in conventions (read-only) and custom conventions you
-              can add, edit, and delete.
+              Markdown guidance composed into Claude sessions, at three scopes:
+              <strong>Conductor</strong>, <strong>Workspace</strong> and <strong>Project</strong>.
+              Conductor and Workspace each have an always-on <strong>core</strong> plus built-in
+              conventions toggled here; Project conventions are picked per project when it is created.
+              Built-in bodies are read-only; every scope also takes custom conventions you can add,
+              edit, and delete.
             </p>
             <details class="conventions-block">
               <summary class="conventions-summary">Workspace conventions</summary>
@@ -312,7 +314,7 @@
                 <input id="wk-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
                 <input id="wk-add-name" type="text" placeholder="Short name" />
                 <input id="wk-add-desc" type="text" placeholder="One-line description" />
-                <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into the root CLAUDE.md"></textarea>
+                <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into every project's CONVENTIONS.md"></textarea>
                 <div class="or-add-actions">
                   <button id="wk-add-save" type="button">Save</button>
                   <button id="wk-add-cancel" type="button">Cancel</button>
