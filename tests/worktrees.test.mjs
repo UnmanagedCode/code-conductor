@@ -9,7 +9,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { listWorktrees, getWorktree, getWorktreeMergeStatus } from '../src/worktrees.ts';
+import { listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -136,6 +136,56 @@ test('createWorktree refuses on a repo with no commits (unborn HEAD)', async () 
   assert.match(r.body.error, /no commits yet/);
   assert.ok(!/ambiguous argument/.test(r.body.error),
     `refusal leaked git's raw text: ${r.body.error}`);
+});
+
+test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn', async () => {
+  // getHeadBranchAndSha has callers that hand it a path nothing repo-validated
+  // (createWorktree's baseWorktree, mergeWorktreeIntoParent's parentPath), so a
+  // missing or non-repo directory reaches the same `rev-parse HEAD` failure as
+  // an unborn HEAD. Only the unborn one may claim that cause; the others must
+  // still carry git's own stderr, which names theirs.
+  const unborn = await makeUnbornRepo('fresh');
+  await assert.rejects(getHeadBranchAndSha(unborn), (e) => {
+    assert.match(e.message, /no commits yet/);
+    assert.ok(!/unable to resolve HEAD/.test(e.message));
+    return true;
+  });
+
+  const missing = path.join(projectsRoot, 'gone');
+  await assert.rejects(getHeadBranchAndSha(missing), (e) => {
+    assert.ok(!/no commits yet/.test(e.message),
+      `a directory that does not exist must not be told to commit in it: ${e.message}`);
+    assert.match(e.message, /unable to resolve HEAD/);
+    assert.ok(e.message.length > `unable to resolve HEAD in ${missing}: `.length,
+      `the refusal must keep git's stderr, which names the real cause: ${e.message}`);
+    return true;
+  });
+
+  const plain = path.join(projectsRoot, 'plain');
+  await fs.mkdir(plain, { recursive: true });
+  await assert.rejects(getHeadBranchAndSha(plain), (e) => {
+    assert.ok(!/no commits yet/.test(e.message),
+      `a non-repo must not be told to commit in it: ${e.message}`);
+    assert.match(e.message, /unable to resolve HEAD/);
+    return true;
+  });
+});
+
+test('a base worktree whose directory vanished is refused by cause, not as "no commits yet"', async () => {
+  // The concrete stale-store-record path: the worktree dir is removed
+  // out-of-band while its store record survives, then something is based on it.
+  await makeRealRepo('demo');
+  const created = await createWorktree('demo');
+  await rmrf(created.worktreePath);
+  assert.ok(await getWorktree('demo', created.worktreeName),
+    'the store record must outlive the directory — that is what makes this reachable');
+
+  await assert.rejects(createWorktree('demo', { baseWorktree: created.worktreeName }), (e) => {
+    assert.ok(!/no commits yet/.test(e.message),
+      `must not instruct the caller to commit in a directory that is gone: ${e.message}`);
+    assert.match(e.message, /unable to resolve HEAD/);
+    return true;
+  });
 });
 
 test('GET /api/projects reports unbornHead until the first commit', async () => {

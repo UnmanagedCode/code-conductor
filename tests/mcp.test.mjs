@@ -965,6 +965,24 @@ test('list_projects flags a repo with no commits and stays silent on a normal on
     'a repo with commits must render exactly as before');
 });
 
+test('list_projects never reports a non-repo project as having an unborn HEAD', async () => {
+  // hasUnbornHead() cannot tell "no repo" from "no commits" — `rev-parse
+  // --verify --quiet HEAD` exits non-zero for both — so the isGitRepo guard in
+  // the handler is the ONLY thing keeping both deviant lines off a bare-mkdir
+  // project's block. Without it a non-repo renders as a repo that just needs a
+  // commit, which is the opposite of the truth.
+  await fs.mkdir(path.join(projectsRoot, 'plain'), { recursive: true });
+  await makeUnbornRepo(projectsRoot, 'fresh');
+  const list = text(await callTool(baseUrl, 'list_projects', {}));
+  const plain = projectBlock(list, 'plain');
+  assert.match(plain, /! not a git repo/);
+  assert.ok(!/! no commits yet/.test(plain),
+    `a non-repo must not also claim an unborn HEAD: ${plain}`);
+  // The unborn project in the same render proves the flag is live, so the
+  // assertion above is a real guard and not a payload that is off everywhere.
+  assert.match(projectBlock(list, 'fresh'), /! no commits yet/);
+});
+
 test('project_status on an unborn HEAD says no commits yet instead of a blank HEAD', async () => {
   await makeUnbornRepo(projectsRoot, 'fresh');
   const st = text(await callTool(baseUrl, 'project_status', { project: 'fresh' }));

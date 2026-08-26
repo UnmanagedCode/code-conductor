@@ -171,10 +171,23 @@ export async function getHeadBranchAndSha(projectPath: string): Promise<{ branch
   const branch = head.code === 0 ? head.stdout.trim() || null : null;
   const sha = await runGit(projectPath, ['rev-parse', 'HEAD']);
   if (sha.code !== 0) {
-    // On a repo, `rev-parse HEAD` fails only when HEAD resolves to nothing — an
-    // unborn HEAD (`git init` with no commit yet). Name that instead of leaking
-    // git's "ambiguous argument 'HEAD'", which is what the user actually saw.
-    throw httpError(400, `${projectPath} has no commits yet — a worktree branches off HEAD, so make a first commit there first`);
+    // `rev-parse HEAD` fails for more than one reason, and two of this
+    // function's callers hand it a path nothing has repo-validated: the
+    // `baseWorktree` branch of createWorktree (a path read straight out of a
+    // store record, which readMeta's own comment says can be stale) and
+    // mergeWorktreeIntoParent's `meta.parentPath`. A directory removed
+    // out-of-band or a corrupt repo lands here too, so PROVE the unborn case
+    // before naming it — an unborn HEAD is a symbolic ref whose target branch
+    // has no commits, which neither of those other failures satisfies.
+    const ref = await runGit(projectPath, ['symbolic-ref', '--quiet', 'HEAD']);
+    const unborn = ref.code === 0
+      && (await runGit(projectPath, ['show-ref', '--verify', '--quiet', ref.stdout.trim()])).code !== 0;
+    if (unborn) {
+      throw httpError(400, `${projectPath} has no commits yet — a worktree branches off HEAD, so make a first commit there first`);
+    }
+    // Anything else keeps git's own stderr, which is the only thing that names
+    // the actual cause (a missing dir, a corrupt object store).
+    throw httpError(400, `unable to resolve HEAD in ${projectPath}: ${sha.stderr.trim()}`);
   }
   return { branch, sha: sha.stdout.trim() };
 }
