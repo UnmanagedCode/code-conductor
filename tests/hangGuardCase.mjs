@@ -134,6 +134,19 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     // even when stdout is deliberately stalled below. Its console.log ones do NOT
     // arrive until the pause releases — see the routing rule below.
     //
+    // ANY case passing `discardStdout` therefore reads a STDERR-ONLY
+    // accumulator: its assertions can see only what a console.error writer
+    // emitted. That observability is not assumed — it is PINNED by `the
+    // discarded-stdout shape carries stderr diagnostics and drops stdout ones`
+    // in tests/hang-guard-run-cap.test.mjs, which runs a discarding shape
+    // against detached-orphan and asserts `STREAM STALLED` and `SWEPT` arrive
+    // while the console.log verdict line does not.
+    // "Capture stdout instead of discarding it" was measured and REFUSED: with
+    // the 4000ms pause in place and no discard, the accumulator is still empty,
+    // because a failing run's `close` fires at ~1.8s and the parent never
+    // resumes to read anything. Dropping the discard hides the dependency
+    // instead of removing it.
+    //
     // The rendezvous is called from BOTH handlers, and only the stdout one is
     // exercised today: a fixture's own `writeSync(2, …)` reaches us on the
     // runner's STDOUT, because node:test relays it as a `test:stderr` event and
@@ -145,12 +158,13 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     // across both. run.mjs's console.error diagnostics reach the handler here:
     // the SIGINT/SIGTERM banners, `SWEPT` under every trigger, `STREAM STALLED`,
     // `NO REPORT`. Its console.log diagnostics reach the stdout handler instead,
-    // including the verdict line (`tests/run.mjs:546`), the /proc WARNING
-    // (`:557`) and `slowest files` (`:563`). So a case rendezvousing on a
-    // console.error diagnostic needs THIS call and nothing else — which is why it
-    // stays — while one waiting on the verdict line must hook stdout. Check which
-    // writer emits your pattern rather than assuming a stream; guessing stderr is
-    // how card 2026-0228's silent no-signal failed in the first place.
+    // including the verdict line (grep run.mjs for `files reported,`), the /proc
+    // WARNING (`WARNING — /proc was unavailable`) and `slowest files (limit`. So
+    // a case rendezvousing on a console.error diagnostic needs THIS call and
+    // nothing else — which is why it stays — while one waiting on the verdict
+    // line must hook stdout. Check which writer emits your pattern rather than
+    // assuming a stream; guessing stderr is how card 2026-0228's silent
+    // no-signal failed in the first place.
     child.stderr.on('data', d => { out += d; rendezvous(); });
     const keep = d => { if (!discardStdout) out += d; rendezvous(); };
     if (stdoutPauseMs > 0) {
