@@ -46,9 +46,9 @@
 // 2026-0222, and docs/architecture.md's rule: make each branch reachable ONLY by
 // construction, never by margin.
 //
-// THE CONSTRUCTION. The four ranking fixtures chain their COMPLETIONS through marker
-// files (tests/fixtures/attribution/chain.mjs). Each waits for its predecessor's
-// marker, spends its own designed increment, then writes its own:
+// THE CONSTRUCTION. The four ranking fixtures chain their COMPLETIONS
+// (tests/fixtures/attribution/chain.mjs). Each waits for its predecessor's PROCESS
+// TO EXIT, spends its own designed increment, then publishes its own pid:
 //     fast  0  ->  subsecond +550  ->  medium +650  ->  slow +900
 // so the chain still sums to 2100ms, but as CUMULATIVE separations rather than as
 // four independent races against spawn cost.
@@ -61,8 +61,8 @@
 //
 //   * `dequeue_b - dequeue_a >= 0` whenever a is listed BEFORE b: node dispatches in
 //     `files` order and, at TEST_CONCURRENCY=4, all four fit in the window together.
-//   * `done_a - done_b >=` the designed increment, because b writes its marker before
-//     exiting and a does not begin its own increment until it sees that marker.
+//   * `done_a - done_b >=` the designed increment, because a does not begin its own
+//     increment until b's PROCESS HAS EXITED.
 //
 // Both terms non-negative, so every bound below is a LOWER bound that no load can
 // violate. This is not a widened tolerance — it is a tighter claim that stopped
@@ -70,18 +70,24 @@
 //
 // TWO LOAD-BEARING CHOICES, both commented at their call site: `TEST_CONCURRENCY: 4`
 // (fewer slots than chained fixtures DEADLOCKS the chain — loudly, via chain.mjs's
-// 10s marker cap) and the argv order `slow, medium, subsecond, fast`, DESCENDING by
+// 10s rendezvous cap) and the argv order `slow, medium, subsecond, fast`, DESCENDING by
 // expected figure, which is what puts the dequeue stagger in the safe direction.
 //
-// THE ONE RESIDUAL MACHINE-SPEED TERM, stated honestly. A marker is written at the
-// end of the predecessor's test BODY, not at its process exit, so each difference
-// carries `exitCost_successor - exitCost_predecessor` — the teardown/summary/exit
-// cost of two same-shape child processes. It is mean-zero, it is bounded well below
-// the designed increments, and critically it contains NO module-loading component,
-// which is the part of C that reaches 772ms. If an excursion ever appears, the remedy
-// is to gate on the predecessor's PROCESS EXIT (have the marker carry its pid and
-// poll `process.kill(pid, 0)` until ESRCH), which collapses the residual to the
-// parent's event-delivery jitter. THE REMEDY IS NEVER TO LOOSEN A BOUND.
+// GATING ON EXIT RATHER THAN ON THE MARKER IS LOAD-BEARING AND WAS MEASURED. An
+// earlier cut released the successor when the predecessor WROTE its marker, at the
+// end of its test body — which leaves `exitCost_predecessor` inside the difference
+// and subtracting. At 72-way that broke all three bounds (minima 1050 / 811 / 460
+// against 1200 / 900 / 550, standalone red 13/24). chain.mjs's header carries the
+// numbers and the correlation that isolated the term. Waiting for the process to be
+// GONE removes it and turns `exitCost_successor` into a positive buffer.
+//
+// THE ONE RESIDUAL MACHINE-SPEED TERM, stated honestly. What is left is
+// `J_successor - J_predecessor`, the PARENT's event-delivery jitter for the two
+// file-level `test:complete` events. To break a bound the parent's loop would have to
+// stall long enough to deliver both events a whole designed increment closer together
+// than they occurred — a parent-side quantity, not the child-lifecycle cost that
+// reaches 770ms here, and buffered by `exitCost_successor`. IF IT EVER EXCURSES, THE
+// REMEDY IS NEVER TO LOOSEN A BOUND.
 //
 // WHAT THIS FILE DOES NOT CLAIM, stated as a boundary rather than as totality: a
 // UNIFORM rescale of every figure by a constant factor (e.g. x1.5) passes everything
@@ -194,7 +200,7 @@ test('the verdict line charges each file its OWN wall, not an earlier-listed fil
   //
   // TEST_CONCURRENCY 4: one slot per chained fixture, so all four are dispatched
   // together and the chain is structural rather than a race. Fewer slots deadlocks
-  // it, loudly, via chain.mjs's 10s marker cap. resolveConcurrency (tests/run.mjs)
+  // it, loudly, via chain.mjs's 10s rendezvous cap. resolveConcurrency (tests/run.mjs)
   // honours an explicit integer with NO core-derived cap, so this is portable to a
   // 2-core box.
   const { code, diag, ranking, of } =

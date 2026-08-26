@@ -1,4 +1,5 @@
-// CHAIN LINK 2 — waits for `fast`, spends 550ms, releases `subsecond`.
+// CHAIN LINK 2 — waits for `fast`'s PROCESS TO EXIT, spends 550ms, publishes
+// `subsecond`.
 //
 // Its increment is the SMALLEST in the chain and is therefore the resolution floor
 // the suite pins: assertion (2b) `sub - fast >= 550` in

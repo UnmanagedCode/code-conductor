@@ -1,4 +1,5 @@
-// CHAIN TAIL — waits for `medium`, spends 900ms, releases nothing.
+// CHAIN TAIL — waits for `medium`'s PROCESS TO EXIT, spends 900ms, publishes
+// nothing.
 //
 // The culprit: the file that actually spends the wall time. Listed FIRST in the
 // runner's argv by tests/summary-attribution.test.mjs, which is what makes the

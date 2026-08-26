@@ -1,4 +1,5 @@
-// CHAIN LINK 3 — waits for `subsecond`, spends 650ms, releases `medium`.
+// CHAIN LINK 3 — waits for `subsecond`'s PROCESS TO EXIT, spends 650ms, publishes
+// `medium`.
 //
 // The middle of the ranking: a file whose real wall is neither extreme, so neither
 // direction of error can fake it. Listed second in test 1's argv, so its summary is

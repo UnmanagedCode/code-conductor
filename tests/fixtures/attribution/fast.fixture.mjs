@@ -1,5 +1,6 @@
-// CHAIN HEAD — increment 0. Does no work at all: it writes the `fast` marker and
-// exits, which is what releases subsecond.fixture.mjs.
+// CHAIN HEAD — increment 0. Does no work at all: it publishes its pid under the
+// `fast` marker and exits. subsecond.fixture.mjs is released by that EXIT, not by
+// the marker appearing — see chain.mjs's header for the measurement that forced it.
 //
 // The victim of the original bug: trivial work, listed AFTER the files that do the
 // real sleeping, so it finishes while they are still running and the pre-fix
