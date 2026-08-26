@@ -130,18 +130,27 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
       signalled = true;
       try { child.kill(signal); } catch { /* already gone */ }
     };
-    // stderr is ALWAYS drained, so the guard's own diagnostics reach us even when
-    // stdout is deliberately stalled below.
+    // stderr is ALWAYS drained, so the guard's console.error diagnostics reach us
+    // even when stdout is deliberately stalled below. Its console.log ones do NOT
+    // arrive until the pause releases — see the routing rule below.
     //
     // The rendezvous is called from BOTH handlers, and only the stdout one is
     // exercised today: a fixture's own `writeSync(2, …)` reaches us on the
     // runner's STDOUT, because node:test relays it as a `test:stderr` event and
     // run.mjs's spec reporter pipes to process.stdout (measured 5/5 with
     // silent-orphan). So this call is currently unexercised — deleting it leaves
-    // the suite green — and it is NOT dead code: the runner's OWN guard
-    // diagnostics (`hang-guard: …`, written with console.error/writeSync(2) from
-    // run.mjs itself, not from inside a test child) do arrive here, so the day a
-    // case rendezvouses on one of those, this is the handler that fires.
+    // the suite green — and it is NOT dead code.
+    //
+    // THE WRITER CALL DECIDES THE HANDLER, and `hang-guard:` output is split
+    // across both. run.mjs's console.error diagnostics reach the handler here:
+    // the SIGINT/SIGTERM banners, `SWEPT` under every trigger, `STREAM STALLED`,
+    // `NO REPORT`. Its console.log diagnostics reach the stdout handler instead,
+    // including the verdict line (`tests/run.mjs:546`), the /proc WARNING
+    // (`:557`) and `slowest files` (`:563`). So a case rendezvousing on a
+    // console.error diagnostic needs THIS call and nothing else — which is why it
+    // stays — while one waiting on the verdict line must hook stdout. Check which
+    // writer emits your pattern rather than assuming a stream; guessing stderr is
+    // how card 2026-0228's silent no-signal failed in the first place.
     child.stderr.on('data', d => { out += d; rendezvous(); });
     const keep = d => { if (!discardStdout) out += d; rendezvous(); };
     if (stdoutPauseMs > 0) {

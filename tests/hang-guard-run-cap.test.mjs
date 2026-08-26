@@ -58,8 +58,12 @@ test('a healthy run whose stdout consumer stalls is NOT reported as a stall', as
   // push time on a healthy run, never emitted in a genuine wedge.
   // stdout is DISCARDED here, and the assertions are stderr-only on purpose: the
   // runner's closing process.exit() drops whatever the paused consumer had not
-  // taken, so the verdict line is not reliably observable in this shape. Every
-  // guard diagnostic goes to stderr, which is drained throughout.
+  // taken, so the verdict line is not reliably observable in this shape. The two
+  // diagnostics asserted below (`STREAM STALLED`, `SWEPT`) are console.error ones
+  // and so arrive on stderr, which is drained throughout — but that is NOT true
+  // of every guard diagnostic: the writer call decides the stream, and run.mjs
+  // emits the verdict line, the /proc WARNING and `slowest files` with
+  // console.log. See the routing rule at runGuard's stderr handler.
   const r = await runGuard('chatty', FAST, { stdoutPauseMs: 4000, discardStdout: true });
   assert.equal(r.code, 0, `a healthy run must stay green behind a slow consumer:\n${r.out}`);
   assert.doesNotMatch(r.out, /STREAM STALLED/,
