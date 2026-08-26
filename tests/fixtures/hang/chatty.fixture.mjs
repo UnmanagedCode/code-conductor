@@ -13,7 +13,10 @@
 // `process.exit()` discards the remainder — so the false positive does NOT
 // reproduce and a test built at that size would pass against the broken code.
 // At ~4MB backpressure genuinely defers `end`, and with the gate removed the run
-// declares STREAM STALLED and exits 1 at ~1.8s. Do not shrink this fixture.
+// declares STREAM STALLED and exits 1 at ~1.8s. Do not shrink this fixture — a
+// shrink now goes loud red rather than silently green, via the
+// `wallMs > PAUSE * 0.9` assertion in the slow-consumer case of
+// tests/hang-guard-run-cap.test.mjs (measured 4022ms at 400 tests vs 117ms at 20).
 //
 // Nothing here leaks, nothing hangs, and the run must be green.
 import test from 'node:test';

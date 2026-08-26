@@ -9,7 +9,16 @@
 
 import test from 'node:test';
 import assert from 'node:assert';
-import { FAST, runGuard } from './hangGuardCase.mjs';
+import { FAST, SWEEP, runGuard } from './hangGuardCase.mjs';
+
+// The two diagnostics the slow-consumer case below asserts the ABSENCE of,
+// shared with the pin that proves they REACH that case's accumulator — so the
+// pattern proved observable is the same object the absence is asserted against
+// (the `HOLDER_LINE` idiom, card 2026-0228).
+const STALL = /STREAM STALLED/;
+const SWEPT = /SWEPT/;
+// The slow-consumer case's forcing delay, named so the case can assert on it.
+const PAUSE = 4000;
 
 test("the guard's own timers cannot outlive the run", async () => {
   // A ref'd cap timer that teardown fails to clear would hang EVERY clean run
@@ -38,6 +47,28 @@ test('the absolute run cap fires, fails the run, and still prints the verdict', 
   assert.ok(r.wallMs < 20_000, `capped run took ${r.wallMs}ms — the cap did not bound it`);
 });
 
+test('the discarded-stdout shape carries stderr diagnostics and drops stdout ones', async () => {
+  // NON-VACUITY PIN for the slow-consumer case below, which asserts the ABSENCE
+  // of STALL and SWEPT against an accumulator that — stdout being discarded —
+  // receives stderr only. Absence proves nothing unless presence is reachable,
+  // so this runs the SAME discarding shape against a fixture that genuinely
+  // trips both and asserts they ARRIVE. Cheapest such run in the family (~1.7s).
+  //
+  // WHAT THIS DOES *NOT* BUY: it does not rescue detection. Moving either
+  // writer to console.log still reddens the case below via its `code === 0`
+  // assertion, because run.mjs does `failed++` on both `streamStalled` and
+  // `sweptOrphans > 0`. What the pin protects is (a) diagnostic honesty — that
+  // case would otherwise fail with a bare "expected 0, got 1" while its two
+  // named assertions silently degraded to decoration — and (b) the one narrow
+  // regression the pair alone discriminates: a guard that PRINTS a stall or
+  // sweep without punishing it.
+  const r = await runGuard('detached-orphan', FAST, { discardStdout: true });
+  assert.match(r.out, STALL, 'STREAM STALLED must reach a discarded-stdout accumulator');
+  assert.match(r.out, SWEPT, 'SWEPT must reach a discarded-stdout accumulator');
+  assert.doesNotMatch(r.out, /files reported/,
+    'the verdict line is console.log, so this shape must NOT see it');
+});
+
 test('a healthy run whose stdout consumer stalls is NOT reported as a stall', async () => {
   // The stall check's false-positive shape, and the one that matters most because
   // it fires on GREEN runs. The ledger settles from SOURCE-stream events (push
@@ -56,17 +87,25 @@ test('a healthy run whose stdout consumer stalls is NOT reported as a stall', as
   //
   // The gate is `nodeFinished` (node's single run-level test:summary): emitted at
   // push time on a healthy run, never emitted in a genuine wedge.
-  // stdout is DISCARDED here, and the assertions are stderr-only on purpose: the
-  // runner's closing process.exit() drops whatever the paused consumer had not
-  // taken, so the verdict line is not reliably observable in this shape. The two
-  // diagnostics asserted below (`STREAM STALLED`, `SWEPT`) are console.error ones
-  // and so arrive on stderr, which is drained throughout — but that is NOT true
-  // of every guard diagnostic: the writer call decides the stream, and run.mjs
-  // emits the verdict line, the /proc WARNING and `slowest files` with
-  // console.log. See the routing rule at runGuard's stderr handler.
-  const r = await runGuard('chatty', FAST, { stdoutPauseMs: 4000, discardStdout: true });
+  //
+  // stdout is DISCARDED here and the two assertions below are consequently
+  // STDERR-ONLY. That routing is a PRECONDITION of this shape, not an incidental
+  // choice, and it is pinned by the case above rather than asserted here: both
+  // patterns are console.error diagnostics of run.mjs, while the verdict line,
+  // the /proc WARNING and `slowest files` are console.log ones that never arrive.
+  // Capturing stdout instead does not remove the dependency — measured, with the
+  // pause in place and no discard, this accumulator is STILL empty, because a
+  // failing run's `close` fires at ~1.8s while the consumer stays paused to
+  // PAUSE ms, so the parent never resumes and reads nothing.
+  assert.ok(PAUSE > SWEEP * 2,
+    `the ${PAUSE}ms pause must outlast the ${SWEEP}ms stall grace, or the stream ends before an ` +
+    'ungated check could ever declare a stall and this case cannot fail');
+  const r = await runGuard('chatty', FAST, { stdoutPauseMs: PAUSE, discardStdout: true });
   assert.equal(r.code, 0, `a healthy run must stay green behind a slow consumer:\n${r.out}`);
-  assert.doesNotMatch(r.out, /STREAM STALLED/,
+  assert.ok(r.wallMs > PAUSE * 0.9,
+    `the run finished in ${r.wallMs}ms behind a ${PAUSE}ms pause — backpressure did not defer ` +
+    "`end`, so the fixture no longer forces the shape (it was shrunk?)");
+  assert.doesNotMatch(r.out, STALL,
     'a slow stdout consumer is not a leaked process');
-  assert.doesNotMatch(r.out, /SWEPT/, 'nothing may be SIGKILLed on a healthy run');
+  assert.doesNotMatch(r.out, SWEPT, 'nothing may be SIGKILLed on a healthy run');
 });
