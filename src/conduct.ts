@@ -8,6 +8,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { projectsRoot, writeFileAtomic } from './projects.ts';
 import { composeCurrentConduct } from './conductorConventions.ts';
+import { composeCurrentWorkspace } from './workspaceConventions.ts';
+import { ensureConventionsImport } from './conventionsImport.ts';
 
 export const CONDUCT_PROJECT_NAME = '.conduct';
 
@@ -23,12 +25,6 @@ export function isConductorInstance(inst: { project: string } | null | undefined
   return !!inst && inst.project === CONDUCT_PROJECT_NAME;
 }
 
-// The import line `.conduct/CLAUDE.md` must carry for the composed role doc to
-// reach the conductor. Both this module and
-// migrations/0031-conduct-conventions-import.mjs must emit this exact literal,
-// so a migrated install and a fresh ensure converge on one shape.
-const CONDUCT_IMPORT_LINE = '@CONVENTIONS.md';
-
 // Idempotent: ensures the `.conduct` dir exists (it is the cwd of every
 // conductor session, so it must be present before spawn) and that its
 // `CLAUDE.md` imports the generated role doc.
@@ -37,8 +33,8 @@ const CONDUCT_IMPORT_LINE = '@CONVENTIONS.md';
 // writer (see conductConventionsPath below). Edit paths for its content are the
 // `conventions/conductor/*.md` fragments (built-in text) and Settings →
 // Conductor conventions (toggles + custom conventions). Workspace conventions
-// reach the conductor via Claude Code's ancestor walk-up to the app-owned
-// <projectsRoot>/CLAUDE.md.
+// reach the conductor because materializeCurrentConduct below prepends them to
+// the role doc it writes.
 //
 // Returns {path, created} so callers (and tests) can tell what happened;
 // `created` means the DIR was created, independent of the CLAUDE.md step.
@@ -51,34 +47,8 @@ export async function ensureConductProject(): Promise<{ path: string; created: b
   } catch (e) {
     if (errCode(e) !== 'EEXIST') throw e;
   }
-  await ensureConductClaudeMd(dir);
+  await ensureConventionsImport(dir);
   return { path: dir, created };
-}
-
-// Guarantee `.conduct/CLAUDE.md` carries a line whose trim() is exactly the
-// import. Three branches, and the third is what makes this safe to run on boot,
-// on the Conduct-tap ensure route, and on resume-restart:
-//   - absent            → create with the import alone;
-//   - present, no import → PREPEND it, every existing byte kept below (the file
-//                          may be the user's own; nothing here may rewrite it);
-//   - present, imported  → NO WRITE AT ALL, so repeat ensures cause no mtime
-//                          churn.
-// Detection is line-level, not substring: prose mentioning the filename must
-// not read as an import.
-async function ensureConductClaudeMd(dir: string): Promise<void> {
-  const target = path.join(dir, 'CLAUDE.md');
-  let existing: string | null = null;
-  try {
-    // `wx` so a concurrent ensure can't clobber a file that appeared between a
-    // read and a write; EEXIST just means "someone got here first, re-read it".
-    await fs.writeFile(target, `${CONDUCT_IMPORT_LINE}\n`, { encoding: 'utf8', flag: 'wx' });
-    return;
-  } catch (e) {
-    if (errCode(e) !== 'EEXIST') throw e;
-    existing = await fs.readFile(target, 'utf8');
-  }
-  if (existing.split('\n').some(line => line.trim() === CONDUCT_IMPORT_LINE)) return;
-  await writeFileAtomic(target, `${CONDUCT_IMPORT_LINE}\n${existing}`);
 }
 
 // Where the composed conductor role doc is materialized for the CLI to read:
@@ -117,7 +87,11 @@ export function conductConventionsPath(): string {
 // Called from Instance.launch() for conductor instances only.
 export async function materializeCurrentConduct(): Promise<void> {
   await ensureConductProject();
-  await writeFileAtomic(conductConventionsPath(), await composeCurrentConduct());
+  // Workspace conventions first, role doc second: composeCurrentWorkspace()
+  // ends with a newline, so `\n${role}` leaves exactly one blank line before
+  // `# Conductor role` and the role doc's generated footer stays last.
+  const [workspace, role] = await Promise.all([composeCurrentWorkspace(), composeCurrentConduct()]);
+  await writeFileAtomic(conductConventionsPath(), `${workspace}\n${role}`);
 }
 
 // The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the

@@ -66,7 +66,6 @@ import {
 } from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.ts';
 import * as ttsInstall from './ttsInstall.ts';
-import { ensureRootClaudeMd } from './rootClaudeMd.ts';
 import { setTitle as setSessionTitle, MAX_TITLE_LEN } from './sessionTitles.ts';
 import { getSummaries, setSummary, deleteSummaries, SUMMARY_LENGTHS, type SummaryLength } from './sessionSummaries.ts';
 import { resolveBacking } from './sessionLineage.ts';
@@ -448,7 +447,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         throw httpError(400, 'conventions must be an array of slug strings');
       }
       const slugs = (conventions ?? []) as string[];
-      const conventionsDoc = slugs.length ? await composeProjectConventionsDoc(slugs) : null;
+      const conventionsDoc = await composeProjectConventionsDoc(slugs);
       const scaffold = await composeProjectScaffold(validName, slugs);
       const created = await createProject(validName, { conventionsDoc });
       // Scaffold directive is returned (not persisted) — the caller folds it
@@ -1675,10 +1674,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     } catch (e) { next(e); }
   });
 
-  // Settings → Conventions → Workspace block. code-conductor fully owns the
-  // projects-root CLAUDE.md (the file every project imports via `@../CLAUDE.md`),
-  // composed from an always-on core + toggleable conventions. Every mutation
-  // regenerates that file so it takes effect immediately.
+  // Settings → Conventions → Workspace block — an always-on core + toggleable
+  // conventions, under ONE installation-wide selection. The composed text is
+  // delivered per project (folded into each project's in-tree CONVENTIONS.md,
+  // and into `.conduct/CONVENTIONS.md` before every conductor spawn), so every
+  // mutation fans out over all projects to take effect immediately.
   r.get('/settings/conventions/workspace', async (req, res, next) => {
     try {
       const [conventions, enabled] = await Promise.all([getWorkspaceConventionsCatalog(), getWorkspaceSelection()]);
@@ -1692,7 +1692,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     try {
       const enabled = jsonBody(req).enabled as string[];
       const saved = await setWorkspaceSelection(enabled);
-      await ensureRootClaudeMd();
+      await regenerateAllProjectConventions({ log: console });
       res.json({ enabled: saved });
     } catch (e) { next(e); }
   });
@@ -1704,7 +1704,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const convention = await addWorkspaceConvention({
         slug: slug as string, name: name as string, description: description as string, body: text as string,
       });
-      await ensureRootClaudeMd();
+      await regenerateAllProjectConventions({ log: console });
       res.status(201).json({ convention });
     } catch (e) { next(e); }
   });
@@ -1715,7 +1715,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const body = jsonBody(req);
       const { name, description, body: text } = body;
       const convention = await updateWorkspaceConvention(slug, { name, description, body: text });
-      await ensureRootClaudeMd();
+      await regenerateAllProjectConventions({ log: console });
       res.json({ convention });
     } catch (e) { next(e); }
   });
@@ -1724,7 +1724,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     try {
       const { slug } = req.params;
       const result = await deleteWorkspaceConvention(slug);
-      await ensureRootClaudeMd();
+      await regenerateAllProjectConventions({ log: console });
       res.json(result);
     } catch (e) { next(e); }
   });

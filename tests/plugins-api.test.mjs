@@ -389,7 +389,8 @@ test('contributions-only plugin (convention w/ scaffold facet) flows through to 
     await assert.rejects(fs.stat(path.join(boot.projectsRoot, '.code-conductor', 'projects', 'usesconv', 'project.json')), { code: 'ENOENT' });
 
     // Disable → convention drops from the catalog; the committed CONVENTIONS.md
-    // survives (nothing regenerates it, and regeneration would no-op anyway).
+    // survives because this is the direct host call, which runs no fan-out (the
+    // HTTP disable route does — pinned by the next test).
     await boot.pluginHost.disable('conv-plugin');
     conv = await api(boot.baseUrl, 'GET', '/api/settings/conventions/project');
     assert.ok(!conv.body.conventions.some(r => r.slug === 'conv-plugin/vis-check'));
@@ -418,12 +419,15 @@ test('enable/disable a project-convention plugin fans out to referencing project
     // Mangle the body (marker intact) to prove the fan-out actually rewrites.
     await fs.writeFile(target, '<!-- cc:conventions projconv/vis -->\n\nSTALE BODY\n');
 
-    // Disable → fan-out runs, but this marker's only slug is now unresolvable,
-    // so nothing resolves to a body ⇒ the (stale) committed file is left
-    // exactly as-is, never blanked (a marker with other resolvable slugs
-    // alongside a disabled one would instead recompose those and note this one).
+    // Disable → fan-out runs; the marker's only slug is now unresolvable (a
+    // clean disable, not a degraded catalog), so it is demoted to the note and
+    // KEPT in the marker, while the workspace block still refreshes.
     assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/projconv/disable')).status, 200);
-    assert.equal(await fs.readFile(target, 'utf8'), '<!-- cc:conventions projconv/vis -->\n\nSTALE BODY\n', 'frozen while disabled');
+    const disabled = await fs.readFile(target, 'utf8');
+    assert.equal(disabled.split('\n', 1)[0], '<!-- cc:conventions projconv/vis -->', 'the slug survives in the marker');
+    assert.match(disabled, /> Convention unavailable: `projconv\/vis`\./);
+    assert.match(disabled, /# Workspace conventions/);
+    assert.doesNotMatch(disabled, /STALE BODY/);
 
     // Re-enable → fan-out re-resolves the slug ⇒ CONVENTIONS.md refreshed.
     assert.equal((await api(boot.baseUrl, 'POST', '/api/plugins/projconv/enable')).status, 200);

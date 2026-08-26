@@ -15,8 +15,13 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { InProcessClaudeLauncher } from './inProcessLauncher.mjs';
 import { composeCurrentConduct, setSelection } from '../src/conductorConventions.ts';
+import { composeCurrentWorkspace } from '../src/workspaceConventions.ts';
 import { conductConventionsPath, conductProjectPath } from '../src/conduct.ts';
 import { orchStoreRoot, projectsRoot } from '../src/projects.ts';
+
+// The materialized doc is workspace conventions + the role doc, in that order
+// (src/conduct.ts) — every content assertion below compares against both.
+const expectedDoc = async () => `${await composeCurrentWorkspace()}\n${await composeCurrentConduct()}`;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -60,7 +65,7 @@ test('spawning a conductor writes the composed doc to .conduct/CONVENTIONS.md', 
   // Content equality, not mere existence — this is the assertion that kills a
   // mutant writing a truncated / empty / wrong document.
   const onDisk = await fs.readFile(target, 'utf8');
-  assert.equal(onDisk, await composeCurrentConduct(), 'file content is the composed conductor doc');
+  assert.equal(onDisk, await expectedDoc(), 'file content is the workspace conventions + the composed conductor doc');
   assert.match(onDisk, /# Conductor role/);
   assert.match(onDisk, /## Worker lifecycle/);
 
@@ -160,7 +165,7 @@ test('the doc and the import are correct AT the moment the process is launched',
     assert.equal(rec.seen.length, 1, 'one launch observed');
     assert.equal(rec.seen[0].exists, true,
       'the doc must already exist when the process is launched');
-    assert.equal(rec.seen[0].content, await composeCurrentConduct(),
+    assert.equal(rec.seen[0].content, await expectedDoc(),
       'doc content at launch time is the freshly composed document');
     assert.equal(rec.seen[0].imported, true,
       'the CLAUDE.md import must already be in place at launch time');
@@ -180,7 +185,7 @@ test('the doc and the import are correct AT the moment the process is launched',
     assert.doesNotMatch(rec.seen[1].content, /## Worker lifecycle/,
       'at launch time the doc already reflects the narrowed selection');
     assert.match(rec.seen[1].content, /## Canonical workflow/);
-    assert.equal(rec.seen[1].content, await composeCurrentConduct());
+    assert.equal(rec.seen[1].content, await expectedDoc());
   } finally {
     await ctx2.instances.shutdown();
     await ctx2.close();

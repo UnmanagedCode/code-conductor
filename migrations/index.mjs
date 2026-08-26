@@ -18,6 +18,13 @@ import * as m0005 from './0005-rename-conducted-marker.mjs';
 import * as m0006 from './0006-init-cost-tracking.mjs';
 import * as m0007 from './0007-migrate-legacy-model-settings.mjs';
 import * as m0008 from './0008-migrate-tiered-session-summaries.mjs';
+// 0009-seed-legacy-shell-installer-baseline is intentionally NOT registered:
+// SUPERSEDED BY 0032, which removes the whole
+// `<store>/workspace-claudemd/` ownership store. 0009's "already applied?"
+// probe is "does baseline.md exist?", so leaving it in the chain would make it
+// re-seed that directory on every boot with 0032 removing it again right
+// after — both migrations reporting `applied` forever. The file stays for the
+// historical record (cf. 0017 / 0003 above).
 import * as m0009 from './0009-seed-legacy-shell-installer-baseline.mjs';
 import * as m0010 from './0010-conduct-md-generated-file.mjs';
 import * as m0011 from './0011-rename-optional-guidelines-store.mjs';
@@ -60,6 +67,7 @@ import * as m0028 from './0028-tri-state-default-playbook.mjs';
 import * as m0029 from './0029-enable-playbooks-conductor-convention.mjs';
 import * as m0030 from './0030-backfill-mid-turn-steering.mjs';
 import * as m0031 from './0031-conduct-conventions-import.mjs';
+import * as m0032 from './0032-retire-root-claude-md.mjs';
 
 // Ordered list. Numeric (lexicographic) order IS execution order — keep it that
 // way: append to the end, or letter-suffix (`0018b`) when a migration must slot
@@ -70,7 +78,7 @@ import * as m0031 from './0031-conduct-conventions-import.mjs';
 // must consume `models.sonnetContextWindow` before 0019 deletes it, but 0026
 // later drops the `window` key that proves it did, so asserting on the
 // end state alone would pass even with the two reordered.
-export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0009, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028, m0029, m0030, m0031];
+export const ALL = [m0001, m0002, m0004, m0005, m0006, m0007, m0008, m0010, m0011, m0012, m0013, m0014, m0015, m0016, m0018, m0018b, m0019, m0020, m0021, m0022, m0023, m0024, m0025, m0026, m0027, m0028, m0029, m0030, m0031, m0032];
 
 export async function runMigrations({ root, log = console.log } = {}) {
   for (const m of ALL) {

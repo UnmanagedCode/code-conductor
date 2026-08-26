@@ -356,7 +356,7 @@ export async function writeProjectMeta(
 
 // Shared mkdir-parent → write tmp(.pid.seq) → rename helper. Homed here
 // because projects.ts is the lowest module already imported by the other
-// call sites (appSettings.ts, rootClaudeMd.ts) — no import cycle.
+// call sites (appSettings.ts, conventionsImport.ts) — no import cycle.
 //
 // The tmp name must be unique per call: pid separates processes, the counter
 // separates concurrent calls within one process. A shared name let the
@@ -535,14 +535,13 @@ export async function createProject(
   if (init.code !== 0) {
     throw httpError(500, `git init failed in ${full}: ${init.stderr.trim() || init.stdout.trim()}`);
   }
-  // Seed a CLAUDE.md that imports the workspace-wide one at ~/project/CLAUDE.md.
-  // Using @../CLAUDE.md so Claude Code's import resolver pulls the workspace
-  // file in regardless of where the project ends up being mounted.
-  // When conventions were selected the caller passes the composed CONVENTIONS.md
-  // document; we add an in-project `@CONVENTIONS.md` import and write the file.
-  // That file is app-owned + regenerated later (src/projectClaudeMd.ts); the
-  // caller composes it (no circular dep on projectConventions here).
-  const importLine = conventionsDoc != null ? '@../CLAUDE.md\n@CONVENTIONS.md\n' : '@../CLAUDE.md\n';
+  // Seed a CLAUDE.md importing the in-project CONVENTIONS.md — the sole channel
+  // for both workspace and project conventions, so it is unconditional and
+  // travels with the tree wherever the project is mounted. The caller passes the
+  // composed document (no circular dep on projectConventions here); that file is
+  // app-owned + regenerated later (src/projectClaudeMd.ts), which also re-ensures
+  // this import line, so a caller that passes none still converges.
+  const importLine = '@CONVENTIONS.md\n';
   const claudeMdPath = path.join(full, 'CLAUDE.md');
   try {
     await fs.writeFile(claudeMdPath, importLine, { flag: 'wx' });

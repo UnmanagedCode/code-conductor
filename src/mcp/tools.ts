@@ -714,7 +714,7 @@ export function buildTools(): Tool[] {
     {
       name: 'create_project',
       description:
-        'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
+        'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @CONVENTIONS.md ' +
         'so workspace-wide conventions are inherited. The new dir is initialized as a git repo (no commits). ' +
         'Project conventions can be attached by passing their slugs — call list_project_conventions to ' +
         'discover available slugs. Each carries a CLAUDE.md fragment (appended inline) and/or a one-time ' +

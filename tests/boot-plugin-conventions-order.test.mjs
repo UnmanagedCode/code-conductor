@@ -30,10 +30,11 @@ const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
 const PLUGIN_ID = 'bootorder-plugin';
 const PLUGIN_SLUG = `${PLUGIN_ID}/demo`;
 // A BUILT-IN project-convention seed rides in the marker alongside the plugin
-// slug, and it is load-bearing: regenerateAllProjectConventions leaves a file
-// untouched when NO slug resolves to a body. With only the plugin slug in the
-// marker, an unwired provider resolves nothing, the file is never rewritten,
-// and this test would pass while proving nothing.
+// slug. An unwired provider writes the demotion note either way, so the seed is
+// no longer what forces a write — it is what makes the "plugin text survived"
+// assertion meaningful: with only the plugin slug in the marker, a regenerated
+// file holding nothing but the note is indistinguishable from a correct one for
+// a project that genuinely selected nothing resolvable.
 const SEED_SLUG = 'design-guidelines';
 const MARKER = `<!-- cc:conventions ${SEED_SLUG},${PLUGIN_SLUG} -->`;
 const PLUGIN_BODY_MARKER = 'PLUGIN-DEMO-BODY';
@@ -126,7 +127,7 @@ test('boot regenerates project CONVENTIONS.md with plugin bodies — the provide
   const doc = await fs.readFile(conventionsMd, 'utf8');
   // Fixture guard: if the regen declined entirely, everything below is vacuous.
   assert.doesNotMatch(doc, /STALE BODY/, 'the file was actually regenerated');
-  assert.match(doc, /## Design guidelines/, 'the built-in seed body is what forces the rewrite');
+  assert.match(doc, /## Design guidelines/, 'the built-in seed body resolves alongside the plugin one');
   // THE assertion. Unwired, this is `> Convention unavailable: ...` instead.
   assert.match(doc, new RegExp(PLUGIN_BODY_MARKER),
     'the plugin convention body must survive the boot regeneration');

@@ -14,7 +14,6 @@ import { loadAllArchived } from './src/archivedSessions.ts';
 import { runMigrations } from './migrations/index.mjs';
 import { checkClaudeReadiness, formatReadiness } from './src/health.ts';
 import { sweepPendingTempCleanup } from './src/tempCleanup.ts';
-import { ensureRootClaudeMd } from './src/rootClaudeMd.ts';
 import { ensureConductProject } from './src/conduct.ts';
 import { regenerateAllProjectConventions } from './src/projectClaudeMd.ts';
 import { restoreFromResumeManifest } from './src/resumeRestart.ts';
@@ -168,16 +167,9 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
-  // The three app-owned regenerations below all run here, before listen: none
-  // of them needs the bound port. (What DOES gate on ordering is called out at
-  // regenerateAllProjectConventions further down — it is not this one.)
-  // Regenerate the app-owned <PROJECTS_ROOT>/CLAUDE.md (the file every project
-  // imports via `@../CLAUDE.md`) from the composed workspace convention modules.
-  // A one-time backup of a hand-edited copy fires on the first app-owned
-  // regeneration. Strictly non-fatal: a failure must never abort boot — unlike
-  // a migration, this is a convenience sync.
-  try { await ensureRootClaudeMd({ log: console }); }
-  catch (e) { console.warn('root CLAUDE.md regenerate failed:', e); }
+  // The two app-owned regenerations below both run here, before listen: neither
+  // needs the bound port. (What DOES gate on ordering is called out at
+  // regenerateAllProjectConventions further down.)
   // Ensure the hidden `.conduct` project dir exists (the cwd of every conductor
   // session) and that its CLAUDE.md imports the role doc. The doc ITSELF is
   // composed fresh and written by the pre-spawn materializer, not here, so
@@ -196,18 +188,18 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // into each project's in-tree CONVENTIONS.md. Nothing errors; the corruption
   // is only visible in the files. Pinned by tests/boot-plugin-conventions-order.test.mjs.
   //
-  // ensureRootClaudeMd above is NOT what this protects: it composes the
-  // WORKSPACE catalog, which passes no extraProvider at all (see
-  // src/workspaceConventions.ts), so a plugin-namespaced slug can never enter it.
+  // Only the PROJECT part of each file is at risk: the workspace conventions
+  // folded into the same document compose from the WORKSPACE catalog, which
+  // passes no extraProvider at all (see src/workspaceConventions.ts), so a
+  // plugin-namespaced slug can never enter it.
   //
-  // Regenerate each split-model project's in-tree CONVENTIONS.md from its own
-  // marker so existing projects pick up improved convention text. Projects with
-  // no marker are skipped; an unresolvable slug drops out of the body (named in
-  // a note) while the rest still refreshes. Left as-is (never rewritten) when:
-  // no slug resolves to a body, the catalog is degraded and a slug is
-  // unresolvable (can't tell "gone" from "temporarily unreachable"), or every
-  // slug resolves but none carries a body. Strictly non-fatal, same as the
-  // regens above.
+  // Regenerate every project's in-tree CONVENTIONS.md — the composed workspace
+  // conventions plus whatever that project's own marker selects — so existing
+  // projects pick up improved convention text. An unresolvable slug drops out
+  // of the body (named in a note) while the rest still refreshes. The file is
+  // left as-is only when the catalog is degraded and a marker slug is
+  // unresolvable (can't tell "gone" from "temporarily unreachable"). Strictly
+  // non-fatal, same as the ensure above.
   try { await regenerateAllProjectConventions({ log: console }); }
   catch (e) { console.warn('project CONVENTIONS.md regenerate failed:', e); }
   // Seed the conductor's own project into CC-Dev, same placement plugins get
