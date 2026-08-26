@@ -41,17 +41,24 @@ function ms(envName, fallback) {
 //
 //   margin of the family's worst file        BEFORE ->  AFTER
 //     healthy, whole-suite, quiet        48 865ms (1.84x) ->    9 861ms (9.13x)
-//     healthy, whole-suite, 72-way       58 153ms (1.55x) -> <14 343ms (>6.3x)
+//     healthy, whole-suite, 72-way       58 153ms (1.55x) -> <=14 343ms (>=6.27x)
 //     BROKEN GUARD (recipe below)       149 002ms (0.60x) ->   31 932ms (2.82x)
 //   suite wall around them: 57 206ms -> 42 516ms quiet, 195 682ms -> 112 268ms at
 //   72-way.
 //
 // THE STARVED ROW IS A BOUND, NOT A POINT, and deliberately so: after the split no
 // idle-wake-* file reaches the starved verdict line's top five at all, so the only
-// figure that run supports is "below its 5th entry" (server-restart, 14 343ms).
+// figure that run supports is "AT OR below its 5th entry" (server-restart, 14 343ms)
+// — absent from a top five bounds you by the 5th entry, it does not put you under it.
 // Running the eight files ALONE at 72-way puts the worst at 11 328ms (7.94x), which
 // is a lighter condition than a 284-file run and so a lower bound. Quote whichever
 // you measure, with its width.
+//
+// EVERY BOUND IN THIS BLOCK ROUNDS AGAINST ITS OWN CLAIM, NOT TOWARD IT. 90 000 /
+// 14 343 = 6.2748, so the margin row says >=6.27x, not >6.3x; the growth ceiling
+// below says 46%, not the 45.45% it derives from. Point values round to nearest —
+// a bound rounded the convenient way asserts margin its own anchor never gave it,
+// in the one comment whose whole job is not to do that.
 //
 // WHAT DRIFTS: every millisecond figure, with the box and the ambient load. WHAT IS
 // ANCHORED: the ORDER of those three rows (broken worst, then starved, then quiet),
@@ -59,7 +66,7 @@ function ms(envName, fallback) {
 // this family barely at all, because timers fire on schedule under load: BEFORE the
 // split, quiet to 72-way, the whole suite grew 242% while the file grew 19%; AFTER,
 // the suite grew 164% (42 516 -> 112 268ms) while the family's worst grew at most
-// 45%. CASE COUNT is the threat here, and it is additive: a new case adds to the max
+// 46%. CASE COUNT is the threat here, and it is additive: a new case adds to the max
 // only once it exceeds the largest existing file.
 //
 // THE BROKEN ROW WAS BELOW 1x BEFORE THE SPLIT, and this is what that cost: the
