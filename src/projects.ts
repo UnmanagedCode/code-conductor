@@ -310,9 +310,14 @@ export async function resolveProjectDir(name: string): Promise<{ path: string; e
 async function heldNameReason(name: string): Promise<string | null> {
   let held: { path: string; external: boolean } | null;
   try { held = await resolveProjectDir(name); }
-  catch {
-    // The one thing resolveProjectDir refuses rather than misses: something is
-    // at the in-root path and it is not a directory.
+  catch (e) {
+    // resolveProjectDir throws exactly one refusal of its own — a 404 saying
+    // something is at the in-root path and is not a directory. Everything else
+    // it throws is a real fault it deliberately does NOT swallow (EACCES on
+    // `.external/`, a `.external` that is a file), and reporting one of those
+    // as "not a directory" would send the caller hunting a stray file that
+    // isn't there. Those propagate: a broken installation is not a refusal.
+    if ((e as { statusCode?: unknown }).statusCode !== 404) throw e;
     return `'${path.join(projectsRoot(), name)}' exists but is not a directory — remove it, or pick another name.`;
   }
   return held ? `project '${name}' already exists at ${held.path}.` : null;
@@ -712,6 +717,22 @@ export async function getProject(name: string): Promise<{ name: string; path: st
   return { name, path: resolved.path, external: resolved.external };
 }
 
+// Is `inner` the same directory as `outer`, or inside it? Decided with
+// path.relative rather than a string prefix, which needs TWO corrections to be
+// right and still isn't: a bare prefix test matches a merely prefix-SHARING
+// sibling (`<root>-backup` "inside" `<root>`), anchoring it with a separator
+// fixes that but then misses the filesystem root (`'/' + path.sep` is `'//'`,
+// which prefixes nothing — so `/`, which contains everything, tested as
+// containing nothing). path.relative gets every case right with no special
+// case: '' means equal, a result that escapes upward means outside.
+// Both paths must already be resolved — every caller passes a realpath.
+function isWithin(inner: string, outer: string): boolean {
+  const rel = path.relative(outer, inner);
+  if (rel === '') return true;                       // the same directory
+  if (path.isAbsolute(rel)) return false;            // no relative route at all
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`);
+}
+
 export type AdoptResult =
   | { ok: true; name: string; path: string; external: true }
   | { ok: false; code: string; reason: string };
@@ -747,19 +768,18 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   } catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` }; }
 
   // Already managed? One directory with two project identities would share one
-  // encodeCwd session dir and hold two store entries. Tested in BOTH directions,
-  // and `startsWith` is anchored with a separator so a merely prefix-SHARING
-  // sibling (`<projectsRoot>-backup`) is not mistaken for a descendant:
-  //   - the target inside the root ⇒ it is (or is part of) a project already;
-  //   - the root inside the TARGET ⇒ adopting it would enclose the projects
-  //     root, cc's own checkout and `.external/` itself in one "project", which
-  //     the conductor's hard boundary then forbids anyone from working inside.
+  // encodeCwd session dir and hold two store entries. Tested in BOTH directions
+  // — the target inside the root means it is (or is part of) a project already;
+  // the root inside the TARGET means adopting it would enclose every managed
+  // project, cc's own checkout and `.external/` itself in one "project" that
+  // the conductor's hard boundary then forbids anyone from working inside — and
+  // equality falls out of either test.
   let rootReal = projectsRoot();
   try { rootReal = await fs.realpath(rootReal); } catch { /* root may not exist yet */ }
-  if (real === rootReal || real.startsWith(rootReal + path.sep)) {
-    return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is inside the projects root — it is already managed by code-conductor.` };
+  if (isWithin(real, rootReal)) {
+    return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is the projects root or inside it — it is already managed by code-conductor.` };
   }
-  if (rootReal.startsWith(real + path.sep)) {
+  if (isWithin(rootReal, real)) {
     return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' contains the projects root '${rootReal}' — adopting it would put every managed project inside one project.` };
   }
   for (const p of await listProjects()) {

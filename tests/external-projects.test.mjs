@@ -213,22 +213,43 @@ test('every adopt refusal returns a code, is not 5xx, and leaves no symlink behi
   assert.equal(ok.body.path, second.real);
 });
 
-test('TARGET_ALREADY_MANAGED fires on containment in either direction, and not on a prefix-sharing sibling', async () => {
-  // The projects root is `<home>/project`. `<home>/project-backup` SHARES that
-  // prefix without being inside it, so an unanchored startsWith would refuse a
-  // perfectly adoptable repo. `<home>` CONTAINS the root, so adopting it would
-  // enclose every managed project — plus cc's own checkout and `.external/` —
-  // in one "project" the conductor is then forbidden to work inside.
+test('TARGET_ALREADY_MANAGED fires on real containment in either direction, and on nothing else', async () => {
+  // One conditional, five cases. Two of them are string-prefix traps, one on
+  // each side of it: with the root at `<home>/project`, `<home>/project-backup`
+  // string-prefixes the root and `<home>/proj` is string-prefixed BY it, yet
+  // neither is an ancestor or a descendant of it. A prefix test — anchored or
+  // not — gets at least one of them wrong.
   const rootReal = await fs.realpath(projectsRoot);
-  const sibling = await makeExternalRepo('project-backup');
-  assert.ok(sibling.real.startsWith(rootReal), 'the sibling really does share the root prefix');
-  assert.ok(!sibling.real.startsWith(rootReal + path.sep), 'but is not inside it');
 
-  const ok = await adoptProject('sib', sibling.repoPath);
-  assert.equal(ok.ok, true, `a prefix-sharing sibling must be adoptable: ${JSON.stringify(ok)}`);
-  assert.equal(ok.path, sibling.real);
+  // (1) prefix-shares on the INSIDE side: `<root>-backup` is not inside `<root>`.
+  const backup = await makeExternalRepo('project-backup');
+  assert.ok(backup.real.startsWith(rootReal) && !backup.real.startsWith(rootReal + path.sep),
+    'the fixture really does share the root prefix without being inside it');
+  const okBackup = await adoptProject('sib', backup.repoPath);
+  assert.equal(okBackup.ok, true, `a prefix-sharing sibling must be adoptable: ${JSON.stringify(okBackup)}`);
+  assert.equal(okBackup.path, backup.real);
 
-  // The inverse direction: a target that CONTAINS the projects root.
+  // (2) prefix-shares on the TARGET side: `<home>/proj` is a strict string
+  //     prefix of the root's path, so an unanchored containment test on this
+  //     side wrongly refuses it as "contains the projects root".
+  const shorter = await makeExternalRepo('proj');
+  assert.ok(rootReal.startsWith(shorter.real) && !rootReal.startsWith(shorter.real + path.sep),
+    'the fixture really is a string prefix of the root without being its ancestor');
+  const okShorter = await adoptProject('shorter', shorter.repoPath);
+  assert.equal(okShorter.ok, true, `a target the root merely string-prefixes must be adoptable: ${JSON.stringify(okShorter)}`);
+  assert.equal(okShorter.path, shorter.real);
+
+  // (3) the projects root ITSELF. It does not start with `root + sep`, so an
+  //     equality-free containment test lets the directory enclosing every
+  //     managed project — and `.external/` — be adopted as one project.
+  await git(projectsRoot, 'init', '-q', '-b', 'main');
+  await git(projectsRoot, 'config', 'user.email', 'test@example.com');
+  await git(projectsRoot, 'config', 'user.name', 'test');
+  const self = await adoptProject('itself', projectsRoot);
+  assert.equal(self.ok, false, `the projects root must never be adoptable: ${JSON.stringify(self)}`);
+  assert.equal(self.code, 'TARGET_ALREADY_MANAGED');
+
+  // (4) a real ANCESTOR of the root.
   await git(home, 'init', '-q', '-b', 'main');
   await git(home, 'config', 'user.email', 'test@example.com');
   await git(home, 'config', 'user.name', 'test');
@@ -236,7 +257,16 @@ test('TARGET_ALREADY_MANAGED fires on containment in either direction, and not o
   assert.equal(enclosing.ok, false, JSON.stringify(enclosing));
   assert.equal(enclosing.code, 'TARGET_ALREADY_MANAGED');
   assert.match(enclosing.reason, /contains the projects root/);
-  assert.ok(!(await fs.readdir(externalDir())).includes('enclosing'), 'and no symlink was written');
+
+  // (5) the filesystem root contains everything, including the projects root.
+  //     Refused on containment, so it never reaches the git-root test — which
+  //     is the only thing that was stopping it when `/` slipped through.
+  const fsRoot = await adoptProject('slash', '/');
+  assert.equal(fsRoot.ok, false, `'/' must be refused on containment: ${JSON.stringify(fsRoot)}`);
+  assert.equal(fsRoot.code, 'TARGET_ALREADY_MANAGED');
+
+  // No refusal wrote a link; the two accepted adopts did.
+  assert.deepEqual((await fs.readdir(externalDir())).sort(), ['shorter', 'sib']);
 });
 
 test('validateName refuses the dot-only names that would escape the projects root', async () => {
@@ -285,6 +315,50 @@ test('resolveProjectDir distinguishes a missing project from a broken .external/
   assert.deepEqual((await listProjects()).map(p => p.name), ['inroot']);
 });
 
+test('a non-ENOENT stat failure on an already-resolved target rethrows, and ENOENT is still a miss', async () => {
+  // resolveProjectDir has TWO catch sites. The realpath one is pinned by the
+  // broken-`.external/` test above; this is the stat-of-the-resolved-target one,
+  // which has the same swallow-class exposure. It is unreachable in practice —
+  // realpath(3) stats every component, so anything that would fail this stat
+  // already failed the realpath — so the only way to reach it is to inject the
+  // failure. Patched narrowly (this one path, delegating everything else) and
+  // restored in `finally`, matching tests/write-file-atomic.test.mjs.
+  const { repoPath, real } = await makeExternalRepo();
+  assert.equal((await adoptProject('ext', repoPath)).ok, true);
+
+  const origStat = fs.stat;
+  try {
+    fs.stat = async function (target, ...rest) {
+      if (String(target) === real) {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      }
+      return origStat.call(this, target, ...rest);
+    };
+    await assert.rejects(() => getProject('ext'), (e) => e.code === 'EACCES',
+      'a permissions fault on the resolved target must surface, not read as "no such project"');
+  } finally {
+    fs.stat = origStat;
+  }
+
+  // The ENOENT half of the same catch stays a miss: a target deleted between
+  // the realpath and the stat is a race, not a fault.
+  try {
+    fs.stat = async function (target, ...rest) {
+      if (String(target) === real) {
+        throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+      }
+      return origStat.call(this, target, ...rest);
+    };
+    await assert.rejects(() => getProject('ext'), /not found/,
+      'a raced deletion is a 404, not a 500');
+  } finally {
+    fs.stat = origStat;
+  }
+
+  // And the patch really is gone.
+  assert.equal((await getProject('ext')).path, real);
+});
+
 test('PROJECT_EXISTS names what actually holds the name, not a project that does not exist', async () => {
   // Both of these refuse safely, but "project already exists" would send the
   // caller off to pick a new name and leave the real blocker sitting there.
@@ -310,6 +384,29 @@ test('PROJECT_EXISTS names what actually holds the name, not a project that does
   assert.equal(staleRes.code, 'PROJECT_EXISTS');
   assert.match(staleRes.reason, /stale link/, `reason must offer the removal path: ${staleRes.reason}`);
   assert.ok(staleRes.reason.includes(externalLinkPath('stale')), 'and name the link to remove');
+
+  // (c) The inverse: a fault resolveProjectDir deliberately RETHROWS must not
+  //     be laundered into (a)'s wording. A broken `.external/` is not a stray
+  //     file, and telling the caller to remove one sends them hunting a path
+  //     that does not exist while the real fault stays invisible.
+  //     Injected rather than staged on disk: any on-disk way to break
+  //     `.external/` also breaks the listProjects() call adoptProject makes
+  //     earlier, so the throw would come from there and prove nothing about
+  //     this branch. Keyed to the one link path, so nothing else is affected.
+  const origRealpath = fs.realpath;
+  const linkFor = externalLinkPath('fresh-name');
+  try {
+    fs.realpath = async function (target, ...rest) {
+      if (String(target) === linkFor) {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      }
+      return origRealpath.call(this, target, ...rest);
+    };
+    await assert.rejects(() => adoptProject('fresh-name', repoPath), (e) => e.code === 'EACCES',
+      'a broken .external/ propagates as itself, not as a PROJECT_EXISTS refusal');
+  } finally {
+    fs.realpath = origRealpath;
+  }
 });
 
 // ---------- 7.6 the irreversible failure mode, full route cascade ----------
@@ -402,6 +499,14 @@ test('an external project\'s worktrees live under .external/, never beside the t
   const siblings = await fs.readdir(parentOfTarget);
   assert.ok(!siblings.some(e => e.includes('_worktree_')),
     `a worktree dir was created in the user's parent directory: ${siblings.join(', ')}`);
+  // The worktree dir is a REAL directory sitting right beside the project's
+  // symlink record, so `.external/` now holds one of each. Only the symlink is
+  // a project: without that filter, one worktree creation makes `list_projects`
+  // and the sidebar sprout a bogus project named `<name>_worktree_<id>`.
+  assert.deepEqual((await fs.readdir(externalDir())).sort(), [wt.worktreeName, 'ext'].sort(),
+    'both entries really are there, so the filter is what excludes one');
+  assert.deepEqual((await listProjects()).map(p => p.name), ['ext'],
+    'only the symlink is listed as a project');
   // The branch exists in the TARGET repo.
   const branches = (await git(real, 'branch', '--list', wt.branch)).stdout;
   assert.match(branches, new RegExp(wt.branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
