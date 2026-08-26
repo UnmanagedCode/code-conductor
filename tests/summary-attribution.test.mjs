@@ -12,11 +12,10 @@
 // THREE SEAMS, THREE TESTS, and they fail against different wrong implementations —
 // keep all three:
 //   1. `the verdict line charges each file its OWN wall` — the ordering bug itself,
-//      plus SUB-SECOND RESOLUTION in its assertion (5). Fails against the pre-fix
-//      `test:summary` source. Against a reporter that coarsens the figure to whole
-//      seconds, MORE than (5) fires — see (5)'s own comment for which, per
-//      convention — but (5) is the only one that fires for EVERY convention and the
-//      only one whose catch does not depend on load.
+//      plus MILLISECOND RESOLUTION in its assertion (5). Fails against the pre-fix
+//      `test:summary` source, on assertions (1), (2) and (2b). NOTE: under the argv
+//      order this file now uses, assertion (3) does NOT kill that mutant alone —
+//      see (3)'s own comment.
 //   2. `a KILLED file keeps its figure` — a file with NO summary and NO inner
 //      completion. Fails against the pre-fix source AND against sourcing the
 //      duration from the last INNER `test:complete`.
@@ -37,63 +36,94 @@
 // shipped reporter is the thing under test, and a second copy of the rule here could
 // agree with itself while the shipped one was broken.
 //
-// ── THRESHOLD ALGEBRA — read before changing a fixture sleep or a constant ───────
-// Every bound below is a RATIO or an ORDERING, never an absolute ms figure. Load
-// inflates every figure by that file's own spawn+import cost, so absolutes drift
-// with it while ratios and differences largely cancel it. (An earlier revision
-// asserted `medium <= 900` and went red on a CORRECT reading of 972ms under
-// starvation.)
+// ── THE CHAIN — read before changing a fixture increment or an argv order ─────────
+// NO BOUND IN TEST 1 CONTAINS A CHILD-LIFECYCLE TERM. That is the design, and it
+// replaces an earlier revision's "threshold algebra", which tolerated a per-file
+// spawn+import cost C by RATIO. Read that sentence precisely: ONE machine-speed term
+// survives, it is PARENT-side, and it is quantified below under "THE ONE RESIDUAL".
+// This banner used to claim no machine-speed term at all, which was false — and a
+// test artifact that overstates its own load-independence is the exact disease this
+// card treats. A ratio MULTIPLIES C instead of cancelling it:
+// `fast * 3 < medium` reduces to an absolute cap of C < 600ms, and C was measured at
+// 772ms at 72-way starvation (vs ~320ms at the repo's standard 24-way width). That
+// assertion went red 42% of the time on a completely correct reporter — card
+// 2026-0222, and docs/architecture.md's rule: make each branch reachable ONLY by
+// construction, never by margin.
 //
-// THE SPAWN COST IS PER FILE, NOT COMMON. This is the trap: an earlier revision did
-// the algebra with a single shared C and concluded assertion (2) had 800ms of slack,
-// when it had 200ms — and (2) was then MEASURED FAILING 1 run in 20 under starvation
-// (slow 1788 / medium 1431, margin -1ms).
+// THE CONSTRUCTION. The four ranking fixtures chain their COMPLETIONS
+// (tests/fixtures/attribution/chain.mjs). Each waits for its predecessor's PROCESS
+// TO EXIT, spends its own designed increment, then publishes its own pid:
+//     fast  0  ->  subsecond +550  ->  medium +650  ->  slow +900
+// so the chain still sums to 2100ms, but as CUMULATIVE separations rather than as
+// four independent races against spawn cost.
 //
-// The mechanism is a TENDENCY, not a rule: at concurrency 2, slow and fast take the
-// two slots TOGETHER at t=0 (so slow's own spawn is already contended) while medium
-// waits for the one fast vacates, so medium more often pays the worse spawn.
-// Measured, it is only a lean — C_medium > C_slow in 6 of 20 starved runs at S=1700
-// and 12 of 20 at S=2100. It is the lean that drives the TIGHT end (the worst run in
-// each campaign had C_medium 231 vs C_slow 88, and 254 vs 120), while at the slack
-// end C_slow was the larger (115 vs 265, and 89 vs 140). So do not reason from an
-// assumed ordering: the bounds below hold because they treat C_medium and C_slow
-// SEPARATELY, which is the whole point of writing them per file.
+// WHY EACH BOUND HOLDS AGAINST ANY CHILD-SIDE COST. (Not "at any load" — see the
+// third term below and THE ONE RESIDUAL further down.) run.mjs reports
+// `done - dequeue`, where dequeue is stamped at `test:dequeue`, i.e. at DISPATCH,
+// before the child boots — which is why a fixture doing no work at all can still
+// report 772ms. So for any two files:
 //
-// With medium's sleep M=1200 and slow's S=2100 (fast = C_f, medium = M + C_m,
-// slow = S + C_s, subsecond = 550 + C_sub), each assertion tolerates:
-//   (1) fast * 3 < medium        while  3*C_f - C_m  <  M          = 1200ms
-//   (2) medium * 1.25 < slow     while  1.25*C_m - C_s  <  S - 1.25M = 600ms
-//   (4) slow >= 2100             unconditional — it is a control, not a bound
-//   (5) 0 < medium - subsecond < 1000  while  C_sub - C_m < 650  and
-//                                            C_m - C_sub < 350
-// Measured spawn costs: ~37ms quiet. TWO SEPARATE 20-RUN CAMPAIGNS under 16 CPU
-// spinners, which must not be quoted as one — the failure came from the first and the
-// verification from the second:
-//   * S=1700 (the campaign that FAILED): (2)'s binding quantity 1.25*C_m - C_s ranged
-//     -121..201ms against the 200ms that S=1700 allowed, so the one run at 201ms is
-//     exactly the margin -1ms failure above.
-//   * S=2100 (the campaign that VERIFIED the fix): binding quantity -29..198ms
-//     against 600ms; 0 assertions would fail, raw margins (1) min 425ms, (2) min
-//     402ms, (4) min 70ms, (5) gap 569-849ms inside its 0-1000 band. Per-file maxima
-//     in this campaign: C_f 323ms, C_m 271ms, C_s 264ms, C_sub 236ms.
-// The MAXIMA are not the risk; the SPREAD between two files in one run is.
+//     reported_a - reported_b = (done_a - done_b) + (dequeue_b - dequeue_a)
 //
-// Two standing warnings. Raising M widens (1) but NARROWS (2), so the sleeps are
-// solved together, never tuned one at a time. And do not re-derive these bounds with
-// a single C: that is the exact error that shipped a marginal assertion.
+//   * `dequeue_b - dequeue_a >= 0` whenever a is listed BEFORE b: node dispatches in
+//     `files` order and, at TEST_CONCURRENCY=4, all four fit in the window together.
+//   * `done_a - done_b >=` the designed increment, because a does not begin its own
+//     increment until b's PROCESS HAS EXITED.
 //
-// THAT RE-SOLVE COST SOMETHING, WHICH IS WHY subsecond.fixture.mjs EXISTS. At
-// M=600 / S=1200 assertion (2) happened to DOUBLE as a resolution check: both its
-// figures quantized to 1000ms, so `1250 < 1000` caught a reporter that coarsened the
-// figure to whole seconds. At the current M=1200 / S=2100 they land on 1000 and
-// 2000 and (2) passes on them, so that coverage was lost as a side effect of tuning
-// the sleeps.
-// Assertion (5) pins resolution EXPLICITLY rather than relying on the coincidence,
-// which is what lets these sleeps be chosen for C-tolerance alone.
+// BOTH OF THOSE TERMS ARE NON-NEGATIVE. But `done` is stamped in the inner runner's
+// `test:complete` HANDLER, not at the child's exit, so the identity carries a third,
+// PARENT-side term — the delivery lag of each event, `J_a - J_b`. It is mean-zero and
+// small (measured buffers over the floors: +12..+53ms quiet, +46..+539ms at 72-way),
+// but it is not structurally zero. So the honest claim is: every bound below is a
+// lower bound that no CHILD-SIDE cost can violate, and the multiplied-C term that made
+// this file flake is gone. It is not a widened tolerance — it is a far tighter claim
+// than the ratios were — but it is not literally unconditional either.
+//
+// TWO LOAD-BEARING CHOICES, both commented at their call site: `TEST_CONCURRENCY: 4`
+// (fewer slots than chained fixtures DEADLOCKS the chain — loudly, via chain.mjs's
+// 10s rendezvous cap) and the argv order `slow, medium, subsecond, fast`, DESCENDING by
+// expected figure, which is what puts the dequeue stagger in the safe direction.
+//
+// GATING ON EXIT RATHER THAN ON THE MARKER IS LOAD-BEARING AND WAS MEASURED. An
+// earlier cut released the successor when the predecessor WROTE its marker, at the
+// end of its test body — which leaves `exitCost_predecessor` inside the difference
+// and subtracting. At 72-way that broke all three bounds (minima 1050 / 811 / 460
+// against 1200 / 900 / 550, standalone red 13/24). chain.mjs's header carries the
+// numbers and the correlation that isolated the term. Waiting for the process to be
+// GONE removes it and turns `exitCost_successor` into a positive buffer.
+//
+// THE ONE RESIDUAL MACHINE-SPEED TERM, stated honestly, because the banner above is
+// deliberately narrow about it. What is left is `J_successor - J_predecessor`, the
+// PARENT's delivery lag for the two file-level `test:complete` events. ONE CONTIGUOUS
+// STALL OF THE PARENT'S EVENT LOOP SPANNING BOTH COMPLETIONS compresses their reported
+// difference toward zero — that is the branch that is still reachable by MARGIN rather
+// than by construction, and it is why this file cannot claim totality.
+//
+// The stall has to be roughly the size of the designed increment it is attacking:
+// ~600ms to break (2b), ~850ms for (2), ~1150ms for (1). Not theoretical — the runner
+// self-inflicts stalls of this shape via procSampler's synchronous whole-/proc
+// snapshot (~2900 pids on this box), and Termux has documented multi-hundred-ms
+// throttle events.
+//
+// CONSEQUENCE FOR ANYONE TUNING THE INCREMENTS: 550ms, the SMALLEST link, is what sets
+// the stall size that breaks this suite. DO NOT SHRINK IT WITHOUT RE-MEASURING — every
+// ms off it is a ms off the parent-stall the file can absorb.
+//
+// The exposure is vastly smaller than the multiplied-C term it replaced (which reached
+// 770ms of CHILD cost per file and fired 42% of the time), and it fails LOUD — a
+// compressed difference goes red, never silently green. IF IT EVER EXCURSES, THE
+// REMEDY IS NEVER TO LOOSEN A BOUND.
+//
+// WHAT THIS FILE DOES NOT CLAIM, stated as a boundary rather than as totality: a
+// UNIFORM rescale of every figure by a constant factor (e.g. x1.5) passes everything
+// here, because it violates no ordering, no designed separation and no resolution
+// claim.
 // ─────────────────────────────────────────────────────────────────────────────────
 
 import test from 'node:test';
 import assert from 'node:assert';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -106,47 +136,58 @@ const fixture = name => path.join(__dirname, 'fixtures', 'attribution', `${name}
 // Runs the real runner against the named fixtures and returns its `hang-guard:`
 // lines plus the parsed slowest-files ranking.
 //
-// CONCURRENCY 2 is the default here because test 1 needs slow and fast to hold the
-// two slots together (so fast finishes inside slow's window) and medium to be
-// dispatched into the slot fast vacates.
+// CONCURRENCY 2 is the default here because the non-chained fixtures (killed,
+// teardown) need no overlap. Test 1's chain needs one slot per chained fixture and
+// overrides it — see its call site.
 async function runFixtures(names, extraEnv = {}) {
-  const { code, out } = await new Promise((resolve, reject) => {
-    // NODE_TEST_CONTEXT must not reach the child. node:test sets it in every
-    // per-file test child, and a nested run() that sees it prints "run() is being
-    // called recursively within a test file. skipping running files" and silently
-    // runs NOTHING — the inner runner would report 0 files and every assertion
-    // below would fail for the wrong reason.
-    const childEnv = {
-      ...process.env,
-      TEST_CONCURRENCY: '2',
-      // Bounds a genuine regression in the runner itself, and keeps that case well
-      // inside the OUTER 90s per-file watchdog — which would otherwise SIGKILL this
-      // file and truncate exactly the diagnostics naming what broke.
-      CC_TEST_RUN_CAP_MS: '30000',
-      ...extraEnv,
-    };
-    delete childEnv.NODE_TEST_CONTEXT;
-    const child = spawn(process.execPath, [RUNNER, ...names.map(fixture)], {
-      env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
+  // Per-call sync dir for the chain's markers. mkdtemp, not a fixed path: two
+  // concurrent suite runs on one box must not see each other's markers.
+  const syncDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-attr-'));
+  let result;
+  try {
+    result = await new Promise((resolve, reject) => {
+      // NODE_TEST_CONTEXT must not reach the child. node:test sets it in every
+      // per-file test child, and a nested run() that sees it prints "run() is being
+      // called recursively within a test file. skipping running files" and silently
+      // runs NOTHING — the inner runner would report 0 files and every assertion
+      // below would fail for the wrong reason.
+      const childEnv = {
+        ...process.env,
+        TEST_CONCURRENCY: '2',
+        // Bounds a genuine regression in the runner itself, and keeps that case well
+        // inside the OUTER 90s per-file watchdog — which would otherwise SIGKILL this
+        // file and truncate exactly the diagnostics naming what broke.
+        CC_TEST_RUN_CAP_MS: '30000',
+        CC_ATTR_SYNC_DIR: syncDir,
+        ...extraEnv,
+      };
+      delete childEnv.NODE_TEST_CONTEXT;
+      const child = spawn(process.execPath, [RUNNER, ...names.map(fixture)], {
+        env: childEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let buf = '';
+      child.stdout.on('data', d => { buf += d; });
+      child.stderr.on('data', d => { buf += d; });
+      // Backstop so a runner regression surfaces as a failed assertion here rather
+      // than as a stalled test. killDescendants FIRST — SIGKILLing only the nested
+      // runner would leave its fixture children reparented to init, and one of those
+      // fixtures deliberately outlives its parent's deadline.
+      const bail = setTimeout(() => {
+        try { killDescendants(child.pid); } catch { /* best effort */ }
+        child.kill('SIGKILL');
+      }, 30_000);
+      child.on('error', err => { clearTimeout(bail); reject(err); });
+      // Always awaits the child's exit, so this file never leaves a ChildProcess
+      // handle behind — Layer B (tests/handleLeakGuard.mjs) is preloaded into this
+      // very file and would correctly fail it if we did.
+      child.on('close', c => { clearTimeout(bail); resolve({ code: c, out: buf }); });
     });
-    let buf = '';
-    child.stdout.on('data', d => { buf += d; });
-    child.stderr.on('data', d => { buf += d; });
-    // Backstop so a runner regression surfaces as a failed assertion here rather
-    // than as a stalled test. killDescendants FIRST — SIGKILLing only the nested
-    // runner would leave its fixture children reparented to init, and one of those
-    // fixtures deliberately outlives its parent's deadline.
-    const bail = setTimeout(() => {
-      try { killDescendants(child.pid); } catch { /* best effort */ }
-      child.kill('SIGKILL');
-    }, 30_000);
-    child.on('error', err => { clearTimeout(bail); reject(err); });
-    // Always awaits the child's exit, so this file never leaves a ChildProcess
-    // handle behind — Layer B (tests/handleLeakGuard.mjs) is preloaded into this
-    // very file and would correctly fail it if we did.
-    child.on('close', c => { clearTimeout(bail); resolve({ code: c, out: buf }); });
-  });
+  } finally {
+    // In a `finally`, not after the await: the promise rejects on child.on('error').
+    fs.rmSync(syncDir, { recursive: true, force: true });
+  }
+  const { code, out } = result;
 
   // Quote ONLY `hang-guard:` lines in assertion messages. The inner runner emits a
   // full spec report including `ℹ tests/pass/fail` count lines, and this suite is
@@ -154,7 +195,26 @@ async function runFixtures(names, extraEnv = {}) {
   // exact hazard tests/hangGuardCase.mjs's redactTotals exists for. Selecting the
   // diagnostic lines we want is cheaper than redacting the ones we don't.
   const guardLines = out.split('\n').filter(l => /^hang-guard:/.test(l));
-  const diag = guardLines.join('\n') || '(no hang-guard: lines in output)';
+
+  // ON A RED INNER RUN, ALSO QUOTE ITS ERROR LINES. `hang-guard:` lines alone say a
+  // file failed but never WHY, so a broken chain used to surface here as the generic
+  // "the fixture run should be green" while chain.mjs's specific diagnostic ("predecessor
+  // 'X' did not publish a pid and exit within 10000ms … TEST_CONCURRENCY was below the
+  // number of chained fixtures") sat in `buf` and was discarded. Loud is not enough —
+  // a failure has to be DIAGNOSABLE from this file's own output.
+  //
+  // The selection stays narrow on purpose: Error-bearing lines only, never the inner
+  // run's `ℹ tests/pass/fail` counts. Folding those into our output is the exact hazard
+  // tests/hangGuardCase.mjs's redactTotals exists for, and this suite is read by
+  // count-based parsers. The `ℹ`/`#` drop is belt-and-braces on top of that.
+  const errorLines = code === 0 ? [] : out.split('\n')
+    .filter(l => /\b[A-Za-z]*Error\b/.test(l) && !/^\s*[ℹ#]/.test(l))
+    .map(l => l.trim())
+    .slice(0, 6);
+  const diag = [
+    guardLines.join('\n') || '(no hang-guard: lines in output)',
+    ...(errorLines.length ? ['inner run errors:', ...errorLines] : []),
+  ].join('\n');
 
   const line = guardLines.find(l => l.startsWith('hang-guard: slowest files'));
   assert.ok(line, `no slowest-files line was printed:\n${diag}`);
@@ -172,94 +232,103 @@ async function runFixtures(names, extraEnv = {}) {
 }
 
 test('the verdict line charges each file its OWN wall, not an earlier-listed file\'s', async () => {
-  // ARGV ORDER IS LOAD-BEARING: slow FIRST. discover() preserves argv order, and the
-  // bug only fires for a file listed after one that is still running. Reverse these
-  // and the unfixed reporter looks correct.
-  const { code, diag, ranking, of } = await runFixtures(['slow', 'fast', 'medium', 'subsecond']);
+  // TWO LOAD-BEARING ARGUMENTS HERE — see the chain block at the top of this file.
+  //
+  // ARGV ORDER `slow, medium, subsecond, fast`: DESCENDING by expected figure. Two
+  // jobs at once. (a) slow is still FIRST, and the pre-fix bug only fires for a file
+  // listed after one that is still running — reverse that and the unfixed reporter
+  // looks correct. (b) every pair compared below is listed larger-first, so
+  // `dequeue_b - dequeue_a >= 0` in each difference and the stagger can only ever
+  // help. Do NOT reorder these to make assertion (3) a stronger discriminator; see
+  // (3)'s comment for that trade.
+  //
+  // TEST_CONCURRENCY 4: one slot per chained fixture, so all four are dispatched
+  // together and the chain is structural rather than a race. Fewer slots deadlocks
+  // it, loudly, via chain.mjs's 10s rendezvous cap. resolveConcurrency (tests/run.mjs)
+  // honours an explicit integer with NO core-derived cap, so this is portable to a
+  // 2-core box.
+  const { code, diag, ranking, of } =
+    await runFixtures(['slow', 'medium', 'subsecond', 'fast'], { TEST_CONCURRENCY: '4' });
   assert.equal(code, 0, `the fixture run should be green:\n${diag}`);
   assert.equal(ranking.length, 4, `expected all four fixtures in the ranking:\n${diag}`);
 
   const slow = of('slow'), medium = of('medium'), fast = of('fast'), sub = of('subsecond');
 
   // (1) A TRIVIAL FILE IS NOT CHARGED A WORKING FILE'S WALL. The primary bug-catcher:
-  // unfixed, fast is charged the ~1.7s it spent WAITING for slow's summary. It fails
-  // by ~3x — measured unfixed, fast 1732ms against a ceiling of medium/3 = 566ms, so
-  // 1732/566 = 3.06x. (Derive this ratio afresh if you change a fixture sleep; it is
-  // medium/3 vs fast, not a round number.) Tolerance C < 600ms (see the algebra above).
-  assert.ok(fast * 3 < medium,
-    `fast.fixture.mjs (no sleep, reported ${fast}ms) should be far cheaper than ` +
-    `medium.fixture.mjs (1200ms sleep, reported ${medium}ms); a near-tie means fast is ` +
-    `inheriting the wall of an earlier-listed file that was still running:\n${diag}`);
+  // unfixed, fast is charged the wall it spent WAITING for slow's summary, so this
+  // difference collapses toward ~0 (measured unfixed, every figure lands within a few
+  // ms of slow's completion instant). medium's link ends 550 + 650 = 1200ms after
+  // fast's, and medium is dequeued no later than fast, so 1200 is a floor that no
+  // CHILD-side cost can breach. It is NOT unconditional: a contiguous parent-loop stall
+  // of ~1150ms spanning both completions compresses this difference — see "THE ONE
+  // RESIDUAL" in the header. That is the only way this line goes red on a correct
+  // reporter, and it goes RED, never silently green.
+  assert.ok(medium - fast >= 1200,
+    `medium.fixture.mjs completes 1200ms of chain after fast.fixture.mjs, so their ` +
+    `reported figures must differ by at least that — got medium ${medium}ms, fast ` +
+    `${fast}ms, difference ${medium - fast}ms. A near-tie means fast is inheriting the ` +
+    `wall of an earlier-listed file that was still running:\n${diag}`);
 
   // (2) THE FIGURE RESOLVES TWO FILES THAT BOTH DID REAL BUT DIFFERENT WORK. This is
   // precisely what the old plateau hid — four trivial files reading within ~600ms of
-  // the one real culprit. Tolerance C < 800ms.
-  assert.ok(medium * 1.25 < slow,
-    `medium.fixture.mjs (1200ms sleep, reported ${medium}ms) should be clearly cheaper ` +
-    `than slow.fixture.mjs (2100ms sleep, reported ${slow}ms); the figure is not ` +
-    `resolving their real walls:\n${diag}`);
+  // the one real culprit. slow's link ends 900ms after medium's; slow is dequeued no
+  // later than medium.
+  assert.ok(slow - medium >= 900,
+    `slow.fixture.mjs completes 900ms of chain after medium.fixture.mjs, so their ` +
+    `reported figures must differ by at least that — got slow ${slow}ms, medium ` +
+    `${medium}ms, difference ${slow - medium}ms. The figure is not resolving their ` +
+    `real walls:\n${diag}`);
 
-  // (3) THE PUBLISHED RANKING IS THE TRUE ORDER. Asserted as the WHOLE sequence, not
-  // "slow is first": unfixed, medium is always LAST (its dequeue is the latest, so it
-  // inherits least of the held wall) while slow and fast tie to within ~1ms and trade
-  // first place at random — measured, the correct file won first place in 4 of 5 runs,
-  // so a first-place-only check would pass against the broken reporter most of the
-  // time. The full sequence never matches unfixed and always matches fixed.
+  // (2b) THE SAME CLAIM AT THE SMALLEST DESIGNED SEPARATION — the resolution floor.
+  // Kills a reporter that rounds away separations below ~1s while preserving the
+  // larger ones, which (1) and (2) would both survive.
+  assert.ok(sub - fast >= 550,
+    `subsecond.fixture.mjs completes 550ms of chain after fast.fixture.mjs, so their ` +
+    `reported figures must differ by at least that — got subsecond ${sub}ms, fast ` +
+    `${fast}ms, difference ${sub - fast}ms:\n${diag}`);
+
+  // (3) THE PUBLISHED RANKING IS THE TRUE ORDER, asserted as the WHOLE sequence.
+  //
+  // KNOWN AND DELIBERATE: under this argv order it no longer kills the pre-fix
+  // `test:summary` mutant ON ITS OWN. That mutant collapses every figure to slow's
+  // completion instant, i.e. a near-tie, and the sort is stable, so it emits `files`
+  // order — which is now exactly the expected sequence. (1), (2) and (2b) all fire on
+  // that mutant instead, and they fire UNCONDITIONALLY, which the old argv order could
+  // not offer. This is retained as a whole-sequence co-guard. Do NOT "restore" its
+  // unique kill by reverting the argv order — that reintroduces the load term.
   assert.deepEqual(ranking.map(r => r.name),
     ['slow.fixture.mjs', 'medium.fixture.mjs', 'subsecond.fixture.mjs', 'fast.fixture.mjs'],
     `the ranking must order files by the wall they actually spent:\n${diag}`);
 
   // (4) Control, not a discriminator — it also passes against the unfixed reporter.
-  // slow.fixture.mjs sleeps 2100ms, so dispatch→child-done can never be below that at
-  // any load. Kills a mutant that collapses the figure to a small constant.
+  // The chain sums to 550 + 650 + 900 = 2100ms before slow can exit, so dispatch→done
+  // can never be below that at any load. Kills a mutant that collapses the figure to a
+  // small constant.
   assert.ok(slow >= 2100,
-    `slow.fixture.mjs sleeps 2100ms, so it cannot legitimately report ${slow}ms:\n${diag}`);
+    `slow.fixture.mjs completes at the end of a 2100ms chain, so it cannot ` +
+    `legitimately report ${slow}ms:\n${diag}`);
 
-  // (5) SUB-SECOND RESOLUTION. medium and subsecond differ by only ~650ms of true
-  // wall, so the reported figures must stay strictly ordered AND stay under a second
-  // apart. Stated as a two-sided bound on the DIFFERENCE, which is what makes it
-  // both load-safe and complete:
-  //   * a difference cancels the common spawn cost C to first order, so unlike an
-  //     absolute bound it does not drift with load;
-  //   * every way of coarsening the figure to whole seconds violates one side —
-  //     tie the two (difference 0, violating the lower bound) or split them across
-  //     adjacent buckets (difference exactly 1000, violating the upper). That is why
-  //     it does not matter WHERE the buckets happen to fall.
-  // IT IS NOT THE ONLY ASSERTION THAT FIRES — IT IS THE ONLY RELIABLE ONE. An earlier
-  // revision of this comment claimed "(1)-(4) all pass", which was true when slow
-  // slept 1700ms (quantized 2000 cleared (4)'s floor) and became false when the
-  // C-algebra fix moved that sleep to 2100. Measured quiet — slow 2138 / medium 1237 /
-  // subsecond 586 / fast 34 — and evaluated per convention:
-  //   round: figures 2000/1000/1000/0. (4) fires FIRST (2000 >= 2100 is false), (5)
-  //          also fires (gap 0). (1)(2)(3) pass — the ranking still matches, because
-  //          the sort is stable and the tie preserves insertion order.
-  //   floor: 2000/1000/0/0. (3) fires (subsecond and fast tie at 0, so the sequence
-  //          inverts), plus (4) and (5) (gap 1000).
-  //   ceil:  3000/2000/1000/1000. (1) fires, plus (3) and (5). (4) PASSES here.
-  // So (4)'s catch is real but LOAD-DEPENDENT: q(slow) = round((2100+C_s)/1000)*1000
-  // clears the 2100 floor as soon as C_s >= 400ms, and the measured C_s maximum over
-  // 20 starved runs was 264ms — 136ms of headroom, not a guarantee.
+  // (5) MILLISECOND RESOLUTION, stated as a lattice residue. The claim is simply "the
+  // figure was not quantized", and this states it directly, with NO load term at all —
+  // which the (0, 1000) band it replaces could not: that band's upper half was
+  // measured OUTSIDE its range (gap 1053ms) on a correct reporter at load1 ~73.
   //
-  // (5) IS THE LOAD-INDEPENDENT ONE, and structurally so: under any mapping onto a
-  // 1000ms lattice both figures become multiples of 1000, so their difference is a
-  // multiple of 1000 — and no multiple of 1000 lies strictly inside (0, 1000). One
-  // side of the bound must fire wherever the buckets land, at any load. Neither side
-  // is dead weight: round trips the lower one, floor and ceil the upper.
+  // It is also STRICTLY STRONGER. Any whole-second lattice makes every figure
+  // ≡ 0 (mod 1000) hence ≡ 0 (mod 100), so every mutant the band caught still dies —
+  // and the 100ms and 500ms lattices the old header admits (as "the boundary of what
+  // this file claims") now die too. THE GUARANTEE COVERS 100ms-MULTIPLE QUANTA ONLY:
+  // (5) fires only when ALL FOUR figures land on the 100ms lattice, so a 50ms quantum
+  // escapes ~15 runs in 16 (~(1/2)^4 caught; measured 0 kills in 16). Do not read this
+  // as "catches any lattice". False-positive probability with four independent
+  // millisecond figures is ~1e-8.
   //
-  // THE ENVELOPE, stated honestly rather than as totality. A 500ms lattice escapes
-  // (5) — gap 500 sits inside the band — and is caught instead by (4) under
-  // round/floor, or by (1) under ceil (fast 500, medium 1500, so 3*500 < 1500 is
-  // false). A 100ms lattice and a uniform x1.5 scaling pass all five, because they
-  // violate no invariant these tests state: order, ratio and sub-second resolution
-  // all survive them. That is the boundary of what this file claims, not a hole in it.
-  // Measured true gap: 650ms quiet.
-  const gap = medium - sub;
-  assert.ok(gap > 0 && gap < 1000,
-    `medium.fixture.mjs (1200ms sleep, reported ${medium}ms) and subsecond.fixture.mjs ` +
-    `(550ms sleep, reported ${sub}ms) differ by ~650ms of real wall, so the reported ` +
-    `figures must differ by more than 0 and less than 1000ms — got ${gap}ms. A gap of 0 ` +
-    `means the figure lost sub-second resolution; a gap of exactly 1000 means the two ` +
-    `were rounded into adjacent whole seconds:\n${diag}`);
+  // The band's LOWER half — medium and subsecond strictly ordered — is not lost:
+  // (3) pins the full sequence and (2b) pins the separation numerically.
+  const figures = [slow, medium, sub, fast];
+  assert.ok(figures.some(ms => ms % 100 !== 0),
+    `all four reported figures (${figures.join(', ')}) are multiples of 100ms, which ` +
+    `four independent millisecond walls are not: the figure has been quantized onto a ` +
+    `lattice and lost its resolution:\n${diag}`);
 });
 
 test('a KILLED file keeps its figure and its place in the ranking', async () => {
@@ -298,11 +367,18 @@ test('a KILLED file keeps its figure and its place in the ranking', async () => 
     `killed.fixture.mjs ran until the ${KILL_MS}ms watchdog fired, so it cannot ` +
     `legitimately report ${killed}ms:\n${diag}`);
   // And it must still outrank the trivial file, i.e. the kill did not merely leave a
-  // placeholder at the bottom of the list.
+  // placeholder at the bottom of the list. THIS *IS* "killed > fast", stated
+  // structurally: the ranking is sorted descending, and argv is ['killed', 'fast'] so
+  // dequeue_killed <= dequeue_fast while done_killed > done_fast.
+  //
+  // A `killed > of('fast') * 3` ratio used to follow this line. IT WAS DELETED, DO NOT
+  // RESTORE IT (card 2026-0222): a ratio between two wall figures multiplies the
+  // per-file spawn cost instead of cancelling it — that one required C_fast < 667ms,
+  // and C_fast was measured at 772ms at 72-way starvation, where it duly went red on a
+  // correct reporter. It said nothing the two assertions around it do not: this line
+  // carries the ordering, and the KILL_MS floor above carries the magnitude.
   assert.equal(ranking[0].name, 'killed.fixture.mjs',
     `the killed file must still rank as the most expensive file:\n${diag}`);
-  assert.ok(killed > of('fast') * 3,
-    `killed.fixture.mjs (${killed}ms) must dominate fast.fixture.mjs (${of('fast')}ms):\n${diag}`);
 });
 
 test('post-test teardown is inside the reported figure', async () => {
@@ -313,9 +389,20 @@ test('post-test teardown is inside the reported figure', async () => {
   // Discriminates the FILE-level `test:complete` from the last INNER one: the inner
   // test completes ~1ms in and the hook then sleeps ~900ms. Measured 954ms from the
   // file-level event; the inner-complete source would report ~40ms. The 700ms floor
-  // sits between them and is load-safe in both directions — the sleep is wall-clock
-  // so load cannot shrink it, and the wrong source would need 700ms of pure
-  // spawn+import cost to sneak past.
+  // sits between them, and THE TWO DIRECTIONS ARE NOT EQUALLY SAFE — do not restate
+  // this as "load-safe in both directions", which it is not:
+  //   * FALSE-REDS: unconditional. The correct figure is dequeue→file-complete and
+  //     contains a 900ms wall-clock sleep that load can only inflate, so a correct
+  //     reporter can never fall under 700.
+  //   * THE ANTI-MUTANT MARGIN: conditional, and this card measured where it breaks.
+  //     The wrong-source figure is dequeue-relative too — it is spawn+import `C` plus
+  //     ~1ms — so load pushes it TOWARD the threshold, not away. Quiet, C ~40ms leaves
+  //     ~660ms of margin; at 72-way starvation C was measured at 772ms, i.e. ABOVE the
+  //     floor, where the inner-complete mutant survives this test.
+  // Benign in practice: mutation grading runs quiet, and test 3 is a deliberate
+  // co-guard whose kills co-fire with tests 1 and 2 (see the header). Fix it by
+  // grading quiet, never by moving the 700ms floor or the fixture's sleep — the floor
+  // is what sits between the two sources.
   const { code, diag, ranking, of } = await runFixtures(['teardown']);
   assert.equal(code, 0, `the teardown fixture run should be green:\n${diag}`);
   assert.equal(ranking.length, 1, `expected exactly the one fixture:\n${diag}`);

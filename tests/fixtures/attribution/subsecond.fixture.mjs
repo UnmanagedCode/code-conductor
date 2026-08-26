@@ -1,21 +1,18 @@
-// Pairs with medium.fixture.mjs to pin SUB-SECOND RESOLUTION: two files whose true
-// walls differ by ~650ms must stay strictly ordered and stay less than a second
-// apart in the reported figures.
+// CHAIN LINK 2 — waits for `fast`'s PROCESS TO EXIT, spends 550ms, publishes
+// `subsecond`.
 //
-// 550ms is chosen against medium's 1200ms, not freely:
-//   * the true gap is ~650ms, so it sits well inside the (0, 1000) band assertion
-//     (5) requires, with ~350ms of headroom above and ~650ms below;
-//   * both figures land in the SAME round-to-nearest-second bucket ([500, 1500) →
-//     1000), so a reporter that quantized to seconds would TIE them;
-//   * 550 + spawn cost stays clear of the 500ms bucket floor, so the tie does not
-//     accidentally break and let a quantizing reporter pass.
-// Do not shrink it toward 460ms: the figure would flirt with rounding to 0 instead
-// of 1000, which breaks the tie and turns assertion (5) into a false negative.
+// Its increment is the SMALLEST in the chain and is therefore the resolution floor
+// the suite pins: assertion (2b) `sub - fast >= 550` in
+// tests/summary-attribution.test.mjs. A reporter that rounded away separations
+// below ~1s while preserving the larger ones dies on this one and no other.
 //
-// It costs almost nothing in wall: at TEST_CONCURRENCY=2 it is dispatched into the
-// slot medium vacates and finishes while slow.fixture.mjs is still running.
+// 550ms is no longer solved against medium's sleep — the old (0, 1000) band and its
+// round-to-nearest-second tie argument are gone, replaced by an explicit
+// millisecond-lattice residue check. It is simply the smallest increment still far
+// above the chain's 10ms poll granularity.
 import test from 'node:test';
+import { link } from './chain.mjs';
 
-test('subsecond fixture: occupies ~550ms of wall', async () => {
-  await new Promise(r => setTimeout(r, 550));
+test('subsecond fixture: adds 550ms to the chain', async () => {
+  await link({ after: 'fast', sleepMs: 550, signal: 'subsecond' });
 });
