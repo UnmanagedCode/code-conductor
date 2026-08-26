@@ -294,17 +294,19 @@
           </div>
           <div id="settings-conventions" class="settings-group" hidden>
             <p class="settings-desc">
-              Markdown guidance composed into Claude sessions, at three scopes that cascade
-              <strong>Conductor → Workspace → Project</strong>. Each scope has an always-on
-              <strong>core</strong> plus toggleable built-in conventions (read-only) and custom conventions you
-              can add, edit, and delete.
+              Markdown guidance composed into Claude sessions, at three scopes:
+              <strong>Conductor</strong>, <strong>Workspace</strong> and <strong>Project</strong>.
+              Conductor and Workspace each have an always-on <strong>core</strong> plus built-in
+              conventions toggled here; Project conventions are picked per project when it is created.
+              Built-in bodies are read-only; every scope also takes custom conventions you can add,
+              edit, and delete.
             </p>
             <details class="conventions-block">
               <summary class="conventions-summary">Workspace conventions</summary>
               <p class="settings-desc">
-                Composed into the app-owned projects-root <code>CLAUDE.md</code> — the file every project
-                imports via <code>@../CLAUDE.md</code>. Global; changes regenerate that file immediately
-                (it is fully owned by code-conductor, overwritten on boot and on change).
+                Composed into every project's own <code>CONVENTIONS.md</code> (above that project's own
+                conventions) and into the conductor's role doc. Global; a change regenerates every one of
+                those files immediately (they are fully owned by code-conductor and overwritten).
               </p>
               <div id="wk-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="wk-convention-list" class="cc-convention-list"></ul>
@@ -312,7 +314,7 @@
                 <input id="wk-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
                 <input id="wk-add-name" type="text" placeholder="Short name" />
                 <input id="wk-add-desc" type="text" placeholder="One-line description" />
-                <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into the root CLAUDE.md"></textarea>
+                <textarea id="wk-add-body" rows="6" placeholder="Markdown body composed into every project's CONVENTIONS.md"></textarea>
                 <div class="or-add-actions">
                   <button id="wk-add-save" type="button">Save</button>
                   <button id="wk-add-cancel" type="button">Cancel</button>
@@ -373,9 +375,9 @@
             <details class="conventions-block">
               <summary class="conventions-summary">Project conventions</summary>
               <p class="settings-desc">
-                Named <code>CLAUDE.md</code> sections selectable per project at creation (snapshotted into
-                that project's <code>CLAUDE.md</code>). Built-in seeds are read-only; custom conventions
-                can be added, edited, and deleted here.
+                Named sections selectable per project at creation, composed into that project's
+                <code>CONVENTIONS.md</code> and regenerated there. Built-in seeds are read-only; custom
+                conventions can be added, edited, and deleted here.
               </p>
               <div id="pc-status" class="st-status" aria-live="polite">Loading…</div>
               <ul id="pc-convention-list" class="or-rule-list"></ul>
@@ -383,7 +385,7 @@
                 <input id="pc-add-slug" type="text" placeholder="slug (e.g. my-convention)" />
                 <input id="pc-add-name" type="text" placeholder="Short name" />
                 <input id="pc-add-desc" type="text" placeholder="One-line description" />
-                <textarea id="pc-add-body" rows="6" placeholder="Markdown body appended to a new project's CLAUDE.md"></textarea>
+                <textarea id="pc-add-body" rows="6" placeholder="Markdown body composed into a project's CONVENTIONS.md"></textarea>
                 <div class="or-add-actions">
                   <button id="pc-add-save" type="button">Save</button>
                   <button id="pc-add-cancel" type="button">Cancel</button>

@@ -1,6 +1,10 @@
 // Unit tests for migration 0009 (seed the workspace-CLAUDE.md baseline from
 // the legacy shell-installer's baseline file when present). Verifies the
 // seed, the no-legacy no-op, the already-seeded no-op, and idempotency.
+//
+// 0009 is no longer in `ALL` — 0032 retired the store it seeds (see
+// migrations/index.mjs). These tests call `m0009.run` directly, so they still
+// describe the frozen artifact's behaviour.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -629,7 +629,7 @@ test('create_project creates the directory, seeds CLAUDE.md, and inits git', asy
   const plain = unwrap(await callTool(baseUrl, 'create_project', { name: 'plain' }));
   assert.equal(plain.name, 'plain');
   const claudeMd = await fs.readFile(path.join(projectsRoot, 'plain', 'CLAUDE.md'), 'utf8');
-  assert.match(claudeMd, /@\.\.\/CLAUDE\.md/);
+  assert.equal(claudeMd, '@CONVENTIONS.md\n');
   // The repo is created with no git-related argument passed — init is not opt-in.
   const gitStat = await fs.stat(path.join(projectsRoot, 'plain', '.git'));
   assert.ok(gitStat.isDirectory());
@@ -925,7 +925,7 @@ test('project_status on a non-git project returns isGitRepo:false but still list
   // Creation always inits a repo now, so reach the non-repo state with a bare
   // mkdir + the CLAUDE.md the file-listing assertion below needs.
   await fs.mkdir(path.join(projectsRoot, 'a'), { recursive: true });
-  await fs.writeFile(path.join(projectsRoot, 'a', 'CLAUDE.md'), '@../CLAUDE.md\n');
+  await fs.writeFile(path.join(projectsRoot, 'a', 'CLAUDE.md'), '@CONVENTIONS.md\n');
   const st = text(await callTool(baseUrl, 'project_status', { project: 'a' }));
   assert.match(st, /^! not a git repo$/m);
   // The CLAUDE.md the fixture above wrote should be there, and as a file (no

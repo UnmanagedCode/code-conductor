@@ -1,6 +1,7 @@
 // Tests for workspace conventions: compose (core + enabled), global
-// selection state, custom-convention CRUD, projects-root CLAUDE.md regeneration,
-// and the REST surface. Analog of tests/conductor-conventions.test.mjs.
+// selection state, custom-convention CRUD, the per-project fan-out that
+// delivers the composed text, and the REST surface. Analog of
+// tests/conductor-conventions.test.mjs.
 
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,6 +9,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { createProject } from '../src/projects.ts';
+import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
 import {
   SEED_CONVENTIONS, getCatalog, getSelection, setSelection,
   addCustomConvention, deleteCustomConvention, composeWorkspace, composeCurrentWorkspace,
@@ -106,16 +109,47 @@ test('deleteCustomConvention drops the slug from the enabled selection', async (
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/conventions/workspace returns core + 4 conventions + enabled', async () => {
+test('GET /api/settings/conventions/workspace returns core + 4 built-in conventions + enabled', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/conventions/workspace');
   assert.equal(r.status, 200);
   assert.ok(r.body.core && r.body.core.name);
   assert.equal(r.body.conventions.length, 4);
   assert.equal(r.body.enabled.length, 4);
+  for (const m of r.body.conventions) assert.equal(m.builtin, true);
 });
 
-test('POST creates a custom convention (201); PUT /:slug updates; DELETE removes; each regenerates root CLAUDE.md', async () => {
-  const rootClaudeMd = path.join(projectsRoot, 'CLAUDE.md');
+// Two projects with different project-scope selections — the workspace block is
+// installation-wide, so BOTH must carry every workspace mutation.
+const conventionsPath = (name) => path.join(projectsRoot, name, 'CONVENTIONS.md');
+async function twoProjects() {
+  await createProject('with-conv', { conventionsDoc: await composeProjectConventionsDoc(['design-guidelines']) });
+  await createProject('without-conv');   // no CONVENTIONS.md at creation
+  return ['with-conv', 'without-conv'];
+}
+async function bothFiles(names) {
+  return Promise.all(names.map(n => fs.readFile(conventionsPath(n), 'utf8')));
+}
+
+test('PUT selection fans out to EVERY project\'s CONVENTIONS.md; built-in edit/delete → 400; unknown slug → 400', async () => {
+  const names = await twoProjects();
+  const r = await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/selection', { enabled: ['git-hygiene'] });
+  assert.equal(r.status, 200);
+  for (const content of await bothFiles(names)) {
+    assert.match(content, /## Git hygiene/);
+    assert.doesNotMatch(content, /## Opening URLs/);
+    assert.match(content, /# Workspace conventions/);
+  }
+
+  const put = await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/git-hygiene', { name: 'X' });
+  assert.equal(put.status, 400);
+  const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/workspace/git-hygiene');
+  assert.equal(del.status, 400);
+  const bad = await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/selection', { enabled: ['nope'] });
+  assert.equal(bad.status, 400);
+});
+
+test('POST creates a custom convention (201); PUT /:slug updates; DELETE removes; each fans out to every project', async () => {
+  const names = await twoProjects();
 
   const add = await api(baseUrl, 'POST', '/api/settings/conventions/workspace', {
     slug: 'rest-mod', name: 'REST mod', description: 'via REST', body: '## REST mod',
@@ -123,19 +157,19 @@ test('POST creates a custom convention (201); PUT /:slug updates; DELETE removes
   assert.equal(add.status, 201);
   assert.equal(add.body.convention.builtin, false);
   // Custom conventions are off by default (not in the default all-builtins selection),
-  // so the body is present in the catalog but not yet in the composed file.
+  // so the body is present in the catalog but not yet in the composed text.
   await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/selection', {
     enabled: [...SEED_CONVENTIONS.map(m => m.slug), 'rest-mod'],
   });
-  assert.match(await fs.readFile(rootClaudeMd, 'utf8'), /## REST mod/);
+  for (const content of await bothFiles(names)) assert.match(content, /## REST mod/);
 
   const upd = await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/rest-mod', {
     name: 'REST mod v2', description: 'updated', body: '## REST mod v2',
   });
   assert.equal(upd.status, 200);
-  assert.match(await fs.readFile(rootClaudeMd, 'utf8'), /## REST mod v2/);
+  for (const content of await bothFiles(names)) assert.match(content, /## REST mod v2/);
 
   const del = await api(baseUrl, 'DELETE', '/api/settings/conventions/workspace/rest-mod');
   assert.equal(del.status, 200);
-  assert.doesNotMatch(await fs.readFile(rootClaudeMd, 'utf8'), /## REST mod/);
+  for (const content of await bothFiles(names)) assert.doesNotMatch(content, /## REST mod/);
 });

@@ -1,5 +1,5 @@
-// Project conventions — a catalog of named CLAUDE.md sections that can be
-// appended inline to a new project's CLAUDE.md at creation time.
+// Project conventions — a catalog of named sections a project selects at
+// creation, composed into (and regenerated in) its own CONVENTIONS.md.
 //
 // Seeds are read-only (builtin: true); their bodies live in committed `.md`
 // fragments under conventions/project/<slug>.md. Custom conventions
@@ -53,9 +53,9 @@ export const updateCustomConvention = catalog.updateCustom;
 export const deleteCustomConvention = catalog.deleteCustom;
 
 // Resolves an array of slugs against the catalog and returns the markdown block
-// to append after `@../CLAUDE.md\n` in a new project's CLAUDE.md. Unknown slugs
-// produce a 400 error. Slugs whose convention carries only a scaffold facet (no
-// fragment body) contribute nothing. Empty array → '' (no append).
+// composeProjectConventionsDoc places under `# Project conventions`. Unknown
+// slugs produce a 400 error. Slugs whose convention carries only a scaffold
+// facet (no fragment body) contribute nothing. Empty array → '' (no block).
 export const composeProjectConventionsBlock = catalog.compose;
 
 // Resolves selected slugs against the catalog and composes the one-time setup

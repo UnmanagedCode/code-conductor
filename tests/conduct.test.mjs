@@ -8,6 +8,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { materializeCurrentConduct, conductConventionsPath } from '../src/conduct.ts';
+import { composeCurrentConduct } from '../src/conductorConventions.ts';
+import { composeCurrentWorkspace } from '../src/workspaceConventions.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -42,6 +45,19 @@ test('ensureConductProject creates .conduct/ with a CLAUDE.md importing the role
     'ensure must not write the role doc');
   // The 0003 → 0010 → 0022 lineage stays dead.
   await assert.rejects(fs.stat(path.join(conductDir, 'CONDUCT.md')), 'no CONDUCT.md written');
+});
+
+// T13 — the conductor is a destination of the WORKSPACE conventions too: the
+// materialized doc is workspace text first, role doc second, one blank line
+// apart. Whole-document equality kills an ordering / separator mutant.
+test('materializeCurrentConduct writes the workspace conventions above the role doc', async () => {
+  await materializeCurrentConduct();
+  const onDisk = await fs.readFile(conductConventionsPath(), 'utf8');
+  const [workspace, role] = [await composeCurrentWorkspace(), await composeCurrentConduct()];
+  assert.equal(onDisk, `${workspace}\n${role}`);
+  assert.ok(onDisk.startsWith('# Workspace conventions'), 'workspace block opens the doc');
+  assert.ok(onDisk.endsWith(role), 'the role doc — generated footer and all — stays last');
+  assert.ok(onDisk.indexOf('# Workspace conventions') < onDisk.indexOf('# Conductor role'));
 });
 
 test('import detection is LINE-level: prose merely mentioning @CONVENTIONS.md still gains a standalone import', async () => {

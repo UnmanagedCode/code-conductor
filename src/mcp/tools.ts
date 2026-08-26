@@ -714,10 +714,11 @@ export function buildTools(): Tool[] {
     {
       name: 'create_project',
       description:
-        'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @../CLAUDE.md ' +
-        'so workspace-wide conventions are inherited. The new dir is initialized as a git repo (no commits). ' +
+        'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @CONVENTIONS.md and ' +
+        'writes that CONVENTIONS.md, carrying the workspace-wide conventions. The new dir is initialized ' +
+        'as a git repo (no commits). ' +
         'Project conventions can be attached by passing their slugs — call list_project_conventions to ' +
-        'discover available slugs. Each carries a CLAUDE.md fragment (appended inline) and/or a one-time ' +
+        'discover available slugs. Each carries a fragment (composed into CONVENTIONS.md) and/or a one-time ' +
         'scaffold directive: a picked convention flagged hasScaffold:true composes a setup directive that is ' +
         'RETURNED as this tool\'s `scaffold` field (empty when none), which YOU fold into your FIRST send_prompt ' +
         'to the project\'s first worker (it is never auto-sent).',

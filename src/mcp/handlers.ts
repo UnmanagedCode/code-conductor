@@ -1774,7 +1774,7 @@ export async function setProjectWorkspace({ project, workspace }: { project: str
 // ---------- create / introspect ----------
 
 export async function createProject({ name, conventions = [] }: { name: string; conventions?: string[] }) {
-  const conventionsDoc = conventions.length ? await composeProjectConventionsDoc(conventions) : null;
+  const conventionsDoc = await composeProjectConventionsDoc(conventions);
   const scaffold = await composeProjectScaffold(name, conventions);
   const created = await fsCreateProject(name, { conventionsDoc });
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST

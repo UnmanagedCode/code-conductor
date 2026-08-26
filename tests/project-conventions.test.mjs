@@ -173,10 +173,12 @@ test('composeProjectConventionsBlock throws 400 on unknown slug', async () => {
 
 // ── createProject with conventions (unit) ─────────────────────────────────────
 
-test('createProject with no conventions seeds only @../CLAUDE.md', async () => {
+// The direct/test entry point: no document passed ⇒ no CONVENTIONS.md yet (the
+// next regenerate creates it), but the import line is seeded unconditionally.
+test('createProject with no conventions still seeds the @CONVENTIONS.md import', async () => {
   const { path: projPath } = await createProject('plain-proj');
   const content = await fs.readFile(path.join(projPath, 'CLAUDE.md'), 'utf8');
-  assert.equal(content, '@../CLAUDE.md\n');
+  assert.equal(content, '@CONVENTIONS.md\n');
   await assert.rejects(() => fs.readFile(path.join(projPath, 'CONVENTIONS.md'), 'utf8'));
 });
 
@@ -184,7 +186,7 @@ test('createProject with conventions imports + writes CONVENTIONS.md', async () 
   const conventionsDoc = await composeProjectConventionsDoc(['documentation-guidelines']);
   const { path: projPath } = await createProject('convention-proj', { conventionsDoc });
   const claude = await fs.readFile(path.join(projPath, 'CLAUDE.md'), 'utf8');
-  assert.equal(claude, '@../CLAUDE.md\n@CONVENTIONS.md\n');
+  assert.equal(claude, '@CONVENTIONS.md\n');
   const conventions = await fs.readFile(path.join(projPath, 'CONVENTIONS.md'), 'utf8');
   assert.ok(conventions.startsWith('<!-- cc:conventions documentation-guidelines -->'));
   assert.ok(conventions.includes('## Documentation guidelines'));
@@ -263,7 +265,7 @@ test('POST /api/projects with conventions writes CONVENTIONS.md + imports it', a
   });
   assert.equal(r.status, 201);
   const claude = await fs.readFile(path.join(projectsRoot, 'proj-with-conventions', 'CLAUDE.md'), 'utf8');
-  assert.equal(claude, '@../CLAUDE.md\n@CONVENTIONS.md\n');
+  assert.equal(claude, '@CONVENTIONS.md\n');
   const conventions = await fs.readFile(path.join(projectsRoot, 'proj-with-conventions', 'CONVENTIONS.md'), 'utf8');
   assert.ok(conventions.startsWith('<!-- cc:conventions documentation-guidelines,design-guidelines -->'));
   assert.ok(conventions.includes('## Documentation guidelines'));
@@ -278,11 +280,17 @@ test('POST /api/projects with unknown convention slug returns 400', async () => 
   assert.match(r.body.error, /unknown convention slug/);
 });
 
-test('POST /api/projects with no conventions seeds only @../CLAUDE.md', async () => {
+// The HTTP creation path always composes a document, so even a project that
+// picks no project conventions is born carrying the workspace ones.
+test('POST /api/projects with no conventions still writes a CONVENTIONS.md carrying the workspace block', async () => {
   const r = await api(baseUrl, 'POST', '/api/projects', { name: 'bare-proj' });
   assert.equal(r.status, 201);
   const content = await fs.readFile(path.join(projectsRoot, 'bare-proj', 'CLAUDE.md'), 'utf8');
-  assert.equal(content, '@../CLAUDE.md\n');
+  assert.equal(content, '@CONVENTIONS.md\n');
+  const conventions = await fs.readFile(path.join(projectsRoot, 'bare-proj', 'CONVENTIONS.md'), 'utf8');
+  assert.equal(conventions.split('\n', 1)[0], '<!-- cc:conventions -->');
+  assert.match(conventions, /# Workspace conventions/);
+  assert.doesNotMatch(conventions, /# Project conventions/);
 });
 
 // ── MCP tools ─────────────────────────────────────────────────────────────
@@ -324,7 +332,7 @@ test('create_project MCP tool with conventions appends bodies to CLAUDE.md', asy
   const result = await tool.handler({ name: 'mcp-guided', conventions: ['documentation-guidelines'] }, { instances });
   assert.equal(result.name, 'mcp-guided');
   const claude = await fs.readFile(path.join(projectsRoot, 'mcp-guided', 'CLAUDE.md'), 'utf8');
-  assert.equal(claude, '@../CLAUDE.md\n@CONVENTIONS.md\n');
+  assert.equal(claude, '@CONVENTIONS.md\n');
   const conventions = await fs.readFile(path.join(projectsRoot, 'mcp-guided', 'CONVENTIONS.md'), 'utf8');
   assert.ok(conventions.includes('## Documentation guidelines'));
 });

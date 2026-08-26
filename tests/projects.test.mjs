@@ -106,11 +106,11 @@ test('createProject fails loudly when git init fails', async () => {
   await assert.rejects(fs.readFile(path.join(projectsRoot, 'boom', 'CLAUDE.md')));
 });
 
-test('POST /api/projects seeds CLAUDE.md that imports the workspace-wide one', async () => {
+test('POST /api/projects seeds CLAUDE.md that imports the in-project CONVENTIONS.md', async () => {
   await api(baseUrl, 'POST', '/api/projects', { name: 'with-md' });
   const mdPath = path.join(projectsRoot, 'with-md', 'CLAUDE.md');
   const text = await fs.readFile(mdPath, 'utf8');
-  assert.match(text, /@\.\.\/CLAUDE\.md/, 'imports the parent workspace CLAUDE.md');
+  assert.equal(text, '@CONVENTIONS.md\n', 'the sole conventions channel, in-tree and location-independent');
 });
 
 test('POST /api/projects rejects bad names', async () => {

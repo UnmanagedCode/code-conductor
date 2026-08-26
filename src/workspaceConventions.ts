@@ -1,17 +1,17 @@
-// Workspace conventions — the toggleable sections composed into the
-// app-owned projects-root CLAUDE.md (the file every project imports via
-// `@../CLAUDE.md`) alongside the always-on core.
+// Workspace conventions — the "applies to every project" sections, composed
+// alongside the always-on core into one text with no destination of its own.
 //
 // CORE (conventions/workspace/core.md) is always present. The four built-in
 // conventions (conventions/workspace/<slug>.md) and any user-defined custom
-// conventions are toggled via a single GLOBAL selection (there is one
-// projects-root CLAUDE.md), persisted at
+// conventions are toggled via a single GLOBAL selection — installation-wide by
+// design, so it can never drift per project — persisted at
 // <orchStoreRoot>/conventions/workspace.json as { enabled: [...], rules: [...] }.
 //
-// The composed file is fully app-owned: regenerated (overwritten) on boot
-// and after a settings change by ensureRootClaudeMd() in rootClaudeMd.ts.
-// This mirrors src/conductorConventions.ts, whose composed doc is instead
-// written to `.conduct/CONVENTIONS.md` before every conductor spawn.
+// Delivery is per destination, and every destination is app-owned + fully
+// overwritten: src/projectClaudeMd.ts folds this text into each project's
+// in-tree CONVENTIONS.md (on boot and after every workspace-settings change),
+// and src/conduct.ts prepends it to the conductor role doc it materializes into
+// `.conduct/CONVENTIONS.md` before every conductor spawn.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -27,7 +27,7 @@ const CORE_FILE = path.join(CONVENTIONS_DIR, 'core.md');
 // as a non-toggleable row so users see what can't be turned off.
 export const CORE_META = {
   name: 'Core (always on)',
-  description: 'Intro + the @../CLAUDE.md import contract every project relies on',
+  description: 'Intro + the per-project CONVENTIONS.md delivery contract',
 };
 
 // Built-in convention metadata (order = order they appear in the composed doc).
@@ -68,9 +68,9 @@ export const validateSlug = catalog.validateSlug;
 // ── Global selection (the shared collaborator, no overrides) ────────────────
 //
 // Plain selection: the persisted `enabled` array is the whole story, and its
-// absence defaults to all built-ins so a fresh install renders the projects-root
-// CLAUDE.md equivalent to the pre-carve bundled canonical. Deleting a custom
-// convention also drops it from that array.
+// absence defaults to all built-ins so a fresh install composes the equivalent
+// of the pre-carve bundled canonical. Deleting a custom convention also drops
+// it from that array.
 
 const selection = createSelectionStore({ catalog, seeds: SEED_CONVENTIONS, noun: 'convention' });
 
