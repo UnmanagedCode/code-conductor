@@ -152,10 +152,28 @@ const DEAD = 'cc-testrun-Abc123';   // owning run finished: its root is gone
 const LIVE = 'cc-testrun-Live99';   // owning run still going: its root exists
 const rootExists = marker => marker === LIVE;
 
+// REFUSE DUPLICATE PIDS. `new Map(entries)` keeps the LAST entry for a repeated
+// key, so a table row that reuses a pid silently VOIDS the earlier one — the row
+// is still there to read, still commented, and no longer reaches the code under
+// test. That happened here (5010 was used twice; the empty-valued-marker row
+// never reached byPid, and deleting it left the file green), and a fixture row
+// that silently voids itself is exactly the class this card exists to close. A
+// guard in the builder makes the next one a loud failure instead of a quiet one.
+function assertDistinctPids(rows) {
+  const seen = new Set();
+  for (const r of rows) {
+    assert.ok(!seen.has(r.pid), `duplicate pid ${r.pid} in a snapshot table — ` +
+      'the later row silently voids the earlier one, which then tests nothing');
+    seen.add(r.pid);
+  }
+  return rows;
+}
+
 const rowsToSnap = (rows, { available = true } = {}) => ({
   available,
   byParent: new Map(),
-  byPid: new Map(rows.map(r => [r.pid, { ident: '1', argv: ['node', 'server.mjs'], env: '', ...r }])),
+  byPid: new Map(assertDistinctPids(rows)
+    .map(r => [r.pid, { ident: '1', argv: ['node', 'server.mjs'], env: '', ...r }])),
 });
 
 test('staleRunTargets licences only processes of a PROVABLY finished run', () => {
@@ -181,7 +199,7 @@ test('staleRunTargets licences only processes of a PROVABLY finished run', () =>
     // An anchored entry with an EMPTY value: captures '', which is not run-root
     // shaped. Refused by the same conjunct, and worth its line because '' is the
     // one value that slips past a truthiness check.
-    { pid: 5010, env: 'PATH=/usr/bin\0CC_TEST_RUN_ID=\0' },
+    { pid: 5011, env: 'PATH=/usr/bin\0CC_TEST_RUN_ID=\0' },
     // PREFIX SHARER: its marker STARTS WITH the dead run's. The capture is
     // anchored at both ends, so the captured value is the whole entry and cannot
     // be confused with the shorter one.
@@ -189,7 +207,8 @@ test('staleRunTargets licences only processes of a PROVABLY finished run', () =>
     // Near-miss variable NAMES. 5008 is excluded by `CC_TEST_RUN_ID` simply not
     // being followed by `=`; 5010 is the one the LEADING `(?:^|\0)` anchor exists
     // for — a name ENDING with ours satisfies an unanchored search, so without it
-    // an unrelated process is licensed by a name collision.
+    // an unrelated process is licensed by a name collision. (5011 above is the
+    // empty-valued entry; these three pids are distinct on purpose.)
     { pid: 5008, env: `CC_TEST_RUN_IDX=${DEAD}\0` },
     { pid: 5010, env: `PREV_CC_TEST_RUN_ID=${DEAD}\0` },
     // Marker present but the entry is UNTERMINATED: fail closed.

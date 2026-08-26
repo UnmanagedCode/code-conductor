@@ -80,11 +80,24 @@ test('redactTotals neutralises inner count lines and nothing else', () => {
 // testable with synthesised rows and no real processes. This is the safety-
 // critical half: over-firing here means SIGKILLing something that is not ours.
 
-const snapOf = rows => ({
-  available: true,
-  byPid: new Map(rows.map(r => [r.pid, { ident: '1', argv: [], ...r }])),
-  byParent: new Map(),
-});
+// Same duplicate-pid guard as tests/orphan-reaper.test.mjs, for the same reason:
+// `new Map(entries)` keeps the LAST entry for a repeated key, so a reused pid
+// silently voids the earlier row — it stays readable, stays commented, and stops
+// reaching the code under test. Found once on this branch; guarded so the next
+// one fails loudly.
+const snapOf = rows => {
+  const seen = new Set();
+  for (const r of rows) {
+    assert.ok(!seen.has(r.pid), `duplicate pid ${r.pid} in a snapshot table — ` +
+      'the later row silently voids the earlier one, which then tests nothing');
+    seen.add(r.pid);
+  }
+  return {
+    available: true,
+    byPid: new Map(rows.map(r => [r.pid, { ident: '1', argv: [], ...r }])),
+    byParent: new Map(),
+  };
+};
 const MARK = 'cc-testrun-Abc123';
 const envWith = id => `PATH=/usr/bin\0CC_TEST_RUN_ID=${id}\0HOME=/root\0`;
 
