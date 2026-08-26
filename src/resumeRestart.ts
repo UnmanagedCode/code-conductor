@@ -169,7 +169,11 @@ export async function drainToManifest({ server, wss, instances, log = console, g
       for (const inst of live) {
         // Already forced once ⇒ leave it alone; a second control_request buys
         // nothing and the turn is already severed as far as we can sever it.
-        if (inst.status !== 'turn' || inst.turnForceAborted) continue;
+        // No status check: BOTH tiers are contracted to no-op off-turn
+        // (docs/protocol.md → Two-tier interrupt), pinned for the forced tier by
+        // tests/instances.test.mjs → 'forced interrupt is a no-op when not in a
+        // turn'. Re-adding one here would duplicate a guarantee the callee owns.
+        if (inst.turnForceAborted) continue;
         inst.interrupt({ force: true })
           .catch((e: unknown) => log.warn?.('resume-restart: forced interrupt failed', errMsg(e)));
       }
