@@ -681,10 +681,17 @@ export class Sidebar {
       }
       row._nameSpan = nameSpan;
       row._pill = el('span', { class: 'wt-unmerged' });
+      // Its own element, not a second mode of _pill: the two are independent
+      // facts, and both are (re)positioned on every render so a first commit
+      // clears this one without the row being rebuilt.
+      row._noCommitsPill = el('span', {
+        class: 'no-commits-pill',
+        title: 'no commits yet — make a first commit to enable worktrees',
+      }, 'no commits');
       row._holder = holder;
     }
     row._holder.p = p;
-    const { _nameSpan: nameSpan, _pill: pill } = row;
+    const { _nameSpan: nameSpan, _pill: pill, _noCommitsPill: noCommits } = row;
     const ms = p.mergeStatus;
     if (ms && ms.upstream && (ms.ahead > 0 || ms.behind > 0)) {
       const upstream = ms.upstream;
@@ -703,6 +710,13 @@ export class Sidebar {
       if (!pill.isConnected) nameSpan.after(pill);
     } else if (pill.isConnected) {
       pill.remove();
+    }
+    if (p.unbornHead) {
+      // Anchored after the ahead/behind pill when that one is showing, so the
+      // two keep a stable order; the merge-pill block above owns its own slot.
+      if (!noCommits.isConnected) (pill.isConnected ? pill : nameSpan).after(noCommits);
+    } else if (noCommits.isConnected) {
+      noCommits.remove();
     }
     return row;
   }
@@ -819,6 +833,7 @@ export class Sidebar {
         path: '(hidden)',
         workspace: null,
         isGitRepo: false,
+        unbornHead: false,
         worktrees: [],
         sessions: { count: this.conductSessionCount, lastActivity: this.conductSessionLastActivity },
         mergeStatus: { ahead: null, behind: null, upstream: null },

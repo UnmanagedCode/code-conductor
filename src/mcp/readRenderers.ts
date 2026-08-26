@@ -96,6 +96,7 @@ function aheadBehind(v: unknown): string {
 const PROJECT_DEVIANT: DeviantSpec[] = [
   { key: 'workspace', default: null, label: 'workspace' },
   { key: 'isGitRepo', default: true, label: '! not a git repo' },
+  { key: 'unbornHead', default: false, label: '! no commits yet — a worktree needs a first commit' },
 ];
 
 export function renderProjects(projects: unknown): string {
@@ -345,6 +346,11 @@ export function renderProjectStatus(status: unknown): string {
   ];
   if (s.isGitRepo === false) {
     parts.push('! not a git repo');
+  } else if (s.unbornHead) {
+    // No `base …` line: that line is worktree-only, and a worktree is created
+    // off a sha, so it can never be unborn.
+    parts.push(`branch ${dash(s.branch)}`);
+    parts.push('HEAD — no commits yet');
   } else {
     parts.push(`branch ${dash(s.branch)}`);
     parts.push(`HEAD ${dash(head.sha)} ${trunc(head.subject, 100)}`);

@@ -143,6 +143,16 @@ export async function isGitRepo(projectPath: string): Promise<boolean> {
   return r.code === 0;
 }
 
+// True when `projectPath`'s HEAD points at a branch with no commits yet — a
+// `git init`ed dir nothing has been committed to. `rev-parse --verify --quiet
+// HEAD` exits non-zero and silent there, 0 on any resolvable HEAD (detached
+// included). CALL ONLY WHEN isGitRepo() IS ALREADY TRUE: outside a repo it also
+// exits non-zero, which would read as "unborn" rather than "no repo".
+export async function hasUnbornHead(projectPath: string): Promise<boolean> {
+  const r = await runGit(projectPath, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+  return r.code !== 0;
+}
+
 // `git status --porcelain` for a worktree path. Returns
 // { ok: boolean, lines: string[] }. Callers can decide whether a
 // non-empty `lines` means "refuse" or "fall back to the agent flow".
@@ -161,7 +171,10 @@ export async function getHeadBranchAndSha(projectPath: string): Promise<{ branch
   const branch = head.code === 0 ? head.stdout.trim() || null : null;
   const sha = await runGit(projectPath, ['rev-parse', 'HEAD']);
   if (sha.code !== 0) {
-    throw httpError(400, `unable to resolve HEAD in ${projectPath}: ${sha.stderr.trim()}`);
+    // On a repo, `rev-parse HEAD` fails only when HEAD resolves to nothing — an
+    // unborn HEAD (`git init` with no commit yet). Name that instead of leaking
+    // git's "ambiguous argument 'HEAD'", which is what the user actually saw.
+    throw httpError(400, `${projectPath} has no commits yet — a worktree branches off HEAD, so make a first commit there first`);
   }
   return { branch, sha: sha.stdout.trim() };
 }

@@ -296,7 +296,7 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .worktree-row button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
 .worktree-row button:hover { color: var(--text); }
 .worktree-row .wt-remove:hover { color: var(--red); }
-.wt-unmerged {
+.wt-unmerged, .no-commits-pill {
   font-family: ui-monospace, monospace;
   font-size: 10px;
   color: var(--amber);

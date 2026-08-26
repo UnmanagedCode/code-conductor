@@ -104,6 +104,18 @@ test('listProjects hides orchestrator-owned worktree directories', async () => {
   assert.equal(demo.worktrees[0].parentProject, 'demo');
 });
 
+// Create a real git repo at <projectsRoot>/<name>/ with NO commit — an unborn
+// HEAD, exactly what project creation now leaves behind.
+async function makeUnbornRepo(name) {
+  const repoPath = path.join(projectsRoot, name);
+  await fs.mkdir(repoPath, { recursive: true });
+  await git(repoPath, 'init', '-q', '-b', 'main');
+  await git(repoPath, 'config', 'user.email', 'test@example.com');
+  await git(repoPath, 'config', 'user.name', 'test');
+  await git(repoPath, 'config', 'commit.gpgsign', 'false');
+  return repoPath;
+}
+
 test('createWorktree rejects when the project is not a git repo', async () => {
   // Non-git project: just `mkdir`, no `git init`. Creating via the API is no
   // longer a way to reach this state — creation always inits a repo.
@@ -113,6 +125,41 @@ test('createWorktree rejects when the project is not a git repo', async () => {
   });
   assert.equal(r.status, 400);
   assert.match(r.body.error, /not a git repository/);
+});
+
+test('createWorktree refuses on a repo with no commits (unborn HEAD)', async () => {
+  await makeUnbornRepo('fresh');
+  const r = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'fresh', mode: 'bypassPermissions', worktree: true,
+  });
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /no commits yet/);
+  assert.ok(!/ambiguous argument/.test(r.body.error),
+    `refusal leaked git's raw text: ${r.body.error}`);
+});
+
+test('GET /api/projects reports unbornHead until the first commit', async () => {
+  const repoPath = await makeUnbornRepo('fresh');
+  await fs.mkdir(path.join(projectsRoot, 'plain'), { recursive: true });
+
+  let list = await api(baseUrl, 'GET', '/api/projects');
+  assert.equal(list.status, 200);
+  let fresh = list.body.find(p => p.name === 'fresh');
+  assert.equal(fresh.isGitRepo, true);
+  assert.equal(fresh.unbornHead, true);
+  // A non-repo is a third, distinct state — isGitRepo carries it, not unbornHead.
+  const plain = list.body.find(p => p.name === 'plain');
+  assert.equal(plain.isGitRepo, false);
+  assert.equal(plain.unbornHead, false);
+
+  await fs.writeFile(path.join(repoPath, 'README.md'), '# fresh\n');
+  await git(repoPath, 'add', '.');
+  await git(repoPath, 'commit', '-q', '-m', 'initial');
+
+  list = await api(baseUrl, 'GET', '/api/projects');
+  fresh = list.body.find(p => p.name === 'fresh');
+  assert.equal(fresh.isGitRepo, true);
+  assert.equal(fresh.unbornHead, false);
 });
 
 test('spawn with worktree:"<existing>" reuses the worktree without re-creating it', async () => {

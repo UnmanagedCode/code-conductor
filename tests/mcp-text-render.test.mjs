@@ -544,7 +544,42 @@ describe('renderWorktrees', () => {
 });
 
 
+describe('renderProjects unbornHead', () => {
+  const row = (over) => ({
+    name: 'p', path: '/w/p', workspace: null, liveCount: 0,
+    isGitRepo: true, worktrees: [],
+    sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
+    ...over,
+  });
+
+  test('unbornHead:true emits the no-commits deviant line', () => {
+    assert.match(renderProjects([row({ unbornHead: true })]),
+      /^ {2}! no commits yet — a worktree needs a first commit$/m);
+  });
+
+  test('unbornHead:false and an absent key both render nothing new', () => {
+    const absent = renderProjects([row({})]);
+    assert.equal(renderProjects([row({ unbornHead: false })]), absent);
+    assert.ok(!absent.includes('no commits yet'));
+  });
+});
+
 describe('renderProjectStatus', () => {
+  test('an unborn HEAD renders no-commits-yet instead of a blank HEAD', () => {
+    const out = renderProjectStatus({
+      project: 'fresh', worktree: null, cwd: '/w/fresh',
+      files: [], isGitRepo: true, unbornHead: true, branch: 'main',
+      head: null, dirty: [], recentCommits: [],
+    });
+    assert.match(out, /^branch main$/m);
+    assert.match(out, /^HEAD — no commits yet$/m);
+    assert.ok(!/^HEAD — —$/m.test(out));
+    assert.ok(!out.includes('! not a git repo'));
+    // DIRTY/COMMITS still render — both are meaningful on an unborn repo.
+    assert.match(out, /^DIRTY \(none\)$/m);
+    assert.match(out, /^COMMITS \(none\)$/m);
+  });
+
   test('a worktree carries base, ahead/behind and a diffstat', () => {
     assert.equal(renderProjectStatus({
       project: 'demo', worktree: 'demo_worktree_ab12', cwd: '/w/cc-projects/demo_worktree_ab12',

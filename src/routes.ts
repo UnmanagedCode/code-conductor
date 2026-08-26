@@ -13,7 +13,7 @@ import {
   summarizeWorkspaces, validateName,
 } from './projects.ts';
 import {
-  isGitRepo, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
+  isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
   attachmentsDir, getWorktreeMergeStatus, syncWorktree,
   getProjectUpstreamStatus, getProjectCommits,
@@ -389,6 +389,9 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     const projIsGitRepo = await isGitRepo(p.path);
     return {
       isGitRepo: projIsGitRepo,
+      // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
+      // "no commits", so a non-repo reports false and isGitRepo carries it.
+      unbornHead: projIsGitRepo ? await hasUnbornHead(p.path) : false,
       worktrees: worktreesWithMerge,
       mergeStatus: projIsGitRepo
         ? await getProjectUpstreamStatus(p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
@@ -417,6 +420,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           ...p,
           sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
           isGitRepo: gitFacts.isGitRepo,
+          unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,
           sessions: await summarizeSessions(p.path, projTempSids).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
           mergeStatus: gitFacts.mergeStatus,
