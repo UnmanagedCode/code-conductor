@@ -297,6 +297,11 @@ export class OverageResumeController {
   // under the bar, or failed-open), or reschedule (still over / can't-confirm). The
   // process-gone case routes to run() which emits the sole surviving auto_resume_skipped.
   _resolveDue(inst: InstanceLike, id: string, usage: unknown): void {
+    // Cancelled while this verify was awaiting usage (policy switched off stop-resume
+    // — card 2026-0231 — user takeover, kill). The only way to arrive here unmarked: a
+    // cancel deletes the timers entry, so no later tick can re-collect the session.
+    // Running on would send a resume prompt into a session no longer marked for one.
+    if (!inst.autoStoppedForOverage && inst.autoResumeAt === null) { this._failCount.delete(id); return; }
     if (inst.proc) {
       // Still alive → usage-gate the resume.
       const over = usage == null ? null : usageOverThreshold(usage);

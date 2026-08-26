@@ -276,6 +276,7 @@ export interface InstanceManagerLike {
   sessionIdsForWorktree(project: string, worktreeName: string): string[];
   removeAllForProject(projectName: string): Promise<number>;
   reevaluateOverageResumes(): void;
+  syncOveragePolicy(): void;
   forceUsageTick(): Promise<unknown>;
   // Restart surface (src/restart.ts / resumeRestart.ts) — the restart routes
   // pass the manager to scheduleRestart/drainAndScheduleRestart as the

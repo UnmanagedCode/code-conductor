@@ -4269,6 +4269,34 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
   }
 
+  // Apply a CHANGED overage policy to sessions already marked under the old one.
+  // The policy is live authority, not just trip-time input (card 2026-0231): the
+  // moment it is no longer 'stop-resume', no session may carry a resumption mark.
+  // Iterates byId, NOT _overageResume.timers: a session mid-verify (fireNow/_tick
+  // delete their timers entry before awaiting fetchUsage) has no timer but is still
+  // marked, and a session soft-interrupted but not yet at idle has
+  // autoStoppedForOverage set with no deadline armed — clearing that flag is what
+  // stops the status handler from arming it a moment later. No-op under 'stop-resume':
+  // switching INTO it deliberately marks nothing (nothing records which sessions a
+  // plain `stop` halted, and engaging the queue gate with no deadline to flush it
+  // would strand every send) — it takes effect at the next trip.
+  syncOveragePolicy(): void {
+    if (getOnOverageAction() === 'stop-resume') return;
+    // Kills the queue gate + the _reschedule lockout push. Leaves _overageActive and
+    // the clear timer alone: the fleet lands exactly where a native `stop` trip leaves it.
+    this._overageResumeMode = false;
+    for (const inst of [...this.byId.values()]) {
+      const queued = inst._overageQueue.length;
+      if (!inst.autoResumeAt && !inst.autoStoppedForOverage && !queued &&
+          !inst._overageStoppedUnarmed && !this._overageResume.timers.has(inst.id)) continue;
+      this._overageResume.cancel(inst.id);  // deadline + every mark flag + queue, then status emit
+      if (queued) {
+        inst._emitUi({ kind: 'system', subtype: 'auto_resume_skipped', data: {
+          reason: `overage handling changed — ${queued} queued message(s) dropped` } });
+      }
+    }
+  }
+
   // Force the usage poller to tick NOW rather than at its next ~60s beat — the
   // stop-direction half of a Settings → Models Apply, whose release-direction half
   // is reevaluateOverageResumes above. Delegates into the composed
