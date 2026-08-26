@@ -247,6 +247,24 @@ const holderPidFrom = (out) => {
   return Number(m[1]);
 };
 
+// --- the harness's own signalWhen precondition -------------------------------
+
+test('runGuard refuses signalWhen together with discardStdout', () => {
+  // The rendezvous matches against the SAME accumulator the cases assert on, so
+  // with stdout discarded the pattern could never match and the signal would
+  // silently never be sent — both interrupt legs below would then exercise no
+  // interrupt path at all while still going red for a confusing reason. This
+  // guard is the only thing standing between that combination and a run, and it
+  // is otherwise pinned by nothing: no case passes both options, so demoting the
+  // throw to a warning leaves the whole suite green (measured). Synchronous by
+  // design — runGuard throws before constructing its Promise, so this needs no
+  // nested run and costs nothing.
+  assert.throws(
+    () => runGuard('silent-orphan', FAST, { signalWhen: HOLDER_LINE, discardStdout: true }),
+    /signalWhen rendezvouses on the captured stream/,
+    'runGuard accepted signalWhen with stdout discarded — the signal can never be sent');
+});
+
 test('a leak that wedges nothing is still swept, at the END of a healthy run', async () => {
   // THE CASE THIS WHOLE CARD EXISTS FOR, and the only behavioural proof that the
   // class is closed. Every other sweep case leaks a holder of the runner's own

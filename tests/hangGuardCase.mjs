@@ -113,11 +113,18 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     });
     let out = '';
     let signalled = false;
-    // Fires at most once, synchronously, in the same tick the matching bytes
-    // arrive. Called from BOTH stream handlers: a fixture's own `writeSync(2, …)`
-    // reaches us on the runner's STDOUT, because node:test relays it as a
-    // `test:stderr` event and run.mjs's spec reporter pipes to process.stdout —
-    // hooking only stderr would never fire (measured 5/5 with silent-orphan).
+    // Fires at most once. The kill is issued synchronously inside the observing
+    // `data` handler, which TIGHTENS the R1 residual documented in
+    // docs/architecture.md (the outer loop must not stall between the pipe
+    // becoming readable and the signal) — but it is a description of the code,
+    // NOT a correctness requirement: deferring the kill (e.g. via setImmediate)
+    // changes no outcome, since a late signal either still lands inside the
+    // fixture's dwell or the leg goes loud red down the healthy-end path.
+    // Mutation-verified as such, so do not add an assertion pinning it.
+    //
+    // The once-only `signalled` latch IS load-bearing and IS pinned by the two
+    // interrupt legs. The pattern is matched against the accumulated `out`, so
+    // without the latch every subsequent chunk would re-signal.
     const rendezvous = () => {
       if (signalled || !signalWhen || !signalWhen.test(out)) return;
       signalled = true;
@@ -125,6 +132,16 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     };
     // stderr is ALWAYS drained, so the guard's own diagnostics reach us even when
     // stdout is deliberately stalled below.
+    //
+    // The rendezvous is called from BOTH handlers, and only the stdout one is
+    // exercised today: a fixture's own `writeSync(2, …)` reaches us on the
+    // runner's STDOUT, because node:test relays it as a `test:stderr` event and
+    // run.mjs's spec reporter pipes to process.stdout (measured 5/5 with
+    // silent-orphan). So this call is currently unexercised — deleting it leaves
+    // the suite green — and it is NOT dead code: the runner's OWN guard
+    // diagnostics (`hang-guard: …`, written with console.error/writeSync(2) from
+    // run.mjs itself, not from inside a test child) do arrive here, so the day a
+    // case rendezvouses on one of those, this is the handler that fires.
     child.stderr.on('data', d => { out += d; rendezvous(); });
     const keep = d => { if (!discardStdout) out += d; rendezvous(); };
     if (stdoutPauseMs > 0) {
@@ -149,8 +166,11 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     }, hardTimeoutMs);
     // Clear on BOTH paths: a still-armed bail would hold this file's loop open
     // past its teardown and Layer B (preloaded here) would fail it as a leak.
-    // `bail` is now the ONLY timer here — the interrupt path arms none, which is
-    // one of the things making the rendezvous cheaper than the delay it replaced.
+    // `bail` is the only timer here that needs clearing, and the INTERRUPT PATH
+    // arms none at all (which is what the rendezvous bought over the delay it
+    // replaced). The one other timer in this function is the `stdoutPauseMs`
+    // pause-release above — armed only in that configuration, and `.unref()`d, so
+    // it can never be what holds the loop open.
     child.on('error', err => { clearTimeout(bail); reject(err); });
     child.on('close', (code, sig) => {
       clearTimeout(bail);
