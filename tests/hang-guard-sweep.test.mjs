@@ -235,11 +235,35 @@ const pidAlive = (pid) => {
   catch (e) { return e.code === 'EPERM'; }
 };
 
+// ONE source for the fixture's marker line: the rendezvous that FIRES the
+// interrupt below and the pid this case READS BACK are the same pattern, or the
+// signal could fire on a line the assertion then refuses. No `g` flag — a global
+// regex carries `lastIndex` across `.test()` calls and would skip matches.
+const HOLDER_LINE = /silent-orphan: holder pid=(\d+)/;
+
 const holderPidFrom = (out) => {
-  const m = /silent-orphan: holder pid=(\d+)/.exec(out);
+  const m = HOLDER_LINE.exec(out);
   assert.ok(m, `the fixture never printed its holder pid:\n${out}`);
   return Number(m[1]);
 };
+
+// --- the harness's own signalWhen precondition -------------------------------
+
+test('runGuard refuses signalWhen together with discardStdout', () => {
+  // The rendezvous matches against the SAME accumulator the cases assert on, so
+  // with stdout discarded the pattern could never match and the signal would
+  // silently never be sent — both interrupt legs below would then exercise no
+  // interrupt path at all while still going red for a confusing reason. This
+  // guard is the only thing standing between that combination and a run, and it
+  // is otherwise pinned by nothing: no case passes both options, so demoting the
+  // throw to a warning leaves the whole suite green (measured). Synchronous by
+  // design — runGuard throws before constructing its Promise, so this needs no
+  // nested run and costs nothing.
+  assert.throws(
+    () => runGuard('silent-orphan', FAST, { signalWhen: HOLDER_LINE, discardStdout: true }),
+    /signalWhen rendezvouses on the captured stream/,
+    'runGuard accepted signalWhen with stdout discarded — the signal can never be sent');
+});
 
 test('a leak that wedges nothing is still swept, at the END of a healthy run', async () => {
   // THE CASE THIS WHOLE CARD EXISTS FOR, and the only behavioural proof that the
@@ -301,15 +325,24 @@ for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
     // never reaches it — pre-fix the runner died on node's default handling and the
     // holder was left alive on the box with nothing having looked.
     //
+    // The signal is CAUSED by the fixture's own marker, not scheduled after a
+    // delay: `signalWhen: HOLDER_LINE` fires the interrupt in the same tick the
+    // holder-pid line is observed, so "the pid was printed before the signal" is
+    // a causal fact, not a start-up margin on a starved box (card 2026-0228 —
+    // the `signalAfterMs: 1200` this replaced went red 5-6/14 runs at 72-way,
+    // because spawn→marker measures 759-1585 ms there).
+    //
     // CC_TEST_DWELL_MS keeps the fixture's test body open so the runner is still
     // mid-run when the signal lands: 4000ms, comfortably inside FILE_KILL (8000)
-    // so the per-file watchdog is not what ends this, and the signal at 1200ms is
-    // well clear of process start-up on a starved box. SIGKILL is deliberately not
-    // tested — no in-process handler can run for it, which is what
-    // tests/reapOrphans.mjs exists for.
+    // so the per-file watchdog is not what ends this. It no longer bounds the
+    // GREEN path — the signal lands at spawn→marker and the interrupt cuts the
+    // dwell short — it bounds the FAILURE path, i.e. how fast a marker that never
+    // arrives goes red (measured 5.0-5.8 s per leg at 72-way with the
+    // rendezvous neutered). SIGKILL is deliberately not tested — no in-process handler can
+    // run for it, which is what tests/reapOrphans.mjs exists for.
     const r = await runGuard('silent-orphan',
       { ...FAST, CC_TEST_DWELL_MS: '4000' },
-      { signalAfterMs: 1200, signal });
+      { signalWhen: HOLDER_LINE, signal });
     const holder = holderPidFrom(r.out);
 
     assert.match(r.out, new RegExp(`hang-guard: ${signal} — sweeping this run's processes before exiting\\.`),

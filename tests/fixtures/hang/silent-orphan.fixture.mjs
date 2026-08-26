@@ -42,10 +42,19 @@ test('silent-orphan: leaks a live process that holds nothing of ours', async () 
     ['-e', `setTimeout(() => process.exit(0), ${HOLDER_LIFETIME_MS})`],
     { stdio: 'ignore', detached: true });
   orphan.unref();
-  // fd 2 directly, not console.log: stderr is the one stream runGuard always
-  // drains (stdout is deliberately stallable there), and a raw write cannot be
-  // reformatted or buffered away by the reporter. The case reads this pid back
-  // and asserts it is DEAD — `SWEPT` being printed is not proof of death.
+  // fd 2 directly, not console.log, so a raw write cannot be reformatted or
+  // buffered away by the in-child reporter. That is ALL the fd-2 choice buys:
+  // this line does NOT arrive on the runner's stderr. node:test relays it as a
+  // `test:stderr` event and run.mjs's spec reporter pipes to process.stdout, so
+  // runGuard sees it on the runner's STDOUT either way (measured 5/5).
+  //
+  // LOAD-BEARING TEXT. The case reads this pid back and asserts it is DEAD
+  // (`SWEPT` being printed is not proof of death), and the two interrupt legs
+  // additionally RENDEZVOUS on it — the signal is sent the tick this line is
+  // observed, which is what makes those legs causal rather than timed (card
+  // 2026-0228). Both uses go through the single `HOLDER_LINE` regex in
+  // tests/hang-guard-sweep.test.mjs, so changing this text cannot silently
+  // disable the signal while leaving the read-back working.
   writeSync(2, `silent-orphan: holder pid=${orphan.pid}\n`);
   if (DWELL_MS > 0) await new Promise(r => setTimeout(r, DWELL_MS));
 });
