@@ -71,12 +71,32 @@ export function redactTotals(out) {
 // its own cap, and TWO such cases at 45s sum past the outer 90s per-file watchdog
 // — which would SIGKILL this file and truncate exactly the diagnostics naming
 // which guard broke. 20s keeps two comfortably under the deadline.
-// `signalAfterMs` sends ONE signal to the nested runner that long after spawn —
-// the only way to exercise its interrupt path, since an interrupt is by
-// definition not something a fixture can do to itself. It targets `child.pid`
-// alone, never a process group: the runner shares OUR group (spawn without
-// `detached`), so a group signal would hit this test file too.
-export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPauseMs = 0, discardStdout = false, signalAfterMs = 0, signal = 'SIGTERM' } = {}) {
+// `signalWhen` is a RENDEZVOUS, not a delay. Pass a RegExp and ONE signal is
+// sent to the nested runner the moment the captured stream first matches it —
+// synchronously, in the same tick as the observation, once only. Signalling is
+// the only way to exercise the runner's interrupt path, since an interrupt is by
+// definition not something a fixture can do to itself; making the signal
+// CAUSED BY the fixture's own marker is what keeps that from being an assertion
+// across a machine-speed window (card 2026-0228). The fixed `signalAfterMs:
+// 1200` this replaced required the whole nested boot chain to fit in 1200 ms:
+// measured spawn→marker 759-1585 ms at 72-way starvation vs 87-115 ms idle, so
+// the sweep file went red 6/14 runs / 8/28 interrupt legs there and never once
+// quiet.
+// There is deliberately NO fallback timer. "Wait N ms, then signal anyway" is
+// `signalAfterMs` under a new name, and the run is already bounded three times
+// over — the fixture's own dwell, then CC_TEST_RUN_CAP_MS, then hardTimeoutMs
+// below — so a fourth bound would be a second source of truth. A marker that
+// never arrives is a fast, loud red (measured 4.9-5.6 s), not a hang.
+// It targets `child.pid` alone, never a process group: the runner shares OUR
+// group (spawn without `detached`), so a group signal would hit this test file
+// too.
+export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPauseMs = 0, discardStdout = false, signalWhen = null, signal = 'SIGTERM' } = {}) {
+  // The rendezvous reads the SAME accumulator the case asserts on, so with
+  // stdout discarded it could never match and the signal would silently never be
+  // sent — a green-looking case that exercised no interrupt path at all.
+  if (signalWhen && discardStdout) throw new Error(
+    'runGuard: signalWhen rendezvouses on the captured stream, which discardStdout throws away — ' +
+    'the signal would silently never be sent');
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     // NODE_TEST_CONTEXT must not reach the child. node:test sets it in every
@@ -91,10 +111,21 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
+    let signalled = false;
+    // Fires at most once, synchronously, in the same tick the matching bytes
+    // arrive. Called from BOTH stream handlers: a fixture's own `writeSync(2, …)`
+    // reaches us on the runner's STDOUT, because node:test relays it as a
+    // `test:stderr` event and run.mjs's spec reporter pipes to process.stdout —
+    // hooking only stderr would never fire (measured 5/5 with silent-orphan).
+    const rendezvous = () => {
+      if (signalled || !signalWhen || !signalWhen.test(out)) return;
+      signalled = true;
+      try { child.kill(signal); } catch { /* already gone */ }
+    };
     // stderr is ALWAYS drained, so the guard's own diagnostics reach us even when
     // stdout is deliberately stalled below.
-    child.stderr.on('data', d => { out += d; });
-    const keep = d => { if (!discardStdout) out += d; };
+    child.stderr.on('data', d => { out += d; rendezvous(); });
+    const keep = d => { if (!discardStdout) out += d; rendezvous(); };
     if (stdoutPauseMs > 0) {
       // Simulate a slow consumer (a pager, a slow disk) by reading nothing for
       // this long, so the runner's writes hit backpressure once the pipe fills.
@@ -106,12 +137,6 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
     } else {
       child.stdout.on('data', keep);
     }
-    let signalTimer;
-    if (signalAfterMs > 0) {
-      signalTimer = setTimeout(() => {
-        try { child.kill(signal); } catch { /* already gone */ }
-      }, signalAfterMs);
-    }
     // Backstop so a guard regression surfaces as a failed assertion here rather
     // than as a stalled test. killDescendants FIRST: several fixtures leak a
     // busy-looping or interval-holding process, and SIGKILLing only the nested
@@ -121,12 +146,13 @@ export function runGuard(name, env = FAST, { hardTimeoutMs = 20_000, stdoutPause
       try { killDescendants(child.pid); } catch { /* best effort */ }
       child.kill('SIGKILL');
     }, hardTimeoutMs);
-    // Clear on BOTH paths: a still-armed signal timer would hold this file's loop
-    // open past its teardown and Layer B (preloaded here) would fail it as a leak.
-    child.on('error', err => { clearTimeout(bail); clearTimeout(signalTimer); reject(err); });
+    // Clear on BOTH paths: a still-armed bail would hold this file's loop open
+    // past its teardown and Layer B (preloaded here) would fail it as a leak.
+    // `bail` is now the ONLY timer here — the interrupt path arms none, which is
+    // one of the things making the rendezvous cheaper than the delay it replaced.
+    child.on('error', err => { clearTimeout(bail); reject(err); });
     child.on('close', (code, sig) => {
       clearTimeout(bail);
-      clearTimeout(signalTimer);
       resolve({ code, signal: sig, out: redactTotals(out), wallMs: Date.now() - startedAt });
     });
   });

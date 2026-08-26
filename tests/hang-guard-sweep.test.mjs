@@ -235,8 +235,14 @@ const pidAlive = (pid) => {
   catch (e) { return e.code === 'EPERM'; }
 };
 
+// ONE source for the fixture's marker line: the rendezvous that FIRES the
+// interrupt below and the pid this case READS BACK are the same pattern, or the
+// signal could fire on a line the assertion then refuses. No `g` flag — a global
+// regex carries `lastIndex` across `.test()` calls and would skip matches.
+const HOLDER_LINE = /silent-orphan: holder pid=(\d+)/;
+
 const holderPidFrom = (out) => {
-  const m = /silent-orphan: holder pid=(\d+)/.exec(out);
+  const m = HOLDER_LINE.exec(out);
   assert.ok(m, `the fixture never printed its holder pid:\n${out}`);
   return Number(m[1]);
 };
@@ -301,15 +307,24 @@ for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
     // never reaches it — pre-fix the runner died on node's default handling and the
     // holder was left alive on the box with nothing having looked.
     //
+    // The signal is CAUSED by the fixture's own marker, not scheduled after a
+    // delay: `signalWhen: HOLDER_LINE` fires the interrupt in the same tick the
+    // holder-pid line is observed, so "the pid was printed before the signal" is
+    // a causal fact, not a start-up margin on a starved box (card 2026-0228 —
+    // the `signalAfterMs: 1200` this replaced went red 6/14 runs at 72-way,
+    // because spawn→marker measures 759-1585 ms there).
+    //
     // CC_TEST_DWELL_MS keeps the fixture's test body open so the runner is still
     // mid-run when the signal lands: 4000ms, comfortably inside FILE_KILL (8000)
-    // so the per-file watchdog is not what ends this, and the signal at 1200ms is
-    // well clear of process start-up on a starved box. SIGKILL is deliberately not
-    // tested — no in-process handler can run for it, which is what
-    // tests/reapOrphans.mjs exists for.
+    // so the per-file watchdog is not what ends this. It no longer bounds the
+    // GREEN path — the signal lands at spawn→marker and the interrupt cuts the
+    // dwell short — it bounds the FAILURE path, i.e. how fast a marker that never
+    // arrives goes red (measured 4.9-5.6 s at 72-way with the rendezvous
+    // neutered). SIGKILL is deliberately not tested — no in-process handler can
+    // run for it, which is what tests/reapOrphans.mjs exists for.
     const r = await runGuard('silent-orphan',
       { ...FAST, CC_TEST_DWELL_MS: '4000' },
-      { signalAfterMs: 1200, signal });
+      { signalWhen: HOLDER_LINE, signal });
     const holder = holderPidFrom(r.out);
 
     assert.match(r.out, new RegExp(`hang-guard: ${signal} — sweeping this run's processes before exiting\\.`),
