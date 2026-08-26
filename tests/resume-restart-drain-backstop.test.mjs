@@ -185,27 +185,6 @@ test('drain grace loop: a straggler outliving the grace window is force-aborted 
     'EXACTLY one interrupt: the soft arm never discharged, and the loop forces once');
 });
 
-test('drain grace loop: a straggler that discharges within the grace window is never escalated', async () => {
-  process.env.ORCH_SOFT_INTERRUPT_DEADLINE_MS = '10000';
-  const { inst, evs } = await latchedMidTurn();
-
-  // Start the drain WITHOUT awaiting, so the soft arm it places can be given a
-  // block boundary before the (long) grace window expires.
-  const drain = drainToManifest({ server: null, wss: null, instances, log: QUIET, graceMs: 3000 });
-  await waitFor(() => inst.interrupting === true);
-  inst._handleStdoutLine(JSON.stringify(
-    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { text: '' } } }));
-  inst._handleStdoutLine(JSON.stringify(
-    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'x' } } }));
-  assert.equal(inst._interruptFired, true, 'the soft tier discharged on the next block key');
-
-  await withCeiling(drain, 8000, 'drainToManifest');
-  assert.equal(inst.turnForceAborted, false, 'never escalated — it stopped on its own boundary');
-  assert.equal(evs.filter(e => e.kind === 'system' && e.subtype === 'stderr'
-    && /interrupt deadline/.test(e.data?.line ?? '')).length, 0, 'no deadline annotation either');
-  assert.equal(interruptsIn(await stdinLines()).length, 1, 'the soft stop only');
-});
-
 // The two escalation paths must not BOTH fire. With the fuses set equal, the
 // deadline's force sets `_turnForceAborted`, which is what the grace loop skips
 // on — so the CLI still sees exactly one interrupt rather than a second abort
@@ -222,4 +201,58 @@ test('drain: the deadline and the grace loop never double-force one straggler', 
   assert.equal(inst.status, 'idle');
   assert.equal(inst.turnForceAborted, true);
   assert.equal(interruptsIn(await stdinLines()).length, 1, 'one interrupt, not two');
+});
+
+
+// ── The deadline's `_interruptFired` conjunct ──────────────────────────────
+//
+// INVARIANT: a soft-FIRED stop is not force-escalated by its own deadline while
+// it is still awaiting the result. The window is
+// `_interruptArmed && _interruptFired && status === 'turn'` — the request left,
+// the CLI has not yet wound the turn down — and nothing else in the suite
+// reaches it: the round-1 "discharges normally" case is already idle by the time
+// its deadline comes due, so that one returns on the `_interruptArmed` conjunct
+// and `_interruptFired` is never the deciding factor.
+//
+// Staged by delaying the fake's interrupt `result` past the deadline (`delay_ms`
+// on that turn, tests/fake-claude-engine.mjs), so the deadline genuinely fires
+// inside the window. The instance is armed DIRECTLY rather than through the
+// drain: the guard belongs to `_armInterruptDeadline`, shared by all three
+// automatic callers, and the drain's own wiring is already pinned above.
+//
+// Dropping the conjunct escalates on top of a stop that already landed: a second
+// `control_request` at the CLI, a forced abort of a turn that was winding down
+// cleanly, and a diagnostic naming a boundary that was in fact reached.
+test('deadline: a stop that has already FIRED is not escalated while awaiting its result', async () => {
+  // Same framing as the shared fixture — only the abort's `result` is slowed, so
+  // there is one source of truth for the gateway shape.
+  const scenario = JSON.parse(await fs.readFile(LATCHED, 'utf8'));
+  const abort = scenario.turns.find(t => t.on?.type === 'control');
+  abort.delay_ms = 600; // > the 150ms deadline below
+  const slowPath = path.join(home, 'scenario-slow-abort.json');
+  await fs.writeFile(slowPath, JSON.stringify(scenario));
+  process.env.FAKE_CLAUDE_SCENARIO = slowPath;
+
+  const { inst, evs } = await latchedMidTurn();
+  await inst.interrupt({ deadlineMs: 150 });
+  assert.equal(inst._interruptFired, false, 'still latched inside the unclosed block');
+
+  // Give the arm its boundary: the soft request goes out now.
+  inst._handleStdoutLine(JSON.stringify(
+    { type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { text: '' } } }));
+  inst._handleStdoutLine(JSON.stringify(
+    { type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'x' } } }));
+  assert.equal(inst._interruptFired, true, 'the soft tier fired');
+  assert.equal(inst._interruptArmed, true, 'and the arm is still standing');
+  assert.equal(inst.status, 'turn', 'the result has not landed yet — this IS the window');
+
+  // The deadline comes due HERE, inside that window; then the result arrives.
+  await waitFor(() => inst.status === 'idle', { timeout: 5000 });
+
+  const escalation = evs.filter(e => e.kind === 'system' && e.subtype === 'stderr')
+    .map(e => e.data?.line ?? '').find(l => /interrupt deadline/.test(l));
+  assert.equal(escalation, undefined,
+    'the deadline must not escalate a stop that already reached the CLI');
+  assert.equal(inst.turnForceAborted, false, 'so nothing was force-aborted');
+  assert.equal(interruptsIn(await stdinLines()).length, 1, 'the soft interrupt only');
 });
