@@ -9,8 +9,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSafeRoot, assertStoreIsolated, removeSafeRoot } from './safeStoreRoot.mjs';
 import { snapshot, countMatching, liveChildren, descendants, killTree, killDescendants, killPids,
-         processesWithMarker } from './procTree.mjs';
-import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS } from './hangGuardConfig.mjs';
+         processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
+import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,7 +29,9 @@ process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
 // than heuristically — see processesWithMarker in tests/procTree.mjs. It gets its
 // own variable because PROJECTS_ROOT (the obvious candidate) is reassigned by
 // bootServer per server, so a grandchild spawned mid-test would not carry the
-// run root. Nothing else writes CC_TEST_RUN_ID.
+// run root. The ONLY other writer is markRun() in tests/safeStoreRoot.mjs, and
+// it uses `??=` — it mints a marker for a STANDALONE file run and never replaces
+// the one exported here, so a value seen by a child is always its own run's.
 const RUN_MARKER = path.basename(safeRoot.root); // mkdtemp'd, so unique per run
 process.env.CC_TEST_RUN_ID = RUN_MARKER;
 
@@ -320,6 +322,28 @@ function sweepOrphans(snap, why) {
     `(pids ${orphans.join(',')}; trigger: ${why}).`,
   );
 }
+// Sweep on an INTERRUPTED run too. A `detached` child is in its OWN process
+// group, so a terminal SIGINT to the runner's group never reaches it — which is
+// why an interrupted campaign leaks where a completed one (now) does not.
+// Registered here, immediately after sweepOrphans' definition, because
+// RUN_MARKER and sweepOrphans are `const`/function bindings this closure reads.
+//
+// SIGKILL stays uncoverable BY CONSTRUCTION — no in-process handler can run for
+// it. tests/reapOrphans.mjs exists for that residue.
+for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.once(sig, () => {
+    console.error(`\nhang-guard: ${sig} — sweeping this run's processes before exiting.`);
+    sweepOrphans(snapshot(), sig.toLowerCase());
+    // Restate 128+signo explicitly: installing ANY listener for a signal removes
+    // node's own default handling, exit status included, so without this the
+    // runner would fall through to a natural exit and every caller would see a
+    // different status than before. The normal-exit path (`process.exit(failed
+    // === 0 && !guardrailFailed ? 0 : 1)`) is untouched — `process.once` never
+    // fires on it.
+    process.exit(code);
+  });
+}
+
 procSampler.unref?.();
 
 const concurrency = resolveConcurrency();
@@ -461,24 +485,63 @@ if (capTripped) {
   failed++;
 }
 
+// The sweep on the NORMAL end of a run. Every other trigger sits on a path that
+// is already failing (stream stall, run cap), and a leak reaches neither: a
+// leaked process only wedges the stream if it holds stdio inherited from US, and
+// a plugin child holds pipes to the TEST FILE's child instead. So the stream ends
+// cleanly, the cap is never reached, nothing looks, and the process survives on
+// the box forever (measured: 21 such orphans across 9 runs, every one of whose
+// run roots had been removed — i.e. every owning run exited normally).
+sweepOrphans(snapshot(), 'run end');
+// Reap BEFORE the run root is removed, so a live process can never be left with a
+// (deleted) cwd inside it. This check is what PINS that order: it sits between
+// the sweep and removeSafeRoot below, so moving the sweep after teardown makes it
+// fire.
+//
+// It HOLDS the invariant rather than only reporting it. Everything in `residual`
+// matched THIS run's marker, so it is already licensed by the same identity the
+// sweep uses — reap it through the same killPids path. Reporting alone would print
+// the diagnostic and then let removeSafeRoot run anyway, leaving a live process
+// with a (deleted) cwd inside a deleted root: exactly the state the order exists
+// to prevent. The reap does not soften the verdict — the run still goes red.
+//
+// Both halves live in tests/procTree.mjs so they are pinned by return value
+// rather than only by whole-run behaviour: inline, deleting the reap left the
+// entire suite green (the diagnostic still printed, the run still reddened), and
+// the settle loop's stale-snapshot filter had no discriminating test at all.
+const residual = await settleResidual(
+  processesWithMarker(RUN_MARKER, snapshot({ environ: true })),
+  RUN_MARKER,
+  { settleMs: RESIDUAL_SETTLE_MS },
+);
+if (residual.length > 0) {
+  console.error(`\nhang-guard: ${reapResidual(residual).message}`);
+  failed++;
+}
+
 // A2b — the verdict line, printed UNCONDITIONALLY (green or red). A green run
 // must STATE the property rather than merely not violate it, and a red run needs
 // it just as much: the slowest-file figure is the standing evidence that
 // FILE_KILL_MS's margin is still real as the suite grows.
 const unreported = [...discovered].filter(f => !reported.has(f));
 const slowest = [...fileDurations.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-// A sweep means a test leaked a live process that had to be SIGKILLed. That is
-// a defect in the test, not a tidy-up: without this the run reads exit 0 and we
-// have traded a hang for a silent green — the very class this card names as
-// worse than a hang.
-// A leaked live process must fail the run — without this we would have traded a
-// hang for a silent green, the very class this card names as worse than a hang.
-// Counted as ONE defect regardless of how many processes it left behind: the
-// stall and the sweep are two symptoms of the same leak, and `failed` feeds a
-// count-based parser that this card exists to keep honest. Every sweep today
-// happens on a path that is already failing (stall or cap), so this branch is
-// belt-and-braces rather than the sole cause of a red run; it stays because a
-// future sweep trigger must not be able to pass silently.
+// A sweep means a test leaked a live process that had to be SIGKILLed — a defect
+// in the test, not a tidy-up. Without this branch the run reads exit 0 and we
+// have traded a hang for a silent green, the very class this card names as worse
+// than a hang. Counted as ONE defect regardless of how many processes it left
+// behind: the stall and the sweep are two symptoms of the same leak, and `failed`
+// feeds a count-based parser that this card exists to keep honest.
+//
+// It is LOAD-BEARING for a leak that wedges nothing (card 2026-0226): the run-end
+// sweep above reaches a process that neither the stall trigger nor the cap can
+// see, and on that path `sweptOrphans > 0` is the signal. It was belt-and-braces
+// while every sweep sat on an already-failing path; that is no longer so, and
+// deleting it now buys exactly that outcome.
+//
+// It is not the ONLY guard on that path — the RESIDUAL check above is a second
+// one, for a process that survived the sweep rather than one that was swept. Do
+// not restate a count of the guards here: the set changes on other cards, and a
+// census in a comment goes stale silently. Grep `failed++` for the live list.
 if (streamStalled || sweptOrphans > 0) failed++;
 console.log(
   `\nhang-guard: ${reported.size}/${discovered.size} files reported, ` +

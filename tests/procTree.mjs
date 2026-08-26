@@ -11,6 +11,10 @@
 // blind watchdog that claims the property is worse than one that says it
 // couldn't look.
 //
+// One function here is async — settleResidual, which re-asks a liveness question
+// over a bounded interval. Everything else is synchronous and side-effect-free
+// apart from killPids/reapResidual, which signal.
+//
 // Everything is built on ONE snapshot() per sampling tick. The watchdog asks
 // several questions each tick (peak fake-claude count, which children are
 // alive, what they have spawned); answering each with its own /proc walk would
@@ -105,6 +109,48 @@ export function descendants(pid, snap = snapshot()) {
   return out;
 }
 
+// The ONE expression of what a CC_TEST_RUN_ID entry looks like in a
+// /proc/<pid>/environ blob, anchored at BOTH ends. Every predicate below reads it
+// from here, and tests/reapOrphans.mjs imports it, so the suite has exactly one
+// answer to "is this pid ours" and one licence to kill.
+//
+// environ is a sequence of NUL-terminated entries (verified: the final entry is
+// terminated too), so:
+//   * `(?:^|\0)` rules out a variable whose NAME merely ENDS with ours —
+//     `PREV_CC_TEST_RUN_ID=<marker>` satisfies a plain `includes` on the needle,
+//     and a licence to kill must not be granted by a name collision;
+//   * the trailing `\0` rules out a marker that merely STARTS WITH the one asked
+//     about. Without it an inner runner's sweep matches an OUTER runner's marker
+//     and SIGKILLs the outer run's processes — measured with an 8-char marker:
+//     the outer file died at 3.8s having reported 5 of 16 cases. Nothing here
+//     depends on mkdtemp's fixed-width suffix, which is a fact of
+//     tests/safeStoreRoot.mjs and not of this predicate.
+// Both written as escapes, never literal NUL bytes: a literal renders every diff
+// of this file binary. No `g` flag, so `exec` is stateless and the constant is
+// safe to share across callers.
+export const MARKER_RE = /(?:^|\0)CC_TEST_RUN_ID=([^\0]*)\0/;
+
+// The marker carried by `env`, or null. The single place either predicate below
+// decides what a blob says about itself.
+//
+// FIRST anchored entry only — `exec`, not a scan. A blob carrying CC_TEST_RUN_ID
+// TWICE therefore answers with the first one, so ours being the SECOND yields
+// null and the pid is refused. That cannot happen to a real process (execve
+// builds one entry per name, and nothing here writes the variable twice), and it
+// is recorded because the direction is worth knowing rather than because it needs
+// fixing: duplicates make this REFUSE a kill, never grant one. If a future caller
+// ever needs last-wins or any-match, note that it is trading that safety away.
+//
+// AND IT IS NOT A ONE-WORD CHANGE, because MARKER_RE CONSUMES its trailing '\0'.
+// Two entries are adjacent — one's terminator is the next one's `(?:^|\0)` — so a
+// `g`-flag scan matches the first, leaves lastIndex past the NUL the second needs,
+// and finds nothing further. Measured: swapping `exec` for `matchAll` + last-wins
+// changes NOTHING, which is a silently vacuous edit. Real alternative semantics
+// need a non-consuming lookaround, `(?<=^|\0)…(?=\0)`.
+function markerIn(env) {
+  return typeof env === 'string' ? (MARKER_RE.exec(env)?.[1] ?? null) : null;
+}
+
 // Every process carrying THIS run's marker in its environment — i.e. every
 // descendant of this runner at any depth, however it was spawned.
 //
@@ -129,30 +175,55 @@ export function descendants(pid, snap = snapshot()) {
 // NOTE on the marker choice: PROJECTS_ROOT looks like a ready-made marker and is
 // NOT usable. bootServer reassigns it per server to a path outside the run root,
 // so a grandchild spawned mid-test inherits the reassigned value (measured).
-// CC_TEST_RUN_ID exists precisely because nothing else mutates it.
+// CC_TEST_RUN_ID exists precisely because nothing else OVERWRITES it: run.mjs
+// exports it per run, and tests/safeStoreRoot.mjs mints one (with `??=`) only for
+// a standalone file run that inherited none.
 //
 // Pure over `snap`: pass a synthesised snapshot to test it without processes.
 export function processesWithMarker(marker, snap = snapshot({ environ: true })) {
   if (!marker || !snap.available) return [];
-  // The trailing '\0' ANCHORS the needle. /proc/<pid>/environ is a sequence of
-  // NUL-terminated entries (verified: the final entry is terminated too), so this
-  // makes the match exact for free. Without it, one marker being a strict prefix
-  // of another means an inner runner's sweep matches an OUTER runner's marker and
-  // SIGKILLs the outer run's processes — measured with an 8-char marker: the outer
-  // file died at 3.8s having reported 5 of 16 cases. Nothing here should depend on
-  // mkdtemp's fixed-width suffix, which is a fact of tests/safeStoreRoot.mjs and
-  // not of this predicate.
-  //
-  // Write it as the ESCAPE '\0', never a literal NUL byte: a literal would make
-  // git render every diff of this file as binary.
-  const needle = `CC_TEST_RUN_ID=${marker}\0`;
+  // MARKER_RE, not a plain `includes` on the needle. THIS is the predicate that
+  // holds the kill authority — it feeds sweepOrphans on all four of its triggers
+  // — so it is the one that must carry the tighter anchoring, not merely share it
+  // with a narrower caller. An earlier revision anchored only the single-pid
+  // variant below, which left the loose predicate doing the killing.
   const out = [];
   for (const info of snap.byPid.values()) {
     if (info.pid === process.pid || info.pid <= 1) continue;
-    if (!info.env || !info.env.includes(needle)) continue;
+    if (markerIn(info.env) !== marker) continue;
     out.push({ pid: info.pid, ident: info.ident, argv: info.argv });
   }
   return out;
+}
+
+
+// processesWithMarker's identity, asked about ONE pid — the same question over
+// one /proc/<pid>/environ read instead of a whole /proc walk. Both go through
+// markerIn/MARKER_RE and apply the same pid <= 1 and self sentinels, so
+// `hasMarker(pid, m)` and `processesWithMarker(m).some(p => p.pid === pid)` agree
+// on every input; a caller cannot get a looser verdict by choosing the cheaper
+// call. That equivalence is pinned in tests/orphan-reaper.test.mjs — keep it, it
+// is what stops one of the two being widened alone.
+//
+// IT EXISTS TO BE A LICENCE TO KILL. A test that reaps its own child in a
+// teardown hook must first establish the child IS its own: fake/injected `spawn`
+// stand-ins carry synthetic pids (tests/plugins-supervisor.test.mjs uses
+// 900001 + n). pid_max here is 4194304 and live pids have long since wrapped past
+// that band — one unrelated live process sat at 1089935 while this was written —
+// so a synthetic pid, or the process GROUP -900001, names a stranger. Do not
+// re-derive that from a pid census: the point is the WRAP, not any one figure.
+// The alternative — a caller-supplied "this one is fake" flag — relocates kill
+// authority to the caller instead of closing the class, so it is not offered.
+//
+// FAILS CLOSED: a vanished pid, an unreadable environ, an absent or empty marker
+// all answer false. `read` is injectable so the licence table can be driven
+// without real processes.
+export function hasMarker(pid, marker, read = p => readFileSync(`/proc/${p}/environ`, 'utf8')) {
+  if (!marker) return false;
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false;
+  let env;
+  try { env = read(pid); } catch { return false; }
+  return markerIn(env) === marker;
 }
 
 // SIGKILL an explicit, already-ordered list. Entries may be a bare pid or
@@ -197,6 +268,75 @@ export function killDescendants(pid, snap = snapshot()) {
 // killDescendants + `pid` itself, last.
 export function killTree(pid, snap = snapshot()) {
   return [...killDescendants(pid, snap), ...killPids([{ pid, ident: snap.byPid.get(pid)?.ident ?? null }])];
+}
+
+// Of `hits`, the entries STILL carrying `marker` after a bounded settle. Used by
+// tests/run.mjs's run-end residual check, which asks it about the set a fresh
+// /proc walk just produced.
+//
+// WHY A LIVE RE-VERIFY AND NOT THE WALK'S OWN ANSWER. `hits` comes from
+// processesWithMarker, i.e. from a snapshot, and a snapshot is not evidence of
+// liveness: that walk's readdirSync('/proc') samples the pid list microseconds
+// after the sweep's kills, so a pid landing early in a ~2700-pid iteration is
+// read INSIDE its own death window and reported as alive. Observed at load 25 as
+// a false RESIDUAL, with SWEPT naming the same pid on an otherwise healthy run;
+// reproducible deterministically (walk, SIGKILL, wait 50ms — the cached environ
+// still names it, a live read refuses it). So each candidate is asked again,
+// directly.
+//
+// The re-verify cannot fail the same way round. The stale-snapshot bug produced a
+// false ALIVE; a false answer here would need environ to stop answering while the
+// process lives, which on Linux means it is gone.
+//
+// THE BOUND IS THE SECOND CONCERN, not the fix: it only decides how long a
+// genuinely-signalled process may take to die. RESIDUAL_SETTLE_MS
+// (tests/hangGuardConfig.mjs) owns that number and the reason it is a choice
+// rather than a guarantee.
+//
+// `hasMarker` / `now` / `sleep` are injected so the loop is table-testable with no
+// /proc and no real waiting — see tests/orphan-reaper.test.mjs. The production
+// path takes every default.
+export async function settleResidual(hits, marker, {
+  hasMarker: hasMarkerFn = hasMarker,
+  settleMs = 0,
+  stepMs = 10,
+  now = () => Date.now(),
+  sleep = (ms) => new Promise(r => setTimeout(r, ms)),
+} = {}) {
+  // The healthy path pays NOTHING — not a sleep, not even a clock read. This is
+  // why the settle is free on the overwhelming majority of runs, and it is
+  // asserted rather than assumed.
+  if (hits.length === 0) return hits;
+  const deadline = now() + settleMs;
+  for (;;) {
+    hits = hits.filter(h => hasMarkerFn(h.pid, marker));
+    // Both exits matter: empty means they died, the deadline means one did not
+    // and must be REPORTED rather than waited out forever.
+    if (hits.length === 0 || now() >= deadline) return hits;
+    await sleep(stepMs);
+  }
+}
+
+// Reap a residual set and describe what happened. Every entry is already licensed
+// — it matched this run's marker on a live re-read — so this is the step that
+// turns "detected" into "HELD": without it the caller prints its diagnostic, reds
+// the run, and then lets teardown remove the run root out from under a live
+// process, which is the (deleted)-cwd state the whole ordering exists to prevent.
+//
+// It is a named unit rather than two inline lines because inline it was
+// UNTESTABLE: deleting the kill left every test in the suite green, since the
+// diagnostic still printed and the run still went red. Returning `reaped`
+// alongside the message puts the action in a return value, so removing or
+// short-circuiting it fails a test. The message embeds both counts, so a reap
+// that silently signals nothing reads as `RESIDUAL 1 … SIGKILLed 0`.
+export function reapResidual(residual, { kill = killPids } = {}) {
+  const reaped = kill(residual);
+  return {
+    reaped,
+    message:
+      `RESIDUAL ${residual.length} marked process(es) still alive at teardown ` +
+      `(pids ${residual.map(r => r.pid).join(',')}); SIGKILLed ${reaped.length}.`,
+  };
 }
 
 // How many processes anywhere on the box have `substr` in their cmdline.

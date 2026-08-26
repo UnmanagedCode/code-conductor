@@ -45,7 +45,9 @@ export function assertStoreIsolated(storeRoot) {
 }
 
 const REAL_TMP = realpathSync(os.tmpdir());
-const RUN_ROOT_SHAPE = /^cc-testrun-[A-Za-z0-9]{6}$/;
+// Exported so tests/reapOrphans.mjs licences a marker against THIS shape rather
+// than re-declaring the regex — a second copy could widen while this one did not.
+export const RUN_ROOT_SHAPE = /^cc-testrun-[A-Za-z0-9]{6}$/;
 
 // Realpath the nearest EXISTING ancestor of `p` (p itself may not exist yet —
 // e.g. PROJECTS_ROOT points at a "project" subdir nothing has mkdir'd yet).
@@ -130,6 +132,7 @@ export function ensureSafeStoreEnv() {
   if (process.env.PROJECTS_ROOT) {
     assertSafeTestRunRoot(process.env.PROJECTS_ROOT);
     const root = path.dirname(process.env.PROJECTS_ROOT);
+    markRun(root);
     return {
       root,
       projectsRoot: process.env.PROJECTS_ROOT,
@@ -140,7 +143,23 @@ export function ensureSafeStoreEnv() {
   const safe = createSafeRoot();
   process.env.PROJECTS_ROOT = safe.projectsRoot;
   process.env.CLAUDE_PROJECTS_ROOT = safe.claudeProjectsRoot;
+  markRun(safe.root);
   return safe;
+}
+
+// Give this process a run marker if it does not already have one, so children of
+// a STANDALONE `node tests/foo.test.mjs` are visible to the hang guard's sweep
+// and to tests/reapOrphans.mjs. Without it, a single-file run is the one blind
+// spot where a leaked child carries no identity at all and nothing can ever reap
+// it — which is exactly the mode used for narrow-scope flake-rate measurements.
+//
+// `??=`, NEVER `=`: under run.mjs the value is already set, and re-minting it
+// here would drop this child (and everything it spawns) out of its OWN run's
+// sweep. That is also why this is not in createSafeRoot() —
+// tests/tmpRegistry.test.mjs calls ensureSafeStoreEnv() mid-file, and a bare
+// assignment there would clobber the child's inherited marker.
+function markRun(root) {
+  process.env.CC_TEST_RUN_ID ??= path.basename(root);
 }
 
 // Test-only: reset the verified flag so a test can exercise assertVerified()'s

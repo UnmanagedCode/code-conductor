@@ -31,6 +31,10 @@ function ms(envName, fallback) {
 // which is why the split remedy below does not transfer to it.
 // RE-ANCHOR THIS WHEN THE TOP FILE CHANGES.
 //
+// HOW TO REPRODUCE THE STARVED CONDITION: docs/architecture.md -> "Reproducing CPU
+// starvation". It is recorded once, there — every starved figure in this repo cites
+// the same recipe and a second copy would drift.
+//
 // hang-guard is no longer at the top, and is no longer one file. Card 2026-0198
 // split tests/hang-guard.test.mjs into five tests/hang-guard-*.test.mjs files
 // (file-kill / run-cap / layer-b / sweep / stall) over the shared harness in
@@ -139,6 +143,57 @@ export const LEAK_GRACE_MS = ms('CC_TEST_LEAK_GRACE_MS', 15_000);
 // at ~4ms — so this is almost pure margin. It is applied once, from the last file
 // to settle, rather than compounding per file.
 export const ORPHAN_SWEEP_MS = ms('CC_TEST_ORPHAN_SWEEP_MS', 5_000);
+
+// Parent-side, at TEARDOWN: how long the run-end residual check gives a
+// just-signalled process to actually leave the process table before calling it a
+// survivor. NOT a tolerance on anything a test asserts, and not a deadline any
+// guard rides to — it exists because "is it alive?" cannot be decided
+// instantaneously about a process we signalled microseconds ago.
+//
+// THIS CONSTANT IS NOT THE FIX FOR THE FALSE RESIDUAL — do not read it as one.
+// That was a STALE SNAPSHOT, not slow signal delivery, and the fix is the LIVE
+// hasMarker re-verify in settleResidual (tests/run.mjs). Demonstrated
+// deterministically: take a /proc walk, SIGKILL the holder, wait 50ms, and the
+// walk's CACHED environ still names it while a live re-read does not.
+// processesWithMarker's readdirSync('/proc') samples the pid list microseconds
+// after the sweep's kills, so a pid early in a ~2700-pid iteration is read inside
+// its own death window. Observed once at load 25 with SWEPT and RESIDUAL naming
+// the same pid on an otherwise healthy run.
+//
+// 250ms IS A MEASUREMENT-INFORMED CHOICE, NOT A GUARANTEE — do not quote a
+// margin from it as though it bounded the broken case.
+//
+// What was measured is the HEALTHY path: process.kill() to /proc/<pid>/environ no
+// longer answering, for a marked detached orphan on a 16-core box.
+//   n=30,  load ~25.0 : p50 1.4ms  p90 3.6ms            max 5.3ms
+//   n=200, load ~12.4 : p50 1.3ms  p90 3.1ms  p99 6.9ms max 7.7ms
+//   n=200, load ~25.5 : p50 0.4ms  p90 4.5ms  p99 8.5ms max 9.9ms
+// Quote the LARGEST tail (9.9ms), not the smallest sample: the first run's 5.3ms
+// max sits inside the later runs' tails, so a margin computed from it is an
+// artefact of n=30. Against 9.9ms the bound is ~25x.
+//
+// THE RELEVANT WORST CASE IS NOT IN THAT TABLE, and no fixed bound can cover it.
+// A signalled process is not reaped while it is in uninterruptible (D-state)
+// sleep, and swap pressure or cgroup CPU throttling can stretch the same window
+// arbitrarily. None of those are load-average-shaped, so measuring harder does
+// not produce a bound that proves anything.
+//
+// WHAT MAKES THAT ACCEPTABLE IS THE FAILURE DIRECTION, not the margin. Exceeding
+// the bound yields a VISIBLE RED, never a silent leak: the process is returned as
+// residual, re-SIGKILLed (harmlessly — it is already dying, and killPids
+// re-verifies identity first), named in the RESIDUAL line, and the run fails. So
+// the cost of the bound being too small is a false red on an otherwise-clean run,
+// which is loud and diagnosable; the cost of it being too large is only teardown
+// latency on a run that is already failing. Raise CC_TEST_RESIDUAL_SETTLE_MS if a
+// box shows that false red — that escape hatch, not a bigger default, is the
+// answer to a pathologically slow reaper.
+//
+// It cannot mask a real leak in either direction: a process that outlives its own
+// SIGKILL by the whole bound is still returned and still fails the run, and one
+// that exits inside the window did not survive the run. And it is only ever paid
+// when the first snapshot found something — a healthy run returns without
+// sleeping at all (pinned in tests/orphan-reaper.test.mjs).
+export const RESIDUAL_SETTLE_MS = ms('CC_TEST_RESIDUAL_SETTLE_MS', 250);
 
 // Parent-side, absolute: the whole run may not exceed this. LAST-RESORT
 // BACKSTOP ONLY — it exists to make an unbounded hang finite, not to bound a

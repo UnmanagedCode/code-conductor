@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert';
 import { killPids, processesWithMarker } from './procTree.mjs';
-import { redactTotals, runGuard } from './hangGuardCase.mjs';
+import { FAST, redactTotals, runGuard } from './hangGuardCase.mjs';
 
 // --- the harness's own count-line redaction ---------------------------------
 //
@@ -80,11 +80,24 @@ test('redactTotals neutralises inner count lines and nothing else', () => {
 // testable with synthesised rows and no real processes. This is the safety-
 // critical half: over-firing here means SIGKILLing something that is not ours.
 
-const snapOf = rows => ({
-  available: true,
-  byPid: new Map(rows.map(r => [r.pid, { ident: '1', argv: [], ...r }])),
-  byParent: new Map(),
-});
+// Same duplicate-pid guard as tests/orphan-reaper.test.mjs, for the same reason:
+// `new Map(entries)` keeps the LAST entry for a repeated key, so a reused pid
+// silently voids the earlier row — it stays readable, stays commented, and stops
+// reaching the code under test. Found once on this branch; guarded so the next
+// one fails loudly.
+const snapOf = rows => {
+  const seen = new Set();
+  for (const r of rows) {
+    assert.ok(!seen.has(r.pid), `duplicate pid ${r.pid} in a snapshot table — ` +
+      'the later row silently voids the earlier one, which then tests nothing');
+    seen.add(r.pid);
+  }
+  return {
+    available: true,
+    byPid: new Map(rows.map(r => [r.pid, { ident: '1', argv: [], ...r }])),
+    byParent: new Map(),
+  };
+};
 const MARK = 'cc-testrun-Abc123';
 const envWith = id => `PATH=/usr/bin\0CC_TEST_RUN_ID=${id}\0HOME=/root\0`;
 
@@ -103,6 +116,12 @@ test('processesWithMarker matches this run\'s descendants and nothing else', () 
     // matches it and one run's sweep SIGKILLs another run's processes (measured
     // with a truncated marker: an inner runner killed the outer run's).
     { pid: 4007, env: envWith(MARK + 'XY') },
+    // NAME SHARING — the other half of the anchor, and the direction a plain
+    // `includes` on the needle gets WRONG: this variable's NAME ends with ours,
+    // so `CC_TEST_RUN_ID=<marker>\0` appears verbatim inside it. This predicate
+    // holds the kill authority for all four sweep triggers, so it is the one
+    // that must refuse (card 2026-0226 round 1).
+    { pid: 4008, env: `PATH=/usr/bin\0PREV_CC_TEST_RUN_ID=${MARK}\0` },
   ];
   const hits = processesWithMarker(MARK, snapOf(rows)).map(h => h.pid).sort((a, b) => a - b);
   assert.deepEqual(hits, [4001, 4002],
@@ -111,8 +130,25 @@ test('processesWithMarker matches this run\'s descendants and nothing else', () 
 
 test('processesWithMarker refuses to match when it cannot see', () => {
   // No marker and no /proc are both "I cannot tell" — and must never be read as
-  // "everything matches", which would SIGKILL the box.
-  assert.deepEqual(processesWithMarker('', snapOf([{ pid: 4001, env: envWith(MARK) }])), []);
+  // "everything matches", which would SIGKILL the box. THIS predicate is the one
+  // holding kill authority: it feeds sweepOrphans -> killPids on all four sweep
+  // triggers, so its falsy-marker guard matters more than its single-pid twin's.
+  //
+  // The box below is POPULATED with the two rows a falsy marker can actually
+  // match, because the obvious assertion is vacuous: asking `''` about a snapshot
+  // of normally-marked rows passes with `!marker` deleted, since strict equality
+  // rejects them anyway. A row only pins the guard if markerIn's answer for it can
+  // EQUAL the falsy marker.
+  const falsyBox = snapOf([
+    { pid: 4001, env: envWith(MARK) },                  // normal — rejected either way
+    { pid: 4004, env: 'PATH=/usr/bin\0HOME=/root\0' },  // no entry: markerIn -> null
+    { pid: 4013, env: 'PATH=/usr/bin\0CC_TEST_RUN_ID=\0' }, // empty VALUE: markerIn -> ''
+  ]);
+  assert.deepEqual(processesWithMarker('', falsyBox), [],
+    'an empty marker matched the empty-valued entry — that is a licence to SIGKILL it');
+  assert.deepEqual(processesWithMarker(null, falsyBox), [],
+    'a null marker matched every unmarked process on the box');
+  assert.deepEqual(processesWithMarker(undefined, falsyBox), []);
   // The unavailable snapshot is deliberately POPULATED with a row that WOULD
   // match. An empty byPid makes this pass with the `!snap.available` guard
   // deleted, since the loop returns [] either way — and a partially populated
@@ -191,3 +227,108 @@ test('a leak from a file too fast to be sampled is still found and killed', asyn
     'a sub-tick orphan must still be identified and SIGKILLed');
   assert.ok(r.wallMs < 20_000, `run took ${r.wallMs}ms — it fell through to the absolute run cap`);
 });
+
+// A live pid, asked the cheapest way there is. Signal 0 checks for existence
+// without delivering anything; ESRCH is "gone", EPERM is "alive but not ours".
+const pidAlive = (pid) => {
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }
+};
+
+const holderPidFrom = (out) => {
+  const m = /silent-orphan: holder pid=(\d+)/.exec(out);
+  assert.ok(m, `the fixture never printed its holder pid:\n${out}`);
+  return Number(m[1]);
+};
+
+test('a leak that wedges nothing is still swept, at the END of a healthy run', async () => {
+  // THE CASE THIS WHOLE CARD EXISTS FOR, and the only behavioural proof that the
+  // class is closed. Every other sweep case leaks a holder of the runner's own
+  // stdio, so the STREAM STALL trigger reaches it; this holder has
+  // `stdio: 'ignore'` and holds nothing, so before card 2026-0226 the stream
+  // ended cleanly, the cap was never reached, NOTHING looked, and the run exited
+  // 0 with a live process left on the box. Measured pre-fix: exit 0,
+  // `0 leaked process(es) swept`, holder still alive after the run.
+  const r = await runGuard('silent-orphan');
+  const holder = holderPidFrom(r.out);
+
+  // NON-VACUITY, and it is load-bearing: without this pair someone could satisfy
+  // the case by making the fixture stall, and it would pass through the OLD
+  // trigger while proving nothing about the new one. Both must hold — the run
+  // must have ended the healthy way AND still gone red.
+  assert.match(r.out, /stream ended cleanly/,
+    'the fixture wedged the stream, so this proves the stall trigger, not the run-end sweep');
+  assert.match(r.out, /run cap not reached/);
+
+  assert.match(r.out, /hang-guard: SWEPT \d+ leaked process\(es\) \(pids [\d,]+; trigger: run end\)/,
+    'the sweep must fire on the run-end trigger specifically');
+  assert.equal(r.code, 1, `a leaked live process must fail the run:\n${r.out}`);
+
+  // `SWEPT` printed is NOT proof of death — killPids reports what it signalled,
+  // and a bad ident re-check or a wrong pid would print the same line. Ask the
+  // kernel. Bounded poll: the holder's parent is already gone, so init reaps it
+  // at once; this tolerates that latency without tolerating survival.
+  const deadline = Date.now() + 3000;
+  while (pidAlive(holder) && Date.now() < deadline) await new Promise(r2 => setTimeout(r2, 25));
+  assert.equal(pidAlive(holder), false,
+    `holder ${holder} survived the sweep — SWEPT was printed but nothing died`);
+});
+
+test('the run-end sweep runs BEFORE the run root is removed', async () => {
+  // ORDER, pinned by a check that can only be satisfied one way round. run.mjs
+  // re-reads its own marker AFTER sweeping and BEFORE removeSafeRoot; move the
+  // sweep past teardown and a live process is left with a (deleted) cwd inside a
+  // removed run root — the state all 21 measured orphans were found in — and the
+  // RESIDUAL line fires. This also guards the other direction: a sweep whose
+  // SIGKILL had not landed by the time the check reads /proc would print it too,
+  // which is why the check reads `environ` (empty for a zombie) and so fails
+  // closed toward clean.
+  const r = await runGuard('silent-orphan');
+  assert.doesNotMatch(r.out, /hang-guard: RESIDUAL/,
+    `a marked process was still alive at teardown:\n${r.out}`);
+});
+
+// BOTH signal legs, because run.mjs pairs each with its OWN exit status and a
+// single-signal test lets the other one float: mutating
+// `[['SIGINT', 130], ['SIGTERM', 143]]` to `[['SIGINT', 143], ...]` survived the
+// whole suite while only SIGTERM was sent. The sweep ACTION is shared, so it is
+// pinned by either leg; what needs both is the CODE PAIRING.
+for (const [signal, code] of [['SIGTERM', 143], ['SIGINT', 130]]) {
+  test(`${signal} mid-run sweeps this run's processes and exits ${code}`, async () => {
+    // An INTERRUPTED run is the one path the run-end sweep cannot cover, and it is
+    // the one an interrupted campaign actually takes. A `detached` child sits in
+    // its own process group, so a terminal SIGINT/SIGTERM to the runner's group
+    // never reaches it — pre-fix the runner died on node's default handling and the
+    // holder was left alive on the box with nothing having looked.
+    //
+    // CC_TEST_DWELL_MS keeps the fixture's test body open so the runner is still
+    // mid-run when the signal lands: 4000ms, comfortably inside FILE_KILL (8000)
+    // so the per-file watchdog is not what ends this, and the signal at 1200ms is
+    // well clear of process start-up on a starved box. SIGKILL is deliberately not
+    // tested — no in-process handler can run for it, which is what
+    // tests/reapOrphans.mjs exists for.
+    const r = await runGuard('silent-orphan',
+      { ...FAST, CC_TEST_DWELL_MS: '4000' },
+      { signalAfterMs: 1200, signal });
+    const holder = holderPidFrom(r.out);
+
+    assert.match(r.out, new RegExp(`hang-guard: ${signal} — sweeping this run's processes before exiting\\.`),
+      `the interrupt path never swept:\n${r.out}`);
+    // The trigger string is the signal's own name, so a handler wired to the
+    // wrong signal cannot pass by sweeping under the other one's label.
+    assert.match(r.out,
+      new RegExp(`hang-guard: SWEPT \\d+ leaked process\\(es\\) \\(pids [\\d,]+; trigger: ${signal.toLowerCase()}\\)`));
+    // 128+signo — node's OWN default status, restated by the handler because
+    // installing any listener for a signal REMOVES that default. A run that exits
+    // some other status has changed what every caller sees, and the two legs carry
+    // DIFFERENT numbers, so asserting one proves nothing about the other.
+    assert.equal(r.code, code,
+      `expected 128+${signal}=${code}, got code=${r.code} signal=${r.signal}:\n${r.out}`);
+    assert.equal(r.signal, null, 'the runner must exit under its own control, not die from the signal');
+
+    const deadline = Date.now() + 3000;
+    while (pidAlive(holder) && Date.now() < deadline) await new Promise(r2 => setTimeout(r2, 25));
+    assert.equal(pidAlive(holder), false,
+      `holder ${holder} survived an interrupted run — this is the leak an interrupted campaign leaves`);
+  });
+}

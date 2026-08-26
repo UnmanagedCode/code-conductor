@@ -2,9 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import { createSupervisor } from '../src/plugins/supervisor.ts';
 import { allocatePort, pidAlive, waitForPort } from '../src/plugins/ports.ts';
 import { FAKE_PLUGIN_DIR, waitFor } from './plugin-helpers.mjs';
+import { hasMarker } from './procTree.mjs';
 
 const manifest = (backend) => ({ id: 'fake-plugin', name: 'Fake', version: '1', pluginApi: 1, backend });
 
@@ -40,8 +42,22 @@ function withDeadline(promise, ms, onTimeout) {
   return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
 }
 
-async function startAndSettle(sup, opts) {
+// Teardown is registered AT SPAWN TIME, before anything that can throw. The
+// readiness `waitFor` below runs before `rec` reaches the caller, so a timeout
+// there used to leak a child the caller's own `finally` never learned about —
+// and the two cases that assert on a live tree (`stop kills the whole process
+// group`, `post-ready exit fires onExit`) had no `finally` at all, so any failed
+// assertion ahead of their `sup.stop()` leaked the child AND its grandchild.
+// That asymmetry is what produced the measured 9:3 forker:slow-ready split in
+// the orphan inventory: the forker test leaks on a strictly larger set of
+// failures.
+//
+// Double-stop is safe, so call sites may keep an explicit stop as well:
+// killProcessGroup swallows ESRCH (src/groupedCommand.ts) and
+// waitFor(() => !pidAlive(pid)) resolves at once on a dead pid.
+async function startAndSettle(t, sup, opts) {
   const rec = await sup.start(opts);
+  t.after(() => stopAndWait(sup, opts.id, rec));
   const rt = await waitFor(() => {
     const r = sup.runtime(opts.id);
     return r && r.status !== 'starting' ? r : false;
@@ -49,7 +65,35 @@ async function startAndSettle(sup, opts) {
   return { rec, rt };
 }
 
+// LICENCE TO KILL — read this before touching the guard.
+//
+// `sup.stop` signals a process GROUP: `process.kill(-pgid, …)`. Two tests in
+// this file inject `_spawn: fakeSpawn`, whose stand-in children carry
+// `pid = 900001 + n` — a number picked by an array index, not by the kernel.
+// Now that teardown is registered unconditionally at spawn time, an unguarded
+// stop would SIGTERM-then-SIGKILL process group 900001 on those tests. That is
+// not theoretical here: pid_max on this box is 4194304, live pids reach ~3.99M,
+// and an unrelated live process sits at 1089935 — pids have wrapped well past
+// 900001, so the group belongs to a stranger.
+//
+// The guard is the SAME exact identity used everywhere else in this suite, asked
+// about one pid: does /proc/<pid>/environ carry this run's CC_TEST_RUN_ID? A real
+// child inherits it at exec (measured); a fake object never had an environ at
+// all. Deliberately NOT a caller-supplied "this one is fake" flag — a flag
+// relocates kill authority to the caller instead of closing the class, and the
+// next fake spawner would have to remember to set it.
+//
+// The pgid conjunct is not redundant. The licence is established for `rec.pid`,
+// but what gets signalled is the group `rec.pgid`; they coincide only because
+// the supervisor spawns detached (pgid === pid, src/plugins/supervisor.ts). If
+// that ever changes, the licence stops covering what we signal, so it is checked
+// rather than assumed. Skipping `sup.stop` also skips its `children.delete(id)`
+// bookkeeping, which is inert in teardown — every test builds its own supervisor
+// and none inspects it afterwards.
 function stopAndWait(sup, id, rec) {
+  if (rec.pgid !== rec.pid || !hasMarker(rec.pid, process.env.CC_TEST_RUN_ID)) {
+    return Promise.resolve();
+  }
   sup.stop({ id, pgid: rec.pgid });
   return waitFor(() => !pidAlive(rec.pid));
 }
@@ -102,7 +146,17 @@ function fakeSpawn(scripts) {
   const fn = () => {
     const script = scripts[Math.min(spawned.length, scripts.length - 1)];
     const proc = new EventEmitter();
-    proc.pid = 900001 + spawned.length; // never signalled — these tests never stop()
+    // A SYNTHETIC pid — an array index, not a kernel allocation. What keeps it
+    // from being signalled is the hasMarker/pgid licence in stopAndWait, NOT
+    // anything about these tests: startAndSettle registers teardown for EVERY
+    // caller, unconditionally, so a stop IS attempted for these children and
+    // refused on identity. The comment here used to say "these tests never
+    // stop()", which stopped being true when that teardown became unconditional
+    // (card 2026-0226) — and a false reason sitting on this line is how the
+    // licence gets deleted as redundant. If you remove the licence, this line
+    // becomes process.kill(-900001, 'SIGTERM') against a stranger's process
+    // group.
+    proc.pid = 900001 + spawned.length;
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
     spawned.push(proc);
@@ -121,53 +175,41 @@ function fakeSpawn(scripts) {
 const EADDRINUSE_STDERR = (port) =>
   `Error: listen EADDRINUSE: address already in use 127.0.0.1:${port}\n`;
 
-test('readiness via healthPath; child gets $PORT and reaches ready', async () => {
+test('readiness via healthPath; child gets $PORT and reaches ready', async (t) => {
   const sup = createSupervisor();
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rec, rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'node server.mjs', healthPath: '/health' }),
     cwd: FAKE_PLUGIN_DIR,
     env: { CONDUCTOR_URL: 'http://127.0.0.1:9999' },
   });
-  try {
-    assert.equal(rt.status, 'ready');
-    const env = await (await fetch(`http://127.0.0.1:${rec.port}/env`)).json();
-    assert.equal(env.port, rec.port);
-    assert.equal(env.pluginId, 'fake-plugin');
-    assert.equal(env.conductorUrl, 'http://127.0.0.1:9999');
-    assert.equal(rec.pgid, rec.pid);
-    assert.ok(rec.startedAt);
-  } finally {
-    await stopAndWait(sup, 'fake-plugin', rec);
-  }
+  assert.equal(rt.status, 'ready');
+  const env = await (await fetch(`http://127.0.0.1:${rec.port}/env`)).json();
+  assert.equal(env.port, rec.port);
+  assert.equal(env.pluginId, 'fake-plugin');
+  assert.equal(env.conductorUrl, 'http://127.0.0.1:9999');
+  assert.equal(rec.pgid, rec.pid);
+  assert.ok(rec.startedAt);
 });
 
-test('readiness via readyWhen stdout regex', async () => {
+test('readiness via readyWhen stdout regex', async (t) => {
   const sup = createSupervisor();
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'node server.mjs', readyWhen: 'listening on \\d+' }),
     cwd: FAKE_PLUGIN_DIR,
   });
-  try {
-    assert.equal(rt.status, 'ready');
-  } finally {
-    await stopAndWait(sup, 'fake-plugin', rec);
-  }
+  assert.equal(rt.status, 'ready');
 });
 
-test('readiness via bare TCP probe, with a slow-binding child', async () => {
+test('readiness via bare TCP probe, with a slow-binding child', async (t) => {
   const sup = createSupervisor();
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'SLOW_READY_MS=1000 node slow-ready.mjs' }),
     cwd: FAKE_PLUGIN_DIR,
   });
-  try {
-    assert.equal(rt.status, 'ready');
-  } finally {
-    await stopAndWait(sup, 'fake-plugin', rec);
-  }
+  assert.equal(rt.status, 'ready');
 });
 
 test('bare-TCP readiness does not fire before the port is actually bound', async () => {
@@ -203,9 +245,9 @@ test('bare-TCP readiness does not fire before the port is actually bound', async
   }
 });
 
-test('crash before ready → crashed with output tail', async () => {
+test('crash before ready → crashed with output tail', async (t) => {
   const sup = createSupervisor();
-  const { rt } = await startAndSettle(sup, {
+  const { rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'node crash.mjs' }),
     cwd: FAKE_PLUGIN_DIR,
@@ -215,25 +257,21 @@ test('crash before ready → crashed with output tail', async () => {
   assert.match(rt.error, /boom/);
 });
 
-test('never-ready child → crashed after the readiness bound', async () => {
+test('never-ready child → crashed after the readiness bound', async (t) => {
   // 400ms, not 1500: readyWhen cannot match, so this test WAITS OUT the whole
   // bound (measured 2067ms of the file's 6.0s). 400ms still leaves >=2 of the
   // supervisor's 200ms poll intervals, and the assertions below are the timeout
   // branch — they do not depend on the child having started, so a short bound
   // cannot flip the outcome.
   const sup = createSupervisor({ _readyTimeoutMs: 400 });
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     // Matches nothing the fixture prints — readiness must time out.
     manifest: manifest({ start: 'node server.mjs', readyWhen: 'WILL_NEVER_MATCH' }),
     cwd: FAKE_PLUGIN_DIR,
   });
-  try {
-    assert.equal(rt.status, 'crashed');
-    assert.match(rt.error, /readiness not confirmed/);
-  } finally {
-    await stopAndWait(sup, 'fake-plugin', rec);
-  }
+  assert.equal(rt.status, 'crashed');
+  assert.match(rt.error, /readiness not confirmed/);
 });
 
 // ── the settle window (card 2026-0219) ──────────────────────────────────────
@@ -243,7 +281,7 @@ test('never-ready child → crashed after the readiness bound', async () => {
 // rather than raced: T1/T1b decide "inside the window" by nextTick ordering,
 // T2 decides "outside the window" by setting the window to zero.
 
-test('EADDRINUSE inside the settle window retries on a fresh port', async () => {
+test('EADDRINUSE inside the settle window retries on a fresh port', async (t) => {
   const PORT_A = 45111, PORT_B = 45222; // never bound — the fake children do no I/O
   const spawnFake = fakeSpawn([
     { stderr: EADDRINUSE_STDERR(PORT_A), exitCode: 1 },
@@ -254,7 +292,7 @@ test('EADDRINUSE inside the settle window retries on a fresh port', async () => 
     _spawn: spawnFake,
     _allocatePort: () => { calls++; return Promise.resolve(calls === 1 ? PORT_A : PORT_B); },
   });
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rec, rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'irrelevant — _spawn is faked', readyWhen: 'listening on \\d+' }),
     cwd: FAKE_PLUGIN_DIR,
@@ -269,14 +307,14 @@ test('EADDRINUSE inside the settle window retries on a fresh port', async () => 
   assert.equal(rec.pgid, spawnFake.spawned[1].pid);
 });
 
-test('EADDRINUSE retries are bounded, then it gives up', async () => {
+test('EADDRINUSE retries are bounded, then it gives up', async (t) => {
   const spawnFake = fakeSpawn([{ stderr: EADDRINUSE_STDERR(45111), exitCode: 1 }]); // repeats
   let calls = 0;
   const sup = createSupervisor({
     _spawn: spawnFake,
     _allocatePort: () => { calls++; return Promise.resolve(45100 + calls); },
   });
-  const { rt } = await startAndSettle(sup, {
+  const { rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'irrelevant — _spawn is faked', readyWhen: 'listening on \\d+' }),
     cwd: FAKE_PLUGIN_DIR,
@@ -290,7 +328,7 @@ test('EADDRINUSE retries are bounded, then it gives up', async () => {
   assert.equal(calls, 4);
 });
 
-test('a real child that loses the port race after the window reports EADDRINUSE', async () => {
+test('a real child that loses the port race after the window reports EADDRINUSE', async (t) => {
   const sq = await squat();
   let calls = 0;
   const sup = createSupervisor({
@@ -301,7 +339,7 @@ test('a real child that loses the port race after the window reports EADDRINUSE'
     _allocatePort: () => { calls++; return Promise.resolve(sq.port); },
   });
   try {
-    const { rec, rt } = await startAndSettle(sup, {
+    const { rec, rt } = await startAndSettle(t, sup, {
       id: 'fake-plugin',
       // Readiness can never match, so the child's own exit is what settles the
       // record and rt.error carries node's real bind-failure text.
@@ -416,9 +454,9 @@ test('waitForPort resolves on a port bound after earlier probes were refused', a
   }
 });
 
-test('stop kills the whole process group (grandchild included)', async () => {
+test('stop kills the whole process group (grandchild included)', async (t) => {
   const sup = createSupervisor();
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rec, rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'node forker.mjs' }),
     cwd: FAKE_PLUGIN_DIR,
@@ -430,10 +468,10 @@ test('stop kills the whole process group (grandchild included)', async () => {
   await waitFor(() => !pidAlive(rec.pid) && !pidAlive(grandchildPid));
 });
 
-test('post-ready exit fires onExit with status exited', async () => {
+test('post-ready exit fires onExit with status exited', async (t) => {
   const exits = [];
   const sup = createSupervisor({ onExit: (id, info) => exits.push({ id, info }) });
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rec, rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'node server.mjs', healthPath: '/health' }),
     cwd: FAKE_PLUGIN_DIR,
@@ -445,14 +483,100 @@ test('post-ready exit fires onExit with status exited', async () => {
   assert.equal(exits[0].info.status, 'exited');
 });
 
-test('git HEAD is recorded when cwd is a repo, null otherwise', async () => {
+test('git HEAD is recorded when cwd is a repo, null otherwise', async (t) => {
   const sup = createSupervisor();
   // The fixture lives inside the code-conductor repo → HEAD resolves.
-  const { rec, rt } = await startAndSettle(sup, {
+  const { rec, rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
     manifest: manifest({ start: 'node crash.mjs' }),
     cwd: FAKE_PLUGIN_DIR,
   });
   assert.equal(rt.status, 'crashed'); // crash child: no cleanup needed
   assert.match(rec.gitHead, /^[0-9a-f]{40}$/);
+});
+
+// ── startAndSettle's teardown contract (card 2026-0226) ─────────────────────
+// These pin the CONTRACT, not a pre/post behavioural difference: the old
+// signature does not exist to compare against. The behavioural proof that the
+// leak class is closed is the run-end sweep case in
+// tests/hang-guard-sweep.test.mjs. What is worth pinning here is the pair of
+// properties that make the teardown both effective and safe.
+
+// Filled by the case below, read by the one after it. Top-level tests in a file
+// run in order, and a test's own `after` hook cannot be observed from inside its
+// own body — so the assertion has to be the NEXT case. That ordering is the
+// whole mechanism; do not reorder or wrap these two.
+const treeReap = {};
+
+test('a failure before the explicit stop() still leaves the teardown to reap the tree', async (t) => {
+  // The exact leaking shape from the orphan inventory: `node forker.mjs` holds a
+  // live grandchild, and the case that exercised it (`stop kills the whole
+  // process group`) had NO try/finally, so any failed assertion ahead of its
+  // `sup.stop()` leaked both processes — 9 of the 12 measured orphan tree roots
+  // were forkers for exactly that reason. This case deliberately never calls
+  // stop(): the teardown registered at spawn time is the only thing that can
+  // reap it, which is the property under test.
+  const sup = createSupervisor();
+  const { rec, rt } = await startAndSettle(t, sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'node forker.mjs' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  assert.equal(rt.status, 'ready');
+  const { grandchildPid } = await (await fetch(`http://127.0.0.1:${rec.port}/`)).json();
+  assert.ok(pidAlive(grandchildPid), 'the fixture did not actually fork a live grandchild');
+  Object.assign(treeReap, { pid: rec.pid, grandchildPid });
+});
+
+test('…and by now that teardown has reaped the child AND its grandchild', async () => {
+  assert.ok(treeReap.pid, 'the case above did not run — these two are a pair');
+  // A grandchild is the half a bare `child.kill()` misses; the teardown goes
+  // through the process GROUP, which is why it reaches both.
+  await waitFor(() => !pidAlive(treeReap.pid) && !pidAlive(treeReap.grandchildPid));
+});
+
+test('stopAndWait refuses to signal anything that is not provably this run\'s', async () => {
+  // THE SAFETY DIRECTION, and the reason the guard exists at all. `sup.stop`
+  // signals a process GROUP; the two fakeSpawn cases above carry
+  // `pid = 900001 + n`, an array index masquerading as a pid. Asserted on the
+  // DECISION (was `stop` called?) rather than on an outcome, because "nothing
+  // visibly broke" is exactly what killing a stranger's process group looks like
+  // from in here.
+  //
+  // The stub reaps through the ChildProcess HANDLE rather than re-deriving a pid,
+  // so this case never itself performs the pid arithmetic it exists to forbid.
+  // It also has to reap: stopAndWait waits for the pid to go away after calling
+  // stop, so a stub that only records would hang on its own no-op.
+  const calls = [];
+  let live = null;
+  const stubSup = { stop: (arg) => { calls.push(arg); live?.kill('SIGKILL'); } };
+
+  await stopAndWait(stubSup, 'fake-plugin', { pid: 900001, pgid: 900001 });
+  assert.deepEqual(calls, [],
+    'signalled process group -900001 — a number picked by an array index, and a ' +
+    'live pid band on this box (pid_max 4194304, live pids ~3.99M)');
+
+  const real = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+  try {
+    await waitFor(() => pidAlive(real.pid));
+
+    // THE PGID CONJUNCT, checked while the child is alive and marked so the ONLY
+    // possible reason to refuse is the divergence. The licence is established for
+    // rec.pid, but what gets signalled is the group rec.pgid; they coincide only
+    // because the supervisor spawns detached (pgid === pid).
+    await stopAndWait(stubSup, 'fake-plugin', { pid: real.pid, pgid: real.pid + 1 });
+    assert.deepEqual(calls, [],
+      'signalled a group the licence was never established for');
+
+    // NON-VACUITY: the same call path must still fire for a real, marked child,
+    // or the guard could be a blanket refusal and every teardown registered above
+    // would be inert while these cases stayed green.
+    live = real;
+    await stopAndWait(stubSup, 'fake-plugin', { pid: real.pid, pgid: real.pid });
+    assert.deepEqual(calls, [{ id: 'fake-plugin', pgid: real.pid }],
+      'a real child of this run inherits CC_TEST_RUN_ID at exec and MUST be stoppable');
+  } finally {
+    real.kill('SIGKILL'); // idempotent; covers the fail paths above
+    await waitFor(() => !pidAlive(real.pid));
+  }
 });
