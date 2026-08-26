@@ -211,12 +211,15 @@ test('the backstop removes a minted root on a non-zero process.exit()', () => {
 // failure with a chmod, which does not constrain root, so it skips as root rather
 // than passing vacuously.
 //
-// Disclosed gap, scoped deliberately: removing the `mintedRoots.delete()` call
-// ALTOGETHER is a genuine no-op, and no test here distinguishes it. A root that
-// rmrf really removed leaves a stale entry the backstop then lstats, gets ENOENT
-// for, and skips — the same outcome as having dropped it. Pinning that would mean
-// asserting on private registry contents, which would tie a test to the shape of
-// state that is deliberately not part of this module's surface.
+// Disclosed gap, waived deliberately: removing the `mintedRoots.delete()` call
+// ALTOGETHER is a no-op here. A root that rmrf really removed leaves a stale
+// entry the backstop then lstats, gets ENOENT for, and skips — the same outcome
+// as having dropped it. The variant IS distinguishable, but only by watching the
+// backstop act on a path RESURRECTED after a successful removal: recreate a
+// directory at that exact path and the stale entry now names something that
+// exists and passes the shape gate. Nothing in this system ever reuses an
+// mkdtemp-unique path, so that input never occurs and the difference is
+// unobservable in practice — pinning it would pin a fiction, not the behaviour.
 
 test('the deletion gate refuses a symlink pointing at a valid run root', async () => {
   // Discriminating by construction: the realpath'd TARGET passes

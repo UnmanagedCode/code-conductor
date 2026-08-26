@@ -450,8 +450,8 @@ a selector: it refuses a symlink *pointing at* a valid run root, which `assertSa
 would realpath into acceptance; it refuses a temp dir of the wrong shape; and because `lstat` runs
 before the shape gate it reports an already-removed root as `ENOENT` — the one error class the
 backstop can read as "already gone" — which the backstop then consumes silently rather than reporting
-a cleanup failure for work the normal path already did. The other edge is the ordering inside
-`removeSafeRoot`: the registry entry is dropped only after `rmrf` resolves, so a removal that FAILS
+a cleanup failure for work the normal path already did. The ordering inside `removeSafeRoot` is
+likewise pinned: the registry entry is dropped only after `rmrf` resolves, so a removal that FAILS
 leaves the root registered for the backstop to retry. Reversed, the registry empties while the root is
 still on disk and the backstop's emptiness guard returns early — a silent leak. The test induces that
 failure with a `chmod` (a deterministic `EACCES`, not a class `fs.rm` retries) and so is uid-dependent:
