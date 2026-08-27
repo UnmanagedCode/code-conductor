@@ -8,6 +8,16 @@ import { TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock, SystemBlock, T
 import { el } from './dom.js';
 import { parseWakeCallback } from './wakeCallback.js';
 
+// The evicted-content seam divider's identity, in one place: `_renderHistoryGap`
+// builds it and `lazyHistory.js` collapses a doubled one at a page seam.
+// NB `.history-divider` alone is shared with the history_replayed divider —
+// the gap dedupe must key on `history-gap` only.
+const HISTORY_GAP_CLASS = 'history-gap';
+
+export function isHistoryGapNode(node) {
+  return !!node && node.nodeType === 1 && node.classList.contains(HISTORY_GAP_CLASS);
+}
+
 function renderFileChip(a) {
   return el('div', { class: 'block file-attachment' },
     el('span', { class: 'fa-icon' }, '📎'),
@@ -710,10 +720,21 @@ export class Conversation {
   // whole blocks are genuinely missing here — never a half block. Closing
   // the assistant segment also makes this a merge barrier: content across a
   // real gap must not glue into one bubble.
+  //
+  // Adjacency dedupe (2026-0069): the pager can mark one seam twice — a page
+  // starting exactly ON the seam splices at offset 0 while the page below it
+  // splices at its own end (2026-0054) — and the marker is seq-less, so
+  // apply()'s seenSeq guard never sees it. Two dividers in a row are one seam;
+  // dividers separated by real content are distinct seams and both render.
+  // The cross-page half of this rule lives in lazyHistory's spliceBatchAbove:
+  // paged batches render into their own detached root and cannot see this one.
   _renderHistoryGap() {
-    const node = el('div', { class: 'history-divider history-gap' },
-      el('span', {}, '── ⋯ earlier messages unavailable ──'));
-    this.root.appendChild(node);
+    if (!isHistoryGapNode(this.root.lastElementChild)) {
+      this.root.appendChild(el('div', { class: `history-divider ${HISTORY_GAP_CLASS}` },
+        el('span', {}, '── ⋯ earlier messages unavailable ──')));
+    }
+    // Unconditional: the merge-barrier semantics hold for every marker,
+    // whether or not this one appended a divider.
     this._closeAssistantSegment();
   }
 

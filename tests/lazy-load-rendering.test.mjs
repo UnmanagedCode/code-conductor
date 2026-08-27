@@ -284,6 +284,8 @@ test('history_gap renders a divider and blocks merging across the gap', async ()
 
   const divider = root.querySelector('.history-divider.history-gap');
   assert.ok(divider, 'gap divider rendered');
+  assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 1,
+    'exactly one divider for one marker');
   assert.ok(divider.textContent.includes('earlier messages unavailable'));
   assertNull(main.leadingAssistantWrap, 'gap is a merge barrier');
 
@@ -300,6 +302,153 @@ test('history_gap renders a divider and blocks merging across the gap', async ()
   const text = root.textContent;
   assert.ok(text.indexOf('turn head') < text.indexOf('earlier messages unavailable'));
   assert.ok(text.indexOf('earlier messages unavailable') < text.indexOf('surviving tail'));
+});
+
+// --- Doubled seam marker collapses to one divider (2026-0069) -------------
+// The backward pager can mark ONE archive/ring seam twice: a page whose
+// quiescent snap lands its start exactly ON the seam splices the marker at
+// offset 0 while the page below it splices at its own end, yielding
+// `[…, 12, <GAP>][<GAP>, 13, …]` (2026-0054, server-side and deliberately
+// open). The client collapses the pair at render time; the dedupe is
+// adjacency-scoped, so distinct seams still each get a divider.
+
+test('two adjacent history_gap events render one divider', async () => {
+  const { root, Conversation } = await setupDOM();
+  const main = new Conversation(root, {});
+  // Both markers are seq-less (as the server emits them), so apply()'s
+  // seenSeq guard cannot be what collapses them.
+  main.apply({ kind: 'history_gap' });
+  main.apply({ kind: 'history_gap' });
+
+  assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 1,
+    'one seam, one divider');
+});
+
+test('a doubled seam marker across two pages renders one divider', async () => {
+  const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+  const main = new Conversation(root, {});
+  // The live chunk is the page BELOW the seam: `[<GAP>, 13, …]`.
+  main.apply({ kind: 'history_gap' });
+  main.apply({ kind: 'text_delta', msgId: 'mR', blockIdx: 5, text: 'surviving tail', _seq: 50, parentToolUseId: null });
+  main.apply({ kind: 'text_end', msgId: 'mR', blockIdx: 5, _seq: 51, parentToolUseId: null });
+
+  // The next-older page ends ON the seam: `[…, 12, <GAP>]`. It renders into
+  // its own detached root, so the append-time check cannot see the live
+  // divider across the container boundary — only the splice can.
+  const above = seq([
+    { kind: 'user_echo', text: 'giant prompt', userIndex: 0, parentToolUseId: null },
+    { kind: 'text_delta', msgId: 'mA', blockIdx: 0, text: 'turn head', parentToolUseId: null },
+    { kind: 'text_end', msgId: 'mA', blockIdx: 0, parentToolUseId: null },
+  ]);
+  above.push({ kind: 'history_gap' });
+  const batch = renderEventBatch(above);
+  assert.equal(batch.holder.querySelectorAll('.history-divider.history-gap').length, 1,
+    'the batch itself carries one divider before the splice');
+  const liveDivider = root.querySelector('.history-divider.history-gap');
+  spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+  assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 1,
+    'the doubled seam collapses to one divider');
+  // A prepend must not mutate already-rendered content: the node dropped is
+  // the one this splice just inserted, not the live view's existing divider.
+  // `assert.ok` on an identity comparison, never `assert.equal(node, node)` —
+  // two DOM operands reach assert's serializer and stall the child (see
+  // tests/dom-assert-tripwire.mjs's "NOT COVERED" note).
+  assert.ok(root.querySelector('.history-divider.history-gap') === liveDivider,
+    'the pre-existing divider is the survivor');
+  // The surviving divider must still sit AT the seam, between the two pages.
+  const text = root.textContent;
+  assert.ok(text.indexOf('turn head') < text.indexOf('earlier messages unavailable'),
+    'divider below the older page');
+  assert.ok(text.indexOf('earlier messages unavailable') < text.indexOf('surviving tail'),
+    'divider above the newer page');
+});
+
+test('gap dividers separated by real content both render', async () => {
+  // Half 1 — one render pass: gap, real content, gap. Two distinct seams.
+  {
+    const { root, Conversation } = await setupDOM();
+    const main = new Conversation(root, {});
+    main.apply({ kind: 'history_gap' });
+    main.apply({ kind: 'text_delta', msgId: 'm1', blockIdx: 0, text: 'between the seams', _seq: 60, parentToolUseId: null });
+    main.apply({ kind: 'text_end', msgId: 'm1', blockIdx: 0, _seq: 61, parentToolUseId: null });
+    main.apply({ kind: 'history_gap' });
+    assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 2,
+      'append side: content between the markers keeps both dividers');
+  }
+  // Half 2 — across a splice: the batch ends with a gap, but the chunk below
+  // it begins with real content (its own gap sits further down).
+  {
+    const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+    const main = new Conversation(root, {});
+    main.apply({ kind: 'text_delta', msgId: 'mR', blockIdx: 0, text: 'live top content', _seq: 70, parentToolUseId: null });
+    main.apply({ kind: 'text_end', msgId: 'mR', blockIdx: 0, _seq: 71, parentToolUseId: null });
+    main.apply({ kind: 'history_gap' });
+    main.apply({ kind: 'text_delta', msgId: 'mR2', blockIdx: 1, text: 'live bottom content', _seq: 72, parentToolUseId: null });
+    main.apply({ kind: 'text_end', msgId: 'mR2', blockIdx: 1, _seq: 73, parentToolUseId: null });
+
+    const above = seq([
+      { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+    ]);
+    above.push({ kind: 'history_gap' });
+    const batch = renderEventBatch(above);
+    spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+
+    assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 2,
+      'splice side: real content between the markers keeps both dividers');
+  }
+});
+
+test('a replay divider adjacent to a gap divider is not collapsed', async () => {
+  // `.history-divider` is SHARED with the system/history_replayed divider —
+  // the dedupe must key on `history-gap` alone, on both sides.
+  // Append side: the replay divider is the root's lastElementChild when the
+  // gap marker arrives.
+  {
+    const { root, Conversation } = await setupDOM();
+    const main = new Conversation(root, {});
+    main.apply({ kind: 'system', subtype: 'history_replayed', data: { count: 3 }, _seq: 80, parentToolUseId: null });
+    main.apply({ kind: 'history_gap' });
+    assert.equal(root.querySelectorAll('.history-divider').length, 2,
+      'append side: replay divider does not suppress the gap divider');
+    assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 1);
+  }
+  // Splice side, both orientations: a batch ending in a replay divider above
+  // a chunk starting with a gap, and a batch ending in a gap above a chunk
+  // starting with a replay divider. Neither pair may be collapsed.
+  {
+    const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+    const main = new Conversation(root, {});
+    main.apply({ kind: 'history_gap' });
+    main.apply({ kind: 'text_delta', msgId: 'mR', blockIdx: 0, text: 'tail', _seq: 90, parentToolUseId: null });
+    main.apply({ kind: 'text_end', msgId: 'mR', blockIdx: 0, _seq: 91, parentToolUseId: null });
+
+    const batch = renderEventBatch(seq([
+      { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+      { kind: 'system', subtype: 'history_replayed', data: { count: 7 }, parentToolUseId: null },
+    ]));
+    spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+    assert.equal(root.querySelectorAll('.history-divider').length, 2,
+      'splice side: a trailing replay divider survives above a gap divider');
+    assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 1);
+  }
+  {
+    const { root, Conversation, renderEventBatch, spliceBatchAbove } = await setupDOM();
+    const main = new Conversation(root, {});
+    main.apply({ kind: 'system', subtype: 'history_replayed', data: { count: 7 }, _seq: 95, parentToolUseId: null });
+    main.apply({ kind: 'text_delta', msgId: 'mR', blockIdx: 0, text: 'tail', _seq: 96, parentToolUseId: null });
+    main.apply({ kind: 'text_end', msgId: 'mR', blockIdx: 0, _seq: 97, parentToolUseId: null });
+
+    const above = seq([
+      { kind: 'user_echo', text: 'older prompt', userIndex: 0, parentToolUseId: null },
+    ]);
+    above.push({ kind: 'history_gap' });
+    const batch = renderEventBatch(above);
+    spliceBatchAbove({ root, batch, conversation: main, oldestLeadingWrap: main.leadingAssistantWrap });
+    assert.equal(root.querySelectorAll('.history-divider').length, 2,
+      'splice side: a trailing gap divider survives above a replay divider');
+    assert.equal(root.querySelectorAll('.history-divider.history-gap').length, 1);
+  }
 });
 
 test('a batch with genuinely dangling content (interrupted turn / trim plain-cut) finalizes its visuals', async () => {
