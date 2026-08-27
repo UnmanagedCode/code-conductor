@@ -121,9 +121,15 @@ function indexBacking(byPublic: Map<string, LineageRow>): Map<string, string> {
 //   - NO SELF-DEADLOCK: every mutation reads through `loadStrict`, never
 //     `loadLineage`, so a write can never wait on this barrier. A new mutation
 //     must keep using `loadStrict` or it wedges every read behind itself.
-//   - A REJECTED WRITE IS SWALLOWED HERE, deliberately: that failure already has
-//     an owner (`Instance._lineageError` → `flushLineage` → `renew_error`), so
-//     warning again would double-report — and the read must still proceed.
+//   - A REJECTED WRITE IS SWALLOWED HERE, deliberately, and the read must still
+//     proceed either way. For the ROTATION writer — the one this barrier exists
+//     for — the failure already has an owner (`Instance._lineageError` →
+//     `flushLineage` → `renew_error`), so warning again would double-report. The
+//     `dropSegment` kick also lands in `_lineageError`, but nothing calls
+//     `flushLineage` on that path, so its failure is reported only if a later
+//     renew flush happens to pick it up. That gap predates this barrier and is
+//     not closed here — the claim above is scoped to the rotation writer, not to
+//     every kicked write.
 //   - `mintPublicId` IS DELIBERATELY UNTRACKED (it is awaited in `launch()`), so
 //     a read racing a fresh spawn can miss the brand-new row. Harmless: that is
 //     the store's base case, where public id == backing id. Do not widen for it.
