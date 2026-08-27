@@ -138,6 +138,13 @@ const inFlightWrites = new Set<Promise<unknown>>();
 export function trackLineageWrite(p: Promise<unknown>): void {
   const tracked = p.then(() => {}, () => {});
   inFlightWrites.add(tracked);
+  // DELIBERATELY UNPINNED — no test will catch you deleting this line. Shedding a
+  // settled entry is a MEMORY property, not a behavioural one: `Promise.all` over
+  // already-settled promises still resolves in a microtask, so a set that never
+  // shrinks reads identically. Without it the set grows for the life of the
+  // process and every lineage read iterates all of it. Pinning that would mean
+  // exporting an introspection seam purely for the test, so review is the only
+  // guard — hence this warning rather than a test.
   void tracked.then(() => { inFlightWrites.delete(tracked); });
 }
 

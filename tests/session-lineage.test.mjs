@@ -407,6 +407,60 @@ test('a read waits behind a write kicked before it began', async () => {
     'and it must observe the kicked rotation, not the pre-rotation row');
 });
 
+test('a read waits for EVERY pending tracked write, not just one of them', async () => {
+  // The barrier's own claim — "a read sees EVERY write kicked before the read
+  // began" — is strictly stronger than "a read waits for A pending write", and the
+  // module-global in-flight set is what makes the difference reachable: two
+  // instances renewing concurrently, or a dropSegment kick overlapping a rotation,
+  // each add an INDEPENDENT entry. A barrier that awaited only part of the set
+  // would leave the unawaited write's reader serving the pre-rotation row, which
+  // is the whole defect this store's barrier exists to close.
+  //
+  // Both release ORDERS run, and that is the point: releasing the LAST-tracked
+  // write first catches a barrier that awaits only the last; releasing the
+  // FIRST-tracked write first catches one that awaits only the first (and either
+  // order alone catches a `Promise.race`). Either half on its own leaves a
+  // partial-set barrier alive.
+  for (const releaseFirstTracked of [false, true]) {
+    await reset();
+    const label = releaseFirstTracked ? 'first-tracked released first' : 'last-tracked released first';
+    const pubA = await mintPublicId(backing('11111111'));
+    const pubB = await mintPublicId(backing('22222222'));
+    const rotA = backing('aaaa1111');
+    const rotB = backing('bbbb2222');
+
+    // Two INDEPENDENTLY gated writes, so both are pending at the same time. Each
+    // enters the module's serialize chain only when its own gate opens, so neither
+    // is queued behind the other.
+    let openA, openB;
+    const writeA = new Promise((r) => { openA = r; }).then(() => recordRotation(pubA, rotA, 'renew'));
+    const writeB = new Promise((r) => { openB = r; }).then(() => recordRotation(pubB, rotB, 'renew'));
+    trackLineageWrite(writeA); // tracked FIRST
+    trackLineageWrite(writeB); // tracked SECOND
+
+    let settled = false;
+    const readP = loadLineage().then((v) => { settled = true; return v; });
+
+    // Open one of them and AWAIT it, so it has demonstrably landed on disk — a
+    // barrier awaiting only that entry then has nothing left to wait for, and the
+    // hops give its read every chance to finish. That is what makes the assertion
+    // below a real red rather than a slow-write artefact.
+    (releaseFirstTracked ? openA : openB)();
+    await (releaseFirstTracked ? writeA : writeB);
+    await hops();
+    assert.equal(settled, false,
+      `the read must stay parked while the OTHER tracked write is still pending (${label})`);
+
+    // Open the other; only now may the read proceed — and it must observe BOTH,
+    // which is also what fails if the barrier sits after the readFile instead of
+    // before it.
+    (releaseFirstTracked ? openB : openA)();
+    const { byPublic } = await readP;
+    assert.equal(byPublic.get(pubA)?.current, rotA, `the read observed the FIRST-tracked write (${label})`);
+    assert.equal(byPublic.get(pubB)?.current, rotB, `the read observed the SECOND-tracked write (${label})`);
+  }
+});
+
 test('the barrier tolerates a write that REJECTS: the read resolves, stale, not hung', async () => {
   await reset();
   const first = backing('ffffffff');
