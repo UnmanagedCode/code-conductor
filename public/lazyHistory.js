@@ -8,7 +8,7 @@
 // the batch instance is discarded after its nodes are transplanted; button
 // click handlers keep working because they close over app.js callbacks.
 
-import { Conversation } from './conversation.js';
+import { Conversation, isHistoryGapNode } from './conversation.js';
 import { apiFetch } from './http.js';
 
 // A correct server never hands back an empty backward page while `hasMore`
@@ -77,9 +77,9 @@ export function prependBatch(root, holder, anchorNode = null, afterInsert = null
 }
 
 // Splice a rendered batch above the existing content: viewport-preserving
-// prepend, seam-bubble merge, and sub-agent adoption — one operation so the
-// scroll compensation in prependBatch sees the final layout. Returns the new
-// oldest chunk's leading wrap (the next page's merge target).
+// prepend, seam gap collapse, seam-bubble merge, and sub-agent adoption — one
+// operation so the scroll compensation in prependBatch sees the final layout.
+// Returns the new oldest chunk's leading wrap (the next page's merge target).
 //
 //   batch             — renderEventBatch() result
 //   conversation      — the live Conversation (parked orphan child events);
@@ -88,7 +88,19 @@ export function prependBatch(root, holder, anchorNode = null, afterInsert = null
 //                       (null when it starts on a turn boundary / gap)
 export function spliceBatchAbove({ root, batch, anchorNode = null, conversation = null, oldestLeadingWrap = null }) {
   let merged = false;
+  // Captured before the move — afterwards the holder is empty.
+  const batchTail = batch.holder.lastElementChild;
   prependBatch(root, batch.holder, anchorNode, () => {
+    // Seam gap collapse (2026-0069): this batch ends with a gap divider and
+    // the chunk below begins with one — the pager marked the same seam on
+    // both pages (2026-0054). Drop the newly inserted one; the divider
+    // already in the document stays put. Strictly adjacent: a gap divider
+    // separated from another by real content is a different seam.
+    // Inert w.r.t. the merge below — a batch ending in a gap has
+    // trailingOpenWrap === null (the gap closes the assistant segment).
+    if (isHistoryGapNode(batchTail) && isHistoryGapNode(batchTail.nextElementSibling)) {
+      batchTail.remove();
+    }
     // Bubble merge: the batch ends with an OPEN assistant segment and the
     // chunk below begins with one — pages are contiguous, so both halves
     // belong to one turn. Move the batch's trailing blocks to the FRONT of
