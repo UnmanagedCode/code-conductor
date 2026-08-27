@@ -967,8 +967,15 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
     const inst = instForSession(srv.instances, sid1);
 
     // Reject, do not delay — the seam the sibling test uses, driven the other way.
+    // The message is TAGGED with the attempt number so the terminal report can be
+    // traced to a specific attempt: with an identical message every time, "kept
+    // the first error" and "kept the last error" are indistinguishable, and the
+    // loop's LAST-error contract would be unpinned.
     let flushCalls = 0;
-    inst.flushLineage = async () => { flushCalls++; throw new Error('ENOSPC writing session-lineage.json'); };
+    inst.flushLineage = async () => {
+      flushCalls++;
+      throw new Error(`ENOSPC writing session-lineage.json (attempt ${flushCalls})`);
+    };
 
     await callTool(srv.baseUrl, 'renew_session', { summary: 'survives a failed flush' }, { caller: sid1 });
     await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
@@ -980,15 +987,22 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
       && ev.subtype === 'renew_error' && ev.data?.stage === 'lineage'));
     assert.match(errEv.data.message, /ENOSPC writing session-lineage\.json/, 'carries the cause');
     assert.match(errEv.data.message, /in memory\s+but not on disk/, 'and names the orphan risk');
+    // …and specifically the LAST attempt's cause, not the first. A loop that
+    // remembered the first failure and never overwrote it would satisfy every
+    // other assertion here; this is the only thing that separates them.
+    assert.match(errEv.data.message, new RegExp(`attempt ${1 + LINEAGE_RETRY_ATTEMPTS}\\b`),
+      `the terminal report must carry attempt ${1 + LINEAGE_RETRY_ATTEMPTS}'s error — the LAST one`);
+    assert.doesNotMatch(errEv.data.message, /attempt 1\b/,
+      'and must NOT be the first attempt\'s error, kept and never replaced');
     // DELIBERATE REVERSAL (card 2026-0193, window (c)). This used to pin
     // `flushCalls === 1, 'flushed exactly once — not retried behind the scenes'`.
     // The flush-failure branch now runs a BOUNDED retry — LINEAGE_RETRY_ATTEMPTS
     // re-kick + re-flush rounds on top of the first attempt — because a stale
     // store left behind by a transient failure orphans the session on the next
-    // restart. This stub rejects every time, so all of them fail and the
-    // exhausted loop emits ONE terminal renew_error carrying the LAST error,
-    // which is what (1) above asserts. The transient-failure counterpart (retry
-    // succeeds, nothing emitted) is the sibling test below.
+    // restart. This stub rejects every time — with a per-attempt tag — so all of
+    // them fail and the exhausted loop emits ONE terminal renew_error carrying the
+    // LAST error, both of which (1) above asserts. The transient-failure
+    // counterpart (retry succeeds, nothing emitted) is the sibling test below.
     assert.equal(flushCalls, 1 + LINEAGE_RETRY_ATTEMPTS,
       'the first flush plus every bounded retry ran — and produced exactly one renew_error');
     assert.equal(inst.ringSnapshot().filter(ev => ev.kind === 'system'

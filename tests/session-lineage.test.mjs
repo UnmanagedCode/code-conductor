@@ -375,11 +375,16 @@ test('a row whose segments are all unparseable is dropped, not half-loaded', asy
 // ---------------------------------------------------------------------------
 // T4 — the kick-anchored read barrier (card 2026-0193, window (a)).
 // Timers are deliberately absent: `hops` yields the event loop a bounded number
-// of times, which is enough for a single readFile to land but can never let a
-// promise that is genuinely parked resolve.
+// of times, which is enough for the I/O of an UNBARRIERED read to land but can
+// never let a promise that is genuinely parked resolve.
+//
+// The count is deliberately far larger than the handful of poll/check turns a
+// readFile needs. It is one-sided: too few hops could let a slow readFile under
+// load look "parked" and shift which assertion fires, while too many cost only
+// scheduling turns on the passing path, where nothing is waiting on them.
 // ---------------------------------------------------------------------------
 
-const hops = async (n = 40) => {
+const hops = async (n = 500) => {
   for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
 };
 
@@ -441,23 +446,37 @@ test('a read waits for EVERY pending tracked write, not just one of them', async
     let settled = false;
     const readP = loadLineage().then((v) => { settled = true; return v; });
 
-    // Open one of them and AWAIT it, so it has demonstrably landed on disk — a
-    // barrier awaiting only that entry then has nothing left to wait for, and the
-    // hops give its read every chance to finish. That is what makes the assertion
-    // below a real red rather than a slow-write artefact.
-    (releaseFirstTracked ? openA : openB)();
-    await (releaseFirstTracked ? writeA : writeB);
-    await hops();
-    assert.equal(settled, false,
-      `the read must stay parked while the OTHER tracked write is still pending (${label})`);
+    // MANDATORY CLEANUP, not defensive style. The in-flight set is module-global
+    // and lives for the whole test FILE: an assertion failure below would
+    // otherwise abort with a never-settling entry still registered, and the next
+    // test's read would park on that orphan and ride to node's per-test timeout
+    // instead of failing on its own merits. So both gates open and both writes
+    // drain on every exit path — which is also what makes "this cannot hang" true
+    // on the failing path and not just the passing one.
+    try {
+      // Open one of them and AWAIT it, so it has demonstrably landed on disk — a
+      // barrier awaiting only that entry then has nothing left to wait for, and
+      // the hops give its read every chance to finish. That is what makes the
+      // assertion below a real red rather than a slow-write artefact.
+      (releaseFirstTracked ? openA : openB)();
+      await (releaseFirstTracked ? writeA : writeB);
+      await hops();
+      assert.equal(settled, false,
+        `the read must stay parked while the OTHER tracked write is still pending (${label})`);
 
-    // Open the other; only now may the read proceed — and it must observe BOTH,
-    // which is also what fails if the barrier sits after the readFile instead of
-    // before it.
-    (releaseFirstTracked ? openB : openA)();
-    const { byPublic } = await readP;
-    assert.equal(byPublic.get(pubA)?.current, rotA, `the read observed the FIRST-tracked write (${label})`);
-    assert.equal(byPublic.get(pubB)?.current, rotB, `the read observed the SECOND-tracked write (${label})`);
+      // Open the other; only now may the read proceed — and it must observe BOTH,
+      // which is also what fails if the barrier sits after the readFile instead of
+      // before it.
+      (releaseFirstTracked ? openB : openA)();
+      const { byPublic } = await readP;
+      assert.equal(byPublic.get(pubA)?.current, rotA, `the read observed the FIRST-tracked write (${label})`);
+      assert.equal(byPublic.get(pubB)?.current, rotB, `the read observed the SECOND-tracked write (${label})`);
+    } finally {
+      // Idempotent: re-resolving an already-open gate is a no-op.
+      openA();
+      openB();
+      await Promise.allSettled([writeA, writeB, readP]);
+    }
   }
 });
 
