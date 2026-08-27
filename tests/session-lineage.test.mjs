@@ -11,6 +11,9 @@
 //   3. ROTATION — append + advance, lazy row creation from the base case,
 //      idempotent on a retry, and exactly reversible by revertRotation.
 //   4. READ TOLERANCE — dropSegment keeps a chain from pointing at a missing file.
+//   5. READ BARRIER — a read waits behind writes kicked fire-and-forget before it
+//      began (trackLineageWrite), and resolves rather than hangs or throws when
+//      such a write REJECTS.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +31,7 @@ process.env.CLAUDE_PROJECTS_ROOT = path.join(tmp, 'claude-projects');
 
 const {
   loadLineage, mintPublicId, recordRotation, revertRotation,
-  resolveBacking, publicIdFor, segmentsFor, dropSegment,
+  resolveBacking, publicIdFor, segmentsFor, dropSegment, trackLineageWrite,
   PUBLIC_ID_LEN, PUBLIC_ID_LEN_EXTENDED,
 } = await import('../src/sessionLineage.ts');
 
@@ -367,4 +370,129 @@ test('a row whose segments are all unparseable is dropped, not half-loaded', asy
   assert.deepEqual([...byPublic.keys()], ['good']);
   assert.deepEqual([...byBacking.keys()], ['x']);
   await fs.rm(STORE_FILE(), { force: true });
+});
+
+// ---------------------------------------------------------------------------
+// T4 — the kick-anchored read barrier (card 2026-0193, window (a)).
+// Timers are deliberately absent: `hops` yields the event loop a bounded number
+// of times, which is enough for the I/O of an UNBARRIERED read to land but can
+// never let a promise that is genuinely parked resolve.
+//
+// The count is deliberately far larger than the handful of poll/check turns a
+// readFile needs. It is one-sided: too few hops could let a slow readFile under
+// load look "parked" and shift which assertion fires, while too many cost only
+// scheduling turns on the passing path, where nothing is waiting on them.
+// ---------------------------------------------------------------------------
+
+const hops = async (n = 500) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+};
+
+test('a read waits behind a write kicked before it began', async () => {
+  await reset();
+  const first = backing('dddddddd');
+  const publicId = await mintPublicId(first);
+  const rotated = backing('eeeeeeee');
+
+  // Stand in for Instance._kickLineageWrite: the durable write is fire-and-forget
+  // and its chain is registered with the barrier, gated so it has demonstrably
+  // NOT landed while the read below is issued.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  trackLineageWrite(gate.then(() => recordRotation(publicId, rotated, 'renew')));
+
+  let settled = false;
+  const readP = resolveBacking(publicId).then((v) => { settled = true; return v; });
+  await hops();
+  assert.equal(settled, false,
+    'the read must be parked on the barrier — without one its single readFile lands in a few hops');
+
+  release();
+  assert.equal(await readP, rotated,
+    'and it must observe the kicked rotation, not the pre-rotation row');
+});
+
+test('a read waits for EVERY pending tracked write, not just one of them', async () => {
+  // The barrier's own claim — "a read sees EVERY write kicked before the read
+  // began" — is strictly stronger than "a read waits for A pending write", and the
+  // module-global in-flight set is what makes the difference reachable: two
+  // instances renewing concurrently, or a dropSegment kick overlapping a rotation,
+  // each add an INDEPENDENT entry. A barrier that awaited only part of the set
+  // would leave the unawaited write's reader serving the pre-rotation row, which
+  // is the whole defect this store's barrier exists to close.
+  //
+  // Both release ORDERS run, and that is the point: releasing the LAST-tracked
+  // write first catches a barrier that awaits only the last; releasing the
+  // FIRST-tracked write first catches one that awaits only the first (and either
+  // order alone catches a `Promise.race`). Either half on its own leaves a
+  // partial-set barrier alive.
+  for (const releaseFirstTracked of [false, true]) {
+    await reset();
+    const label = releaseFirstTracked ? 'first-tracked released first' : 'last-tracked released first';
+    const pubA = await mintPublicId(backing('11111111'));
+    const pubB = await mintPublicId(backing('22222222'));
+    const rotA = backing('aaaa1111');
+    const rotB = backing('bbbb2222');
+
+    // Two INDEPENDENTLY gated writes, so both are pending at the same time. Each
+    // enters the module's serialize chain only when its own gate opens, so neither
+    // is queued behind the other.
+    let openA, openB;
+    const writeA = new Promise((r) => { openA = r; }).then(() => recordRotation(pubA, rotA, 'renew'));
+    const writeB = new Promise((r) => { openB = r; }).then(() => recordRotation(pubB, rotB, 'renew'));
+    trackLineageWrite(writeA); // tracked FIRST
+    trackLineageWrite(writeB); // tracked SECOND
+
+    let settled = false;
+    const readP = loadLineage().then((v) => { settled = true; return v; });
+
+    // MANDATORY CLEANUP, not defensive style. The in-flight set is module-global
+    // and lives for the whole test FILE: an assertion failure below would
+    // otherwise abort with a never-settling entry still registered, and the next
+    // test's read would park on that orphan and ride to node's per-test timeout
+    // instead of failing on its own merits. So both gates open and both writes
+    // drain on every exit path — which is also what makes "this cannot hang" true
+    // on the failing path and not just the passing one.
+    try {
+      // Open one of them and AWAIT it, so it has demonstrably landed on disk — a
+      // barrier awaiting only that entry then has nothing left to wait for, and
+      // the hops give its read every chance to finish. That is what makes the
+      // assertion below a real red rather than a slow-write artefact.
+      (releaseFirstTracked ? openA : openB)();
+      await (releaseFirstTracked ? writeA : writeB);
+      await hops();
+      assert.equal(settled, false,
+        `the read must stay parked while the OTHER tracked write is still pending (${label})`);
+
+      // Open the other; only now may the read proceed — and it must observe BOTH,
+      // which is also what fails if the barrier sits after the readFile instead of
+      // before it.
+      (releaseFirstTracked ? openB : openA)();
+      const { byPublic } = await readP;
+      assert.equal(byPublic.get(pubA)?.current, rotA, `the read observed the FIRST-tracked write (${label})`);
+      assert.equal(byPublic.get(pubB)?.current, rotB, `the read observed the SECOND-tracked write (${label})`);
+    } finally {
+      // Idempotent: re-resolving an already-open gate is a no-op.
+      openA();
+      openB();
+      await Promise.allSettled([writeA, writeB, readP]);
+    }
+  }
+});
+
+test('the barrier tolerates a write that REJECTS: the read resolves, stale, not hung', async () => {
+  await reset();
+  const first = backing('ffffffff');
+  const publicId = await mintPublicId(first);
+
+  // The failure mode the barrier must survive: withLock throwing after
+  // LOCK_RETRY_MAX (pinned by tests/store-lock.test.mjs, cited not duplicated).
+  // The rejection already has an owner — Instance._lineageError → flushLineage →
+  // renew_error — so the barrier swallows it and the read must still proceed.
+  trackLineageWrite(Promise.reject(
+    new Error('storeLock: could not acquire session-lineage.json after 25 retries (owner still alive)')));
+
+  assert.equal(await resolveBacking(publicId), first,
+    'the read returns the (stale) row rather than hanging or rethrowing the write failure');
+  assert.deepEqual((await segmentsFor(publicId)).map((g) => g.id), [first]);
 });

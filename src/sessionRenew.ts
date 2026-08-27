@@ -38,6 +38,12 @@ import type { InstanceLike, InstanceManagerLike } from './instanceTypes.ts';
 // renewal rather than leaving the instance stuck in `clearing` forever.
 const CLEAR_ROTATE_TIMEOUT_MS = Number(process.env.ORCH_RENEW_CLEAR_TIMEOUT_MS) || 60_000;
 
+// Re-kicks of the rotation's durable lineage write after the first flush failed,
+// on top of that first attempt (so the worst case is 1 + this flushes). NO sleep
+// between them, which is what bounds WHICH failures this can recover — see the
+// retry loop in _onClearingTurnEnd.
+export const LINEAGE_RETRY_ATTEMPTS = 2;
+
 export interface RenewalOpts {
   summary?: string;
   // The conductor's POST-renewal directive, carried by a `requested` entry and
@@ -357,17 +363,44 @@ export class SessionRenewController {
     // earliest possible moment), so this normally resolves instantly. On failure
     // the rotation is live in memory but absent from disk — recovery would resolve
     // the public id to the pre-clear transcript and orphan everything the renewed
-    // session goes on to write — so say so, loudly, and RESEED ANYWAY: the clear
+    // session goes on to write — so RETRY it a bounded number of times, then say
+    // so loudly if it still failed, and RESEED ANYWAY either way: the clear
     // already happened irreversibly and the summary is the only thing that can
     // save the session. Failure-visible, not abort.
-    try {
-      await inst.flushLineage();
-    } catch (err) {
+    //
+    // The retry is a re-kick, not a re-implementation: `recordRotation` is
+    // idempotent, so `retryRotationWrite()` either lands the missing segment or
+    // no-ops on one already written. `renew_error` fires ONCE, carrying the LAST
+    // error, and only after every attempt failed.
+    //
+    // WHAT THIS CAN ACTUALLY RECOVER, and it is exactly one thing: a CROSS-PROCESS
+    // LOCK-CONTENTION throw. A failed attempt has already spent its whole ~10s
+    // `withLock` backoff window (src/storeLock.ts) waiting out the contender, so a
+    // fresh attempt is a genuine second chance if that contender released late.
+    // Everything else is NOT recoverable here and will exhaust every attempt and
+    // reach the terminal `renew_error` below: `retryRotationWrite()` is
+    // synchronous and the re-kicked `recordRotation` reaches `loadStrict` on the
+    // next microtask, so a deterministic store error (EISDIR, EPERM, ENOSPC,
+    // corrupt JSON) re-throws the same error milliseconds later — there is no
+    // interval in which it could clear. That is the bound; the no-sleep choice is
+    // what sets it, and adding a sleep would be a different design, not a tweak.
+    let lineageErr: unknown = null;
+    for (let attempt = 0; attempt <= LINEAGE_RETRY_ATTEMPTS; attempt++) {
+      if (attempt > 0) inst.retryRotationWrite();
+      try {
+        await inst.flushLineage();
+        lineageErr = null;
+        break;
+      } catch (err) {
+        lineageErr = err;
+      }
+    }
+    if (lineageErr !== null) {
       inst._emitUi({
         kind: 'system', subtype: 'renew_error',
         data: {
           stage: 'lineage',
-          message: `session lineage write failed: ${errMsg(err)} — the rotation is in memory `
+          message: `session lineage write failed: ${errMsg(lineageErr)} — the rotation is in memory `
             + 'but not on disk, so a restart before the next rotation would resume the pre-clear '
             + 'transcript and orphan this session\'s new turns',
         },

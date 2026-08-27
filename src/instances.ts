@@ -7,6 +7,7 @@ import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapSta
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId } from './projects.ts';
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
+  trackLineageWrite,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
@@ -1617,6 +1618,25 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._lineageWrite = this._lineageWrite.then(write).catch((err: unknown) => {
       this._lineageError = err instanceof Error ? err : new Error(String(err));
     });
+    // Register the WHOLE chain with the lineage store's read barrier, so a read
+    // issued from here on waits for this write instead of serving the
+    // pre-rotation row (src/sessionLineage.ts → trackLineageWrite). Registering
+    // the chain rather than `write` alone is what makes one line cover both
+    // kicked writers, and tracking it module-side is what keeps it holding after
+    // this instance leaves `byId` — the spontaneous-exit variant, where no
+    // `remove()` ever ran and the resume's live-guard is already false.
+    trackLineageWrite(this._lineageWrite);
+  }
+
+  // Re-kick the CURRENT rotation's durable write. Called by
+  // SessionRenewController when the first flush failed: `recordRotation` is
+  // idempotent (src/sessionLineage.ts), so a re-kick either lands the missing
+  // segment or no-ops on one already written.
+  retryRotationWrite(): void {
+    const publicId = this.sessionId;
+    const backingId = this.backingSessionId;
+    if (!publicId || !backingId) return;
+    this._kickLineageWrite(() => recordRotation(publicId, backingId, 'renew'));
   }
 
   spawn({ resume }: { resume?: string } = {}): void {
