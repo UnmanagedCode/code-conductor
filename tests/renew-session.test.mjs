@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, instForSession } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { WAKE_CALLBACK_MARKER, WAKE_BODY_SEP } from '../public/wakeCallback.js';
-import { RENEW_SUMMARY_TEMPLATE } from '../src/sessionRenew.ts';
+import { RENEW_SUMMARY_TEMPLATE, LINEAGE_RETRY_ATTEMPTS } from '../src/sessionRenew.ts';
 import { isConducted } from '../src/conductedSessions.ts';
 import { isTemp } from '../src/tempSessions.ts';
 import { isArchived } from '../src/archivedSessions.ts';
@@ -257,6 +257,158 @@ test('resume after rotation resumes CURRENT, not the first segment', async () =>
     // permanent full-id guarantee, for wiki pages and old kanban cards.
     const { resolveBacking } = await import('../src/sessionLineage.ts');
     assert.equal(await resolveBacking(firstBacking), firstBacking);
+  } finally {
+    await srv.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The KICK-ANCHORED READ BARRIER (card 2026-0193, window (a)). The renew
+// rotation is persisted fire-and-forget — Instance._kickLineageWrite from the
+// system/init handler — so between the in-memory rotation and that write
+// landing, every lineage READ still serves the PRE-rotation row. The damaging
+// reader is spawn_instance({resume}), which resolves the public id through
+// publicIdFor -> resolveBacking (InstanceManager._doCreate): losing that race
+// `--resume`s the pre-clear transcript and orphans everything the renewed
+// session goes on to write.
+//
+// Both tests FORCE the window instead of racing it: _kickLineageWrite(() => held)
+// parks the CHAIN itself, so the rotation's own write queues behind a promise the
+// test owns. Parking the chain — not stubbing recordRotation — is what makes the
+// store genuinely stale; a stopped recordRotation would prove nothing about a
+// barrier that waits on kicked writes.
+//
+// They differ ONLY in how the session stops being live, and that is the point:
+// T1 kills it (remove() ran, the instance left byId), T2 loses the subprocess
+// spontaneously (no remove(), the instance is still in byId with proc === null).
+// A flush-before-byId.delete fix passes T1 and fails T2.
+// ---------------------------------------------------------------------------
+
+// Materialise both segments' transcripts with distinguishable content. A wrong
+// resume then finds a perfectly valid file — the PRE-clear one — which is exactly
+// the silent failure a file-existence-only assertion would miss.
+async function materializeBothSegments(claudeProjectsRoot, cwd, firstBacking) {
+  const dir = path.join(claudeProjectsRoot, encodeCwd(cwd));
+  await fs.mkdir(dir, { recursive: true });
+  const line = (uuid, text) => JSON.stringify({
+    type: 'user', uuid, message: { role: 'user', content: text },
+  }) + '\n';
+  await fs.writeFile(path.join(dir, `${firstBacking}.jsonl`), line('pre-1', 'PRE-CLEAR TURN'));
+  await fs.writeFile(path.join(dir, `${NEW_SID}.jsonl`), line('post-1', 'POST-CLEAR TURN'));
+}
+
+// Fire spawn_instance({resume}) WITHOUT awaiting it, park until the server is
+// demonstrably inside create({resume}) — `_resuming` is populated synchronously,
+// before _doCreate's first await, and that first await IS the lineage read — then
+// release the held write and settle.
+//
+// `settledBeforeRelease` is captured in the promise's own continuation, so the
+// ordering claim is a recorded fact rather than a timer. The release is
+// UNCONDITIONAL, so a fix that blocks the resume can never hang this.
+async function resumeAcrossRelease(srv, publicId, releaseWrite) {
+  let released = false;
+  let settledBeforeRelease = null;
+  const note = () => { if (settledBeforeRelease === null) settledBeforeRelease = !released; };
+  const before = new Set(srv.instances.byId.keys());
+  const resumeP = callTool(srv.baseUrl, 'spawn_instance', { resume: publicId })
+    .then((v) => { note(); return v; }, (e) => { note(); throw e; });
+  // Park until the server is demonstrably past the point of no return — either
+  // inside create({resume}) with the read still pending, or (with no barrier)
+  // already finished. The second disjunct is what turns a missing barrier into
+  // the assertion failure below instead of a 10s timeout.
+  await waitFor(() => srv.instances._resuming.size === 1 || settledBeforeRelease !== null);
+  released = true;
+  releaseWrite();
+  await resumeP;
+  const inst2 = [...srv.instances.byId.values()].find((i) => !before.has(i.id));
+  assert.ok(inst2, 'the resume registered a new instance');
+  return { inst2, settledBeforeRelease };
+}
+
+// The three assertions both tests share: the resume waited, it named the CURRENT
+// segment, and the conversation it replayed is the post-clear one.
+async function assertResumedCurrentSegment({ inst2, settledBeforeRelease }, firstBacking) {
+  await waitFor(() => inst2.status === 'idle');
+  const argv = inst2._spawnArgv;
+  const at = argv.indexOf('--resume');
+  assert.ok(at > 0, `--resume must be in the argv: ${JSON.stringify(argv)}`);
+  assert.equal(argv[at + 1], NEW_SID, '--resume must carry the CURRENT segment');
+  assert.notEqual(argv[at + 1], firstBacking, 'and must NOT carry the pre-rotation segment');
+  const echoes = inst2.ringSnapshot().filter((ev) => ev.kind === 'user_echo').map((ev) => ev.text);
+  assert.ok(echoes.some((t) => t.includes('POST-CLEAR TURN')),
+    `the post-clear transcript must be replayed; got ${JSON.stringify(echoes)}`);
+  assert.ok(!echoes.some((t) => t.includes('PRE-CLEAR TURN')),
+    `the pre-clear transcript must NOT be replayed; got ${JSON.stringify(echoes)}`);
+  // Asserted LAST so the two above report the actual damage first. This one is
+  // the mechanism: the resume did not settle until the parked write landed.
+  assert.equal(settledBeforeRelease, false,
+    'the resume must not resolve its public id before the pending rotation write lands');
+}
+
+test('a resume waits for a PENDING rotation write instead of reading the pre-rotation row (killed)', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const publicId = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, publicId)?.status === 'idle');
+    const inst = instForSession(srv.instances, publicId);
+    const firstBacking = inst.backingSessionId;
+
+    // Park the durable-write chain: everything kicked from here on — the rotation
+    // included — queues behind `held`.
+    let releaseWrite;
+    const held = new Promise((r) => { releaseWrite = r; });
+    inst._kickLineageWrite(() => held);
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'stale-read check' }, { caller: publicId });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: publicId, text: 'go1' });
+    // IN-MEMORY only. The store is still pre-rotation, by construction.
+    await waitFor(() => inst.backingSessionId === NEW_SID);
+    await materializeBothSegments(srv.claudeProjectsRoot, inst.cwd, firstBacking);
+
+    await callTool(srv.baseUrl, 'kill_instance', { sessionId: publicId });
+    await waitFor(() => !instForSession(srv.instances, publicId));
+
+    await assertResumedCurrentSegment(
+      await resumeAcrossRelease(srv, publicId, releaseWrite), firstBacking);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('…and on the SPONTANEOUS-EXIT variant, where the instance never left byId', async () => {
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const publicId = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, publicId)?.status === 'idle');
+    const inst = instForSession(srv.instances, publicId);
+    const firstBacking = inst.backingSessionId;
+
+    let releaseWrite;
+    const held = new Promise((r) => { releaseWrite = r; });
+    inst._kickLineageWrite(() => held);
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'stale-read check' }, { caller: publicId });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: publicId, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === NEW_SID);
+    await materializeBothSegments(srv.claudeProjectsRoot, inst.cwd, firstBacking);
+
+    // Lose the subprocess on its own — no kill_instance, so no remove() runs.
+    inst.proc.kill('SIGKILL');
+    await waitFor(() => inst.proc === null);
+    // THE precondition that separates this from T1: the exited instance is still
+    // registered, yet nothing live answers to the public id, so the resume's
+    // check-and-claim guard lets it through.
+    assert.equal(srv.instances.byId.has(inst.id), true, 'the instance never left byId');
+    assert.equal(srv.instances.liveForSession(publicId), null, 'and nothing live answers to the public id');
+
+    await assertResumedCurrentSegment(
+      await resumeAcrossRelease(srv, publicId, releaseWrite), firstBacking);
   } finally {
     await srv.close();
   }
@@ -828,7 +980,20 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
       && ev.subtype === 'renew_error' && ev.data?.stage === 'lineage'));
     assert.match(errEv.data.message, /ENOSPC writing session-lineage\.json/, 'carries the cause');
     assert.match(errEv.data.message, /in memory\s+but not on disk/, 'and names the orphan risk');
-    assert.equal(flushCalls, 1, 'flushed exactly once — not retried behind the scenes');
+    // DELIBERATE REVERSAL (card 2026-0193, window (c)). This used to pin
+    // `flushCalls === 1, 'flushed exactly once — not retried behind the scenes'`.
+    // The flush-failure branch now runs a BOUNDED retry — LINEAGE_RETRY_ATTEMPTS
+    // re-kick + re-flush rounds on top of the first attempt — because a stale
+    // store left behind by a transient failure orphans the session on the next
+    // restart. This stub rejects every time, so all of them fail and the
+    // exhausted loop emits ONE terminal renew_error carrying the LAST error,
+    // which is what (1) above asserts. The transient-failure counterpart (retry
+    // succeeds, nothing emitted) is the sibling test below.
+    assert.equal(flushCalls, 1 + LINEAGE_RETRY_ATTEMPTS,
+      'the first flush plus every bounded retry ran — and produced exactly one renew_error');
+    assert.equal(inst.ringSnapshot().filter(ev => ev.kind === 'system'
+      && ev.subtype === 'renew_error' && ev.data?.stage === 'lineage').length, 1,
+      'one terminal report for the exhausted retry loop, not one per attempt');
 
     // (2) …and the reseed STILL lands. This is what dies if the branch rethrows.
     const seedEcho = await waitFor(() => inst.ringSnapshot().find(ev => ev.kind === 'user_echo'
@@ -842,6 +1007,77 @@ test('a failed DURABLE FLUSH is reported and the reseed happens anyway', async (
     // renewal window is released even though the flush threw.
     assert.equal(inst.sessionId, sid1, 'the public id is untouched by a flush failure');
     await waitFor(() => inst.renewalPending === false);
+  } finally {
+    await srv.close();
+  }
+});
+
+test('a TRANSIENT lineage-flush failure is retried, leaving the store correct and the stream clean', async () => {
+  // Card 2026-0193 window (c), and the counterpart to the test above. Before the
+  // retry, ANY flush failure — including a lock-contention throw or a store dir
+  // that was briefly unwritable — left the rotation in memory and absent from
+  // disk until some later rotation happened to succeed. A restart in that window
+  // resolves the public id to the pre-clear transcript.
+  //
+  // The REAL write is made to fail, not `flushLineage`: a stub would bypass
+  // recordRotation entirely and leave the store already correct, so it could not
+  // tell a working retry from no retry at all.
+  const srv = await bootServer({ scenarioPath: SCENARIO });
+  mgr = srv.instances;
+  try {
+    await api(srv.baseUrl, 'POST', '/api/projects', { name: 'p' });
+    const spawn = await api(srv.baseUrl, 'POST', '/api/instances', { project: 'p', mode: 'bypassPermissions' });
+    const sid1 = spawn.body.sessionId;
+    await waitFor(() => instForSession(srv.instances, sid1)?.status === 'idle');
+    const inst = instForSession(srv.instances, sid1);
+
+    // A directory where the store file belongs: loadStrict's readFile throws
+    // EISDIR inside the lock, so recordRotation aborts without clobbering.
+    const storeFile = path.join(srv.projectsRoot, '.code-conductor', 'session-lineage.json');
+    await fs.rm(storeFile, { force: true });
+    await fs.mkdir(storeFile, { recursive: true });
+
+    // Clear the obstruction on the FIRST flush only, so the retry hits a writable
+    // store. In `finally`, because the call it hangs off of is the one that throws.
+    let flushCalls = 0;
+    const realFlush = inst.flushLineage.bind(inst);
+    inst.flushLineage = async () => {
+      flushCalls++;
+      try {
+        return await realFlush();
+      } finally {
+        if (flushCalls === 1) await fs.rm(storeFile, { recursive: true, force: true });
+      }
+    };
+
+    await callTool(srv.baseUrl, 'renew_session', { summary: 'retried past a transient failure' }, { caller: sid1 });
+    await callTool(srv.baseUrl, 'send_prompt', { sessionId: sid1, text: 'go1' });
+    await waitFor(() => inst.backingSessionId === NEW_SID);
+
+    // The reseed is dispatched only after the retry loop settles, so the seed echo
+    // is the signal that the loop is done — no polling on flushCalls itself.
+    const seedEcho = await waitFor(() => inst.ringSnapshot().find(ev => ev.kind === 'user_echo'
+      && typeof ev.text === 'string' && ev.text.includes('retried past a transient failure')));
+    assert.match(seedEcho.text, /Your context was just renewed/, 'the real seed, not a stray echo');
+
+    // (1) The store is actually CORRECT afterwards — the whole point, and the
+    //     damage a missing retry does. The row was destroyed with the obstruction,
+    //     so recordRotation recreates it lazily from the base case (the public id
+    //     as its own `initial` segment).
+    const { segmentsFor, resolveBacking } = await import('../src/sessionLineage.ts');
+    assert.deepEqual((await segmentsFor(sid1)).map(g => [g.id, g.reason]),
+      [[sid1, 'initial'], [NEW_SID, 'renew']],
+      'the retry landed the rotation on a lazily recreated row');
+    assert.equal(await resolveBacking(sid1), NEW_SID,
+      'so the public id resolves to the POST-clear transcript, not the pre-clear one');
+    // (2) A recovered failure is NOT reported. The renew_error is reserved for an
+    //     exhausted loop, so the stream a human reads stays clean.
+    assert.deepEqual(inst.ringSnapshot().filter(ev => ev.kind === 'system'
+      && ev.subtype === 'renew_error' && ev.data?.stage === 'lineage'), [],
+      'a failure the retry recovered must not be reported');
+    // (3) Exactly one retry: the loop stops at the first success rather than
+    //     running every attempt regardless.
+    assert.equal(flushCalls, 2, 'one failed flush, then one retry that succeeded — and no more');
   } finally {
     await srv.close();
   }

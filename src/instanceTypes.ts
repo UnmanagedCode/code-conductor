@@ -151,6 +151,10 @@ export interface InstanceLike {
   // failure since the last flush (see src/instances.ts). SessionRenewController
   // waits on this before reseeding a rotated session.
   flushLineage(): Promise<void>;
+  // Re-kick the current rotation's durable lineage write (idempotent). Paired
+  // with flushLineage for the bounded retry SessionRenewController runs when the
+  // first flush failed.
+  retryRotationWrite(): void;
   summary(): InstanceSummary;
   _emitUi(ev: UiEvent): void;
   prompt(text: string, attachments?: unknown[], opts?: { annotateIfMidTurn?: boolean; internal?: boolean; midTurnNote?: string }): Promise<unknown>;

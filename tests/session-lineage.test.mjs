@@ -11,6 +11,9 @@
 //   3. ROTATION — append + advance, lazy row creation from the base case,
 //      idempotent on a retry, and exactly reversible by revertRotation.
 //   4. READ TOLERANCE — dropSegment keeps a chain from pointing at a missing file.
+//   5. READ BARRIER — a read waits behind writes kicked fire-and-forget before it
+//      began (trackLineageWrite), and resolves rather than hangs or throws when
+//      such a write REJECTS.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +31,7 @@ process.env.CLAUDE_PROJECTS_ROOT = path.join(tmp, 'claude-projects');
 
 const {
   loadLineage, mintPublicId, recordRotation, revertRotation,
-  resolveBacking, publicIdFor, segmentsFor, dropSegment,
+  resolveBacking, publicIdFor, segmentsFor, dropSegment, trackLineageWrite,
   PUBLIC_ID_LEN, PUBLIC_ID_LEN_EXTENDED,
 } = await import('../src/sessionLineage.ts');
 
@@ -367,4 +370,56 @@ test('a row whose segments are all unparseable is dropped, not half-loaded', asy
   assert.deepEqual([...byPublic.keys()], ['good']);
   assert.deepEqual([...byBacking.keys()], ['x']);
   await fs.rm(STORE_FILE(), { force: true });
+});
+
+// ---------------------------------------------------------------------------
+// T4 — the kick-anchored read barrier (card 2026-0193, window (a)).
+// Timers are deliberately absent: `hops` yields the event loop a bounded number
+// of times, which is enough for a single readFile to land but can never let a
+// promise that is genuinely parked resolve.
+// ---------------------------------------------------------------------------
+
+const hops = async (n = 40) => {
+  for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r));
+};
+
+test('a read waits behind a write kicked before it began', async () => {
+  await reset();
+  const first = backing('dddddddd');
+  const publicId = await mintPublicId(first);
+  const rotated = backing('eeeeeeee');
+
+  // Stand in for Instance._kickLineageWrite: the durable write is fire-and-forget
+  // and its chain is registered with the barrier, gated so it has demonstrably
+  // NOT landed while the read below is issued.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  trackLineageWrite(gate.then(() => recordRotation(publicId, rotated, 'renew')));
+
+  let settled = false;
+  const readP = resolveBacking(publicId).then((v) => { settled = true; return v; });
+  await hops();
+  assert.equal(settled, false,
+    'the read must be parked on the barrier — without one its single readFile lands in a few hops');
+
+  release();
+  assert.equal(await readP, rotated,
+    'and it must observe the kicked rotation, not the pre-rotation row');
+});
+
+test('the barrier tolerates a write that REJECTS: the read resolves, stale, not hung', async () => {
+  await reset();
+  const first = backing('ffffffff');
+  const publicId = await mintPublicId(first);
+
+  // The failure mode the barrier must survive: withLock throwing after
+  // LOCK_RETRY_MAX (pinned by tests/store-lock.test.mjs, cited not duplicated).
+  // The rejection already has an owner — Instance._lineageError → flushLineage →
+  // renew_error — so the barrier swallows it and the read must still proceed.
+  trackLineageWrite(Promise.reject(
+    new Error('storeLock: could not acquire session-lineage.json after 25 retries (owner still alive)')));
+
+  assert.equal(await resolveBacking(publicId), first,
+    'the read returns the (stale) row rather than hanging or rethrowing the write failure');
+  assert.deepEqual((await segmentsFor(publicId)).map((g) => g.id), [first]);
 });

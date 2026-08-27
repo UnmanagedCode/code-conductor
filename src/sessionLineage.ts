@@ -101,9 +101,48 @@ function indexBacking(byPublic: Map<string, LineageRow>): Map<string, string> {
   return byBacking;
 }
 
+// KICK-ANCHORED READ BARRIER. Durable lineage writes are normally awaited in
+// place by their caller, but two are kicked fire-and-forget onto an instance's
+// `_lineageWrite` chain (`Instance._kickLineageWrite`: the `renew` rotation seen
+// in `system/init`, and `dropSegment` on a missing-transcript replay). A read
+// landing inside that window returns the PRE-rotation row — and the damaging
+// reader is the resume path (`publicIdFor` → `resolveBacking` in
+// `InstanceManager._doCreate`), which then `--resume`s the pre-clear transcript
+// and orphans the renewed session's tail.
+//
+// So the barrier is anchored at the KICK, not at `serialize` below: `serialize`
+// only orders a read behind writes already INSIDE it, while a kicked write sits
+// upstream on the per-instance chain and has not enrolled yet. It is registered
+// by `_kickLineageWrite` and awaited in `loadLineage` — the single chokepoint
+// every reader funnels through (the three resolvers plus the session-list scan
+// in `src/projects.ts`), so one await covers all four.
+//
+// Three facts a future editor needs:
+//   - NO SELF-DEADLOCK: every mutation reads through `loadStrict`, never
+//     `loadLineage`, so a write can never wait on this barrier. A new mutation
+//     must keep using `loadStrict` or it wedges every read behind itself.
+//   - A REJECTED WRITE IS SWALLOWED HERE, deliberately: that failure already has
+//     an owner (`Instance._lineageError` → `flushLineage` → `renew_error`), so
+//     warning again would double-report — and the read must still proceed.
+//   - `mintPublicId` IS DELIBERATELY UNTRACKED (it is awaited in `launch()`), so
+//     a read racing a fresh spawn can miss the brand-new row. Harmless: that is
+//     the store's base case, where public id == backing id. Do not widen for it.
+const inFlightWrites = new Set<Promise<unknown>>();
+
+export function trackLineageWrite(p: Promise<unknown>): void {
+  const tracked = p.then(() => {}, () => {});
+  inFlightWrites.add(tracked);
+  void tracked.then(() => { inFlightWrites.delete(tracked); });
+}
+
 // Bulk load, tolerant: a missing file is the legitimate empty base case, and a
 // corrupt one degrades to empty (loudly) rather than breaking every read path.
 export async function loadLineage(): Promise<Lineage> {
+  // ONE snapshot, not a drain loop: the invariant is "a read sees every write
+  // kicked BEFORE the read began". A loop would starve under a steady write
+  // stream and buys nothing. Empty set (every read outside a rotation or a
+  // pruned-transcript replay) ⇒ one microtask, zero I/O.
+  await Promise.all([...inFlightWrites]);
   let byPublic: Map<string, LineageRow>;
   try {
     byPublic = parseLineageJson(await fs.readFile(lineageFile(), 'utf8'));
