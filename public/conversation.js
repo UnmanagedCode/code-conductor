@@ -733,8 +733,15 @@ export class Conversation {
       this.root.appendChild(el('div', { class: `history-divider ${HISTORY_GAP_CLASS}` },
         el('span', {}, '── ⋯ earlier messages unavailable ──')));
     }
-    // Unconditional: the merge-barrier semantics hold for every marker,
-    // whether or not this one appended a divider.
+    // Unconditional, and deliberately redundant rather than dead: the barrier
+    // must hold for every marker, not just the ones that appended a divider.
+    // The redundancy is unobservable, not untested — `_activeAssistantWrap` is
+    // only ever set non-null in `_ensureMessageWrap`'s new-wrap branch, right
+    // after that wrap is appended to the root, so non-null implies something
+    // was appended since the last close. Contrapositive: the guard above being
+    // true means nothing was appended since the divider, hence the wrap is
+    // already null and this close is a no-op. Keep it — the guard's condition
+    // is what makes it redundant, so narrowing either one re-couples them.
     this._closeAssistantSegment();
   }
 
