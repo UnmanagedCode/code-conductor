@@ -3,6 +3,13 @@
 // Terminate, reflect the session's current mute state via isSessionMuted(),
 // and hide along with the rest of the ⋮ menu when no instance is active.
 //
+// Also owns the ⋮ menu's open-state-across-update() pins (2026-0241): an open
+// panel must survive update() (called on every message_start etc.) instead of
+// being closed unconditionally, while still (a) refreshing its items live,
+// (b) closing when it stops being menu-eligible, (c) closing when the active
+// session changes under it, and (d) still closing via every deliberate path
+// (outside click, Escape, toggle re-click, item click).
+//
 // Same approach as tests/header-change-model.test.mjs: load the real
 // index.html into happy-dom so `dom` matches app.js's getElementById wiring,
 // then drive the real installHeader() factory with fake instance state.
@@ -74,6 +81,16 @@ async function setup() {
   const usageByInstance = new Map();
   const composer = { disable() { this.disabled = true; }, set(s) { this.disabled = false; Object.assign(this, s); } };
   const conversation = { setUserActionsEnabled() {} };
+  const calls = { openSummary: 0, openStats: 0, openPrune: 0 };
+  const sessionActions = {
+    applySessionTitle: async () => {},
+    syncWorktree: async () => {},
+    mergeWorktree: async () => {},
+    respawnActive: async () => {},
+  };
+  const openSummary = () => { calls.openSummary += 1; };
+  const openStats = () => { calls.openStats += 1; };
+  const openPrune = () => { calls.openPrune += 1; };
 
   const header = installHeader({
     dom,
@@ -90,14 +107,25 @@ async function setup() {
     getAccountUsageStale: () => false,
     composer,
     conversation,
+    sessionActions,
+    openSummary,
+    openStats,
+    openPrune,
   });
 
   return {
-    window, document, dom, header, composer, notifications,
+    window, document, dom, header, composer, notifications, calls,
     setInstances: (v) => { instances = v; },
     setActiveId: (v) => { activeId = v; },
   };
 }
+
+const click = (node, win) =>
+  node.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
+const pointerdown = (node, win) =>
+  node.dispatchEvent(new win.Event('pointerdown', { bubbles: true, cancelable: true }));
+const keydown = (node, win, key) =>
+  node.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 
 const LIVE_INSTANCE = {
   id: 'inst-1', sessionId: 'sess-1', status: 'idle', mode: 'plan',
@@ -161,4 +189,157 @@ test('when the active id has no backing instance, the ⋮ menu (and Mute) is hid
   setInstances([]);
   header.update();
   assert.equal(dom.overflowMenu.hidden, true);
+});
+
+const OTHER_INSTANCE = {
+  id: 'inst-2', sessionId: 'sess-2', status: 'idle', mode: 'plan',
+  model: 'claude-sonnet-4-6', project: 'demo', title: null, worktree: null,
+  autoApprovePlan: false, interrupting: false, debug: false,
+};
+
+test('T1: an open ⋮ panel survives update() driven by message_start-style events', async () => {
+  const { window, dom, header, setInstances, setActiveId } = await setup();
+  setInstances([LIVE_INSTANCE]);
+  setActiveId('inst-1');
+  header.update();
+
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: menu opens on toggle click');
+  assert.equal(dom.overflowToggle.getAttribute('aria-expanded'), 'true');
+
+  for (let i = 0; i < 3; i += 1) {
+    header.update();
+    assert.equal(dom.overflowPanel.hidden, false, `panel must stay open after update() #${i + 1}`);
+    assert.equal(dom.overflowToggle.getAttribute('aria-expanded'), 'true');
+  }
+});
+
+test('T2: items keep refreshing live while the ⋮ panel stays open', async () => {
+  const { window, dom, header, notifications, setInstances, setActiveId } = await setup();
+  try {
+    setInstances([LIVE_INSTANCE]);
+    setActiveId('inst-1');
+    header.update();
+    click(dom.overflowToggle, window);
+    assert.equal(dom.overflowPanel.hidden, false);
+    assert.equal(dom.pruneSessionBtn.disabled, false);
+    assert.equal(
+      dom.pruneSessionBtn.title,
+      "Shrink this session's context by stubbing out old tool payloads and thinking "
+        + '— mechanical, no LLM pass, no token cost',
+    );
+
+    setInstances([{ ...LIVE_INSTANCE, status: 'turn' }]);
+    header.update();
+    assert.equal(dom.overflowPanel.hidden, false, 'panel must still be open across a status-changing update()');
+    assert.equal(dom.pruneSessionBtn.disabled, true);
+    assert.equal(dom.pruneSessionBtn.title, 'Prune is only available between turns');
+    assert.equal(dom.killBtn.textContent, '⏸ Interrupt');
+
+    notifications.muteSession('sess-1', true);
+    header.update();
+    assert.equal(dom.overflowPanel.hidden, false, 'panel must still be open after a mute-driven update()');
+    assert.equal(dom.muteBtn.textContent, '🔔 Unmute');
+    assert.equal(dom.muteBtn.getAttribute('aria-pressed'), 'true');
+  } finally {
+    notifications.NotificationState.mutedSessions.clear();
+  }
+});
+
+test('T3: the ⋮ menu closes when the session stops being menu-eligible', async () => {
+  const { window, dom, header, setInstances, setActiveId } = await setup();
+  setActiveId('inst-1');
+
+  // (a) instance transitions to a non-menu-eligible status ('exited').
+  setInstances([LIVE_INSTANCE]);
+  header.update();
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: open');
+  setInstances([{ ...LIVE_INSTANCE, status: 'exited' }]);
+  header.update();
+  assert.equal(dom.overflowMenu.hidden, true);
+  assert.equal(dom.overflowPanel.hidden, true);
+  assert.equal(dom.overflowToggle.getAttribute('aria-expanded'), 'false');
+
+  // (b) the active instance disappears from state entirely.
+  setInstances([LIVE_INSTANCE]);
+  header.update();
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: open again');
+  setInstances([]);
+  header.update();
+  assert.equal(dom.overflowMenu.hidden, true);
+  assert.equal(dom.overflowPanel.hidden, true);
+  assert.equal(dom.overflowToggle.getAttribute('aria-expanded'), 'false');
+
+  // Re-open probe: the controller must have been disarmed by the close above,
+  // not merely hidden — otherwise toggleOverflow's "already armed" branch
+  // would take the close path and the panel would never reopen.
+  setInstances([LIVE_INSTANCE]);
+  header.update();
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'menu must be able to reopen after the forced close');
+});
+
+test('T4: switching the active session under an open menu closes it', async () => {
+  const { window, dom, header, setInstances, setActiveId } = await setup();
+  setInstances([LIVE_INSTANCE, OTHER_INSTANCE]);
+  setActiveId('inst-1');
+  header.update();
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: open on inst-1');
+
+  // Programmatic switch — no pointer event, mirroring popstate / a
+  // notification click, which the outside-pointerdown dismiss can't catch.
+  setActiveId('inst-2');
+  header.update();
+  assert.equal(dom.overflowPanel.hidden, true, 'menu must close when the active session changed under it');
+  assert.equal(dom.overflowToggle.getAttribute('aria-expanded'), 'false');
+
+  // Re-open probe (disarm check, same reasoning as T3).
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'menu must be able to reopen on the new active session');
+
+  header.update();
+  assert.equal(dom.overflowPanel.hidden, false, 'reopened panel must survive a further update() on the same session');
+});
+
+test('T5: the deliberate close paths still close the ⋮ menu', async () => {
+  const { window, document, dom, header, calls, setInstances, setActiveId } = await setup();
+  setInstances([LIVE_INSTANCE]);
+  setActiveId('inst-1');
+  header.update();
+
+  // (a) outside pointerdown dismisses.
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: open');
+  pointerdown(document.getElementById('conversation'), window);
+  assert.equal(dom.overflowPanel.hidden, true);
+  assert.equal(dom.overflowToggle.getAttribute('aria-expanded'), 'false');
+
+  // (b) pointerdown INSIDE the panel must not close it out from under a click.
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: open');
+  pointerdown(dom.overflowPanel, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'a pointerdown inside the panel must not dismiss it');
+
+  // (c) Escape dismisses; any other key does not.
+  keydown(document, window, 'a');
+  assert.equal(dom.overflowPanel.hidden, false, 'a non-Escape key must not dismiss');
+  keydown(document, window, 'Escape');
+  assert.equal(dom.overflowPanel.hidden, true);
+
+  // (d) clicking an item closes the menu and invokes its handler.
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: open');
+  assert.equal(calls.openSummary, 0);
+  click(dom.summarizeSessionBtn, window);
+  assert.equal(dom.overflowPanel.hidden, true);
+  assert.equal(calls.openSummary, 1);
+
+  // (e) re-clicking the toggle while open closes it.
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, false, 'sanity: open');
+  click(dom.overflowToggle, window);
+  assert.equal(dom.overflowPanel.hidden, true);
 });
