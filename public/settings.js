@@ -1161,6 +1161,19 @@ export function installSettings({
     ));
   }
 
+  // Parse the custom-model context field: a plain token count, or DECIMAL k/m
+  // shorthand (200k → 200000, 1.5m → 1500000). Returns null for anything the
+  // caller must reject — the `Number(...)` fallback keeps a bare integer behaving
+  // exactly as it did when this field was type="number".
+  function parseCtxTokens(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s) return null;
+    const m = /^(\d*\.?\d+)\s*([km])$/i.exec(s);
+    const n = m ? Number(m[1]) * (m[2].toLowerCase() === 'k' ? 1_000 : 1_000_000) : Number(s);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return Math.round(n);
+  }
+
   // Compact token formatter for the custom-model list (e.g. 1000000 → "1M").
   function fmtCtxTokens(n) {
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1) + 'M';
@@ -1223,11 +1236,10 @@ export function installSettings({
       if (smCustomStatusEl) smCustomStatusEl.textContent = 'Label, backend, and model id are required.';
       return;
     }
-    // Context window (tokens) — REQUIRED, and must be positive.
-    const ctxRaw = smCustomContextEl?.value?.trim();
-    const ctx = Number(ctxRaw);
-    if (!ctxRaw || !Number.isFinite(ctx) || ctx <= 0) {
-      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Context is required and must be a positive number of tokens.';
+    // Context window (tokens) — REQUIRED, positive, k/m shorthand accepted.
+    const ctx = parseCtxTokens(smCustomContextEl?.value);
+    if (ctx === null) {
+      if (smCustomStatusEl) smCustomStatusEl.textContent = 'Context is required: a positive token count, optionally with a k or m suffix (e.g. 200k, 1m).';
       return;
     }
     if (smCustomStatusEl) smCustomStatusEl.textContent = 'Adding…';
