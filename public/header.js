@@ -85,6 +85,12 @@ export function installHeader({
   let openCombinedPopover = null;
   let openModelPopover = null;
   let currentInst = null;
+  // The instance id the ⋮ menu was opened against — read by update() to close
+  // the menu when a programmatic switch (popstate, notification click) moves
+  // the active session out from under it. Deliberately not cleared on close:
+  // closeOverflow() early-returns while disarmed, so a stale value here is
+  // never observed.
+  let overflowOwnerId = null;
 
   // Header ⋮ overflow menu — hosts the secondary actions (Interrupt/Kill, Mute,
   // Debug, Rename, Change model, Summarize, Session stats, Prune) so they don't
@@ -105,6 +111,7 @@ export function installHeader({
     dom.overflowPanel.hidden = false;
     dom.overflowToggle.setAttribute('aria-expanded', 'true');
     overflowCtl.arm();
+    overflowOwnerId = getActiveId();
   }
   dom.overflowToggle.addEventListener('click', toggleOverflow);
 
@@ -595,12 +602,20 @@ export function installHeader({
 
   function update() {
     // The header gets rebuilt from scratch on every call, which discards
-    // the existing chip nodes. Close any open popover first so it's not
-    // left hanging off a detached anchor.
+    // the existing chip nodes. The chips are rebuilt below, so close the two
+    // chip-anchored popovers first — they'd otherwise be left hanging off a
+    // detached anchor. The ⋮ trigger and panel are static markup that update()
+    // only mutates in place, so an open menu survives a re-render — it must: a
+    // running session re-renders on every message_start. Close it only where
+    // it stops being valid: the wrapper is about to be hidden (no instance or
+    // a status with no applicable items), or the session it was opened against
+    // is no longer active (a programmatic switch; a user's click elsewhere
+    // already dismisses it).
     closeCombinedPopover();
     closeModelPopover();
-    closeOverflow();
     const inst = getInstances().find(i => i.id === getActiveId());
+    const canMenu = !!inst && ['idle', 'turn', 'spawning'].includes(inst.status);
+    if (!canMenu || inst?.id !== overflowOwnerId) closeOverflow();
     currentInst = inst ?? null;
     if (!inst) {
       dom.instanceTitle.textContent = 'no instance selected';
@@ -699,7 +714,6 @@ export function installHeader({
     // plans lives in the controls row (sibling of #mode-select), not in
     // this menu, so the toggle is one click from anywhere — including
     // mid-turn.
-    const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
     dom.debugBtn.hidden = !canMenu;
     dom.renameSessionBtn.hidden = !canMenu;
     dom.renameSessionBtn.disabled = !canMenu || !inst.sessionId;
