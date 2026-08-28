@@ -436,3 +436,41 @@ test('TurnEndBlock: cost segment renders at 4dp, and is absent when unknown', ()
   assert.ok(!noCost.node.textContent.includes('$'),
     'no cost figure at all when both cost and costDelta are null');
 });
+
+// ── Card 2026-0245: tool_args collapse state is the node, and it is sticky ──
+// _renderBody used to wipe `this.body` and rebuild the .tool-args <details>
+// on every setName / input delta / finalizeInput, so any user toggle died
+// with the node. The node is now persistent and `open` is written only when
+// the CODE-CHOSEN default actually changes.
+
+test('ToolUseBlock: a user toggle on tool_args survives a _renderBody rebuild', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'SomeFutureTool', toolUseId: 'tu_sticky' });
+  block.finalizeInput({ foo: 'bar' });
+  const d = block.body.querySelector('details.block.tool-args');
+  assert.ok(d, 'expected details.block.tool-args');
+  assert.ok(!d.open, 'unknown tool starts collapsed');
+
+  d.open = true;                      // the user expands it
+  block.setName('SomeFutureTool');    // any later render pass
+
+  assert.ok(block.body.querySelector('details.block.tool-args') === d,
+    'the tool-args node must be the SAME node — not rebuilt and restored');
+  assert.equal(d.open, true, 'the user expansion survives the re-render');
+  assert.ok(d.querySelector('pre').textContent.includes('"foo"'), 'payload still rendered');
+});
+
+test('ToolUseBlock: the code-owned tool_args default flip still applies when untouched', () => {
+  setupDOM();
+  const block = new ToolUseBlock({ name: 'Bash', toolUseId: 'tu_flip' });
+  // Unparseable partial JSON → generic partial-JSON args, collapsed.
+  block.appendInputDelta('{"comm');
+  const d = block.body.querySelector('details.block.tool-args');
+  assert.ok(d, 'expected details.block.tool-args while streaming');
+  assert.ok(!d.open, 'generic partial-JSON args stay collapsed');
+
+  block.finalizeInput({ command: 'ls' });
+  const after = block.body.querySelector('details.block.tool-args');
+  assert.ok(after === d, 'still the same node across the default flip');
+  assert.equal(d.open, true, 'the renderer-backed default must still auto-open an untouched block');
+});

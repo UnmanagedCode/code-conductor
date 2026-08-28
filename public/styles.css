@@ -728,15 +728,26 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
   background: rgba(122, 213, 211, 0.04);
   border-radius: 0 4px 4px 0;
 }
-.sub-conversation::before {
-  content: "↳ sub-agent";
-  display: block;
+.sub-conversation > summary {
   font-size: 10px;
   color: var(--tool);
   text-transform: uppercase;
   letter-spacing: .08em;
-  margin-bottom: 4px;
+  cursor: pointer;
+  list-style: none;
+  display: flex; align-items: baseline;
 }
+.sub-conversation > summary::-webkit-details-marker { display: none; }
+.sub-conversation > summary::before {
+  /* Custom caret — matches .block.tool summary::before, which display:flex
+     strips the native triangle from. */
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform .12s;
+}
+.sub-conversation[open] > summary { margin-bottom: 4px; }
+.sub-conversation[open] > summary::before { transform: rotate(90deg); }
 .sub-conversation .msg { background: transparent; border: none; padding: 4px 0; margin-bottom: 8px; }
 .sub-conversation .block.tool { padding-left: 4px; }
 
