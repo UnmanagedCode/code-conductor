@@ -329,13 +329,14 @@ test('enforce: pin fill-in, self-edge, an `on` driver, fail-closed spawn, needs,
     assert.equal(rev.model !== null, true, 'the reviewer role resolved to a model');
 
     // Permission comes from the worker's CURRENT stage: audit denies both.
-    refused(await t.call('sync_worktree', { sessionId: rev.sessionId }), 'TOOL_DENIED_IN_STAGE');
+    refused(await t.call('set_idle_timeout', { sessionId: rev.sessionId, timeoutSeconds: 30 }),
+      'TOOL_DENIED_IN_STAGE');
     refused(await t.call('approve_plan', { sessionId: rev.sessionId }),
       'TOOL_DENIED_IN_STAGE');
     // ...and the same tool is permitted for the implementer, in `build`. Both
     // halves are required: a mutant that denied the tool everywhere would pass
     // the two refusals above and fail here.
-    assert.notEqual((await t.call('sync_worktree', { sessionId: impl.sessionId })).code,
+    assert.notEqual((await t.call('set_idle_timeout', { sessionId: impl.sessionId, timeoutSeconds: 30 })).code,
       'TOOL_DENIED_IN_STAGE');
 
     // `audit` is workers:"many": a second lens runs ALONGSIDE the first rather

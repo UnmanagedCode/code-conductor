@@ -15,7 +15,7 @@ import {
 import {
   isGitRepo, hasUnbornHead, listWorktrees, removeWorktree, mergeWorktreeIntoParent,
   buildRebasePrompt, getWorktree, removeAllWorktreesForProject,
-  attachmentsDir, getWorktreeMergeStatus, syncWorktree,
+  attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
 import {
@@ -1246,33 +1246,46 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       } catch (e) { next(e); }
     });
 
-    // Sync a worktree from its parent's baseBranch. Server-side FF
-    // when possible; otherwise sends the templated rebase prompt to
-    // the worktree's agent. Returns {ok:true, action} on success
-    // (action ∈ already-in-sync | fast-forwarded | rebase-prompt-sent)
-    // or {ok:false, reason} when neither path is available.
+    // Measure the worktree against its parent's baseBranch and land what git
+    // can do alone (FF or auto-rebase). Never prompts the agent — a blocked
+    // sync comes back as ok:true + action (commit-required | rebase-conflict)
+    // carrying the rendered rebasePrompt; POST /rebase-prompt is the separate,
+    // explicit dispatch. Works on a dead instance: reporting sync state needs
+    // no subprocess.
     r.post('/instances/:id/sync', async (req, res, next) => {
       try {
         const inst = instances.get(req.params.id);
         if (!inst) throw httpError(404, 'instance not found');
         if (!inst.worktree) throw httpError(400, 'instance is not attached to a worktree');
         const result = await syncWorktree(inst.project, inst.worktree.worktreeName);
-        if (result.ok && result.action === 'rebase-required') {
-          if (!inst.proc) {
-            invalidate(inst.project);
-            res.json({
-              ok: false,
-              reason: 'instance is not running — Resume it before clicking Sync so the agent can rebase',
-            });
-            return;
-          }
-          await inst.prompt(buildRebasePrompt(inst.worktree), [], { annotateIfMidTurn: false });
-          invalidate(inst.project);
-          res.json({ ok: true, action: 'rebase-prompt-sent', ahead: result.ahead, behind: result.behind });
-          return;
-        }
         invalidate(inst.project);
         res.json(result);
+      } catch (e) { next(e); }
+    });
+
+    // The only path in the land flow that starts a worker turn, split out from
+    // /sync so that measuring is never also dispatching. The brief is chosen
+    // server-side from the worktree's current state, never supplied by the client
+    // — and this check is all the state it has: a dispatch can arrive against a
+    // worktree that has moved since the sync that blocked (stale tab, a second
+    // click, another actor), so neither brief claims anything about an earlier
+    // rebase attempt. See buildRebasePrompt.
+    r.post('/instances/:id/rebase-prompt', async (req, res, next) => {
+      try {
+        const inst = instances.get(req.params.id);
+        if (!inst) throw httpError(404, 'instance not found');
+        if (!inst.worktree) throw httpError(400, 'instance is not attached to a worktree');
+        if (!inst.proc) {
+          res.json({
+            ok: false, code: 'SESSION_NOT_LIVE',
+            reason: 'instance is not running — Resume it before asking the agent to rebase',
+          });
+          return;
+        }
+        const dirty = await worktreeDirtyLines(inst.worktree.worktreePath);
+        const blocker = (dirty.ok && dirty.lines.length > 0) ? 'dirty' : 'conflict';
+        await inst.prompt(buildRebasePrompt(inst.worktree, blocker), [], { annotateIfMidTurn: false });
+        res.json({ ok: true, action: 'rebase-prompt-sent', blocker });
       } catch (e) { next(e); }
     });
 

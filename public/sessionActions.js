@@ -294,9 +294,8 @@ export function installSessionActions({
     return result.title ?? null;
   }
 
-  // Sync the active instance's worktree with its parent branch. The server
-  // picks the action (fast-forward / rebase / hand it to the agent) and this
-  // reports whichever one it took.
+  // Sync only measures + lands what git can do alone. Dispatching the rebase is a
+  // separate, confirmed call, because it starts a turn in someone's session.
   async function syncWorktree() {
     const id = getActiveId();
     if (!id) return;
@@ -309,11 +308,35 @@ export function installSessionActions({
         alert(`Synced worktree → ${result.newSha?.slice(0, 12) ?? '?'}`);
       } else if (result.action === 'rebased') {
         alert(`Worktree auto-rebased onto ${result.newSha?.slice(0, 12) ?? '?'} — click Merge when ready.`);
-      } else if (result.action === 'rebase-prompt-sent') {
-        alert('Rebase prompt sent to the agent — watch the conversation for REBASE_DONE, then click Merge.');
       }
       await refreshProjects();
+      if (result.action === 'commit-required' || result.action === 'rebase-conflict') {
+        await offerRebasePrompt(id, result);
+      }
     } catch (e) { alert(`sync failed: ${e.message}`); }
+  }
+
+  // git can't land this one. Name the session that would be asked to do it and get
+  // consent before starting a turn in it; with no live session there is nobody to
+  // ask, and the worktree still needs rebasing — say so instead of failing silently.
+  async function offerRebasePrompt(id, result) {
+    const inst = getInstances().find(i => i.id === id);
+    const what = result.action === 'commit-required'
+      ? `has uncommitted changes and is ${result.behind} commit(s) behind ${result.baseBranch}`
+      : `conflicts with ${result.baseBranch} — the automatic rebase was aborted, so nothing changed`;
+    if (!inst || inst.status === 'crashed' || inst.status === 'exited') {
+      alert(`This worktree ${what}.\n\nNo agent is running here to rebase it — Resume the session ` +
+            `(or rebase ${result.branch} yourself), then click Sync again.`);
+      return;
+    }
+    const who = inst.title || `session ${(inst.sessionId || inst.id).slice(0, 8)}`;
+    if (!confirm(`This worktree ${what}.\n\nSend the rebase prompt to ${who}? That starts a turn in ` +
+                 `this session — watch the conversation for REBASE_DONE, then click Merge.`)) return;
+    try {
+      const sent = await apiFetch(`/api/instances/${id}/rebase-prompt`, { method: 'POST' });
+      if (!sent.ok) { alert(`Cannot ask the agent to rebase:\n${sent.reason}`); return; }
+      alert('Rebase prompt sent — watch the conversation for REBASE_DONE, then click Merge.');
+    } catch (e) { alert(`rebase prompt failed: ${e.message}`); }
   }
 
   async function mergeWorktree() {

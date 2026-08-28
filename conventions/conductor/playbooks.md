@@ -7,4 +7,4 @@ A playbook is a graph of **stages** a worker is bound to. The server checks ever
 - **On a stuck run, `playbook_state({sessionId})`** — it answers what each next move would do using the same check that enforces, and a refusal's `reason` names what to pass to satisfy it. Treat that as a recipe, not a dead end.
 - **Enforcement is the human's per-session switch, not yours.** You have no tool to change it; if the graph blocks work the user wants done, say so rather than routing around it.
 - **The playbook preferred in Settings renders below under its own heading** — selecting it does not bind a spawn.
-- **Policy governs who works, never what lands.** A stage's `tools` may name only tools that address a worker (their schema carries `sessionId`), plus `spawn_instance`; `merge_worktree` / `delete_worktree` carry none.
+- **Policy governs who works, never what lands.** A stage's `tools` may name only tools that address a worker (their schema carries `sessionId`), plus `spawn_instance`; `sync_worktree` / `merge_worktree` / `delete_worktree` carry none.

@@ -818,26 +818,39 @@ type SyncResult =
   | { ok: true; action: 'already-in-sync'; ahead: number; behind: number }
   | { ok: true; action: 'fast-forwarded'; ahead: 0; behind: 0; newSha: string }
   | { ok: true; action: 'rebased'; ahead: number; behind: 0; newSha: string }
-  | { ok: true; action: 'rebase-required'; ahead: number; behind: number }
+  | { ok: true; action: 'commit-required' | 'rebase-conflict'; ahead: number; behind: number;
+      branch: string; baseBranch: string; baseSha: string; rebasePrompt: string }
   | { ok: false; code: 'WORKTREE_HAS_DEPENDENTS'; dependents: string[]; reason: string }
   | { ok: false; reason: string };
+
+// One builder for both blocked results so the two call sites below cannot drift.
+function rebaseBlocked(meta: WorktreeMeta, action: 'commit-required' | 'rebase-conflict',
+                       ahead: number, behind: number): SyncResult {
+  return {
+    ok: true, action, ahead, behind,
+    branch: meta.branch, baseBranch: meta.baseBranch, baseSha: meta.baseSha,
+    rebasePrompt: buildRebasePrompt(meta, action === 'commit-required' ? 'dirty' : 'conflict'),
+  };
+}
 
 // Bring a worktree's branch up to date with the parent's baseBranch.
 // Picks the cheapest path:
 //   - behind == 0                                 → already in sync (no-op).
 //   - behind > 0, ahead == 0, worktree tree clean → server-side `git
 //     merge --ff-only <baseBranch>` inside the worktree.
-//   - dirty working tree (any ahead count)        → caller must send
-//     buildRebasePrompt(meta) to the worktree's agent (the agent
-//     commits/discards before rebasing).
+//   - dirty working tree (any ahead count)        → 'commit-required': the
+//     worktree must commit or discard before any rebase can run.
 //   - ahead > 0, clean tree                       → attempt server-side
-//     `git rebase <baseBranch>`; on success return 'rebased'; on
-//     conflict abort cleanly and fall back to the agent rebase prompt.
+//     `git rebase <baseBranch>`; on success return 'rebased'; on conflict
+//     abort cleanly and return 'rebase-conflict'.
+// Prompts nobody: the two blocked results carry a rendered `rebasePrompt` for
+// the caller to dispatch (or not) as its own explicit act.
 // Returns one of:
 //   { ok:true,  action:"already-in-sync",  ahead, behind }
 //   { ok:true,  action:"fast-forwarded",   ahead:0, behind:0, newSha }
 //   { ok:true,  action:"rebased",          ahead, behind:0, newSha }
-//   { ok:true,  action:"rebase-required",  ahead, behind }
+//   { ok:true,  action:"commit-required"|"rebase-conflict", ahead, behind,
+//               branch, baseBranch, baseSha, rebasePrompt }
 //   { ok:false, reason: "..." }
 export async function syncWorktree(projectName: string, worktreeName: string): Promise<SyncResult> {
   const meta = await getWorktree(projectName, worktreeName);
@@ -864,13 +877,13 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
     return { ok: true, action: 'already-in-sync', ahead, behind };
   }
   // Dirty working tree → agent must commit/discard before any rebase can
-  // proceed (git rebase refuses a dirty tree). Send the rebase prompt.
+  // proceed (git rebase refuses a dirty tree).
   const dirty = await worktreeDirtyLines(meta.worktreePath);
   if (!dirty.ok) {
     return { ok: false, reason: `git status failed inside worktree '${meta.worktreePath}'` };
   }
   if (dirty.lines.length > 0) {
-    return { ok: true, action: 'rebase-required', ahead, behind };
+    return rebaseBlocked(meta, 'commit-required', ahead, behind);
   }
   // Pure-behind + clean tree → fast-forward; no rebase needed.
   if (ahead === 0) {
@@ -892,8 +905,8 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
     };
   }
   // Diverged + clean tree → attempt automatic rebase. On conflict, abort
-  // cleanly so the worktree is never left mid-rebase, then fall back to
-  // the agent rebase prompt.
+  // cleanly so the worktree is never left mid-rebase, then report
+  // 'rebase-conflict' with the brief the caller may dispatch.
   //
   // --rebase-merges is load-bearing, not a nicety: a worktree that other
   // worktrees merged into carries their merge commits, and a bare `git rebase`
@@ -916,21 +929,44 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   }
   // Abort unconditionally — safe no-op if rebase never started.
   await runGit(meta.worktreePath, ['rebase', '--abort']);
-  return { ok: true, action: 'rebase-required', ahead, behind };
+  return rebaseBlocked(meta, 'rebase-conflict', ahead, behind);
 }
 
-// Build the prompt text the orchestrator sends to the agent when the
-// user clicks "Ask agent to rebase". Kept in this module so the on-disk
-// metadata and the prompt phrasing stay consistent.
-export function buildRebasePrompt(meta: WorktreeMeta): string {
+// The prompt text a caller sends to the worktree's agent when git could not land
+// the sync itself. Two briefs, because the two blockers need different first
+// moves: 'dirty' must commit or discard before it can rebase; 'conflict' has a
+// clean tree and only the rebase itself left to do. Neither brief asserts any
+// history the sender observed — a dispatch can arrive against a worktree whose
+// state has since moved (see the /rebase-prompt route), so the conflict brief
+// states the request and the one invariant that always holds (the orchestrator
+// aborts a failed rebase, never leaves one half-applied) and tells the agent to
+// verify the rest itself. Kept in this module so the on-disk metadata and the
+// prompt phrasing stay consistent, and so both briefs keep --rebase-merges in
+// step with syncWorktree's own rebase above.
+export function buildRebasePrompt(meta: WorktreeMeta, blocker: 'dirty' | 'conflict'): string {
+  const rebaseStep = `Run \`git rebase --rebase-merges ${meta.baseBranch}\` inside this worktree so the work sits on top of the parent's current ${meta.baseBranch}. Keep \`--rebase-merges\`: without it any merge commit on this branch is silently flattened.`;
+  const steps = blocker === 'dirty'
+    ? [
+        `This worktree has uncommitted changes, so it cannot be rebased onto ${meta.baseBranch} yet.`,
+        ``,
+        `Please:`,
+        `1. Commit any meaningful uncommitted changes in the worktree (ignore noise).`,
+        `2. ${rebaseStep}`,
+      ]
+    : [
+        `This worktree needs to be rebased onto ${meta.baseBranch} by hand, and you are being asked to do it.`,
+        `Start with \`git status\`: the tree should be clean with no rebase in progress — the orchestrator aborts a failed rebase rather than leaving one half-applied. If it turns out the branch needs nothing, say so instead of forcing a rebase.`,
+        ``,
+        `Please:`,
+        `1. ${rebaseStep}`,
+        `2. Resolve any conflicts as they come up (\`git status\` lists them, \`git rebase --continue\` after each).`,
+      ];
   return [
     `You are running in an isolated git worktree.`,
     `Worktree branch: ${meta.branch}`,
     `Originally branched from: ${meta.baseBranch} at ${meta.baseSha.slice(0, 12)}`,
     ``,
-    `Please:`,
-    `1. Commit any meaningful uncommitted changes in the worktree (ignore noise).`,
-    `2. Run \`git rebase --rebase-merges ${meta.baseBranch}\` inside this worktree so the work sits on top of the parent's current ${meta.baseBranch}. Keep \`--rebase-merges\`: without it any merge commit on this branch is silently flattened.`,
+    ...steps,
     `3. If you hit conflicts you can't resolve with high confidence, STOP and use AskUserQuestion to consult the user before continuing.`,
     `4. When the rebase is clean, run \`git status\` to confirm, then reply with the line "REBASE_DONE" on its own so I can fast-forward the parent.`,
   ].join('\n');

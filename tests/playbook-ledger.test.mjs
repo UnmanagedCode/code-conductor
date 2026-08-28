@@ -76,7 +76,7 @@ test('fold builds the projection across all five event kinds', () => {
   const p = fold([
     { kind: 'spawn', sessionId: 's1', playbook: 'solo', stage: 'plan', project: 'demo', worktree: 'demo_wt' },
     { kind: 'transition', sessionId: 's1', from: 'plan', to: 'implement', via: 'approve_plan' },
-    { kind: 'refusal', sessionId: 's1', tool: 'sync_worktree', code: 'TOOL_DENIED_IN_STAGE', reason: 'nope' },
+    { kind: 'refusal', sessionId: 's1', tool: 'locate_session', code: 'TOOL_DENIED_IN_STAGE', reason: 'nope' },
     // `from: 'off'` on purpose: the ledger is an append-only record of what WAS
     // true, and 'off' was a level before it was retired. The fold stores the mode
     // as a bare string precisely so history stays readable after the live

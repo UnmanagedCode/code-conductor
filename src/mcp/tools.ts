@@ -585,16 +585,23 @@ export function buildTools(): Tool[] {
     {
       name: 'sync_worktree',
       description:
-        'Bring a worktree up to date with its base branch — server-side fast-forward when possible; ' +
-        'otherwise attempts an automatic git rebase and only sends a rebase prompt to the worktree\'s ' +
-        'live agent when conflicts block the rebase. Caller passes the worktree\'s attached worker sessionId. ' +
-        'Refuses WORKTREE_HAS_DEPENDENTS (listing them) while any worktree is based on this one, since every ' +
-        'sync path rewrites the base they were created from — delete those worktrees first; killing their ' +
-        'workers is not enough.',
+        'Bring a worktree up to date with its base branch — server-side fast-forward when possible, ' +
+        'otherwise an automatic `git rebase --rebase-merges`. Returns immediately and never prompts a ' +
+        'worker. Actions already-in-sync / fast-forwarded / rebased mean it landed; commit-required ' +
+        '(the worktree has uncommitted changes) and rebase-conflict (the rebase was attempted and ' +
+        'aborted, leaving the worktree clean and untouched) are successful measurements, not failures — ' +
+        'both are ok:true and carry branch, baseBranch, baseSha, ahead, behind and a ready-to-send ' +
+        'rebasePrompt: send_prompt it verbatim to whichever worker should do the work, or resolve it ' +
+        'another way. Refuses WORKTREE_HAS_DEPENDENTS (listing them) while any worktree is based on ' +
+        'this one, since every sync path rewrites the base they were created from — delete those ' +
+        'worktrees first; killing their workers is not enough.',
       inputSchema: {
         type: 'object',
-        properties: { sessionId: { type: 'string', description: 'Worker sessionId attached to the worktree.' } },
-        required: ['sessionId'],
+        properties: {
+          project: { type: 'string', description: 'Parent project holding the worktree.' },
+          worktree: { type: 'string', description: 'Worktree name (see list_worktrees).' },
+        },
+        required: ['project', 'worktree'],
       },
       handler: h.syncWorktree,
     },

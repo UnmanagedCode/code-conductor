@@ -79,6 +79,8 @@ export async function builtins() {
 //   build   omits spawn_instance ⇒ STAGE_NOT_SPAWNABLE; denies nothing that
 //           `audit` denies, which is the permitted half of the deny tests
 //   audit   `needs` on SPAWN-entry, workers:"many", and the stage-scoped denies
+//           (`set_idle_timeout` is a governable no-op on an idle worker —
+//           denying it exercises policy without touching the subprocess)
 //   amend   `needs` on TRANSITION-entry at the default liveness:"live"; the
 //           DECLARED amend->amend self-loop, so its rounds are ledgered
 //   sealed  a dead end with both write doors shut — no outgoing edge, set_mode
@@ -107,7 +109,7 @@ export const GATELAB = {
       workers: 'many',
       tools: {
         spawn_instance: { pin: { mode: 'bypassPermissions', model: 'reviewer' } },
-        sync_worktree: 'deny',
+        set_idle_timeout: 'deny',
         approve_plan: 'deny',
       },
     },

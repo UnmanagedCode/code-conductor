@@ -28,7 +28,7 @@ import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import {
   isGitRepo, hasUnbornHead, listWorktrees as fsListWorktrees, getWorktreeMergeStatus,
   createWorktree as fsCreateWorktree, removeWorktree, getWorktree,
-  syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent, buildRebasePrompt,
+  syncWorktree as fsSyncWorktree, mergeWorktreeIntoParent,
   worktreeDirtyLines, runGit,
   listDependentWorktrees, dependentsRefusal, resolveWorktreeName,
   type WorktreeMeta,
@@ -1712,22 +1712,11 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
   return { project, worktree: wtName };
 }
 
-export async function syncWorktree({ sessionId }: { sessionId: string }, { instances }: McpCtx) {
-  const r = await getInst(instances, sessionId);
-  if ('soft' in r) return r.soft;
-  const inst = r.inst;
-  if (!inst.worktree) throw new Error(`session ${sessionId} is not attached to a worktree`);
-  const result = await fsSyncWorktree(inst.project, inst.worktree.worktreeName);
-  if (result.ok && result.action === 'rebase-required') {
-    // getInst is LIVE-only, so inst.proc is guaranteed — the agent is here to
-    // drive the rebase prompt.
-    await inst.prompt(buildRebasePrompt(inst.worktree), [], { annotateIfMidTurn: false });
-    return {
-      ok: true, action: 'rebase-prompt-sent',
-      ahead: result.ahead, behind: result.behind,
-    };
-  }
-  return result;
+export async function syncWorktree({ project, worktree }: { project: string; worktree: string }) {
+  const wt = await getWorktree(project, worktree);
+  if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
+  // Resolve once and pass the canonical name down (same reason as deleteWorktree).
+  return fsSyncWorktree(project, wt.worktreeName);
 }
 
 export async function mergeWorktree({ project, worktree, allowDirty }: { project: string; worktree: string; allowDirty?: boolean }) {

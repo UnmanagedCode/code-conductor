@@ -36,7 +36,7 @@ approve_plan / sync_worktree / merge_worktree / kill_instance   // no extra get_
 - **A wake implies the worker's subagents finished too** — the orchestrator defers it until backgrounded `Agent` tasks complete (a stuck one shows up as a heartbeat instead).
 - **You are woken automatically.** A session you spawned or have ever prompted is yours: whenever it enters a turn, you are woken when that turn ends. Nothing to arm, nothing to re-arm, no way to opt out — including turns it starts on its own (an auto-approved plan rolling into implementation). Abandon a worker with `kill_instance`.
 - **Read each wake before proceeding.** The stub either folds the worker's output in (act on it) or points you to `get_recent_messages`. Check your agreed sentinel — a turn ending is not the work being done.
-- **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need you to end your turn.
+- **Recon / review / land calls** (`list_*`, `project_status`, `project_read`, `project_diff`, `project_bash`, `get_recent_messages`, `sync_worktree`, `merge_worktree`, …) return immediately — run them synchronously within a wake-up turn. Only worker *turns* need you to end your turn.
 - **Heartbeat, never timers.** While one of your sessions is mid-turn it pings you every `ORCH_SUBSCRIBE_TIMEOUT_MS` with a stub labelled "did NOT finish" — that means still running, not finished, and it repeats until the turn ends. A heartbeat never consumes your turn-end wake; that still arrives. On one, `interrupt_turn` or escalate rather than landing. Never poll a worker with timers (`ScheduleWakeup`, `/loop`, sleep loops).
 
 ## Your own plan mode
@@ -92,7 +92,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `get_transcript({sessionId, fromSeq?, limit?})` — full UI event stream. Poll incrementally: pass the returned `nextFrom` as the next `fromSeq`; `hasMore` flags more to drain; evicted ranges are served from the on-disk transcript, so no history is lost. Never poll a RETIRED session waiting for a `turn_end`. Meaningful kinds: prose deltas, `tool_use`/`tool_result` (may carry `is_error:true`), `plan_request`, `user_question`, `turn_end` — see the transcript event stream for the full set. For most decisions `get_recent_messages` is enough.
 
 **Land work**
-- `sync_worktree({sessionId})` — fast-forwards or auto-rebases the worktree server-side; only when conflicts block the rebase does it send a rebase prompt to the worker — that is a worker turn — end your turn and it wakes you. Expected refusals come back as `{ok:false, reason, code}`, never thrown.
+- `sync_worktree({project, worktree})` — fast-forwards or auto-rebases the worktree server-side and returns immediately; it prompts nobody. `commit-required` and `rebase-conflict` are `ok:true` measurements, not failures — the worktree is untouched, and the result carries a ready-to-send `rebasePrompt`. Expected refusals come back as `{ok:false, reason, code}`, never thrown.
 - `merge_worktree({project, worktree})` — the landing step. Success is `{ok:true, newSha}`; `WORKTREE_BEHIND` ⇒ `sync_worktree` first.
 - `delete_worktree({project, worktree, force?})` — soft-refuses with a `code` naming the blocker (e.g. attached instance, dirty tree) unless `force:true`; see the schema for the full set.
 

@@ -357,7 +357,7 @@ test('POST /sync fast-forwards the worktree when it is purely behind a clean par
   assert.equal(wtSha, parentSha);
 });
 
-test('POST /sync falls back to the rebase prompt when the pure-behind worktree has uncommitted changes', async () => {
+test('POST /sync reports commit-required (and prompts nobody) when the pure-behind worktree has uncommitted changes', async () => {
   const repoPath = await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
     project: 'demo', mode: 'bypassPermissions', worktree: true,
@@ -377,13 +377,18 @@ test('POST /sync falls back to the rebase prompt when the pure-behind worktree h
   const r = await api(baseUrl, 'POST', `/api/instances/${id}/sync`);
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
-  assert.equal(r.body.action, 'rebase-prompt-sent');
+  assert.equal(r.body.action, 'commit-required');
+  assert.match(r.body.rebasePrompt, /isolated git worktree/);
+  assert.match(r.body.rebasePrompt, /git rebase --rebase-merges main/);
+  assert.match(r.body.rebasePrompt, /REBASE_DONE/);
+  assert.equal(r.body.branch, wt.branch);
+  assert.equal(r.body.baseBranch, wt.baseBranch);
+  assert.equal(r.body.baseSha, wt.baseSha);
 
-  await waitFor(() => events.some(e => e.kind === 'user_echo'));
-  const echo = events.find(e => e.kind === 'user_echo');
-  assert.match(echo.text, /isolated git worktree/);
-  assert.match(echo.text, /git rebase --rebase-merges main/);
-  assert.match(echo.text, /REBASE_DONE/);
+  // The old code prompted synchronously inside the request, so an echo would
+  // already be on the stream by the time the response landed. Nothing is.
+  assert.equal(events.filter(e => e.kind === 'user_echo').length, 0,
+    'sync must not start a turn in the worker');
 });
 
 test('POST /sync auto-rebases the worktree when it has diverged without conflicts', async () => {
@@ -418,7 +423,7 @@ test('POST /sync auto-rebases the worktree when it has diverged without conflict
   assert.ok(isAncestor, 'worktree HEAD should be a descendant of the parent tip after rebase');
 });
 
-test('POST /sync falls back to the rebase prompt when the diverged worktree has conflicts', async () => {
+test('POST /sync reports rebase-conflict (and prompts nobody) when the diverged worktree has conflicts', async () => {
   const repoPath = await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
     project: 'demo', mode: 'bypassPermissions', worktree: true,
@@ -445,20 +450,23 @@ test('POST /sync falls back to the rebase prompt when the diverged worktree has 
   const r = await api(baseUrl, 'POST', `/api/instances/${id2}/sync`);
   assert.equal(r.status, 200);
   assert.equal(r.body.ok, true);
-  assert.equal(r.body.action, 'rebase-prompt-sent');
+  assert.equal(r.body.action, 'rebase-conflict');
   assert.equal(r.body.ahead, 1);
   assert.equal(r.body.behind, 1);
+  assert.equal(r.body.branch, wt.branch);
+  assert.equal(r.body.baseBranch, wt.baseBranch);
+  assert.equal(r.body.baseSha, wt.baseSha);
+  assert.match(r.body.rebasePrompt, /git rebase --rebase-merges main/);
 
-  // Worktree must be clean — rebase was aborted before falling back.
+  // Worktree must be clean — the rebase was aborted before reporting.
   const status = (await git(wt.worktreePath, 'status', '--porcelain')).stdout.trim();
   assert.equal(status, '', 'worktree should be clean after aborted rebase');
 
-  await waitFor(() => events.some(e => e.kind === 'user_echo'));
-  const echo = events.find(e => e.kind === 'user_echo');
-  assert.match(echo.text, /git rebase --rebase-merges main/);
+  assert.equal(events.filter(e => e.kind === 'user_echo').length, 0,
+    'sync must not start a turn in the worker');
 });
 
-test('POST /sync refuses the rebase prompt when the instance is not running (conflict fallback)', async () => {
+test('POST /sync reports the conflict on a dead instance — measuring needs no subprocess', async () => {
   const repoPath = await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
     project: 'demo', mode: 'bypassPermissions', worktree: true,
@@ -468,9 +476,9 @@ test('POST /sync refuses the rebase prompt when the instance is not running (con
   const wt = await getWorktree('demo', wtName);
   await waitFor(() => instances.get(id)?.status === 'idle');
 
-  // Both sides modify the same line → guaranteed conflict so auto-rebase
-  // fails and the code must fall back to sending the rebase prompt. With
-  // the instance stopped, that fallback path should return ok:false.
+  // Both sides modify the same line → guaranteed conflict, so the auto-rebase
+  // fails. The old code refused here because no subprocess was alive to be
+  // prompted; sync no longer prompts, so it must report the measurement.
   await commitInParent(repoPath, 'shared.txt', 'parent version\n', 'parent edit');
   await instances.get(id).kill({ graceMs: 200 });
   await commitInWorktree(wt.worktreePath, 'shared.txt', 'agent version\n', 'agent edit');
@@ -478,12 +486,120 @@ test('POST /sync refuses the rebase prompt when the instance is not running (con
 
   const r = await api(baseUrl, 'POST', `/api/instances/${id}/sync`);
   assert.equal(r.status, 200);
-  assert.equal(r.body.ok, false);
-  assert.match(r.body.reason, /not running/i);
+  assert.equal(r.body.ok, true, `sync should measure a dead instance: ${r.body.reason}`);
+  assert.equal(r.body.action, 'rebase-conflict');
+  assert.equal(r.body.ahead, 1);
+  assert.equal(r.body.behind, 1);
+  assert.match(r.body.rebasePrompt, /git rebase --rebase-merges main/);
 
   // Worktree must be clean — aborted rebase should not leave stray files.
   const status = (await git(wt.worktreePath, 'status', '--porcelain')).stdout.trim();
   assert.equal(status, '', 'worktree should be clean after aborted rebase');
+});
+
+test('POST /rebase-prompt refuses SESSION_NOT_LIVE when the instance is not running', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const wtName = created.body.worktree.worktreeName;
+  const id = created.body.id;
+  const wt = await getWorktree('demo', wtName);
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  await commitInParent(repoPath, 'shared.txt', 'parent version\n', 'parent edit');
+  await instances.get(id).kill({ graceMs: 200 });
+  await commitInWorktree(wt.worktreePath, 'shared.txt', 'agent version\n', 'agent edit');
+  await waitFor(() => !instances.get(id)?.proc);
+
+  const r = await api(baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, false);
+  assert.equal(r.body.code, 'SESSION_NOT_LIVE');
+  assert.match(r.body.reason, /not running/i);
+});
+
+test('POST /rebase-prompt sends the dirty brief when the worktree has uncommitted changes', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const wtName = created.body.worktree.worktreeName;
+  const id = created.body.id;
+  const wt = await getWorktree('demo', wtName);
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  await commitInParent(repoPath, 'parent.txt', 'parent work\n', 'parent work');
+  await fs.writeFile(path.join(wt.worktreePath, 'wip.txt'), 'uncommitted\n');
+
+  const events = [];
+  instances.on('event', ({ id: eid, ev }) => { if (eid === id) events.push(ev); });
+
+  const r = await api(baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.action, 'rebase-prompt-sent');
+  // The blocker is derived server-side from the worktree, not taken from the client.
+  assert.equal(r.body.blocker, 'dirty');
+
+  await waitFor(() => events.some(e => e.kind === 'user_echo'));
+  const echo = events.find(e => e.kind === 'user_echo');
+  assert.match(echo.text, /Commit any meaningful uncommitted changes/);
+  assert.match(echo.text, /git rebase --rebase-merges main/);
+  assert.match(echo.text, /REBASE_DONE/);
+});
+
+test('POST /rebase-prompt sends the conflict brief when the worktree is clean', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const wtName = created.body.worktree.worktreeName;
+  const id = created.body.id;
+  const wt = await getWorktree('demo', wtName);
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  await commitInParent(repoPath, 'shared.txt', 'parent version\n', 'parent edit');
+  await commitInWorktree(wt.worktreePath, 'shared.txt', 'agent version\n', 'agent edit');
+
+  const events = [];
+  instances.on('event', ({ id: eid, ev }) => { if (eid === id) events.push(ev); });
+
+  const r = await api(baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.blocker, 'conflict');
+
+  await waitFor(() => events.some(e => e.kind === 'user_echo'));
+  const echo = events.find(e => e.kind === 'user_echo');
+  assert.match(echo.text, /needs to be rebased onto main by hand/);
+  assert.match(echo.text, /git rebase --rebase-merges main/);
+});
+
+test('POST /rebase-prompt on an already-in-sync worktree claims no rebase attempt', async () => {
+  // The stale-dispatch state: the endpoint cannot observe whether a rebase was
+  // ever tried, so the brief must assert nothing about one.
+  await makeRealRepo('demo');
+  const created = await api(baseUrl, 'POST', '/api/instances', {
+    project: 'demo', mode: 'bypassPermissions', worktree: true,
+  });
+  const id = created.body.id;
+  await waitFor(() => instances.get(id)?.status === 'idle');
+
+  const events = [];
+  instances.on('event', ({ id: eid, ev }) => { if (eid === id) events.push(ev); });
+
+  const r = await api(baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.equal(r.body.blocker, 'conflict');
+
+  await waitFor(() => events.some(e => e.kind === 'user_echo'));
+  const echo = events.find(e => e.kind === 'user_echo');
+  // Past-tense claims about an attempt only — step 3's "if you hit conflicts you
+  // can't resolve" is a forward-looking instruction, not an assertion of history.
+  assert.doesNotMatch(echo.text, /\b(was|were) (aborted|attempted)\b|automatic rebase|rebase (hit|failed|conflicted)/i);
+  assert.match(echo.text, /no rebase in progress/);
 });
 
 test('POST /merge creates a merge commit on the parent when worktree is ahead (--no-ff)', async () => {
@@ -695,7 +811,7 @@ test('GET /api/projects exposes mergeStatus tracking ahead/behind for each workt
   assert.equal(me.mergeStatus.behind, 1);
 });
 
-test('sync and merge reject non-worktree instances', async () => {
+test('sync, rebase-prompt and merge reject non-worktree instances', async () => {
   await makeRealRepo('demo');
   const created = await api(baseUrl, 'POST', '/api/instances', {
     project: 'demo', mode: 'bypassPermissions',
@@ -706,6 +822,10 @@ test('sync and merge reject non-worktree instances', async () => {
   const s = await api(baseUrl, 'POST', `/api/instances/${id}/sync`);
   assert.equal(s.status, 400);
   assert.match(s.body.error, /not attached to a worktree/);
+
+  const rp = await api(baseUrl, 'POST', `/api/instances/${id}/rebase-prompt`);
+  assert.equal(rp.status, 400);
+  assert.match(rp.body.error, /not attached to a worktree/);
 
   const m = await api(baseUrl, 'POST', `/api/instances/${id}/merge`);
   assert.equal(m.status, 400);
