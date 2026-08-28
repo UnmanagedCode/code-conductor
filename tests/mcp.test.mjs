@@ -600,6 +600,51 @@ test('create_worktree + list_worktrees + delete_worktree against a real git repo
     'WORKTREES (none)');
 });
 
+test('sync_worktree takes {project, worktree} and declares no sessionId', async () => {
+  const { body } = await rpc(baseUrl, 'tools/list');
+  const sync = body.result.tools.find(t => t.name === 'sync_worktree');
+  assert.ok(sync, 'sync_worktree is listed');
+  assert.deepEqual(sync.inputSchema.required, ['project', 'worktree']);
+  // Not an optional alias either: declaring sessionId at all would put a landing
+  // call back into the playbook-governable set (see playbook-schema.test.mjs).
+  assert.equal(sync.inputSchema.properties.sessionId, undefined);
+});
+
+test('sync_worktree measures a conflicted worktree and prompts nobody', async () => {
+  const repoPath = await makeRealRepo(projectsRoot, 'demo');
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'demo', mode: 'bypassPermissions', createWorktree: true,
+  }));
+  await waitFor(() => instForSession(instances, spawn.sessionId).sessionId);
+  const inst = instForSession(instances, spawn.sessionId);
+  const wt = inst.worktree;
+
+  // Both sides edit the same line → the auto-rebase must conflict.
+  await git(wt.worktreePath, 'config', 'user.email', 'agent@example.com');
+  await git(wt.worktreePath, 'config', 'user.name', 'agent');
+  await git(wt.worktreePath, 'config', 'commit.gpgsign', 'false');
+  await fs.writeFile(path.join(wt.worktreePath, 'shared.txt'), 'agent version\n');
+  await git(wt.worktreePath, 'add', '.');
+  await git(wt.worktreePath, 'commit', '-q', '-m', 'agent edit');
+  await fs.writeFile(path.join(repoPath, 'shared.txt'), 'parent version\n');
+  await git(repoPath, 'add', '.');
+  await git(repoPath, 'commit', '-q', '-m', 'parent edit');
+
+  const events = [];
+  instances.on('event', ({ id: eid, ev }) => { if (eid === inst.id) events.push(ev); });
+
+  // Bare slug resolves, exactly like merge_worktree.
+  const slug = wt.worktreeName.replace(/^demo_worktree_/, '');
+  const res = unwrap(await callTool(baseUrl, 'sync_worktree', { project: 'demo', worktree: slug }));
+  assert.equal(res.ok, true, `sync failed: ${res.reason}`);
+  assert.equal(res.action, 'rebase-conflict');
+  assert.match(res.rebasePrompt, /git rebase --rebase-merges/);
+  // The old handler prompted synchronously before returning, so an echo would
+  // already be on this worker's stream. Nothing is: sync starts no turn.
+  assert.equal(events.filter(e => e.kind === 'user_echo').length, 0,
+    'sync_worktree must not start a turn in the worker');
+});
+
 test('merge_worktree refuses with friendly reason when the worktree is behind', async () => {
   const repoPath = await makeRealRepo(projectsRoot, 'demo');
   // Spawn an instance into a fresh worktree.

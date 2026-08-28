@@ -126,6 +126,14 @@ async function makeFeature(project, { name = 'auth', tasks = 0 } = {}) {
   return { repoPath, feature, tasks: taskMetas };
 }
 
+// Past-tense claims that a rebase already ran here. Covers the was/were/got/has
+// been/had been families against the abort-and-failure vocabulary, plus the
+// "a previous/earlier rebase" opener that needs no auxiliary verb at all.
+// NOT "failed rebase": that is the present-tense standing invariant the brief
+// is allowed — and required — to state.
+const PAST_ATTEMPT_CLAIM =
+  /\b(was|were|got|has been|have been|had been)\s+(aborted|attempted|tried|abandoned|rolled back|undone)\b|\b(a |the |an )?(previous|earlier|prior|last) rebase\b|\brebase (was|has|had|got)\b/i;
+
 // ---------------------------------------------------------------------------
 // T1 — a feature's merge commits survive its own sync (--rebase-merges at the
 //      automated call site, src/worktrees.ts syncWorktree).
@@ -163,16 +171,97 @@ test('T1: syncing a feature preserves the task merge commit it carries', async (
 // ---------------------------------------------------------------------------
 // T2 — the conflict path instructs the same history-preserving rebase.
 // ---------------------------------------------------------------------------
-test('T2: buildRebasePrompt tells the agent to rebase with --rebase-merges', async () => {
+test('T2: both rebase briefs tell the agent to rebase with --rebase-merges', async () => {
   await makeRealRepo('demo');
   const feature = await createWorktree('demo', { name: 'auth' });
-  const prompt = buildRebasePrompt(feature);
-  // T1 cannot see this string — it exercises the server-side rebase only — so a
-  // flag on just one of the two call sites would let the agent-driven conflict
-  // path flatten exactly what the automated path preserved. This is not the only
-  // catcher: two rebase-prompt assertions in tests/worktrees.test.mjs match the
-  // command text too. This one states the invariant directly.
-  assert.match(prompt, /git rebase --rebase-merges main/);
+  // T1 cannot see these strings — it exercises the server-side rebase only — so a
+  // flag on just one of the three call sites would let the agent-driven path
+  // flatten exactly what the automated path preserved. Both briefs are asserted:
+  // either one dropping the flag is the same bug.
+  assert.match(buildRebasePrompt(feature, 'dirty'), /git rebase --rebase-merges main/);
+  assert.match(buildRebasePrompt(feature, 'conflict'), /git rebase --rebase-merges main/);
+});
+
+// ---------------------------------------------------------------------------
+// T2b — the conflict brief claims no history it cannot stand behind. A dispatch
+//       can land on a worktree whose state has moved since the sync that
+//       blocked, so the brief may state only the standing invariant.
+// ---------------------------------------------------------------------------
+test('T2b: the conflict brief asserts no rebase attempt, only the standing invariant', async () => {
+  await makeRealRepo('demo');
+  const feature = await createWorktree('demo', { name: 'auth' });
+  const prompt = buildRebasePrompt(feature, 'conflict');
+
+  // GOLDEN COPY. The invariant — "claims no rebase was attempted, failed, or
+  // aborted, in ANY phrasing" — cannot be expressed as a verb enumeration; the
+  // next paraphrase slips past it. The brief is a fixed template with three
+  // substituted fields, so pinning its whole rendered text is exact: ANY added
+  // sentence fails here, whatever its wording. Deliberately a literal and NOT
+  // buildRebasePrompt's own output, which would assert nothing.
+  const expected = [
+    `You are running in an isolated git worktree.`,
+    `Worktree branch: ${feature.branch}`,
+    `Originally branched from: ${feature.baseBranch} at ${feature.baseSha.slice(0, 12)}`,
+    ``,
+    `This worktree needs to be rebased onto ${feature.baseBranch} by hand, and you are being asked to do it.`,
+    'Start with `git status`: the tree should be clean with no rebase in progress — the orchestrator aborts a failed rebase rather than leaving one half-applied. If it turns out the branch needs nothing, say so instead of forcing a rebase.',
+    ``,
+    `Please:`,
+    "1. Run `git rebase --rebase-merges main` inside this worktree so the work sits on top of the parent's current main. Keep `--rebase-merges`: without it any merge commit on this branch is silently flattened.",
+    '2. Resolve any conflicts as they come up (`git status` lists them, `git rebase --continue` after each).',
+    "3. If you hit conflicts you can't resolve with high confidence, STOP and use AskUserQuestion to consult the user before continuing.",
+    '4. When the rebase is clean, run `git status` to confirm, then reply with the line "REBASE_DONE" on its own so I can fast-forward the parent.',
+  ].join('\n');
+  assert.equal(prompt, expected,
+    'the conflict brief changed — re-baseline ONLY after checking the new text asserts no past rebase attempt');
+
+  // The statement of intent, kept alongside the golden copy so a lazy
+  // re-baseline still trips. Present-tense "the orchestrator aborts a failed
+  // rebase" is the standing invariant and must stay allowed; what is banned is
+  // any claim that one HAPPENED here. Step 3's "if you hit conflicts you can't
+  // resolve" is forward-looking and likewise allowed.
+  assert.doesNotMatch(prompt, PAST_ATTEMPT_CLAIM);
+  assert.match(prompt, /no rebase in progress/);
+  assert.match(prompt, /git status/);
+});
+
+// ---------------------------------------------------------------------------
+// T2c/T2d — the two blocked sync results are ok:true measurements that hand the
+//       caller everything it needs to dispatch without re-deriving anything.
+// ---------------------------------------------------------------------------
+test('T2c: a dirty worktree behind its base returns commit-required with the dirty brief', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'auth' });
+  await commitFile(repoPath, 'main.js', 'export const m = 1;\n', 'main moves on');
+  await fs.writeFile(path.join(wt.worktreePath, 'scratch.js'), 'export const s = 1;\n');
+
+  const r = await syncWorktree('demo', wt.worktreeName);
+  assert.equal(r.ok, true, `sync should measure, not fail: ${JSON.stringify(r)}`);
+  assert.equal(r.action, 'commit-required');
+  assert.equal(r.branch, wt.branch);
+  assert.equal(r.baseBranch, wt.baseBranch);
+  assert.equal(r.baseSha, wt.baseSha);
+  // Byte-identical: the caller can send it verbatim.
+  assert.equal(r.rebasePrompt, buildRebasePrompt(wt, 'dirty'));
+});
+
+test('T2d: a genuine conflict returns rebase-conflict, the conflict brief, and a clean worktree', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'auth' });
+  // Same file, divergent content on both sides ⇒ the rebase must conflict.
+  await commitFile(wt.worktreePath, 'clash.js', 'export const v = "worktree";\n', 'worktree edit');
+  const before = await headSha(wt.worktreePath);
+  await commitFile(repoPath, 'clash.js', 'export const v = "main";\n', 'main edit');
+
+  const r = await syncWorktree('demo', wt.worktreeName);
+  assert.equal(r.ok, true, `sync should measure, not fail: ${JSON.stringify(r)}`);
+  assert.equal(r.action, 'rebase-conflict');
+  assert.equal(r.rebasePrompt, buildRebasePrompt(wt, 'conflict'));
+  // The abort ran: the worktree sits back at its own HEAD with a clean tree.
+  assert.equal(await headSha(wt.worktreePath), before);
+  assert.equal((await git(wt.worktreePath, 'status', '--porcelain')).stdout.trim(), '');
+  // Still on its own branch, not the detached HEAD a live rebase leaves behind.
+  assert.equal((await git(wt.worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD')).stdout.trim(), wt.branch);
 });
 
 // ---------------------------------------------------------------------------

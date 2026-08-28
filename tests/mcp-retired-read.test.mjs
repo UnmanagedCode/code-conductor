@@ -234,7 +234,6 @@ test('the worker-addressing tools still refuse a retired worker SESSION_NOT_LIVE
       ['send_prompt', { sessionId: sid, text: 'go' }],
       ['set_mode', { sessionId: sid, mode: 'bypassPermissions' }],
       ['interrupt_turn', { sessionId: sid }],
-      ['sync_worktree', { sessionId: sid }],
       ['kill_instance', { sessionId: sid }],
     ];
     for (const [name, args] of cases) {
