@@ -14,9 +14,10 @@
 // node:test gives each file its own process, so the module's mutable state is
 // pristine here.
 //
-// Eight mirrors: DEFAULT_VERSIONS + DEFAULT_VERSION_LABELS, DEFAULT_TIER_BACKEND,
+// Nine mirrors: DEFAULT_VERSIONS + DEFAULT_VERSION_LABELS, DEFAULT_TIER_BACKEND,
 // DEFAULT_TIER_LABELS (+ the tier list and its order), DEFAULT_ROLE_BINDING,
-// the `backends` first-paint registry, CLAUDE_BACKEND, defaultEffort, familyOf.
+// the `backends` first-paint registry, CLAUDE_BACKEND, defaultEffort,
+// EFFORT_LEVELS, familyOf.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,7 +34,7 @@ import {
   CLAUDE_BACKEND_ID,
   familyOf as serverFamilyOf,
 } from '../src/modelVersions.ts';
-import { DEFAULT_EFFORT } from '../src/effortLevels.ts';
+import { DEFAULT_EFFORT, EFFORT_LEVELS } from '../src/effortLevels.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MODELS_URL = pathToFileURL(path.resolve(__dirname, '..', 'public', 'models.js')).href;
@@ -101,6 +102,13 @@ test('mirror: the first-paint default effort equals DEFAULT_EFFORT', async () =>
   for (const t of CAPABILITY_TIERS) {
     assert.equal(client.getActiveTierEffort(t.tier), DEFAULT_EFFORT, `default effort for tier ${t.tier}`);
   }
+});
+
+test('mirror: the first-paint effort level list equals EFFORT_LEVELS, in order', async () => {
+  // The ⋮ menu's Change-effort picker renders this array verbatim, so a stale
+  // mirror offers the user the wrong levels — or the right ones in the wrong
+  // order (the list is ordered low → high) — until the boot fetch lands.
+  assert.deepEqual(client.getEffortLevels(), [...EFFORT_LEVELS]);
 });
 
 test('mirror: client familyOf agrees with the server for every catalog id', async () => {

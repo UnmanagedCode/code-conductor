@@ -46,7 +46,7 @@ import {
 import { makeDismissable } from './dismissable.js';
 import { formatAgo } from './sidebar.js';
 import { send } from './ws.js';
-import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, CLAUDE_BACKEND } from './models.js';
+import { resolveSpawnModel, getTierList, getActiveTierEnabled, getActiveTierBackend, getTierLabel, backendIdOf, getBackendLabel, getEffortLevels, CLAUDE_BACKEND } from './models.js';
 import { isSessionMuted, muteSession } from './notifications.js';
 
 // The reserved project every conductor session lives in — mirrors
@@ -83,7 +83,9 @@ export function installHeader({
   openPrune,
 }) {
   let openCombinedPopover = null;
-  let openModelPopover = null;
+  // One holder for BOTH ⋮ pickers (model, effort) — opening either closes the
+  // other, and they share the anchoring maths in togglePicker.
+  let openPicker = null;
   let currentInst = null;
   // The instance id the ⋮ menu was opened against — read by update() to close
   // the menu when a programmatic switch (popstate, notification click) moves
@@ -257,22 +259,22 @@ export function installHeader({
   // (subtype:set_model, via Instance.setModel) — no optimistic mutation of
   // inst.model here; the status broadcast (wsRouter.js) is what actually
   // flips it once the CLI acks.
-  function closeModelPopover() {
-    if (!openModelPopover) return;
-    const { node, anchor, ctl } = openModelPopover;
+  function closePicker() {
+    if (!openPicker) return;
+    const { node, anchor, ctl } = openPicker;
     node.remove();
     anchor.setAttribute('aria-expanded', 'false');
     ctl.disarm();
-    openModelPopover = null;
+    openPicker = null;
   }
 
-  function toggleModelPopover(anchor, inst) {
-    if (openModelPopover && openModelPopover.anchor === anchor) {
-      closeModelPopover();
+  function togglePicker(anchor, build) {
+    if (openPicker && openPicker.anchor === anchor) {
+      closePicker();
       return;
     }
-    closeModelPopover();
-    const node = buildModelPopover(inst);
+    closePicker();
+    const node = build();
     document.body.appendChild(node);
     const r = anchor.getBoundingClientRect();
     // Anchor (⋮ trigger) sits near the top of the viewport, so open below by
@@ -289,10 +291,10 @@ export function installHeader({
     anchor.setAttribute('aria-expanded', 'true');
     const ctl = makeDismissable({
       isInside: (t) => node.contains(t) || anchor.contains(t),
-      onDismiss: () => closeModelPopover(),
+      onDismiss: () => closePicker(),
     });
     ctl.arm();
-    openModelPopover = { node, anchor, ctl };
+    openPicker = { node, anchor, ctl };
   }
 
   function buildModelPopover(inst) {
@@ -334,7 +336,7 @@ export function installHeader({
           const { model, backend } = resolveSpawnModel(tier);
           try {
             await send('model', { id: inst.id, model, backend }, { ack: true });
-            closeModelPopover();
+            closePicker();
             closeOverflow();
           } catch (e) {
             alert('Change model failed: ' + e.message);
@@ -356,7 +358,59 @@ export function installHeader({
 
   dom.changeModelBtn.addEventListener('click', () => {
     closeOverflow();
-    if (currentInst) toggleModelPopover(dom.overflowToggle, currentInst);
+    if (currentInst) togglePicker(dom.overflowToggle, () => buildModelPopover(currentInst));
+  });
+
+  // "Change effort" popover: the same anchored picker shape as Change model, one
+  // button per level of the server's catalog (getEffortLevels()). Selecting one
+  // sends a `t:'effort'` frame, which the server turns into a `/effort <level>`
+  // line on the session's stdin — the control protocol has no `set_effort`, and
+  // the CLI runs the slash command locally (no model turn, zero tokens). Nothing
+  // is disabled per backend: unlike a model switch this repoints no endpoint. The
+  // menu item is idle-only, which is what keeps the line a lone message.
+  function buildEffortPopover(inst) {
+    const node = document.createElement('div');
+    node.className = 'ih-usage-popover';
+    node.setAttribute('role', 'dialog');
+    node.setAttribute('aria-label', 'Change effort');
+
+    const header = document.createElement('div');
+    header.className = 'ih-usage-popover-header';
+    header.textContent = 'Change effort';
+    node.appendChild(header);
+
+    const row = document.createElement('div');
+    row.className = 'quick-spawn-models';
+    for (const level of getEffortLevels()) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'qs-model';
+      btn.dataset.effort = level;
+      // Highlight the level the session is running at — the only place the
+      // current effort is shown (the menu item's label stays static).
+      btn.classList.toggle('qs-selected', level === inst.effort);
+      btn.textContent = level;
+      btn.addEventListener('click', async () => {
+        try {
+          await send('effort', { id: inst.id, effort: level }, { ack: true });
+          // Only the picker to close: the ⋮ panel was already dismissed by the
+          // menu item's own handler on the way in. (buildModelPopover keeps a
+          // second closeOverflow() here; it is a no-op for the same reason.)
+          closePicker();
+        } catch (e) {
+          alert('Change effort failed: ' + e.message);
+        }
+      });
+      row.appendChild(btn);
+    }
+    node.appendChild(row);
+
+    return node;
+  }
+
+  dom.changeEffortBtn.addEventListener('click', () => {
+    closeOverflow();
+    if (currentInst) togglePicker(dom.overflowToggle, () => buildEffortPopover(currentInst));
   });
 
   // Two levels, so the menu item sends the OTHER one. Lives here rather than in
@@ -612,7 +666,7 @@ export function installHeader({
     // is no longer active (a programmatic switch; a user's click elsewhere
     // already dismisses it).
     closeCombinedPopover();
-    closeModelPopover();
+    closePicker();
     const inst = getInstances().find(i => i.id === getActiveId());
     const canMenu = !!inst && ['idle', 'turn', 'spawning'].includes(inst.status);
     if (!canMenu || inst?.id !== overflowOwnerId) closeOverflow();
@@ -720,6 +774,14 @@ export function installHeader({
     dom.changeModelBtn.hidden = !canMenu;
     dom.changeModelBtn.disabled = !canMenu || !inst.sessionId;
     dom.changeModelBtn.textContent = '🧠 Change model';
+    // Idle-only for the same reason as Prune below: mid-turn the CLI folds the
+    // `/effort` line into the running turn's input instead of running it as a
+    // local slash command (server refuses it 409 too).
+    dom.changeEffortBtn.hidden = !canMenu;
+    dom.changeEffortBtn.disabled = inst.status !== 'idle' || !inst.sessionId;
+    dom.changeEffortBtn.title = inst.status !== 'idle'
+      ? 'Effort can only be changed between turns'
+      : 'Change how hard this session reasons, without restarting';
     dom.sessionStatsBtn.hidden = !canMenu;
     dom.sessionStatsBtn.disabled = !canMenu || !inst.sessionId;
     // Prune kills and respawns the subprocess against a rewritten transcript, so

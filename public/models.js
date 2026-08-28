@@ -59,6 +59,11 @@ const DEFAULT_ROLE_BINDING = {
 // resolveSpawnEffort, src/appSettings.ts).
 let defaultEffort = 'high';
 
+// First-paint seed for the effort VOCABULARY (mirrors EFFORT_LEVELS in
+// src/effortLevels.ts, ordered low → high) — replaced by the payload's `efforts`
+// on the boot fetch. Rendered verbatim by the ⋮ menu's Change-effort picker.
+let effortLevels = ['low', 'medium', 'high', 'xhigh', 'max'];
+
 let activeTierEffort = {};
 let activeTierEnabled = { fast: true, balanced: true, powerful: true, frontier: true };
 let activeDefaultSpawnTier = 'powerful';
@@ -118,6 +123,11 @@ export function getActiveTierEffort(tier) { return activeTierEffort[tier] || def
 export function setActiveTierEffort(map) { activeTierEffort = { ...activeTierEffort, ...(map || {}) }; }
 export function setDefaultEffort(level) { if (level) defaultEffort = level; return defaultEffort; }
 
+// The level catalog, as shipped by the server. Ordered — the picker renders it
+// in array order.
+export function getEffortLevels() { return effortLevels; }
+export function setEffortLevels(list) { if (Array.isArray(list) && list.length) effortLevels = [...list]; return effortLevels; }
+
 export async function loadModelVersions() {
   try {
     const r = await fetch('/api/settings/models', { cache: 'no-store' });
@@ -135,6 +145,7 @@ export async function loadModelVersions() {
       setBackends(data.backends);
       if (data.tierBackend) setActiveTierBackend(data.tierBackend);
       setDefaultEffort(data.defaultEffort);
+      setEffortLevels(data.efforts);
       if (data.tierEffort) setActiveTierEffort(data.tierEffort);
       if (data.roleBackend) setActiveRoleBindings(data.roleBackend);
       if (data.enabledTiers) setActiveTierEnabled(data.enabledTiers);

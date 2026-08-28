@@ -84,6 +84,7 @@ Notes on `assistant` envelope handling that don't table cleanly: `buildMessageFr
 | `prompt` | `id`, `text`, optional `attachments` (`[{name, mediaType, dataBase64}]`) |
 | `mode` | `id`, `mode` (`plan` / `ask` / `bypassPermissions`; `ask` → CLI `bypassPermissions`) |
 | `model` | `id`, `model` (canonical model id, e.g. `claude-opus-4-8`; live `control_request` `subtype:set_model`) |
+| `effort` | `id`, `effort` (a level from `EFFORT_LEVELS`, `src/effortLevels.ts`). **Not** a `control_request` — the protocol has no `set_effort`; the server writes `/effort <level>` as a lone-text `user` line on the session's stdin, which the CLI runs locally (no model turn). Idle-only: refused `409` during a turn. An unknown level acks `ok:false`. |
 | `interrupt` | `id`, optional `force` (omitted/false ⇒ arm a deferred abort; `true` ⇒ abort immediately) |
 | `kill` | `id` |
 | `hook_decision` | `id`, `toolUseId`, `allow` (resolves ask-mode hook with original `tool_use_id`) |

@@ -115,6 +115,7 @@ const dom = {
   summaryDialog: document.getElementById('summary-dialog'),
   renameSessionBtn: document.getElementById('rename-session-btn'),
   changeModelBtn: document.getElementById('change-model-btn'),
+  changeEffortBtn: document.getElementById('change-effort-btn'),
   sessionStatsBtn: document.getElementById('session-stats-btn'),
   statsDialog: document.getElementById('stats-dialog'),
   pruneSessionBtn: document.getElementById('prune-session-btn'),

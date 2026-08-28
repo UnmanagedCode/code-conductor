@@ -594,6 +594,66 @@ test('model switch via WS with an unknown model acks false', async () => {
   }
 });
 
+test('effort change via WS updates instance.effort and acks', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).sessionId);
+
+    c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    // No control_request behind this one: the router calls setEffort, which
+    // writes `/effort low` on the session's stdin (see tests/effort-change.test.mjs).
+    c.send({ t: 'effort', id, effort: 'low', reqId: 'e1' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'e1');
+    assert.equal(ack.ok, true);
+    assert.equal(instances.get(id).effort, 'low');
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
+});
+
+test('effort change via WS with an unknown level acks false', async () => {
+  const { baseUrl, wsUrl, instances, close } = await setup();
+  let c = null;
+  try {
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+    const id = r.body.id;
+    await waitFor(() => instances.get(id).sessionId);
+    const before = instances.get(id).effort;
+
+    c = await wsClient(wsUrl);
+    c.send({ t: 'subscribe', id });
+    await c.wait(m => m.t === 'snapshot');
+    c.send({ t: 'effort', id, effort: 'nope', reqId: 'e2' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'e2');
+    assert.equal(ack.ok, false, 'the setter throws and the router catch turns it into a negative ack');
+    assert.equal(instances.get(id).effort, before);
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
+});
+
+test('effort change via WS for an unknown instance acks false with a reason', async () => {
+  const { wsUrl, close } = await setup();
+  let c = null;
+  try {
+    c = await wsClient(wsUrl);
+    c.send({ t: 'effort', id: 'nope', effort: 'low', reqId: 'e3' });
+    const ack = await c.wait(m => m.t === 'ack' && m.reqId === 'e3');
+    assert.equal(ack.ok, false);
+    assert.equal(ack.error, 'unknown instance');
+  } finally {
+    if (c) await c.close();
+    await close();
+  }
+});
+
 test('turn_notification is broadcast to every connected client (not just subscribers)', async () => {
   // Background instances should still ping the user (via the
   // turn_notification channel) even if the foreground tab is subscribed to a

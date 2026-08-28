@@ -54,6 +54,7 @@ async function setup() {
     summarizeSessionBtn: document.getElementById('summarize-session-btn'),
     renameSessionBtn: document.getElementById('rename-session-btn'),
     changeModelBtn: document.getElementById('change-model-btn'),
+    changeEffortBtn: document.getElementById('change-effort-btn'),
     sessionStatsBtn: document.getElementById('session-stats-btn'),
     pruneSessionBtn: document.getElementById('prune-session-btn'),
     autoApprovePlanBtn: document.getElementById('auto-approve-plan-btn'),

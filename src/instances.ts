@@ -53,6 +53,7 @@ import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
 import type { WriteStream } from 'node:fs';
 import { httpError } from './httpError.ts';
+import { isKnownEffort } from './effortLevels.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
 // overageResume.ts; re-export it here so existing importers (and tests) that
@@ -2752,6 +2753,50 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.emit('status', this.summary());
     this._writeSessionMetadata().catch(() => {});
     return this.model;
+  }
+
+  // Live "Change effort" — the control protocol has NO `set_effort` subtype (the
+  // CLI answers only `set_permission_mode` / `set_model` / `interrupt`), so this
+  // writes `/effort <level>` on the SAME stdin path a user turn uses and lets the
+  // CLI handle it locally: no model turn, a `<synthetic>` confirmation reply, zero
+  // tokens. Synchronous for that reason — there is no ack to await.
+  //
+  // IDLE-ONLY. Mid-turn the CLI queues an incoming line and flushes it combined
+  // with the next turn's input, so it would stop being a lone message and land as
+  // prose instead of running as a slash command.
+  //
+  // Unlike setModel there is deliberately no backend guard: nothing here repoints
+  // an endpoint, every backend runs the same inner CLI, and `--effort` is already
+  // passed unconditionally at launch.
+  //
+  // No on-disk store to touch: `this.effort` is the single source every downstream
+  // surface reads (summary(), the `--effort` relaunch arg, fork's createArgs, the
+  // restart manifest). The debug meta.json `effort` stays put — it records what the
+  // process LAUNCHED with, which is still true.
+  setEffort(effort: string): string {
+    // Validate before anything reaches stdin: an unknown level must never be
+    // written to the CLI, where it would land as an ordinary prose message.
+    if (!isKnownEffort(effort)) throw new Error('invalid effort');
+    if (this.status === 'turn') {
+      throw httpError(409, 'cannot change effort during a running turn — interrupt first');
+    }
+    if (!this.proc || !this.proc.stdin || !this.proc.stdin.writable) throw new Error('not running');
+    // The echo is load-bearing, not cosmetic: the CLI persists this line as a
+    // `type:"user"` jsonl line, which isPureUserPromptLine counts — so a missing
+    // live bubble would shift every rewind/fork userMessageIndex by one.
+    this._emitUi({ kind: 'user_echo', text: `/effort ${effort}` });
+    this._sendRaw({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: `/effort ${effort}` }] },
+      parent_tool_use_id: null,
+    });
+    this.effort = effort;
+    // Assigned BEFORE the transition so the frame _setStatus broadcasts already
+    // carries the new level — no second emit needed (unlike setModel, which does
+    // not move the status). The CLI's `result` for the local command flips this
+    // back to idle through the ordinary turn_end path.
+    this._setStatus('turn');
+    return this.effort;
   }
 
   // Promote a temp session to a normal one: stop suppressing the

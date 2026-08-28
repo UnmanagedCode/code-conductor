@@ -169,6 +169,9 @@ export interface InstanceLike {
   promptOrQueueSteer(text: string, attachments?: unknown[]): Promise<void>;
   setMode(mode: string): Promise<unknown>;
   setModel(model: string, backend?: unknown): Promise<unknown>;
+  // Synchronous on purpose: `/effort` is a CLI-LOCAL slash command written to
+  // stdin, so there is no control_response to await. See src/instances.ts.
+  setEffort(effort: string): string;
   interrupt(opts?: { force?: boolean; deadlineMs?: number }): Promise<unknown>;
   kill(opts?: { graceMs?: number }): Promise<unknown>;
   setAutoApprovePlan(enabled: boolean): void;
