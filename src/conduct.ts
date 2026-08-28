@@ -10,8 +10,12 @@ import { projectsRoot, writeFileAtomic } from './projects.ts';
 import { composeCurrentConduct } from './conductorConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
+// The name is homed in the systems registry, which pins this project to the
+// local system and must not import this module to do it (see the constant's
+// comment there). Re-exported so `.conduct`'s name still comes from here.
+import { CONDUCT_PROJECT_NAME, resolveSystem } from './systems/registry.ts';
 
-export const CONDUCT_PROJECT_NAME = '.conduct';
+export { CONDUCT_PROJECT_NAME };
 
 export function conductProjectPath(): string {
   return path.join(projectsRoot(), CONDUCT_PROJECT_NAME);
@@ -47,7 +51,9 @@ export async function ensureConductProject(): Promise<{ path: string; created: b
   } catch (e) {
     if (errCode(e) !== 'EEXIST') throw e;
   }
-  await ensureConventionsImport(dir);
+  // Resolved, not assumed: `.conduct` is PINNED to the local system, so this is
+  // the one call that both proves and uses the pin.
+  await ensureConventionsImport(await resolveSystem(CONDUCT_PROJECT_NAME), dir);
   return { path: dir, created };
 }
 

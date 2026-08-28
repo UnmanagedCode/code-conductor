@@ -22,6 +22,7 @@
 
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import type { ExecOptions, ExecResult, ExecSpec } from './systems/system.ts';
 
 // Tail of a command's output kept in memory. Chatty scripts (npm ci, a browser
 // downloader) can emit megabytes; only the tail is ever shown or logged. This
@@ -33,33 +34,12 @@ export const GROUP_OUTPUT_CAP = 16 * 1024;
 // script to unwind, short enough that a wedged one doesn't hold the caller.
 const DEFAULT_KILL_GRACE_MS = 100;
 
-export interface GroupedCommandResult {
-  // Process exit code, 124 on timeout, 1 on spawn error.
-  code: number;
-  stdout: string;
-  stderr: string;
-  // stdout + stderr interleaved in arrival order — what a human reads in a log.
-  output: string;
-  timedOut: boolean;
-  // True when `cap` clipped the output (so a caller can add a "…truncated" marker).
-  truncated: boolean;
-  durationMs: number;
-  // The spawn error message when the child never started (ENOENT, EACCES),
-  // else null. Distinguishes "failed to launch" from "ran and exited 1", which
-  // callers surface differently.
-  spawnError: string | null;
-}
-
-export interface GroupedCommandOptions {
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  timeoutMs?: number;
-  // Per-stream tail cap in characters. Omit for unbounded (git porcelain output
-  // is already small and callers parse it whole).
-  cap?: number;
-  onChunk?: (text: string) => void;
-  killGraceMs?: number;
-}
+// The local implementation of the System `exec` primitive: its result and
+// option shapes ARE the interface's (src/systems/system.ts), so LocalSystem
+// delegates here without a translation layer. The aliases keep this module's
+// own vocabulary readable at its call sites.
+export type GroupedCommandResult = ExecResult;
+export type GroupedCommandOptions = ExecOptions;
 
 // SIGTERM the whole process group, then SIGKILL it after `graceMs` if it is
 // still there. The backstop timer is `unref`'d so a pending kill can never hold
@@ -78,19 +58,37 @@ export function killProcessGroup(
   setTimeout(() => signalGroup('SIGKILL'), graceMs).unref();
 }
 
-// `argv` runs the binary directly; `shell` runs a command string through
-// `bash -lc` (which is what a user-authored hook/start command expects — it may
-// contain pipes, `&&`, or rely on login-shell PATH).
-export type GroupedCommandSpec = { argv: string[] } | { shell: string };
+// `shell` runs the command string through `bash -lc` — what a user-authored
+// hook/start command expects (pipes, `&&`, login-shell PATH).
+export type GroupedCommandSpec = ExecSpec;
 
 export function runGroupedCommand(
   spec: GroupedCommandSpec,
-  { cwd, env = process.env, timeoutMs, cap, onChunk, killGraceMs }: GroupedCommandOptions,
+  { cwd, env = process.env, timeoutMs, cap, headCapBytes, onChunk, killGraceMs, stdin }: GroupedCommandOptions,
 ): Promise<GroupedCommandResult> {
   return new Promise((resolve) => {
     const start = Date.now();
     const [cmd, args] = 'shell' in spec ? ['bash', ['-lc', spec.shell]] : [spec.argv[0], spec.argv.slice(1)];
-    const proc = spawn(cmd, args, { cwd, env, detached: true });
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn(cmd, args, {
+        cwd, env, detached: true,
+        // 'ignore' gives the command a closed stdin so an interactive one sees
+        // EOF instead of blocking on a pipe nobody writes to.
+        ...(stdin === 'ignore' ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : {}),
+      });
+    } catch (e) {
+      // spawn throws SYNCHRONOUSLY for an invalid argument — a NUL byte in an
+      // argv entry is the reachable case, since the caller's own string lands
+      // there — where a missing binary or a bad cwd arrives as an 'error'
+      // event. The runner never rejects either way: both become a spawnError.
+      const msg = e instanceof Error ? e.message : String(e);
+      resolve({
+        code: 1, stdout: '', stderr: msg, output: msg,
+        timedOut: false, truncated: false, durationMs: Date.now() - start, spawnError: msg,
+      });
+      return;
+    }
 
     let stdout = '', stderr = '', output = '', truncated = false;
     // One decoder per stream so a multi-byte character split across two chunk
@@ -104,7 +102,18 @@ export function runGroupedCommand(
       return s.slice(-cap);
     };
 
+    // Bytes retained so far under a HEAD cap, shared across both streams. Whole
+    // chunks are kept until the budget is met, so retention can overshoot by at
+    // most one chunk; past that the pipes are still drained (the command runs to
+    // completion) but nothing more is kept.
+    let headBytes = 0;
+
     const onData = (which: 'out' | 'err') => (d: Buffer) => {
+      if (headCapBytes !== undefined) {
+        if (headBytes >= headCapBytes) { truncated = true; return; }
+        headBytes += d.length;
+        if (headBytes >= headCapBytes) truncated = true;
+      }
       const s = decoders[which].write(d);
       if (!s) return;
       if (which === 'out') stdout = clip(stdout + s);

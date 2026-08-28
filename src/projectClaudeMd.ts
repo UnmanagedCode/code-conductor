@@ -26,9 +26,9 @@
 // file, a non-marker first line, or a zero-slug marker is regenerated with the
 // workspace block and an empty project part.
 
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { listProjects } from './projects.ts';
+import { resolveSystem } from './systems/registry.ts';
 import { composeProjectConventionsBlock, getCatalog } from './projectConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
@@ -119,10 +119,13 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   const projects = await listProjects();
   const proj = projects.find(p => p.name === projectName);
   if (!proj) return { skipped: 'no-project' };
+  // This is one of the only two places cc writes INSIDE a project tree, so it
+  // reads and writes through the project's system, never with a bare fs call.
+  const system = await resolveSystem(projectName);
   const target = conventionsTargetPath(proj.path);
 
   let existing: string | null = null;
-  try { existing = await fs.readFile(target, 'utf8'); }
+  try { existing = await system.readFile(target); }
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
 
   const slugs = (existing === null ? null : parseMarker(existing.split('\n', 1)[0])) ?? [];
@@ -151,9 +154,9 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
     return { skipped: 'catalog-degraded', missing };
   }
 
-  await ensureConventionsImport(proj.path);
+  await ensureConventionsImport(system, proj.path);
   const content = await composeProjectConventionsDoc(slugs, missing);
-  await fs.writeFile(target, content);
+  await system.writeFile(target, content);
   if (log?.log) {
     log.log(missing.length
       ? `CONVENTIONS.md regenerated without unresolvable ${missing.join(', ')}: ${target}`

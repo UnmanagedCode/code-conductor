@@ -18,6 +18,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
+import { resolveSystem } from './systems/registry.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
   getCommitDiff, getCommitFileDiff,
@@ -381,20 +382,21 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
   async function computeGitFacts(p: { name: string; path: string }) {
+    const system = await resolveSystem(p.name);
     const worktrees = await listWorktrees(p.name).catch(() => []);
     const worktreesWithMerge = await Promise.all(worktrees.map(async (w) => ({
       ...w,
-      mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
+      mergeStatus: await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null })),
     })));
-    const projIsGitRepo = await isGitRepo(p.path);
+    const projIsGitRepo = await isGitRepo(system, p.path);
     return {
       isGitRepo: projIsGitRepo,
       // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
       // "no commits", so a non-repo reports false and isGitRepo carries it.
-      unbornHead: projIsGitRepo ? await hasUnbornHead(p.path) : false,
+      unbornHead: projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
       worktrees: worktreesWithMerge,
       mergeStatus: projIsGitRepo
-        ? await getProjectUpstreamStatus(p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
+        ? await getProjectUpstreamStatus(system, p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
         : { ahead: null, behind: null, upstream: null },
     };
   }
@@ -1288,7 +1290,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         // the failure into the else-branch would assert something we never
         // measured. Refuse instead, exactly as syncWorktree does for the same
         // git-status failure.
-        const dirty = await worktreeDirtyLines(inst.worktree.worktreePath);
+        const dirty = await worktreeDirtyLines(await resolveSystem(inst.project), inst.worktree.worktreePath);
         if (!dirty.ok) {
           res.json({
             ok: false, code: 'WORKTREE_STATUS_FAILED',

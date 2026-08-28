@@ -13,6 +13,8 @@
 
 import { runGit, getWorktree } from './worktrees.ts';
 import { getProject } from './projects.ts';
+import { resolveSystem } from './systems/registry.ts';
+import type { System } from './systems/system.ts';
 import { httpError } from './httpError.ts';
 
 // Maximum bytes of raw git diff output to keep for a single file's unified
@@ -189,8 +191,11 @@ function clampContext(contextLines: number): number {
   return Math.max(0, Math.min(50, Number.isFinite(Number(contextLines)) ? Math.floor(Number(contextLines)) : 3));
 }
 
-// A resolved diff target: the repo dir plus a builder for the git argv.
+// A resolved diff target: the system the repo lives on, the repo dir, and a
+// builder for the git argv. The system travels WITH the target so every git
+// call below reaches the same machine the target was resolved on.
 interface DiffTarget {
+  system: System;
   cwd: string;
   // `opts` land right after the subcommand so both `git diff` and `git show`
   // accept them; `pathspec` (if any) goes last after `--`. Prepend
@@ -221,8 +226,8 @@ export interface DiffFileDetail extends DiffFileSummary {
 // summary mode (src/mcp/handlers.ts).
 async function summarizeTarget(t: DiffTarget): Promise<{ files: DiffFileSummary[]; totalAdds: number; totalDels: number }> {
   const [rn, rns] = await Promise.all([
-    runGit(t.cwd, t.argv(['--numstat', '-M'], [])),
-    runGit(t.cwd, t.argv(['--name-status', '-M'], [])),
+    runGit(t.system, t.cwd, t.argv(['--numstat', '-M'], [])),
+    runGit(t.system, t.cwd, t.argv(['--name-status', '-M'], [])),
   ]);
   if (rn.code !== 0) throw httpError(500, (rn.stderr || rn.stdout).trim() || 'git numstat failed');
   if (rns.code !== 0) throw httpError(500, (rns.stderr || rns.stdout).trim() || 'git name-status failed');
@@ -252,7 +257,7 @@ async function fileDiffForTarget(
   // path — the client only sends the new path.
   let oldPath = oldPathHint;
   if (oldPath === null) {
-    const nsR = await runGit(t.cwd, t.argv(['--name-status', '-M'], [filePath]));
+    const nsR = await runGit(t.system, t.cwd, t.argv(['--name-status', '-M'], [filePath]));
     if (nsR.code === 0) {
       const rows = parseNameStatus(nsR.stdout);
       if (rows[0]?.oldPath) oldPath = rows[0].oldPath;
@@ -260,13 +265,13 @@ async function fileDiffForTarget(
   }
   const pathspec = oldPath ? [oldPath, filePath] : [filePath];
 
-  const numR = await runGit(t.cwd, t.argv(['--numstat', '-M'], pathspec));
+  const numR = await runGit(t.system, t.cwd, t.argv(['--numstat', '-M'], pathspec));
   if (numR.code !== 0) throw httpError(500, (numR.stderr || numR.stdout).trim() || 'git numstat failed');
   const numRows = parseNumstat(numR.stdout);
   if (numRows.length === 0) {
     throw httpError(404, `path '${filePath}' is not part of this diff`);
   }
-  const nsR = await runGit(t.cwd, t.argv(['--name-status', '-M'], pathspec));
+  const nsR = await runGit(t.system, t.cwd, t.argv(['--name-status', '-M'], pathspec));
   const nsRows = nsR.code === 0 ? parseNameStatus(nsR.stdout) : [];
   const status = mapStatus(nsRows[0]?.status ?? 'M');
   const adds = numRows.reduce((s, r) => s + r.additions, 0);
@@ -282,7 +287,7 @@ async function fileDiffForTarget(
     return { ...summaryFields, hunks: [], truncated: false, oversized: true, bytes: 0 };
   }
 
-  const diffR = await runGit(t.cwd, t.argv([`--unified=${ctx}`, '--no-color', '-M'], pathspec));
+  const diffR = await runGit(t.system, t.cwd, t.argv([`--unified=${ctx}`, '--no-color', '-M'], pathspec));
   if (diffR.code !== 0) {
     throw httpError(500, (diffR.stderr || diffR.stdout).trim() || 'git diff failed');
   }
@@ -310,6 +315,7 @@ async function worktreeTarget(
   const ref = baseRef || meta.baseBranch;
   if (baseRef) assertValidBaseRef(ref);
   const target: DiffTarget = {
+    system: await resolveSystem(projectName),
     cwd: meta.worktreePath,
     argv: (o, p) => [
       ...(p.length ? ['--literal-pathspecs'] : []),
@@ -351,8 +357,8 @@ export async function getWorktreeFileDiff(
 
 // Fetch a commit's message + parent SHAs and decide whether it's a merge —
 // shared by both the commit summary and per-file paths.
-async function commitMeta(proj: { path: string }, sha: string): Promise<{ commitMessage: string | null; isMerge: boolean }> {
-  const metaR = await runGit(proj.path, ['log', '-1', '--format=%B%x1f%P', sha]);
+async function commitMeta(proj: { path: string; system: System }, sha: string): Promise<{ commitMessage: string | null; isMerge: boolean }> {
+  const metaR = await runGit(proj.system, proj.path, ['log', '-1', '--format=%B%x1f%P', sha]);
   if (metaR.code !== 0) {
     const stderr = (metaR.stderr || '').trim();
     const notFound = /unknown revision|bad revision|ambiguous argument/i.test(stderr);
@@ -364,8 +370,9 @@ async function commitMeta(proj: { path: string }, sha: string): Promise<{ commit
   return { commitMessage, isMerge: parents.length >= 2 };
 }
 
-function commitTarget(proj: { path: string }, sha: string, isMerge: boolean): DiffTarget {
+function commitTarget(proj: { path: string; system: System }, sha: string, isMerge: boolean): DiffTarget {
   return {
+    system: proj.system,
     cwd: proj.path,
     argv: (o, p) => [
       ...(p.length ? ['--literal-pathspecs'] : []),
@@ -415,8 +422,9 @@ export async function getCommitFileDiff(
   return { project: projectName, path: filePath, file };
 }
 
-function uncommittedTarget(proj: { path: string }): DiffTarget {
+function uncommittedTarget(proj: { path: string; system: System }): DiffTarget {
   return {
+    system: proj.system,
     cwd: proj.path,
     argv: (o, p) => [
       ...(p.length ? ['--literal-pathspecs'] : []),
@@ -437,7 +445,7 @@ export async function getProjectUncommittedDiff(
 ): Promise<{ project: string; files: DiffFileSummary[]; totalAdds: number; totalDels: number; totalFiles: number }> {
   const proj = await getProject(projectName);
   const target = uncommittedTarget(proj);
-  const probe = await runGit(proj.path, ['rev-parse', '--verify', 'HEAD']);
+  const probe = await runGit(proj.system, proj.path, ['rev-parse', '--verify', 'HEAD']);
   if (probe.code !== 0) {
     return { project: projectName, files: [], totalAdds: 0, totalDels: 0, totalFiles: 0 };
   }
@@ -455,7 +463,7 @@ export async function getProjectUncommittedFileDiff(
   { contextLines = 3 }: { contextLines?: number } = {},
 ): Promise<{ project: string; path: string; file: DiffFileDetail }> {
   const proj = await getProject(projectName);
-  const probe = await runGit(proj.path, ['rev-parse', '--verify', 'HEAD']);
+  const probe = await runGit(proj.system, proj.path, ['rev-parse', '--verify', 'HEAD']);
   if (probe.code !== 0) {
     throw httpError(404, `path '${filePath}' is not part of this diff`);
   }

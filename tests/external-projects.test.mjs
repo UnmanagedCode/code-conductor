@@ -18,6 +18,7 @@ import {
   externalLinkPath, externalDir, EXTERNAL_DIRNAME,
 } from '../src/projects.ts';
 import { createWorktree, syncWorktree, mergeWorktreeIntoParent, removeWorktree } from '../src/worktrees.ts';
+import { LocalSystem } from '../src/systems/localSystem.ts';
 import { ensureProjectConventionsMd, regenerateAllProjectConventions } from '../src/projectClaudeMd.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -520,6 +521,63 @@ test('deleteProject on an external project unlinks the record and keeps the targ
   assert.equal(await fs.readFile(keeper, 'utf8'), 'kept\n', 'the target file survives deleteProject itself');
   assert.ok((await fs.stat(real)).isDirectory());
   await assert.rejects(() => fs.lstat(externalLinkPath('ext')));
+});
+
+// ---------- 7.6c the unlink-not-rm invariant, as a refactor guard ----------
+
+// The invariant at src/projects.ts's external branch is enforced by a COMMENT:
+// the adopted target is the user's own repo, so the realpath must never reach a
+// removal call. Routing project-scoped I/O through a System handle
+// (docs/systems-design.md §5.4) rewrites exactly the lines that comment guards,
+// and the failure mode is invisible from the outside — `rm -rf` on a symlink
+// removes the link too, so "the target survived" passes for the wrong reason on
+// a machine where the link is a link. So this asserts on the CALLS, at both
+// layers a removal can be issued from: no recursive removal is ever handed the
+// link or anything under the target, and the link goes away by unlink.
+test('deleting an external project issues NO recursive removal against the link or the target', async () => {
+  const { repoPath, real } = await makeExternalRepo();
+  assert.equal((await adoptProject('ext', repoPath)).ok, true);
+  const link = externalLinkPath('ext');
+
+  const recursive = [];   // every recursive-removal call, whatever layer issued it
+  const unlinked = [];    // every single-entry unlink
+  const origRm = fs.rm, origRmdir = fs.rmdir, origUnlink = fs.unlink;
+  const origRemoveTree = LocalSystem.prototype.removeTree;
+  const origSysUnlink = LocalSystem.prototype.unlink;
+  try {
+    fs.rm = function (p, ...rest) { recursive.push(`fs.rm ${p}`); return origRm.call(this, p, ...rest); };
+    fs.rmdir = function (p, ...rest) { recursive.push(`fs.rmdir ${p}`); return origRmdir.call(this, p, ...rest); };
+    fs.unlink = function (p, ...rest) { unlinked.push(String(p)); return origUnlink.call(this, p, ...rest); };
+    LocalSystem.prototype.removeTree = function (p, ...rest) {
+      recursive.push(`system.removeTree ${p}`);
+      return origRemoveTree.call(this, p, ...rest);
+    };
+    LocalSystem.prototype.unlink = function (p, ...rest) {
+      unlinked.push(String(p));
+      return origSysUnlink.call(this, p, ...rest);
+    };
+
+    const res = await deleteProject('ext');
+    assert.equal(res.path, real);
+  } finally {
+    fs.rm = origRm; fs.rmdir = origRmdir; fs.unlink = origUnlink;
+    LocalSystem.prototype.removeTree = origRemoveTree;
+    LocalSystem.prototype.unlink = origSysUnlink;
+  }
+
+  const forbidden = recursive.filter((entry) => {
+    const p = entry.slice(entry.indexOf(' ') + 1);
+    return p === real || p.startsWith(real + path.sep) || p === link;
+  });
+  assert.deepEqual(forbidden, [],
+    `a recursive removal was issued against the adopted repo or its record:\n  ${forbidden.join('\n  ')}`);
+  assert.ok(unlinked.includes(link), `the record must be removed by unlink; unlinked: ${unlinked.join(', ')}`);
+
+  // And the store entry — which IS cc's own — still went, so the assertion
+  // above is about placement, not about deleteProject having stopped working.
+  assert.ok(recursive.some(e => e.includes(projectStoreDir('ext'))),
+    `the central-store entry must still be removed recursively: ${recursive.join(', ')}`);
+  assert.ok((await fs.stat(real)).isDirectory());
 });
 
 test('deleteProject on an in-root project still removes the directory', async () => {

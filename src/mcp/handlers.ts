@@ -4,8 +4,6 @@
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { spawn } from 'node:child_process';
-import { killProcessGroup } from '../groupedCommand.ts';
 import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.ts';
 import {
   listProjects as fsListProjects,
@@ -34,6 +32,8 @@ import {
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
+import { resolveSystem } from '../systems/registry.ts';
+import type { System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
@@ -306,18 +306,19 @@ function notLiveRefusal(sessionId: string): SoftRefusal {
 export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   const projects = await fsListProjects();
   const enriched = await Promise.all(projects.map(async (p) => {
+    const system = await resolveSystem(p.name);
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
     const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
       ...w,
       sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
-      mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
+      mergeStatus: await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null })),
     })));
-    const projIsGitRepo = await isGitRepo(p.path);
+    const projIsGitRepo = await isGitRepo(system, p.path);
     return {
       ...p,
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
       isGitRepo: projIsGitRepo,
-      unbornHead: projIsGitRepo ? await hasUnbornHead(p.path) : false,
+      unbornHead: projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
@@ -370,11 +371,11 @@ async function sessionCwdsFor(p: { name: string; path: string }) {
 // remote upstream, a different question that renders `? ?` on every project
 // without one, and it cost three git subprocesses per project to say nothing.
 // `list_projects` still reports it for projects that do have an upstream.
-async function groupGit(dir: string, meta: WorktreeMeta | null) {
+async function groupGit(system: System, dir: string, meta: WorktreeMeta | null) {
   // A worktree's branch is already recorded in its metadata — only a main
   // checkout has to ask git, and only it can be on a branch we don't know.
-  if (meta) return { branch: meta.branch ?? null, mergeStatus: await getWorktreeMergeStatus(meta).catch(() => null) };
-  const headRef = await runGit(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => null);
+  if (meta) return { branch: meta.branch ?? null, mergeStatus: await getWorktreeMergeStatus(system, meta).catch(() => null) };
+  const headRef = await runGit(system, dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => null);
   return { branch: headRef?.code === 0 ? headRef.stdout.trim() || null : null, mergeStatus: null };
 }
 
@@ -474,7 +475,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // than as a missing project.
     const empty = !liveHere.length && !rows.length && !archivedCount;
     if (empty && project === null) return null;
-    const { branch, mergeStatus } = await groupGit(t.cwd, t.meta);
+    const { branch, mergeStatus } = await groupGit(await resolveSystem(t.project), t.cwd, t.meta);
     const tracked = (sid: string) => (proj ? proj.bySession.get(sid) : undefined);
     return {
       project: t.project,
@@ -1513,15 +1514,16 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   }
   const wt = await getWorktree(project, worktree);
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
+  const system = await resolveSystem(project);
   // Resolve the worktree's current HEAD sha (the right edge of the diff).
-  const headR = await runGit(wt.worktreePath, ['rev-parse', 'HEAD']);
+  const headR = await runGit(system, wt.worktreePath, ['rev-parse', 'HEAD']);
   const head = headR.code === 0 ? headR.stdout.trim() : null;
   const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
   if (typeof baseRef === 'string' && baseRef.trim()) assertValidBaseRef(ref);
   // Commit count ref..HEAD — computed directly against `ref` (not via
   // getWorktreeMergeStatus, which is pinned to the worktree's recorded
   // baseBranch and ignores a caller-supplied baseRef override).
-  const aheadR = await runGit(wt.worktreePath, ['rev-list', '--count', `${ref}..HEAD`]);
+  const aheadR = await runGit(system, wt.worktreePath, ['rev-list', '--count', `${ref}..HEAD`]);
   const ahead = aheadR.code === 0 ? Number.parseInt(aheadR.stdout.trim(), 10) : null;
   const ctx = Number.isInteger(contextLines) && contextLines >= 0 && contextLines <= 50 ? contextLines : 3;
   const pathArgs = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p.trim()) : [];
@@ -1535,8 +1537,8 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     const numArgs = ['diff', '--numstat', '-M', `${ref}...HEAD`, ...pathspec];
     const nsArgs = ['diff', '--name-status', '-M', `${ref}...HEAD`, ...pathspec];
     const [rn, rns] = await Promise.all([
-      runGit(wt.worktreePath, numArgs),
-      runGit(wt.worktreePath, nsArgs),
+      runGit(system, wt.worktreePath, numArgs),
+      runGit(system, wt.worktreePath, nsArgs),
     ]);
     if (rn.code !== 0) throw new Error(`git diff --numstat failed in ${wt.worktreePath}: ${rn.stderr.trim() || rn.stdout.trim()}`);
     if (rns.code !== 0) throw new Error(`git diff --name-status failed in ${wt.worktreePath}: ${rns.stderr.trim() || rns.stdout.trim()}`);
@@ -1561,8 +1563,8 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
 
     // Staged + unstaged changes vs HEAD (does not include untracked files)
     const [rnu, rnsu] = await Promise.all([
-      runGit(wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
-      runGit(wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
+      runGit(system, wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
+      runGit(system, wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
     ]);
     const uNums = rnu.code === 0 ? parseNumstat(rnu.stdout) : [];
     const uStats = rnsu.code === 0 ? parseNameStatus(rnsu.stdout) : [];
@@ -1577,7 +1579,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       additions: uFiles.reduce((acc, f) => acc + f.additions, 0),
       deletions: uFiles.reduce((acc, f) => acc + f.deletions, 0),
     };
-    const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
+    const utR = await runGit(system, wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
     const untracked = utR.code === 0
       ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
@@ -1586,7 +1588,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   }
 
   // ---- diff mode: full diff with line-based pagination ----
-  const r = await runGit(wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`, ...pathspec]);
+  const r = await runGit(system, wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`, ...pathspec]);
   if (r.code !== 0) {
     throw new Error(`git diff failed in ${wt.worktreePath}: ${r.stderr.trim() || r.stdout.trim()}`);
   }
@@ -1597,9 +1599,9 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
 
   // Staged + unstaged vs HEAD. git diff HEAD does NOT include untracked files,
   // so list those separately via ls-files --others.
-  const wu = await runGit(wt.worktreePath, ['diff', `--unified=${ctx}`, 'HEAD', ...pathspec]);
+  const wu = await runGit(system, wt.worktreePath, ['diff', `--unified=${ctx}`, 'HEAD', ...pathspec]);
   uncommittedDiff = wu.code === 0 ? (wu.stdout ?? '') : '';
-  const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
+  const utR = await runGit(system, wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
   untracked = utR.code === 0
     ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : [];
@@ -1695,7 +1697,7 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
     const dependents = await listDependentWorktrees(project, wtName);
     if (dependents.length > 0) return dependentsRefusal(worktree, dependents, 'deleting');
     if (wt) {
-      const dirty = await worktreeDirtyLines(wt.worktreePath);
+      const dirty = await worktreeDirtyLines(await resolveSystem(project), wt.worktreePath);
       if (dirty.ok && dirty.lines.length > 0) {
         return {
           ok: false,
@@ -2117,25 +2119,28 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a
 // useful message if either is missing.
-async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string }> {
+// Every project_* tool resolves its cwd here, which makes it the one place they
+// pick up the System that cwd lives on — a worktree is on the same system as
+// its parent project by construction.
+async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string; system: System }> {
   const proj = await getProject(projectName);
   if (worktreeName) {
     const wt = await getWorktree(projectName, worktreeName);
     if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
-    return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path };
+    return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path, system: proj.system };
   }
-  return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path };
+  return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path, system: proj.system };
 }
 
 // Read the top-level directory listing, hiding dotfiles by default.
 // Used by project_status for a quick "what's in this dir?" snapshot.
 // Errors return an empty list.
-async function listTopLevelEntries(cwd: string): Promise<Array<{ name: string; kind: string }>> {
+async function listTopLevelEntries(system: System, cwd: string): Promise<Array<{ name: string; kind: string }>> {
   try {
-    const entries = await fs.readdir(cwd, { withFileTypes: true });
+    const entries = await system.readDir(cwd);
     return entries
       .filter(e => !e.name.startsWith('.'))
-      .map(e => ({ name: e.name, kind: e.isDirectory() ? 'dir' : (e.isFile() ? 'file' : 'other') }))
+      .map(e => ({ name: e.name, kind: e.kind === 'dir' ? 'dir' : (e.kind === 'file' ? 'file' : 'other') }))
       .sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
         return a.name.localeCompare(b.name);
@@ -2149,7 +2154,7 @@ async function listTopLevelEntries(cwd: string): Promise<Array<{ name: string; k
 // (branch + head + dirty + recent commits), top-level files, and — for
 // worktrees — the mergeStatus + a diff stat vs the base branch.
 export async function projectStatus({ project, worktree, logLimit = 20 }: { project: string; worktree?: string; logLimit?: number }) {
-  const { cwd, worktreeMeta } = await resolveProjectCwd(project, worktree);
+  const { cwd, worktreeMeta, system } = await resolveProjectCwd(project, worktree);
   const out: {
     project: string; worktree: string | null; cwd: string;
     files: Array<{ name: string; kind: string }>;
@@ -2169,20 +2174,20 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     project,
     worktree: worktreeMeta?.worktreeName ?? null,
     cwd,
-    files: await listTopLevelEntries(cwd),
+    files: await listTopLevelEntries(system, cwd),
     isGitRepo: false,
     unbornHead: false,
   };
-  if (!(await isGitRepo(cwd))) {
+  if (!(await isGitRepo(system, cwd))) {
     return textResult(renderProjectStatus(out));
   }
   out.isGitRepo = true;
-  out.unbornHead = await hasUnbornHead(cwd);
+  out.unbornHead = await hasUnbornHead(system, cwd);
   // Branch (may be null on detached HEAD).
-  const branchR = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branchR = await runGit(system, cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   out.branch = branchR.code === 0 ? branchR.stdout.trim() || null : null;
   // HEAD sha + subject.
-  const headR = await runGit(cwd, ['log', '-1', '--pretty=%H%n%s']);
+  const headR = await runGit(system, cwd, ['log', '-1', '--pretty=%H%n%s']);
   if (headR.code === 0) {
     const [sha, ...subj] = headR.stdout.trim().split('\n');
     out.head = { sha: sha ?? null, subject: subj.join('\n') || null };
@@ -2191,10 +2196,10 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
   }
   // Dirty lines (porcelain). For worktrees, filter out our own dotdir.
   if (worktreeMeta) {
-    const d = await worktreeDirtyLines(cwd);
+    const d = await worktreeDirtyLines(system, cwd);
     out.dirty = d.ok ? d.lines : [];
   } else {
-    const d = await runGit(cwd, ['status', '--porcelain']);
+    const d = await runGit(system, cwd, ['status', '--porcelain']);
     out.dirty = d.code === 0
       ? d.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
@@ -2211,7 +2216,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
   }
   // Recent commits (oneline). Negative or 0 logLimit → skip.
   if (typeof logLimit === 'number' && Number.isInteger(logLimit) && logLimit > 0) {
-    const logR = await runGit(cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
+    const logR = await runGit(system, cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
     out.recentCommits = logR.code === 0
       ? logR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
@@ -2220,8 +2225,8 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
   if (worktreeMeta) {
     out.baseBranch = worktreeMeta.baseBranch;
     out.baseSha = worktreeMeta.baseSha;
-    out.mergeStatus = await getWorktreeMergeStatus(worktreeMeta).catch(() => ({ ahead: null, behind: null }));
-    const diffR = await runGit(cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
+    out.mergeStatus = await getWorktreeMergeStatus(system, worktreeMeta).catch(() => ({ ahead: null, behind: null }));
+    const diffR = await runGit(system, cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
     out.diffStat = diffR.code === 0 ? diffR.stdout.trim() : '';
   }
   return textResult(renderProjectStatus(out));
@@ -2245,42 +2250,29 @@ export async function projectRead({ project, worktree, relativePath,
   if (path.isAbsolute(relativePath)) {
     throw new Error('relativePath must be project-relative (no absolute paths)');
   }
-  const { cwd } = await resolveProjectCwd(project, worktree);
+  const { cwd, system } = await resolveProjectCwd(project, worktree);
   const resolved = path.resolve(cwd, relativePath);
   // Path-traversal guard: resolved must stay under cwd.
   const rel = path.relative(cwd, resolved);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`relativePath escapes project root: ${relativePath}`);
   }
-  let stat;
-  try { stat = await fs.stat(resolved); }
-  catch (e) {
-    if (errCode(e) === 'ENOENT') {
-      throw httpError(404, `file not found: ${relativePath}`);
-    }
-    throw e;
+  const stat = await system.stat(resolved);
+  if (!stat) {
+    throw httpError(404, `file not found: ${relativePath}`);
   }
-  if (stat.isDirectory()) {
+  if (stat.kind === 'dir') {
     throw new Error(`'${relativePath}' is a directory — use project_status to list it`);
   }
-  if (!stat.isFile()) {
+  if (stat.kind !== 'file') {
     throw new Error(`'${relativePath}' is not a regular file`);
   }
   const cap = typeof maxBytes === 'number' && Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : 256 * 1024;
 
   // Always read up to cap bytes first (preserves existing binary behaviour and
   // avoids loading huge files on the fast path).
-  const fh = await fs.open(resolved, 'r');
-  let buf: Buffer;
-  let truncatedByBytes: boolean;
-  try {
-    const len = Math.min(stat.size, cap);
-    buf = Buffer.alloc(len);
-    await fh.read(buf, 0, len, 0);
-    truncatedByBytes = stat.size > cap;
-  } finally {
-    await fh.close();
-  }
+  const buf = await system.readFileBytes(resolved, { length: Math.min(stat.size, cap) });
+  const truncatedByBytes = stat.size > cap;
 
   // Best-effort text detection: probe for NULs in the first 4 KB (unchanged).
   const probe = buf.slice(0, Math.min(4096, buf.length));
@@ -2311,7 +2303,7 @@ export async function projectRead({ project, worktree, relativePath,
 
   // Slow path: line params active — read the full file for accurate line ops.
   const fullText = truncatedByBytes
-    ? await fs.readFile(resolved, 'utf8')
+    ? await system.readFile(resolved)
     : buf.toString('utf8');
 
   const allLines = fullText.split('\n');
@@ -2396,7 +2388,7 @@ export async function bashProject({ project, worktree, command, timeout }: {
     throw new Error('project_bash requires a non-empty command string');
   }
   const timeoutMs = clampBashTimeoutMs(timeout);
-  const { cwd, worktreeMeta } = await resolveProjectCwd(project, worktree);
+  const { cwd, worktreeMeta, system } = await resolveProjectCwd(project, worktree);
   // Responses report the CANONICAL name, never the caller's spelling — see
   // docs/protocol.md → Input params. All three exit paths below echo it.
   const wtName = worktreeMeta?.worktreeName ?? null;
@@ -2407,75 +2399,33 @@ export async function bashProject({ project, worktree, command, timeout }: {
     ? ['zsh', ['--no-rcs', '-c', wrapped]]
     : ['bash', ['--noprofile', '--norc', '-c', wrapped]];
 
-  return new Promise((resolve) => {
-    const start = Date.now();
-    let timedOut = false;
-    let capped = false;
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-
-    let proc;
-    try {
-      proc = spawn(spawnCmd, spawnArgs, {
-        cwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
-    } catch (err) {
-      resolve(textPayload(
-        { project, worktree: wtName, cwd, exitCode: null,
-          durationMs: Date.now() - start, error: true },
-        errMsg(err),
-      ));
-      return;
-    }
-
-    const killGroup = (): void => killProcessGroup(proc.pid, {
-      graceMs: 100,
-      fallback: (sig) => proc.kill(sig),
-    });
-    // Keep draining both pipes to completion (avoids backpressure stalling
-    // the process) but stop RETAINING bytes past the cap — matches the
-    // built-in Bash tool's semantics (truncate what's *shown*, let the
-    // command run to completion). timeoutMs is the only hard kill.
-    const onData = (chunk: Buffer) => {
-      if (bytes >= BASH_OUTPUT_CAP) { capped = true; return; }
-      chunks.push(chunk);
-      bytes += chunk.length;
-      if (bytes >= BASH_OUTPUT_CAP) capped = true;
-    };
-    proc.stdout.on('data', onData);
-    proc.stderr.on('data', onData);
-
-    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      const durationMs = Date.now() - start;
-      const raw = Buffer.concat(chunks).toString('utf8');
-      const output = capped ? raw + '\n… [truncated at the output cap]' : raw;
-      const meta: {
-        project: string; worktree: string | null; cwd: string;
-        exitCode: number | null; durationMs: number; truncated?: boolean; timedOut?: boolean;
-      } = {
-        project, worktree: wtName, cwd,
-        exitCode: timedOut ? null : (code ?? null),
-        durationMs,
-      };
-      if (capped) meta.truncated = true;
-      if (timedOut) meta.timedOut = true;
-      resolve(textPayload(meta, output.trimEnd()));
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(timer);
-      resolve(textPayload(
-        { project, worktree: wtName, cwd, exitCode: null,
-          durationMs: Date.now() - start, error: true },
-        err.message,
-      ));
-    });
+  // One-shot exec on the project's system. `stdin: 'ignore'` is load-bearing:
+  // an interactive command would otherwise hang until the timeout. The HEAD cap
+  // keeps draining both streams to completion — truncate what is *shown*, let
+  // the command run — matching the built-in Bash tool's semantics.
+  const r = await system.exec({ argv: [spawnCmd, ...spawnArgs] }, {
+    cwd, timeoutMs, stdin: 'ignore', headCapBytes: BASH_OUTPUT_CAP,
   });
+
+  if (r.spawnError) {
+    return textPayload(
+      { project, worktree: wtName, cwd, exitCode: null, durationMs: r.durationMs, error: true },
+      r.spawnError,
+    );
+  }
+
+  const output = r.truncated ? r.output + '\n… [truncated at the output cap]' : r.output;
+  const meta: {
+    project: string; worktree: string | null; cwd: string;
+    exitCode: number | null; durationMs: number; truncated?: boolean; timedOut?: boolean;
+  } = {
+    project, worktree: wtName, cwd,
+    exitCode: r.timedOut ? null : r.code,
+    durationMs: r.durationMs,
+  };
+  if (r.truncated) meta.truncated = true;
+  if (r.timedOut) meta.timedOut = true;
+  return textPayload(meta, output.trimEnd());
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

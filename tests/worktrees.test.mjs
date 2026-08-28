@@ -13,6 +13,7 @@ import {
   listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir } from '../src/projects.ts';
+import { localSystem } from '../src/systems/registry.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -161,14 +162,14 @@ test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn'
   // an unborn HEAD. Only the unborn one may claim that cause; the others must
   // still carry git's own stderr, which names theirs.
   const unborn = await makeUnbornRepo('fresh');
-  await assert.rejects(getHeadBranchAndSha(unborn), (e) => {
+  await assert.rejects(getHeadBranchAndSha(localSystem(), unborn), (e) => {
     assert.match(e.message, /no commits yet/);
     assert.ok(!/unable to resolve HEAD/.test(e.message));
     return true;
   });
 
   const missing = path.join(projectsRoot, 'gone');
-  await assert.rejects(getHeadBranchAndSha(missing), (e) => {
+  await assert.rejects(getHeadBranchAndSha(localSystem(), missing), (e) => {
     assert.ok(!/no commits yet/.test(e.message),
       `a directory that does not exist must not be told to commit in it: ${e.message}`);
     assert.match(e.message, /unable to resolve HEAD/);
@@ -179,7 +180,7 @@ test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn'
 
   const plain = path.join(projectsRoot, 'plain');
   await fs.mkdir(plain, { recursive: true });
-  await assert.rejects(getHeadBranchAndSha(plain), (e) => {
+  await assert.rejects(getHeadBranchAndSha(localSystem(), plain), (e) => {
     assert.ok(!/no commits yet/.test(e.message),
       `a non-repo must not be told to commit in it: ${e.message}`);
     assert.match(e.message, /unable to resolve HEAD/);
@@ -746,7 +747,7 @@ test('POST /merge fast-forwards the worktree branch so it is left at behind:0', 
   assert.equal(wtSha, r.body.newSha);
 
   const refreshed = await getWorktree('demo', wtName);
-  const status = await getWorktreeMergeStatus(refreshed);
+  const status = await getWorktreeMergeStatus(localSystem(), refreshed);
   assert.deepEqual(status, { ahead: 0, behind: 0 });
 });
 

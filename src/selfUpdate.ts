@@ -5,6 +5,9 @@ import { runGit, getProjectUpstreamStatus } from './worktrees.ts';
 import { runGitLive, fetchOriginBounded } from './gitLive.ts';
 import { httpError } from './httpError.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
+// Self-update operates on cc's OWN checkout — always the local system, never a
+// project on one (docs/systems-design.md §5.1).
+import { localSystem } from './systems/registry.ts';
 
 // Conductor self-update — the app's own version of the Plugin Library update
 // path (src/plugins/library.ts). The conductor is distributed as a git clone
@@ -68,7 +71,7 @@ export async function getSelfUpdateStatus({ repoRoot = defaultRepoRoot() }: { re
 }> {
   const version = await readVersion(repoRoot);
   await fetchOriginBounded(repoRoot);
-  const status = await getProjectUpstreamStatus(repoRoot);
+  const status = await getProjectUpstreamStatus(localSystem(), repoRoot);
   const canCheck = typeof status.behind === 'number';
   const behind = canCheck ? status.behind : null;
   const ahead = canCheck ? status.ahead : null;
@@ -113,7 +116,7 @@ export async function applySelfUpdate({
   npm: { ran: boolean; ok: boolean; code: number; tail: string } | null;
   restartRequired: boolean;
 }> {
-  const before = await runGit(repoRoot, ['rev-parse', 'HEAD']);
+  const before = await runGit(localSystem(), repoRoot, ['rev-parse', 'HEAD']);
   const beforeSha = before.code === 0 ? before.stdout.trim() : '';
 
   onValidated?.();
@@ -130,7 +133,7 @@ export async function applySelfUpdate({
   // and run npm rather than risk booting with stale deps.
   let depsChanged = true;
   if (beforeSha) {
-    const diff = await runGit(repoRoot, ['diff', '--name-only', `${beforeSha}..HEAD`]);
+    const diff = await runGit(localSystem(), repoRoot, ['diff', '--name-only', `${beforeSha}..HEAD`]);
     depsChanged = diff.code !== 0
       || diff.stdout.split('\n').map(s => s.trim()).some(f => DEP_FILES.has(f));
   }

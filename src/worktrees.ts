@@ -8,42 +8,17 @@
 // `<projectsRoot>/.code-conductor/projects/<project>/worktrees/<worktreeDir>/`
 // — the worktree dir itself stays clean.
 
-import { execFile, spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { httpError } from './httpError.ts';
-import { runGroupedCommand } from './groupedCommand.ts';
 import {
   projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects,
   EXTERNAL_DIRNAME,
   type ProjectInfo,
 } from './projects.ts';
-
-// Manual execFile wrapper. `promisify(execFile)` would be tempting but
-// this Node build (Termux's android port) doesn't ship the
-// util.promisify.custom symbol on execFile, so the promisified version
-// resolves to just stdout (a string) instead of {stdout, stderr}.
-// Wrap it ourselves so the shape is reliable across runtimes.
-interface ExecResult {
-  stdout: string;
-  stderr: string;
-}
-
-function execFileP(file: string, args: string[], options: object = {}): Promise<ExecResult> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, options, (err, stdout, stderr) => {
-      if (err) {
-        const e = err as Error & { stdout?: string | Buffer; stderr?: string | Buffer };
-        e.stdout = stdout;
-        e.stderr = stderr;
-        reject(e);
-      } else {
-        resolve({ stdout: String(stdout), stderr: String(stderr) });
-      }
-    });
-  });
-}
+import { resolveSystem } from './systems/registry.ts';
+import type { System } from './systems/system.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
@@ -152,26 +127,26 @@ interface GitResult {
   code: number;
 }
 
-export async function runGit(cwd: string, args: string[]): Promise<GitResult> {
-  try {
-    const { stdout, stderr } = await execFileP('git', ['-C', cwd, ...args], {
-      encoding: 'utf8',
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return { stdout, stderr, code: 0 };
-  } catch (e) {
-    const err = e as { stdout?: unknown; stderr?: unknown; message?: unknown; code?: unknown };
-    // execFile rejects with an error that carries stdout/stderr/code.
-    return {
-      stdout: typeof err.stdout === 'string' ? err.stdout : '',
-      stderr: typeof err.stderr === 'string' ? err.stderr : typeof err.message === 'string' ? err.message : '',
-      code: typeof err.code === 'number' ? err.code : 1,
-    };
-  }
+// EVERY git invocation in the app funnels through here, which is why it is the
+// single site that gives git a System: one signature converts the whole git
+// surface. Git is DERIVED from the `exec` primitive — it is not a system
+// operation of its own, so a provider never implements it.
+//
+// `-C <cwd>` is kept alongside the exec cwd: it anchors git to the repo even
+// if a provider normalises the working directory, and it is what makes the
+// argv self-describing in a protocol trace.
+//
+// Output is uncapped: callers parse git porcelain whole, so a tail cap would
+// silently corrupt a large diff instead of reporting one. `spawnError` folds
+// into `stderr` because callers read stderr for the diagnostic and a git that
+// never started has none of its own.
+export async function runGit(system: System, cwd: string, args: string[]): Promise<GitResult> {
+  const r = await system.exec({ argv: ['git', '-C', cwd, ...args] }, { cwd });
+  return { stdout: r.stdout, stderr: r.stderr || r.spawnError || '', code: r.code };
 }
 
-export async function isGitRepo(projectPath: string): Promise<boolean> {
-  const r = await runGit(projectPath, ['rev-parse', '--git-dir']);
+export async function isGitRepo(system: System, projectPath: string): Promise<boolean> {
+  const r = await runGit(system, projectPath, ['rev-parse', '--git-dir']);
   return r.code === 0;
 }
 
@@ -180,16 +155,16 @@ export async function isGitRepo(projectPath: string): Promise<boolean> {
 // HEAD` exits non-zero and silent there, 0 on any resolvable HEAD (detached
 // included). CALL ONLY WHEN isGitRepo() IS ALREADY TRUE: outside a repo it also
 // exits non-zero, which would read as "unborn" rather than "no repo".
-export async function hasUnbornHead(projectPath: string): Promise<boolean> {
-  const r = await runGit(projectPath, ['rev-parse', '--verify', '--quiet', 'HEAD']);
+export async function hasUnbornHead(system: System, projectPath: string): Promise<boolean> {
+  const r = await runGit(system, projectPath, ['rev-parse', '--verify', '--quiet', 'HEAD']);
   return r.code !== 0;
 }
 
 // `git status --porcelain` for a worktree path. Returns
 // { ok: boolean, lines: string[] }. Callers can decide whether a
 // non-empty `lines` means "refuse" or "fall back to the agent flow".
-export async function worktreeDirtyLines(worktreePath: string): Promise<{ ok: boolean; lines: string[] }> {
-  const dirty = await runGit(worktreePath, ['status', '--porcelain']);
+export async function worktreeDirtyLines(system: System, worktreePath: string): Promise<{ ok: boolean; lines: string[] }> {
+  const dirty = await runGit(system, worktreePath, ['status', '--porcelain']);
   if (dirty.code !== 0) return { ok: false, lines: [] };
   const lines = (dirty.stdout || '').split('\n').filter(l => l.trim().length > 0);
   return { ok: true, lines };
@@ -198,10 +173,10 @@ export async function worktreeDirtyLines(worktreePath: string): Promise<{ ok: bo
 // Look up the parent repo's current branch + commit. Detached HEAD is
 // allowed (we record null for `branch`) — the rebase-back path will
 // require a named branch, but creation itself shouldn't be blocked.
-export async function getHeadBranchAndSha(projectPath: string): Promise<{ branch: string | null; sha: string }> {
-  const head = await runGit(projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+export async function getHeadBranchAndSha(system: System, projectPath: string): Promise<{ branch: string | null; sha: string }> {
+  const head = await runGit(system, projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   const branch = head.code === 0 ? head.stdout.trim() || null : null;
-  const sha = await runGit(projectPath, ['rev-parse', 'HEAD']);
+  const sha = await runGit(system, projectPath, ['rev-parse', 'HEAD']);
   if (sha.code !== 0) {
     // `rev-parse HEAD` fails for more than one reason, and two of this
     // function's callers hand it a path nothing has repo-validated: the
@@ -211,9 +186,9 @@ export async function getHeadBranchAndSha(projectPath: string): Promise<{ branch
     // out-of-band or a corrupt repo lands here too, so PROVE the unborn case
     // before naming it — an unborn HEAD is a symbolic ref whose target branch
     // has no commits, which neither of those other failures satisfies.
-    const ref = await runGit(projectPath, ['symbolic-ref', '--quiet', 'HEAD']);
+    const ref = await runGit(system, projectPath, ['symbolic-ref', '--quiet', 'HEAD']);
     const unborn = ref.code === 0
-      && (await runGit(projectPath, ['show-ref', '--verify', '--quiet', ref.stdout.trim()])).code !== 0;
+      && (await runGit(system, projectPath, ['show-ref', '--verify', '--quiet', ref.stdout.trim()])).code !== 0;
     if (unborn) {
       throw httpError(400, `${projectPath} has no commits yet — a worktree branches off HEAD, so make a first commit there first`);
     }
@@ -253,6 +228,12 @@ async function fileExists(p: string): Promise<boolean> {
   catch { return false; }
 }
 
+// The in-tree half of the same question, asked of the system the tree lives on.
+async function systemFileExists(system: System, p: string): Promise<boolean> {
+  try { return (await system.stat(p)) !== null; }
+  catch { return false; }
+}
+
 interface PostWorktreeHookResult {
   ran: boolean;
   skipped?: string;
@@ -274,7 +255,7 @@ interface PostWorktreeHookResult {
 // Always resolves — never rejects — so a broken hook cannot abort a
 // successful worktree create. Result is attached to the createWorktree()
 // return value as `postWorktreeCreate`; `source` records which location ran.
-async function runPostWorktreeHook(meta: WorktreeMeta): Promise<PostWorktreeHookResult> {
+async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<PostWorktreeHookResult> {
   if (process.env.ORCH_DISABLE_POST_WORKTREE_HOOK === '1') {
     return { ran: false, skipped: 'disabled' };
   }
@@ -283,16 +264,21 @@ async function runPostWorktreeHook(meta: WorktreeMeta): Promise<PostWorktreeHook
   const inStore = path.join(projectStoreDir(meta.parentProject), 'post-worktree-create.sh');
   let scriptPath: string | null = null;
   let source: string | null = null;
-  if (await fileExists(inTree)) { scriptPath = inTree; source = 'in-tree'; }
+  // The in-tree script is read from the project's system; the store one is cc's
+  // own, always local.
+  if (await systemFileExists(system, inTree)) { scriptPath = inTree; source = 'in-tree'; }
   else if (await fileExists(inStore)) { scriptPath = inStore; source = 'store'; }
   if (!scriptPath) return { ran: false };
 
   // Ensure the executable bit is set — the script may have been committed
   // without it (e.g. on Windows / FAT filesystems). Non-fatal if chmod fails.
   try {
-    const stat = await fs.stat(scriptPath);
-    if (!(stat.mode & 0o111)) {
-      await fs.chmod(scriptPath, stat.mode | 0o111);
+    if (source === 'in-tree') {
+      const st = await system.stat(scriptPath);
+      if (st && !(st.mode & 0o111)) await system.chmod(scriptPath, st.mode | 0o111);
+    } else {
+      const st = await fs.stat(scriptPath);
+      if (!(st.mode & 0o111)) await fs.chmod(scriptPath, st.mode | 0o111);
     }
   } catch { /* best-effort */ }
 
@@ -306,13 +292,13 @@ async function runPostWorktreeHook(meta: WorktreeMeta): Promise<PostWorktreeHook
     CC_PARENT_PATH: meta.parentPath,
   };
 
-  // detached=true (inside runGroupedCommand) puts bash + all its children in
+  // detached=true (inside the system's exec) puts bash + all its children in
   // their own process group, so a timeout kills the whole tree — a hook running
   // `npm ci` would otherwise leave grandchildren orphaned. This hook keeps its
   // OWN result shaping rather than the shared one: it reports `timedOut` as a
   // flag with a null exitCode instead of the runner's 124 convention, and it
   // prefixes a truncation marker at a clean line boundary.
-  const r = await runGroupedCommand({ argv: ['bash', scriptPath] }, {
+  const r = await system.exec({ argv: ['bash', scriptPath] }, {
     cwd: meta.worktreePath, env, timeoutMs, cap: HOOK_OUTPUT_CAP,
   });
 
@@ -362,7 +348,8 @@ export async function createWorktree(
   { baseWorktree, name }: CreateWorktreeOptions = {},
 ): Promise<CreateWorktreeResult> {
   const proj = await getProject(projectName);
-  if (!(await isGitRepo(proj.path))) {
+  const system = proj.system;
+  if (!(await isGitRepo(system, proj.path))) {
     throw httpError(400, `project '${projectName}' is not a git repository`);
   }
   // Resolve the base: either the project root or another worktree. A base
@@ -391,7 +378,7 @@ export async function createWorktree(
     baseWorktreeName = base.worktreeName;
     baseLabel = `worktree '${baseWorktree}'`;
   }
-  const head = await getHeadBranchAndSha(basePath);
+  const head = await getHeadBranchAndSha(system, basePath);
   if (!head.branch) {
     // git worktree add can work off a detached HEAD, but tracking down
     // "what was the base" later is messy. Refuse cleanly instead.
@@ -429,7 +416,7 @@ export async function createWorktree(
   // catches a leftover branch with no worktree, which `removeWorktree`'s
   // best-effort `git branch -d` can leave behind and a directory check cannot
   // see.
-  const existingBranch = await runGit(proj.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  const existingBranch = await runGit(system, proj.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
   if (existingBranch.code === 0) {
     throw httpError(
       409,
@@ -442,7 +429,7 @@ export async function createWorktree(
   // `git worktree add <path> -b <branch> <start-point>` creates the
   // branch off the captured SHA so subsequent activity on the base
   // branch can't drift our base.
-  const add = await runGit(proj.path, ['worktree', 'add', worktreePath, '-b', branch, head.sha]);
+  const add = await runGit(system, proj.path, ['worktree', 'add', worktreePath, '-b', branch, head.sha]);
   if (add.code !== 0) {
     throw httpError(500, `git worktree add failed: ${add.stderr.trim() || add.stdout.trim()}`);
   }
@@ -466,7 +453,7 @@ export async function createWorktree(
   // dir + branch + metadata are written, BEFORE the instance subprocess is
   // created — so a slow hook never interferes with the 5 s control-request
   // timeout. Non-fatal: a failure warns but does not roll back the worktree.
-  const postWorktreeCreate = await runPostWorktreeHook(meta);
+  const postWorktreeCreate = await runPostWorktreeHook(system, meta);
   return { ...meta, postWorktreeCreate };
 }
 
@@ -475,8 +462,8 @@ export async function createWorktree(
 // entries whose dir has a matching record in the central store.
 export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]> {
   const proj = await getProject(projectName);
-  if (!(await isGitRepo(proj.path))) return [];
-  const r = await runGit(proj.path, ['worktree', 'list', '--porcelain']);
+  if (!(await isGitRepo(proj.system, proj.path))) return [];
+  const r = await runGit(proj.system, proj.path, ['worktree', 'list', '--porcelain']);
   if (r.code !== 0) return [];
   const candidates: string[] = [];
   for (const line of r.stdout.split('\n')) {
@@ -561,6 +548,7 @@ export async function removeWorktree(
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
+  const system = await resolveSystem(projectName);
   const parentPath = meta.parentPath;
 
   if (!force) {
@@ -570,7 +558,7 @@ export async function removeWorktree(
     if (dependents.length > 0) {
       throw httpError(409, dependentsRefusal(worktreeName, dependents, 'deleting').reason);
     }
-    const dirty = await worktreeDirtyLines(meta.worktreePath);
+    const dirty = await worktreeDirtyLines(system, meta.worktreePath);
     if (dirty.ok && dirty.lines.length > 0) {
       throw httpError(
         409,
@@ -582,7 +570,7 @@ export async function removeWorktree(
   // Pass --force to `git worktree remove`. We already validated the
   // tree is clean above (or the caller opted into force); the flag
   // also keeps git from refusing on minor leftover state.
-  const rm = await runGit(parentPath, ['worktree', 'remove', '--force', meta.worktreePath]);
+  const rm = await runGit(system, parentPath, ['worktree', 'remove', '--force', meta.worktreePath]);
   if (rm.code !== 0) {
     throw httpError(500, `git worktree remove failed: ${rm.stderr.trim() || rm.stdout.trim()}`);
   }
@@ -590,7 +578,7 @@ export async function removeWorktree(
   // fast-forwarded the base onto the worktree branch then `-d` will
   // succeed; otherwise the branch may be ahead and we use `-D`.
   const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
-  await runGit(parentPath, delArgs);
+  await runGit(system, parentPath, delArgs);
   // Drop the central-store entry (metadata + attachments + debug).
   try { await fs.rm(worktreeStoreDir(projectName, meta.worktreeName), { recursive: true, force: true }); }
   catch { /* best-effort */ }
@@ -607,8 +595,8 @@ export interface MergeStatus {
 // RIGHT is AHEAD. Returns { ahead: null, behind: null } on a non-zero exit or
 // unparseable output — the shared "unknown" shape both callers render as
 // "no indicator".
-async function parseAheadBehind(cwd: string, left: string, right: string): Promise<MergeStatus> {
-  const r = await runGit(cwd, ['rev-list', '--left-right', '--count', `${left}...${right}`]);
+async function parseAheadBehind(system: System, cwd: string, left: string, right: string): Promise<MergeStatus> {
+  const r = await runGit(system, cwd, ['rev-list', '--left-right', '--count', `${left}...${right}`]);
   if (r.code !== 0) return { ahead: null, behind: null };
   const parts = r.stdout.trim().split(/\s+/);
   if (parts.length !== 2) return { ahead: null, behind: null };
@@ -628,11 +616,11 @@ async function parseAheadBehind(cwd: string, left: string, right: string): Promi
 // Returns { ahead: null, behind: null } when the comparison fails (base
 // branch renamed/deleted, ref missing, etc.) — callers treat null as
 // "unknown" and render no indicator.
-export async function getWorktreeMergeStatus(meta: WorktreeMeta): Promise<MergeStatus> {
+export async function getWorktreeMergeStatus(system: System, meta: WorktreeMeta): Promise<MergeStatus> {
   if (!meta?.parentPath || !meta?.baseBranch || !meta?.branch) {
     return { ahead: null, behind: null };
   }
-  return parseAheadBehind(meta.parentPath, meta.baseBranch, meta.branch);
+  return parseAheadBehind(system, meta.parentPath, meta.baseBranch, meta.branch);
 }
 
 export interface UpstreamStatus extends MergeStatus {
@@ -649,18 +637,18 @@ export interface UpstreamStatus extends MergeStatus {
 //     no upstream configured, HEAD is detached, the project isn't a
 //     git repo, or the rev-list comparison fails. Callers treat the
 //     null shape as "no indicator to render".
-export async function getProjectUpstreamStatus(projectPath: string): Promise<UpstreamStatus> {
-  const headRef = await runGit(projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+export async function getProjectUpstreamStatus(system: System, projectPath: string): Promise<UpstreamStatus> {
+  const headRef = await runGit(system, projectPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (headRef.code !== 0) return { ahead: null, behind: null, upstream: null };
   const branch = headRef.stdout.trim();
   if (!branch) return { ahead: null, behind: null, upstream: null };
-  const upRef = await runGit(projectPath, [
+  const upRef = await runGit(system, projectPath, [
     'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}',
   ]);
   if (upRef.code !== 0) return { ahead: null, behind: null, upstream: null };
   const upstream = upRef.stdout.trim();
   if (!upstream) return { ahead: null, behind: null, upstream: null };
-  const st = await parseAheadBehind(projectPath, upstream, branch);
+  const st = await parseAheadBehind(system, projectPath, upstream, branch);
   // ahead and behind are always set or nulled together, so one test covers both.
   // On a parse failure the resolved upstream ref is DISCARDED, not reported.
   if (st.ahead === null) return { ahead: null, behind: null, upstream: null };
@@ -705,6 +693,7 @@ export async function mergeWorktreeIntoParent(
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
+  const system = await resolveSystem(projectName);
   // 0. Refuse if another worktree is based on this one. THIS merge moves their
   //    base on its own: step 7 below fast-forwards this worktree's own branch
   //    onto the merge commit, and that branch IS what the children were created
@@ -730,7 +719,7 @@ export async function mergeWorktreeIntoParent(
   //    Returns data fields only; each caller maps the code to its own
   //    audience-specific reason string (REST "click Sync first" / MCP "call
   //    sync_worktree first").
-  const status = await getWorktreeMergeStatus(meta);
+  const status = await getWorktreeMergeStatus(system, meta);
   if (status.behind != null && status.behind > 0) {
     return { ok: false, code: 'WORKTREE_BEHIND', behind: status.behind, baseBranch: meta.baseBranch };
   }
@@ -738,7 +727,7 @@ export async function mergeWorktreeIntoParent(
   //    the merge would land work somewhere unexpected. A worktree base
   //    satisfies this by construction: its HEAD *is* its own branch, which is
   //    exactly this worktree's baseBranch.
-  const head = await getHeadBranchAndSha(meta.parentPath);
+  const head = await getHeadBranchAndSha(system, meta.parentPath);
   if (head.branch !== meta.baseBranch) {
     return {
       ok: false,
@@ -751,7 +740,7 @@ export async function mergeWorktreeIntoParent(
   //    otherwise, but the error message is friendlier from us. Note there is no
   //    override: a worktree used as a base is a merge target, so it has to be
   //    kept clean.
-  const dirty = await runGit(meta.parentPath, ['status', '--porcelain']);
+  const dirty = await runGit(system, meta.parentPath, ['status', '--porcelain']);
   if (dirty.code === 0 && dirty.stdout.trim().length > 0) {
     return {
       ok: false,
@@ -763,7 +752,7 @@ export async function mergeWorktreeIntoParent(
   //    merged, so uncommitted/untracked changes there would silently not
   //    land. Overridable: allowDirty:true merges anyway.
   if (!allowDirty) {
-    const wtDirty = await worktreeDirtyLines(meta.worktreePath);
+    const wtDirty = await worktreeDirtyLines(system, meta.worktreePath);
     if (wtDirty.ok && wtDirty.lines.length > 0) {
       return {
         ok: false,
@@ -786,7 +775,7 @@ export async function mergeWorktreeIntoParent(
   // 6. Attempt the merge. --no-ff forces a merge commit even when FF would
   //    be possible; --no-edit makes git use its default message non-
   //    interactively (we'd hang otherwise waiting on an editor).
-  const merge = await runGit(meta.parentPath, ['merge', '--no-ff', '--no-edit', meta.branch]);
+  const merge = await runGit(system, meta.parentPath, ['merge', '--no-ff', '--no-edit', meta.branch]);
   if (merge.code !== 0) {
     return {
       ok: false,
@@ -795,7 +784,7 @@ export async function mergeWorktreeIntoParent(
         `git merge --no-ff ${meta.branch} failed`),
     };
   }
-  const newHead = await runGit(meta.parentPath, ['rev-parse', 'HEAD']);
+  const newHead = await runGit(system, meta.parentPath, ['rev-parse', 'HEAD']);
   // 7. Fast-forward the worktree's own branch up to the merge commit. The
   //    worktree branch is one of that commit's two parents, so it's always
   //    an ancestor of the new HEAD — --ff-only can't fail on divergence.
@@ -805,7 +794,7 @@ export async function mergeWorktreeIntoParent(
   //    parent is correct regardless of whether this step lands, so a
   //    failure here (e.g. a worktree tree that went dirty mid-merge) must
   //    not turn the overall result into a failure.
-  const ff = await runGit(meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
+  const ff = await runGit(system, meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
   return {
     ok: true,
     output: merge.stdout.trim() || merge.stderr.trim(),
@@ -859,6 +848,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
+  const system = await resolveSystem(projectName);
   // Refuse before anything is computed or touched if another worktree is based
   // on this one: every sync path below rewrites or moves this branch, which is
   // the base they were created from. Checked first, and unconditionally on
@@ -868,7 +858,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   if (dependents.length > 0) {
     return dependentsRefusal(worktreeName, dependents, 'syncing');
   }
-  const { ahead, behind } = await getWorktreeMergeStatus(meta);
+  const { ahead, behind } = await getWorktreeMergeStatus(system, meta);
   if (ahead == null || behind == null) {
     return {
       ok: false,
@@ -880,7 +870,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   }
   // Dirty working tree → agent must commit/discard before any rebase can
   // proceed (git rebase refuses a dirty tree).
-  const dirty = await worktreeDirtyLines(meta.worktreePath);
+  const dirty = await worktreeDirtyLines(system, meta.worktreePath);
   if (!dirty.ok) {
     return { ok: false, reason: `git status failed inside worktree '${meta.worktreePath}'` };
   }
@@ -889,7 +879,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   }
   // Pure-behind + clean tree → fast-forward; no rebase needed.
   if (ahead === 0) {
-    const merge = await runGit(meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
+    const merge = await runGit(system, meta.worktreePath, ['merge', '--ff-only', meta.baseBranch]);
     if (merge.code !== 0) {
       return {
         ok: false,
@@ -897,7 +887,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
           `git merge --ff-only ${meta.baseBranch} failed inside worktree`),
       };
     }
-    const newHead = await runGit(meta.worktreePath, ['rev-parse', 'HEAD']);
+    const newHead = await runGit(system, meta.worktreePath, ['rev-parse', 'HEAD']);
     return {
       ok: true,
       action: 'fast-forwarded',
@@ -918,9 +908,9 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   // recreates a merge whose side branch has since been deleted. Keep it in step
   // with buildRebasePrompt below: if only one of the two carries the flag, the
   // conflict path undoes what the automated path preserved.
-  const rebase = await runGit(meta.worktreePath, ['rebase', '--rebase-merges', meta.baseBranch]);
+  const rebase = await runGit(system, meta.worktreePath, ['rebase', '--rebase-merges', meta.baseBranch]);
   if (rebase.code === 0) {
-    const newHead = await runGit(meta.worktreePath, ['rev-parse', 'HEAD']);
+    const newHead = await runGit(system, meta.worktreePath, ['rev-parse', 'HEAD']);
     return {
       ok: true,
       action: 'rebased',
@@ -930,7 +920,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
     };
   }
   // Abort unconditionally — safe no-op if rebase never started.
-  await runGit(meta.worktreePath, ['rebase', '--abort']);
+  await runGit(system, meta.worktreePath, ['rebase', '--abort']);
   return rebaseBlocked(meta, 'rebase-conflict', ahead, behind);
 }
 
@@ -1045,17 +1035,17 @@ export async function getProjectCommits(
   const proj = await getProject(projectName);
   const n = Number(limit);
   const cap = Math.max(1, Math.min(COMMITS_MAX_LIMIT, Number.isFinite(n) ? Math.floor(n) : COMMITS_DEFAULT_LIMIT));
-  if (!(await isGitRepo(proj.path))) {
+  if (!(await isGitRepo(proj.system, proj.path))) {
     return {
       project: projectName, branch: null, commits: [], truncated: false, limit: cap,
       hasUncommitted: false, aheadCount: null, aheadOf: null,
     };
   }
-  const head = await runGit(proj.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const head = await runGit(proj.system, proj.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = head.code === 0 ? (head.stdout.trim() || null) : null;
 
   // Detect uncommitted changes (staged or unstaged).
-  const statusR = await runGit(proj.path, ['status', '--porcelain']);
+  const statusR = await runGit(proj.system, proj.path, ['status', '--porcelain']);
   const hasUncommitted = statusR.code === 0
     ? (statusR.stdout || '').split('\n').some(l => l.trim().length > 0)
     : false;
@@ -1065,14 +1055,14 @@ export async function getProjectCommits(
   // Fall back to worktree base-branch metadata (orchestrator-managed worktrees).
   let aheadCount: number | null = null;
   let aheadOf: string | null = null;
-  const upstreamStatus = await getProjectUpstreamStatus(proj.path);
+  const upstreamStatus = await getProjectUpstreamStatus(proj.system, proj.path);
   if (upstreamStatus.ahead !== null) {
     aheadCount = upstreamStatus.ahead;
     aheadOf = upstreamStatus.upstream;
   } else {
     const worktreeMeta = await findWorktreeMetaForPath(proj.path);
     if (worktreeMeta) {
-      const mergeStatus = await getWorktreeMergeStatus(worktreeMeta);
+      const mergeStatus = await getWorktreeMergeStatus(proj.system, worktreeMeta);
       if (mergeStatus.ahead !== null) {
         aheadCount = mergeStatus.ahead;
         aheadOf = worktreeMeta.baseBranch;
@@ -1082,7 +1072,7 @@ export async function getProjectCommits(
 
   // Field separator \x1f between fields; %s/%h/%H/%an/%ar/%aI/%P are all single-line.
   // %P = parent SHAs (space-separated): empty for the root commit, ≥2 for a merge.
-  const r = await runGit(proj.path, [
+  const r = await runGit(proj.system, proj.path, [
     'log', `--max-count=${cap + 1}`,
     '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI%x1f%P',
   ]);

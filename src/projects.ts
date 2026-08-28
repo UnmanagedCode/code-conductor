@@ -11,6 +11,13 @@ import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
+import { localSystem, resolveSystem } from './systems/registry.ts';
+import { writeFileAtomic } from './systems/localSystem.ts';
+import type { System } from './systems/system.ts';
+
+// Re-exported from its implementation on the local system: the store is always
+// local, so cc's own atomic writes and the local System's are one operation.
+export { writeFileAtomic };
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -258,6 +265,14 @@ export interface ProjectInfo {
   external: boolean;
 }
 
+// What the resolver hands back: where the project's tree is, how it is placed,
+// and — threaded through every operation on that tree — the System it lives on.
+export interface ResolvedProjectDir {
+  path: string;
+  external: boolean;
+  system: System;
+}
+
 // THE resolver every project path in the app comes from: an in-root directory,
 // else a `.external/<name>` symlink, else null.
 //
@@ -268,14 +283,17 @@ export interface ProjectInfo {
 // every resume of an external project's session looks at the wrong directory.
 // Claude Code's `CLAUDE.md` upward walk follows the realpath for the same
 // reason, and neither has an env lever.
-export async function resolveProjectDir(name: string): Promise<{ path: string; external: boolean } | null> {
+export async function resolveProjectDir(name: string): Promise<ResolvedProjectDir | null> {
+  // The System the project's tree lives on — resolved BEFORE the tree is
+  // touched, because from Phase 4 on it decides which machine to look on.
+  // In-root and `.external` are both LOCAL placements: a symlink under the
+  // projects root has no relationship to a remote system.
+  const system = await resolveSystem(name);
   const inRoot = path.join(projectsRoot(), name);
-  let inRootStat: Awaited<ReturnType<typeof fs.stat>> | null = null;
-  try { inRootStat = await fs.stat(inRoot); }
-  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+  const inRootStat = await system.stat(inRoot);
   if (inRootStat) {
-    if (!inRootStat.isDirectory()) throw httpError(404, `'${name}' is not a directory`);
-    return { path: inRoot, external: false };
+    if (inRootStat.kind !== 'dir') throw httpError(404, `'${name}' is not a directory`);
+    return { path: inRoot, external: false, system };
   }
   // A broken link, a link cycle, or no link at all: the name is simply unknown.
   // Anything else — EACCES on `.external/`, ENOTDIR because `.external` is a
@@ -291,12 +309,11 @@ export async function resolveProjectDir(name: string): Promise<{ path: string; e
     if (code === 'ENOENT' || code === 'ELOOP') return null;
     throw e;
   }
-  // realpath just resolved it, so an ENOENT here is a concurrent deletion.
-  let targetStat: Awaited<ReturnType<typeof fs.stat>>;
-  try { targetStat = await fs.stat(real); }
-  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
-  if (!targetStat.isDirectory()) return null; // a link to a file is not a project
-  return { path: real, external: true };
+  // realpath just resolved it, so an absent target here is a concurrent deletion.
+  const targetStat = await system.stat(real);
+  if (!targetStat) return null;
+  if (targetStat.kind !== 'dir') return null; // a link to a file is not a project
+  return { path: real, external: true, system };
 }
 
 // "Is this name usable?" — the shared existing-name test for the two creation
@@ -308,7 +325,7 @@ export async function resolveProjectDir(name: string): Promise<{ path: string; e
 // forever. createProject discards the text (its 409 wording is a fixed
 // contract); adoptProject surfaces it.
 async function heldNameReason(name: string): Promise<string | null> {
-  let held: { path: string; external: boolean } | null;
+  let held: ResolvedProjectDir | null;
   try { held = await resolveProjectDir(name); }
   catch (e) {
     // resolveProjectDir throws exactly one refusal of its own — a 404 saying
@@ -356,7 +373,9 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     let real: string;
     try { real = await fs.realpath(externalLinkPath(e.name)); }
     catch { continue; }
-    try { if (!(await fs.stat(real)).isDirectory()) continue; }
+    // The link is a local record, but its TARGET is the project tree — stat it
+    // through the project's system, never with a bare fs call.
+    try { if ((await (await resolveSystem(e.name)).stat(real))?.kind !== 'dir') continue; }
     catch { continue; }
     const meta = await readProjectMeta(e.name);
     out.push({ name: e.name, path: real, workspace: meta.workspace, external: true });
@@ -376,7 +395,7 @@ export async function findSelfProject(selfDir: string = SELF_PROJECT_DIR): Promi
   try { selfReal = await fs.realpath(selfDir); } catch { return null; }
   for (const p of await listProjects()) {
     let real: string;
-    try { real = await fs.realpath(p.path); } catch { continue; }
+    try { real = await (await resolveSystem(p.name)).realpath(p.path); } catch { continue; }
     if (real === selfReal) return p;
   }
   return null;
@@ -467,37 +486,6 @@ export async function writeProjectMeta(
   }
   await writeFileAtomic(file, JSON.stringify(next, null, 2) + '\n');
   return next;
-}
-
-// Shared mkdir-parent → write tmp(.pid.seq) → rename helper. Homed here
-// because projects.ts is the lowest module already imported by the other
-// call sites (appSettings.ts, conventionsImport.ts) — no import cycle.
-//
-// The tmp name must be unique per call: pid separates processes, the counter
-// separates concurrent calls within one process. A shared name let the
-// winner's rename delete the loser's still-in-flight source file (board
-// 2026-0156: two same-process writers to one target — e.g. a plugin stop's
-// awaited write racing its own fire-and-forget child-exit write — collided
-// on `${filePath}.${pid}.tmp` and the loser threw ENOENT on a file it wrote
-// itself). The `unlink` below is required *because* the name became unique
-// (with a shared name it would delete a sibling writer's tmp file, so it
-// couldn't have existed before) and is only safe for that same reason.
-//
-// Concurrent writers to one target are last-write-wins, not merged or
-// locked: this fixes writers destroying each other's tmp file, not the
-// lost-update where a stale payload's rename overwrites a newer one.
-let atomicWriteSeq = 0;
-
-export async function writeFileAtomic(filePath: string, data: string): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
-  try {
-    await fs.writeFile(tmp, data);
-    await fs.rename(tmp, filePath);
-  } catch (e) {
-    await fs.unlink(tmp).catch(() => {});
-    throw e;
-  }
 }
 
 // ── Workspace registry ────────────────────────────────────────────────
@@ -629,6 +617,7 @@ export async function createProject(
   { conventionsDoc = null }: { conventionsDoc?: string | null } = {},
 ): Promise<{ name: string; path: string }> {
   validateName(name);
+  const system = await resolveSystem(name);
   const root = projectsRoot();
   const full = path.join(root, name);
   // resolveProjectDir, not the mkdir alone: an ADOPTED project holds the name
@@ -639,7 +628,7 @@ export async function createProject(
     throw httpError(409, `project '${name}' already exists`);
   }
   try {
-    await fs.mkdir(full, { recursive: false });
+    await system.mkdir(full);
   } catch (e) {
     if (errCode(e) === 'EEXIST') {
       throw httpError(409, `project '${name}' already exists`);
@@ -653,7 +642,7 @@ export async function createProject(
   // sits inside a repo, and skip the init. Dynamic import because worktrees.ts
   // statically imports this module (as with listWorktrees below).
   const { runGit } = await import('./worktrees.ts');
-  const init = await runGit(full, ['init', '-q']);
+  const init = await runGit(system, full, ['init', '-q']);
   if (init.code !== 0) {
     throw httpError(500, `git init failed in ${full}: ${init.stderr.trim() || init.stdout.trim()}`);
   }
@@ -666,12 +655,12 @@ export async function createProject(
   const importLine = '@CONVENTIONS.md\n';
   const claudeMdPath = path.join(full, 'CLAUDE.md');
   try {
-    await fs.writeFile(claudeMdPath, importLine, { flag: 'wx' });
+    await system.writeFile(claudeMdPath, importLine, { exclusive: true });
   } catch (e) {
     if (errCode(e) !== 'EEXIST') throw e;
   }
   if (conventionsDoc != null) {
-    await fs.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
+    await system.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
   }
   return { name, path: full };
 }
@@ -685,12 +674,19 @@ export async function createProject(
 export async function deleteProject(name: string): Promise<{ name: string; path: string }> {
   validateName(name);
   const resolved = await resolveProjectDir(name);
+  // The system the tree lives on. A name that resolves to nothing has no tree
+  // and no record to read: that case keeps today's local behaviour (Phase 4
+  // turns it into the refusal §5.2 of docs/systems-design.md requires).
+  const system = resolved?.system ?? await resolveSystem(name);
   if (resolved?.external) {
     // DELETING AN EXTERNAL PROJECT UNREGISTERS IT. Do not "simplify" this back
-    // into the fs.rm below: `resolved.path` is the user's own repo (the
-    // realpath), and the realpath must never reach a removal call. fs.unlink
-    // can never follow a symlink; fs.rm's recursive path merely happens not to,
-    // and that is an implementation detail this must not depend on.
+    // into the removeTree below: `resolved.path` is the user's own repo (the
+    // realpath), and the realpath must never reach a removal call. What is
+    // removed here is the `.external/<name>` LINK — a local record under the
+    // projects root, not a path on any system — and it is removed with a
+    // single-entry unlink, which can never follow the symlink. `removeTree` is
+    // `rm -rf`: it merely happens not to follow one, and that is an
+    // implementation detail this must not depend on.
     try { await fs.unlink(externalLinkPath(name)); }
     catch (e) {
       if (errCode(e) !== 'ENOENT') throw httpError(500, `failed to unregister project '${name}': ${errMsg(e)}`);
@@ -698,7 +694,7 @@ export async function deleteProject(name: string): Promise<{ name: string; path:
   } else {
     const full = path.join(projectsRoot(), name);
     try {
-      await fs.rm(full, { recursive: true, force: true });
+      await system.removeTree(full);
     } catch (e) {
       throw httpError(500, `failed to delete project '${name}': ${errMsg(e)}`);
     }
@@ -710,11 +706,22 @@ export async function deleteProject(name: string): Promise<{ name: string; path:
   return { name, path: resolved?.path ?? path.join(projectsRoot(), name) };
 }
 
-export async function getProject(name: string): Promise<{ name: string; path: string; external: boolean }> {
+// Carries the System handle so a caller that has the project has everything it
+// needs to operate on the tree. NOT the serialised project shape — that is
+// ProjectInfo, which stays a plain record (both REST and MCP spread it into a
+// response body).
+export interface ResolvedProject {
+  name: string;
+  path: string;
+  external: boolean;
+  system: System;
+}
+
+export async function getProject(name: string): Promise<ResolvedProject> {
   validateName(name);
   const resolved = await resolveProjectDir(name);
   if (!resolved) throw httpError(404, `project '${name}' not found`);
-  return { name, path: resolved.path, external: resolved.external };
+  return { name, path: resolved.path, external: resolved.external, system: resolved.system };
 }
 
 // Is `inner` the same directory as `outer`, or inside it? Decided with
@@ -758,14 +765,25 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   if (typeof target !== 'string' || target.trim() === '' || !path.isAbsolute(target)) {
     return { ok: false, code: 'INVALID_TARGET_PATH', reason: 'path must be a non-empty absolute path.' };
   }
+  // The system the adopted tree lives on. Adoption has no record yet to read it
+  // from, so it is the local built-in: `.external` is a LOCAL placement (a
+  // symlink under the projects root). Phase 4 adds the remote-adopt branch,
+  // where the caller names the system and this becomes its handle.
+  const system = localSystem();
   let real: string;
-  try { real = await fs.realpath(target); }
+  try { real = await system.realpath(target); }
   catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot resolve '${target}': ${errMsg(e)}` }; }
-  try {
-    if (!(await fs.stat(real)).isDirectory()) {
-      return { ok: false, code: 'TARGET_NOT_A_DIRECTORY', reason: `'${real}' is not a directory.` };
-    }
-  } catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` }; }
+  let targetStat;
+  try { targetStat = await system.stat(real); }
+  catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` }; }
+  // Absent after a successful realpath is a raced deletion, not a bad shape —
+  // same code the throwing form reported.
+  if (!targetStat) {
+    return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': no such file or directory` };
+  }
+  if (targetStat.kind !== 'dir') {
+    return { ok: false, code: 'TARGET_NOT_A_DIRECTORY', reason: `'${real}' is not a directory.` };
+  }
 
   // Already managed? One directory with two project identities would share one
   // encodeCwd session dir and hold two store entries. Tested in BOTH directions
@@ -794,12 +812,12 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   // creation and every diff the wrong toplevel. Dynamic import for the same
   // reason as createProject's — worktrees.ts statically imports this module.
   const { runGit } = await import('./worktrees.ts');
-  const top = await runGit(real, ['rev-parse', '--show-toplevel']);
+  const top = await runGit(system, real, ['rev-parse', '--show-toplevel']);
   if (top.code !== 0) {
     return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository.` };
   }
   let topReal = top.stdout.trim();
-  try { topReal = await fs.realpath(topReal); } catch { /* compare what git printed */ }
+  try { topReal = await system.realpath(topReal); } catch { /* compare what git printed */ }
   if (topReal !== real) {
     return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository ROOT — its toplevel is '${topReal}'. Adopt that instead.` };
   }
