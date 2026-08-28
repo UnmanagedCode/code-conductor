@@ -588,7 +588,8 @@ export function buildTools(): Tool[] {
         'Bring a worktree up to date with its base branch — server-side fast-forward when possible, ' +
         'otherwise an automatic `git rebase --rebase-merges`. Returns immediately and never prompts a ' +
         'worker. Actions already-in-sync / fast-forwarded / rebased mean it landed; commit-required ' +
-        '(the worktree has uncommitted changes) and rebase-conflict (the rebase was attempted and ' +
+        '(the worktree is behind AND has uncommitted changes, so no rebase can even start) and ' +
+        'rebase-conflict (the rebase was attempted and ' +
         'aborted, leaving the worktree clean and untouched) are successful measurements, not failures — ' +
         'both are ok:true and carry branch, baseBranch, baseSha, ahead, behind and a ready-to-send ' +
         'rebasePrompt: send_prompt it verbatim to whichever worker should do the work, or resolve it ' +

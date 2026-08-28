@@ -1282,8 +1282,21 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           });
           return;
         }
+        // A FAILED measurement is not a clean tree. `worktreeDirtyLines` reports
+        // {ok:false, lines:[]} when `git status` itself exits non-zero, and the
+        // conflict brief tells the agent the tree "should be clean" — so folding
+        // the failure into the else-branch would assert something we never
+        // measured. Refuse instead, exactly as syncWorktree does for the same
+        // git-status failure.
         const dirty = await worktreeDirtyLines(inst.worktree.worktreePath);
-        const blocker = (dirty.ok && dirty.lines.length > 0) ? 'dirty' : 'conflict';
+        if (!dirty.ok) {
+          res.json({
+            ok: false, code: 'WORKTREE_STATUS_FAILED',
+            reason: `git status failed inside worktree '${inst.worktree.worktreePath}' — cannot tell the agent what to do`,
+          });
+          return;
+        }
+        const blocker = dirty.lines.length > 0 ? 'dirty' : 'conflict';
         await inst.prompt(buildRebasePrompt(inst.worktree, blocker), [], { annotateIfMidTurn: false });
         res.json({ ok: true, action: 'rebase-prompt-sent', blocker });
       } catch (e) { next(e); }

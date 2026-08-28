@@ -838,8 +838,10 @@ function rebaseBlocked(meta: WorktreeMeta, action: 'commit-required' | 'rebase-c
 //   - behind == 0                                 → already in sync (no-op).
 //   - behind > 0, ahead == 0, worktree tree clean → server-side `git
 //     merge --ff-only <baseBranch>` inside the worktree.
-//   - dirty working tree (any ahead count)        → 'commit-required': the
-//     worktree must commit or discard before any rebase can run.
+//   - behind > 0 + dirty tree (any ahead count)   → 'commit-required': the
+//     worktree must commit or discard before any rebase can run. Reached only
+//     after the behind == 0 short-circuit above, so a dirty worktree that is
+//     not behind is 'already-in-sync', never this.
 //   - ahead > 0, clean tree                       → attempt server-side
 //     `git rebase <baseBranch>`; on success return 'rebased'; on conflict
 //     abort cleanly and return 'rebase-conflict'.
