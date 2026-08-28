@@ -210,7 +210,7 @@ export class Conversation {
     }
     let sub = this.subConvs.get(ev.parentToolUseId);
     if (!sub) {
-      sub = new Conversation(parent.subRoot, {
+      sub = new Conversation(parent.subBody, {
         isSub: true,
         onUserQuestionSubmit: this.onUserQuestionSubmit,
         onPlanDecision: this.onPlanDecision,

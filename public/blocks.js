@@ -277,11 +277,25 @@ export class ToolUseBlock {
     this._timer = null;
     this._doneElapsed = null;
 
+    // The .tool-args <details> is created once and kept — its `open` attribute
+    // IS the user's collapse state, so _renderBody swaps only the payload.
+    // _argsDefaultOpen remembers the last default the code itself applied.
+    this.argsDetails = null;
+    this._argsDefaultOpen = false;
+
     this.summary = el('summary', {});
     this.body = el('div', { class: 'tool-body' });
-    // Sub-agents (Task tool) stream their own events into here under
-    // parent_tool_use_id — rendered as a nested mini-conversation.
-    this.subRoot = el('div', { class: 'sub-conversation', hidden: true });
+    // Sub-agents (Agent tool) stream their own events into subBody under
+    // parent_tool_use_id — rendered as a nested mini-conversation. subRoot is
+    // its own <details> so the turn transcript collapses independently of the
+    // balloon, tool_args and tool_result. subBody (not subRoot) is the child
+    // Conversation's root: Conversation._setEmpty() wipes its root's innerHTML,
+    // which would eat the summary.
+    this.subBody = el('div', { class: 'sub-conversation-body' });
+    this.subRoot = el('details', { class: 'sub-conversation', hidden: true, open: true },
+      el('summary', {}, '↳ sub-agent'),
+      this.subBody,
+    );
     // Collapsed by default — the smart summary already shows the command
     // and the disclosure caret (rendered in CSS since display:flex hides
     // the native triangle on summary) tells the user the body is hidden.
@@ -289,9 +303,12 @@ export class ToolUseBlock {
     this._renderSummary();
     this._renderBody();
   }
+  // Reveal only. Never touches `open` on either <details> — the user's collapse
+  // must survive every subsequent child event (this used to force
+  // this.node.open = true, re-expanding the balloon on every streamed sub-agent
+  // token and undoing any manual collapse).
   revealSubRoot() {
     if (this.subRoot.hasAttribute('hidden')) this.subRoot.removeAttribute('hidden');
-    if (!this.node.open) this.node.open = true;
   }
 
   setName(name) {
@@ -362,30 +379,40 @@ export class ToolUseBlock {
   }
 
   _renderBody() {
-    this.body.textContent = '';
     const input = this.input;
-    if (!input) {
-      if (this.partialJson) this.body.appendChild(wrapToolArgs(el('pre', {}, this.partialJson)));
-      return;
-    }
-    const renderer = TOOL_INPUT_RENDERERS[renderKindFor(this.name)];
+    const renderer = input ? TOOL_INPUT_RENDERERS[renderKindFor(this.name)] : null;
     const parsed = renderer ? renderer(input) : null;
-    if (parsed) {
-      this.body.appendChild(wrapToolArgs(parsed, { open: true }));
+    let payload = null;
+    let wantOpen = false;
+    if (parsed) { payload = parsed; wantOpen = true; }
+    else if (input) {
+      try { payload = el('pre', {}, JSON.stringify(input, null, 2)); }
+      catch { payload = el('pre', {}, this.partialJson); }
+    } else if (this.partialJson) {
+      payload = el('pre', {}, this.partialJson);
+    }
+    if (!payload) {
+      if (this.argsDetails) { this.argsDetails.remove(); this.argsDetails = null; }
       return;
     }
-    let pre;
-    try { pre = el('pre', {}, JSON.stringify(input, null, 2)); }
-    catch { pre = el('pre', {}, this.partialJson); }
-    this.body.appendChild(wrapToolArgs(pre));
+    if (!this.argsDetails) {
+      this.argsDetails = el('details', { class: 'block tool-args' },
+        el('summary', {}, '↪ tool_args'));
+      this._argsDefaultOpen = false;
+      this.body.appendChild(this.argsDetails);
+    }
+    // Replace the payload, keep the <summary> (child 0) and the node identity —
+    // the node IS the collapse state, so rebuilding it would lose a user toggle.
+    while (this.argsDetails.childNodes.length > 1) this.argsDetails.lastChild.remove();
+    this.argsDetails.appendChild(payload);
+    // Only write `open` when the code-chosen default actually changes (generic
+    // JSON → renderer-backed). Re-asserting an unchanged default would clobber
+    // a user toggle.
+    if (wantOpen !== this._argsDefaultOpen) {
+      this.argsDetails.open = wantOpen;
+      this._argsDefaultOpen = wantOpen;
+    }
   }
-}
-
-function wrapToolArgs(node, { open = false } = {}) {
-  return el('details', { class: 'block tool-args', open },
-    el('summary', {}, '↪ tool_args'),
-    node,
-  );
 }
 
 const TOOL_INPUT_RENDERERS = {
