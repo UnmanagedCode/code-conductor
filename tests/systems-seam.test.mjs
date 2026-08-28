@@ -9,13 +9,19 @@
 // hatches while real operations run, and fails on any call that reached the
 // watched tree without a `src/systems/localSystem.ts` frame beneath it.
 //
-// THE FIXTURE IS AN ADOPTED (external) PROJECT ON PURPOSE. Its tree sits in its
-// own temp dir, far from the projects root, so "reached the project tree" is a
-// pure path test with nothing to disentangle: cc's store, the `.external/<name>`
-// symlink record and the worktree directory all live under the projects root
-// and are LOCAL PLACEMENT — not part of any system — while the adopted repo
-// itself is the project tree. (`external` has no relationship to remote
-// systems; it is the fixture that separates the two path spaces cleanly.)
+// BOTH PLACEMENTS ARE DRIVEN, and they cover different code. The ADOPTED
+// (external) fixture is the clean one: its tree sits in its own temp dir, far
+// from the projects root, so "reached the project tree" is a pure path test with
+// nothing to disentangle — cc's store, the `.external/<name>` symlink record and
+// the worktree directory all live under the projects root and are LOCAL
+// PLACEMENT, not part of any system. (`external` has no relationship to remote
+// systems; it is the fixture that separates the two path spaces cleanly.) But
+// resolveProjectDir's IN-ROOT branch, createProject and deleteProject's
+// tree-removal branch are only reachable from an in-root project, and a suite
+// that drove only the adopted one would call them covered while never running
+// them — so the last test drives an in-root project end to end, watching
+// `<projectsRoot>/<name>` alone (the store and the worktree dir are siblings of
+// it, not children, so they stay outside the watch by construction).
 //
 // THE INTERCEPTORS, and why they are installed the way they are:
 //   - `fs.promises` is one shared object and src modules call `fs.readFile(…)`
@@ -167,8 +173,10 @@ after(async () => { await rmrf(home); });
 
 // Run one real operation with the tree under watch, and report both halves:
 // what the System saw, and what got past it.
-async function drive(label, fn) {
-  watched = [target];
+// `expectSystemOps: false` is for an operation that legitimately touches nothing
+// inside the tree — it still must not leak, but there is nothing to route.
+async function drive(label, fn, { tree = target, expectSystemOps = true } = {}) {
+  watched = [tree];
   systemOps = [];
   const before = leaks.length;
   try {
@@ -178,8 +186,10 @@ async function drive(label, fn) {
     watched = [];
     assert.deepEqual(escaped, [],
       `${label}: reached the project tree without going through its System:\n  ${escaped.join('\n  ')}`);
-    assert.ok(systemOps.length > 0,
-      `${label}: no System operation touched the project tree — the test drove nothing`);
+    if (expectSystemOps) {
+      assert.ok(systemOps.length > 0,
+        `${label}: no System operation touched the project tree — the test drove nothing`);
+    }
   }
 }
 
@@ -247,4 +257,60 @@ test('deleting the project reaches the tree only through the System', async () =
     assert.equal(r.path, target);
   });
   assert.ok((await fsp.stat(target)).isDirectory(), 'the adopted repo survives — it was unregistered');
+});
+
+test('an IN-ROOT project reaches its tree only through the System, from create to delete', async () => {
+  const name = 'inroot';
+  const tree = path.join(projectsRoot, name);
+
+  // createProject is itself under watch: the mkdir, the `git init` and both
+  // seed-file writes land in the tree it is creating.
+  await drive('createProject', async () => {
+    const created = await mods.projects.createProject(name);
+    assert.equal(created.path, tree);
+  }, { tree });
+  assert.match(await fsp.readFile(path.join(tree, 'CLAUDE.md'), 'utf8'), /@CONVENTIONS\.md/);
+
+  // Give it a commit so the git surface has something to report. Test-side
+  // setup, so it runs outside any watch.
+  await fsp.writeFile(path.join(tree, 'README.md'), '# in-root\n');
+  await git(tree, 'config', 'user.email', 'test@example.com');
+  await git(tree, 'config', 'user.name', 'test');
+  await git(tree, 'config', 'commit.gpgsign', 'false');
+  await git(tree, 'add', '.');
+  await git(tree, 'commit', '-q', '-m', 'initial');
+
+  // resolveProjectDir's IN-ROOT branch — a different stat from the adopted
+  // path's, and the one every in-root project in a real install goes through.
+  await drive('getProject (in-root)', async () => {
+    const proj = await mods.projects.getProject(name);
+    assert.equal(proj.path, tree);
+    assert.equal(proj.external, false);
+  }, { tree });
+  // Listing an IN-ROOT project touches nothing inside its tree — the path is
+  // composed from the root enumeration, never probed — so there is no System op
+  // to expect here, only nothing to leak. That is exactly why the root
+  // `fs.readdir` is a sanctioned exception rather than a routing target.
+  await drive('listProjects (in-root)', async () => {
+    assert.deepEqual((await mods.projects.listProjects()).map(p => p.name), [name]);
+  }, { tree, expectSystemOps: false });
+  await drive('getProjectCommits (in-root)', async () => {
+    const r = await mods.worktrees.getProjectCommits(name);
+    assert.equal(r.commits.length, 1);
+  }, { tree });
+  await drive('projectRead (in-root)', async () => {
+    const r = await mods.handlers.projectRead({ project: name, relativePath: 'README.md' });
+    assert.match(JSON.stringify(r), /# in-root/);
+  }, { tree });
+  await drive('ensureProjectConventionsMd (in-root)', async () => {
+    assert.equal((await mods.projectClaudeMd.ensureProjectConventionsMd(name)).regenerated, true);
+  }, { tree });
+  const wt = await drive('createWorktree (in-root)', () => mods.worktrees.createWorktree(name), { tree });
+  assert.equal(path.dirname(wt.worktreePath), projectsRoot, 'the worktree dir is a SIBLING, not inside the watched tree');
+  await drive('removeWorktree (in-root)', () => mods.worktrees.removeWorktree(name, wt.worktreeName), { tree });
+
+  // deleteProject's other branch: an in-root project's tree really is removed,
+  // through the System. The adopted fixture can only ever prove the opposite.
+  await drive('deleteProject (in-root)', () => mods.projects.deleteProject(name), { tree });
+  await assert.rejects(() => fsp.stat(tree), 'the in-root tree is removed — the unlink branch must not have swallowed this one');
 });

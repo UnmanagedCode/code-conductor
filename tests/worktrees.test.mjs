@@ -11,9 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
+  runGit, GIT_OUTPUT_LIMIT_BYTES,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir } from '../src/projects.ts';
 import { localSystem } from '../src/systems/registry.ts';
+import { LocalSystem } from '../src/systems/localSystem.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -153,6 +155,57 @@ test('createWorktree refuses on a repo with no commits (unborn HEAD)', async () 
   assert.match(r.body.error, /no commits yet/);
   assert.ok(!/ambiguous argument/.test(r.body.error),
     `refusal leaked git's raw text: ${r.body.error}`);
+});
+
+// Every runGit caller parses git's output WHOLE, so the outcome that must never
+// happen is a short read reported as success. cc is also a single process
+// hosting every worker session, and git output is unbounded in the ordinary
+// case, so the fence has to be attached to EVERY call, not just the diff paths
+// someone remembered.
+test('runGit fences git output: the limit rides on every call, and crossing it fails', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const origExec = LocalSystem.prototype.exec;
+
+  const limits = [];
+  try {
+    LocalSystem.prototype.exec = function (spec, opts) {
+      limits.push(opts.maxBufferBytes);
+      return origExec.call(this, spec, opts);
+    };
+    const ok = await runGit(localSystem(), repoPath, ['rev-parse', 'HEAD']);
+    assert.equal(ok.code, 0);
+  } finally { LocalSystem.prototype.exec = origExec; }
+  assert.ok(limits.length > 0, 'the git call went through the System');
+  assert.deepEqual([...new Set(limits)], [GIT_OUTPUT_LIMIT_BYTES],
+    `every runGit exec must carry the fence; saw ${JSON.stringify(limits)}`);
+  assert.equal(GIT_OUTPUT_LIMIT_BYTES, 16 * 1024 * 1024,
+    'the fence is 16 MB — the bound execFile enforced before git became a System op');
+
+  // The boundary itself, end to end through real git. The ceiling is shrunk at
+  // the same seam rather than by producing 16 MB of git output in a test: what
+  // is under test is what runGit does when git crosses the fence, and that is
+  // identical at either value.
+  await fs.writeFile(path.join(repoPath, 'big.txt'), 'padding line for the diff\n'.repeat(4000));
+  await git(repoPath, 'add', '.');
+  await git(repoPath, 'commit', '-q', '-m', 'big');
+  try {
+    LocalSystem.prototype.exec = function (spec, opts) {
+      return origExec.call(this, spec, { ...opts, maxBufferBytes: 8192 });
+    };
+    const r = await runGit(localSystem(), repoPath, ['show', 'HEAD']);
+    assert.equal(r.code, 1, 'past the fence runGit FAILS — every caller already branches on a non-zero code');
+    assert.match(r.stderr, /exceeded the 8192-byte limit/,
+      'the diagnostic reaches the field callers build their error text from');
+    assert.ok(r.stdout.length > 0, 'the output that arrived first is kept, as the old maxBuffer error did');
+    assert.ok(r.stdout.length < 100_000,
+      `retention must stop at the fence, kept ${r.stdout.length} bytes of a ~100 KB diff`);
+  } finally { LocalSystem.prototype.exec = origExec; }
+
+  // And the same command under the real fence is an ordinary success — the
+  // fence must not be a cap that clips every large-ish diff.
+  const full = await runGit(localSystem(), repoPath, ['show', 'HEAD']);
+  assert.equal(full.code, 0);
+  assert.ok(full.stdout.includes('padding line for the diff'));
 });
 
 test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn', async () => {

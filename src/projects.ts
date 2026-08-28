@@ -284,10 +284,15 @@ export interface ResolvedProjectDir {
 // Claude Code's `CLAUDE.md` upward walk follows the realpath for the same
 // reason, and neither has an env lever.
 export async function resolveProjectDir(name: string): Promise<ResolvedProjectDir | null> {
-  // The System the project's tree lives on — resolved BEFORE the tree is
-  // touched, because from Phase 4 on it decides which machine to look on.
-  // In-root and `.external` are both LOCAL placements: a symlink under the
-  // projects root has no relationship to a remote system.
+  // SYSTEMS-P4: THE HUB. A record naming a system resolves to
+  // `{path: systemPath, external: false, system}` here, and every downstream
+  // caller then resolves correctly; today a project with no local tree reads as
+  // unknown, which is the root cause of the other SYSTEMS-P4 sites.
+  //
+  // The System is resolved BEFORE the tree is touched, because from Phase 4 on
+  // it decides which machine to look on. In-root and `.external` are both LOCAL
+  // placements: a symlink under the projects root has no relationship to a
+  // remote system.
   const system = await resolveSystem(name);
   const inRoot = path.join(projectsRoot(), name);
   const inRootStat = await system.stat(inRoot);
@@ -343,6 +348,14 @@ async function heldNameReason(name: string): Promise<string | null> {
 export async function listProjects(): Promise<ProjectInfo[]> {
   const root = projectsRoot();
   await fs.mkdir(root, { recursive: true });
+  // SYSTEMS-P4: this enumeration is the LOCAL half. A remote project has no
+  // directory here, so P4 unions these filesystem-derived entries with the
+  // store-derived records whose `project.json` carries a `system` field.
+  //
+  // The bare `fs` calls below are deliberate and stay: the projects root is cc's
+  // own registry area, not a project tree — it is local by definition, and no
+  // remote project lives in it. Only a resolved project PATH goes through a
+  // System (see the target stat further down).
   const entries = await fs.readdir(root, { withFileTypes: true });
   const worktreeDirs = await listAllWorktreeDirNames();
   const out: ProjectInfo[] = [];
@@ -617,6 +630,9 @@ export async function createProject(
   { conventionsDoc = null }: { conventionsDoc?: string | null } = {},
 ): Promise<{ name: string; path: string }> {
   validateName(name);
+  // SYSTEMS-P4: third branch — on a non-local system the mkdir, `git init` and
+  // the seed files below all happen on the system, at a caller-named path,
+  // instead of under the local projects root.
   const system = await resolveSystem(name);
   const root = projectsRoot();
   const full = path.join(root, name);
@@ -674,9 +690,14 @@ export async function createProject(
 export async function deleteProject(name: string): Promise<{ name: string; path: string }> {
   validateName(name);
   const resolved = await resolveProjectDir(name);
+  // SYSTEMS-P4: third branch — deleting a remote project UNREGISTERS it and
+  // never touches the remote tree (D11), returning the remote path and its
+  // system so a caller can say which machine it was unregistered from.
+  //
   // The system the tree lives on. A name that resolves to nothing has no tree
-  // and no record to read: that case keeps today's local behaviour (Phase 4
-  // turns it into the refusal §5.2 of docs/systems-design.md requires).
+  // and no record to read: that case keeps today's local behaviour — the
+  // `removeTree` below is a forced removal of a path that does not exist, i.e.
+  // a silent success, which is exactly what P4 must turn into a refusal.
   const system = resolved?.system ?? await resolveSystem(name);
   if (resolved?.external) {
     // DELETING AN EXTERNAL PROJECT UNREGISTERS IT. Do not "simplify" this back
@@ -765,10 +786,14 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   if (typeof target !== 'string' || target.trim() === '' || !path.isAbsolute(target)) {
     return { ok: false, code: 'INVALID_TARGET_PATH', reason: 'path must be a non-empty absolute path.' };
   }
-  // The system the adopted tree lives on. Adoption has no record yet to read it
-  // from, so it is the local built-in: `.external` is a LOCAL placement (a
-  // symlink under the projects root). Phase 4 adds the remote-adopt branch,
-  // where the caller names the system and this becomes its handle.
+  // SYSTEMS-P4: third branch — the caller names the system, this becomes its
+  // handle, and the checks below change shape: the local-projects-root
+  // containment tests are skipped and the duplicate test compares
+  // `(system, path)` rather than a path alone.
+  //
+  // Adoption has no record yet to read a system from, so today it is the local
+  // built-in: `.external` is a LOCAL placement (a symlink under the projects
+  // root).
   const system = localSystem();
   let real: string;
   try { real = await system.realpath(target); }

@@ -21,6 +21,12 @@ function tmpdir() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-systems-local-'));
 }
 
+// VACUOUS UNTIL PHASE 2, AND DELIBERATELY KEPT ANYWAY. In Phase 1 there is no
+// record that could name another system, so every project resolves local and
+// deleting the pin from resolveSystem changes nothing this test can see —
+// verified, not assumed. It pins the CONTRACT so the pin has an assertion to
+// grow into: the test that can fail lands with P2's record reads, where a
+// `.conduct` record naming a system must still resolve local.
 test('resolveSystem pins `.conduct` to the local system', async () => {
   const sys = await resolveSystem(CONDUCT_PROJECT_NAME);
   assert.equal(sys.id, LOCAL_SYSTEM_ID);
@@ -178,6 +184,54 @@ test('exec headCapBytes keeps the HEAD of the output and still runs to completio
   } finally { await rmrf(dir); }
 });
 
+test('exec maxBufferBytes FAILS past the ceiling rather than truncating successfully', async () => {
+  const dir = await tmpdir();
+  try {
+    // The fence behind runGit. Its callers parse git output whole, so the one
+    // outcome that must never happen is a short read reported as success —
+    // that is a wrong answer, where a failure is merely a failure.
+    const r = await localSystem().exec(
+      { shell: `for i in $(seq 1 20000); do echo "line-$i-padding-padding-padding"; done` },
+      { cwd: dir, maxBufferBytes: 4096 },
+    );
+    assert.equal(r.code, 1, 'past the ceiling the call FAILS — a truncated success would be read as the truth');
+    assert.equal(r.timedOut, false, 'the ceiling is not a timeout');
+    assert.match(r.stderr, /exceeded the 4096-byte limit/,
+      'the diagnostic lands in stderr, which is where the `stderr || stdout` callers read it');
+    assert.match(r.stdout, /^line-1-/, 'the output that arrived first is retained');
+    assert.ok(r.stdout.length > 0 && r.stdout.length <= 4096,
+      `the failure carries exactly the output under the fence, kept ${r.stdout.length} bytes`);
+  } finally { await rmrf(dir); }
+});
+
+test('a command that finishes before the kill lands still FAILS past the ceiling', async () => {
+  const dir = await tmpdir();
+  try {
+    // The fence has two independent halves and only one of them is the kill.
+    // `head` writes 8 KB into the pipe (well under its capacity, so it never
+    // blocks) and exits 0 before a signal could change anything — so the exit
+    // code cc sees is the command's own success. Without the explicit
+    // overflow-to-failure mapping the result would be `{code: 0}` carrying a
+    // 1 KB prefix of an 8 KB answer: a truncated success, the one outcome a
+    // parse-whole caller cannot detect. Measured deterministic over 30 runs.
+    const r = await localSystem().exec({ argv: ['head', '-c', '8192', '/dev/zero'] },
+      { cwd: dir, maxBufferBytes: 1024 });
+    assert.equal(r.code, 1, 'a self-terminating command must not report success with clipped output');
+    assert.equal(r.stdout.length, 1024, 'and it still carries exactly the output under the fence');
+  } finally { await rmrf(dir); }
+});
+
+test('exec under the ceiling is untouched by it', async () => {
+  const dir = await tmpdir();
+  try {
+    const r = await localSystem().exec({ shell: 'echo small' }, { cwd: dir, maxBufferBytes: 4096 });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout, 'small\n');
+    assert.equal(r.stderr, '', 'no diagnostic is invented for output that fits');
+    assert.equal(r.truncated, false);
+  } finally { await rmrf(dir); }
+});
+
 test('exec never rejects, even when spawn throws synchronously', async () => {
   const dir = await tmpdir();
   try {
@@ -186,7 +240,7 @@ test('exec never rejects, even when spawn throws synchronously', async () => {
     // into argv, so this input is reachable from the API, and the runner's
     // "never rejects" contract is what turns it into a reported result instead
     // of an exception out of the tool call.
-    const r = await localSystem().exec({ argv: ['echo', 'a b'] }, { cwd: dir });
+    const r = await localSystem().exec({ argv: ['echo', 'a\u0000b'] }, { cwd: dir });
     assert.equal(r.code, 1);
     assert.ok(r.spawnError, 'the synchronous throw is reported as a spawnError');
     assert.equal(r.timedOut, false);

@@ -64,7 +64,7 @@ export type GroupedCommandSpec = ExecSpec;
 
 export function runGroupedCommand(
   spec: GroupedCommandSpec,
-  { cwd, env = process.env, timeoutMs, cap, headCapBytes, onChunk, killGraceMs, stdin }: GroupedCommandOptions,
+  { cwd, env = process.env, timeoutMs, cap, headCapBytes, maxBufferBytes, onChunk, killGraceMs, stdin }: GroupedCommandOptions,
 ): Promise<GroupedCommandResult> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -107,8 +107,29 @@ export function runGroupedCommand(
     // most one chunk; past that the pipes are still drained (the command runs to
     // completion) but nothing more is kept.
     let headBytes = 0;
+    // Bytes seen across both streams, and whether they crossed maxBufferBytes.
+    // Crossing it kills the command: this ceiling is a fence, not a cap, so
+    // there is nothing to gain by letting it keep producing output nobody will
+    // keep — and the memory it was about to cost is the whole point.
+    let seenBytes = 0;
+    let overflowed = false;
 
-    const onData = (which: 'out' | 'err') => (d: Buffer) => {
+    const onData = (which: 'out' | 'err') => (chunk: Buffer) => {
+      let d = chunk;
+      if (maxBufferBytes !== undefined) {
+        // Everything after the fence is discarded, so the failure carries
+        // exactly the first `maxBufferBytes` of output — the partial result
+        // execFile's maxBuffer error used to hand back.
+        if (overflowed) return;
+        const room = maxBufferBytes - seenBytes;
+        seenBytes += d.length;
+        if (seenBytes > maxBufferBytes) {
+          overflowed = true;
+          d = d.subarray(0, Math.max(0, room));
+          killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) });
+          if (d.length === 0) return;
+        }
+      }
       if (headCapBytes !== undefined) {
         if (headBytes >= headCapBytes) { truncated = true; return; }
         headBytes += d.length;
@@ -140,8 +161,19 @@ export function runGroupedCommand(
         if (!stderr) stderr = spawnError;
         if (!output) output = spawnError;
       }
+      if (overflowed) {
+        // Loud, and in the field callers read the diagnostic from: `stderr ||
+        // stdout` is the near-universal shape here, so leaving stderr empty
+        // would promote megabytes of partial output into an error message.
+        const msg = `output exceeded the ${maxBufferBytes}-byte limit — command killed`;
+        stderr = stderr ? `${stderr}\n${msg}` : msg;
+        truncated = true;
+      }
       resolve({
-        code: timedOut ? 124 : code,
+        // An overflow is a FAILURE, not a truncated success (see maxBufferBytes):
+        // the exit code the killed child reports is meaningless, so it is 1 —
+        // what execFile's maxBuffer error mapped to before this was a System op.
+        code: timedOut ? 124 : overflowed ? 1 : code,
         stdout, stderr, output,
         timedOut, truncated,
         durationMs: Date.now() - start,

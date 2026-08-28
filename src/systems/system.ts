@@ -30,10 +30,17 @@ export interface ExecOptions {
   // is already small and callers parse it whole).
   cap?: number;
   // Total HEAD cap in bytes across both streams: retain the first N bytes and
-  // keep draining. The opposite end from `cap`, and the two are exclusive —
-  // project_bash truncates what is *shown* while letting the command run
-  // (src/mcp/handlers.ts), which a tail cap cannot express.
+  // keep draining. The opposite end from `cap` — project_bash truncates what is
+  // *shown* while letting the command run (src/mcp/handlers.ts), which a tail
+  // cap cannot express. One caller wants one end; setting both is meaningless.
   headCapBytes?: number;
+  // Hard ceiling on output bytes. Unlike the two caps, this is a FAILURE, not a
+  // truncation: past it the command is killed and the result is `{code: 1}`
+  // carrying whatever output arrived first. It exists for callers that parse
+  // output WHOLE — a clipped-but-successful parse would be read as the truth,
+  // which is worse than a reported failure. runGit is the caller
+  // (src/worktrees.ts); omitting it means unbounded retention in this process.
+  maxBufferBytes?: number;
   onChunk?: (text: string) => void;
   killGraceMs?: number;
   // 'ignore' hands the command a closed stdin, so an interactive command sees

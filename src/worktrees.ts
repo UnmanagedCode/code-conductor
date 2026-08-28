@@ -136,12 +136,26 @@ interface GitResult {
 // if a provider normalises the working directory, and it is what makes the
 // argv self-describing in a protocol trace.
 //
-// Output is uncapped: callers parse git porcelain whole, so a tail cap would
-// silently corrupt a large diff instead of reporting one. `spawnError` folds
-// into `stderr` because callers read stderr for the diagnostic and a git that
-// never started has none of its own.
+// OUTPUT IS FENCED, NOT CAPPED, and the difference is the whole design. Every
+// caller parses git's output WHOLE — porcelain, numstat, a unified diff — so a
+// cap that clipped it would hand back a short parse that reads as the truth. So
+// past GIT_OUTPUT_LIMIT_BYTES the command is killed and the call FAILS, with
+// whatever arrived first still in `stdout`. Callers need no new branch: a
+// non-zero code is what they already handle (a 500 from the diff surfaces, an
+// empty history from getProjectCommits).
+//
+// The fence is not optional. cc is a single process hosting every worker
+// session, and git output is unbounded in the ordinary case — a vendored-tree
+// deletion, a many-file rename, `status --porcelain` on a huge working tree.
+// Measured: 37 MB of output retained a 37 MB string at 248 MB RSS.
+export const GIT_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
+
 export async function runGit(system: System, cwd: string, args: string[]): Promise<GitResult> {
-  const r = await system.exec({ argv: ['git', '-C', cwd, ...args] }, { cwd });
+  const r = await system.exec({ argv: ['git', '-C', cwd, ...args] }, { cwd, maxBufferBytes: GIT_OUTPUT_LIMIT_BYTES });
+  // DELIBERATE, ACCEPTED DEVIATION from the pre-System behaviour (D5): a git
+  // that never started used to leave `stderr` empty, and now carries the spawn
+  // diagnostic. It differs only when the spawn itself fails, no caller parses
+  // this field, and the alternative is a failure with no message at all.
   return { stdout: r.stdout, stderr: r.stderr || r.spawnError || '', code: r.code };
 }
 
@@ -397,6 +411,12 @@ export async function createWorktree(
   const dirName = worktreeDirName(projectName, id);
   // See this file's header comment for why an external project's worktrees land
   // under `.external/` rather than beside the target repo.
+  //
+  // SYSTEMS-P4: third branch — this binary ternary falls through to the local
+  // projects root for a remote project, which would create the worktree
+  // DIRECTORY here while `runGit` ran on the system: a split-brain worktree.
+  // The third answer is a path on the system, sibling to its `systemPath`,
+  // mirroring the "beside the target repo" reasoning above.
   const worktreePath = path.join(
     proj.external ? path.join(projectsRoot(), EXTERNAL_DIRNAME) : projectsRoot(),
     dirName,
