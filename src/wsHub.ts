@@ -237,6 +237,14 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             reply(true);
             return;
           }
+          case 'effort': {
+            if (!inst) { reply(false, 'unknown instance'); return; }
+            // Level validation + the idle-only 409 both live in the setter; the
+            // router's catch turns either throw into `reply(false, message)`.
+            inst.setEffort(String(msg.effort));
+            reply(true);
+            return;
+          }
           case 'interrupt': {
             if (!inst) { reply(false, 'unknown instance'); return; }
             await inst.interrupt({ force: !!msg.force });

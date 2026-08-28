@@ -178,7 +178,8 @@ async function setupHeader() {
   const ids = ['composer-input', 'mode-select', 'kill-btn', 'mute-btn', 'resume-btn',
     'instance-title', 'turn-indicator', 'ti-left', 'ti-dot', 'ti-label', 'ti-ellipsis',
     'ti-interrupt-now', 'ti-usage-slot', 'sync-btn', 'merge-btn', 'debug-btn',
-    'summarize-session-btn', 'rename-session-btn', 'change-model-btn', 'session-stats-btn',
+    'summarize-session-btn', 'rename-session-btn', 'change-model-btn', 'change-effort-btn',
+    'session-stats-btn',
     'prune-session-btn', 'auto-approve-plan-btn', 'playbook-enforcement-btn',
     'overflow-menu', 'overflow-toggle', 'overflow-panel'];
   const camel = (s) => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());

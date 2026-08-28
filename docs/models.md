@@ -109,6 +109,9 @@ The consequences of being a substitution backend:
 - **Live "Change model" is refused** — the endpoint is fixed at launch, so any
   switch with a non-`claude` backend on either side (including
   substitution↔substitution) is rejected `409 BACKEND_LOCKED`.
+  Live **"Change effort"** is *not* refused here: it repoints no endpoint — every
+  backend runs the same inner Claude CLI, which handles `/effort` locally, and
+  `--effort` is already passed unconditionally at spawn for all of them.
 - **`launch_failed`** is emitted when the subprocess dies on its own (binary
   missing, daemon gone, cloud-auth 401) — see [protocol.md](protocol.md#websocket-protocol).
 - **Off-spec stream framing is coded for, not assumed away.** A gateway may frame a
@@ -309,6 +312,17 @@ so a changed default moves *new spawns*, never anything already running:
 | Restart manifest (`src/resumeRestart.ts`) | step 1 — it carries the recorded `effort` explicitly, so the session comes back at the exact level it was running at |
 | `POST /api/instances/:id/fork` | step 1 — `create({… effort: inst.effort …})`, so the fork inherits the source session's level (it *does* re-enter `_doCreate`, unlike the row below) |
 | `Instance.launch({resume})` — `respawn_instance`, `POST /instances/:id/respawn`, crash-respawn, rewind, prune | reuses the live `this.effort`; these never re-enter `_doCreate`, so nothing is re-resolved |
+
+**A live "Change effort"** (⋮ menu → `⚡ Change effort`, `Instance.setEffort`) moves
+`this.effort` and nothing else — there is no on-disk store for effort. Every row
+above that *reuses the live value* therefore comes back at the changed level:
+`Instance.launch({resume})`, the fork's `createArgs`, and the restart manifest
+(`drainToManifest` reads `summary().effort`). The one row it cannot reach is the
+no-manifest resume — sidebar one-click, anchor auto-resume — which still lands on
+`DEFAULT_EFFORT`, because effort is never persisted per session. The debug
+`meta.json` `effort` field is deliberately left alone: it records what the process
+*launched* with. Mechanism + the idle-only refusal:
+[features.md](features.md) → Change effort.
 
 The client **never** resolves this chain. The `/api/settings/models` payload ships
 `tierEffort` (effective, always concrete), `efforts` (the level catalog),
