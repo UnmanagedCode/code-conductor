@@ -92,7 +92,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `get_transcript({sessionId, fromSeq?, limit?})` — full UI event stream. Poll incrementally: pass the returned `nextFrom` as the next `fromSeq`; `hasMore` flags more to drain; evicted ranges are served from the on-disk transcript, so no history is lost. Never poll a RETIRED session waiting for a `turn_end`. Meaningful kinds: prose deltas, `tool_use`/`tool_result` (may carry `is_error:true`), `plan_request`, `user_question`, `turn_end` — see the transcript event stream for the full set. For most decisions `get_recent_messages` is enough.
 
 **Land work**
-- `sync_worktree({project, worktree})` — fast-forwards or auto-rebases the worktree server-side and returns immediately; it prompts nobody. `commit-required` and `rebase-conflict` are `ok:true` measurements, not failures — the worktree is untouched, and the result carries a ready-to-send `rebasePrompt`. Expected refusals come back as `{ok:false, reason, code}`, never thrown.
+- `sync_worktree({project, worktree})` — fast-forwards or auto-rebases the worktree server-side; it prompts nobody. `commit-required` and `rebase-conflict` are `ok:true` measurements, not failures — the worktree is untouched, and the result carries a ready-to-send `rebasePrompt`. Expected refusals come back as `{ok:false, reason, code}`, never thrown.
 - `merge_worktree({project, worktree})` — the landing step. Success is `{ok:true, newSha}`; `WORKTREE_BEHIND` ⇒ `sync_worktree` first.
 - `delete_worktree({project, worktree, force?})` — soft-refuses with a `code` naming the blocker (e.g. attached instance, dirty tree) unless `force:true`; see the schema for the full set.
 

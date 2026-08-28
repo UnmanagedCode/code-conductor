@@ -2,7 +2,7 @@
 
 An **assignment** is what the worker's initial brief covers; the test is *would this need a new brief?* Work still in service of the brief is the same assignment even where the plan narrows or widens it.
 
-- **Same assignment → keep the worker**: review findings, refinements, fixing what the diff missed, conflict resolution during a `sync_worktree`.
+- **Same assignment → keep the worker**: review findings, refinements, fixing what the diff missed, conflict resolution after a `sync_worktree`.
 - **New assignment → new worktree and a fresh worker**, even on the same files: one worktree is one merge unit, and a worker scoped by a finished assignment carries context that is a liability rather than a head start — re-exploration is the cheaper cost. (An operational/read-only worker produces nothing to land, so it consumes no merge unit — reuse it across assignments wherever it is rooted, including inside an existing worktree; see "Operational tasks".)
 - **Merge = landed = assignment over → retire.** A *refused or conflicted* merge is not landed: `sync_worktree` and retry, keeping the worker for the rebase you dispatch on `commit-required` / `rebase-conflict`.
 
