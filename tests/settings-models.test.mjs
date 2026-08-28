@@ -91,11 +91,12 @@ test('modelVersions catalog: tiers, managed backend rows + default {backend,mode
 });
 
 // ── Ollama cloud preset catalog ─────────────────────────────────────────
-test('ollamaCloudModels: 8-model catalog, tags verbatim, tier defaults, no global-default change', () => {
-  assert.equal(OLLAMA_CLOUD_MODELS.length, 8);
+test('ollamaCloudModels: 9-model catalog, tags verbatim, tier defaults, no global-default change', () => {
+  assert.equal(OLLAMA_CLOUD_MODELS.length, 9);
   const tags = OLLAMA_CLOUD_MODELS.map(m => m.model);
   assert.ok(tags.includes('deepseek-v4-flash:cloud'));
   assert.ok(tags.includes('glm-5.3-flash:cloud'), 'GLM-5.3 Flash added to the catalog');
+  assert.ok(tags.includes('glm-5.3:cloud'), 'GLM-5.3 added to the catalog');
   assert.ok(tags.includes('qwen3.5:cloud'));
   assert.ok(tags.includes('glm-5.2:cloud'));
   assert.ok(tags.includes('mistral-large-3:675b-cloud'), 'Mistral stays size-pinned, not normalized to :cloud');
@@ -155,7 +156,7 @@ test('GET /api/settings/models returns the registry, catalog, and {backend,model
     assert.deepEqual(r.body.claudeFamilies.map(f => f.family), ['fable', 'opus', 'sonnet', 'haiku']);
     assert.equal(r.body.activeVersions, undefined); // removed
     assert.deepEqual(r.body.customModels, []);
-    assert.equal(r.body.ollamaCloudModels.length, 8);
+    assert.equal(r.body.ollamaCloudModels.length, 9);
     assert.ok(r.body.ollamaCloudModels.some(m => m.model === 'glm-5.2:cloud'));
     // Each curated model ships its native context window (raw tokens).
     const ctxByTag = Object.fromEntries(r.body.ollamaCloudModels.map(m => [m.model, m.contextWindow]));
@@ -163,6 +164,7 @@ test('GET /api/settings/models returns the registry, catalog, and {backend,model
       'deepseek-v4-flash:cloud':        1_000_000,
       'deepseek-v4-pro:cloud':          1_000_000,
       'glm-5.2:cloud':                  1_000_000,
+      'glm-5.3:cloud':                  1_000_000,
       'glm-5.3-flash:cloud':            1_000_000,
       'minimax-m3:cloud':               1_000_000,
       'qwen3.5:cloud':                    256_000,

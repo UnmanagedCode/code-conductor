@@ -35,6 +35,7 @@ export const OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
   { model: 'deepseek-v4-flash:cloud',    label: 'DeepSeek V4 Flash',         contextWindow: 1_000_000, midTurnSteering: false },
   { model: 'qwen3.5:cloud',              label: 'Qwen3.5',                  contextWindow:   256_000 },
   { model: 'glm-5.2:cloud',              label: 'GLM-5.2',                  contextWindow: 1_000_000 },
+  { model: 'glm-5.3:cloud',              label: 'GLM-5.3',                  contextWindow: 1_000_000 },
   { model: 'glm-5.3-flash:cloud',        label: 'GLM-5.3 Flash',            contextWindow: 1_000_000 },
   { model: 'deepseek-v4-pro:cloud',      label: 'DeepSeek V4 Pro',          contextWindow: 1_000_000 },
   { model: 'kimi-k2.7-code:cloud',       label: 'Kimi K2.7 Code',                 contextWindow:   256_000 },
