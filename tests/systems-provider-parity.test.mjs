@@ -61,6 +61,10 @@ async function codeOf(fn) {
 }
 
 test('exec: the ordinary results agree — streams, exit code, cwd and env', async () => {
+  // Set AFTER both systems exist: a provider launched earlier must still see it,
+  // which is only true because `exec` sends the resolved environment on every
+  // call rather than letting the provider answer from its boot snapshot.
+  process.env.CC_PARITY_AMBIENT = 'set-after-launch';
   const [a, b] = await both(null, async (sys, root) => ({
     echo: normalise(await sys.exec({ argv: ['echo', 'hello'] }, { cwd: root }), root),
     shell: normalise(await sys.exec({ shell: 'echo out; echo err >&2; exit 5' }, { cwd: root }), root),
@@ -72,8 +76,32 @@ test('exec: the ordinary results agree — streams, exit code, cwd and env', asy
     // caller that just set a variable is entitled to see.
     inherited: normalise(await sys.exec({ argv: ['sh', '-c', 'echo "[$CC_PARITY_AMBIENT]"'] }, { cwd: root }), root),
   }));
+  delete process.env.CC_PARITY_AMBIENT;
   assert.deepEqual(a, b);
   assert.equal(a.cwd.stdout, '<ROOT>\n');
+  assert.equal(a.inherited.stdout, '[set-after-launch]\n',
+    'a caller that just set a variable sees it — on both implementations');
+});
+
+test('exec sends the CALLER\'s environment, even one changed after the provider launched', async () => {
+  // The provider is a long-lived process launched once. If `exec` omitted `env`
+  // and let it answer from its own environment, every variable a caller sets
+  // after boot would be invisible — silently, and only on the wire
+  // implementation. So the connection is opened FIRST here, deliberately.
+  const sys = makeProviderSystem([]);
+  const local = new LocalSystem();
+  try {
+    await sys.connect();
+    process.env.CC_PARITY_LATE = 'set-after-the-provider-launched';
+    const opts = { cwd: os.tmpdir() };
+    const spec = { argv: ['sh', '-c', 'echo "[$CC_PARITY_LATE]"'] };
+    assert.equal((await local.exec(spec, opts)).stdout.trim(), '[set-after-the-provider-launched]');
+    assert.equal((await sys.exec(spec, opts)).stdout.trim(), '[set-after-the-provider-launched]',
+      'the wire implementation resolves the environment per call, not at launch');
+  } finally {
+    delete process.env.CC_PARITY_LATE;
+    sys.dispose();
+  }
 });
 
 test('exec: a command that cannot start reports the same failure shape on both', async () => {
@@ -105,6 +133,10 @@ test('exec: the three output controls truncate, drain and fence identically', as
     tail: normalise(await sys.exec(spew, { cwd: root, cap: 137 }), root),
     head: normalise(await sys.exec(spew, { cwd: root, headCapBytes: 137 }), root),
     fence: normalise(await sys.exec(spew, { cwd: root, maxBufferBytes: 600 }), root),
+    // A command that has ALREADY EXITED 0 when its output crosses the fence:
+    // the overflow must still be reported as a failure, or a caller that parses
+    // output whole reads a clipped parse as the truth.
+    fenceAfterSuccess: normalise(await sys.exec({ shell: 'echo abcdefghij' }, { cwd: root, maxBufferBytes: 3 }), root),
     plain: normalise(await sys.exec(spew, { cwd: root }), root),
   }));
   assert.deepEqual(a.tail, b.tail);
@@ -113,6 +145,10 @@ test('exec: the three output controls truncate, drain and fence identically', as
   assert.equal(a.fence.code, 1);
   assert.equal(b.fence.code, 1);
   assert.deepEqual(a.fence.stderr, b.fence.stderr, 'the overflow diagnostic is the same text on both');
+  assert.deepEqual(a.fenceAfterSuccess, b.fenceAfterSuccess);
+  assert.equal(a.fenceAfterSuccess.code, 1,
+    'an overflow is a FAILURE even when the command itself exited 0');
+  assert.equal(a.fenceAfterSuccess.truncated, true);
   assert.equal(a.head.truncated, true);
   assert.equal(b.head.truncated, true);
   // The head cap retains WHOLE chunks, so how much lands past the budget

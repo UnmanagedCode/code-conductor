@@ -118,11 +118,16 @@ for (const config of CAPABILITY_CONFIGS) {
       const pidFile = path.join(root, 'grandchild.pid');
       // bash is the direct child; `sleep` is the grandchild that outlives it
       // unless the whole GROUP is signalled — the orphaned-`npm ci` failure.
+      // The grandchild's own stdout goes to /dev/null so it does not hold the
+      // command's pipes open after the direct child dies; what is under test is
+      // the SIGNAL's reach, not how long an orphan keeps a pipe.
       const r = await sys.exec(
-        { shell: `sleep 30 & echo $! > ${pidFile}; wait` },
+        { shell: `sleep 30 >/dev/null 2>&1 & echo $! > ${pidFile}; wait` },
         { cwd: root, timeoutMs: 300 },
       );
       assert.equal(r.timedOut, true);
+      assert.ok(r.durationMs < 3_000,
+        'the exit frame came from the provider, not from cc\'s wedge backstop');
       const pid = Number((await fs.readFile(pidFile, 'utf8')).trim());
       assert.ok(pid > 0, 'the grandchild recorded its pid');
       try {
