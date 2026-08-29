@@ -24,10 +24,11 @@ import {
 import { makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 
-// The opening sentinel line every framed command emits before the command runs.
-// Everything before it belongs to the shell, so a parser test that omits it is
-// testing a stream that could never occur.
-const B = (n) => `${beginFor(n)}\n`;
+// The opening sentinel exactly as the framed script emits it — INCLUDING the
+// injected leading newline, without which the marker glues itself to whatever
+// the shell printed before it. Everything before it belongs to the shell, so a
+// parser test that omits it is testing a stream that could never occur.
+const B = (n) => `\n${beginFor(n)}\n`;
 
 const MODES = [
   { name: 'persistent shell', flags: [], persistent: true },
@@ -106,8 +107,8 @@ test('the nonce is fresh per command, and the script keeps cd and export in the 
   assert.notEqual(newNonce(), newNonce(), 'a fixed nonce is forgeable — that is the measured desync');
   assert.match(newNonce(), /^[0-9a-f]{32}$/, '128 bits');
   const script = frameCommand('N', 'echo hi');
-  assert.match(script, /^printf '__CC_N_BEGIN__\\n'; printf '__CC_N_BEGIN__\\n' >&2\n/,
-    'the opening sentinel is emitted on BOTH streams before the command runs');
+  assert.ok(script.startsWith(String.raw`printf '\n__CC_N_BEGIN__\n'; printf '\n__CC_N_BEGIN__\n' >&2`),
+    'the opening sentinel is emitted on BOTH streams before the command runs, each newline-prefixed');
   assert.match(script, /\{ echo hi\n\} < \/dev\/null\n/, 'braces, not a subshell, so cd and export land in the shell');
   assert.match(script, /< \/dev\/null/, 'the command group gets a closed stdin, like project_bash and the Bash tool');
   assert.ok(script.includes(String.raw`printf '\n__CC_N__\n' >&2`),
@@ -262,7 +263,12 @@ function fakeHost({ banner = '', bannerErr = '', respond }) {
         if (out) handlers.onStdout(Buffer.from(out, 'utf8'));
         if (err) handlers.onStderr(Buffer.from(err, 'utf8'));
       };
-      if (banner || bannerErr) emit(banner, bannerErr);
+      // A login shell sources its profile when it STARTS, which is after cc has
+      // written the first command into its stdin — so the banner arrives ahead
+      // of that command's opening sentinel, not before the shell is usable.
+      // Emitting it at openStream time instead would land it while cc is not
+      // reading, where it is discarded and proves nothing.
+      let pendingBanner = { out: banner, err: bannerErr };
       state.stream = {
         write(script) {
           const nonce = /__CC_([0-9a-f]+)_BEGIN__/.exec(script)[1];
@@ -271,10 +277,12 @@ function fakeHost({ banner = '', bannerErr = '', respond }) {
           const r = respond(command, nonce) ?? {};
           if (r.silent) return;
           const s = sentinelFor(nonce);
+          const pre = pendingBanner;
+          pendingBanner = { out: '', err: '' };
           // The opening sentinel first, exactly as the framed script emits it.
           setImmediate(() => emit(
-            `${B(nonce)}${r.stdout ?? ''}\n${s} ${r.code ?? 0} ${Buffer.from(r.cwd ?? '/w').toString('base64')}\n`,
-            `${B(nonce)}${r.stderr ?? ''}\n${s}\n`,
+            `${pre.out}${B(nonce)}${r.stdout ?? ''}\n${s} ${r.code ?? 0} ${Buffer.from(r.cwd ?? '/w').toString('base64')}\n`,
+            `${pre.err}${B(nonce)}${r.stderr ?? ''}\n${s}\n`,
           ));
         },
         close() {},
@@ -286,6 +294,27 @@ function fakeHost({ banner = '', bannerErr = '', respond }) {
   };
   return { host, state };
 }
+
+test('a banner with NO trailing newline still frames — on both streams', async () => {
+  // The opening sentinel has to START a line just as the closing ones do. A
+  // profile that writes an unterminated banner ('printf MOTD') otherwise glues
+  // itself to the marker, which then never matches: the command wedges to its
+  // deadline. And in persistent mode the reset reopens the same login shell,
+  // which reprints the same banner — so it is a LOOP, one wedge per command,
+  // for the life of the session.
+  for (const stream of ['stdout', 'stderr']) {
+    const { host } = fakeHost({
+      banner: stream === 'stdout' ? 'UNTERMINATED-MOTD' : '',
+      bannerErr: stream === 'stderr' ? 'UNTERMINATED-MOTD' : '',
+      respond: () => ({ stdout: 'out', stderr: 'err' }),
+    });
+    const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 300 });
+    const r = await sh.run('echo real');
+    assert.equal(r.stdout, 'out', `${stream}: an unterminated banner must not swallow the marker`);
+    assert.equal(r.stderr, 'err', stream);
+    assert.equal(r.code, 0, stream);
+  }
+});
 
 test('a login shell\'s banner is never attributed to a command, on either stream', async () => {
   // `$SHELL -l` sources profile files, and anything they print lands on the

@@ -65,16 +65,23 @@ function afterMarkerLine(text: string, marker: string): number {
 // - `$PWD` is base64'd because a path may contain spaces or newlines.
 // - stderr gets its own sentinel, opening AND closing, so cc knows when both
 //   streams are done and where each one's command output starts.
-// - The leading `\n` on BOTH closing sentinels guarantees each starts a line
-//   even when the command's output has no trailing newline — `printf err >&2`
-//   is ordinary, and without it the stderr sentinel lands mid-line, never
-//   matches, and the command wedges until its deadline. parseFramed strips
-//   exactly that one newline back off, so a blank line is never attributed to
-//   the command.
+// - THE INVARIANT, and the one to keep if any line here is ever edited: EVERY
+//   sentinel — opening and closing, on BOTH streams — is emitted with an
+//   injected leading `\n`, because a sentinel only counts when it STARTS a
+//   line. Whatever precedes it may have no trailing newline of its own: a
+//   command that ends with `printf err >&2`, or a login profile that prints an
+//   unterminated banner. Without the injected newline the marker glues itself
+//   to that text, never matches, and the command wedges until its deadline —
+//   and in persistent mode the reset reopens the same login shell, which
+//   reprints the same banner, so it is a LOOP: one wedge per command for the
+//   life of the session.
+//   The CLOSING sentinels' newline is stripped back off by the parser, so a
+//   blank line is never attributed to the command. The OPENING ones need no
+//   strip: everything before them is discarded by definition.
 export function frameCommand(nonce: string, command: string): string {
   const s = sentinelFor(nonce);
   const b = beginFor(nonce);
-  return `printf '${b}\\n'; printf '${b}\\n' >&2\n`
+  return `printf '\\n${b}\\n'; printf '\\n${b}\\n' >&2\n`
     + `{ ${command}\n} < /dev/null\n`
     + `__cc_rc=$?; printf '\\n${s} %d %s\\n' "$__cc_rc" "$(printf %s "$PWD" | base64 | tr -d '\\n')"\n`
     + `printf '\\n${s}\\n' >&2\n`;

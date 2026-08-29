@@ -171,7 +171,10 @@ export interface HelloProviderFrame {
   protocol: number;
   provider: string;
   capabilities?: Record<string, unknown>;
-  system?: Partial<SystemDescriptor>;
+  // REQUIRED, and `shell` within it must be an absolute path: it is the only
+  // descriptor field cc acts on, and a hello without it is refused EPROTO at
+  // the handshake. The rest of the descriptor is advisory and defaulted.
+  system: { shell: string } & Partial<SystemDescriptor>;
 }
 
 export interface ExecFrame {

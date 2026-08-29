@@ -82,7 +82,16 @@ The provider answers exactly once:
 - `protocol` is an integer. **A mismatch is refused** (`EPROTO`) — cc speaks
   `PROTOCOL_VERSION`, currently `1`.
 - `capabilities`: a **missing key is `false`**; an **unknown key is ignored**.
-- `system.shell` is what cc opens for a redirected shell (§5).
+- **`system.shell` is REQUIRED and MUST be an absolute path.** It is the only
+  descriptor field cc *acts* on — it is what a redirected shell is opened with
+  (§5) — so a hello without it, or with a relative or empty one, is refused
+  `EPROTO` at the handshake. Refusing here rather than later is deliberate: the
+  alternative surfaces much later as an obscure spawn failure inside a shell
+  session, with nothing pointing back at the handshake. A provider that does not
+  know its target's shell up front must find one before answering (`getent
+  passwd`, `$SHELL`, or a hardcoded `/bin/sh`) rather than omit the field.
+- The other `system` fields (`os`, `pathSep`, `home`) are advisory: cc reports
+  them and defaults them when absent.
 - Unknown *frame types* are likewise ignored by both ends. Unknown capability
   keys and unknown frame types are the extension point: **the contract can grow
   without a version bump.**
@@ -121,7 +130,7 @@ anything — but it is lying in its own logs.
 | `exec` | `id`, `cwd`, **`argv`** *or* **`shell`**, `env?`, `timeoutMs?`, `killGraceMs?`, `stdin?` | Run a command |
 | `stdin` | `id`, `dataB64` | Write to a running command's stdin. **Requires `persistentShell`** |
 | `stdinClose` | `id` | EOF its stdin. **Requires `persistentShell`** |
-| `signal` | `id`, `signal`, `processGroup` | Signal a running command |
+| `signal` | `id`, `signal`, `processGroup` | Signal a running command. **`signal` is a POSIX signal NAME in `SIG*` form** (`"SIGTERM"`, `"SIGKILL"`) — never a bare name and never a number |
 | `close` | `id` | Abandon the operation |
 | `readFile` | `id`, `path`, `offset?`, `length?` | Read |
 | `writeFile` | `id`, `path`, `mode?`, `atomic?`, `exclusive?` | Open a write; `data`… then `end` follow |
@@ -132,7 +141,7 @@ anything — but it is lying in its own logs.
 
 | Frame | Fields | Meaning |
 |---|---|---|
-| `hello` | `protocol`, `provider`, `capabilities?`, `system?` | Handshake reply |
+| `hello` | `protocol`, `provider`, `capabilities?`, **`system`** (with an absolute `system.shell`; `os`/`pathSep`/`home` optional) | Handshake reply |
 | `stdout` / `stderr` | `id`, `seq`, `dataB64` | Output of a running command |
 | `exit` | `id`, `code`, `signal`, `timedOut`, `descendantsMaySurvive?` | Terminal for an `exec` |
 | `readFileResult` | `id`, `size`, `mode`, `isBinary` | Opens a read; `data`… then `end` follow |
@@ -181,7 +190,7 @@ Rules:
   `code` comes from the taxonomy (usually `ENOENT`). cc turns it into a result
   carrying a `spawnError` rather than a throw, so the two are distinguishable at
   every call site.
-- A `signal` frame delivers exactly that signal. When the signal is `SIGTERM`
+- A `signal` frame delivers exactly that signal, named in `SIG*` form. When it is `SIGTERM`
   the provider also **arms a SIGKILL backstop** after `killGraceMs`, because a
   script that traps or ignores SIGTERM would otherwise never die.
 - `processGroup:true` means "the whole group". A provider without
@@ -210,17 +219,19 @@ nothing for it beyond honouring `stdin` frames.
 For each command cc writes:
 
 ```sh
+printf '\n__CC_<nonce>_BEGIN__\n'; printf '\n__CC_<nonce>_BEGIN__\n' >&2
 { <user command>
 } < /dev/null
 __cc_rc=$?; printf '\n__CC_<nonce>__ %d %s\n' "$__cc_rc" "$(printf %s "$PWD" | base64 | tr -d '\n')"
-printf '__CC_<nonce>__\n' >&2
+printf '\n__CC_<nonce>__\n' >&2
 ```
 
 Braces rather than a subshell, so `cd` and `export` land in the shell itself;
-`$PWD` rides as base64 because a path may contain spaces or newlines; stderr
-gets its own sentinel so cc knows both streams are done.
+`$PWD` rides as base64 because a path may contain spaces or newlines. Each
+stream is bracketed by its OWN pair of sentinels, so cc knows both where a
+command's output starts and when it is done.
 
-Four rules, each earned by a measured or reasoned failure:
+Five rules, each earned by a measured or reasoned failure:
 
 1. **The nonce is random per command, not per shell.** A fixed nonce is
    forgeable: a command that echoed the sentinel was measured desynchronising
@@ -230,8 +241,26 @@ Four rules, each earned by a measured or reasoned failure:
    past one command.**
 3. **`< /dev/null` on the command group.** A command genuinely needing stdin
    runs as its own one-shot `exec`, at the cost of not sharing shell state.
-4. **cc strips the one newline it injected**, so a blank line is never
-   attributed to the command's stdout.
+4. **EVERY sentinel line — opening and closing, on BOTH streams — is emitted
+   with an injected leading newline.** A sentinel only counts when it STARTS a
+   line, and whatever precedes it may have no trailing newline of its own: a
+   command ending in `printf err >&2`, or a login profile printing an
+   unterminated banner. Without the injected newline the marker glues itself to
+   that text, never matches, and the command wedges until its deadline — and in
+   a persistent shell the reset reopens the same login shell, which reprints the
+   same banner, so it is a *loop*: one wedge per command for the life of the
+   session. This is the rule to keep if any line of the script is ever edited;
+   the four sentinels are just today's instances of it.
+5. **cc strips the injected newline back off the CLOSING sentinels**, so a blank
+   line is never attributed to the command. The opening ones need no strip:
+   everything before them is discarded by definition.
+
+**The opening sentinel is what separates the shell's output from the command's.**
+`$SHELL -l` is a *login* shell: it sources profile files, and whatever they
+print arrives before the command's own output. Everything up to and including
+the opening sentinel line is discarded. This matters most in the
+`persistentShell:false` fallback, where every command gets its own login shell
+and so its own copy of that banner.
 
 Two wedge modes, one recovery: an unterminated quote leaves the shell awaiting
 input and no sentinel arrives (a per-command deadline fires → `ETIMEDOUT`); a

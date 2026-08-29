@@ -36,7 +36,7 @@ export const PROVIDER_ARGV_ENV = 'CC_CONFORMANCE_PROVIDER';
 // disagree about what a valid value looks like.
 function baseArgv() {
   const spec = process.env[PROVIDER_ARGV_ENV]?.trim();
-  return spec ? parseProviderLaunch(spec) : ['node', REFERENCE_PROVIDER];
+  return spec ? parseProviderLaunch(spec, PROVIDER_ARGV_ENV) : ['node', REFERENCE_PROVIDER];
 }
 
 export function providerArgv(flags = []) {

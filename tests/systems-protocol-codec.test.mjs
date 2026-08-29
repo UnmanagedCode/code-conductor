@@ -10,8 +10,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FS_ERROR_CODES, MAX_LINE_BYTES, NdjsonDecoder, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION,
-  SystemError, classifyStderr, decodeFrame, encodeFrame, execFailure, isSystemErrorCode,
-  readCapabilities,
+  SystemError, classifySpawnError, classifyStderr, decodeFrame, encodeFrame, execFailure,
+  isBase64, isSystemErrorCode, readCapabilities,
 } from '../src/systems/protocol.ts';
 
 const push = (dec, s) => dec.push(Buffer.from(s, 'utf8'));
@@ -73,6 +73,73 @@ test('an unknown frame type decodes fine — that is the extension point', () =>
   const f = decodeFrame('{"type":"somethingNew","id":"x","extra":1}');
   assert.equal(f.type, 'somethingNew');
   assert.equal(f.extra, 1);
+  // …and the payload rule does NOT reach it. The rule is keyed on the four
+  // frame types whose meaning IS their payload; a future type may carry a
+  // `dataB64` cc knows nothing about, and rejecting it would close the
+  // extension point the line above opens.
+  const g = decodeFrame('{"type":"somethingNew","id":"x","dataB64":"!!not base64"}');
+  assert.equal(g.dataB64, '!!not base64');
+  // Nor does it reach a KNOWN type that carries no payload.
+  assert.equal(decodeFrame('{"type":"exit","id":"x","code":0,"dataB64":"!!"}').code, 0);
+});
+
+test('canonical base64 is what isBase64 accepts, and nothing else', () => {
+  for (const good of ['', 'AAAA', 'SEVMTE8=', 'SEVMTE9P', 'YQ==']) {
+    assert.equal(isBase64(good), true, JSON.stringify(good));
+  }
+  for (const bad of [
+    'SEVMTE8',        // length not a multiple of 4
+    '!!!!',           // outside the alphabet
+    'AB=C',           // padding that is not at the end
+    'SEVM TE8=',      // whitespace
+    'SEVMTE8===',     // over-padded
+    'SEVMTE8=!!junk', // the shape that matters: a valid prefix then garbage,
+                      // which a lenient decoder returns the prefix of
+  ]) {
+    assert.equal(isBase64(bad), false, JSON.stringify(bad));
+  }
+});
+
+test('a payload frame with a corrupted or missing dataB64 is EPROTO — on all four types', () => {
+  // A payload is part of its frame. `Buffer.from(s,'base64')` stops at the first
+  // unreadable character and returns the prefix, so decoding leniently turns a
+  // corrupted chunk into a SILENT PARTIAL ANSWER: a writeFile that reports
+  // success having dropped its tail, or a command whose stdout is quietly
+  // truncated with exit 0. Checked here, once, for both ends and both
+  // directions — `stdout`/`stderr`/`data` come from the provider, `stdin` and
+  // `data` go to it.
+  for (const type of ['stdout', 'stderr', 'data', 'stdin']) {
+    assert.throws(
+      () => decodeFrame(`{"type":"${type}","id":"x","seq":0,"dataB64":"SEVMTE8=!!corrupted"}`),
+      (e) => e instanceof SystemError && e.code === 'EPROTO' && /invalid base64/.test(e.message),
+      `${type}: a corrupted payload`,
+    );
+    assert.throws(
+      () => decodeFrame(`{"type":"${type}","id":"x","seq":0}`),
+      (e) => e instanceof SystemError && e.code === 'EPROTO' && /no dataB64/.test(e.message),
+      `${type}: an absent payload`,
+    );
+    assert.throws(
+      () => decodeFrame(`{"type":"${type}","id":"x","seq":0,"dataB64":null}`),
+      (e) => e.code === 'EPROTO',
+      `${type}: a non-string payload`,
+    );
+    // A zero-byte payload is legitimate — an empty chunk, or a zero-length read.
+    assert.equal(decodeFrame(`{"type":"${type}","id":"x","seq":0,"dataB64":""}`).dataB64, '');
+  }
+});
+
+test('a spawn failure names its errno as a TOKEN, not as strerror text', () => {
+  // `spawn /bin/sh ENOENT` carries no 'No such file or directory', so the
+  // stderr classifier cannot read it — which is why a command that never
+  // started gets its own reader. A vanished cwd depends on this being ENOENT
+  // rather than an opaque failure.
+  assert.equal(classifySpawnError('spawn /bin/sh ENOENT'), 'ENOENT');
+  assert.equal(classifySpawnError('spawn EACCES'), 'EACCES');
+  assert.equal(classifySpawnError('Error: spawn ENOTDIR'), 'ENOTDIR');
+  assert.equal(classifySpawnError('something nobody has seen before'), 'EUNKNOWN');
+  assert.equal(classifySpawnError('EUNKNOWNISH'), 'EUNKNOWN',
+    'the token must be whole — a substring of a longer word is not an errno');
 });
 
 test('a line past the framing fence is EPROTO, even before its newline arrives', () => {

@@ -232,4 +232,10 @@ test('the provider seam parses its launch spec, and refuses a malformed one loud
   assert.throws(() => parseProviderLaunch('[]'), /non-empty JSON array/);
   assert.throws(() => parseProviderLaunch('[1,2]'), /non-empty JSON array/);
   assert.throws(() => parseProviderLaunch('[node]'), SyntaxError);
+  // The refusal names the setting the value CAME FROM. The conformance harness
+  // parses CC_CONFORMANCE_PROVIDER through this same function, and telling its
+  // reader about a different variable sends them looking in the wrong place.
+  assert.throws(() => parseProviderLaunch('[]'), /^Error: CC_LOCAL_SYSTEM_PROVIDER /);
+  assert.throws(() => parseProviderLaunch('[]', 'CC_CONFORMANCE_PROVIDER'),
+    /^Error: CC_CONFORMANCE_PROVIDER /);
 });

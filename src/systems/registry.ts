@@ -57,12 +57,16 @@ export const MANAGED_SYSTEM_IDS: readonly string[] = MANAGED_SYSTEMS.map(s => s.
 // value that is not a JSON array is taken as a bare executable path.
 export const LOCAL_PROVIDER_ENV = 'CC_LOCAL_SYSTEM_PROVIDER';
 
-export function parseProviderLaunch(spec: string): string[] {
+// `varName` is the setting the value came FROM, so a typo is reported against
+// the variable the reader actually set — the conformance harness parses
+// CC_CONFORMANCE_PROVIDER through here too, and naming the wrong one sends them
+// looking in the wrong place.
+export function parseProviderLaunch(spec: string, varName: string = LOCAL_PROVIDER_ENV): string[] {
   const trimmed = spec.trim();
   if (trimmed.startsWith('[')) {
     const v: unknown = JSON.parse(trimmed);
     if (!Array.isArray(v) || v.length === 0 || v.some(x => typeof x !== 'string')) {
-      throw new Error(`${LOCAL_PROVIDER_ENV} must be a non-empty JSON array of strings`);
+      throw new Error(`${varName} must be a non-empty JSON array of strings`);
     }
     return v as string[];
   }
