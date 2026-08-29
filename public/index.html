@@ -117,6 +117,7 @@
             <select id="settings-group-select">
               <option value="models">Models</option>
               <option value="backends">Backends</option>
+              <option value="systems">Systems</option>
               <option value="account">Account</option>
               <option value="voice">Voice</option>
               <option value="conventions">Conventions</option>
@@ -225,6 +226,29 @@
                 </div>
               </div>
               <div id="sb-form-status" class="st-status" aria-live="polite"></div>
+            </fieldset>
+          </div>
+          <div id="settings-systems" class="settings-group" hidden>
+            <p class="settings-desc">
+              A <strong>system</strong> is an execution environment a project's tree can live on —
+              its git repo, its files and the commands run in it. <strong>This machine</strong> is
+              built in: it is where every project lives unless its record names another, and it
+              can't be edited or removed. Registering a system here only gives it a name; a system
+              a project still names can't be removed until that project moves.
+            </p>
+            <div id="sy-status" class="st-status" aria-live="polite">Loading…</div>
+            <ul id="sy-list" class="sy-list"></ul>
+            <fieldset class="sm-group">
+              <legend id="sy-form-legend">Add a system</legend>
+              <div class="sy-form">
+                <input id="sy-id" type="text" placeholder="id (e.g. prod-box)" autocomplete="off" />
+                <input id="sy-label" type="text" placeholder="Label (e.g. Prod box)" autocomplete="off" />
+                <div class="sy-form-actions">
+                  <button type="button" id="sy-save" class="btn">Add</button>
+                  <button type="button" id="sy-cancel" class="btn" hidden>Cancel</button>
+                </div>
+              </div>
+              <div id="sy-form-status" class="st-status" aria-live="polite"></div>
             </fieldset>
           </div>
           <div id="settings-account" class="settings-group" hidden>

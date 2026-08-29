@@ -11,7 +11,7 @@ import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
-import { localSystem, resolveSystem } from './systems/registry.ts';
+import { CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, localSystem, placementOf, resolveSystem } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
 import type { System } from './systems/system.ts';
 
@@ -263,6 +263,12 @@ export interface ProjectInfo {
   // Adopted from outside the projects root — its record is a `.external/<name>`
   // symlink and its `path` is the target's REALPATH (see resolveProjectDir).
   external: boolean;
+  // The System the tree lives on, and — only when that is not `local` — the
+  // path on it. Both come from placementOf(), so absence of the record field
+  // reads as `local` and the `.conduct` pin holds here too. Plain strings, not
+  // the System HANDLE: both REST and MCP spread this into a response body.
+  system: string;
+  systemPath: string | null;
 }
 
 // What the resolver hands back: where the project's tree is, how it is placed,
@@ -371,7 +377,7 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     if (worktreeDirs.has(e.name)) continue;
     const full = path.join(root, e.name);
     const meta = await readProjectMeta(e.name);
-    out.push({ name: e.name, path: full, workspace: meta.workspace, external: false });
+    out.push({ name: e.name, path: full, workspace: meta.workspace, external: false, ...placementOf(e.name, meta) });
   }
   // Adopted out-of-root projects. Only SYMLINKS are projects here — which is
   // also what excludes external projects' worktree dirs, real directories
@@ -391,7 +397,7 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     try { if ((await (await resolveSystem(e.name)).stat(real))?.kind !== 'dir') continue; }
     catch { continue; }
     const meta = await readProjectMeta(e.name);
-    out.push({ name: e.name, path: real, workspace: meta.workspace, external: true });
+    out.push({ name: e.name, path: real, workspace: meta.workspace, external: true, ...placementOf(e.name, meta) });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
@@ -447,29 +453,68 @@ export function validateWorkspace(workspace: unknown): string | null {
   return trimmed;
 }
 
+// The project record. `system`/`systemPath` are read RAW here — placementOf()
+// (src/systems/registry.ts) is what turns them into a placement, so the pin and
+// the absence-means-local rule live in one place rather than in every reader.
+export interface ProjectMeta {
+  workspace: string | null;
+  system: string | null;
+  systemPath: string | null;
+}
+
+const EMPTY_META: ProjectMeta = { workspace: null, system: null, systemPath: null };
+
 // Read the project's optional metadata file from the central store.
-// Missing file or malformed JSON → {workspace: null}. The store dir may
+// Missing file or malformed JSON → every field null. The store dir may
 // not exist yet — that's fine.
-export async function readProjectMeta(name: string): Promise<{ workspace: string | null }> {
+//
+// It returns `system`/`systemPath` even though nothing in this module writes
+// them, and that is load-bearing: writeProjectMeta merges over what this
+// returns and drops empty fields, so a field this reader forgot would be
+// DELETED from the record by the next unrelated write (a workspace change).
+export async function readProjectMeta(name: string): Promise<ProjectMeta> {
   validateName(name);
   const file = path.join(projectStoreDir(name), 'project.json');
   try {
     const raw = await fs.readFile(file, 'utf8');
     const obj: unknown = JSON.parse(raw);
-    let workspace: string | null = null;
-    if (typeof obj === 'object' && obj !== null) {
-      const w = (obj as { workspace?: unknown }).workspace;
-      if (typeof w === 'string' && w.trim() !== '') workspace = w.trim();
-    }
-    return { workspace };
+    if (typeof obj !== 'object' || obj === null) return { ...EMPTY_META };
+    const rec = obj as { workspace?: unknown; system?: unknown; systemPath?: unknown };
+    const str = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+    return { workspace: str(rec.workspace), system: str(rec.system), systemPath: str(rec.systemPath) };
   } catch (e) {
-    if (errCode(e) === 'ENOENT') return { workspace: null };
+    if (errCode(e) === 'ENOENT') return { ...EMPTY_META };
     // Malformed JSON or unreadable — degrade to unassigned rather than
     // throwing. A single console.warn (not an error) so noisy systems
     // don't spam logs on every list.
     console.warn(`projects: failed to read ${file}: ${errMsg(e)}`);
-    return { workspace: null };
+    return { ...EMPTY_META };
   }
+}
+
+// Which projects name a NON-LOCAL system, grouped by system id — the
+// still-referenced check behind Settings → Systems' delete refusal.
+//
+// This walks the STORE, which is deliberately not how projects are listed: the
+// store accumulates directories for projects that no longer exist, so it is not
+// a registry. It is sound HERE because it keys on the POSITIVE marker — a stale
+// directory is invisible unless its record actually names a system — and
+// because it goes through placementOf(), so `.conduct` cannot be counted onto a
+// system no matter what its record says.
+export async function projectsBySystem(): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  const projectsDir = path.join(orchStoreRoot(), 'projects');
+  let names: string[];
+  try { names = await fs.readdir(projectsDir); }
+  catch (e) { if (errCode(e) === 'ENOENT') return out; throw e; }
+  for (const name of names.sort()) {
+    // A hand-made directory under an unusable name has no project behind it.
+    try { validateName(name); } catch { continue; }
+    const { system } = placementOf(name, await readProjectMeta(name));
+    if (system === LOCAL_SYSTEM_ID) continue;
+    (out[system] ??= []).push(name);
+  }
+  return out;
 }
 
 // Write the project's metadata. Atomic rename to avoid torn reads if the
@@ -1103,7 +1148,11 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   const conductPath = path.join(projectsRoot(), '.conduct');
   try {
     const s = await fs.stat(conductPath);
-    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null, external: false });
+    if (s.isDirectory()) {
+      // Synthesized, not listed — and `.conduct` is pinned local, so its placement
+      // comes from the pin rather than from a record read that could not change it.
+      projects.push({ name: CONDUCT_PROJECT_NAME, path: conductPath, workspace: null, external: false, ...placementOf(CONDUCT_PROJECT_NAME, {}) });
+    }
   } catch { /* .conduct doesn't exist yet — skip */ }
 
   const probe = async (id: string): Promise<{ project: string; worktreeName: string | null } | null> => {
@@ -1219,7 +1268,11 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
   const conductPath = path.join(projectsRoot(), '.conduct');
   try {
     const s = await fs.stat(conductPath);
-    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null, external: false });
+    if (s.isDirectory()) {
+      // Synthesized, not listed — and `.conduct` is pinned local, so its placement
+      // comes from the pin rather than from a record read that could not change it.
+      projects.push({ name: CONDUCT_PROJECT_NAME, path: conductPath, workspace: null, external: false, ...placementOf(CONDUCT_PROJECT_NAME, {}) });
+    }
   } catch { /* .conduct doesn't exist yet — skip */ }
 
   const groups: { project: string; sessions: ArchivedSessionRow[] }[] = [];

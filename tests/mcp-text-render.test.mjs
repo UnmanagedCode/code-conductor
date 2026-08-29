@@ -211,6 +211,38 @@ describe('renderProjects', () => {
     ].join('\n'));
   });
 
+  test('a project on another system names it and its path there; local is silent', () => {
+    const row = (extra) => ({
+      name: 'p', path: '/anywhere/p', workspace: null, liveCount: 0, isGitRepo: true,
+      worktrees: [], sessions: { count: 0, archivedCount: 0, lastActivity: 0 }, ...extra,
+    });
+    const baseline = [
+      'PROJECTS (1)',
+      '',
+      '▸ p  /anywhere/p',
+      '  sessions 0   last —',
+      '  live 0',
+      '  worktrees 0',
+    ].join('\n');
+    // `local` carries no news — the deviant default. Absence of the fields must
+    // read the same, because absence of the record field IS local and most
+    // projects have no record at all.
+    assert.equal(renderProjects([row({ system: 'local', systemPath: null })]), baseline);
+    assert.equal(renderProjects([row({})]), baseline, 'an absent field is still no news');
+    // A remote one says WHICH system and WHERE on it — the `▸` header path is a
+    // cc-side path and does not carry the second fact.
+    assert.equal(renderProjects([row({ system: 'prod-box', systemPath: '/app' })]), [
+      'PROJECTS (1)',
+      '',
+      '▸ p  /anywhere/p',
+      '  system prod-box',
+      '  systemPath /app',
+      '  sessions 0   last —',
+      '  live 0',
+      '  worktrees 0',
+    ].join('\n'));
+  });
+
   test('an empty root still names itself', () => {
     assert.equal(renderProjects([]), 'PROJECTS (none)');
   });

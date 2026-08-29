@@ -100,6 +100,12 @@ const PROJECT_DEVIANT: DeviantSpec[] = [
   // Adopted from outside the projects root. The real target path is already the
   // `▸ <name>  <path>` header, so this only has to say WHICH kind it is.
   { key: 'external', default: false, label: 'external' },
+  // The System the tree lives on. DEVIANT for the same reason `external` is:
+  // `local` is where every project is unless its record says otherwise, so the
+  // common listing stays short and a project on another machine says so — with
+  // the path on that machine, which the `▸` header does not carry.
+  { key: 'system', default: 'local', label: 'system' },
+  { key: 'systemPath', default: null, label: 'systemPath' },
 ];
 
 export function renderProjects(projects: unknown): string {

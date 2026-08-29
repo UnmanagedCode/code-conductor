@@ -459,7 +459,7 @@ test('create_project RETURNS the composed scaffold directive from picked convent
   // Nothing persisted to the store — the project meta stays clean (the marker in
   // CONVENTIONS.md is the only selection record), no spawn coupling.
   const { readProjectMeta } = await import('../src/projects.ts');
-  assert.deepEqual(await readProjectMeta('sc-proj'), { workspace: null });
+  assert.deepEqual(await readProjectMeta('sc-proj'), { workspace: null, system: null, systemPath: null });
 });
 
 test('REST POST /api/projects returns the scaffold directive in the 201 body', async () => {

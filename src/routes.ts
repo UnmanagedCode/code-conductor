@@ -8,7 +8,7 @@ import {
   listProjects, createProject, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject,
-  findSessionLocation, writeProjectMeta,
+  findSessionLocation, writeProjectMeta, projectsBySystem,
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName,
 } from './projects.ts';
@@ -63,6 +63,7 @@ import {
   getAllRoles, addCustomRole, removeCustomRole,
   getCustomModels, addCustomModel, removeCustomModel,
   getBackends, addBackend, updateBackend, removeBackend,
+  getSystems, addSystem, updateSystem, removeSystem,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.ts';
@@ -1603,6 +1604,51 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const ok = await removeBackend(req.params.id);
       if (!ok) return res.status(404).json({ error: 'backend not found' });
       res.json(modelsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  // ── The system registry (Settings → Systems) ───────────────────────────
+  // Registration only: a row declares that an execution environment exists and
+  // what to call it. Nothing on this surface connects to one.
+  //
+  // Each row carries the projects whose record NAMES it, so the still-referenced
+  // refusal below is visible before it is hit. `local` always carries none: a
+  // local project has no `system` field to name it with, which is the same
+  // absence-means-local rule the resolver reads.
+  async function systemsState() {
+    const byId = await projectsBySystem();
+    return { systems: getSystems().map(s => ({ ...s, projects: byId[s.id] ?? [] })) };
+  }
+
+  r.get('/settings/systems', async (_req, res, next) => {
+    try { res.json(await systemsState()); } catch (e) { next(e); }
+  });
+
+  r.post('/settings/systems', async (req, res, next) => {
+    try {
+      const { id, label } = jsonBody(req);
+      const rec = await addSystem({ id, label });
+      res.status(201).json({ ...(await systemsState()), added: rec });
+    } catch (e) { next(e); }
+  });
+
+  r.patch('/settings/systems/:id', async (req, res, next) => {
+    try {
+      const { label } = jsonBody(req);
+      const rec = await updateSystem(req.params.id, { label });
+      if (!rec) return res.status(404).json({ error: 'system not found' });
+      res.json({ ...(await systemsState()), updated: rec });
+    } catch (e) { next(e); }
+  });
+
+  // Removal NEVER cascades: a system a project record still names is refused
+  // with 409 naming those projects (removeSystem throws it), the managed row
+  // with 400, an unknown id with 404.
+  r.delete('/settings/systems/:id', async (req, res, next) => {
+    try {
+      const ok = await removeSystem(req.params.id);
+      if (!ok) return res.status(404).json({ error: 'system not found' });
+      res.json(await systemsState());
     } catch (e) { next(e); }
   });
 
