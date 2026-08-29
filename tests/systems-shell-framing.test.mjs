@@ -252,6 +252,29 @@ for (const mode of MODES) {
 // Driven through a fake ShellHost, which is the seam ProviderShell was given so
 // these do not depend on which login shell the box happens to have.
 
+// What the framed script's `printf` statements will actually put on each
+// stream, read back OUT of the script rather than restated.
+//
+// A fixture that hard-codes the framing it believes the code emits silently
+// stops testing that framing the moment it changes — and the framing's whole
+// subtlety is which sentinels carry an injected leading newline, which is
+// exactly what a hard-coded fixture would supply for free. Deriving it means a
+// script that stopped newline-prefixing a marker produces a fake stream where
+// the marker is glued to whatever preceded it, as a real shell would.
+//
+// The trailing context stops at `;` as well as at a newline: both opening
+// sentinels are one statement apart on one line, and only the second is
+// redirected.
+function shellEmissions(script) {
+  const out = [], err = [];
+  for (const m of script.matchAll(/printf '([^']*)'([^\n;]*)/g)) {
+    (m[2].includes('>&2') ? err : out).push(m[1].replace(/\\n/g, '\n'));
+  }
+  assert.deepEqual([out.length, err.length], [2, 2],
+    `the framed script must emit an opening and a closing sentinel on each stream; got ${JSON.stringify({ out, err })}`);
+  return { out, err };
+}
+
 function fakeHost({ banner = '', bannerErr = '', respond }) {
   const state = { commands: [], stream: null };
   const host = {
@@ -276,13 +299,18 @@ function fakeHost({ banner = '', bannerErr = '', respond }) {
           state.commands.push(command);
           const r = respond(command, nonce) ?? {};
           if (r.silent) return;
-          const s = sentinelFor(nonce);
           const pre = pendingBanner;
           pendingBanner = { out: '', err: '' };
-          // The opening sentinel first, exactly as the framed script emits it.
+          // Byte-for-byte what a shell running this script would produce:
+          // opening sentinel, the command's output, closing sentinel — with the
+          // closing stdout one's `%d %s` filled in as the shell would fill them.
+          const { out, err } = shellEmissions(script);
+          const closingOut = out[1]
+            .replace('%d', String(r.code ?? 0))
+            .replace('%s', Buffer.from(r.cwd ?? '/w').toString('base64'));
           setImmediate(() => emit(
-            `${pre.out}${B(nonce)}${r.stdout ?? ''}\n${s} ${r.code ?? 0} ${Buffer.from(r.cwd ?? '/w').toString('base64')}\n`,
-            `${pre.err}${B(nonce)}${r.stderr ?? ''}\n${s}\n`,
+            `${pre.out}${out[0]}${r.stdout ?? ''}${closingOut}`,
+            `${pre.err}${err[0]}${r.stderr ?? ''}${err[1]}`,
           ));
         },
         close() {},
@@ -367,4 +395,10 @@ test('a command whose sentinel never arrives times out and RESETS the shell', as
   assert.match(sh.resetReason, /deadline/, 'the reason is recorded so a reconnect can SAY it lost its state');
   const after = await sh.run('echo back');
   assert.equal(after.stdout, 'echo back');
+  // …and cc STOPS claiming it lost state. The reason is recorded so a reconnect
+  // can say so once; a sticky one becomes a permanent false "I lost your cwd"
+  // on a shell that has been working for hours.
+  assert.equal(sh.resetReason, null,
+    'a successful reconnect clears the reset reason it reported');
+  assert.equal(sh.open, true, 'and the shell is open again');
 });

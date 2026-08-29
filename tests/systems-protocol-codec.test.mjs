@@ -138,8 +138,16 @@ test('a spawn failure names its errno as a TOKEN, not as strerror text', () => {
   assert.equal(classifySpawnError('spawn EACCES'), 'EACCES');
   assert.equal(classifySpawnError('Error: spawn ENOTDIR'), 'ENOTDIR');
   assert.equal(classifySpawnError('something nobody has seen before'), 'EUNKNOWN');
-  assert.equal(classifySpawnError('EUNKNOWNISH'), 'EUNKNOWN',
-    'the token must be whole — a substring of a longer word is not an errno');
+  // THE BOUNDARY RULE, which only a message carrying an unknown code that
+  // CONTAINS a known one can show: a plain substring search would answer EACCES
+  // for both of these, naming a permissions fault that did not happen and
+  // hiding the real one.
+  assert.equal(classifySpawnError('spawn /x EACCESX'), 'EUNKNOWN', 'a longer code is not EACCES');
+  assert.equal(classifySpawnError('spawn /x XEACCES'), 'EUNKNOWN', 'nor is a suffixed one');
+  assert.equal(classifySpawnError('spawn /x ENOENTFOO'), 'EUNKNOWN');
+  // Adjacent punctuation is still a boundary — the errno is a whole word, not a
+  // whole message.
+  assert.equal(classifySpawnError("spawn '/x': ENOENT."), 'ENOENT');
 });
 
 test('a line past the framing fence is EPROTO, even before its newline arrives', () => {
