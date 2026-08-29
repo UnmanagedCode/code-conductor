@@ -21,7 +21,7 @@ import {
   getSystems, getSystem, isKnownSystem, addSystem, updateSystem, removeSystem,
 } from '../src/appSettings.ts';
 import { orchStoreRoot, projectStoreDir, createProject } from '../src/projects.ts';
-import { MANAGED_SYSTEMS, MANAGED_SYSTEM_IDS, LOCAL_SYSTEM_ID } from '../src/systems/registry.ts';
+import { MANAGED_SYSTEMS, MANAGED_SYSTEM_IDS, LOCAL_SYSTEM_ID, parseProviderLaunch } from '../src/systems/registry.ts';
 
 async function writeRecord(name, record) {
   const dir = projectStoreDir(name);
@@ -220,4 +220,22 @@ describe('systems settings routes', () => {
     assert.equal(gone.status, 200);
     assert.deepEqual(gone.body.systems.map(s => s.id), [LOCAL_SYSTEM_ID]);
   });
+});
+
+test('the provider seam parses its launch spec, and refuses a malformed one loudly', () => {
+  // CC_LOCAL_SYSTEM_PROVIDER decides whether `local` is the in-process system
+  // or a ProviderSystem over the wire protocol. A typo in it must say so, not
+  // silently launch something else.
+  assert.deepEqual(parseProviderLaunch('  ["node","p.ts","--flag"] '), ['node', 'p.ts', '--flag']);
+  assert.deepEqual(parseProviderLaunch('/usr/local/bin/my-provider'), ['/usr/local/bin/my-provider'],
+    'a value that is not a JSON array is a bare executable path');
+  assert.throws(() => parseProviderLaunch('[]'), /non-empty JSON array/);
+  assert.throws(() => parseProviderLaunch('[1,2]'), /non-empty JSON array/);
+  assert.throws(() => parseProviderLaunch('[node]'), SyntaxError);
+  // The refusal names the setting the value CAME FROM. The conformance harness
+  // parses CC_CONFORMANCE_PROVIDER through this same function, and telling its
+  // reader about a different variable sends them looking in the wrong place.
+  assert.throws(() => parseProviderLaunch('[]'), /^Error: CC_LOCAL_SYSTEM_PROVIDER /);
+  assert.throws(() => parseProviderLaunch('[]', 'CC_CONFORMANCE_PROVIDER'),
+    /^Error: CC_CONFORMANCE_PROVIDER /);
 });

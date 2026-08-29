@@ -9,6 +9,7 @@
 import { readProjectMeta } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { LocalSystem, LOCAL_SYSTEM_ID } from './localSystem.ts';
+import { ProviderSystem } from './providerSystem.ts';
 import type { System } from './system.ts';
 
 export { LOCAL_SYSTEM_ID };
@@ -41,9 +42,46 @@ export const MANAGED_SYSTEMS: readonly SystemRecord[] = [
 
 export const MANAGED_SYSTEM_IDS: readonly string[] = MANAGED_SYSTEMS.map(s => s.id);
 
+// THE PROVIDER SEAM, and the reason the protocol can be proved sufficient.
+//
+// `CC_LOCAL_SYSTEM_PROVIDER` replaces the in-process `local` system with a
+// ProviderSystem speaking the wire protocol (docs/systems-protocol.md) to the
+// named command — normally the reference provider, which is this same machine
+// reached the long way round. Every project-scoped operation in the app then
+// runs over the protocol, which is what lets the WHOLE test suite serve as the
+// protocol's conformance gate in each capability configuration
+// (`npm run gate:systems`). Following CLAUDE_BIN's precedent: an env seam whose
+// only job is to make a real dependency swappable under test.
+//
+// The value is a JSON array of argv (`["node","…/referenceProvider.ts"]`); a
+// value that is not a JSON array is taken as a bare executable path.
+export const LOCAL_PROVIDER_ENV = 'CC_LOCAL_SYSTEM_PROVIDER';
+
+// `varName` is the setting the value came FROM, so a typo is reported against
+// the variable the reader actually set — the conformance harness parses
+// CC_CONFORMANCE_PROVIDER through here too, and naming the wrong one sends them
+// looking in the wrong place.
+export function parseProviderLaunch(spec: string, varName: string = LOCAL_PROVIDER_ENV): string[] {
+  const trimmed = spec.trim();
+  if (trimmed.startsWith('[')) {
+    const v: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(v) || v.length === 0 || v.some(x => typeof x !== 'string')) {
+      throw new Error(`${varName} must be a non-empty JSON array of strings`);
+    }
+    return v as string[];
+  }
+  return [trimmed];
+}
+
+function buildLocalSystem(): System {
+  const spec = process.env[LOCAL_PROVIDER_ENV];
+  if (!spec?.trim()) return new LocalSystem();
+  return new ProviderSystem({ id: LOCAL_SYSTEM_ID, launch: { argv: parseProviderLaunch(spec) } });
+}
+
 // One instance for the process: a System handle is a connection, not a value,
 // and two `local` handles would be two identities for one machine.
-const LOCAL = new LocalSystem();
+const LOCAL: System = buildLocalSystem();
 
 export function localSystem(): System {
   return LOCAL;

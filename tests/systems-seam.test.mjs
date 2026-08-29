@@ -107,12 +107,17 @@ function installInterceptors() {
 // Wrap every System method so the operations that DID go through the seam are
 // observable. Wrapping the prototype catches the singleton the registry already
 // built — a handle is looked up per call, so there is nothing to re-inject.
-function spyOnSystem(LocalSystem) {
-  for (const name of Object.getOwnPropertyNames(LocalSystem.prototype)) {
+function spyOnSystem(SystemClass) {
+  const proto = SystemClass.prototype;
+  for (const name of Object.getOwnPropertyNames(proto)) {
     if (name === 'constructor') continue;
-    const orig = LocalSystem.prototype[name];
-    if (typeof orig !== 'function') continue;
-    LocalSystem.prototype[name] = function (...args) {
+    // Descriptor, not a property read: a System implementation may expose
+    // ACCESSORS (ProviderSystem's `handshake`/`capabilities`), and reading one
+    // off the prototype invokes it with no instance behind it.
+    const desc = Object.getOwnPropertyDescriptor(proto, name);
+    if (typeof desc?.value !== 'function') continue;
+    const orig = desc.value;
+    proto[name] = function (...args) {
       if (args.some(argTouches)) systemOps.push(`${name}:${args.find(argTouches)}`);
       return orig.apply(this, args);
     };
@@ -139,8 +144,14 @@ before(async () => {
     projectClaudeMd: await import('../src/projectClaudeMd.ts'),
     handlers: await import('../src/mcp/handlers.ts'),
     localSystem: await import('../src/systems/localSystem.ts'),
+    providerSystem: await import('../src/systems/providerSystem.ts'),
   };
+  // BOTH implementations of `System`. Which one the registry hands out depends
+  // on CC_LOCAL_SYSTEM_PROVIDER (tests/systemHandle.mjs), and spying only the
+  // in-process one would leave the positive half of every assertion below
+  // observing nothing under the provider configuration.
   spyOnSystem(mods.localSystem.LocalSystem);
+  spyOnSystem(mods.providerSystem.ProviderSystem);
 
   home = await fsp.mkdtemp(path.join(os.tmpdir(), 'cc-systems-seam-'));
   projectsRoot = path.join(home, 'projects');

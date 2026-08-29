@@ -18,7 +18,8 @@ import {
   externalLinkPath, externalDir, EXTERNAL_DIRNAME,
 } from '../src/projects.ts';
 import { createWorktree, syncWorktree, mergeWorktreeIntoParent, removeWorktree } from '../src/worktrees.ts';
-import { LocalSystem } from '../src/systems/localSystem.ts';
+import { localSystem } from '../src/systems/registry.ts';
+import { liveSystemProto } from './systemHandle.mjs';
 import { ensureProjectConventionsMd, regenerateAllProjectConventions } from '../src/projectClaudeMd.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -327,9 +328,13 @@ test('a non-ENOENT stat failure on an already-resolved target rethrows, and ENOE
   const { repoPath, real } = await makeExternalRepo();
   assert.equal((await adoptProject('ext', repoPath)).ok, true);
 
-  const origStat = fs.stat;
+  // Injected at the SYSTEM seam, which is where resolveProjectDir's stat now
+  // lives — patching node's `fs` would miss it entirely whenever the handle is
+  // a ProviderSystem (tests/systemHandle.mjs).
+  const statProto = liveSystemProto(localSystem());
+  const origStat = statProto.stat;
   try {
-    fs.stat = async function (target, ...rest) {
+    statProto.stat = async function (target, ...rest) {
       if (String(target) === real) {
         throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
       }
@@ -338,22 +343,22 @@ test('a non-ENOENT stat failure on an already-resolved target rethrows, and ENOE
     await assert.rejects(() => getProject('ext'), (e) => e.code === 'EACCES',
       'a permissions fault on the resolved target must surface, not read as "no such project"');
   } finally {
-    fs.stat = origStat;
+    statProto.stat = origStat;
   }
 
-  // The ENOENT half of the same catch stays a miss: a target deleted between
-  // the realpath and the stat is a race, not a fault.
+  // The ABSENT half stays a miss: a target deleted between the realpath and the
+  // stat is a race, not a fault. Absence is the System contract's `null` — the
+  // ENOENT→null mapping itself belongs to the implementation and is pinned in
+  // tests/systems-local.test.mjs — so that is what is injected here.
   try {
-    fs.stat = async function (target, ...rest) {
-      if (String(target) === real) {
-        throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
-      }
+    statProto.stat = async function (target, ...rest) {
+      if (String(target) === real) return null;
       return origStat.call(this, target, ...rest);
     };
     await assert.rejects(() => getProject('ext'), /not found/,
       'a raced deletion is a 404, not a 500');
   } finally {
-    fs.stat = origStat;
+    statProto.stat = origStat;
   }
 
   // And the patch really is gone.
@@ -542,17 +547,21 @@ test('deleting an external project issues NO recursive removal against the link 
   const recursive = [];   // every recursive-removal call, whatever layer issued it
   const unlinked = [];    // every single-entry unlink
   const origRm = fs.rm, origRmdir = fs.rmdir, origUnlink = fs.unlink;
-  const origRemoveTree = LocalSystem.prototype.removeTree;
-  const origSysUnlink = LocalSystem.prototype.unlink;
+  // The LIVE handle's prototype (tests/systemHandle.mjs): this test's core
+  // assertion is a NEGATIVE one, so a spy on a class the registry is not using
+  // would record nothing and pass for the wrong reason.
+  const sysProto = liveSystemProto(localSystem());
+  const origRemoveTree = sysProto.removeTree;
+  const origSysUnlink = sysProto.unlink;
   try {
     fs.rm = function (p, ...rest) { recursive.push(`fs.rm ${p}`); return origRm.call(this, p, ...rest); };
     fs.rmdir = function (p, ...rest) { recursive.push(`fs.rmdir ${p}`); return origRmdir.call(this, p, ...rest); };
     fs.unlink = function (p, ...rest) { unlinked.push(String(p)); return origUnlink.call(this, p, ...rest); };
-    LocalSystem.prototype.removeTree = function (p, ...rest) {
+    sysProto.removeTree = function (p, ...rest) {
       recursive.push(`system.removeTree ${p}`);
       return origRemoveTree.call(this, p, ...rest);
     };
-    LocalSystem.prototype.unlink = function (p, ...rest) {
+    sysProto.unlink = function (p, ...rest) {
       unlinked.push(String(p));
       return origSysUnlink.call(this, p, ...rest);
     };
@@ -561,8 +570,8 @@ test('deleting an external project issues NO recursive removal against the link 
     assert.equal(res.path, real);
   } finally {
     fs.rm = origRm; fs.rmdir = origRmdir; fs.unlink = origUnlink;
-    LocalSystem.prototype.removeTree = origRemoveTree;
-    LocalSystem.prototype.unlink = origSysUnlink;
+    sysProto.removeTree = origRemoveTree;
+    sysProto.unlink = origSysUnlink;
   }
 
   const forbidden = recursive.filter((entry) => {

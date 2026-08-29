@@ -1,4 +1,6 @@
 > See also: [README](../README.md)
+>
+> This file is the protocol between cc and the **Claude CLI / its own clients** — the subprocess stream, the WebSocket messages, the REST and MCP surface. The protocol between cc and a **System provider** (the NDJSON stdio contract for running commands and reading/writing files on another machine) is its own document: [systems-protocol.md](systems-protocol.md).
 
 ## Subprocess protocol
 ```bash
