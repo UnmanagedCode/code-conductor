@@ -161,6 +161,22 @@ test('describeToolInput: spawn_instance without playbook/stage omits them', () =
   assert.doesNotMatch(s, /stage=/);
 });
 
+test('describeToolInput: spawn_instance resume call omits project bracket and shows resume=<8 chars>', () => {
+  const s = describeToolInput('mcp__code-conductor__spawn_instance', {
+    resume: '78ac46d0-1234-5678-9abc-def012345678',
+  });
+  assert.equal(s, 'resume=78ac46d0');
+  assert.doesNotMatch(s, /\[/);
+  assert.doesNotMatch(s, /undefined/);
+});
+
+test('describeToolInput: spawn_instance without project and without resume renders no bracket', () => {
+  const s = describeToolInput('mcp__code-conductor__spawn_instance', { model: 'sonnet' });
+  assert.equal(s, 'model=sonnet');
+  assert.doesNotMatch(s, /\[/);
+  assert.doesNotMatch(s, /undefined/);
+});
+
 test('describeToolInput: send_prompt keeps sessionId as the primary summary, appends stage', () => {
   const s = describeToolInput('mcp__code-conductor__send_prompt', {
     sessionId: 'abc123', text: 'go ahead', stage: 'review',
