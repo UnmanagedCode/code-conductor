@@ -8,7 +8,7 @@ import {
   listProjects, createProject, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject,
-  findSessionLocation, writeProjectMeta,
+  findSessionLocation, writeProjectMeta, projectsBySystem,
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName,
 } from './projects.ts';
@@ -18,7 +18,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
-import { resolveSystem } from './systems/registry.ts';
+import { resolveSystem, tryResolveSystem } from './systems/registry.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
   getCommitDiff, getCommitFileDiff,
@@ -63,6 +63,7 @@ import {
   getAllRoles, addCustomRole, removeCustomRole,
   getCustomModels, addCustomModel, removeCustomModel,
   getBackends, addBackend, updateBackend, removeBackend,
+  getSystems, addSystem, updateSystem, removeSystem,
   getDebugByDefault, setDebugByDefault,
 } from './appSettings.ts';
 import * as whisperInstall from './whisperInstall.ts';
@@ -382,20 +383,34 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
   async function computeGitFacts(p: { name: string; path: string }) {
-    const system = await resolveSystem(p.name);
+    // tryResolveSystem, not resolveSystem: this runs once per project inside the
+    // listing's Promise.all, so a throw here would break the WHOLE list for one
+    // project whose record names an unreachable system. An unresolved system
+    // degrades THIS project's git facts to unknown and says why.
+    const { system, unreachable } = await tryResolveSystem(p.name);
+    // Worktree REGISTRATIONS are store-derived and need no System, so they are
+    // still listed for an unreachable project — only their divergence, which is
+    // measured with git on the tree, goes unknown.
     const worktrees = await listWorktrees(p.name).catch(() => []);
     const worktreesWithMerge = await Promise.all(worktrees.map(async (w) => ({
       ...w,
-      mergeStatus: await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null })),
+      mergeStatus: system
+        ? await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null }))
+        : { ahead: null, behind: null },
     })));
-    const projIsGitRepo = await isGitRepo(system, p.path);
+    // undefined, not false: "we could not look" must not render as the positive
+    // claim "not a git repo". The key is simply absent from the response, which
+    // every client already reads as falsy, and `systemUnreachable` carries the
+    // reason so absence is never ambiguous.
+    const projIsGitRepo = system ? await isGitRepo(system, p.path) : undefined;
     return {
+      systemUnreachable: unreachable,
       isGitRepo: projIsGitRepo,
       // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
       // "no commits", so a non-repo reports false and isGitRepo carries it.
-      unbornHead: projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
+      unbornHead: system && projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
       worktrees: worktreesWithMerge,
-      mergeStatus: projIsGitRepo
+      mergeStatus: system && projIsGitRepo
         ? await getProjectUpstreamStatus(system, p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
         : { ahead: null, behind: null, upstream: null },
     };
@@ -421,6 +436,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         return {
           ...p,
           sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
+          // null on a healthy project; the refusal's message when this project's
+          // System could not be resolved, in which case the git facts beside it
+          // are unknown rather than measured.
+          systemUnreachable: gitFacts.systemUnreachable,
           isGitRepo: gitFacts.isGitRepo,
           unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,
@@ -1603,6 +1622,51 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const ok = await removeBackend(req.params.id);
       if (!ok) return res.status(404).json({ error: 'backend not found' });
       res.json(modelsSettingsState());
+    } catch (e) { next(e); }
+  });
+
+  // ── The system registry (Settings → Systems) ───────────────────────────
+  // Registration only: a row declares that an execution environment exists and
+  // what to call it. Nothing on this surface connects to one.
+  //
+  // Each row carries the projects whose record NAMES it, so the still-referenced
+  // refusal below is visible before it is hit. `local` always carries none: a
+  // local project has no `system` field to name it with, which is the same
+  // absence-means-local rule the resolver reads.
+  async function systemsState() {
+    const byId = await projectsBySystem();
+    return { systems: getSystems().map(s => ({ ...s, projects: byId[s.id] ?? [] })) };
+  }
+
+  r.get('/settings/systems', async (_req, res, next) => {
+    try { res.json(await systemsState()); } catch (e) { next(e); }
+  });
+
+  r.post('/settings/systems', async (req, res, next) => {
+    try {
+      const { id, label } = jsonBody(req);
+      const rec = await addSystem({ id, label });
+      res.status(201).json({ ...(await systemsState()), added: rec });
+    } catch (e) { next(e); }
+  });
+
+  r.patch('/settings/systems/:id', async (req, res, next) => {
+    try {
+      const { label } = jsonBody(req);
+      const rec = await updateSystem(req.params.id, { label });
+      if (!rec) return res.status(404).json({ error: 'system not found' });
+      res.json({ ...(await systemsState()), updated: rec });
+    } catch (e) { next(e); }
+  });
+
+  // Removal NEVER cascades: a system a project record still names is refused
+  // with 409 naming those projects (removeSystem throws it), the managed row
+  // with 400, an unknown id with 404.
+  r.delete('/settings/systems/:id', async (req, res, next) => {
+    try {
+      const ok = await removeSystem(req.params.id);
+      if (!ok) return res.status(404).json({ error: 'system not found' });
+      res.json(await systemsState());
     } catch (e) { next(e); }
   });
 
