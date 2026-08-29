@@ -204,11 +204,13 @@ export function describeToolInput(name, input, ctx = {}) {
     return out;
   }
   if (name === 'mcp__code-conductor__spawn_instance') {
-    let out = trunc(`[${input.project}]`);
-    if (input.model != null) out += ` model=${input.model}`;
-    if (input.playbook != null) out += ` playbook=${input.playbook}`;
-    if (input.stage != null) out += ` stage=${input.stage}`;
-    return out;
+    const parts = [];
+    if (input.project != null) parts.push(`[${input.project}]`);
+    if (input.model != null) parts.push(`model=${input.model}`);
+    if (input.playbook != null) parts.push(`playbook=${input.playbook}`);
+    if (input.stage != null) parts.push(`stage=${input.stage}`);
+    if (typeof input.resume === 'string') parts.push(`resume=${input.resume.slice(0, 8)}`);
+    return trunc(parts.join(' '));
   }
   if (name === 'mcp__code-conductor__send_prompt') {
     let out = `sessionId=${trunc(input.sessionId, 100)}`;
