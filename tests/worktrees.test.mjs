@@ -15,7 +15,7 @@ import {
 } from '../src/worktrees.ts';
 import { worktreeStoreDir } from '../src/projects.ts';
 import { localSystem } from '../src/systems/registry.ts';
-import { LocalSystem } from '../src/systems/localSystem.ts';
+import { liveSystemProto } from './systemHandle.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -164,17 +164,21 @@ test('createWorktree refuses on a repo with no commits (unborn HEAD)', async () 
 // someone remembered.
 test('runGit fences git output: the limit rides on every call, and crossing it fails', async () => {
   const repoPath = await makeRealRepo('demo');
-  const origExec = LocalSystem.prototype.exec;
+  // The LIVE handle's prototype (tests/systemHandle.mjs): under the provider
+  // configuration the seam in use is ProviderSystem, and a spy on the wrong
+  // class would report zero calls.
+  const sysProto = liveSystemProto(localSystem());
+  const origExec = sysProto.exec;
 
   const limits = [];
   try {
-    LocalSystem.prototype.exec = function (spec, opts) {
+    sysProto.exec = function (spec, opts) {
       limits.push(opts.maxBufferBytes);
       return origExec.call(this, spec, opts);
     };
     const ok = await runGit(localSystem(), repoPath, ['rev-parse', 'HEAD']);
     assert.equal(ok.code, 0);
-  } finally { LocalSystem.prototype.exec = origExec; }
+  } finally { sysProto.exec = origExec; }
   assert.ok(limits.length > 0, 'the git call went through the System');
   assert.deepEqual([...new Set(limits)], [GIT_OUTPUT_LIMIT_BYTES],
     `every runGit exec must carry the fence; saw ${JSON.stringify(limits)}`);
@@ -189,7 +193,7 @@ test('runGit fences git output: the limit rides on every call, and crossing it f
   await git(repoPath, 'add', '.');
   await git(repoPath, 'commit', '-q', '-m', 'big');
   try {
-    LocalSystem.prototype.exec = function (spec, opts) {
+    sysProto.exec = function (spec, opts) {
       return origExec.call(this, spec, { ...opts, maxBufferBytes: 8192 });
     };
     const r = await runGit(localSystem(), repoPath, ['show', 'HEAD']);
@@ -199,7 +203,7 @@ test('runGit fences git output: the limit rides on every call, and crossing it f
     assert.ok(r.stdout.length > 0, 'the output that arrived first is kept, as the old maxBuffer error did');
     assert.ok(r.stdout.length < 100_000,
       `retention must stop at the fence, kept ${r.stdout.length} bytes of a ~100 KB diff`);
-  } finally { LocalSystem.prototype.exec = origExec; }
+  } finally { sysProto.exec = origExec; }
 
   // And the same command under the real fence is an ordinary success — the
   // fence must not be a cap that clips every large-ish diff.

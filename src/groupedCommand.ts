@@ -21,7 +21,7 @@
 // which callers already branch on.
 
 import { spawn } from 'node:child_process';
-import { StringDecoder } from 'node:string_decoder';
+import { ExecOutputCollector } from './systems/execCollector.ts';
 import type { ExecOptions, ExecResult, ExecSpec } from './systems/system.ts';
 
 // Tail of a command's output kept in memory. Chatty scripts (npm ci, a browser
@@ -70,6 +70,13 @@ export function runGroupedCommand(
     const start = Date.now();
     const [cmd, args] = 'shell' in spec ? ['bash', ['-lc', spec.shell]] : [spec.argv[0], spec.argv.slice(1)];
     let proc: ReturnType<typeof spawn>;
+    // Output accounting is the SHARED implementation (src/systems/execCollector.ts):
+    // the wire `exec` must be indistinguishable from this one, so both read the
+    // caps, the fence and the decoders out of the same object.
+    const collector = new ExecOutputCollector(
+      { cap, headCapBytes, maxBufferBytes, onChunk },
+      () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) }),
+    );
     try {
       proc = spawn(cmd, args, {
         cwd, env, detached: true,
@@ -83,67 +90,12 @@ export function runGroupedCommand(
       // there — where a missing binary or a bad cwd arrives as an 'error'
       // event. The runner never rejects either way: both become a spawnError.
       const msg = e instanceof Error ? e.message : String(e);
-      resolve({
-        code: 1, stdout: '', stderr: msg, output: msg,
-        timedOut: false, truncated: false, durationMs: Date.now() - start, spawnError: msg,
-      });
+      resolve(collector.result(1, { timedOut: false, spawnError: msg, durationMs: Date.now() - start }));
       return;
     }
 
-    let stdout = '', stderr = '', output = '', truncated = false;
-    // One decoder per stream so a multi-byte character split across two chunk
-    // boundaries still decodes correctly — the per-chunk `.toString()` the old
-    // copies used could split it into two replacement characters.
-    const decoders = { out: new StringDecoder('utf8'), err: new StringDecoder('utf8') };
-
-    const clip = (s: string): string => {
-      if (cap === undefined || s.length <= cap) return s;
-      truncated = true;
-      return s.slice(-cap);
-    };
-
-    // Bytes retained so far under a HEAD cap, shared across both streams. Whole
-    // chunks are kept until the budget is met, so retention can overshoot by at
-    // most one chunk; past that the pipes are still drained (the command runs to
-    // completion) but nothing more is kept.
-    let headBytes = 0;
-    // Bytes seen across both streams, and whether they crossed maxBufferBytes.
-    // Crossing it kills the command: this ceiling is a fence, not a cap, so
-    // there is nothing to gain by letting it keep producing output nobody will
-    // keep — and the memory it was about to cost is the whole point.
-    let seenBytes = 0;
-    let overflowed = false;
-
-    const onData = (which: 'out' | 'err') => (chunk: Buffer) => {
-      let d = chunk;
-      if (maxBufferBytes !== undefined) {
-        // Everything after the fence is discarded, so the failure carries
-        // exactly the first `maxBufferBytes` of output — the partial result
-        // execFile's maxBuffer error used to hand back.
-        if (overflowed) return;
-        const room = maxBufferBytes - seenBytes;
-        seenBytes += d.length;
-        if (seenBytes > maxBufferBytes) {
-          overflowed = true;
-          d = d.subarray(0, Math.max(0, room));
-          killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) });
-          if (d.length === 0) return;
-        }
-      }
-      if (headCapBytes !== undefined) {
-        if (headBytes >= headCapBytes) { truncated = true; return; }
-        headBytes += d.length;
-        if (headBytes >= headCapBytes) truncated = true;
-      }
-      const s = decoders[which].write(d);
-      if (!s) return;
-      if (which === 'out') stdout = clip(stdout + s);
-      else stderr = clip(stderr + s);
-      output = clip(output + s);
-      onChunk?.(s);
-    };
-    proc.stdout?.on('data', onData('out'));
-    proc.stderr?.on('data', onData('err'));
+    proc.stdout?.on('data', (chunk: Buffer) => collector.push('out', chunk));
+    proc.stderr?.on('data', (chunk: Buffer) => collector.push('err', chunk));
 
     let timedOut = false;
     const timer = timeoutMs === undefined ? null : setTimeout(() => {
@@ -151,34 +103,9 @@ export function runGroupedCommand(
       killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) });
     }, timeoutMs);
 
-    // On a spawn error (ENOENT, EACCES) the message becomes the diagnostic. It
-    // fills whichever buffers are still empty — in practice all of them, since
-    // the error fires before any data — so `output`-reading and `stderr`-reading
-    // callers both see it without either clobbering real output.
     const finish = (code: number, spawnError?: string): void => {
       if (timer) clearTimeout(timer);
-      if (spawnError) {
-        if (!stderr) stderr = spawnError;
-        if (!output) output = spawnError;
-      }
-      if (overflowed) {
-        // Loud, and in the field callers read the diagnostic from: `stderr ||
-        // stdout` is the near-universal shape here, so leaving stderr empty
-        // would promote megabytes of partial output into an error message.
-        const msg = `output exceeded the ${maxBufferBytes}-byte limit — command killed`;
-        stderr = stderr ? `${stderr}\n${msg}` : msg;
-        truncated = true;
-      }
-      resolve({
-        // An overflow is a FAILURE, not a truncated success (see maxBufferBytes):
-        // the exit code the killed child reports is meaningless, so it is 1 —
-        // what execFile's maxBuffer error mapped to before this was a System op.
-        code: timedOut ? 124 : overflowed ? 1 : code,
-        stdout, stderr, output,
-        timedOut, truncated,
-        durationMs: Date.now() - start,
-        spawnError: spawnError ?? null,
-      });
+      resolve(collector.result(code, { timedOut, spawnError, durationMs: Date.now() - start }));
     };
 
     proc.on('close', (code) => finish(code ?? 1));

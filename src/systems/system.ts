@@ -65,6 +65,13 @@ export interface ExecResult {
   // else null. Distinguishes "failed to launch" from "ran and exited 1", which
   // callers surface differently.
   spawnError: string | null;
+  // Set only when cc (or the far side, on a timeout) terminated the command on
+  // a system whose provider does NOT advertise `processGroupSignal`: the direct
+  // child was signalled and its grandchildren may still be running — the
+  // orphaned-`npm ci` failure src/groupedCommand.ts's header records. ABSENT is
+  // the normal answer, including for every local command, because the local
+  // runner always leads its own process group.
+  descendantsMaySurvive?: true;
 }
 
 export type SystemEntryKind = 'file' | 'dir' | 'symlink' | 'other';
