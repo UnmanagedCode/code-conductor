@@ -21,7 +21,10 @@
 //   EUNSUPPORTED— asking for a persistent shell on a provider that has none.
 
 import { StringDecoder } from 'node:string_decoder';
-import { SystemError, type Capabilities, type SystemDescriptor } from './protocol.ts';
+import {
+  FS_ERROR_CODES, SystemError, classifySpawnError,
+  type Capabilities, type SystemDescriptor, type SystemErrorCode,
+} from './protocol.ts';
 import { frameCommand, newNonce, parseFramedStderr, parseFramedStdout } from './shellFraming.ts';
 import type { ExecOptions, ExecResult, ExecSpec } from './system.ts';
 
@@ -57,6 +60,10 @@ export interface ShellResult {
   // inside a function, a `pushd`, a symlinked path — the shell's own answer is
   // the only one that is right.
   cwd: string;
+}
+
+function isFsErrorCode(code: SystemErrorCode): boolean {
+  return (FS_ERROR_CODES as readonly string[]).includes(code) && code !== 'EUNKNOWN';
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
@@ -204,29 +211,20 @@ export class ProviderShell {
         onStdout: (b) => this.#pending?.pushOut(this.#outDecoder.write(b)),
         onStderr: (b) => this.#pending?.pushErr(this.#errDecoder.write(b)),
         onExit: (code) => this.#down(`the shell exited (code ${code})`),
-        onDown: (err) => this.#down(err.message),
+        // An FS code is preserved: a shell that could not START because its cwd
+        // is gone is ENOENT, not "the shell died".
+        onDown: (err) => this.#down(err.message, isFsErrorCode(err.code) ? err.code : 'ESHELLGONE'),
       },
     );
     this.#stream = stream;
     this.#resetReason = null;
-    // PRIME. `$SHELL -l` is a LOGIN shell: it sources profile files, and
-    // anything they print lands on the stream before the first command's
-    // output. One discarded framed no-op absorbs that banner, so a user command
-    // is never handed the shell's own startup noise as its stdout.
-    try {
-      const primed = await this.#exchange(stream, ':', this.#commandTimeoutMs);
-      this.#cwd = primed.cwd || this.#cwd;
-    } catch (e) {
-      this.#stream = null;
-      throw e;
-    }
     return stream;
   }
 
-  #down(reason: string): void {
+  #down(reason: string, code: SystemErrorCode = 'ESHELLGONE'): void {
     this.#stream = null;
     this.#resetReason = reason;
-    this.#pending?.fail(new SystemError('ESHELLGONE', `${reason} — the shell was reset`));
+    this.#pending?.fail(new SystemError(code, `${reason} — the shell was reset`));
     this.#pending = null;
   }
 
@@ -256,6 +254,13 @@ export class ProviderShell {
     );
     if (r.timedOut) {
       throw new SystemError('ETIMEDOUT', `no shell sentinel within ${deadline}ms — the shell was reset`);
+    }
+    if (r.spawnError) {
+      // The shell itself never started — a cwd deleted since the last command
+      // is the reachable case. That is ENOENT, and saying so beats reporting it
+      // as "the command ended the shell", which is not what happened.
+      this.#resetReason = r.spawnError;
+      throw new SystemError(classifySpawnError(r.spawnError), `the shell could not start: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
     }
     const out = parseFramedStdout(r.stdout, nonce);
     const err = parseFramedStderr(r.stderr, nonce);

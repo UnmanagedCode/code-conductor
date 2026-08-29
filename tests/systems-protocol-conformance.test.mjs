@@ -17,7 +17,9 @@ import {
 } from '../src/systems/protocol.ts';
 import { ProviderConnection } from '../src/systems/providerConnection.ts';
 import { parseFindLines } from '../src/systems/providerSystem.ts';
-import { CAPABILITY_CONFIGS, makeProviderSystem, providerArgv } from './referenceProviderHarness.mjs';
+import {
+  CAPABILITY_CONFIGS, IS_REFERENCE_PROVIDER, makeProviderSystem, providerArgv,
+} from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 
 // Every taxonomy code this file provokes for real. The last test checks the
@@ -63,7 +65,8 @@ for (const config of CAPABILITY_CONFIGS) {
     await withSystem(config.flags, async (sys) => {
       const hs = sys.handshake;
       assert.deepEqual(hs.capabilities, config.caps, 'the flags the provider was launched with are what it advertises');
-      assert.match(hs.provider, /^reference-local\/\d/, 'a provider names and versions itself');
+      assert.match(hs.provider, /^\S+\/\S+$/, 'a provider names and versions itself');
+      if (IS_REFERENCE_PROVIDER) assert.match(hs.provider, /^reference-local\//);
       assert.equal(hs.system.pathSep, path.sep);
       assert.ok(hs.system.shell.startsWith('/'), 'the far side names the shell cc opens for a redirected Bash');
       assert.ok(hs.system.home.length > 0);
@@ -374,6 +377,36 @@ test('a provider that does not advertise persistentShell refuses to be written t
     });
     expectCode(refusal, 'EUNSUPPORTED', 'a stdin frame sent to a provider without the capability');
   } finally { conn.dispose(); }
+});
+
+test('a provider refuses a corrupted write payload — it never lands a partial file', async () => {
+  // The other direction of the same rule. `Buffer.from(s,'base64')` would keep
+  // the readable prefix, so a doc-conforming provider that decoded leniently
+  // would answer `writeFileResult ok` having written a TRUNCATED file: a
+  // success report for a wrong answer, which is the one outcome the taxonomy
+  // exists to prevent.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-badb64-'));
+  const target = path.join(await fs.realpath(dir), 'must-not-exist');
+  const conn = new ProviderConnection({ launch: { argv: providerArgv() } });
+  try {
+    await conn.ensureUp();
+    const id = conn.nextId('w');
+    const refusal = await new Promise((resolve) => {
+      conn.open(id, { frame: (f) => { if (f.type === 'error' || f.type === 'writeFileResult') resolve(f); }, down: resolve });
+      conn.send({ type: 'writeFile', id, path: target });
+      conn.send({ type: 'data', id, seq: 0, dataB64: Buffer.from('HELLO').toString('base64') });
+      // Valid JSON, valid line, unusable payload.
+      conn.send({ type: 'data', id, seq: 1, dataB64: 'V09STEQ=!!corrupted' });
+      conn.send({ type: 'end', id });
+    });
+    assert.notEqual(refusal.type, 'writeFileResult', 'a corrupted payload must not report success');
+    expectCode(refusal, 'EPROTO', 'a writeFile payload that is not valid base64');
+    assert.equal(await fs.stat(target).then(() => 'exists', () => 'absent'), 'absent',
+      'and no partial file was left behind');
+  } finally {
+    conn.dispose();
+    await rmrf(dir);
+  }
 });
 
 test('parseFindLines refuses a malformed entry rather than skipping it', () => {

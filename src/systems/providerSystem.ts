@@ -17,7 +17,7 @@
 // wire implementations of one primitive cannot differ on what an option means.
 
 import {
-  CHUNK_BYTES, MAX_FILE_BYTES, SystemError, execFailure, isSystemErrorCode,
+  CHUNK_BYTES, MAX_FILE_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
@@ -33,17 +33,36 @@ import type {
 // into an unbounded wait.
 const EXEC_TIMEOUT_SLACK_MS = 5_000;
 
+// THE CEILING ON EVERY OPERATION THE CALLER DID NOT BOUND ITSELF.
+//
+// A provider that completes the handshake and then goes mute would otherwise
+// wedge a caller for ever — with no ETRANSPORT, no refusal, just a promise that
+// never settles. That is reachable from project listing and git status, which
+// run at boot, and it is not a bound the caller can supply: `runGit` and the
+// derived operations deliberately carry no timeout, because locally there is
+// nothing to time out against.
+//
+// Generous ON PURPOSE. This is a liveness fence, not a performance budget: it
+// has to sit above the slowest legitimate operation cc issues (an `rm -rf` of a
+// large tree, a clone) so it can never turn a slow answer into a wrong one.
+// Injectable so a test can assert the fence without waiting for it.
+const DEFAULT_OP_TIMEOUT_MS = 10 * 60_000;
+
 export interface ProviderSystemOptions extends ConnectionOptions {
   id: string;
+  // Ceiling for an operation the caller did not bound. Tests shrink it.
+  defaultOpTimeoutMs?: number;
 }
 
 export class ProviderSystem implements System, ShellHost {
   readonly id: string;
   readonly #conn: ProviderConnection;
+  readonly #defaultOpTimeoutMs: number;
   #shell: ProviderShell | null = null;
 
-  constructor({ id, ...connOpts }: ProviderSystemOptions) {
+  constructor({ id, defaultOpTimeoutMs, ...connOpts }: ProviderSystemOptions) {
     this.id = id;
+    this.#defaultOpTimeoutMs = defaultOpTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
     this.#conn = new ProviderConnection(connOpts);
   }
 
@@ -104,11 +123,17 @@ export class ProviderSystem implements System, ShellHost {
         resolve(collector.result(code, { ...extra, durationMs: Date.now() - started }));
       };
 
-      const timer = opts.timeoutMs === undefined ? null : setTimeout(() => {
+      // ARMED UNCONDITIONALLY. When the caller named a deadline the provider
+      // owns it and this is only slack; when the caller named none, this is the
+      // whole bound, and without it a mute provider is an unbounded wait.
+      // Abandoning sends `close`, which is the provider's instruction to kill
+      // the command — so cc does not need to have sent a `timeoutMs` for the
+      // command to actually stop.
+      const timer = setTimeout(() => {
         this.#conn.send({ type: 'close', id });
         finish(124, { timedOut: true, descendantsMaySurvive: !hs.capabilities.processGroupSignal });
-      }, opts.timeoutMs + EXEC_TIMEOUT_SLACK_MS);
-      timer?.unref?.();
+      }, opts.timeoutMs === undefined ? this.#defaultOpTimeoutMs : opts.timeoutMs + EXEC_TIMEOUT_SLACK_MS);
+      timer.unref?.();
 
       this.#conn.open(id, {
         frame: (f) => {
@@ -207,9 +232,19 @@ export class ProviderSystem implements System, ShellHost {
       const done = (fn: () => void): void => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
+        this.#conn.send({ type: 'close', id });
         this.#conn.close(id);
         fn();
       };
+      // The same fence `exec` carries. readFile and writeFile have no
+      // caller-supplied deadline anywhere in cc, so without this a provider
+      // that answers nothing leaves them pending for ever.
+      const timer = setTimeout(() => done(() => reject(new SystemError(
+        'ETIMEDOUT',
+        `the provider did not answer a '${prefix}' operation within ${this.#defaultOpTimeoutMs}ms`,
+      ))), this.#defaultOpTimeoutMs);
+      timer.unref?.();
       this.#conn.open(id, {
         frame: (f) => {
           if (f.type === 'error') {
@@ -239,7 +274,14 @@ export class ProviderSystem implements System, ShellHost {
     // toolchain) rather than importing cc's. Absolute paths only — the cwd is a
     // placeholder, since the far side's notion of "here" is not cc's.
     const r = await this.#exec({ argv: ['env', 'LC_ALL=C', ...argv] }, { cwd, stdin: 'ignore' }, null);
-    if (r.spawnError) throw new SystemError('EUNKNOWN', `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
+    if (r.timedOut) {
+      throw new SystemError('ETIMEDOUT', `${what}: no answer within ${this.#defaultOpTimeoutMs}ms`);
+    }
+    if (r.spawnError) {
+      // A derived command that never started names its errno in the spawn
+      // message rather than in strerror() text.
+      throw new SystemError(classifySpawnError(r.spawnError), `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
+    }
     return r;
   }
 
@@ -335,7 +377,9 @@ export class ProviderSystem implements System, ShellHost {
         if (f.type === 'stdout') handlers.onStdout(decodeData(f));
         else if (f.type === 'stderr') handlers.onStderr(decodeData(f));
         else if (f.type === 'exit') handlers.onExit(typeof f.code === 'number' ? f.code : 1);
-        else if (f.type === 'error') handlers.onDown(new SystemError('ESHELLGONE', frameMessage(f)));
+        // The provider's own code is preserved so the shell can tell "could
+        // not start" (ENOENT on a vanished cwd) from "died".
+        else if (f.type === 'error') handlers.onDown(new SystemError(isSystemErrorCode(f.code) ? f.code : 'ESHELLGONE', frameMessage(f)));
       },
       down: (err) => handlers.onDown(err),
     }, { keepAlive: false });

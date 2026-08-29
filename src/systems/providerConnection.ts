@@ -74,10 +74,17 @@ export class ProviderConnection {
   #child: ChildProcess | null = null;
   #decoder = new NdjsonDecoder();
   #hello: Handshake | null = null;
+  // Set SYNCHRONOUSLY when the hello frame is read, not when #connect resumes
+  // after its await: the two MUST checks in #onData run inside the same
+  // synchronous pass over a chunk that may also carry the hello.
+  #greeted = false;
   #connecting: Promise<Handshake> | null = null;
   #ops = new Map<string, OpHandlers>();
   #keepAlive = 0;
   #stderrTail = '';
+  // Why the channel last went down, so a connect racing the teardown reports
+  // the real cause rather than a generic one.
+  #lastTeardown: SystemError | null = null;
   #failures = 0;
   #nextAttemptAt = 0;
   #idSeq = 0;
@@ -129,6 +136,8 @@ export class ProviderConnection {
 
   async #connect(): Promise<Handshake> {
     this.#decoder = new NdjsonDecoder();
+    this.#greeted = false;
+    this.#lastTeardown = null;
     this.#stderrTail = '';
     let child: ChildProcess;
     try {
@@ -161,6 +170,15 @@ export class ProviderConnection {
     )));
 
     const hello = await this.#shakeHands(child);
+    // The handshake resolving and this line are separated by a microtask, and a
+    // provider can die — or violate a MUST — inside it: a second hello, or an
+    // immediate exit, arriving in the SAME chunk as the hello tears the channel
+    // down before it is ever recorded. Recording it anyway would mark the
+    // connection up with no child behind it, and every later operation would be
+    // sent into a closed pipe and wait out its deadline.
+    if (this.#child !== child) {
+      throw this.#lastTeardown ?? new SystemError('ETRANSPORT', 'the provider went away during the handshake');
+    }
     this.#hello = hello;
     return hello;
   }
@@ -186,6 +204,7 @@ export class ProviderConnection {
       this.#retain();
       this.#ops.set(HELLO_ID, {
         frame: (f) => done(() => {
+          this.#greeted = f.type === 'hello';
           if (f.type !== 'hello') {
             const err = new SystemError('EPROTO', `expected a hello frame, got '${f.type}'`);
             this.#teardown(child, err);
@@ -202,13 +221,27 @@ export class ProviderConnection {
             return;
           }
           const sys = (typeof f.system === 'object' && f.system !== null ? f.system : {}) as Partial<SystemDescriptor>;
+          // `system.shell` is the only field cc ACTS on — it is what a
+          // redirected shell is opened with. An empty or relative value is
+          // accepted silently here and then explodes much later as an obscure
+          // spawn failure inside a shell session, so it is refused at the
+          // handshake, where the message can still name the field.
+          if (typeof sys.shell !== 'string' || !sys.shell.startsWith('/')) {
+            const err = new SystemError(
+              'EPROTO',
+              `provider hello has no absolute system.shell (got ${JSON.stringify(sys.shell)})`,
+            );
+            this.#teardown(child, err);
+            reject(err);
+            return;
+          }
           resolve({
             provider: typeof f.provider === 'string' ? f.provider : 'unknown',
             capabilities: readCapabilities(f.capabilities),
             system: {
               os: sys.os ?? 'unknown',
               pathSep: sys.pathSep ?? '/',
-              shell: sys.shell ?? '/bin/sh',
+              shell: sys.shell,
               home: sys.home ?? '/',
             },
           });
@@ -232,6 +265,18 @@ export class ProviderConnection {
     for (const f of frames) {
       if (this.#child !== child) return;
       const id = typeof f.id === 'string' ? f.id : null;
+      // MUST: a provider answers cc's hello BEFORE any other frame, and answers
+      // it exactly once. Both halves are enforced rather than assumed — an
+      // unenforced MUST is a line in a document, and a provider that streams
+      // output for an id cc has not opened is not one cc can reason about.
+      if (!this.#greeted && id !== null) {
+        this.#teardown(child, new SystemError('EPROTO', `provider sent a '${f.type}' frame for id '${id}' before its hello`));
+        return;
+      }
+      if (this.#greeted && f.type === 'hello') {
+        this.#teardown(child, new SystemError('EPROTO', 'provider sent a second hello'));
+        return;
+      }
       if (id === null) {
         if (f.type === 'error') {
           // An id-less error is CONNECTION-level: it fails everything.
@@ -251,8 +296,10 @@ export class ProviderConnection {
 
   #teardown(child: ChildProcess, err: SystemError): void {
     if (this.#child !== child) return;
+    this.#lastTeardown = err;
     this.#child = null;
     this.#hello = null;
+    this.#greeted = false;
     const ops = [...this.#ops.values()];
     this.#ops.clear();
     this.#keepAlive = 0;

@@ -25,8 +25,9 @@ System owns a project's tree, its git repo and shell commands run inside it.
 | stderr | **Diagnostics only. cc never parses it**; it keeps a bounded tail and quotes it when reporting that the provider died. |
 | Binary payloads | base64 in a `dataB64` field (~33% overhead). |
 | Blank lines | Ignored between frames. Not an error. |
-| Line ceiling | `MAX_LINE_BYTES` = 4 MiB. A longer line is `EPROTO`. |
-| Chunk size | `CHUNK_BYTES` = 64 KiB of raw bytes per `data` frame, before base64. |
+| Line ceiling | `MAX_LINE_BYTES` = 4 MiB. A longer line is `EPROTO`. It is a framing fence, not a payload budget: one chunk frame is `CHUNK_BYTES × 4/3` plus a small envelope, an order of magnitude below it. |
+| Payload validity | A `dataB64` on a `stdout`, `stderr`, `data` or `stdin` frame **MUST be canonical base64** (standard alphabet, correct padding, length a multiple of 4) and **MUST be present**. A payload is part of its frame, so an invalid one is `EPROTO` and fatal exactly as an unparseable line is — decoders in most languages stop at the first bad character and return the prefix, which would turn a corrupted chunk into a silently truncated success. |
+| Chunk size | `CHUNK_BYTES` = 64 KiB of raw bytes per `data` frame, before base64. **Both ends MUST chunk at it** — a payload is not permitted to ride as one large frame. A 32 MiB read sent as a single frame breaches the line ceiling below and dies `EPROTO` mid-transfer. |
 | Per-file cap | `MAX_FILE_BYTES` = 32 MiB. A read or write above it is `EFBIG`. |
 | Paths | **Absolute, on the system.** cc never sends a relative path. |
 
@@ -34,9 +35,13 @@ Provider MUSTs:
 
 1. Write **nothing but frames** to stdout.
 2. Answer cc's `hello` with a `hello` **before any other frame**.
-3. **Exit when stdin reaches EOF.** This is the whole of provider lifecycle
-   management on cc's side: cc closes the pipe (or dies) and the provider —
-   and everything it started — goes away.
+3. **Exit when stdin reaches EOF, taking everything it started with it.** This
+   is the whole of provider lifecycle management on cc's side: cc closes the
+   pipe (or dies) and the provider goes away. **A provider whose children are
+   not its OS descendants must relay the kill itself** — a `docker exec` child
+   is reparented inside the container and outlives the provider, so a docker
+   provider has to SIGKILL its in-flight `docker exec` processes on exit. cc has
+   no way to clean up after a provider that does not.
 4. Interleave concurrent ids correctly (§4).
 
 ### The POSIX assumption
@@ -49,6 +54,14 @@ by cc over `exec` (§6).
 
 **Non-POSIX targets, and non-GNU coreutils, are out of scope.** cc ships no BSD
 dialect: an untested second code path is worse than a refusal.
+
+What §8's classifier actually matches is the **`strerror()` tail** (`No such
+file or directory`, `Not a directory`, …), not a tool's prefix — the tested
+surface is GNU coreutils 9.x plus both `find` families in use here, GNU
+findutils (`find: '/p/.': Not a directory`) and `bfs` (`bfs: error: /p/.: Not a
+directory.`). A `find` or `stat` that produces the POSIX message tails will
+classify correctly whatever it calls itself; one that translates them will not,
+which is what `LC_ALL=C` is for.
 
 ## 2. Handshake and capability negotiation
 
@@ -83,7 +96,7 @@ a user-visible difference, **and a test that runs the fallback**.
 | Capability | Bucket | Absent-behaviour | User-visible difference | Fallback test |
 |---|---|---|---|---|
 | `exec`, `readFile`, `writeFile` | **1 — MUST** | Registration fails; there is no cc without them | — | — |
-| **`persistentShell`** | **2 — OPTIONAL** | cc runs every redirected shell command as a **one-shot `exec`** of the same framing, passing `cwd` explicitly and reading `$PWD` back from the sentinel to carry into the next call | **cwd still persists; exports, shell functions and background jobs do not** — exactly the local CLI's own behaviour, so this is parity, not breakage | `tests/systems-shell-framing.test.mjs`, every case, in both modes |
+| **`persistentShell`** | **2 — OPTIONAL** | cc runs every redirected shell command as a **one-shot `exec`** of the same framing, passing `cwd` explicitly and reading `$PWD` back from the sentinel to carry into the next call | **cwd persists; exports, shell functions and background jobs do not** — which matches the local CLI, whose `Bash` also carries only cwd. Three further differences the mode really does have, stated rather than glossed: **(1)** each command gets a fresh login shell, so profile-file output would land in the command's output — the framing's opening sentinel (§5) is what stops it, and it is load-bearing here in a way it is not for a persistent shell; **(2)** a cwd deleted since the last command fails the NEXT command with `ENOENT` rather than running it somewhere, where a persistent shell would keep running in the deleted directory; **(3)** the command is carried by the `exec` frame's `shell` form, so what it needs of the far side is that form's login shell, not the `system.shell` a persistent session is opened with | `tests/systems-shell-framing.test.mjs`, every case, in both modes |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
@@ -91,9 +104,14 @@ a user-visible difference, **and a test that runs the fallback**.
 
 ## 3. Frames
 
-Every request carries a unique string `id`. Stream frames echo it with a
-`seq` that is **monotonic per id across both streams**, so cc can preserve
-interleaving order.
+Every request carries a unique string `id`. Stream frames echo it with a `seq`
+that is monotonic per id across both streams.
+
+**What cc actually relies on is arrival order on the single stdout pipe**, which
+is what preserves stdout/stderr interleaving; `seq` is a diagnostic for a
+provider author and for anyone reading a captured stream, and cc does not check
+it. A provider that emits wrong `seq` values cannot desynchronise or corrupt
+anything — but it is lying in its own logs.
 
 ### cc → provider
 
@@ -171,9 +189,15 @@ Rules:
   `descendantsMaySurvive: true`** on the eventual `exit`.
 - `close` means cc has stopped listening: kill the command (hard) and emit
   **no further frames** for that id.
-- Backstop: cc arms its own deadline at `timeoutMs + 5 s` and abandons the
-  operation if no `exit` arrives, so a wedged provider cannot turn a bounded
-  command into an unbounded wait.
+- **Backstop: no operation is unbounded.** cc arms its own deadline on every
+  `exec` — at `timeoutMs + 5 s` when the caller named one, and at a generous
+  default ceiling when it did not (`runGit` and the §7 derivations deliberately
+  carry no timeout, because locally there is nothing to time out against).
+  Expiry sends `close`, which is the provider's instruction to kill the command,
+  and reports `{code:124, timedOut:true}`. `readFile` and `writeFile` carry the
+  same ceiling and fail `ETIMEDOUT`. The ceiling is a liveness fence, not a
+  performance budget: it sits above the slowest legitimate operation cc issues,
+  so it can only ever turn a hang into a reported failure.
 
 ### The long-lived shell (cc-side framing)
 
@@ -232,8 +256,11 @@ cc  →  {"type":"readFile","id":"r3","path":"/app/README.md","length":4096}
 
 - `size` and `mode` describe the **whole file** (`mode` as `stat(2)` reports it,
   file-type bits included), not the returned range.
-- `isBinary` is "a NUL byte within the first `BINARY_SNIFF_BYTES` (8 KiB) of the
-  returned data".
+- `isBinary` describes **the returned data, not the file**: "a NUL byte within
+  the first `BINARY_SNIFF_BYTES` (8 KiB) of what this call returns". cc's only
+  reader asks for the head of a file, so the two coincide in practice — but a
+  ranged read from an offset answers about that range, and a provider author
+  reading it as "is this file binary" would be implementing something else.
 - `offset`/`length` bound the read; both absent means the whole file.
 - A requested extent above `MAX_FILE_BYTES` is `EFBIG`.
 
@@ -283,7 +310,12 @@ Costs cc accepts for the shrink, stated rather than hidden:
   treats it as an error, never a silent skip** — a listing that quietly drops an
   entry is indistinguishable from one that does not have it.
 - `realpath` is a round trip on a path that is load-bearing for session
-  identity, so it is cached per (system, path) for the session.
+  identity, and it is **not cached** — a project's realpath is resolved afresh
+  on every call. Caching it would trade a round trip for a class of bug that is
+  much worse than the round trip: a stale entry survives the user moving or
+  re-linking a checkout, and the value keys the session directory, so a wrong
+  one strands every resume for that project. If the round trips ever become the
+  bottleneck, the cache has to be invalidated by something — not merely added.
 
 ## 8. Error taxonomy
 
@@ -301,6 +333,32 @@ shell.
 | `EBUSY` | The wait for a serialised shell exceeded its bound. |
 | `ESHELLGONE` | The long-lived shell died, or a command destroyed the framing so no sentinel can arrive. |
 | `EFBIG` | A read or write above `MAX_FILE_BYTES`. |
+
+### What a provider puts in an `error` frame
+
+An `error` frame carries a code from **either** group above. Which one is not a
+provider's choice — it follows from what failed:
+
+| The provider is answering… | with |
+|---|---|
+| `readFile` / `writeFile` that the filesystem refused | **the FS code the local filesystem would have raised**: `ENOENT`, `EACCES`, `EEXIST` (an `exclusive` write over an existing file), `EISDIR` (a read of a directory), `ENOTDIR`, `ENOSPC` |
+| `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
+| an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
+| a `stdin` / `stdinClose` frame it did not advertise `persistentShell` for | `EUNSUPPORTED` |
+| a frame it could not read at all | `EPROTO`, **id-less** — that is a connection-level failure |
+| a filesystem failure it has no code for | `EUNKNOWN`, with `exitCode`/`stderr` filled in |
+
+**This is a MUST, not a courtesy.** cc's callers branch on these exact codes —
+"create the file unless it already exists" is written as *catch `EEXIST` and
+re-read*, and a missing path resolves to *absent* rather than to an error — so a
+provider that answered `EUNKNOWN` for everything would not be wrong on the wire,
+it would change what the application does. It is what makes a System reached
+over the protocol behave like the local one, and it is asserted per code in the
+conformance suite.
+
+A code cc does not recognise is treated as `EUNKNOWN` rather than as a framing
+violation: inventing a code is a provider being unhelpful, not a stream cc
+cannot read.
 
 ### cc-side interpretation — an exit code plus stderr text
 
@@ -330,11 +388,23 @@ as "no such file" turns one fixable fault into a fleet of misses.
 ## 10. Verifying a provider
 
 ```
+# the reference provider
 node tests/run.mjs tests/systems-protocol-conformance.test.mjs
+
+# YOUR provider, same battery, no test edits
+CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
+  node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 ```
 
-Point it at your provider by editing the harness's launch argv
-(`tests/referenceProviderHarness.mjs`), or run the whole application over it:
+`CC_CONFORMANCE_PROVIDER` is a JSON argv array. The suite **appends** the
+capability flags `--no-persistent-shell` and `--no-process-group-signal` to it,
+so a provider being verified has to accept them (or map them onto its own
+switches) to be exercised in all three configurations; without that it runs the
+first configuration only. The suite builds its fixtures with node's own `fs` and
+then asks the provider about them, so it verifies a provider that reaches **the
+same filesystem as the test process**.
+
+Then run the whole application over it:
 
 ```
 CC_LOCAL_SYSTEM_PROVIDER='["your-provider","--flags"]' npm test
@@ -357,7 +427,22 @@ special-cased here.
 | `exec` | `docker exec -w <cwd> -e … <ctr> sh -c …` |
 | the long-lived shell | one `docker exec -i <ctr> $SHELL -l` |
 | `signal`, `processGroup:true` | `docker exec … kill -- -<pgid>` → `processGroupSignal: true` |
-| `readFile` / `writeFile` | `cat` / `cat >` |
+| `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode` |
 
-Three primitives and two capabilities; a thin `docker exec` provider satisfies
-all of them.
+Three primitives and two capabilities; a `docker exec` provider satisfies all of
+them. **Three things it is not thin about**, worth knowing before starting one:
+
+1. **Reaping.** MUST 3 does not come free: `docker exec` children live in the
+   container and are not reparented to the provider, so stdin-EOF ends the
+   provider and leaves them running. The provider must SIGKILL its in-flight
+   `docker exec` processes on exit itself.
+2. **`processGroupSignal: true` is work.** It needs `setsid` inside the
+   container, discovery of the resulting pgid, and `kill -- -<pgid>` — not just
+   a flag in the handshake. Advertising it without doing that is the one lie
+   this protocol cannot detect; a provider that cannot is expected to advertise
+   `false` and let cc take the documented fallback.
+3. **The base image has to satisfy §1's POSIX assumption.** Alpine — the most
+   likely image a reader reaches for — is busybox, whose `find` has no `-printf`
+   and whose `stat` has no `-c`, so every §7 derivation fails on it. That is
+   out of scope by §1 rather than a gap in the mapping, but it is exactly where
+   a reader will discover it.

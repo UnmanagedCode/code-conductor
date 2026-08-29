@@ -19,10 +19,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { ProviderShell } from '../src/systems/providerShell.ts';
 import {
-  frameCommand, newNonce, parseFramedStderr, parseFramedStdout, sentinelFor,
+  beginFor, frameCommand, newNonce, parseFramedStderr, parseFramedStdout, sentinelFor,
 } from '../src/systems/shellFraming.ts';
 import { makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
+
+// The opening sentinel line every framed command emits before the command runs.
+// Everything before it belongs to the shell, so a parser test that omits it is
+// testing a stream that could never occur.
+const B = (n) => `${beginFor(n)}\n`;
 
 const MODES = [
   { name: 'persistent shell', flags: [], persistent: true },
@@ -49,7 +54,7 @@ test('FIRST MATCH WINS: a second sentinel line cannot move the boundary', () => 
   // probe produced five frames for four commands.
   const n = 'abc';
   const s = sentinelFor(n);
-  const text = `out\n${s} 7 ${Buffer.from('/a').toString('base64')}\ntrailing\n${s} 9 ${Buffer.from('/b').toString('base64')}\n`;
+  const text = `${B(n)}out\n${s} 7 ${Buffer.from('/a').toString('base64')}\ntrailing\n${s} 9 ${Buffer.from('/b').toString('base64')}\n`;
   const m = parseFramedStdout(text, n);
   assert.equal(m.code, 7, 'the FIRST sentinel is the boundary');
   assert.equal(m.cwd, '/a');
@@ -60,7 +65,7 @@ test('a sentinel that does not start a line is output, not a boundary', () => {
   const n = 'abc';
   const s = sentinelFor(n);
   const good = `${s} 0 ${Buffer.from('/x').toString('base64')}`;
-  const m = parseFramedStdout(`prefix ${s} 5 xxx\n${good}\n`, n);
+  const m = parseFramedStdout(`${B(n)}prefix ${s} 5 xxx\n${good}\n`, n);
   assert.equal(m.code, 0);
   assert.equal(m.text, `prefix ${s} 5 xxx`);
 });
@@ -69,26 +74,31 @@ test('cc strips exactly the one newline it injected', () => {
   const n = 'abc';
   const s = sentinelFor(n);
   const b64 = Buffer.from('/x').toString('base64');
-  assert.equal(parseFramedStdout(`\n${s} 0 ${b64}\n`, n).text, '',
+  assert.equal(parseFramedStdout(`${B(n)}\n${s} 0 ${b64}\n`, n).text, '',
     'a command with no output has empty stdout, not a blank line');
-  assert.equal(parseFramedStdout(`hi\n${s} 0 ${b64}\n`, n).text, 'hi',
+  assert.equal(parseFramedStdout(`${B(n)}hi\n${s} 0 ${b64}\n`, n).text, 'hi',
     'output without a trailing newline is not given one');
-  assert.equal(parseFramedStdout(`hi\n\n${s} 0 ${b64}\n`, n).text, 'hi\n',
+  assert.equal(parseFramedStdout(`${B(n)}hi\n\n${s} 0 ${b64}\n`, n).text, 'hi\n',
     "output WITH a trailing newline keeps it — only cc's own newline goes");
 });
 
 test('the sentinel line is not a boundary until it is complete', () => {
   const n = 'abc';
   const s = sentinelFor(n);
-  assert.equal(parseFramedStdout(`out\n${s} 0 eHg`, n), null, 'a half-arrived sentinel line is not yet a frame');
-  assert.equal(parseFramedStdout('out\n', n), null);
-  assert.equal(parseFramedStderr('err\n', n), null);
+  assert.equal(parseFramedStdout(`${B(n)}out\n${s} 0 eHg`, n), null, 'a half-arrived sentinel line is not yet a frame');
+  assert.equal(parseFramedStdout(`${B(n)}out\n`, n), null);
+  assert.equal(parseFramedStderr(`${B(n)}err\n`, n), null);
+  // And nothing is a frame until the OPENING sentinel has arrived: until then
+  // every byte on the stream is the shell's, not the command's.
+  assert.equal(parseFramedStdout(`banner\n${s} 0 eHg=\n`, n), null,
+    'a closing sentinel before the opening one is not a boundary');
+  assert.equal(parseFramedStderr(`banner\n${s}\n`, n), null);
 });
 
 test('the cwd survives spaces and newlines because it rides as base64', () => {
   const n = 'abc';
   const weird = '/tmp/a dir/with\nnewline';
-  const m = parseFramedStdout(`\n${sentinelFor(n)} 0 ${Buffer.from(weird).toString('base64')}\n`, n);
+  const m = parseFramedStdout(`${B(n)}\n${sentinelFor(n)} 0 ${Buffer.from(weird).toString('base64')}\n`, n);
   assert.equal(m.cwd, weird);
 });
 
@@ -96,9 +106,12 @@ test('the nonce is fresh per command, and the script keeps cd and export in the 
   assert.notEqual(newNonce(), newNonce(), 'a fixed nonce is forgeable — that is the measured desync');
   assert.match(newNonce(), /^[0-9a-f]{32}$/, '128 bits');
   const script = frameCommand('N', 'echo hi');
-  assert.match(script, /^\{ echo hi\n\} < \/dev\/null\n/, 'braces, not a subshell, so cd and export land in the shell');
+  assert.match(script, /^printf '__CC_N_BEGIN__\\n'; printf '__CC_N_BEGIN__\\n' >&2\n/,
+    'the opening sentinel is emitted on BOTH streams before the command runs');
+  assert.match(script, /\{ echo hi\n\} < \/dev\/null\n/, 'braces, not a subshell, so cd and export land in the shell');
   assert.match(script, /< \/dev\/null/, 'the command group gets a closed stdin, like project_bash and the Bash tool');
-  assert.match(script, /__CC_N__\\n' >&2/, 'stderr carries its own sentinel so cc knows both streams are done');
+  assert.ok(script.includes(String.raw`printf '\n__CC_N__\n' >&2`),
+    'stderr carries its own sentinel, newline-prefixed like stdout\'s, so a command whose stderr has no trailing newline still frames');
 });
 
 // ── End to end, in both capability modes ─────────────────────────────
@@ -149,6 +162,13 @@ for (const mode of MODES) {
       assert.equal(explicit.stdout, 'out\n');
       assert.equal(explicit.stderr, 'err\n');
       assert.equal(explicit.stdout.includes('__CC_'), false, 'no sentinel text leaks into stdout');
+      // NEITHER stream may assume a trailing newline. `printf err >&2` is
+      // ordinary, and a stderr sentinel that landed mid-line would never match
+      // — the command would wedge until its deadline instead of returning.
+      const bare = await sh.run('printf out-no-nl; printf err-no-nl >&2', { timeoutMs: 4_000 });
+      assert.equal(bare.stdout, 'out-no-nl');
+      assert.equal(bare.stderr, 'err-no-nl');
+      assert.equal(bare.code, 0);
     });
   });
 
@@ -199,6 +219,21 @@ for (const mode of MODES) {
     }, { commandTimeoutMs: 400 });
   });
 
+  test(`[${mode.name}] a shell that cannot START says why — ENOENT, not "the shell died"`, async () => {
+    await withShell(mode.flags, async (sh, cwd) => {
+      assert.equal((await sh.run('echo before')).stdout, 'before\n');
+      // The cwd goes away under the shell. A one-shot opens a new shell for
+      // every command, so it hits this immediately; a persistent one hits it on
+      // its next RESET, which is why the shell is killed first.
+      if (mode.persistent) await assert.rejects(() => sh.run('exit 0'), (e) => e.code === 'ESHELLGONE');
+      await rmrf(cwd);
+      await assert.rejects(() => sh.run('echo after'), (e) => {
+        assert.equal(e.code, 'ENOENT', `expected ENOENT, got ${e.code}: ${e.message}`);
+        return true;
+      });
+    });
+  });
+
   test(`[${mode.name}] cc serialises per shell, and a wait past its bound is EBUSY`, async () => {
     await withShell(mode.flags, async (sh) => {
       const slow = sh.run('sleep 0.5; echo slow');
@@ -216,7 +251,7 @@ for (const mode of MODES) {
 // Driven through a fake ShellHost, which is the seam ProviderShell was given so
 // these do not depend on which login shell the box happens to have.
 
-function fakeHost({ banner = '', respond }) {
+function fakeHost({ banner = '', bannerErr = '', respond }) {
   const state = { commands: [], stream: null };
   const host = {
     capabilities: { persistentShell: true, processGroupSignal: true },
@@ -227,18 +262,19 @@ function fakeHost({ banner = '', respond }) {
         if (out) handlers.onStdout(Buffer.from(out, 'utf8'));
         if (err) handlers.onStderr(Buffer.from(err, 'utf8'));
       };
-      if (banner) emit(banner, '');
+      if (banner || bannerErr) emit(banner, bannerErr);
       state.stream = {
         write(script) {
-          const nonce = /__CC_([0-9a-f]+)__/.exec(script)[1];
-          const command = /^\{ ([\s\S]*?)\n\} < \/dev\/null\n/.exec(script)[1];
+          const nonce = /__CC_([0-9a-f]+)_BEGIN__/.exec(script)[1];
+          const command = /\{ ([\s\S]*?)\n\} < \/dev\/null\n/.exec(script)[1];
           state.commands.push(command);
           const r = respond(command, nonce) ?? {};
           if (r.silent) return;
           const s = sentinelFor(nonce);
+          // The opening sentinel first, exactly as the framed script emits it.
           setImmediate(() => emit(
-            `${r.stdout ?? ''}\n${s} ${r.code ?? 0} ${Buffer.from(r.cwd ?? '/w').toString('base64')}\n`,
-            `${r.stderr ?? ''}${s}\n`,
+            `${B(nonce)}${r.stdout ?? ''}\n${s} ${r.code ?? 0} ${Buffer.from(r.cwd ?? '/w').toString('base64')}\n`,
+            `${B(nonce)}${r.stderr ?? ''}\n${s}\n`,
           ));
         },
         close() {},
@@ -251,19 +287,21 @@ function fakeHost({ banner = '', respond }) {
   return { host, state };
 }
 
-test('a login shell\'s banner is absorbed by the prime, never attributed to a command', async () => {
+test('a login shell\'s banner is never attributed to a command, on either stream', async () => {
   // `$SHELL -l` sources profile files, and anything they print lands on the
-  // stream before the first command's output. One discarded framed no-op eats
-  // it.
+  // stream before the first command's output. The OPENING sentinel is what
+  // separates the two: everything before it is the shell's.
   const { host, state } = fakeHost({
     banner: 'Welcome to the box!\nMOTD line two\n',
-    respond: (cmd) => ({ stdout: cmd === ':' ? '' : 'real output' }),
+    bannerErr: 'nvm: something on stderr\n',
+    respond: () => ({ stdout: 'real output', stderr: 'real error' }),
   });
   const sh = new ProviderShell(host, { cwd: '/w' });
   const r = await sh.run('echo real');
-  assert.equal(state.commands[0], ':', 'the first thing written is the discarded prime');
-  assert.equal(r.stdout, 'real output', 'the banner is not the command\'s stdout');
-  assert.equal(r.stdout.includes('Welcome'), false);
+  assert.deepEqual(state.commands, ['echo real'],
+    'the only thing written is the command itself — no priming round trip');
+  assert.equal(r.stdout, 'real output', "the banner is not the command's stdout");
+  assert.equal(r.stderr, 'real error', "and its stderr half is not the command's stderr");
 });
 
 test('a forgery of the LIVE nonce truncates only its own output — the desync cannot propagate', async () => {

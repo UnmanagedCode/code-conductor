@@ -217,3 +217,141 @@ test('dispose() takes the provider process down with it', async () => {
   }
   assert.equal(live, false, 'the provider process is gone');
 });
+
+// ── The handshake MUSTs, enforced rather than assumed ────────────────
+
+test('an id-carrying frame BEFORE the hello is refused, not routed', async () => {
+  // MUST: a provider answers the handshake before any other frame. A provider
+  // streaming output for an id cc has not opened is not one cc can reason
+  // about, so the violation is named rather than silently eaten.
+  const sys = fakeSystem('early-frame');
+  try {
+    await assert.rejects(() => sys.connect(), (e) => {
+      assert.equal(e.code, 'EPROTO', e.message);
+      assert.match(e.message, /before its hello/);
+      return true;
+    });
+  } finally { sys.dispose(); }
+});
+
+test('a SECOND hello is refused — the handshake happens exactly once', async () => {
+  // The two hellos usually arrive in ONE chunk, so the violation lands between
+  // the handshake resolving and #connect recording it. A connection marked up
+  // with no child behind it would accept the operation below and then wait out
+  // its whole deadline, so `connect` itself must fail — and must fail with the
+  // reason the channel actually went down, not a generic one.
+  const sys = fakeSystem('double-hello');
+  try {
+    await assert.rejects(() => sys.connect(), (e) => {
+      assert.equal(e.code, 'EPROTO', e.message);
+      assert.match(e.message, /second hello/);
+      return true;
+    });
+    assert.equal(sys.handshake, null, 'a torn-down handshake is not recorded as up');
+  } finally { sys.dispose(); }
+});
+
+test('a second hello that arrives AFTER the handshake still fails the next operation', async () => {
+  // The other ordering of the same violation. Whichever way the frames land,
+  // the refusal reaches a caller — it is never swallowed and never a hang.
+  const sys = fakeSystem('late-hello');
+  try {
+    await sys.connect();
+    await assert.rejects(() => sys.readFile('/whatever'), (e) => {
+      assert.equal(e.code, 'EPROTO', e.message);
+      assert.match(e.message, /second hello/);
+      return true;
+    });
+  } finally { sys.dispose(); }
+});
+
+test('a hello with no absolute system.shell is refused at the handshake', async () => {
+  // `system.shell` is the only descriptor field cc ACTS on. Accepting '' here
+  // defers the failure to the first redirected shell, where it surfaces as an
+  // obscure spawn error with nothing pointing at the handshake.
+  const sys = fakeSystem('bad-shell');
+  try {
+    await assert.rejects(() => sys.connect(), (e) => {
+      assert.equal(e.code, 'EPROTO', e.message);
+      assert.match(e.message, /absolute system\.shell/);
+      return true;
+    });
+  } finally { sys.dispose(); }
+});
+
+// ── A corrupted payload is a corrupted frame ─────────────────────────
+
+test('a payload that is not valid base64 fails the operation instead of truncating it', async () => {
+  // `Buffer.from(s,'base64')` stops at the first unreadable character and
+  // returns the prefix. Decoding without a check would report exit 0 with
+  // silently truncated stdout — a wrong answer where the taxonomy requires a
+  // named refusal.
+  for (const mode of ['bad-b64', 'no-datab64']) {
+    const sys = fakeSystem(mode);
+    try {
+      await sys.connect();
+      const r = await sys.exec({ argv: ['whatever'] }, { cwd: os.tmpdir() });
+      assert.equal(r.code, 1, `${mode}: not a success`);
+      assert.match(r.spawnError, /EPROTO|base64|dataB64/, `${mode}: ${r.spawnError}`);
+      assert.equal(r.stdout, '', `${mode}: the unreadable prefix is not handed back as output`);
+    } finally { sys.dispose(); }
+  }
+});
+
+// ── No operation is unbounded ────────────────────────────────────────
+
+test('every operation a mute provider accepts is bounded, not just the ones a caller timed', async () => {
+  // A provider that completes the handshake and then answers nothing. Before
+  // this fence, readFile, writeFile and every derived operation waited for
+  // ever — with no ETRANSPORT and no refusal, just a promise that never
+  // settled. These run at boot (project listing, git status), so the hang was
+  // reachable from a cold start.
+  await tmp(async (dir) => {
+    const sys = fakeSystem('wedge', { defaultOpTimeoutMs: 400 });
+    try {
+      await sys.connect();
+      const started = Date.now();
+      await assert.rejects(() => sys.readFile('/whatever'), (e) => {
+        assert.equal(e.code, 'ETIMEDOUT', e.message);
+        return true;
+      }, 'readFile');
+      await assert.rejects(() => sys.writeFile('/whatever', 'x'), (e) => e.code === 'ETIMEDOUT', 'writeFile');
+      // A DERIVED operation: it is an exec cc issues with no caller timeout at
+      // all, so it is bounded only by the same fence.
+      await assert.rejects(() => sys.stat('/whatever'), (e) => e.code === 'ETIMEDOUT', 'stat');
+      await assert.rejects(() => sys.readDir('/whatever'), (e) => e.code === 'ETIMEDOUT', 'readDir');
+      await assert.rejects(() => sys.realpath('/whatever'), (e) => e.code === 'ETIMEDOUT', 'realpath');
+      await assert.rejects(() => sys.mkdir('/whatever'), (e) => e.code === 'ETIMEDOUT', 'mkdir');
+      await assert.rejects(() => sys.removeTree('/whatever'), (e) => e.code === 'ETIMEDOUT', 'removeTree');
+      await assert.rejects(() => sys.unlink('/whatever'), (e) => e.code === 'ETIMEDOUT', 'unlink');
+      await assert.rejects(() => sys.chmod('/whatever', 0o644), (e) => e.code === 'ETIMEDOUT', 'chmod');
+      // And a caller `exec` with NO timeout of its own, which is what runGit is.
+      const r = await sys.exec({ argv: ['whatever'] }, { cwd: dir });
+      assert.equal(r.timedOut, true, 'an untimed exec is bounded by the same fence');
+      assert.equal(r.code, 124);
+      assert.ok(Date.now() - started < 30_000, 'all of it inside the fence, none of it a hang');
+    } finally { sys.dispose(); }
+  });
+});
+
+test('one failed launch is ONE failure, however many callers were waiting on it', async () => {
+  // The backoff window is derived from the failure count, so counting a single
+  // failed launch once per waiting caller would shorten nothing and lengthen
+  // the window geometrically while reporting attempts that never happened.
+  await tmp(async (dir) => {
+    const countFile = path.join(dir, 'launches');
+    let now = 1_000;
+    const sys = fakeSystem('boom', { countFile, clock: { now: () => now }, restartBaseMs: 500 });
+    try {
+      const settled = await Promise.allSettled([sys.connect(), sys.connect(), sys.connect()]);
+      assert.deepEqual(settled.map(r => r.status), ['rejected', 'rejected', 'rejected']);
+      assert.equal((await fs.readFile(countFile, 'utf8')).trim(), '1', 'three callers, one launch');
+      now += 1;
+      await assert.rejects(() => sys.connect(), (e) => {
+        assert.match(e.message, /1 failed attempt\(s\), next retry in 499ms/,
+          `three waiting callers must not compound into three failures: ${e.message}`);
+        return true;
+      });
+    } finally { sys.dispose(); }
+  });
+});

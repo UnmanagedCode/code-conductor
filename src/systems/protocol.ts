@@ -118,6 +118,17 @@ export function execFailure(what: string, exitCode: number, stderr: string): Sys
   return new SystemError(code, `${what}: ${detail}`, { exitCode, stderr });
 }
 
+// A spawn failure's message ('spawn /bin/sh ENOENT') carries its errno as a
+// TOKEN rather than as strerror() text, so it needs its own reader. Used where
+// a command that never started has to be reported as a named failure rather
+// than as an opaque one.
+export function classifySpawnError(message: string): FsErrorCode {
+  for (const code of FS_ERROR_CODES) {
+    if (code !== 'EUNKNOWN' && new RegExp(`\\b${code}\\b`).test(message)) return code;
+  }
+  return 'EUNKNOWN';
+}
+
 // ── Capabilities ─────────────────────────────────────────────────────
 //
 // EXACTLY TWO, both optional, both with a fallback cc implements and a test
@@ -293,7 +304,37 @@ export function decodeFrame(text: string): AnyFrame {
   if (typeof o.type !== 'string' || o.type === '') {
     throw new SystemError('EPROTO', `frame has no type: ${clip(text)}`);
   }
+  // A PAYLOAD IS PART OF THE FRAME, so a bad payload is a bad frame.
+  //
+  // `Buffer.from(s, 'base64')` is lenient: it stops at the first character it
+  // cannot read and returns what it got. Decoding without this check turns a
+  // corrupted chunk into a SILENT PARTIAL ANSWER — a writeFile that reports
+  // success having dropped its tail, or a command whose stdout is quietly
+  // truncated with exit 0. That is the wrong-answer-over-named-refusal the
+  // taxonomy exists to prevent, so it is checked here, once, for both ends and
+  // both directions.
+  if (PAYLOAD_FRAMES.has(o.type)) {
+    if (typeof o.dataB64 !== 'string') {
+      throw new SystemError('EPROTO', `'${o.type}' frame has no dataB64: ${clip(text)}`);
+    }
+    if (!isBase64(o.dataB64)) {
+      throw new SystemError('EPROTO', `'${o.type}' frame carries invalid base64: ${clip(text)}`);
+    }
+  }
   return o as AnyFrame;
+}
+
+// The frame types whose meaning IS their payload. A type not listed here may
+// carry a `dataB64` cc does not know about; unknown fields stay ignorable.
+const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data', 'stdin']);
+
+// Strict base64: canonical alphabet, correct padding, length a multiple of 4.
+// Deliberately two linear tests rather than one regex with a `*` group, so a
+// megabyte of garbage cannot become a backtracking cost.
+const B64_CHARS = /^[A-Za-z0-9+/]*={0,2}$/;
+
+export function isBase64(v: string): boolean {
+  return v.length % 4 === 0 && B64_CHARS.test(v);
 }
 
 function clip(s: string): string {
