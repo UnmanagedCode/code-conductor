@@ -35,6 +35,19 @@ async function readSettings() {
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
 }
 
+// Plant a hand-edited settings.json — the only way the malformed shapes below
+// can exist, since the API refuses them.
+//
+// IT MUST RUN BEFORE THE FIRST appSettings CALL UNDER THIS PROJECTS ROOT.
+// appSettings caches the parsed document keyed by settingsPath(), so the cache
+// is cold exactly once per freshProjectsRoot() and a direct write AFTER any
+// read/write goes unseen — which would make every assertion below pass against
+// the pre-edit state, i.e. against nothing.
+async function seedSettings(doc) {
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  await fs.writeFile(settingsFile(), JSON.stringify(doc, null, 2));
+}
+
 describe('the systems namespace', () => {
   let home;
   beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
@@ -57,15 +70,31 @@ describe('the systems namespace', () => {
   test('a stored row that shadows a managed id is ignored, label/id from code', async () => {
     // Hand-edited (or migrated-from) state must not be able to rename or
     // repoint the built-in row.
-    await addSystem({ id: 'prod-box', label: 'Prod box' });
-    const raw = await readSettings();
-    raw.systems.registry.unshift({ id: LOCAL_SYSTEM_ID, label: 'Pwned' });
-    await fs.writeFile(settingsFile(), JSON.stringify(raw, null, 2));
+    await seedSettings({ systems: { registry: [
+      { id: LOCAL_SYSTEM_ID, label: 'Pwned' },
+      { id: 'prod-box', label: 'Prod box' },
+    ] } });
 
     const list = getSystems();
     assert.deepEqual(list.map(s => s.id), [LOCAL_SYSTEM_ID, 'prod-box'], 'no duplicate row');
     assert.equal(list[0].label, MANAGED_SYSTEMS[0].label, 'the label comes from code, not the store');
     assert.equal(list[0].managed, true);
+  });
+
+  test('duplicate user rows in a hand-edited store collapse to one, first wins', async () => {
+    // addSystem's 409 keeps a duplicate out of the store, so this is only
+    // reachable by hand-editing settings.json. Rendering the id twice would give
+    // the panel two rows that Edit and Remove interchangeably.
+    await seedSettings({ systems: { registry: [
+      { id: 'prod-box', label: 'Prod box' },
+      { id: 'prod-box', label: 'Impostor' },
+    ] } });
+
+    assert.deepEqual(getSystems().map(s => s.id), [LOCAL_SYSTEM_ID, 'prod-box'], 'one row per id');
+    assert.equal(getSystem('prod-box').label, 'Prod box', 'first wins, matching what the writers do');
+    // And removing it removes BOTH stored rows, so the ghost cannot resurface.
+    assert.equal(await removeSystem('prod-box'), true);
+    assert.deepEqual(getSystems().map(s => s.id), [LOCAL_SYSTEM_ID]);
   });
 
   test('the managed row refuses every mutation', async () => {

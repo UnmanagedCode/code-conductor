@@ -95,6 +95,12 @@ function aheadBehind(v: unknown): string {
 
 const PROJECT_DEVIANT: DeviantSpec[] = [
   { key: 'workspace', default: null, label: 'workspace' },
+  // The project's System could not be resolved, so every git fact below is
+  // ABSENT rather than measured. It leads the block because it is the reason
+  // the rest is missing — and it is why `isGitRepo` is reported `undefined`
+  // (skipped) rather than `false` on such a row: "could not look" is not the
+  // claim "not a git repo".
+  { key: 'systemUnreachable', default: null, label: '! system unreachable' },
   { key: 'isGitRepo', default: true, label: '! not a git repo' },
   { key: 'unbornHead', default: false, label: '! no commits yet — a worktree needs a first commit' },
   // Adopted from outside the projects root. The real target path is already the

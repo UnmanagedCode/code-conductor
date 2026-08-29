@@ -473,11 +473,17 @@ export function getSystems(): SystemRecord[] {
   const s = loadSync();
   const stored = Array.isArray(s.systems?.registry) ? s.systems.registry : [];
   const out: SystemRecord[] = MANAGED_SYSTEMS.map(m => ({ ...m }));
+  // An id identifies exactly one row. addSystem's 409 keeps a duplicate out of
+  // the store, so this only fires on a hand-edited settings.json — where FIRST
+  // WINS, matching what the store's own writers do (updateSystem rewrites the
+  // list filtered by id, so the surviving row is the one a later edit lands on).
+  const seen = new Set<string>(MANAGED_SYSTEM_IDS);
   for (const e of stored) {
     if (!e || typeof e !== 'object') continue;
     const rec = e as { id?: unknown; label?: unknown };
     if (typeof rec.id !== 'string' || !rec.id) continue;
-    if (MANAGED_SYSTEM_IDS.includes(rec.id)) continue;
+    if (seen.has(rec.id)) continue;
+    seen.add(rec.id);
     out.push({
       id: rec.id,
       label: typeof rec.label === 'string' && rec.label ? rec.label : rec.id,

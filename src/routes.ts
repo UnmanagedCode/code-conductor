@@ -18,7 +18,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
-import { resolveSystem } from './systems/registry.ts';
+import { resolveSystem, tryResolveSystem } from './systems/registry.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
   getCommitDiff, getCommitFileDiff,
@@ -383,20 +383,34 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
   async function computeGitFacts(p: { name: string; path: string }) {
-    const system = await resolveSystem(p.name);
+    // tryResolveSystem, not resolveSystem: this runs once per project inside the
+    // listing's Promise.all, so a throw here would break the WHOLE list for one
+    // project whose record names an unreachable system. An unresolved system
+    // degrades THIS project's git facts to unknown and says why.
+    const { system, unreachable } = await tryResolveSystem(p.name);
+    // Worktree REGISTRATIONS are store-derived and need no System, so they are
+    // still listed for an unreachable project — only their divergence, which is
+    // measured with git on the tree, goes unknown.
     const worktrees = await listWorktrees(p.name).catch(() => []);
     const worktreesWithMerge = await Promise.all(worktrees.map(async (w) => ({
       ...w,
-      mergeStatus: await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null })),
+      mergeStatus: system
+        ? await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null }))
+        : { ahead: null, behind: null },
     })));
-    const projIsGitRepo = await isGitRepo(system, p.path);
+    // undefined, not false: "we could not look" must not render as the positive
+    // claim "not a git repo". The key is simply absent from the response, which
+    // every client already reads as falsy, and `systemUnreachable` carries the
+    // reason so absence is never ambiguous.
+    const projIsGitRepo = system ? await isGitRepo(system, p.path) : undefined;
     return {
+      systemUnreachable: unreachable,
       isGitRepo: projIsGitRepo,
       // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
       // "no commits", so a non-repo reports false and isGitRepo carries it.
-      unbornHead: projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
+      unbornHead: system && projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
       worktrees: worktreesWithMerge,
-      mergeStatus: projIsGitRepo
+      mergeStatus: system && projIsGitRepo
         ? await getProjectUpstreamStatus(system, p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
         : { ahead: null, behind: null, upstream: null },
     };
@@ -422,6 +436,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         return {
           ...p,
           sessionIds: instances ? instances.sessionIdsForProject(p.name) : [],
+          // null on a healthy project; the refusal's message when this project's
+          // System could not be resolved, in which case the git facts beside it
+          // are unknown rather than measured.
+          systemUnreachable: gitFacts.systemUnreachable,
           isGitRepo: gitFacts.isGitRepo,
           unbornHead: gitFacts.unbornHead,
           worktrees: worktreesWithSessions,

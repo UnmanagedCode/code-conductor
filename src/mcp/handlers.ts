@@ -32,7 +32,7 @@ import {
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
-import { resolveSystem } from '../systems/registry.ts';
+import { resolveSystem, tryResolveSystem } from '../systems/registry.ts';
 import type { System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
@@ -306,19 +306,30 @@ function notLiveRefusal(sessionId: string): SoftRefusal {
 export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   const projects = await fsListProjects();
   const enriched = await Promise.all(projects.map(async (p) => {
-    const system = await resolveSystem(p.name);
+    // tryResolveSystem, not resolveSystem: one project whose record names an
+    // unreachable system must degrade to its own row, not reject this
+    // Promise.all and take the whole listing down with it.
+    const { system, unreachable } = await tryResolveSystem(p.name);
+    // Worktree registrations are store-derived and need no System, so they still
+    // list; only their git-measured divergence goes unknown.
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
     const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
       ...w,
       sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
-      mergeStatus: await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null })),
+      mergeStatus: system
+        ? await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null }))
+        : { ahead: null, behind: null },
     })));
-    const projIsGitRepo = await isGitRepo(system, p.path);
+    // undefined, not false — "could not look" must not print as the claim
+    // `! not a git repo`. deviations() skips an absent field, and the
+    // `! system unreachable` line beside it says why it is absent.
+    const projIsGitRepo = system ? await isGitRepo(system, p.path) : undefined;
     return {
       ...p,
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
+      systemUnreachable: unreachable,
       isGitRepo: projIsGitRepo,
-      unbornHead: projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
+      unbornHead: system && projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
@@ -475,7 +486,15 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // than as a missing project.
     const empty = !liveHere.length && !rows.length && !archivedCount;
     if (empty && project === null) return null;
-    const { branch, mergeStatus } = await groupGit(await resolveSystem(t.project), t.cwd, t.meta);
+    // Same rule as the project listing, and it matters more here: the UNFILTERED
+    // scope spans every project, so one unreachable record would have broken the
+    // tool a conductor uses to find its own sessions. groupGit's own vocabulary
+    // for "not measured" is `{branch: null, mergeStatus: null}`, which renders as
+    // `br —` with no divergence — so the group still lists its sessions.
+    const { system: groupSystem } = await tryResolveSystem(t.project);
+    const { branch, mergeStatus } = groupSystem
+      ? await groupGit(groupSystem, t.cwd, t.meta)
+      : { branch: null, mergeStatus: null };
     const tracked = (sid: string) => (proj ? proj.bySession.get(sid) : undefined);
     return {
       project: t.project,

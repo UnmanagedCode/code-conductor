@@ -89,6 +89,33 @@ export async function projectPlacement(projectName: string): Promise<ProjectPlac
   return placementOf(projectName, await readProjectMeta(projectName));
 }
 
+// resolveSystem for the LISTINGS, where a refusal is a VALUE rather than a throw.
+//
+// listProjects already promises that one bad entry does not take the page down
+// — a broken `.external` link "is skipped, not fatal: the rest of the project
+// list must still render". Its ENRICHMENT layer has to keep the same promise,
+// and it did not: every listing fans its per-project work out through one
+// `Promise.all`, so a single project whose record names an unreachable system
+// rejected the whole batch and broke the list for every OTHER project too.
+//
+// So a listing resolves through here and degrades the one row it concerns; an
+// addressed-by-name caller keeps resolveSystem and its throw, because there the
+// refusal IS the answer. `unreachable` carries the refusal's own message, so the
+// row can say WHY rather than just showing absent facts.
+//
+// It catches everything, not just the refusal: a listing that must render the
+// rest of the list has the same duty for an unexpected fault as for an expected
+// one.
+export async function tryResolveSystem(
+  projectName: string,
+): Promise<{ system: System | null; unreachable: string | null }> {
+  try {
+    return { system: await resolveSystem(projectName), unreachable: null };
+  } catch (e) {
+    return { system: null, unreachable: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // The System a project's tree, git repo and shell commands live on.
 export async function resolveSystem(projectName: string): Promise<System> {
   const { system } = await projectPlacement(projectName);
