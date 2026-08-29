@@ -11,7 +11,8 @@
     "start": "./conductor.sh",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run typecheck",
-    "test": "NODE_OPTIONS=--max-old-space-size=512 node tests/run.mjs"
+    "test": "NODE_OPTIONS=--max-old-space-size=512 node tests/run.mjs",
+    "gate:systems": "node tests/systems-gate.mjs"
   },
   "dependencies": {
     "express": "^4.22.2",

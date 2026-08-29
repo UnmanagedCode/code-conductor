@@ -242,6 +242,17 @@ export class NdjsonDecoder {
   }
 
   push(chunk: Buffer): AnyFrame[] {
+    try { return this.#push(chunk); }
+    catch (e) {
+      // Any EPROTO drops the buffer. The caller tears the connection down; a
+      // decoder that kept its bytes would hand the next push a frame boundary
+      // it has already proved it cannot find.
+      this.#buf = Buffer.alloc(0);
+      throw e;
+    }
+  }
+
+  #push(chunk: Buffer): AnyFrame[] {
     this.#buf = this.#buf.length === 0 ? chunk : Buffer.concat([this.#buf, chunk]);
     const out: AnyFrame[] = [];
     let start = 0;
@@ -251,7 +262,6 @@ export class NdjsonDecoder {
       const line = this.#buf.subarray(start, nl);
       start = nl + 1;
       if (line.length > this.#maxLineBytes) {
-        this.#buf = Buffer.alloc(0);
         throw new SystemError('EPROTO', `provider frame exceeded ${this.#maxLineBytes} bytes`);
       }
       // A blank line (or a stray \r\n) is not a frame and not an error — it is
@@ -262,7 +272,6 @@ export class NdjsonDecoder {
     }
     this.#buf = start === 0 ? this.#buf : this.#buf.subarray(start);
     if (this.#buf.length > this.#maxLineBytes) {
-      this.#buf = Buffer.alloc(0);
       throw new SystemError('EPROTO', `provider frame exceeded ${this.#maxLineBytes} bytes`);
     }
     return out;
