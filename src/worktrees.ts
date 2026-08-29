@@ -152,10 +152,11 @@ export const GIT_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 
 export async function runGit(system: System, cwd: string, args: string[]): Promise<GitResult> {
   const r = await system.exec({ argv: ['git', '-C', cwd, ...args] }, { cwd, maxBufferBytes: GIT_OUTPUT_LIMIT_BYTES });
-  // DELIBERATE, ACCEPTED DEVIATION from the pre-System behaviour (D5): a git
-  // that never started used to leave `stderr` empty, and now carries the spawn
-  // diagnostic. It differs only when the spawn itself fails, no caller parses
-  // this field, and the alternative is a failure with no message at all.
+  // DELIBERATE, ACCEPTED DEVIATION from the pre-System behaviour, whose bar was
+  // zero behaviour change: a git that never started used to leave `stderr`
+  // empty, and now carries the spawn diagnostic. It differs only when the spawn
+  // itself fails, no caller parses this field, and the alternative is a failure
+  // with no message at all.
   return { stdout: r.stdout, stderr: r.stderr || r.spawnError || '', code: r.code };
 }
 

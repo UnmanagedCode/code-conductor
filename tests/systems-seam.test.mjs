@@ -1,13 +1,13 @@
 // THE SEAM TEST: no direct `fs` call and no directly-spawned process reaches a
 // project tree — every one goes through the project's System.
 //
-// Phase 1 of Systems (docs/systems-design.md §8, §10) threads a System handle
-// through every project-scoped operation. A leak — one surviving `fs.readFile`
-// or `spawn` against a project path — is exactly what would keep working today
-// and silently do the wrong thing the moment that project lives on another
-// machine. So this file does not inspect the code: it WATCHES the two escape
-// hatches while real operations run, and fails on any call that reached the
-// watched tree without a `src/systems/localSystem.ts` frame beneath it.
+// Phase 1 of Systems threads a System handle through every project-scoped
+// operation. A leak — one surviving `fs.readFile` or `spawn` against a project
+// path — is exactly what would keep working today and silently do the wrong
+// thing the moment that project lives on another machine. So this file does not
+// inspect the code: it WATCHES the two escape hatches while real operations
+// run, and fails on any call that reached the watched tree without a
+// `src/systems/localSystem.ts` frame beneath it.
 //
 // BOTH PLACEMENTS ARE DRIVEN, and they cover different code. The ADOPTED
 // (external) fixture is the clean one: its tree sits in its own temp dir, far

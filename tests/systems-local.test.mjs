@@ -1,13 +1,13 @@
 // The `local` System: the contract every call site now depends on, and the
 // `.conduct` pin.
 //
-// Phase 1 of Systems (docs/systems-design.md) routes every project-scoped
-// operation through a System handle. LocalSystem is the only implementation,
-// and its job is to be indistinguishable from the direct fs/spawn calls it
-// replaced — so the semantics asserted here are the ones the call sites were
-// written against, not new ones: absence is a value (not a throw), a broken
-// installation still throws, `unlink` never follows a symlink, and an `exec`
-// head cap truncates what is SHOWN while the command runs to completion.
+// Phase 1 of Systems routes every project-scoped operation through a System
+// handle. LocalSystem is the only implementation, and its job is to be
+// indistinguishable from the direct fs/spawn calls it replaced — so the
+// semantics asserted here are the ones the call sites were written against, not
+// new ones: absence is a value (not a throw), a broken installation still
+// throws, `unlink` never follows a symlink, and an `exec` head cap truncates
+// what is SHOWN while the command runs to completion.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -66,9 +66,9 @@ test('stat reports absence as a value and a real fault as a throw', async () => 
 });
 
 test('unlink removes the link, never what it points at', async () => {
-  // The invariant deleteProject's external branch rests on
-  // (docs/systems-design.md 5.4): the interface itself must guarantee that the
-  // single-entry removal cannot reach the target.
+  // The invariant deleteProject's external branch rests on: the interface
+  // itself must guarantee that the single-entry removal cannot reach the
+  // target.
   const dir = await tmpdir();
   try {
     const target = path.join(dir, 'target');

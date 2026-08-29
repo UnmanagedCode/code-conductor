@@ -527,8 +527,8 @@ test('deleteProject on an external project unlinks the record and keeps the targ
 
 // The invariant at src/projects.ts's external branch is enforced by a COMMENT:
 // the adopted target is the user's own repo, so the realpath must never reach a
-// removal call. Routing project-scoped I/O through a System handle
-// (docs/systems-design.md §5.4) rewrites exactly the lines that comment guards,
+// removal call. Routing project-scoped I/O through a System handle rewrites
+// exactly the lines that comment guards,
 // and the failure mode is invisible from the outside — `rm -rf` on a symlink
 // removes the link too, so "the target survived" passes for the wrong reason on
 // a machine where the link is a link. So this asserts on the CALLS, at both

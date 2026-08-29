@@ -6,7 +6,7 @@ import { runGitLive, fetchOriginBounded } from './gitLive.ts';
 import { httpError } from './httpError.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from './groupedCommand.ts';
 // Self-update operates on cc's OWN checkout — always the local system, never a
-// project on one (docs/systems-design.md §5.1).
+// project on one.
 import { localSystem } from './systems/registry.ts';
 
 // Conductor self-update — the app's own version of the Plugin Library update

@@ -1,14 +1,14 @@
 // The System interface — the seam every PROJECT-SCOPED operation goes through.
 //
-// A System is a remote EXECUTION ENVIRONMENT, not a remote filesystem
-// (docs/systems-design.md). cc's own store, the Claude CLI and everything under
-// `~/.claude/` are always local; what a System owns is the project tree: its
-// git repo, its files, and shell commands run inside it.
+// A System is a remote EXECUTION ENVIRONMENT, not a remote filesystem. cc's own
+// store, the Claude CLI and everything under `~/.claude/` are always local; what
+// a System owns is the project tree: its git repo, its files, and shell commands
+// run inside it.
 //
-// The provider contract has exactly three MUST primitives — `exec`, `readFile`,
-// `writeFile` (§4.2) — and everything else here is DERIVED from `exec` on the
-// far side (`stat -c`, `find`, `mkdir -p`, `rm -rf`, `unlink`, `realpath`,
-// `chmod` — §4.6). They are cc-side helpers rather than provider surface, which
+// The provider contract has exactly three MUST primitives — `exec`, `readFile`
+// and `writeFile` — and everything else here is DERIVED from `exec` on the far
+// side (`stat -c`, `find`, `mkdir -p`, `rm -rf`, `unlink`, `realpath`,
+// `chmod`). They are cc-side helpers rather than provider surface, which
 // is why they live on this interface but will not appear in the wire protocol:
 // a provider implements three operations, this interface exposes the shapes cc
 // actually calls. `LocalSystem` implements each one natively, so routing
@@ -45,7 +45,8 @@ export interface ExecOptions {
   killGraceMs?: number;
   // 'ignore' hands the command a closed stdin, so an interactive command sees
   // EOF instead of hanging until the timeout. Load-bearing for project_bash and
-  // for the redirected Bash framing (§4.5 rule 3).
+  // for the redirected Bash framing, which runs each command group under
+  // `< /dev/null` for the same reason.
   stdin?: 'ignore';
 }
 
@@ -70,7 +71,7 @@ export type SystemEntryKind = 'file' | 'dir' | 'symlink' | 'other';
 
 // What `stat -c '%F %s %f %Y'` carries back, minus the parsing. ABSENCE IS A
 // VALUE, NOT AN ERROR: `stat()` resolves to null for a path that does not
-// exist (§4.7), matching resolveProjectDir's ENOENT→null contract. Every other
+// exist, matching resolveProjectDir's ENOENT→null contract. Every other
 // failure — EACCES, ENOTDIR — throws, because reading a broken installation as
 // "no such file" turns one fixable fault into a fleet of misses.
 export interface SystemStat {
@@ -112,7 +113,7 @@ export interface System {
   readFileBytes(filePath: string, opts?: { length?: number }): Promise<Buffer>;
   writeFile(filePath: string, data: string, opts?: WriteFileOptions): Promise<void>;
 
-  // ── Derived from exec on the far side (§4.6) ───────────────────────
+  // ── Derived from exec on the far side ──────────────────────────────
   // null when the path does not exist. Follows symlinks, like fs.stat.
   stat(p: string): Promise<SystemStat | null>;
   readDir(p: string): Promise<SystemDirent[]>;
@@ -123,8 +124,7 @@ export interface System {
   removeTree(p: string): Promise<void>;
   // Remove ONE directory entry, never following it and never recursing. This is
   // the shape the `.external/<name>` record is deleted with, because its target
-  // is the user's own repo: the realpath must never reach removeTree
-  // (docs/systems-design.md §5.4).
+  // is the user's own repo: the realpath must never reach removeTree.
   unlink(p: string): Promise<void>;
   chmod(p: string, mode: number): Promise<void>;
 }

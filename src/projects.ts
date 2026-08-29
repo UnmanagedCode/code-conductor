@@ -691,7 +691,7 @@ export async function deleteProject(name: string): Promise<{ name: string; path:
   validateName(name);
   const resolved = await resolveProjectDir(name);
   // SYSTEMS-P4: third branch — deleting a remote project UNREGISTERS it and
-  // never touches the remote tree (D11), returning the remote path and its
+  // never touches the remote tree, returning the remote path and its
   // system so a caller can say which machine it was unregistered from.
   //
   // The system the tree lives on. A name that resolves to nothing has no tree
