@@ -1457,6 +1457,40 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // kept as `req.body ?? {}` exactly as before — the handler narrows.
       inst.handleHookCallback(req.body ?? {}, res);
     });
+
+    // THE REDIRECTED BASH. A worker on a remote system has its Bash command
+    // rewritten into an invocation of src/systems/bashForwarder.ts, which posts
+    // the ORIGINAL command here; cc runs it in that session's long-lived shell
+    // on the system and answers with the result, which the forwarder replays as
+    // its own stdout/stderr/exit code.
+    //
+    // The socket closing is load-bearing, not incidental: the CLI kills the
+    // forwarder on a tool timeout or an interrupt, and that abort is cc's only
+    // signal to stop the command on the far side.
+    r.post('/instances/:id/bash-forward', async (req, res) => {
+      const inst = instances.get(req.params.id);
+      const redirect = inst?._redirect;
+      if (!redirect) {
+        res.status(404).json({ stdout: '', stderr: 'cc: this session is not redirected to a system\n', code: 1 });
+        return;
+      }
+      const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown };
+      const command = typeof body.command === 'string' ? body.command : '';
+      if (!command) {
+        res.status(400).json({ stdout: '', stderr: 'cc: the forwarder sent no command\n', code: 1 });
+        return;
+      }
+      const abort = new AbortController();
+      res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+      const timeoutMs = Number(body.timeoutMs);
+      // runForwarded never rejects: every failure comes back as a non-zero exit
+      // with its reason on stderr, which is the channel the worker reads.
+      const result = await redirect.runForwarded(command, {
+        signal: abort.signal,
+        ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
+      });
+      if (!res.writableEnded) res.status(200).json(result);
+    });
   }
 
   // Voice dictation: the composer's mic button streams a recorded audio

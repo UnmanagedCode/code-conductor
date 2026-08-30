@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
 import { promises as fsp, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot } from './projects.ts';
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
   trackLineageWrite,
@@ -33,6 +34,9 @@ import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbo
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
+import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
+import { composeSessionRoot } from './systems/sessionRoot.ts';
+import { bashRuleSources, bashRulesRefusal, findUnenforceableBashRules } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
@@ -454,6 +458,16 @@ export class Instance extends EventEmitter implements InstanceLike {
   hookCallbackUrl: string | null;
   mcpServerUrl: string | null;
   claudePluginDirs: string[];
+  // THE REDIRECTION, or null for a project on cc's own machine.
+  //
+  // A worker on a remote system runs the CLI locally in a cc-owned session root
+  // and crosses the machine boundary tool by tool (src/systems/toolRedirect.ts).
+  // Its presence is what widens the injected hook surface, so it must be
+  // attached before launch() — see attachRedirect.
+  _redirect: SessionRedirect | null;
+  // What a relaunch needs to re-pull the session root, since launch() runs long
+  // after create() resolved the system handle.
+  _redirectPlacement: RedirectPlacement | null;
   worktree: (WorktreeMeta & { postWorktreeCreate?: unknown }) | null;
   temp: boolean;
   conducted: boolean;
@@ -629,6 +643,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.acceptsMidTurnSteering = resolveMidTurnSteering({ backend: this.backend, model: this.model });
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
+    this._redirect = null;
+    this._redirectPlacement = null;
     // Absolute Claude Code plugin roots (each directly containing
     // `.claude-plugin/plugin.json`) contributed by enabled cc plugins whose
     // manifest declares `claudePlugin`. Resolved + validated once at create()
@@ -730,6 +746,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._hooks = new HookBroker({
       getMode: () => this.mode,
       emit: (ev: unknown) => this._emitUi(ev as UiEvent),
+      // A GETTER, not the value: the redirect is attached after construction
+      // (it needs this instance's emit) and dropped when the session ends.
+      getRedirect: () => this._redirect,
     });
     this._stderr = '';
     this._lastLeafUuid = null;     // for last-prompt jsonl marker
@@ -1570,6 +1589,40 @@ export class Instance extends EventEmitter implements InstanceLike {
   // arg-parse time on a missing path). A compose/write error propagates (fail
   // loud): a role-less conductor is worse than a surfaced error, and all
   // callers are async and return errors to REST/MCP.
+  // Bind this session's redirection policy. Called by the manager right after
+  // construction, BEFORE launch(): spawn() reads `_redirect` to decide whether
+  // the injected settings hook Read and PostToolUse and remove Glob/Grep, and a
+  // session launched without that surface would answer file tools from cc's own
+  // disk.
+  attachRedirect(redirect: SessionRedirect, placement: RedirectPlacement): void {
+    this._redirect = redirect;
+    this._redirectPlacement = placement;
+  }
+
+  // Re-pull the session root's config surface. Runs on every (re)launch — the
+  // CLI reads CLAUDE.md, CONVENTIONS.md and `.claude/**` once at startup and
+  // fires no hook for any of it, so a resume that skipped this would run against
+  // whatever the system had at the last spawn. The manifest makes an unchanged
+  // surface one `find` and no transfers.
+  //
+  // A failure is SURFACED, not fatal: the config surface is not the session, and
+  // a system that is briefly unreachable should cost a warning rather than a
+  // worker that cannot start. Every tool call still refuses honestly.
+  async _refreshSessionRoot(): Promise<void> {
+    const placement = this._redirectPlacement;
+    if (!placement) return;
+    try {
+      const { skipped } = await composeSessionRoot(placement);
+      for (const s of skipped) {
+        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: session root skipped ${s.path} — ${s.reason}` } });
+      }
+    } catch (e) {
+      this._emitUi({ kind: 'system', subtype: 'stderr', data: {
+        line: `systems: could not refresh the session root from '${placement.systemId}': ${(e as Error).message}`,
+      } });
+    }
+  }
+
   async launch({ resume }: { resume?: string } = {}): Promise<void> {
     // THE one mint site in the codebase. It lives here rather than in spawn()
     // because minting is async (it persists the lineage row under the store
@@ -1596,6 +1649,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // propagates deliberately: a role-less conductor is worse than a surfaced
     // error, and every caller is async and returns errors to REST/MCP.
     if (isConductorInstance(this)) await materializeCurrentConduct();
+    // The same point in the sequence, for the same reason: the config surface a
+    // remote project's session prompt is built from is pulled here, before the
+    // process that reads it starts.
+    await this._refreshSessionRoot();
     this.spawn({ resume });
   }
 
@@ -1781,7 +1838,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       // interactive `http` hook is ALSO registered for the destructive
       // tools — its behaviour at callback time depends on the
       // orchestrator-tracked mode (ask = prompt user, otherwise = allow).
-      '--settings', buildSettingsJSON({ hookCallbackUrl: this.hookCallbackUrl ?? undefined }),
+      '--settings', buildSettingsJSON({
+        hookCallbackUrl: this.hookCallbackUrl ?? undefined,
+        redirect: this._redirect !== null,
+      }),
     ];
     // Route tool-permission prompts over the stream-json control channel as
     // `can_use_tool` control_requests. THIS is what un-strips the interactive
@@ -2339,6 +2399,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // gone, so the tool won't run anyway, but we still need to free
     // the held-open HTTP responses.
     this._hooks.discardAll();
+    // And close this session's shell on the remote system. It is a process on
+    // someone else's machine keyed to a session that no longer exists; nothing
+    // will ever write to it again.
+    void this._redirect?.close();
     this._closeDebugStreams();
     // `_suppressTempDelete` is set by the resume-restart path
     // (shutdownForResumeSync): there we SIGKILL temp subprocesses but must
@@ -2500,6 +2564,13 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw new Error('prompt requires non-empty text or at least one valid attachment');
     }
 
+    // `@path` PRE-HYDRATION. The CLI expands a mention itself and fires no hook
+    // for it — measured — so on a remote project a mentioned file that is not
+    // already in the session root is simply absent from the turn. cc owns the
+    // one site a prompt is written from, so it fetches them here, before the
+    // text goes to stdin. Best effort: a mention that names nothing is the
+    // CLI's to report, not a reason to refuse the turn.
+    if (this._redirect) await this._redirect.hydrateMentions(safeText);
     // A real prompt is a genuine turn boundary — any Skill invocation still
     // awaiting its content injection is stale (see parser.ts:attachSkillLoad).
     this.parser.expirePendingSkillLoads();
@@ -3482,6 +3553,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._lastLeafUuid = null;
     this._planFiles.reset();
     this._hooks.discardAll();
+    // A rewind/respawn rewrites the CLI's prefix, so the shell's accumulated
+    // cwd and exports belong to a conversation the worker no longer has. Close
+    // it: the next command opens a fresh one and says what it lost.
+    void this._redirect?.close();
     // Per-turn cache-miss capture is owned by _setStatus (into-'turn' reset)
     // and the spawn() that always follows a wipe. But a rewind/respawn rewrites
     // the CLI's prefix, so the stale _prevTurnPrefix must NOT drive a cross-turn
@@ -3690,6 +3765,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   hookCallbackUrl(id: string): string | null {
     if (!this.serverPort) return null;
     return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/hook-callback`;
+  }
+
+  // Where a redirected Bash's local forwarder posts the worker's original
+  // command. Loopback for the same reason the hook callback is: the forwarder
+  // is a child of the CLI, which is a child of this process.
+  bashForwardUrl(id: string): string | null {
+    if (!this.serverPort) return null;
+    return `http://127.0.0.1:${this.serverPort}/api/instances/${id}/bash-forward`;
   }
 
   // Auto-registered orchestrator MCP server URL. Returns the BASE URL (no
@@ -4019,20 +4102,19 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       throw httpError(400, 'project required');
     }
     const proj = await getProject(project);
-    // WORKER SESSIONS ARE LOCAL-ONLY, and this is the one chokepoint every
-    // spawn and resume passes through. The CLI always runs on the machine cc
-    // runs on, so its cwd would be this project's path — a path on ANOTHER
-    // machine, which the CLI would silently create here and then work in,
-    // producing a transcript and a `CLAUDE.md` walk rooted in a directory that
-    // has nothing to do with the project. Redirecting the CLI's tools to the
-    // system is the next phase; refusing by name is the honest answer until it
-    // exists.
-    if (proj.system.id !== LOCAL_SYSTEM_ID) {
+    // A worker on a NON-LOCAL system still runs the CLI here — the CLI is
+    // always local — but never in the project's own directory, which is a path
+    // on another machine. Its cwd is a cc-owned session root (resolved below,
+    // once the worktree is known), and its tools cross the boundary one call at
+    // a time. A system cc cannot open a shell on cannot host a session at all:
+    // every non-local system is reached over the provider protocol, so this
+    // refuses rather than silently degrading to a session with no Bash.
+    const remote = proj.system.id !== LOCAL_SYSTEM_ID;
+    if (remote && !isRedirectable(proj.system)) {
       throw httpError(
         501,
-        `WORKER_SESSIONS_LOCAL_ONLY: project '${proj.name}' lives on system '${proj.system.id}', `
-        + `and cc runs the claude CLI only on its own machine. Every project_* tool works on it; `
-        + `a worker session does not.`,
+        `WORKER_SESSIONS_NEED_A_SHELL: project '${proj.name}' is on system '${proj.system.id}', `
+        + `which cc cannot open a shell on, so a worker there would have no Bash.`,
       );
     }
     // create() is policy-light: mode never depends on temp here. The UI's
@@ -4145,6 +4227,38 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         throw httpError(404, `worktree '${worktree}' not found under project '${project}'`);
       }
       cwd = worktreeMeta.worktreePath;
+    }
+
+    // THE SESSION ROOT, and the point `cwd` stops meaning "the project's
+    // directory" for a remote project.
+    //
+    // Everything downstream of here reads `cwd` as the CLI's working directory:
+    // the resume pre-flight, the transcript path, the model recovery, the
+    // subprocess launch. On a remote project the project's directory is on
+    // another machine, so the CLI's cwd is a cc-owned local session root
+    // holding only the config surface the CLI reads implicitly. `systemCwd`
+    // keeps the other half — the tree the shell and the file bridge address.
+    let redirectPlacement: RedirectPlacement | null = null;
+    if (remote) {
+      const systemCwd = cwd;
+      redirectPlacement = {
+        system: proj.system as RedirectableSystem,
+        systemId: proj.system.id,
+        systemPath: systemCwd,
+        project,
+        worktree: worktreeMeta?.worktreeName ?? null,
+      };
+      // Composed BEFORE the refusal below, because the rules that refusal reads
+      // are the project's own `.claude/settings*.json` — which only exist
+      // locally once they have been pulled.
+      cwd = (await composeSessionRoot(redirectPlacement)).root;
+      const unenforceable = await findUnenforceableBashRules(bashRuleSources(cwd));
+      if (unenforceable.length > 0) {
+        throw Object.assign(
+          new Error(bashRulesRefusal(proj.system.id, unenforceable)),
+          { statusCode: 501, code: 'BASH_RULES_NOT_ENFORCEABLE' },
+        );
+      }
     }
 
     // Resume pre-flight: refuse a resume id that has no resumable conversation
@@ -4276,6 +4390,25 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       launcher: this._claudeLauncher,
     });
     if (recoveredFirstPrompt) inst.firstPrompt = recoveredFirstPrompt;
+    // Attached BEFORE launch(): spawn() reads it to widen the injected hook
+    // surface, and the hook broker reads it on every tool call.
+    if (redirectPlacement) {
+      inst.attachRedirect(new SessionRedirect({
+        system: redirectPlacement.system,
+        systemId: redirectPlacement.systemId,
+        systemPath: redirectPlacement.systemPath,
+        sessionRoot: inst.cwd,
+        forwarderUrl: this.bashForwardUrl(id) ?? '',
+        // The LOCAL paths a file tool may legitimately name on a remote
+        // project: the store (attachments, debug captures), the CLI's own home
+        // (plans, user settings), the transcript root, and cc-managed plugin
+        // roots. Anything else outside the session root is refused, because a
+        // file written there lands on the orchestrator's machine where no
+        // command on the system can ever see it.
+        localRoots: [orchStoreRoot(), path.join(os.homedir(), '.claude'), claudeProjectsRoot(), ...claudePluginDirs],
+        emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
+      }), redirectPlacement);
+    }
 
     inst.on('event', (ev: UiEvent) => this.emit('event', { id, ev }));
     // The Instance signals (rather than self-handles) an overage trip — central
@@ -4868,6 +5001,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       throw httpError(404, 'instance not found');
     }
     if (inst.proc) await inst.kill({ graceMs: 500 });
+    // Independently of the kill: an instance can be removed with no live
+    // process (it crashed, or it already exited), and its shell on the remote
+    // system would then outlive every reference to the session that owns it.
+    await inst._redirect?.close();
     this.byId.delete(id);
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);
@@ -4883,6 +5020,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const victims = [...this.byId.values()].filter(i => i.project === projectName);
     await Promise.all(victims.map(async (i) => {
       try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
+      try { await i._redirect?.close(); } catch { /* ignore */ }
       this.byId.delete(i.id);
       this._cancelAutoResume(i.id);
       this._purgeIdleFor(i.id);
@@ -4898,6 +5036,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const all = [...this.byId.values()];
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
+    // Every session's shell on a remote system, for the same reason remove()
+    // does it: the process is on another machine and nothing else will reap it.
+    await Promise.all(all.map(i => i._redirect?.close().catch(() => {})));
   }
 
   // Snapshot of live temp sessions keyed by what's needed to find their
@@ -5045,4 +5186,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     return out;
   }
+}
+
+// Everything a relaunch needs to re-pull a remote project's session root, and
+// everything the redirection policy needs to address the system. Held on the
+// Instance because launch() runs long after create() resolved the handle.
+export interface RedirectPlacement {
+  system: RedirectableSystem;
+  systemId: string;
+  systemPath: string;
+  project: string;
+  worktree: string | null;
 }

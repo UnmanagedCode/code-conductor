@@ -30,6 +30,29 @@ export const AWAITING_INPUT_MESSAGE =
 // so the model can explore freely without a prompt per call.
 const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 
+// A session on a REMOTE system hooks one tool more. `Read` is not ask-gated —
+// the broker keeps that distinction — but its bytes have to be fetched from the
+// system before the CLI opens the file, which only a PreToolUse hook can do.
+const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Read`;
+
+// The write-back and the output annotation. cc has never injected a PostToolUse
+// hook before: it is what carries an Edit's local result back to the system and
+// what attaches the note saying where it landed.
+const REDIRECT_POST_TOOL_MATCHER = ASK_GATED_TOOL_MATCHER;
+
+// Removed from the tool registry for a redirected session — measured to work
+// even under `--permission-mode bypassPermissions
+// --allow-dangerously-skip-permissions`, which is how every cc worker launches.
+//
+// They are the two tools that read the filesystem and CANNOT be redirected: a
+// PreToolUse hook rewrites input, and there is no channel to substitute a
+// result, so a Glob or a Grep would answer about cc's session root — a
+// directory holding the project's config surface and nothing else. Answering
+// the wrong machine is the leak that costs a worker its trust in every other
+// tool result; the model falls back to `find`/`grep` through the redirected
+// Bash unprompted, which answers about the right one.
+const REDIRECT_DENIED_TOOLS = ['Glob', 'Grep'];
+
 // Per-hook timeout (seconds) for the interactive http hook. Generous —
 // the CLI waits this long for the user to click Allow/Deny in the UI.
 // The orchestrator's pending timeout (see hookBroker.ts) resolves with
@@ -37,19 +60,29 @@ const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 // there to avoid the CLI cutting off a slow human.
 export const HOOK_HTTP_TIMEOUT_S = 660;
 
-export function buildSettingsJSON({ hookCallbackUrl }: { hookCallbackUrl?: string } = {}): string {
+// `redirect` marks a worker session whose project lives on another system
+// (src/systems/toolRedirect.ts). It widens the hook surface rather than
+// replacing it, so a local session's settings are byte-identical to what they
+// were.
+export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookCallbackUrl?: string; redirect?: boolean } = {}): string {
+  const httpHook = (url: string) => [{ type: 'http', url, timeout: HOOK_HTTP_TIMEOUT_S }];
   const preToolUse: unknown[] = [];
+  const out: Record<string, unknown> = { hooks: { PreToolUse: preToolUse } };
   if (hookCallbackUrl) {
     preToolUse.push({
-      matcher: ASK_GATED_TOOL_MATCHER,
-      hooks: [{
-        type: 'http',
-        url: hookCallbackUrl,
-        timeout: HOOK_HTTP_TIMEOUT_S,
-      }],
+      matcher: redirect ? REDIRECT_PRE_TOOL_MATCHER : ASK_GATED_TOOL_MATCHER,
+      hooks: httpHook(hookCallbackUrl),
     });
+    if (redirect) {
+      (out.hooks as Record<string, unknown>).PostToolUse = [
+        { matcher: REDIRECT_POST_TOOL_MATCHER, hooks: httpHook(hookCallbackUrl) },
+      ];
+    }
   }
-  return JSON.stringify({ hooks: { PreToolUse: preToolUse } });
+  // Not `--disallowedTools`: that flag is variadic and swallows the following
+  // prompt argument.
+  if (redirect) out.permissions = { deny: REDIRECT_DENIED_TOOLS };
+  return JSON.stringify(out);
 }
 
 // Builds the inline `--mcp-config` JSON the orchestrator passes to every
