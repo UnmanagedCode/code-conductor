@@ -24,6 +24,7 @@ import {
 import { ExecOutputCollector } from './execCollector.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
 import { ProviderShell, type ShellHost, type ShellStream, type ShellStreamHandlers } from './providerShell.ts';
+import { requireAbsolute } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
 } from './system.ts';
@@ -48,31 +49,6 @@ const EXEC_TIMEOUT_SLACK_MS = 5_000;
 // large tree, a clone) so it can never turn a slow answer into a wrong one.
 // Injectable so a test can assert the fence without waiting for it.
 const DEFAULT_OP_TIMEOUT_MS = 10 * 60_000;
-
-// THE PATH INVARIANT, ENFORCED AT THE WIRE (docs/systems-protocol.md §1: "cc
-// never sends a relative path").
-//
-// Declaring it bought nothing — this class would ship whatever string a caller
-// composed, and a relative path resolves against wherever the PROVIDER process
-// happens to run. A read then answers about a file nobody asked for; a write
-// lands in a directory nobody chose and REPORTS SUCCESS. Both instances of that
-// found so far came from a call site that resolved only the SYSTEM and then
-// composed a path from a project that had none, so `path.join('', x)` produced
-// a bare filename.
-//
-// A relative path arriving here is cc's OWN bug, never a provider's, so it is a
-// hard throw and not a returned refusal: `exec` otherwise never rejects, and
-// swallowing this as a result the caller inspects is exactly how the class
-// stayed invisible. The op name is in the message because the fault is at the
-// call site, not here.
-function requireAbsolute(op: string, what: string, p: string): void {
-  if (!path.isAbsolute(p)) {
-    throw new Error(
-      `${op}: ${what} must be absolute, got ${JSON.stringify(p)} — `
-      + `cc never sends a relative path to a system (docs/systems-protocol.md)`,
-    );
-  }
-}
 
 export interface ProviderSystemOptions extends ConnectionOptions {
   id: string;
@@ -402,6 +378,10 @@ export class ProviderSystem implements System, ShellHost {
   execOneShot(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> { return this.exec(spec, opts); }
 
   async openStream(spec: ExecSpec, opts: ExecOptions, handlers: ShellStreamHandlers): Promise<ShellStream> {
+    // The SECOND way a cwd reaches an `exec` frame. The one-shot fallback goes
+    // through `exec` and is guarded there; this is the persistent-shell path,
+    // and it is the one a redirected Bash session drives every command through.
+    requireAbsolute('openStream', 'cwd', opts.cwd);
     const hs = await this.#conn.ensureUp();
     if (!hs.capabilities.persistentShell) {
       throw new SystemError('EUNSUPPORTED', `system '${this.id}' does not support a persistent shell`);

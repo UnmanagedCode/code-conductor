@@ -9,9 +9,17 @@
 // provider process happens to run, so a WRITE lands in a directory nobody chose
 // and the call reports success.
 //
-// A relative path reaching this boundary is cc's OWN bug, never a provider's,
-// so it fails hard and loudly rather than returning a refusal a caller might
-// swallow. This guard is what should have caught both instances.
+// A relative path reaching a System is cc's OWN bug, never a provider's, so it
+// fails hard and loudly rather than returning a refusal a caller might swallow.
+// This guard is what should have caught both instances.
+//
+// IT IS ENFORCED ON BOTH IMPLEMENTATIONS, and the table below runs against
+// both. The invariant is a property of cc's CALLERS, not of a transport:
+// guarding only the wire would leave production `local` — the system every
+// ordinary project uses — unguarded, where the identical composition bug writes
+// into cc's own process cwd and reports success. `npm run gate:systems` routes
+// `local` through `ProviderSystem`, but `npm test` is the stated bar and would
+// then say nothing about this class on the local path.
 //
 // The two halves below are deliberately separate: the boundary guard (does the
 // rule hold at all?) and the call site it was breached at (does the sweep still
@@ -26,6 +34,7 @@ import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { adoptProject, projectStoreDir, listProjects, findSelfProject } from '../src/projects.ts';
 import { regenerateAllProjectConventions, ensureProjectConventionsMd } from '../src/projectClaudeMd.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
+import { LocalSystem } from '../src/systems/localSystem.ts';
 import { addSystem } from '../src/appSettings.ts';
 
 async function exists(p) {
@@ -37,65 +46,127 @@ async function writeRecord(name, record) {
   await fs.writeFile(path.join(projectStoreDir(name), 'project.json'), JSON.stringify(record, null, 2) + '\n');
 }
 
-describe('the wire boundary refuses a relative path', () => {
+// Every path-taking entry point, as (label, call). Shared by both
+// implementations so neither can grow a hole the other does not have.
+const PATH_OPS = (sys) => [
+  ['stat', () => sys.stat('CONVENTIONS.md')],
+  ['readFile', () => sys.readFile('CONVENTIONS.md')],
+  ['readFileBytes', () => sys.readFileBytes('CONVENTIONS.md')],
+  ['writeFile', () => sys.writeFile('CONVENTIONS.md', 'x')],
+  ['readDir', () => sys.readDir('sub')],
+  ['realpath', () => sys.realpath('')],
+  ['mkdir', () => sys.mkdir('sub')],
+  ['removeTree', () => sys.removeTree('sub')],
+  ['unlink', () => sys.unlink('f')],
+  ['chmod', () => sys.chmod('f', 0o755)],
+];
+
+function guardSuite(label, make) {
+  describe(`${label} refuses a relative path`, () => {
+    let home, sys;
+    beforeEach(async () => { ({ home } = await freshProjectsRoot()); sys = await make(); });
+    afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
+
+    // PINS: every path-taking operation refuses a relative path, so no future
+    // call site can silently repeat the defect through a different method.
+    test('every path-taking operation refuses one', async () => {
+      for (const [name, call] of PATH_OPS(sys)) {
+        await assert.rejects(call, (e) => /absolute/i.test(e.message) && e.message.includes(name),
+          `${name} must refuse a relative path, naming itself`);
+      }
+    });
+
+    // PINS: the empty string is the shape the defect actually took — it is not
+    // absolute, and `path.join('', x)` is what produced it.
+    test('the empty path — the shape the defect took — is refused', async () => {
+      await assert.rejects(() => sys.writeFile('', 'x'), (e) => /absolute/i.test(e.message));
+      await assert.rejects(() => sys.stat(''), (e) => /absolute/i.test(e.message));
+    });
+
+    // PINS: `exec`'s cwd is guarded too — a command run in a relative directory
+    // lands wherever the process happens to be, exactly like a relative write.
+    test("exec's cwd is guarded as well", async () => {
+      await assert.rejects(() => sys.exec({ argv: ['pwd'] }, { cwd: 'sub' }),
+        (e) => /absolute/i.test(e.message) && /cwd/.test(e.message));
+    });
+
+    // PINS: it is a THROW, not a returned refusal — `exec` otherwise never
+    // rejects, and swallowing cc's own bug as a result the caller inspects is
+    // how this class stays invisible.
+    test('it throws rather than resolving to a result exec callers would inspect', async () => {
+      let threw = false;
+      try { await sys.exec({ argv: ['pwd'] }, { cwd: 'relative' }); } catch { threw = true; }
+      assert.equal(threw, true, 'exec rejects here even though it never rejects otherwise');
+    });
+
+    // PINS: the guard does not touch the normal path — an absolute one works.
+    test('an absolute path is unaffected', async () => {
+      const f = path.join(home, 'ok.txt');
+      await sys.writeFile(f, 'hello');
+      assert.equal(await sys.readFile(f), 'hello');
+      assert.equal((await sys.exec({ argv: ['pwd'] }, { cwd: home })).stdout.trim(), home);
+    });
+  });
+}
+
+// The in-process implementation, constructed directly rather than via
+// localSystem(): under the systems gate that accessor hands back a
+// ProviderSystem, and this half exists precisely to cover the one `npm test`
+// alone reaches.
+guardSuite('LocalSystem', async () => new LocalSystem());
+
+guardSuite('ProviderSystem', async () => {
+  await addSystem({
+    id: 'refbox', label: 'Reference',
+    launch: (await import('./remoteSystem.mjs')).referenceLaunch(),
+  });
+  return systemById('refbox', 'test');
+});
+
+// The PERSISTENT SHELL is a second entry into an `exec` frame, and it carried
+// its own `cwd` past the guard: `execOneShot` goes through `exec` and was
+// covered, `openStream` did not. It is the entry a redirected Bash session
+// drives, so a hole there is the one that matters most.
+describe('the persistent shell carries its cwd through the same guard', () => {
   let home, sys;
   beforeEach(async () => {
     ({ home } = await freshProjectsRoot());
-    await addSystem({ id: 'refbox', label: 'Reference', launch: (await import('./remoteSystem.mjs')).referenceLaunch() });
+    await addSystem({
+      id: 'refbox', label: 'Reference',
+      launch: (await import('./remoteSystem.mjs')).referenceLaunch(),
+    });
     sys = await systemById('refbox', 'test');
   });
   afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
 
-  // PINS: every path-taking operation refuses a relative path, so no future
-  // call site can silently repeat the defect through a different method.
-  test('every path-taking operation refuses one', async () => {
-    const cases = [
-      ['stat', () => sys.stat('CONVENTIONS.md')],
-      ['readFile', () => sys.readFile('CONVENTIONS.md')],
-      ['readFileBytes', () => sys.readFileBytes('CONVENTIONS.md')],
-      ['writeFile', () => sys.writeFile('CONVENTIONS.md', 'x')],
-      ['readDir', () => sys.readDir('sub')],
-      ['realpath', () => sys.realpath('')],
-      ['mkdir', () => sys.mkdir('sub')],
-      ['removeTree', () => sys.removeTree('sub')],
-      ['unlink', () => sys.unlink('f')],
-      ['chmod', () => sys.chmod('f', 0o755)],
-    ];
-    for (const [name, call] of cases) {
-      await assert.rejects(call, (e) => /absolute/i.test(e.message) && e.message.includes(name),
-        `${name} must refuse a relative path, naming itself`);
-    }
+  // PINS: openStream refuses a relative cwd. Unguarded, a shell either failed
+  // from the FAR side (the relative path had crossed the wire) or — with a
+  // directory of that name present where the provider ran — happily served
+  // commands from a directory nobody chose, reporting success.
+  test('openStream refuses a relative cwd', async () => {
+    await assert.rejects(
+      () => sys.openStream({ argv: ['/bin/sh', '-l'] }, { cwd: 'relative' }, {
+        onStdout: () => {}, onStderr: () => {}, onExit: () => {}, onDown: () => {},
+      }),
+      (e) => /absolute/i.test(e.message) && /cwd/.test(e.message),
+    );
   });
 
-  // PINS: the empty string is the shape the defect actually took — it is not
-  // absolute, and `path.join('', x)` is what produced it.
-  test("the empty path — the shape the defect took — is refused", async () => {
-    await assert.rejects(() => sys.writeFile('', 'x'), (e) => /absolute/i.test(e.message));
-    await assert.rejects(() => sys.stat(''), (e) => /absolute/i.test(e.message));
+  // PINS the same through `shell()`, the surface a caller actually uses — the
+  // guard has to fire before a command can run, not merely on the raw entry.
+  test('shell() refuses one before a command can run', async () => {
+    const shell = sys.shell({ cwd: 'relative' });
+    await assert.rejects(() => shell.run('pwd'), (e) => /absolute/i.test(e.message) && /cwd/.test(e.message));
   });
 
-  // PINS: `exec`'s cwd is guarded too — a command run in a relative directory
-  // lands wherever the provider happens to be, exactly like a relative write.
-  test("exec's cwd is guarded as well", async () => {
-    await assert.rejects(() => sys.exec({ argv: ['pwd'] }, { cwd: 'sub' }),
-      (e) => /absolute/i.test(e.message) && /cwd/.test(e.message));
-  });
-
-  // PINS: it is a THROW, not a returned refusal — `exec` otherwise never
-  // rejects, and swallowing cc's own bug as a result the caller inspects is how
-  // this class stays invisible.
-  test('it throws rather than resolving to a result exec callers would inspect', async () => {
-    let threw = false;
-    try { await sys.exec({ argv: ['pwd'] }, { cwd: 'relative' }); } catch { threw = true; }
-    assert.equal(threw, true, 'exec rejects here even though it never rejects otherwise');
-  });
-
-  // PINS: the guard does not touch the normal path — an absolute one works.
-  test('an absolute path is unaffected', async () => {
-    const f = path.join(home, 'ok.txt');
-    await sys.writeFile(f, 'hello');
-    assert.equal(await sys.readFile(f), 'hello');
-    assert.equal((await sys.exec({ argv: ['pwd'] }, { cwd: home })).stdout.trim(), home);
+  // PINS: an absolute cwd still opens a working shell, so the guard did not
+  // close the persistent-shell path itself.
+  test('an absolute cwd still opens a working shell', async () => {
+    const shell = sys.shell({ cwd: home });
+    const r = await shell.run('pwd');
+    assert.equal(r.code, 0, JSON.stringify(r));
+    assert.equal(r.stdout.trim(), home);
+    shell.forget?.();
   });
 });
 

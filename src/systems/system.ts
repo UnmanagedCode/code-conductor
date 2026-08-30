@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 // The System interface — the seam every PROJECT-SCOPED operation goes through.
 //
 // A System is a remote EXECUTION ENVIRONMENT, not a remote filesystem. cc's own
@@ -14,8 +16,33 @@
 // actually calls. `LocalSystem` implements each one natively, so routing
 // through it is exactly today's behaviour.
 //
-// The one implementation of this interface today is LocalSystem; the process-
-// backed ProviderSystem arrives with the wire protocol in Phase 3.
+// Two implementations: the in-process LocalSystem, and ProviderSystem, which
+// reaches a system over the wire protocol (docs/systems-protocol.md).
+
+// THE PATH INVARIANT, and it belongs to the CONTRACT rather than to either
+// implementation: every path cc hands a System is absolute, on that system.
+//
+// It is a property of cc's CALLERS, so both implementations enforce it. A
+// relative path resolves against wherever the far side happens to be running —
+// the provider's process cwd, or cc's own for the in-process system — so a read
+// answers about a file nobody asked for and a WRITE lands in a directory nobody
+// chose while REPORTING SUCCESS. Both instances found so far came from a call
+// site that resolved only the SYSTEM and then composed a path from a project
+// that had none, so `path.join('', x)` produced a bare filename.
+//
+// A relative path arriving here is cc's OWN bug, never a provider's, so it is a
+// hard throw and not a returned refusal: `exec` otherwise never rejects, and
+// swallowing this as a result the caller inspects is exactly how the class
+// stayed invisible. The operation is named in the message because the fault is
+// at the call site, not at the boundary that caught it.
+export function requireAbsolute(op: string, what: string, p: string): void {
+  if (!path.isAbsolute(p)) {
+    throw new Error(
+      `${op}: ${what} must be absolute, got ${JSON.stringify(p)} — `
+      + `cc never sends a relative path to a system (docs/systems-protocol.md)`,
+    );
+  }
+}
 
 // `argv` runs the binary directly; `shell` runs a command string through a
 // login-ish shell (which is what a user-authored hook/start command expects —
