@@ -545,9 +545,15 @@ describe('a system that dies mid-operation', () => {
   test('delete_worktree refuses a status that RAN and failed on a live system', async () => {
     await withFailingStatus(wt.worktreePath, async () => {
       const r = await callTool(baseUrl, 'delete_worktree', { project: 'app', worktree: wt.worktreeName });
-      const body = JSON.parse(r.text);
-      assert.equal(body.ok, false, r.text);
-      assert.equal(body.code, 'WORKTREE_DIRTY_UNKNOWN', r.text);
+      // OBSERVED, never parsed. Without this branch the delete falls through to
+      // removeWorktree's intact backstop, which refuses in plain text — so a
+      // `JSON.parse` here failed by CRASHING on unparseable output rather than
+      // by noticing the code was absent. That kills, but it would kill just as
+      // readily for any unrelated change that stopped the output being JSON,
+      // which is the same weak-assertion family this file exists to fix.
+      assert.match(r.text, /WORKTREE_DIRTY_UNKNOWN/, r.text);
+      assert.match(r.text, /"ok":\s*false/, r.text);
+      assert.ok(!r.isError, `a business refusal, not a tool fault: ${r.text}`);
     });
     assert.equal(await exists(wt.worktreePath), true, 'the worktree survives');
   });
