@@ -30,27 +30,33 @@ export const AWAITING_INPUT_MESSAGE =
 // so the model can explore freely without a prompt per call.
 const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 
-// A session on a REMOTE system hooks one tool more. `Read` is not ask-gated —
-// the broker keeps that distinction — but its bytes have to be fetched from the
-// system before the CLI opens the file, which only a PreToolUse hook can do.
-const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Read`;
+// A session on a REMOTE system hooks three tools more. `Read` is not ask-gated
+// — the broker keeps that distinction — but its bytes have to be fetched from
+// the system before the CLI opens the file, which only a PreToolUse hook can
+// do. `Glob` and `Grep` are here as the SECOND guard described below.
+const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Read|Glob|Grep`;
 
 // The write-back and the output annotation. cc has never injected a PostToolUse
 // hook before: it is what carries an Edit's local result back to the system and
 // what attaches the note saying where it landed.
 const REDIRECT_POST_TOOL_MATCHER = ASK_GATED_TOOL_MATCHER;
 
-// Removed from the tool registry for a redirected session — measured to work
-// even under `--permission-mode bypassPermissions
-// --allow-dangerously-skip-permissions`, which is how every cc worker launches.
+// The two tools that read the filesystem and CANNOT be redirected: a PreToolUse
+// hook rewrites input, and there is no channel to substitute a result, so a
+// Glob or a Grep would answer about cc's session root — a directory holding the
+// project's config surface and nothing else. Answering about the wrong machine
+// is the leak that costs a worker its trust in every other tool result; the
+// model falls back to `find`/`grep` through the redirected Bash unprompted,
+// which answers about the right one.
 //
-// They are the two tools that read the filesystem and CANNOT be redirected: a
-// PreToolUse hook rewrites input, and there is no channel to substitute a
-// result, so a Glob or a Grep would answer about cc's session root — a
-// directory holding the project's config surface and nothing else. Answering
-// the wrong machine is the leak that costs a worker its trust in every other
-// tool result; the model falls back to `find`/`grep` through the redirected
-// Bash unprompted, which answers about the right one.
+// MEASURED (claude 2.1.250, cc's exact launch flags): a headless `-p` session
+// does not carry Glob or Grep in its tool registry at all, and `ToolSearch`
+// cannot surface them — so today this denial removes nothing. It is kept
+// because the tool profile is undocumented surface that has already moved once,
+// and the redirection policy denies both BY NAME at the hook as well
+// (src/systems/toolRedirect.ts). Two independent guards, because the invariant
+// they protect — no tool answers about the wrong machine — is the one that
+// makes the whole feature safe rather than merely convenient.
 const REDIRECT_DENIED_TOOLS = ['Glob', 'Grep'];
 
 // Per-hook timeout (seconds) for the interactive http hook. Generous —

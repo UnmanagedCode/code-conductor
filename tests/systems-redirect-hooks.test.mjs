@@ -64,6 +64,10 @@ test('a redirected session hooks Read and PostToolUse and removes Glob/Grep', ()
   assert.match(s.hooks.PreToolUse[0].matcher, /\bBash\b/);
   assert.equal(s.hooks.PostToolUse[0].hooks[0].url, 'http://h');
   assert.deepEqual(s.permissions.deny, ['Glob', 'Grep']);
+  // And hooked as well as denied — two independent guards, because the CLI's
+  // headless tool profile is undocumented surface the denial alone rests on.
+  assert.match(s.hooks.PreToolUse[0].matcher, /\bGlob\b/);
+  assert.match(s.hooks.PreToolUse[0].matcher, /\bGrep\b/);
 });
 
 // PINS: the rewrite reaches the CLI. Without `updatedInput` on the response the

@@ -183,6 +183,20 @@ test('a known-local path passes through untouched', async () => {
   assert.equal(d.updatedInput, undefined);
 });
 
+// PINS THE SECOND GUARD on the one non-negotiable invariant: if Glob or Grep
+// ever reaches the hook — the injected `permissions.deny` having failed, or the
+// CLI's tool profile having changed — it is REFUSED by name, not allowed to
+// answer about cc's session root. A search answering about the wrong machine is
+// exactly the leak that makes a worker distrust every other tool result.
+test('Glob and Grep are refused by name if they ever reach the hook', async () => {
+  for (const tool of ['Glob', 'Grep']) {
+    const d = await pre(tool, { pattern: '**/*.js' });
+    assert.equal(d.decision, 'deny', tool);
+    assert.match(d.reason, /Bash/, 'and it names the tool that answers about the right machine');
+    assert.match(d.reason, new RegExp(remote.id));
+  }
+});
+
 // PINS: R2's annotation is TARGETED — it fires only when the output actually
 // shows a system path, so the model is not fed a note on every command.
 test('a Bash result is annotated only when it actually shows a system path', async () => {

@@ -63,6 +63,14 @@ const FILE_TOOLS: Record<string, string> = {
 };
 const READ_ONLY_FILE_TOOLS = new Set(['Read']);
 
+// Refused by name, whatever the injected settings did. `permissions.deny`
+// already asks the CLI to remove these (src/settings.ts) and measurably does on
+// the profiles where they exist at all — but that is undocumented surface, and
+// the invariant it protects is the one the whole feature rests on. If either
+// tool ever reaches this hook, it is answering about cc's session root rather
+// than the system, and a refusal naming the alternative is the honest reply.
+const UNREDIRECTABLE_TOOLS = new Set(['Glob', 'Grep']);
+
 // How long a session's shell may sit unused before cc closes it. A worker
 // between turns is idle for as long as its user is away, and a shell held open
 // for that is a process on someone else's machine doing nothing.
@@ -126,6 +134,13 @@ export class SessionRedirect {
   // ── PreToolUse ─────────────────────────────────────────────────────
 
   async preToolUse(toolName: string, toolInput: Record<string, unknown>): Promise<RedirectDecision> {
+    if (UNREDIRECTABLE_TOOLS.has(toolName)) {
+      return {
+        decision: 'deny',
+        reason: `${toolName} searches the orchestrator's filesystem, not system '${this.systemId}' where this `
+          + `project's files are. Use \`find\` or \`grep\` through Bash, which runs there.`,
+      };
+    }
     if (toolName === 'Bash') return this.#redirectBash(toolInput);
     const key = FILE_TOOLS[toolName];
     if (key === undefined) return { decision: 'allow' };
