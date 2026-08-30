@@ -29,6 +29,7 @@ import { test, describe, before, after, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { adoptProject, projectStoreDir, listProjects, findSelfProject } from '../src/projects.ts';
@@ -36,6 +37,9 @@ import { regenerateAllProjectConventions, ensureProjectConventionsMd } from '../
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import { addSystem } from '../src/appSettings.ts';
+
+// This repo's own root — what the fence exists to keep relative writes out of.
+const REPO_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 async function exists(p) {
   try { await fs.lstat(p); return true; } catch { return false; }
@@ -63,9 +67,26 @@ const PATH_OPS = (sys) => [
 
 function guardSuite(label, make) {
   describe(`${label} refuses a relative path`, () => {
-    let home, sys;
-    beforeEach(async () => { ({ home } = await freshProjectsRoot()); sys = await make(); });
-    afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
+    let home, sys, prevCwd;
+    // A RELATIVE WRITE LANDS IN THE CURRENT DIRECTORY. These probes write
+    // `CONVENTIONS.md`, and with the guard absent that is this repo's own
+    // tracked `CONVENTIONS.md` — a system-prompt surface — for the LocalSystem
+    // half in this process, and for the ProviderSystem half in the provider,
+    // which inherits this cwd. A test that can clobber a tracked file whenever
+    // the code under test regresses is a hazard for every mutation run, so the
+    // probes are fenced into a scratch directory the same way the sweep tests
+    // are. The assertions are unchanged; only the blast radius is.
+    beforeEach(async () => {
+      ({ home } = await freshProjectsRoot());
+      prevCwd = process.cwd();
+      process.chdir(await fs.mkdtemp(path.join(home, 'relative-write-fence-')));
+      sys = await make();
+    });
+    afterEach(async () => {
+      process.chdir(prevCwd);
+      disposeSystemHandles();
+      await rmrf(home);
+    });
 
     // PINS: every path-taking operation refuses a relative path, so no future
     // call site can silently repeat the defect through a different method.
@@ -99,6 +120,17 @@ function guardSuite(label, make) {
       assert.equal(threw, true, 'exec rejects here even though it never rejects otherwise');
     });
 
+    // PINS THE FENCE ITSELF. Without this the fence is an untested assumption
+    // that a later fixture restructure would silently drop, bringing back a
+    // suite that clobbers the repo's own tracked CONVENTIONS.md the moment the
+    // guard regresses — which is exactly when nobody is looking at the fixture.
+    test('a relative write from here cannot reach the repo', async () => {
+      await fs.writeFile('CONVENTIONS.md', 'fence probe');
+      assert.equal(await fs.readFile(path.join(process.cwd(), 'CONVENTIONS.md'), 'utf8'), 'fence probe');
+      assert.ok(!process.cwd().startsWith(REPO_ROOT),
+        `the relative-write probes must not run inside the repo: ${process.cwd()}`);
+    });
+
     // PINS: the guard does not touch the normal path — an absolute one works.
     test('an absolute path is unaffected', async () => {
       const f = path.join(home, 'ok.txt');
@@ -128,16 +160,20 @@ guardSuite('ProviderSystem', async () => {
 // covered, `openStream` did not. It is the entry a redirected Bash session
 // drives, so a hole there is the one that matters most.
 describe('the persistent shell carries its cwd through the same guard', () => {
-  let home, sys;
+  let home, sys, prevCwd;
   beforeEach(async () => {
     ({ home } = await freshProjectsRoot());
+    // Same fence as guardSuite: an unguarded relative cwd resolves against the
+    // process's own directory, which must never be the repo.
+    prevCwd = process.cwd();
+    process.chdir(await fs.mkdtemp(path.join(home, 'relative-cwd-fence-')));
     await addSystem({
       id: 'refbox', label: 'Reference',
       launch: (await import('./remoteSystem.mjs')).referenceLaunch(),
     });
     sys = await systemById('refbox', 'test');
   });
-  afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
+  afterEach(async () => { process.chdir(prevCwd); disposeSystemHandles(); await rmrf(home); });
 
   // PINS: openStream refuses a relative cwd. Unguarded, a shell either failed
   // from the FAR side (the relative path had crossed the wire) or — with a

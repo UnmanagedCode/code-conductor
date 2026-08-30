@@ -24,6 +24,14 @@
 //                  JSON matches — how you target one specific step of a
 //                  multi-step operation, e.g. `git merge`, without having to
 //                  count cc's git calls
+//   --error-frame RE  answer the first exec whose frame JSON matches with a
+//                  protocol `error` frame instead of forwarding it — the far
+//                  side saying "that command never started". This is the
+//                  COMMAND-level failure, the counterpart of a transport death,
+//                  and it is the only way to reach it for a derived op: those
+//                  run `env LC_ALL=C …` in `/`, so a real spawn there never
+//                  fails. The frame is exactly what a provider emits for an
+//                  unstartable command; nothing is simulated but the trigger.
 //   --die-stderr S write S to stderr just before dying. cc embeds a dying
 //                  provider's stderr TAIL in the refusal it raises, so this is
 //                  how a transport death is given text that LOOKS like a local
@@ -44,11 +52,13 @@ const REFERENCE = path.resolve(__dirname, '..', '..', 'src', 'systems', 'referen
 let budget = null;
 let dieOn = null;
 let dieStderr = null;
+let errorFrame = null;
 const passThrough = [];
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--budget') budget = Number(process.argv[++i]);
   else if (process.argv[i] === '--die-on') dieOn = new RegExp(process.argv[++i]);
   else if (process.argv[i] === '--die-stderr') dieStderr = process.argv[++i];
+  else if (process.argv[i] === '--error-frame') errorFrame = new RegExp(process.argv[++i]);
   // Anything the wrapper does not claim is the reference provider's, so a test
   // can still ask for a capability configuration through it.
   else passThrough.push(process.argv[i]);
@@ -88,6 +98,16 @@ process.stdin.on('data', (chunk) => {
 
     let isExec = false;
     try { isExec = JSON.parse(line)?.type === 'exec'; } catch { /* forward it anyway */ }
+
+    // Answered here rather than forwarded: the command never reaches the real
+    // provider, which is what "never started" means.
+    if (isExec && errorFrame?.test(line)) {
+      const id = JSON.parse(line).id;
+      process.stdout.write(JSON.stringify({
+        type: 'error', id, code: 'ENOENT', message: 'spawn env ENOENT',
+      }) + '\n');
+      continue;
+    }
 
     // The budget dies BEFORE forwarding, so it is deterministic: the exec that
     // exhausts it never runs, and nothing races the wrapper's exit.

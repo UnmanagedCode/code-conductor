@@ -518,6 +518,96 @@ describe('a system that dies mid-operation', () => {
     assert.deepEqual(r.commits, []);
   });
 
+  // ── The OTHER trigger of the refuse-on-unknown guards ────────────────
+  //
+  // Each guard has two triggers: a transport death, and `git status` RUNNING on
+  // a live system and exiting non-zero. Only the second actually exercises the
+  // guard — under the first, `runGit` throws upstream and the operation refuses
+  // whether the guard is there or not, so a test driving only that passes
+  // either way and proves nothing about the guard. These drive the second.
+
+  // PINS: removeWorktree's own unknown-throw. Deleting is what makes this the
+  // costly one — `git worktree remove --force` on a tree whose dirtiness was
+  // never measured destroys uncommitted work.
+  test('removeWorktree refuses a status that RAN and failed on a live system', async () => {
+    await withFailingStatus(wt.worktreePath, async () => {
+      await assert.rejects(
+        () => removeWorktree('app', wt.worktreeName),
+        (e) => e.statusCode === 409 && /could not check/i.test(e.message),
+      );
+    });
+    assert.equal(await exists(wt.worktreePath), true, 'the worktree survives');
+    assert.equal(await exists(worktreeStoreDir('app', wt.worktreeName)), true);
+  });
+
+  // PINS: the MCP precheck's own WORKTREE_DIRTY_UNKNOWN. A separate layer with
+  // its own copy of the predicate, so it needs its own trigger.
+  test('delete_worktree refuses a status that RAN and failed on a live system', async () => {
+    await withFailingStatus(wt.worktreePath, async () => {
+      const r = await callTool(baseUrl, 'delete_worktree', { project: 'app', worktree: wt.worktreeName });
+      const body = JSON.parse(r.text);
+      assert.equal(body.ok, false, r.text);
+      assert.equal(body.code, 'WORKTREE_DIRTY_UNKNOWN', r.text);
+    });
+    assert.equal(await exists(wt.worktreePath), true, 'the worktree survives');
+  });
+
+  // PINS: force is still the deliberate override of an unmeasurable tree, so
+  // the guard above cannot be satisfied by refusing unconditionally.
+  test('force still deletes when the status cannot be measured', async () => {
+    await withFailingStatus(wt.worktreePath, async () => {
+      await removeWorktree('app', wt.worktreeName, { force: true });
+    });
+    assert.equal(await exists(worktreeStoreDir('app', wt.worktreeName)), false);
+  });
+
+  // PINS: merge's PARENT_STATUS_UNKNOWN on its own trigger. `dirty.code === 0 &&`
+  // let a failed status skip the guard and merge into an unmeasured parent.
+  test('merge refuses a parent status that RAN and failed on a live system', async () => {
+    await withFailingStatus(tree, async () => {
+      const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+      assert.equal(r.ok, false, JSON.stringify(r));
+      assert.equal(r.code, 'PARENT_STATUS_UNKNOWN', JSON.stringify(r));
+    });
+  });
+
+  // ── #derive's COMMAND-level half ─────────────────────────────────────
+
+  // PINS: a derived op whose command never STARTED keeps FS classification —
+  // the counterpart of the poisoned-tail pair above. Unreachable with a real
+  // spawn (derived ops run `env` in `/`), so the far side is made to answer
+  // with the protocol `error` frame it would emit for an unstartable command.
+  // Without this, labelling every #derive failure ETRANSPORT goes unnoticed.
+  test('a derived op whose command never started is classified, not called transport', async () => {
+    const other = await seedRepo(path.join(remote.root, 'other'));
+    await goFlaky({ errorFrame: 'realpath' });
+    const r = await adoptProject('other', other, { system: remote.id });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'TARGET_NOT_FOUND', JSON.stringify(r));
+  });
+
+  // ── ProviderShell's start path ───────────────────────────────────────
+
+  // PINS: the shell's own transport/command split, on the one-shot fallback —
+  // the path a provider without `persistentShell` takes, which is reachable
+  // today. A cwd that vanished is ENOENT; a dead transport is ETRANSPORT even
+  // when its stderr says ENOENT.
+  test("the shell's start path splits transport from a real ENOENT", async () => {
+    await goFlaky({ flags: ['--no-persistent-shell'] });
+    const live = await systemById(remote.id, 'test');
+    const gone = live.shell({ cwd: path.join(remote.root, 'never-existed') });
+    await assert.rejects(() => gone.run('pwd'), (e) => e.code === 'ENOENT',
+      'a cwd that is really absent is a real FS answer');
+
+    await goFlaky({ budget: 0, dieStderr: POISON, flags: ['--no-persistent-shell'] });
+    const dead = await systemById(remote.id, 'test');
+    await assert.rejects(
+      () => dead.shell({ cwd: remote.root }).run('pwd'),
+      (e) => e.code === 'ETRANSPORT',
+      "a dead transport is not classified by the corpse's stderr",
+    );
+  });
+
   // ── Fix 10: registrations are store-derived and survive ───────────────
 
   // PINS: worktree REGISTRATIONS list without a System, which is the contract

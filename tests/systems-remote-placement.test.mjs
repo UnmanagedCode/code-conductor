@@ -135,6 +135,26 @@ describe('remote project placement', () => {
     assert.equal(rows[0].path, tree);
   });
 
+  // PINS the OTHER half of the dedup. There are two suppressions, one per local
+  // enumeration, and the in-root one above does not cover the `.external` one:
+  // a name with a remote record AND an adopted symlink is still ONE project,
+  // and the record wins, exactly as the resolver resolves it. Two rows would be
+  // two registrations sharing one store entry and one encoded session dir.
+  test('a name with a remote record and an .external symlink is listed once', async () => {
+    const tree = path.join(remote.root, 'app');
+    await createProject('app', { system: remote.id, systemPath: tree });
+    // An adopted-looking link of the same name, planted directly: adoptProject
+    // would refuse the name, which is the point — only a stale link gets here.
+    const localRepo = await seedRepo(path.join(remote.root, 'stale-local'));
+    await fs.mkdir(path.dirname(externalLinkPath('app')), { recursive: true });
+    await fs.symlink(localRepo, externalLinkPath('app'));
+
+    const rows = await listProjects();
+    assert.deepEqual(rows.map(r => r.name), ['app']);
+    assert.equal(rows[0].path, tree, 'the record wins over the symlink');
+    assert.equal(rows[0].external, false);
+  });
+
   // ── SITE 3: createProject ────────────────────────────────────────────
 
   // PINS: creating on a system does the mkdir, `git init` and the seed files ON
