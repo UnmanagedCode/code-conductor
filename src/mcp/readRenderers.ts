@@ -381,11 +381,17 @@ export function renderProjectStatus(status: unknown): string {
   if (s.isGitRepo === false) return block(...parts);
 
   const dirty = Array.isArray(s.dirty) ? s.dirty as unknown[] : [];
+  // An unanswered status prints as UNKNOWN rather than as an empty DIRTY
+  // heading, which reads as the positive claim that the tree is clean.
+  if (s.dirtyUnknown) {
+    parts.push('DIRTY (unknown — git status did not answer)');
+  } else {
   parts.push('');
   parts.push(s.dirtyTruncated
     ? `DIRTY (${dirty.length} of ${dash(s.dirtyTotal)} — truncated)`
     : heading('DIRTY', dirty.length));
   parts.push(indent(dirty.map(String), 2));
+  }
 
   if (typeof s.diffStat === 'string') {
     parts.push('');

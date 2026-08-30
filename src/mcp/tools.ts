@@ -725,7 +725,8 @@ export function buildTools(): Tool[] {
     {
       name: 'create_project',
       description:
-        'Create a new empty project under ~/project/<name>. Seeds CLAUDE.md with @CONVENTIONS.md and ' +
+        'Create a new empty project under ~/project/<name>, or at `systemPath` on a registered `system`. '
+        + 'Seeds CLAUDE.md with @CONVENTIONS.md and ' +
         'writes that CONVENTIONS.md, carrying the workspace-wide conventions. The new dir is initialized ' +
         'as a git repo with NO commit yet, so its HEAD is unborn: the first worker must be spawned '
         + 'WITHOUT a worktree (worktrees branch off HEAD) until something is committed. ' +
@@ -743,6 +744,8 @@ export function buildTools(): Tool[] {
             items: { type: 'string' },
             description: 'Slugs of project conventions to attach — call list_project_conventions to discover available slugs. Each appends its CLAUDE.md fragment (if any) and, when hasScaffold:true, contributes to the returned `scaffold` directive.',
           },
+          system: { type: 'string', description: 'Create the project on this registered system instead of under the projects root. Requires systemPath. No worker session can be spawned on a non-local system yet.' },
+          systemPath: { type: 'string', description: 'Absolute path on `system` to create the project at. Required with `system`, refused without it.' },
         },
         required: ['name'],
       },
@@ -762,13 +765,14 @@ export function buildTools(): Tool[] {
         "target's working tree as changes to commit. " +
         'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
         'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_NOT_A_REPO, ' +
-        'PROJECT_EXISTS — not errors. ' +
+        'SYSTEM_UNREACHABLE, PROJECT_EXISTS — not errors. ' +
         'Deleting an adopted project only unregisters it; the repo itself is never touched.',
       inputSchema: {
         type: 'object',
         properties: {
           name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name cc will know the repo by. Must match ^[a-zA-Z0-9._-]+$ and must not start with ".".' },
-          path: { type: 'string', description: 'Absolute path to the existing git repository root to adopt.' },
+          path: { type: 'string', description: 'Absolute path to the existing git repository root to adopt — on `system` when one is given, else on cc\'s own machine.' },
+          system: { type: 'string', description: 'Adopt a repo living on this registered system. The path is then validated there, and cc records the placement instead of a symlink.' },
         },
         required: ['name', 'path'],
       },
@@ -989,18 +993,21 @@ export function buildTools(): Tool[] {
         'processes belongs in a spawned worker instead. Run a bash command inside a project or ' +
         'worktree directory, using the exact same shell environment claude\'s own built-in Bash ' +
         'tool uses — the rg/find/grep shims and shell functions/aliases from the captured shell ' +
-        'snapshot (cached per claude version). Mirrors project/worktree for cwd scoping plus the ' +
+        'snapshot (cached per claude version); on a project whose `system` is not `local` that ' +
+        'snapshot does not apply and the command runs in a plain login shell there. ' +
+        'Mirrors project/worktree for cwd scoping plus the ' +
         'meaningful subset of the built-in Bash tool (command/description/timeout). Replaces ' +
         'grep/glob — use rg/grep/find through this tool for search. OUTPUT: a compact-JSON ' +
         'metadata block (content[0]) {project, worktree, cwd, exitCode, durationMs, truncated?, ' +
-        'timedOut?, error?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
+        'timedOut?, descendantsMaySurvive?, error?} PLUS a separate raw, un-escaped text block (content[1]) carrying the ' +
         'combined stdout+stderr output, in arrival order. A non-zero exitCode is a normal result, ' +
         'not a tool error. truncated:true means retained output was capped at the bash output cap (`BASH_OUTPUT_CAP`) — the command ' +
         'still ran to completion; assume later output beyond the cap was lost, not that the process ' +
         'was killed. timeout is milliseconds (default per the schema, clamped to the max enforced in `bashProject` — larger values are ' +
         'clamped); on timeout (the only hard kill) the whole process group is killed, exitCode is ' +
-        'null, and timedOut:true. stdin is not connected — an interactive command hangs until ' +
-        'timeout.',
+        'null, and timedOut:true — except that descendantsMaySurvive:true means only the direct ' +
+        'child could be signalled, so what it started may still be running. stdin is not connected ' +
+        '— an interactive command hangs until timeout.',
       inputSchema: {
         type: 'object',
         properties: {

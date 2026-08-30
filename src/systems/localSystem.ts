@@ -7,6 +7,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { runGroupedCommand } from '../groupedCommand.ts';
+import { requireAbsolute } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
 } from './system.ts';
@@ -58,15 +59,21 @@ export async function writeFileAtomic(filePath: string, data: string): Promise<v
 export class LocalSystem implements System {
   readonly id = LOCAL_SYSTEM_ID;
 
-  exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
+  // `async` on these three so a guard violation REJECTS rather than throwing
+  // synchronously: ProviderSystem's are async, and the two implementations of
+  // one primitive cannot differ on whether a caller's `.catch()` sees it.
+  async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
+    requireAbsolute('exec', 'cwd', opts.cwd);
     return runGroupedCommand(spec, opts);
   }
 
-  readFile(filePath: string): Promise<string> {
+  async readFile(filePath: string): Promise<string> {
+    requireAbsolute('readFile', 'path', filePath);
     return fs.readFile(filePath, 'utf8');
   }
 
   async readFileBytes(filePath: string, { length }: { length?: number } = {}): Promise<Buffer> {
+    requireAbsolute('readFileBytes', 'path', filePath);
     if (length === undefined) return fs.readFile(filePath);
     const fh = await fs.open(filePath, 'r');
     try {
@@ -79,6 +86,7 @@ export class LocalSystem implements System {
   }
 
   async writeFile(filePath: string, data: string, opts: WriteFileOptions = {}): Promise<void> {
+    requireAbsolute('writeFile', 'path', filePath);
     if (opts.atomic && opts.exclusive) {
       // Nothing needs both, and the combination has no single honest meaning:
       // an atomic write ends in a rename, which overwrites by definition.
@@ -93,6 +101,7 @@ export class LocalSystem implements System {
   }
 
   async stat(p: string): Promise<SystemStat | null> {
+    requireAbsolute('stat', 'path', p);
     let s: Awaited<ReturnType<typeof fs.stat>>;
     try { s = await fs.stat(p); }
     catch (e) {
@@ -104,27 +113,33 @@ export class LocalSystem implements System {
   }
 
   async readDir(p: string): Promise<SystemDirent[]> {
+    requireAbsolute('readDir', 'path', p);
     const entries = await fs.readdir(p, { withFileTypes: true });
     return entries.map(e => ({ name: e.name, kind: kindOf(e) }));
   }
 
-  realpath(p: string): Promise<string> {
+  async realpath(p: string): Promise<string> {
+    requireAbsolute('realpath', 'path', p);
     return fs.realpath(p);
   }
 
   async mkdir(p: string, { recursive = false }: { recursive?: boolean } = {}): Promise<void> {
+    requireAbsolute('mkdir', 'path', p);
     await fs.mkdir(p, { recursive });
   }
 
   async removeTree(p: string): Promise<void> {
+    requireAbsolute('removeTree', 'path', p);
     await fs.rm(p, { recursive: true, force: true });
   }
 
   async unlink(p: string): Promise<void> {
+    requireAbsolute('unlink', 'path', p);
     await fs.unlink(p);
   }
 
   async chmod(p: string, mode: number): Promise<void> {
+    requireAbsolute('chmod', 'path', p);
     await fs.chmod(p, mode);
   }
 }

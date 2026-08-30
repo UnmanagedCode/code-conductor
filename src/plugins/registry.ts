@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
+  tryResolveProject,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.ts';
 import {
@@ -17,6 +18,8 @@ import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
+import { LOCAL_SYSTEM_ID, resolveSystem } from '../systems/registry.ts';
+import type { System } from '../systems/system.ts';
 
 // Plugin registry — the single service layer behind the REST api
 // (src/plugins/api.ts), the reverse proxy (src/plugins/proxy.ts) and MCP
@@ -72,6 +75,11 @@ interface PluginEntry {
   id: string | null;
   project: string;
   dir: string;
+  // The System the plugin's project lives on. A plugin is discovered wherever
+  // its project is, but two of its capabilities are LOCAL-ONLY (a backend is a
+  // process cc talks to on a local port; a `--plugin-dir` root must be an
+  // absolute local directory), so every consumer needs to know.
+  system: string;
   manifest: PluginManifest | null;
   manifestSource?: ManifestSource;
   discoveryState: 'ok' | 'invalid' | 'incompatible' | 'conflict';
@@ -81,7 +89,7 @@ interface PluginEntry {
 // The slice of a PluginEntry that active-version resolution reads. Named
 // separately so the accessors injected into collaborators (which declare their
 // own narrow entry shapes) stay assignable without importing PluginEntry.
-type VersionedEntry = { id: string | null; project: string; dir: string };
+type VersionedEntry = { id: string | null; project: string; dir: string; system: string };
 
 type PluginRuntimeStatus = 'stopped' | 'starting' | 'ready' | 'crashed' | 'failed';
 
@@ -161,20 +169,29 @@ export function createPluginHost(opts: {
   async function rescanInternal(): Promise<void> {
     contributions.invalidate();
     const projects = await listProjects();
-    const found: Array<{ project: string; dir: string; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
+    const found: Array<{ project: string; dir: string; system: string; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
     for (const p of projects) {
-      let result = await readManifest(p.path);
+      // Through the project's System. A project whose system cannot be reached
+      // contributes no plugin — and, critically, does NOT fall back to reading
+      // cc's own disk at the same path, which would register whatever happens
+      // to sit there as this project's plugin.
+      const { system, unreachable } = await tryResolveProject(p.name);
+      if (!system) {
+        console.warn(`plugins: skipped '${p.name}' — ${unreachable}`);
+        continue;
+      }
+      let result = await readManifest(system, p.path);
       let manifestSource: ManifestSource = { type: 'main' };
       // Bootstrap fallback: a project whose main checkout has NO manifest
       // file at all may still be a plugin-in-progress living in an unmerged
       // worktree (first-time plugin-ification). A present-but-invalid main
       // manifest keeps its `invalid` state — never masked by a worktree.
       if (result === null) {
-        const fallback = await worktreeManifestFallback(p.name);
+        const fallback = await worktreeManifestFallback(system, p.name);
         if (fallback) ({ result, manifestSource } = fallback);
       }
       if (result === null) continue;
-      found.push({ project: p.name, dir: p.path, result, manifestSource });
+      found.push({ project: p.name, dir: p.path, system: system.id, result, manifestSource });
     }
     // Every discovered plugin project (valid, invalid, or conflicting
     // manifest — being discovered at all is what matters here) joins
@@ -191,7 +208,8 @@ export function createPluginHost(opts: {
       const { result, manifestSource } = f;
       if ('errors' in result) {
         next.push({
-          id: result.id ?? null, project: f.project, dir: f.dir, manifest: null, manifestSource,
+          id: result.id ?? null, project: f.project, dir: f.dir, system: f.system,
+          manifest: null, manifestSource,
           discoveryState: result.incompatible ? 'incompatible' : 'invalid',
           errors: result.errors,
         });
@@ -200,10 +218,10 @@ export function createPluginHost(opts: {
       const m = result.manifest;
       const existing = nextById.get(m.id);
       if (existing) {
-        next.push({ id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${existing.project}'`] });
+        next.push({ id: m.id, project: f.project, dir: f.dir, system: f.system, manifest: m, manifestSource, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${existing.project}'`] });
         continue;
       }
-      const entry: PluginEntry = { id: m.id, project: f.project, dir: f.dir, manifest: m, manifestSource, discoveryState: 'ok', errors: [] };
+      const entry: PluginEntry = { id: m.id, project: f.project, dir: f.dir, system: f.system, manifest: m, manifestSource, discoveryState: 'ok', errors: [] };
       next.push(entry);
       nextById.set(m.id, entry);
     }
@@ -215,7 +233,7 @@ export function createPluginHost(opts: {
   // Reads the worktree store metadata directly (no git spawns — this runs
   // for every manifest-less project on every rescan); a stale entry's
   // worktreePath has no manifest and is skipped.
-  async function worktreeManifestFallback(projectName: string): Promise<{ result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource } | null> {
+  async function worktreeManifestFallback(system: System, projectName: string): Promise<{ result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource } | null> {
     const wtDir = path.join(projectStoreDir(projectName), 'worktrees');
     let names: string[];
     try { names = (await fs.readdir(wtDir)).sort((a, b) => a.localeCompare(b)); }
@@ -225,7 +243,7 @@ export function createPluginHost(opts: {
     for (const name of names) {
       const meta = await readWorktreeMeta(projectName, name).catch(() => null);
       if (!meta?.worktreePath) continue;
-      const result = await readManifest(meta.worktreePath);
+      const result = await readManifest(system, meta.worktreePath);
       if (result && !('errors' in result)) {
         return { result, manifestSource: { type: 'worktree', name } };
       }
@@ -377,11 +395,25 @@ export function createPluginHost(opts: {
     s.startPromise = (async () => {
       contributions.invalidate();
       const entry = requireEnabled(id);
+      // BUCKET 3. A plugin backend is a long-lived process started in the
+      // project dir, talking to cc on a LOCAL port. Crossing to a system needs
+      // remote process lifecycle plus a port forwarded back here, neither of
+      // which exists — so this is refused with its own code rather than started
+      // in a directory that belongs to another machine. The row carries the same
+      // code, so the UI hides the control instead of offering a button that
+      // always fails.
+      if (entry.system !== LOCAL_SYSTEM_ID) {
+        throw httpError(
+          501,
+          `PLUGIN_BACKEND_LOCAL_ONLY: plugin '${id}' lives in project '${entry.project}' on system `
+          + `'${entry.system}', and a plugin backend runs only on the machine cc runs on`,
+        );
+      }
       const cwd = await resolveCwd(entry);
       // Re-read the manifest from the active checkout — contributions follow
       // the running version, and a checkout that stopped being this plugin
       // must not start under its id.
-      const result = await readManifest(cwd);
+      const result = await readManifest(await resolveSystem(entry.project), cwd);
       if (!result) throw httpError(400, `no ${path.basename(cwd)}/conductor.plugin.json in the active checkout`);
       if ('errors' in result) throw httpError(400, `manifest in active checkout is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in active checkout does not match plugin '${id}'`);
@@ -488,7 +520,7 @@ export function createPluginHost(opts: {
     if (entry) return describeRow(entry);
     const reg = store.get(id);
     if (!reg) return null;
-    return describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
+    return describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
   }
 
   // Gathers the five owners the projection reads (discovery entry, persisted
@@ -519,7 +551,7 @@ export function createPluginHost(opts: {
     // (they hold state the user may want to disable).
     for (const [id, reg] of store.entries()) {
       if (!entries.some(e => e.id === id)) {
-        rowPromises.push(describeRow({ id, project: reg.project, dir: '', manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
+        rowPromises.push(describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
       }
     }
     return Promise.all(rowPromises);
@@ -570,7 +602,7 @@ export function createPluginHost(opts: {
       // Same pre-validation as the worktree target: the main checkout must
       // actually BE this plugin (a worktree-sourced plugin's main checkout
       // has no manifest until the worktree lands).
-      const result = await readManifest(entry.dir);
+      const result = await readManifest(await resolveSystem(entry.project), entry.dir);
       if (!result) throw httpError(400, `the main checkout of '${entry.project}' has no conductor.plugin.json`);
       if ('errors' in result) throw httpError(400, `manifest in the main checkout is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in the main checkout does not match plugin '${id}'`);
@@ -580,7 +612,7 @@ export function createPluginHost(opts: {
       const { getWorktree } = await import('../worktrees.ts');
       const meta = await getWorktree(entry.project, ver.name);
       if (!meta?.worktreePath) throw httpError(404, `worktree '${ver.name}' of project '${entry.project}' not found`);
-      const result = await readManifest(meta.worktreePath);
+      const result = await readManifest(await resolveSystem(entry.project), meta.worktreePath);
       if (!result) throw httpError(400, `no conductor.plugin.json in worktree '${ver.name}'`);
       if ('errors' in result) throw httpError(400, `manifest in worktree '${ver.name}' is invalid: ${result.errors.join('; ')}`);
       if (result.manifest.id !== id) throw httpError(400, `manifest id '${result.manifest.id}' in worktree '${ver.name}' does not match plugin '${id}'`);

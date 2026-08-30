@@ -16,6 +16,7 @@
 // REPLACES the environment, exactly as node's spawn does, because the local and
 // wire implementations of one primitive cannot differ on what an option means.
 
+import path from 'node:path';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor,
@@ -23,6 +24,7 @@ import {
 import { ExecOutputCollector } from './execCollector.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
 import { ProviderShell, type ShellHost, type ShellStream, type ShellStreamHandlers } from './providerShell.ts';
+import { requireAbsolute } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
 } from './system.ts';
@@ -90,6 +92,7 @@ export class ProviderSystem implements System, ShellHost {
   // the provider was launched with would silently answer from a snapshot taken
   // at boot.
   async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
+    requireAbsolute('exec', 'cwd', opts.cwd);
     return this.#exec(spec, opts, opts.env ?? process.env);
   }
 
@@ -99,8 +102,11 @@ export class ProviderSystem implements System, ShellHost {
     try { hs = await this.#conn.ensureUp(); }
     catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // TRANSPORT: cc never reached the far side. Flagged as such rather than
+      // left to be classified from `msg`, which embeds the provider's own
+      // dying stderr and may name any errno at all.
       return new ExecOutputCollector({}, () => {}).result(1, {
-        timedOut: false, spawnError: msg, durationMs: Date.now() - started,
+        timedOut: false, spawnError: msg, transportFailure: true, durationMs: Date.now() - started,
       });
     }
     const id = this.#conn.nextId('e');
@@ -114,7 +120,7 @@ export class ProviderSystem implements System, ShellHost {
         });
       });
       const finish = (code: number, extra: {
-        timedOut: boolean; spawnError?: string; descendantsMaySurvive?: boolean;
+        timedOut: boolean; spawnError?: string; transportFailure?: true; descendantsMaySurvive?: boolean;
       }): void => {
         if (settled) return;
         settled = true;
@@ -149,7 +155,10 @@ export class ProviderSystem implements System, ShellHost {
             finish(1, { timedOut: false, spawnError: frameMessage(f) });
           }
         },
-        down: (err) => finish(1, { timedOut: false, spawnError: err.message }),
+        // TRANSPORT: the connection went away mid-command — see the ensureUp
+        // path above. The `error` FRAME beside it is the other kind: the far
+        // side answering about the command, which keeps FS classification.
+        down: (err) => finish(1, { timedOut: false, spawnError: err.message, transportFailure: true }),
       });
       this.#conn.send(execFrame(id, spec, opts, env));
     });
@@ -158,16 +167,19 @@ export class ProviderSystem implements System, ShellHost {
   // ── readFile / writeFile: the other two primitives ─────────────────
 
   async readFile(filePath: string): Promise<string> {
+    requireAbsolute('readFile', 'path', filePath);
     const { data } = await this.#read(filePath, {});
     return data.toString('utf8');
   }
 
   async readFileBytes(filePath: string, { length }: { length?: number } = {}): Promise<Buffer> {
+    requireAbsolute('readFileBytes', 'path', filePath);
     const { data } = await this.#read(filePath, length === undefined ? {} : { length });
     return data;
   }
 
   async writeFile(filePath: string, data: string, opts: WriteFileOptions = {}): Promise<void> {
+    requireAbsolute('writeFile', 'path', filePath);
     if (opts.atomic && opts.exclusive) {
       // Same refusal as LocalSystem: an atomic write ends in a rename, which
       // overwrites by definition, so the combination has no honest meaning.
@@ -280,6 +292,18 @@ export class ProviderSystem implements System, ShellHost {
     if (r.spawnError) {
       // A derived command that never started names its errno in the spawn
       // message rather than in strerror() text.
+      // TRANSPORT FIRST, and never classified by text. `spawnError` carries the
+      // dying provider's stderr TAIL, so a provider that dies of — or merely
+      // logs — an errno would be read as the far side answering about the
+      // operation: `realpath` would raise ENOENT and adoptProject would assert
+      // TARGET_NOT_FOUND about a tree that was there all along, `mkdir` would
+      // raise EEXIST and createProject would report a path as taken on a system
+      // that is dead. The flag is set on this very result by the wire paths that
+      // know which of them produced the failure; only the id-addressed `error`
+      // frame — the far side genuinely answering — reaches the classifier.
+      if (r.transportFailure) {
+        throw new SystemError('ETRANSPORT', `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
+      }
       throw new SystemError(classifySpawnError(r.spawnError), `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
     }
     return r;
@@ -292,6 +316,7 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async stat(p: string): Promise<SystemStat | null> {
+    requireAbsolute('stat', 'path', p);
     // `-L` follows symlinks, matching fs.stat: a broken link is ENOENT on both.
     // `%f` is the RAW mode including the file-type bits, so `kind` is derived
     // from the same number fs.Stats.mode carries rather than from `%F`, whose
@@ -318,6 +343,7 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async readDir(p: string): Promise<SystemDirent[]> {
+    requireAbsolute('readDir', 'path', p);
     // The trailing `/.` is what makes a FILE report ENOTDIR rather than an
     // empty listing — `find <file> -mindepth 1` exits 0 with no output, which
     // would read as "an empty directory".
@@ -327,6 +353,7 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async realpath(p: string): Promise<string> {
+    requireAbsolute('realpath', 'path', p);
     // `-e` requires every component to exist, matching fs.realpath — the
     // default would happily canonicalise a path that is not there.
     const r = await this.#deriveOk(`realpath '${p}'`, ['realpath', '-e', '--', p]);
@@ -334,20 +361,24 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async mkdir(p: string, { recursive = false }: { recursive?: boolean } = {}): Promise<void> {
+    requireAbsolute('mkdir', 'path', p);
     await this.#deriveOk(`mkdir '${p}'`, recursive ? ['mkdir', '-p', '--', p] : ['mkdir', '--', p]);
   }
 
   async removeTree(p: string): Promise<void> {
+    requireAbsolute('removeTree', 'path', p);
     await this.#deriveOk(`removeTree '${p}'`, ['rm', '-rf', '--', p]);
   }
 
   async unlink(p: string): Promise<void> {
+    requireAbsolute('unlink', 'path', p);
     // ONE directory entry, never followed and never recursed — the shape the
     // `.external/<name>` record is deleted with.
     await this.#deriveOk(`unlink '${p}'`, ['unlink', '--', p]);
   }
 
   async chmod(p: string, mode: number): Promise<void> {
+    requireAbsolute('chmod', 'path', p);
     // Callers pass a mode read back from stat, which carries the file-type
     // bits; chmod(1) wants permission bits only.
     const octal = (mode & 0o7777).toString(8).padStart(4, '0');
@@ -365,6 +396,10 @@ export class ProviderSystem implements System, ShellHost {
   execOneShot(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> { return this.exec(spec, opts); }
 
   async openStream(spec: ExecSpec, opts: ExecOptions, handlers: ShellStreamHandlers): Promise<ShellStream> {
+    // The SECOND way a cwd reaches an `exec` frame. The one-shot fallback goes
+    // through `exec` and is guarded there; this is the persistent-shell path,
+    // and it is the one a redirected Bash session drives every command through.
+    requireAbsolute('openStream', 'cwd', opts.cwd);
     const hs = await this.#conn.ensureUp();
     if (!hs.capabilities.persistentShell) {
       throw new SystemError('EUNSUPPORTED', `system '${this.id}' does not support a persistent shell`);

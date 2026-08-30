@@ -296,6 +296,35 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .worktree-row button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
 .worktree-row button:hover { color: var(--text); }
 .worktree-row .wt-remove:hover { color: var(--red); }
+/* Names the system a project's tree lives on. Amber like its neighbours; RED
+   when cc could not reach that system, because the row's git facts are then
+   absent rather than measured and the pill is the only thing on the page that
+   says so. */
+/* Why a plugin row is missing a control: the local-only codes the server
+   returns for the capabilities that do not cross to another system. */
+.pl-local-only {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.system-pill {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 5px;
+  border: 1px solid var(--muted);
+  border-radius: 8px;
+  flex: 0 0 auto;
+  line-height: 1.4;
+}
+
+.system-pill-unreachable {
+  color: var(--red);
+  border-color: var(--red);
+}
+
 .wt-unmerged, .no-commits-pill {
   font-family: ui-monospace, monospace;
   font-size: 10px;

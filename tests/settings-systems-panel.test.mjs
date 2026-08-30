@@ -7,7 +7,11 @@
 //   - the add/edit form round-trips id+label to the right method and URL;
 //   - a 409 on Remove surfaces the server's message VERBATIM (it names the
 //     projects still on the system) instead of failing silently, and the row
-//     survives.
+//     survives;
+//   - the PROVIDER COMMAND round-trips as argv, and its failure (the server
+//     refuses to save a system it could not reach) is shown on the form rather
+//     than swallowed — the whole point of validating at registration is that the
+//     user sees it while they are looking at the command they typed.
 //
 // Mirrors the harness in tests/settings-backends-panel.test.mjs (cache-busted
 // import so module-level state doesn't leak between tests).
@@ -22,7 +26,10 @@ import { Window } from 'happy-dom';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const LOCAL = { id: 'local', label: 'This machine', managed: true, projects: [] };
-const PROD = { id: 'prod-box', label: 'Prod box', managed: false, projects: ['shipping'] };
+const PROD = {
+  id: 'prod-box', label: 'Prod box', managed: false, projects: ['shipping'],
+  launch: ['ssh', 'prod', 'cc-provider'],
+};
 
 const payload = (systems = [LOCAL, PROD]) => ({ systems });
 
@@ -60,6 +67,7 @@ function buildDOM(document) {
       <legend id="sy-form-legend">Add a system</legend>
       <input id="sy-id" type="text" />
       <input id="sy-label" type="text" />
+      <input id="sy-launch" type="text" />
       <button type="button" id="sy-save">Add</button>
       <button type="button" id="sy-cancel" hidden>Cancel</button>
       <div id="sy-form-status"></div>
@@ -137,7 +145,7 @@ test('renders one card per row; the built-in row is read-only and non-removable'
   assert.match(window.document.getElementById('sy-status').textContent, /2 systems — 1 built in/);
 });
 
-test('the add form POSTs id + label, then resets to add mode', async () => {
+test('the add form POSTs id + label + provider command, then resets to add mode', async () => {
   const { impl, calls } = stubFetch(payload());
   const { window, mod } = await setup(impl);
   mod.installSettings({});
@@ -146,13 +154,16 @@ test('the add form POSTs id + label, then resets to add mode', async () => {
   const $ = (id) => window.document.getElementById(id);
   $('sy-id').value = ' staging-box ';
   $('sy-label').value = ' Staging ';
+  $('sy-launch').value = '';
   $('sy-save').click();
   await tick();
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, 'POST');
   assert.equal(calls[0].url, '/api/settings/systems');
-  assert.deepEqual(calls[0].body, { id: 'staging-box', label: 'Staging' });
+  // `launch: null` — not an omitted key and not `[]`: a row added with no
+  // provider command is registration-only, which is legal.
+  assert.deepEqual(calls[0].body, { id: 'staging-box', label: 'Staging', launch: null });
   assert.equal($('sy-id').value, '');
   assert.equal($('sy-label').value, '');
   assert.equal($('sy-save').textContent, 'Add');
@@ -171,7 +182,7 @@ test('the built-in row exposes no way to open the edit form', async () => {
   assert.equal(calls.length, 0, 'no PATCH was issued');
 });
 
-test('editing a user row PATCHes the label only; the id is fixed', async () => {
+test('editing a user row PATCHes label + provider command; the id is fixed', async () => {
   const { impl, calls } = stubFetch(payload());
   const { window, mod } = await setup(impl);
   mod.installSettings({});
@@ -195,7 +206,10 @@ test('editing a user row PATCHes the label only; the id is fixed', async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, 'PATCH');
   assert.equal(calls[0].url, '/api/settings/systems/prod-box');
-  assert.deepEqual(calls[0].body, { label: 'Production' });
+  // The provider command travels with the edit, unchanged: an omitted `launch`
+  // would be indistinguishable from clearing it, and a relabel must not silently
+  // strip the command that makes the system reachable.
+  assert.deepEqual(calls[0].body, { label: 'Production', launch: ['ssh', 'prod', 'cc-provider'] });
   assert.equal($('sy-save').textContent, 'Add', 'back to add mode after a successful save');
 });
 
@@ -252,4 +266,86 @@ test('a failed add reports in the form status and leaves the typed values alone'
   assert.match($('sy-form-status').textContent, /Save failed.*already exists/);
   assert.equal($('sy-id').value, 'prod-box', 'the form is not reset, so the typed id can be corrected');
   assert.equal($('sy-save').disabled, false, 'the button is re-enabled after the failure');
+});
+
+
+// PINS: the provider command is shown on the row, so a user can see which
+// systems can actually be reached and which are names only.
+test('a row shows its provider command; a row without one says it is a name only', async () => {
+  const NAMED_ONLY = { id: 'namedonly', label: 'Named only', managed: false, projects: [] };
+  const { impl } = stubFetch(payload([LOCAL, PROD, NAMED_ONLY]));
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+
+  assert.equal(rowFor(window, 'prod-box').querySelector('.sy-row-launch').textContent,
+    'ssh prod cc-provider');
+  assert.match(rowFor(window, 'namedonly').querySelector('.sy-row-launch').textContent,
+    /no provider command/i);
+  assertNull(rowFor(window, 'local').querySelector('.sy-row-launch'),
+    'the built-in system is in-process — it has no command to show');
+});
+
+// PINS: the form sends the command as ARGV, split on whitespace, because that is
+// what the server stores and what it spawns without a shell.
+test('the add form sends the provider command as argv', async () => {
+  const { impl, calls } = stubFetch(payload());
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+
+  const $ = (id) => window.document.getElementById(id);
+  $('sy-id').value = 'staging-box';
+  $('sy-label').value = 'Staging';
+  $('sy-launch').value = '  docker exec -i ctr cc-provider  ';
+  $('sy-save').click();
+  await tick();
+
+  assert.deepEqual(calls[0].body, {
+    id: 'staging-box', label: 'Staging',
+    launch: ['docker', 'exec', '-i', 'ctr', 'cc-provider'],
+  });
+});
+
+// PINS: an EMPTY command field is sent as null, not as an empty array — that is
+// how a row is cleared back to registration-only, and an empty array is a 400.
+test('an empty provider command clears it rather than sending an empty argv', async () => {
+  const { impl, calls } = stubFetch(payload());
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+
+  const $ = (id) => window.document.getElementById(id);
+  rowFor(window, 'prod-box').querySelector('.sy-row-actions button').click();
+  assert.equal($('sy-launch').value, 'ssh prod cc-provider', 'the edit form is prefilled');
+  $('sy-launch').value = '   ';
+  $('sy-save').click();
+  await tick();
+
+  assert.equal(calls[0].method, 'PATCH');
+  assert.deepEqual(calls[0].body, { label: 'Prod box', launch: null });
+});
+
+// PINS: the registration-time refusal reaches the user VERBATIM on the form.
+// Validating at save time is worth nothing if the reason is swallowed.
+test('a system that cannot be reached shows the provider\'s own error on the form', async () => {
+  const reason = "system 'staging-box' could not be reached with that command: "
+    + "provider 'docker' exited before the handshake; last stderr: no such container";
+  const { impl } = stubFetch(payload(), (call) =>
+    call.method === 'POST' ? { status: 502, error: reason } : null);
+  const { window, mod } = await setup(impl);
+  mod.installSettings({});
+  await openSettings(window);
+
+  const $ = (id) => window.document.getElementById(id);
+  $('sy-id').value = 'staging-box';
+  $('sy-label').value = 'Staging';
+  $('sy-launch').value = 'docker exec -i missing cc-provider';
+  $('sy-save').click();
+  await tick();
+
+  assert.match($('sy-form-status').textContent, /no such container/,
+    "the provider's own diagnosis is what tells the user what to fix");
+  assert.equal($('sy-id').value, 'staging-box', 'the form keeps what was typed, to be corrected');
+  assert.equal($('sy-launch').value, 'docker exec -i missing cc-provider');
 });

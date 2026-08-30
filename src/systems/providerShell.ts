@@ -260,6 +260,14 @@ export class ProviderShell {
       // is the reachable case. That is ENOENT, and saying so beats reporting it
       // as "the command ended the shell", which is not what happened.
       this.#resetReason = r.spawnError;
+      // Same rule as ProviderSystem's #derive and runGit: a transport failure is
+      // never classified by its text, because that text is the dying provider's
+      // own stderr tail. Dormant today — nothing drives the persistent shell yet
+      // — and fixed here so the phase that does drive it does not inherit a
+      // known instance of a defect it will not be looking for.
+      if (r.transportFailure) {
+        throw new SystemError('ETRANSPORT', `the shell could not start: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
+      }
       throw new SystemError(classifySpawnError(r.spawnError), `the shell could not start: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
     }
     const out = parseFramedStdout(r.stdout, nonce);

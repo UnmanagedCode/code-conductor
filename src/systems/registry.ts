@@ -1,15 +1,20 @@
 // System resolution: the one place a project name becomes a System handle, and
 // the one reader of the record field that names it.
 //
-// `local` is the only implementation there is. A user can REGISTER another
-// system (Settings -> Systems) and a project record can name it, but there is
-// no transport to reach one yet — so such a project is REFUSED here rather than
+// `local` is in-process; every other system is reached by launching the
+// provider command its registry row carries and speaking the wire protocol to
+// it (docs/systems-protocol.md). cc ships no TRANSPORT — the provider command
+// is the user's, and what it connects to is its own business.
+//
+// A row with no provider command is registration only: it names a system
+// nothing can reach, and a project on it is REFUSED here BY NAME rather than
 // quietly resolved local (see resolveSystem).
 
 import { readProjectMeta } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { LocalSystem, LOCAL_SYSTEM_ID } from './localSystem.ts';
 import { ProviderSystem } from './providerSystem.ts';
+import type { Handshake } from './providerConnection.ts';
 import type { System } from './system.ts';
 
 export { LOCAL_SYSTEM_ID };
@@ -30,6 +35,11 @@ export interface SystemRecord {
   id: string;
   label: string;
   managed: boolean;
+  // The provider command, as argv — argv[0] is the executable, and it is never
+  // run through a shell (quoting would become part of the contract). Absent on
+  // the managed `local` row, which is in-process, and on a user row that has
+  // not been given one: such a row is a name with nothing behind it.
+  launch?: string[];
 }
 
 // `local` is the machine cc runs on. It is managed for the same reason the
@@ -127,44 +137,111 @@ export async function projectPlacement(projectName: string): Promise<ProjectPlac
   return placementOf(projectName, await readProjectMeta(projectName));
 }
 
-// resolveSystem for the LISTINGS, where a refusal is a VALUE rather than a throw.
-//
-// listProjects already promises that one bad entry does not take the page down
-// — a broken `.external` link "is skipped, not fatal: the rest of the project
-// list must still render". Its ENRICHMENT layer has to keep the same promise,
-// and it did not: every listing fans its per-project work out through one
-// `Promise.all`, so a single project whose record names an unreachable system
-// rejected the whole batch and broke the list for every OTHER project too.
-//
-// So a listing resolves through here and degrades the one row it concerns; an
-// addressed-by-name caller keeps resolveSystem and its throw, because there the
-// refusal IS the answer. `unreachable` carries the refusal's own message, so the
-// row can say WHY rather than just showing absent facts.
-//
-// It catches everything, not just the refusal: a listing that must render the
-// rest of the list has the same duty for an unexpected fault as for an expected
-// one.
-export async function tryResolveSystem(
-  projectName: string,
-): Promise<{ system: System | null; unreachable: string | null }> {
-  try {
-    return { system: await resolveSystem(projectName), unreachable: null };
-  } catch (e) {
-    return { system: null, unreachable: e instanceof Error ? e.message : String(e) };
-  }
-}
-
 // The System a project's tree, git repo and shell commands live on.
 export async function resolveSystem(projectName: string): Promise<System> {
   const { system } = await projectPlacement(projectName);
   if (system === LOCAL_SYSTEM_ID) return LOCAL;
-  // SYSTEMS-P4 maps a registered id onto a live handle here. Until the wire
-  // protocol exists there is no handle to map it to, and REFUSING is the only
-  // honest answer: falling back to `local` would run every operation for this
-  // project against a path on the wrong machine — the silent no-op that reports
-  // success, which is the worst failure this design has.
-  throw httpError(
-    501,
-    `project '${projectName}' is registered on system '${system}', which cc cannot reach yet`,
-  );
+  return systemById(system, `project '${projectName}'`);
+}
+
+// One live handle per registered system, keyed by id. A System handle is a
+// CONNECTION, not a value — the same reason `local` is a module singleton — so
+// two handles for one id would be two provider processes claiming to be one
+// machine, each with its own shell and its own view of what is running.
+//
+// Keyed on the launch argv as well, so editing a row's provider command
+// replaces the handle instead of leaving the old process serving the new
+// configuration.
+const HANDLES = new Map<string, { key: string; sys: ProviderSystem }>();
+
+function handleFor(row: SystemRecord, argv: string[]): ProviderSystem {
+  const key = JSON.stringify(argv);
+  const cur = HANDLES.get(row.id);
+  if (cur && cur.key === key) return cur.sys;
+  cur?.sys.dispose();
+  const sys = new ProviderSystem({ id: row.id, launch: { argv } });
+  HANDLES.set(row.id, { key, sys });
+  return sys;
+}
+
+// Drop a system's live handle, shutting its provider process down. Called when
+// a row is removed or its provider command changes, and by tests between
+// fixtures.
+export function disposeSystemHandle(id: string): void {
+  const cur = HANDLES.get(id);
+  if (!cur) return;
+  cur.sys.dispose();
+  HANDLES.delete(id);
+}
+
+export function disposeSystemHandles(): void {
+  for (const id of [...HANDLES.keys()]) disposeSystemHandle(id);
+}
+
+// A registered id onto a live handle. `subject` names what is being resolved
+// ("project 'x'", "system 'y'") so the refusal reads as an answer about the
+// caller's question rather than about an id it never mentioned.
+//
+// EVERY REFUSAL HERE IS NAMED AND DISTINCT, because the three are three
+// different repairs: register the system, give it a provider command, or fix
+// the system that is down. Falling back to `local` for any of them would run
+// the caller's operation against a path on the wrong machine and report
+// success — the worst failure this design has.
+export async function systemById(id: string, subject: string): Promise<System> {
+  if (id === LOCAL_SYSTEM_ID) return LOCAL;
+  // Dynamic: src/appSettings.ts imports this module for MANAGED_SYSTEMS, and a
+  // static import back would close the cycle at module-evaluation time. Same
+  // device projects.ts uses for worktrees.ts.
+  const { getSystem } = await import('../appSettings.ts');
+  const row = getSystem(id);
+  if (!row) {
+    throw systemRefusal(501, 'SYSTEM_NOT_REGISTERED',
+      `${subject} is registered on system '${id}', which is not in the system registry`);
+  }
+  const argv = row.launch ?? [];
+  if (argv.length === 0) {
+    throw systemRefusal(501, 'SYSTEM_NO_PROVIDER',
+      `${subject} is registered on system '${id}', which has no provider command — `
+      + `give it one in Settings → Systems`);
+  }
+  const sys = handleFor(row, argv);
+  // Connecting HERE, not at first use, is what keeps the degraded listing
+  // honest: tryResolveProject (src/projects.ts) turns this refusal into the
+  // row's `systemUnreachable` reason, whereas a handle that connects lazily
+  // would hand the listing a System that fails every fact separately with
+  // nothing to say why.
+  try { await sys.connect(); }
+  catch (e) {
+    throw systemRefusal(502, 'SYSTEM_UNREACHABLE',
+      `${subject} is on system '${id}', which cannot be reached: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return sys;
+}
+
+// The three ways cc can fail to reach a system, each with its OWN code because
+// each is a different repair: register the system, give it a provider command,
+// or fix the system that is down.
+//
+// They are also MARKED as a family, because a caller with a structured refusal
+// vocabulary of its own — mergeWorktreeIntoParent — has to convert them into a
+// returned refusal rather than let them throw through a contract that promised
+// a value, and it must do that without matching on message text. Everything
+// else keeps the throw: there the refusal IS the answer.
+function systemRefusal(statusCode: number, code: string, message: string): Error {
+  return httpError(statusCode, message, { code, systemRefusal: true });
+}
+
+export function isSystemRefusal(e: unknown): e is Error & { code: string } {
+  return !!e && typeof e === 'object' && (e as { systemRefusal?: unknown }).systemRefusal === true;
+}
+
+// Can cc reach a system launched this way? Used by the registry BEFORE it
+// persists a row, so a system that does not answer is refused at the one moment
+// the user is looking at the command they typed. The probe owns its own
+// throwaway handle — a row that is not saved must leave no live connection
+// behind, and the id it would be saved under has no handle yet.
+export async function probeSystemLaunch(argv: string[]): Promise<Handshake> {
+  const probe = new ProviderSystem({ id: '(probe)', launch: { argv } });
+  try { return await probe.connect(); }
+  finally { probe.dispose(); }
 }

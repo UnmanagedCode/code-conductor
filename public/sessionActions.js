@@ -158,17 +158,33 @@ export function installSessionActions({
     }
   }
 
+  // Deleting a project means three different things, and the confirmation is
+  // the one moment the user can act on the difference:
+  //   in-root  — cc owns the directory and removes it;
+  //   adopted  — the `.external` symlink is unlinked, the user's repo untouched;
+  //   remote   — the record is cleared, the tree on the system untouched.
+  // The last two are UNREGISTER, and saying "rm -rf" for them would promise
+  // something about a checkout cc does not own.
   async function deleteProject(project) {
     const insts = getInstances().filter(i => i.project === project.name);
     const wts = project.worktrees ?? [];
+    const remoteSystem = project.system && project.system !== 'local' ? project.system : null;
+    const unregisterOnly = !!remoteSystem || !!project.external;
+    const where = remoteSystem
+      ? `${project.path} on system '${remoteSystem}'`
+      : project.path;
     const summary = [
-      `Delete project '${project.name}'?`,
-      `Path: ${project.path}`,
+      unregisterOnly ? `Unregister project '${project.name}'?` : `Delete project '${project.name}'?`,
+      `Path: ${where}`,
       ``,
       `This will:`,
       `  • kill ${insts.length} running instance${insts.length === 1 ? '' : 's'}`,
-      `  • remove ${wts.length} worktree${wts.length === 1 ? '' : 's'} (dir + branch)`,
-      `  • rm -rf the project directory itself`,
+      unregisterOnly
+        ? `  • unregister ${wts.length} worktree${wts.length === 1 ? '' : 's'} (their directories and branches are left in place)`
+        : `  • remove ${wts.length} worktree${wts.length === 1 ? '' : 's'} (dir + branch)`,
+      unregisterOnly
+        ? `  • forget the project — ${where} is NOT touched`
+        : `  • rm -rf the project directory itself`,
       ``,
       `(Your ~/.claude/projects/ session history is left in place.)`,
       `Type the project name to confirm:`,

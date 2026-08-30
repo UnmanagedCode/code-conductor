@@ -246,7 +246,13 @@ export function installPluginManager({ onCatalogChange } = {}) {
           // no Start/Stop/version, only Disable.
           const actionsRow = document.createElement('div');
           actionsRow.className = 'pl-actions-row';
-          if (row.hasBackend) {
+          // BUCKET 3: capabilities that only run on the machine cc runs on. The
+          // server returns these same codes; the control is hidden rather than
+          // offered, because a button whose only outcome is a refusal teaches
+          // nothing except that cc is broken.
+          const localOnly = Array.isArray(row.localOnly) ? row.localOnly : [];
+          const backendLocalOnly = localOnly.includes('PLUGIN_BACKEND_LOCAL_ONLY');
+          if (row.hasBackend && !backendLocalOnly) {
             if (row.state === 'ready' || row.state === 'starting') {
               actionsRow.appendChild(btn('Stop', () => act(`Stopping ${row.id}`, () => api('POST', `/api/plugins/${row.id}/stop`))));
               if (row.state === 'ready' && row.stale) {
@@ -258,6 +264,13 @@ export function installPluginManager({ onCatalogChange } = {}) {
             actionsRow.appendChild(versionSelect(row, worktrees[row.project] || []));
           }
           if (actionsRow.childElementCount > 0) actions.appendChild(actionsRow);
+          if (localOnly.length > 0) {
+            const note = document.createElement('div');
+            note.className = 'pl-local-only';
+            note.textContent = `on system '${row.system}': ${localOnly.join(', ')}`;
+            note.title = 'these plugin capabilities run only on the machine code-conductor runs on';
+            actions.appendChild(note);
+          }
           const disableBtn = btn('Disable', () => act(`Disabling ${row.id}`, () => api('POST', `/api/plugins/${row.id}/disable`)));
           disableBtn.className = 'pl-toggle-disable';
           actions.appendChild(disableBtn);

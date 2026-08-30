@@ -18,8 +18,11 @@
 // from the sidebar is indistinguishable from a deleted one — with its git facts
 // ABSENT rather than measured, plus `systemUnreachable` naming the reason.
 //
-// The record that triggers this is the shape this phase documents and ships,
-// and SYSTEMS-P4 makes it ordinary rather than hand-written.
+// The project that triggers this is an ordinary remote project: a record
+// placing it on a system, which is the only registration a remote project has.
+// What makes the system unreachable here is that no registry row exists for it
+// at all — the cheapest of the several ways cc can fail to reach one, and the
+// one whose refusal every listing has to survive.
 
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,16 +45,20 @@ async function writeRecord(name, record) {
 // `withSessions` seeds one transcript per project: list_sessions drops an EMPTY
 // group from an unfiltered listing before it ever computes a branch, so its
 // resolveSystem call — site 3 — is only reachable for a project that has one.
+// The transcript is keyed off the project's own tree path, which for `beta` is
+// the path on its system: the CLI encodes its session directory from the cwd it
+// ran in, and cc has only one such path per project.
 async function seedThree({ withSessions = false } = {}) {
-  for (const name of ['alpha', 'beta', 'gamma']) {
-    await createProject(name);
-    if (withSessions) {
-      await seedSessionJsonl(
-        process.env.CLAUDE_PROJECTS_ROOT, path.join(projectsRoot(), name), `sid-${name}`,
-      );
+  const treeOf = (name) => (name === 'beta' ? REMOTE.systemPath : path.join(projectsRoot(), name));
+  for (const name of ['alpha', 'gamma']) await createProject(name);
+  // `beta` is registered by its record alone — a remote project has no
+  // directory under the projects root and no `.external` link.
+  await writeRecord('beta', REMOTE);
+  if (withSessions) {
+    for (const name of ['alpha', 'beta', 'gamma']) {
+      await seedSessionJsonl(process.env.CLAUDE_PROJECTS_ROOT, treeOf(name), `sid-${name}`);
     }
   }
-  await writeRecord('beta', REMOTE);
 }
 
 let nextRpcId = 1;

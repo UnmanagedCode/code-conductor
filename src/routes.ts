@@ -7,7 +7,7 @@ import type { WebSocketServer } from 'ws';
 import {
   listProjects, createProject, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
-  listArchivedGroupedByProject, getProject,
+  listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
   findSessionLocation, writeProjectMeta, projectsBySystem,
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName,
@@ -18,7 +18,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
-import { resolveSystem, tryResolveSystem } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from './systems/registry.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
   getCommitDiff, getCommitFileDiff,
@@ -30,7 +30,7 @@ import { scheduleRestart } from './restart.ts';
 import { drainAndScheduleRestart } from './resumeRestart.ts';
 import { getSelfUpdateStatus, applySelfUpdate } from './selfUpdate.ts';
 import { BOOT_ID } from './bootId.ts';
-import { getOrCompute, invalidate, invalidateAll } from './projectsCache.ts';
+import { getOrCompute, invalidate, invalidateAll, projectCacheKey } from './projectsCache.ts';
 import { pageInstanceEvents } from './eventArchive.ts';
 import { ensureConductProject, CONDUCT_PROJECT_NAME } from './conduct.ts';
 import { PLAYBOOK_ENFORCEMENT_MODES, isPlaybookEnforcement, DEFAULT_PLAYBOOK_ID } from './playbooks.ts';
@@ -383,11 +383,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
   async function computeGitFacts(p: { name: string; path: string }) {
-    // tryResolveSystem, not resolveSystem: this runs once per project inside the
-    // listing's Promise.all, so a throw here would break the WHOLE list for one
-    // project whose record names an unreachable system. An unresolved system
-    // degrades THIS project's git facts to unknown and says why.
-    const { system, unreachable } = await tryResolveSystem(p.name);
+    // tryResolveProject, not resolveProjectDir: this runs once per project inside
+    // the listing's Promise.all, so a throw here would break the WHOLE list for
+    // one project cc cannot resolve. An unresolved project degrades ITS OWN git
+    // facts to unknown and says why. The whole PROJECT, not just its system: a
+    // record naming a reachable system but carrying no path resolves its system
+    // fine and still has no tree to measure.
+    const { system, unreachable } = await tryResolveProject(p.name);
     // Worktree REGISTRATIONS are store-derived and need no System, so they are
     // still listed for an unreachable project — only their divergence, which is
     // measured with git on the tree, goes unknown.
@@ -402,13 +404,33 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     // claim "not a git repo". The key is simply absent from the response, which
     // every client already reads as falsy, and `systemUnreachable` carries the
     // reason so absence is never ambiguous.
-    const projIsGitRepo = system ? await isGitRepo(system, p.path) : undefined;
+    //
+    // The try covers a system that dies DURING the listing rather than at
+    // resolution: `runGit` throws a system refusal now, and one project's
+    // mid-listing death must degrade its own row rather than reject the
+    // Promise.all and take the whole page down with it.
+    let projIsGitRepo: boolean | undefined;
+    let unborn = false;
+    let deadMidListing: string | null = null;
+    if (system) {
+      // BOTH probes inside one try. A death in the window between them used to
+      // invent `unbornHead: false` — a measured-looking fact — on a row that
+      // then carried no reason for its other facts being absent.
+      try {
+        projIsGitRepo = await isGitRepo(system, p.path);
+        if (projIsGitRepo) unborn = await hasUnbornHead(system, p.path);
+      } catch (e) {
+        if (!isSystemRefusal(e)) throw e;
+        deadMidListing = (e as Error).message;
+        projIsGitRepo = undefined;
+      }
+    }
     return {
-      systemUnreachable: unreachable,
+      systemUnreachable: unreachable ?? deadMidListing,
       isGitRepo: projIsGitRepo,
       // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
       // "no commits", so a non-repo reports false and isGitRepo carries it.
-      unbornHead: system && projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
+      unbornHead: unborn,
       worktrees: worktreesWithMerge,
       mergeStatus: system && projIsGitRepo
         ? await getProjectUpstreamStatus(system, p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
@@ -421,7 +443,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const projects = await listProjects();
       const enriched = await Promise.all(projects.map(async (p) => {
         // Git facts are cached for TTL_MS; concurrent requests coalesce.
-        const gitFacts = await getOrCompute(p.name, () => computeGitFacts(p));
+        // Keyed on the PLACEMENT, not the name: git facts are measured on the
+        // project's system, so an entry cached before a project moved between
+        // systems would be served as facts about the wrong machine.
+        const gitFacts = await getOrCompute(projectCacheKey(p.system, p.name), () => computeGitFacts(p));
         // Attach a lightweight session count + last-active timestamp to
         // each worktree too, so the sidebar can decide whether to show
         // its "Sessions (N)" subnode without an extra fetch.
@@ -454,7 +479,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.post('/projects', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { name, conventions } = body;
+      const { name, conventions, system, systemPath } = body;
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
@@ -474,7 +499,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const slugs = (conventions ?? []) as string[];
       const conventionsDoc = await composeProjectConventionsDoc(slugs);
       const scaffold = await composeProjectScaffold(validName, slugs);
-      const created = await createProject(validName, { conventionsDoc });
+      const created = await createProject(validName, { conventionsDoc, system, systemPath });
       // Scaffold directive is returned (not persisted) — the caller folds it
       // into the first worker brief. See conventions/conductor/core.md.
       res.status(201).json({ ...created, ...(scaffold ? { scaffold } : {}) });
@@ -489,8 +514,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // broadcastProjects(), matching POST /projects.
   r.post('/projects/external', async (req, res, next) => {
     try {
-      const { name, path: targetPath } = jsonBody(req);
-      const result = await adoptProject(name, targetPath);
+      const { name, path: targetPath, system } = jsonBody(req);
+      const result = await adoptProject(name, targetPath, { system });
       res.status(result.ok ? 201 : 200).json(result);
     } catch (e) { next(e); }
   });
@@ -529,13 +554,27 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           { statusCode: 400 },
         );
       }
-      const proj = await getProject(req.params.name);
+      // getProjectForDelete, NOT getProject: unregistering must never depend on
+      // reaching the system. getProject resolves it, which made deleteProject's
+      // remote branch — written so a project on a down system is never stranded
+      // — unreachable from this route, and deadlocked the pair (the project
+      // could not be deleted, and removeSystem then refused 409 because that
+      // project still named the system).
+      const proj = await getProjectForDelete(req.params.name);
       let killed = 0;
       if (instances) killed = await instances.removeAllForProject(proj.name);
       await removeAllWorktreesForProject(proj.name);
-      await deleteProject(proj.name);
+      const deleted = await deleteProject(proj.name);
       invalidate(proj.name);
-      res.json({ ok: true, project: proj.name, killedInstances: killed });
+      // `unregisteredOnly` is the asymmetry the confirm dialog has to state
+      // BEFORE the click, and the response repeats it after: an adopted or
+      // remote project's tree is the user's own and is never removed. `system`
+      // and `path` name what was left behind and where.
+      res.json({
+        ok: true, project: proj.name, killedInstances: killed,
+        system: deleted.system, path: deleted.path,
+        unregisteredOnly: proj.external || deleted.system !== LOCAL_SYSTEM_ID,
+      });
     } catch (e) { next(e); }
   });
 
@@ -1626,8 +1665,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   });
 
   // ── The system registry (Settings → Systems) ───────────────────────────
-  // Registration only: a row declares that an execution environment exists and
-  // what to call it. Nothing on this surface connects to one.
+  // A row declares that an execution environment exists, what to call it, and
+  // — when it carries a `launch` — the provider command cc runs to reach it.
+  // Saving one with a command CONNECTS to it first: an unreachable system is
+  // refused here (502, quoting the provider) rather than saved and discovered
+  // broken by the first project put on it.
   //
   // Each row carries the projects whose record NAMES it, so the still-referenced
   // refusal below is visible before it is hit. `local` always carries none: a
@@ -1644,16 +1686,16 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
   r.post('/settings/systems', async (req, res, next) => {
     try {
-      const { id, label } = jsonBody(req);
-      const rec = await addSystem({ id, label });
+      const { id, label, launch } = jsonBody(req);
+      const rec = await addSystem({ id, label, launch });
       res.status(201).json({ ...(await systemsState()), added: rec });
     } catch (e) { next(e); }
   });
 
   r.patch('/settings/systems/:id', async (req, res, next) => {
     try {
-      const { label } = jsonBody(req);
-      const rec = await updateSystem(req.params.id, { label });
+      const { label, launch } = jsonBody(req);
+      const rec = await updateSystem(req.params.id, { label, launch });
       if (!rec) return res.status(404).json({ error: 'system not found' });
       res.json({ ...(await systemsState()), updated: rec });
     } catch (e) { next(e); }
