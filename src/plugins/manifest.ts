@@ -1,11 +1,11 @@
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { isKnownTier, isKnownClaudeModel, CLAUDE_BACKEND_ID, type BackendBinding, type TierBinding } from '../modelVersions.ts';
 import { isSlug, SLUG_RE, SLUG_MAX } from '../identifiers.ts';
 import { ALLOWED_PROP_KEYS } from '../mcp/argValidation.ts';
+import type { System } from '../systems/system.ts';
 
 // Plugin manifest: `conductor.plugin.json` at the plugin project root.
-// readManifest(dir) reads + validates; validateManifest(json) normalizes a
+// readManifest(system, dir) reads + validates; validateManifest(json) normalizes a
 // parsed object into the canonical shape or returns a structured error list.
 // Validation is deliberately strict at load time: anything the MCP layer's
 // shallow validateArgs (src/mcp/server.ts) can't validate is rejected HERE,
@@ -97,10 +97,15 @@ export type ReadManifestResult =
   | { errors: string[]; incompatible?: boolean; id?: string };
 
 // Result: null (no manifest file) | { manifest } | { errors, incompatible? }
-export async function readManifest(dir: string): Promise<ReadManifestResult> {
+// `system` is the System the checkout lives on. A plugin lives in a PROJECT, so
+// its manifest and its fragment files are project-scoped I/O and must be read
+// through the project's System: a bare local read against a remote project's
+// path does not fail — it reads THIS machine's file at that path and succeeds,
+// registering a plugin that is not there.
+export async function readManifest(system: System, dir: string): Promise<ReadManifestResult> {
   const file = path.join(dir, MANIFEST_FILENAME);
   let raw: string;
-  try { raw = await fs.readFile(file, 'utf8'); }
+  try { raw = await system.readFile(file); }
   catch (e) {
     if ((e as { code?: unknown }).code === 'ENOENT') return null;
     return { errors: [`manifest unreadable: ${(e as Error).message}`] };
@@ -113,7 +118,7 @@ export async function readManifest(dir: string): Promise<ReadManifestResult> {
     // Fragment file refs are validated for shape in validateManifest; existence
     // is checked here (we have the checkout dir) — a stale path is a load-time
     // error, consistent with the module's strict-at-load stance.
-    const fileErrors = await checkFragmentFiles(dir, result.manifest);
+    const fileErrors = await checkFragmentFiles(system, dir, result.manifest);
     if (fileErrors.length > 0) return { errors: fileErrors, id: result.manifest.id };
   }
   return result;
@@ -121,7 +126,7 @@ export async function readManifest(dir: string): Promise<ReadManifestResult> {
 
 // Verify every convention fragment / scaffold-facet `file` ref resolves to a
 // readable file under `dir`. Returns a (possibly empty) list of errors.
-async function checkFragmentFiles(dir: string, manifest: PluginManifest): Promise<string[]> {
+async function checkFragmentFiles(system: System, dir: string, manifest: PluginManifest): Promise<string[]> {
   const refs: Array<[string, string]> = [];
   for (const g of manifest.conventions ?? []) {
     if (g.file) refs.push([`conventions '${g.slug}' file`, g.file]);
@@ -129,8 +134,7 @@ async function checkFragmentFiles(dir: string, manifest: PluginManifest): Promis
   }
   const errors: string[] = [];
   for (const [label, rel] of refs) {
-    try { await fs.access(path.join(dir, rel)); }
-    catch { errors.push(`${label} '${rel}' not found`); }
+    if (!(await system.stat(path.join(dir, rel)))) errors.push(`${label} '${rel}' not found`);
   }
   return errors;
 }

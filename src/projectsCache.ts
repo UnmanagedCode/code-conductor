@@ -79,13 +79,34 @@ export async function getOrCompute<T>(key: string, computeFn: () => Promise<T>):
 }
 
 /**
- * Invalidate the cached entry for a single project. Any in-flight computation
+ * The cache key for one project's git facts: `<systemId>:<name>`.
+ *
+ * Names are globally unique, so the system is not there to disambiguate — it is
+ * there because the FACTS are measured on that system. A project that moves
+ * between systems keeps its name, and an entry keyed on the name alone would
+ * still be served afterwards, as facts about the machine it left.
+ */
+export function projectCacheKey(systemId: string, projectName: string): string {
+  return `${systemId}:${projectName}`;
+}
+
+/**
+ * Invalidate every cached entry for one project. Any in-flight computation
  * for this key will complete but its result will not be stored. The next call
  * to getOrCompute() starts a fresh computation.
+ *
+ * Takes the PROJECT NAME, not a key: the callers are mutations (a merge, a
+ * worktree delete, an instance exit) that know which project changed and not
+ * which system it is on — and a placement change is itself a reason to
+ * invalidate, so a caller that had to name the system would name the wrong one
+ * exactly when it mattered most. Every key for the name goes.
  */
-export function invalidate(key: string): void {
-  const entry = _entries.get(key);
-  _entries.set(key, { data: null, ts: 0, inflight: null, gen: (entry?.gen ?? 0) + 1 });
+export function invalidate(projectName: string): void {
+  const suffix = `:${projectName}`;
+  for (const [key, entry] of _entries) {
+    if (key !== projectName && !key.endsWith(suffix)) continue;
+    _entries.set(key, { data: null, ts: 0, inflight: null, gen: (entry.gen ?? 0) + 1 });
+  }
 }
 
 /**

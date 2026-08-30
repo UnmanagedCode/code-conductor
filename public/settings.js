@@ -66,6 +66,7 @@ export function installSettings({
   const syListEl = document.getElementById('sy-list');
   const syIdEl = document.getElementById('sy-id');
   const syLabelEl = document.getElementById('sy-label');
+  const syLaunchEl = document.getElementById('sy-launch');
   const sySaveEl = document.getElementById('sy-save');
   const syCancelEl = document.getElementById('sy-cancel');
   const syFormLegendEl = document.getElementById('sy-form-legend');
@@ -617,6 +618,20 @@ export function installSettings({
       head.appendChild(actions);
       li.appendChild(head);
 
+      // What cc runs to reach this system. Shown because it is the difference
+      // between a row a project can live on and a row that is only a name: a
+      // system with no command refuses at resolution, and this is where that is
+      // visible before a project is put on it. `local` is in-process and has
+      // nothing to show.
+      if (!sys.managed) {
+        const launch = document.createElement('div');
+        launch.className = 'sy-row-launch';
+        launch.textContent = Array.isArray(sys.launch) && sys.launch.length
+          ? sys.launch.join(' ')
+          : 'no provider command — projects on this system cannot be reached';
+        li.appendChild(launch);
+      }
+
       // What still holds the row. Shown up front so the 409 is a surprise to
       // nobody; absent for `local`, whose projects name no system at all.
       const projects = Array.isArray(sys.projects) ? sys.projects : [];
@@ -635,6 +650,7 @@ export function installSettings({
     syEditingId = null;
     if (syIdEl) { syIdEl.value = ''; syIdEl.disabled = false; }
     if (syLabelEl) { syLabelEl.value = ''; syLabelEl.disabled = false; }
+    if (syLaunchEl) syLaunchEl.value = '';
     if (sySaveEl) sySaveEl.textContent = 'Add';
     if (syCancelEl) syCancelEl.hidden = true;
     if (syFormLegendEl) syFormLegendEl.textContent = 'Add a system';
@@ -645,6 +661,7 @@ export function installSettings({
     syEditingId = sys.id;
     if (syIdEl) { syIdEl.value = sys.id; syIdEl.disabled = true; }
     if (syLabelEl) { syLabelEl.value = sys.label; syLabelEl.disabled = false; }
+    if (syLaunchEl) syLaunchEl.value = Array.isArray(sys.launch) ? sys.launch.join(' ') : '';
     if (sySaveEl) sySaveEl.textContent = 'Save';
     if (syCancelEl) syCancelEl.hidden = false;
     if (syFormLegendEl) syFormLegendEl.textContent = `Edit ${sys.label}`;
@@ -655,18 +672,23 @@ export function installSettings({
     if (sySaveEl) sySaveEl.disabled = true;
     try {
       const label = syLabelEl?.value?.trim();
-      // Editing is only offered for user rows, so the id is fixed and only the
-      // label can move.
+      // argv, split on whitespace: the server spawns it WITHOUT a shell, so it
+      // stores a list and never a string to be re-parsed. An empty field is
+      // `null` — clear the command — and never `[]`, which the server refuses.
+      const parts = (syLaunchEl?.value ?? '').trim().split(/\s+/).filter(Boolean);
+      const launch = parts.length ? parts : null;
+      // Editing is only offered for user rows, so the id is fixed; the label and
+      // the provider command are what can move.
       const r = syEditingId
         ? await fetch(`/api/settings/systems/${encodeURIComponent(syEditingId)}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ label }),
+            body: JSON.stringify({ label, launch }),
           })
         : await fetch('/api/settings/systems', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ id: syIdEl?.value?.trim(), label }),
+            body: JSON.stringify({ id: syIdEl?.value?.trim(), label, launch }),
           });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);

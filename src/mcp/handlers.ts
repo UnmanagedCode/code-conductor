@@ -32,8 +32,8 @@ import {
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
-import { resolveSystem, tryResolveSystem } from '../systems/registry.ts';
-import type { System } from '../systems/system.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, tryResolveSystem } from '../systems/registry.ts';
+import type { ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
@@ -1741,7 +1741,16 @@ export async function syncWorktree({ project, worktree }: { project: string; wor
 }
 
 export async function mergeWorktree({ project, worktree, allowDirty }: { project: string; worktree: string; allowDirty?: boolean }) {
-  const wt = await getWorktree(project, worktree);
+  // The canonical-name lookup reads the project, so an unreachable system
+  // refuses HERE, before mergeWorktreeIntoParent can convert it. Converted the
+  // same way for the same reason: this tool answers with a structured refusal,
+  // and a conductor acts on the code.
+  let wt;
+  try { wt = await getWorktree(project, worktree); }
+  catch (e) {
+    if (!isSystemRefusal(e)) throw e;
+    return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: e.message };
+  }
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
@@ -1801,17 +1810,21 @@ export async function setProjectWorkspace({ project, workspace }: { project: str
 
 // ---------- create / introspect ----------
 
-export async function createProject({ name, conventions = [] }: { name: string; conventions?: string[] }) {
+export async function createProject({ name, conventions = [], system, systemPath }: {
+  name: string; conventions?: string[]; system?: string; systemPath?: string;
+}) {
   const conventionsDoc = await composeProjectConventionsDoc(conventions);
   const scaffold = await composeProjectScaffold(name, conventions);
-  const created = await fsCreateProject(name, { conventionsDoc });
+  const created = await fsCreateProject(name, { conventionsDoc, system, systemPath });
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
 }
 
-export async function adoptProject({ name, path: targetPath }: { name: string; path: string }) {
-  return fsAdoptProject(name, targetPath);
+export async function adoptProject({ name, path: targetPath, system }: {
+  name: string; path: string; system?: string;
+}) {
+  return fsAdoptProject(name, targetPath, { system });
 }
 
 export async function listProjectConventions() {
@@ -2393,6 +2406,16 @@ function shQuote(p: string): string {
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
+// The command wrapped in claude's own restored shell environment, sourced with
+// the same shell that produced the bundle (bundleShellKind).
+async function claudeShellSpec(command: string): Promise<ExecSpec> {
+  const bundlePath = await getShellEnvBundlePath();
+  const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
+  return bundleShellKind(bundlePath) === 'zsh'
+    ? { argv: ['zsh', '--no-rcs', '-c', wrapped] }
+    : { argv: ['bash', '--noprofile', '--norc', '-c', wrapped] };
+}
+
 // Run a shell command inside a project/worktree cwd, in claude's own
 // restored shell environment (rg/find/grep shims + shell functions, via the
 // cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
@@ -2411,18 +2434,22 @@ export async function bashProject({ project, worktree, command, timeout }: {
   // Responses report the CANONICAL name, never the caller's spelling — see
   // docs/protocol.md → Input params. All three exit paths below echo it.
   const wtName = worktreeMeta?.worktreeName ?? null;
-  const bundlePath = await getShellEnvBundlePath();
-  const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
-  const shell = bundleShellKind(bundlePath);
-  const [spawnCmd, spawnArgs] = shell === 'zsh'
-    ? ['zsh', ['--no-rcs', '-c', wrapped]]
-    : ['bash', ['--noprofile', '--norc', '-c', wrapped]];
+
+  // BUCKET 3, and local-only BY CONSTRUCTION rather than by refusal: the bundle
+  // is a file on cc's own machine reconstructing the shims of the `claude`
+  // binary installed there, so sourcing it on another system would source a path
+  // that is not there (or, worse, someone else's file at the same path). On a
+  // non-local system the command runs in a plain login shell instead — which is
+  // where that system's own toolchain lives, so there is nothing to reconstruct.
+  const spec: ExecSpec = system.id === LOCAL_SYSTEM_ID
+    ? await claudeShellSpec(command)
+    : { shell: command };
 
   // One-shot exec on the project's system. `stdin: 'ignore'` is load-bearing:
   // an interactive command would otherwise hang until the timeout. The HEAD cap
   // keeps draining both streams to completion — truncate what is *shown*, let
   // the command run — matching the built-in Bash tool's semantics.
-  const r = await system.exec({ argv: [spawnCmd, ...spawnArgs] }, {
+  const r = await system.exec(spec, {
     cwd, timeoutMs, stdin: 'ignore', headCapBytes: BASH_OUTPUT_CAP,
   });
 
@@ -2436,7 +2463,8 @@ export async function bashProject({ project, worktree, command, timeout }: {
   const output = r.truncated ? r.output + '\n… [truncated at the output cap]' : r.output;
   const meta: {
     project: string; worktree: string | null; cwd: string;
-    exitCode: number | null; durationMs: number; truncated?: boolean; timedOut?: boolean;
+    exitCode: number | null; durationMs: number;
+    truncated?: boolean; timedOut?: boolean; descendantsMaySurvive?: true;
   } = {
     project, worktree: wtName, cwd,
     exitCode: r.timedOut ? null : r.code,
@@ -2444,6 +2472,11 @@ export async function bashProject({ project, worktree, command, timeout }: {
   };
   if (r.truncated) meta.truncated = true;
   if (r.timedOut) meta.timedOut = true;
+  // The command was killed on a system whose provider cannot signal a process
+  // GROUP, so only the direct child was reached. Surfaced because the caller's
+  // next move depends on it: the tree it just timed out may still be holding a
+  // lock, a port or the CPU, and nothing else will ever say so.
+  if (r.descendantsMaySurvive) meta.descendantsMaySurvive = true;
   return textPayload(meta, output.trimEnd());
 }
 

@@ -2,6 +2,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { SUPPORTED_CONVENTION_SCOPES, claudePluginPaths, type PluginManifest } from './manifest.ts';
 import type { BackendBinding, TierBinding } from '../modelVersions.ts';
+import { LOCAL_SYSTEM_ID, systemById } from '../systems/registry.ts';
 
 // What enabled plugins contribute to the conductor beyond an HTTP backend:
 // convention fragments, role bindings and Claude Code plugin roots. Composed by
@@ -24,6 +25,10 @@ interface ContributingEntry {
   id: string;
   project: string;
   dir: string;
+  // The System the plugin's checkout lives on. Fragment bodies are read through
+  // it — they are files in a project tree — while claudePluginDirs refuses a
+  // non-local one outright (see there).
+  system: string;
   manifest: PluginManifest;
 }
 
@@ -43,12 +48,17 @@ export function createContributions({ ensureInit, contributingEntries, resolveCw
   // Bodies are resolved from the active checkout; a fragment path that vanished
   // after load is skipped with a warning (manifest load already rejects missing
   // files).
-  const fragmentBodyCache = new Map<string, string>(); // abs path -> body
-  async function readFragment(abs: string): Promise<string> {
-    const cached = fragmentBodyCache.get(abs);
+  // Keyed by (system, abs path): a path is only a file together with the
+  // machine it is on, and two systems hosting a project at the same path would
+  // otherwise share one cached body.
+  const fragmentBodyCache = new Map<string, string>();
+  async function readFragment(systemId: string, abs: string): Promise<string> {
+    const key = `${systemId}:${abs}`;
+    const cached = fragmentBodyCache.get(key);
     if (cached !== undefined) return cached;
-    const body = (await fs.readFile(abs, 'utf8')).replace(/\s+$/, '');
-    fragmentBodyCache.set(abs, body);
+    const system = await systemById(systemId, `plugin fragment '${abs}'`);
+    const body = (await system.readFile(abs)).replace(/\s+$/, '');
+    fragmentBodyCache.set(key, body);
     return body;
   }
 
@@ -160,14 +170,14 @@ export function createContributions({ ensureInit, contributingEntries, resolveCw
       for (const g of list) {
         let body = '';
         if (g.file) {
-          try { body = await readFragment(path.join(cwd, g.file)); }
+          try { body = await readFragment(entry.system, path.join(cwd, g.file)); }
           catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${errMsg(e)}`); continue; }
         }
         let scaffold: string | undefined;
         if (g.scaffold) {
           if ('text' in g.scaffold) scaffold = g.scaffold.text;
           else {
-            try { scaffold = await readFragment(path.join(cwd, g.scaffold.file)); }
+            try { scaffold = await readFragment(entry.system, path.join(cwd, g.scaffold.file)); }
             catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${errMsg(e)}`); continue; }
           }
         }
@@ -212,6 +222,13 @@ export function createContributions({ ensureInit, contributingEntries, resolveCw
     for (const entry of contributingEntries()) {
       const rels = claudePluginPaths(entry.manifest);
       if (rels.length === 0) continue;
+      // BUCKET 3. `--plugin-dir` takes an absolute LOCAL directory, and a plugin
+      // dir is unbounded in size, so pulling one across is not on the table
+      // either. Passing the remote path through would be worse than failing:
+      // whatever sits at that path on THIS machine would be loaded into every
+      // session instead. The row carries PLUGIN_DIR_LOCAL_ONLY so the UI says
+      // this rather than showing a contribution that is not loaded.
+      if (entry.system !== LOCAL_SYSTEM_ID) continue;
       let cwd: string;
       try { cwd = await resolveCwd(entry); } catch (e) { console.warn(`plugins: claudePlugin cwd for '${entry.id}' failed: ${errMsg(e)}`); continue; }
       for (const rel of rels) {

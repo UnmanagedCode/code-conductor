@@ -27,6 +27,7 @@ const ROW_FIELDS = [
   'hasFrontend',
   'hasMcp',
   'id',
+  'localOnly',
   'manifestSource',
   'name',
   'navLabel',
@@ -37,6 +38,7 @@ const ROW_FIELDS = [
   'stale',
   'startedAt',
   'state',
+  'system',
   'version',
 ];
 

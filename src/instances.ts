@@ -10,6 +10,7 @@ import {
   trackLineageWrite,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
+import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
 import {
@@ -4018,6 +4019,22 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       throw httpError(400, 'project required');
     }
     const proj = await getProject(project);
+    // WORKER SESSIONS ARE LOCAL-ONLY, and this is the one chokepoint every
+    // spawn and resume passes through. The CLI always runs on the machine cc
+    // runs on, so its cwd would be this project's path — a path on ANOTHER
+    // machine, which the CLI would silently create here and then work in,
+    // producing a transcript and a `CLAUDE.md` walk rooted in a directory that
+    // has nothing to do with the project. Redirecting the CLI's tools to the
+    // system is the next phase; refusing by name is the honest answer until it
+    // exists.
+    if (proj.system.id !== LOCAL_SYSTEM_ID) {
+      throw httpError(
+        501,
+        `WORKER_SESSIONS_LOCAL_ONLY: project '${proj.name}' lives on system '${proj.system.id}', `
+        + `and cc runs the claude CLI only on its own machine. Every project_* tool works on it; `
+        + `a worker session does not.`,
+      );
+    }
     // create() is policy-light: mode never depends on temp here. The UI's
     // temp⇒bypassPermissions shortcut is applied at the REST route
     // (POST /api/instances), not in this shared path.

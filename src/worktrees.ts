@@ -17,7 +17,7 @@ import {
   EXTERNAL_DIRNAME,
   type ProjectInfo,
 } from './projects.ts';
-import { resolveSystem } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
 import type { System } from './systems/system.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
@@ -258,6 +258,12 @@ interface PostWorktreeHookResult {
   output?: string;
   truncated?: boolean;
   timedOut?: boolean;
+  // The hook was killed on a system whose provider cannot signal a process
+  // GROUP, so only `bash` itself was reached and whatever it started may still
+  // be running. This hook is the exact case groupedCommand.ts's header
+  // documents — a timed-out `npm ci` in a fresh worktree — and the caller has
+  // to know the install may still be going before it uses the worktree.
+  descendantsMaySurvive?: true;
   error?: boolean;
 }
 
@@ -337,6 +343,7 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   };
   if (r.truncated) result.truncated = true;
   if (r.timedOut) result.timedOut = true;
+  if (r.descendantsMaySurvive) result.descendantsMaySurvive = true;
   return result;
 }
 
@@ -413,13 +420,20 @@ export async function createWorktree(
   // See this file's header comment for why an external project's worktrees land
   // under `.external/` rather than beside the target repo.
   //
-  // SYSTEMS-P4: third branch — this binary ternary falls through to the local
-  // projects root for a remote project, which would create the worktree
-  // DIRECTORY here while `runGit` ran on the system: a split-brain worktree.
-  // The third answer is a path on the system, sibling to its `systemPath`,
-  // mirroring the "beside the target repo" reasoning above.
+  // THE THIRD BRANCH. A remote project's worktree goes ON THE SYSTEM, beside
+  // its tree. Both local answers are paths under cc's own projects root, and
+  // either of them here would create the worktree DIRECTORY on this machine
+  // while every `runGit` below ran on the system: a split-brain worktree, and a
+  // `git worktree add` pointed at a path the repo's machine cannot see.
+  //
+  // A sibling — not a cc-owned directory like `.external/` — because cc owns no
+  // area on another machine to put one in, and inventing one would be a
+  // convention the system's owner never agreed to. The dir name already carries
+  // the project name, so it is recognisable where it lands.
   const worktreePath = path.join(
-    proj.external ? path.join(projectsRoot(), EXTERNAL_DIRNAME) : projectsRoot(),
+    proj.system.id !== LOCAL_SYSTEM_ID
+      ? path.dirname(proj.path)
+      : proj.external ? path.join(projectsRoot(), EXTERNAL_DIRNAME) : projectsRoot(),
     dirName,
   );
   const branch = worktreeBranchName(id);
@@ -600,9 +614,7 @@ export async function removeWorktree(
   // succeed; otherwise the branch may be ahead and we use `-D`.
   const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
   await runGit(system, parentPath, delArgs);
-  // Drop the central-store entry (metadata + attachments + debug).
-  try { await fs.rm(worktreeStoreDir(projectName, meta.worktreeName), { recursive: true, force: true }); }
-  catch { /* best-effort */ }
+  await dropWorktreeStoreEntry(projectName, meta.worktreeName);
   return meta;
 }
 
@@ -710,11 +722,26 @@ export async function mergeWorktreeIntoParent(
   worktreeName: string,
   { allowDirty = false }: { allowDirty?: boolean } = {},
 ): Promise<MergeSuccess | MergeFailure> {
-  const meta = await getWorktree(projectName, worktreeName);
+  // R9's mid-merge case, and the reason this prelude sits inside a try: every
+  // other blocker here is a RETURNED refusal carrying its own code, and callers
+  // render the code — a throw would surface as a 500 with nothing to render and
+  // nothing to act on. Nothing has run yet, and git's steps are individually
+  // atomic anyway, so there is nothing to roll back.
+  //
+  // getWorktree is inside it because it reads the project too: an unreachable
+  // system refuses there first, before this function reaches its own resolve.
+  let meta: WorktreeMeta | null;
+  let system: System;
+  try {
+    meta = await getWorktree(projectName, worktreeName);
+    system = await resolveSystem(projectName);
+  } catch (e) {
+    if (!isSystemRefusal(e)) throw e;
+    return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: e.message };
+  }
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
-  const system = await resolveSystem(projectName);
   // 0. Refuse if another worktree is based on this one. THIS merge moves their
   //    base on its own: step 7 below fast-forwards this worktree's own branch
   //    onto the merge commit, and that branch IS what the children were created
@@ -991,9 +1018,32 @@ export function buildRebasePrompt(meta: WorktreeMeta, blocker: 'dirty' | 'confli
 export async function removeAllWorktreesForProject(projectName: string): Promise<void> {
   let known: WorktreeMeta[] = [];
   try { known = await listWorktrees(projectName); } catch { /* repo may be gone */ }
+  // D11 REACHES THE CASCADE. Deleting a project on a non-local system
+  // unregisters it and never touches the tree — and `git worktree remove
+  // --force` plus `git branch -D` are exactly touching it: they delete a
+  // checkout and a branch inside the user's own repo, on their own machine.
+  // So here the registrations go and the directories and branches stay, for the
+  // same reason the project's own tree does.
+  //
+  // Deleting ONE worktree deliberately still removes it (removeWorktree,
+  // unchanged): cc created that directory, and the user asked for that
+  // directory. This is the whole-project cascade, where the user asked to stop
+  // tracking a project — not to delete work on another machine.
+  const { system } = await projectPlacement(projectName);
+  const unregisterOnly = system !== LOCAL_SYSTEM_ID;
   for (const wt of known) {
-    try { await removeWorktree(projectName, wt.worktreeName, { force: true }); } catch { /* ignore */ }
+    try {
+      if (unregisterOnly) await dropWorktreeStoreEntry(projectName, wt.worktreeName);
+      else await removeWorktree(projectName, wt.worktreeName, { force: true });
+    } catch { /* ignore */ }
   }
+}
+
+// The central-store entry for one worktree (metadata + attachments + debug).
+// cc's own, always local.
+async function dropWorktreeStoreEntry(projectName: string, worktreeName: string): Promise<void> {
+  try { await fs.rm(worktreeStoreDir(projectName, worktreeName), { recursive: true, force: true }); }
+  catch { /* best-effort */ }
 }
 
 // Default / maximum number of commits returned by getProjectCommits.
