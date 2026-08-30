@@ -82,7 +82,7 @@ import {
   updateCustomConvention as updateProjectConvention,
   deleteCustomConvention as deleteProjectConvention,
 } from './projectConventions.ts';
-import { composeProjectConventionsDoc, regenerateAllProjectConventions } from './projectClaudeMd.ts';
+import { composeProjectConventionsDoc, placementDisclosure, regenerateAllProjectConventions } from './projectClaudeMd.ts';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductorConventionsCatalog,
@@ -497,7 +497,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         throw httpError(400, 'conventions must be an array of slug strings');
       }
       const slugs = (conventions ?? []) as string[];
-      const conventionsDoc = await composeProjectConventionsDoc(slugs);
+      // Seeded with the placement disclosure when the project is being created
+      // ON a system, so its first worker's prompt carries it without waiting
+      // for a regeneration sweep.
+      const conventionsDoc = await composeProjectConventionsDoc(slugs, {
+        system: placementDisclosure(system, systemPath),
+      });
       const scaffold = await composeProjectScaffold(validName, slugs);
       const created = await createProject(validName, { conventionsDoc, system, systemPath });
       // Scaffold directive is returned (not persisted) — the caller folds it

@@ -22,6 +22,7 @@ import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { adoptProject } from '../src/projects.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { sessionRootPath } from '../src/systems/sessionRoot.ts';
+import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
 
 // Run a command string the way the CLI's Bash tool runs one: through a shell,
 // on cc's machine. For a redirected session that string IS the forwarder
@@ -207,5 +208,45 @@ describe('a worker session on a remote system', () => {
     const del = await api(baseUrl, 'DELETE', `/api/instances/${instId}`);
     assert.equal(del.status, 200, JSON.stringify(del.body));
     assert.equal(redirect.shellOpen, false);
+  });
+
+  // The one sentence a remote project adds to every worker's system prompt.
+  //
+  // It loads into the prompt of every session on the project, so it is held to
+  // the workspace "System-prompt docs" rule: each sentence must change what the
+  // agent DOES. Both do, and both were measured. The first pre-empts the
+  // coordinate divergence the worker meets the moment a command prints a path.
+  // The second is the correction the spike forced: an earlier wording that said
+  // system paths "are the system's copies of what you see locally" sent the model
+  // straight to `Read /app/greeting.py`, which cannot work — the CLI reads
+  // locally. It must say files are read and edited at their LOCAL paths and that
+  // system paths appear only in command output.
+  
+  test('a remote project discloses its system in one sentence pair, and a local one says nothing', async () => {
+    const doc = await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } });
+    const block = doc.split('# Workspace conventions')[0];
+  
+    assert.match(block, /^<!-- cc:conventions/, 'the marker is still line 1');
+    assert.match(block, /^# System$/m);
+    assert.match(block, /\/app.*prod-box/s);
+    assert.match(block, /Bash.*run/s);
+    // The correction: local paths for reading and editing, system paths only in
+    // output. A doc that says the opposite is worse than saying nothing.
+    assert.match(block, /working directory/);
+    assert.match(block, /only in command output/);
+    assert.ok(!/Read `?\/app/.test(block), 'it never suggests reading a system path');
+  
+    const local = await composeProjectConventionsDoc([]);
+    assert.ok(!/^# System$/m.test(local), 'a local project carries no such section');
+  });
+  
+  // PINS: the sentence really reaches the worker — it is written into the
+  // project's CONVENTIONS.md on the SYSTEM and pulled into the session root,
+  // which is where the CLI's `@CONVENTIONS.md` import reads it from.
+  test('the disclosure reaches the session root through the system copy', async () => {
+    const onSys = await fs.readFile(path.join(tree, 'CONVENTIONS.md'), 'utf8');
+    assert.match(onSys, /^# System$/m);
+    assert.match(onSys, new RegExp(remote.id));
+    assert.equal(await fs.readFile(path.join(root, 'CONVENTIONS.md'), 'utf8'), onSys);
   });
 });

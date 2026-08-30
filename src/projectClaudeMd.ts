@@ -31,6 +31,7 @@ import { listProjects, resolveProjectDir } from './projects.ts';
 import { composeProjectConventionsBlock, getCatalog } from './projectConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
+import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 
@@ -38,6 +39,48 @@ const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 // fragments are bare H2s. Concatenated without this separator, project
 // conventions would read as workspace ones. Heading only — no prose.
 const PROJECT_HEADING = '# Project conventions';
+
+// THE ONE SENTENCE PAIR A REMOTE PROJECT ADDS TO EVERY WORKER'S SYSTEM PROMPT.
+//
+// It is here rather than in the workspace or conductor scope because it is a
+// fact about THIS project's placement, and it must arrive through the channel
+// that already reaches a worker on it: this file, imported by the project's
+// CLAUDE.md.
+//
+// Held to the workspace "System-prompt docs" rule — each sentence changes what
+// the agent does, and both were measured:
+//
+//   * The first pre-empts the coordinate divergence the worker meets the first
+//     time a command prints a path. Told, a worker did the task and remarked on
+//     nothing; untold, it took a system path from a stack trace, tried to read
+//     it, and spent a call recovering.
+//   * The second is a CORRECTION. An earlier wording said system paths "are the
+//     system's copies of what you see locally" and sent the model straight to
+//     `Read /app/greeting.py` — which cannot work, because the CLI reads on
+//     cc's machine. It has to say files are read and edited at their LOCAL
+//     paths, and that a system path appears only in command output.
+//
+// Nothing more. `Glob`/`Grep` being gone is volunteered by the tool registry; a
+// write outside the session root is named by its own refusal; a failed
+// write-back is named by the note on the tool result. Each of those is
+// delivered at the point of use by a channel the worker cannot miss, so
+// repeating it here would be a per-session cost for no change in behaviour.
+function systemDisclosure(system: { id: string; path: string }): string {
+  return `# System\n\n`
+    + `This project's tree is at \`${system.path}\` on system \`${system.id}\`, where \`Bash\` commands run. `
+    + `Read, write and edit files at their paths under this session's working directory; `
+    + `a \`${system.path}\` path appears only in command output, and names the same file as its counterpart here.\n`;
+}
+
+// The disclosure argument for a project being CREATED on a system, from the two
+// request fields that name its placement. One helper rather than the same
+// `id === LOCAL_SYSTEM_ID ? null : …` ternary at each creation surface, which
+// is exactly the shape that drifts.
+export function placementDisclosure(system: unknown, systemPath: unknown): { id: string; path: string } | null {
+  if (typeof system !== 'string' || !system || system === LOCAL_SYSTEM_ID) return null;
+  if (typeof systemPath !== 'string' || !systemPath) return null;
+  return { id: system, path: systemPath };
+}
 
 // Line-1 marker: `<!-- cc:conventions a,b,c -->` (slugs are comma-safe — the
 // slug charset is [a-zA-Z0-9._-] plus plugin `<id>/<slug>`, never a comma).
@@ -84,7 +127,10 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
 // composeProjectConventionsBlock); callers at project creation rely on that.
 // With no project part at all (zero slugs, or none of them resolving to a body
 // or a note) the heading is omitted too and the document is marker + workspace.
-export async function composeProjectConventionsDoc(slugs: string[], missing: string[] = []): Promise<string> {
+export async function composeProjectConventionsDoc(
+  slugs: string[],
+  { missing = [], system = null }: { missing?: string[]; system?: { id: string; path: string } | null } = {},
+): Promise<string> {
   const marker = buildMarker(slugs);
   const workspace = await composeCurrentWorkspace();          // ends with '\n'
   const gone = new Set(missing);
@@ -93,7 +139,10 @@ export async function composeProjectConventionsDoc(slugs: string[], missing: str
   const project = (note || body)
     ? `\n${PROJECT_HEADING}\n${note ? `\n${note}` : ''}${body}`
     : '';
-  return `${marker}\n\n${workspace}${project}`;
+  // FIRST, above the conventions: it frames how every instruction below is
+  // carried out, and a worker that reads it late has already run a command.
+  const placement = system ? `${systemDisclosure(system)}\n` : '';
+  return `${marker}\n\n${placement}${workspace}${project}`;
 }
 
 // Regenerate one project's CONVENTIONS.md: the workspace block always, plus
@@ -164,7 +213,12 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   }
 
   await ensureConventionsImport(system, projPath);
-  const content = await composeProjectConventionsDoc(slugs, missing);
+  const content = await composeProjectConventionsDoc(slugs, {
+    missing,
+    // `resolved.path` IS the path on the system for a remote project, and null
+    // placement for a local one — so a local project's document is unchanged.
+    system: system.id === LOCAL_SYSTEM_ID ? null : { id: system.id, path: projPath },
+  });
   await system.writeFile(target, content);
   if (log?.log) {
     log.log(missing.length

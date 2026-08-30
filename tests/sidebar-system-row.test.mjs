@@ -111,9 +111,10 @@ test('an unreachable system hides the controls that would fail, and keeps delete
     'delete stays — unregistering is exactly what still works');
 });
 
-// PINS: a REACHABLE remote project is fully usable except for worker sessions,
-// so it keeps its git affordances and loses only the spawn button.
-test('a reachable remote project keeps its git affordances but not the spawn button', async () => {
+// PINS: a REACHABLE remote project is fully usable — including worker sessions,
+// which now run the CLI locally and redirect their shell and file tools to the
+// system. Nothing is hidden on it.
+test('a reachable remote project keeps every affordance, spawn included', async () => {
   const { root } = await render(baseProject({
     system: 'prod-box', systemPath: '/app', systemUnreachable: null, isGitRepo: true,
   }));
@@ -124,8 +125,8 @@ test('a reachable remote project keeps its git affordances but not the spawn but
   assert.match(pill.getAttribute('title') ?? '', /\/app/, 'and the path on it');
   assert.equal(root.querySelectorAll('.commit-log').length, 1, 'git facts were measured, so the log works');
   assert.equal(root.querySelectorAll('.delete-project').length, 1);
-  assert.equal(root.querySelectorAll('.add-instance').length, 0,
-    'but a worker cannot run there yet, so the button is not offered');
+  assert.equal(root.querySelectorAll('.add-instance').length, 1,
+    'and a worker can run there, so the button is offered');
 });
 
 // PINS: the row is reconciled, not rebuilt — a system that comes back must clear
