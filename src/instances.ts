@@ -4251,6 +4251,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // Composed BEFORE the refusal below, because the rules that refusal reads
       // are the project's own `.claude/settings*.json` — which only exist
       // locally once they have been pulled.
+      //
+      // launch() composes again, and that is not redundant to remove: this call
+      // is the only one on the CREATE path that can still refuse, and launch()
+      // is the only one that covers a relaunch (rewind, respawn, resume after a
+      // restart) which never comes back through here. The second pass is a
+      // manifest hit — one `find`, no transfers.
       cwd = (await composeSessionRoot(redirectPlacement)).root;
       const unenforceable = await findUnenforceableBashRules(bashRuleSources(cwd));
       if (unenforceable.length > 0) {

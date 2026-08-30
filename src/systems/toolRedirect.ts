@@ -275,8 +275,10 @@ export class SessionRedirect {
       return { stdout: r.stdout, stderr: r.stderr, code: r.code, notice: this.#takeNotice() };
     } catch (e) {
       // A reset already happened inside ProviderShell for the wedge modes; note
-      // it so the NEXT command tells the worker what it lost.
-      this.#pendingNotice = this.#resetNotice(errMsg(e));
+      // it so the NEXT command tells the worker what it lost. An abort got
+      // there FIRST and set a more specific reason — keep that one, since "the
+      // command was interrupted" says more than the failure it caused.
+      this.#pendingNotice ??= this.#resetNotice(errMsg(e));
       return { stdout: '', stderr: `cc: ${errMsg(e)}\n`, code: 1, notice: null };
     } finally {
       signal?.removeEventListener('abort', onAbort);
