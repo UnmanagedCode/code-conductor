@@ -32,6 +32,23 @@ The orchestrator answers `can_use_tool` in `Instance._handleStdoutLine`: for `Ex
 One `PreToolUse` hook via inline `--settings` JSON (the old static `command` deny on **AskUserQuestion|ExitPlanMode** is **removed** — those tools are now gated at the `can_use_tool` layer, see above):
 1. **Edit|Write|NotebookEdit|Bash** — `http` hook → `POST /api/instances/<id>/hook-callback`, a CLI-side hook timeout (`HOOK_HTTP_TIMEOUT_S`); the orchestrator holds the ask-mode response open for a window deliberately under it (`HOOK_PENDING_TIMEOUT_MS`). `ask` is orchestrator-tracked only and maps to `bypassPermissions` at the CLI level; the hook callback inspects orchestrator-side mode to gate.
 
+**A session on a non-`local` system** (`src/settings.ts` → `buildSettingsJSON({redirect:true})`) widens that JSON — it never narrows it, so a local session's settings are byte-identical to the above:
+
+| Addition | Why |
+|---|---|
+| `PreToolUse` matcher gains **`Read\|Glob\|Grep`** | `Read`'s bytes must be fetched from the system before the CLI opens the file, which only a PreToolUse hook can do. `Read` is hooked but **not ask-gated** — the broker keeps that distinction (`ASK_GATED_TOOLS` in `src/hookBroker.ts`), so a remote project prompts on exactly what a local one prompts on. `Glob`/`Grep` are hooked as a second guard on the denial below. |
+| `PostToolUse` on **Edit\|Write\|NotebookEdit\|Bash** → the same URL | The write-back and the output annotation. cc had never injected a `PostToolUse` hook before. |
+| `permissions.deny: ["Glob","Grep"]` | Neither can be redirected: `PreToolUse` rewrites input, and there is no channel to substitute a result, so either would answer about the session root. Not `--disallowedTools`, which is variadic and swallows the following prompt argument. **Measured (claude 2.1.250, cc's exact flags): a headless session carries neither tool anyway and `ToolSearch` cannot surface them, so this currently removes nothing** — it is a guard against a tool profile that is undocumented and has already moved once, alongside the by-name refusal in `src/systems/toolRedirect.ts`. |
+
+Both events post to the one `hook-callback` URL and are discriminated by `hook_event_name`. Response vocabulary (`src/hookBroker.ts`):
+
+| Event | Body |
+|---|---|
+| `PreToolUse` | `{hookSpecificOutput:{hookEventName:"PreToolUse", permissionDecision, permissionDecisionReason?, updatedInput?}}`. `updatedInput` **replaces** the tool input and rides in the SAME response as the allow — including the allow a user's ask-mode click produces. |
+| `PostToolUse` | `{hookSpecificOutput:{hookEventName:"PostToolUse", additionalContext}}`, or `{}` when there is no note. `additionalContext` reaches the model **out of band**, labelled as a hook. A tool result can be annotated, never replaced. |
+
+**The ask card renders the PRE-rewrite `tool_input`.** Under redirection every `Bash` call is rewritten into the same forwarder invocation, so a card built from what will actually run would show every command as one identical opaque line and no two could be told apart. The broker holds both and emits `permission_request` before applying the rewrite.
+
 **Inbound** (orchestrator → CLI stdin):
 
 | Type | Payload | Notes |
@@ -233,7 +250,8 @@ That future-`resetsAt` check is the **safety rail**: a queued send bypasses the 
 | `DELETE` | `/api/projects/:name/sessions/:sid[?force=1]` | **Permanent** delete of the persisted jsonl (the *only* path that removes a session from disk; reachable only from the Settings → Archived per-session Delete). Also drops the title/conducted/archived sidecar entries. 409 if attached, `force=1` kills first. |
 | `DELETE` | `/api/projects/:name/worktrees/:wt/sessions/:sid[?force=1]` | Same, worktree-scoped. |
 | `GET` | `/api/instances/:id/attachments/:filename` | Streams from the central-store attachments dir (path-traversal guarded). |
-| `POST` | `/api/instances/:id/hook-callback` | PreToolUse http hook target; always 200 with `permissionDecision`. |
+| `POST` | `/api/instances/:id/hook-callback` | `PreToolUse` **and** `PostToolUse` http hook target, discriminated by `hook_event_name`; always 200 (see **Subprocess protocol** above for the response shapes). |
+| `POST` | `/api/instances/:id/bash-forward` | `{command, timeoutMs?}` → `{stdout, stderr, code, notice}`. The server side of a redirected `Bash`: `src/systems/bashForwarder.ts` runs locally in place of the worker's command and posts the ORIGINAL here, cc runs it in that session's shell on the system, and the forwarder replays the answer as its own stdout/stderr/exit code. `notice` is non-null exactly once after the shell had to be restarted, and the forwarder prints it to stderr ahead of the output. **Never a 5xx for a command failure** — a wedged shell, a dead provider or a busy one all come back as a non-zero `code` with the reason on `stderr`, because that is the channel the worker reads. **The client disconnecting is load-bearing**: the CLI kills the forwarder on a tool timeout or an interrupt, and that aborted request is cc's only signal to kill the command on the far side. 404 (with the same body shape) when the session is not redirected. |
 | `POST` | `/api/admin/restart` | Self-respawn (202 immediate, detached child, exit). Body `{resume:true}` ⇒ graceful **Resume after restart**: drain every live turn to idle (`src/resumeRestart.ts`), carry sessions (incl. temps) over via `<store>/pending-resume.json`, and resurrect + notify them on boot. Omitted/false ⇒ normal hard restart (wipes temps). |
 | `GET` | `/api/settings/self-update` | `{version, upstream, ahead, behind, canCheck, diverged, updateAvailable}` — conductor version (from `package.json`) + git ahead/behind of the running checkout's current branch vs its `@{upstream}`, after a bounded best-effort fetch. `canCheck:false` (`behind`/`ahead:null`) when HEAD is detached or has no upstream. `diverged:true` when `ahead>0 && behind>0` (a fast-forward can't apply — no Update offered). `updateAvailable` requires `behind>0 && ahead===0`. `src/selfUpdate.ts`. |
 | `GET` | `/api/settings/spawn` | `{debugByDefault}` — persisted default applied to `debug` on `POST /api/instances`/`spawn_instance` when the caller omits it. `src/appSettings.ts`. |
