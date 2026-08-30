@@ -304,8 +304,31 @@ describe('a system that dies mid-operation', () => {
     // failure rather than as the far side saying the path was taken.
     await assert.rejects(
       () => createProject('fresh', { system: remote.id, systemPath: path.join(remote.root, 'fresh') }),
-      (e) => e.statusCode !== 409 && e.code === 'ETRANSPORT',
+      (e) => e.statusCode !== 409,
       'a dead system must not be reported as an occupied path',
+    );
+  });
+
+  // PINS: and that refusal NAMES THE MACHINE. A raw SystemError carries no
+  // statusCode, so REST rendered a bare 500 reading `mkdir '<path>': provider
+  // exited` — which a user reads as cc's own mkdir failing on cc's own disk.
+  // adoptProject's twin already answered "on system 's'"; this one did not.
+  test('a create that fails on the remote system says which machine', async () => {
+    await goFlaky({ budget: 0 });
+    await assert.rejects(
+      () => createProject('fresh', { system: remote.id, systemPath: path.join(remote.root, 'fresh') }),
+      (e) => e.statusCode === 502 && new RegExp(`on system '${remote.id}'`).test(e.message),
+      'a refusal caused by a remote machine must name that machine',
+    );
+  });
+
+  // PINS the pair: a path that REALLY is taken on a LIVE system still refuses
+  // 409 and names the system, so the branch above did not swallow the real one.
+  test('a create onto an occupied path on a live system still refuses 409, named', async () => {
+    const taken = await seedRepo(path.join(remote.root, 'taken'));
+    await assert.rejects(
+      () => createProject('taken', { system: remote.id, systemPath: taken }),
+      (e) => e.statusCode === 409 && new RegExp(remote.id).test(e.message),
     );
   });
 

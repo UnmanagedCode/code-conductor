@@ -381,6 +381,11 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   });
 
   if (r.spawnError) {
+    // REPORTS ONLY — deliberately does not classify, and must stay that way.
+    // `ran: true` is load-bearing: spawnDialog gates the hook result's
+    // visibility on it, so collapsing this into "did not run" would delete a
+    // user-visible fallback rather than fix anything. It invents no fact about
+    // the tree either; the message is quoted, not interpreted.
     return { ran: true, source, exitCode: null, durationMs: r.durationMs, output: r.spawnError, error: true };
   }
 

@@ -833,6 +833,15 @@ export async function createProject(
         ? `'${full}' already exists on system '${placement.system}'`
         : `project '${name}' already exists`);
     }
+    // A failure caused by a REMOTE machine has to name that machine. A raw
+    // SystemError carries no statusCode, so this surfaced as a bare 500 reading
+    // `mkdir '<path>': provider exited` — which a reader takes for cc's own
+    // mkdir failing on cc's own disk. adoptProject's twin already answers "on
+    // system 's'"; this is the same sentence for the create path. A LOCAL create
+    // is left alone: there is no other machine to name.
+    if (placement) {
+      throw httpError(502, `could not create '${full}' on system '${placement.system}': ${errMsg(e)}`);
+    }
     throw e;
   }
   // Registered only once the directory is ours: the mkdir above is what proves
