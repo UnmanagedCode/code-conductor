@@ -21,6 +21,7 @@ import {
   removeWorkspace as fsRemoveWorkspace,
   renameWorkspace as fsRenameWorkspace,
   writeProjectMeta,
+  tryResolveProject,
 } from '../projects.ts';
 import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import {
@@ -32,7 +33,7 @@ import {
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
-import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem, tryResolveSystem } from '../systems/registry.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from '../systems/registry.ts';
 import type { ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
@@ -306,10 +307,13 @@ function notLiveRefusal(sessionId: string): SoftRefusal {
 export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   const projects = await fsListProjects();
   const enriched = await Promise.all(projects.map(async (p) => {
-    // tryResolveSystem, not resolveSystem: one project whose record names an
-    // unreachable system must degrade to its own row, not reject this
-    // Promise.all and take the whole listing down with it.
-    const { system, unreachable } = await tryResolveSystem(p.name);
+    // tryResolveProject, not resolveProjectDir: one project cc cannot resolve
+    // must degrade to its own row, not reject this Promise.all and take the
+    // whole listing down with it. The whole project, not just its system — a
+    // record naming a reachable system but carrying no path has no tree to
+    // measure, and measuring it against an empty path would be wrong rather
+    // than absent.
+    const { system, unreachable } = await tryResolveProject(p.name);
     // Worktree registrations are store-derived and need no System, so they still
     // list; only their git-measured divergence goes unknown.
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
@@ -491,7 +495,7 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // tool a conductor uses to find its own sessions. groupGit's own vocabulary
     // for "not measured" is `{branch: null, mergeStatus: null}`, which renders as
     // `br —` with no divergence — so the group still lists its sessions.
-    const { system: groupSystem } = await tryResolveSystem(t.project);
+    const { system: groupSystem } = await tryResolveProject(t.project);
     const { branch, mergeStatus } = groupSystem
       ? await groupGit(groupSystem, t.cwd, t.meta)
       : { branch: null, mergeStatus: null };

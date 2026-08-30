@@ -251,7 +251,10 @@ async function systemFileExists(system: System, p: string): Promise<boolean> {
 
 interface PostWorktreeHookResult {
   ran: boolean;
-  skipped?: string;
+  // Why the hook did not run, when a hook was found: `'disabled'` for the
+  // kill-switch, `'STORE_HOOK_LOCAL_ONLY'` for a store-sourced script on a
+  // non-local system (see runPostWorktreeHook).
+  skipped?: 'disabled' | 'STORE_HOOK_LOCAL_ONLY';
   source?: string | null;
   exitCode?: number | null;
   durationMs?: number;
@@ -290,6 +293,20 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   if (await systemFileExists(system, inTree)) { scriptPath = inTree; source = 'in-tree'; }
   else if (await fileExists(inStore)) { scriptPath = inStore; source = 'store'; }
   if (!scriptPath) return { ran: false };
+
+  // BUCKET 3: A STORE-SOURCED HOOK IS LOCAL-ONLY. The script lives under cc's
+  // own store, so running it through the project's system would hand the remote
+  // `bash` a path that exists only on THIS machine — an exit-127 wearing the
+  // shape of a broken hook at best, and at worst whatever file happens to sit at
+  // that spelling on the system running instead. Shipping the body across would
+  // need a cc-owned place to put a file on the system, which is the session-root
+  // machinery the next phase brings; until then this is a NAMED refusal, and it
+  // is reported rather than silently skipped, because a hook that quietly does
+  // nothing is the same defect restated. An IN-TREE hook is unaffected — it is
+  // already on the system.
+  if (source === 'store' && system.id !== LOCAL_SYSTEM_ID) {
+    return { ran: false, source, skipped: 'STORE_HOOK_LOCAL_ONLY' };
+  }
 
   // Ensure the executable bit is set — the script may have been committed
   // without it (e.g. on Windows / FAT filesystems). Non-fatal if chmod fails.

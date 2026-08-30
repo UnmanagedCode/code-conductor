@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
+  tryResolveProject,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.ts';
 import {
@@ -17,7 +18,7 @@ import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import type { WorktreeMeta } from '../worktrees.ts';
-import { LOCAL_SYSTEM_ID, resolveSystem, tryResolveSystem } from '../systems/registry.ts';
+import { LOCAL_SYSTEM_ID, resolveSystem } from '../systems/registry.ts';
 import type { System } from '../systems/system.ts';
 
 // Plugin registry — the single service layer behind the REST api
@@ -174,7 +175,7 @@ export function createPluginHost(opts: {
       // contributes no plugin — and, critically, does NOT fall back to reading
       // cc's own disk at the same path, which would register whatever happens
       // to sit there as this project's plugin.
-      const { system, unreachable } = await tryResolveSystem(p.name);
+      const { system, unreachable } = await tryResolveProject(p.name);
       if (!system) {
         console.warn(`plugins: skipped '${p.name}' — ${unreachable}`);
         continue;

@@ -25,7 +25,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { bindRemoteSystem, seedRepo, referenceLaunch } from './remoteSystem.mjs';
+import { bindRemoteSystem, seedRepo, git, referenceLaunch } from './remoteSystem.mjs';
 import { adoptProject, projectsRoot, projectStoreDir } from '../src/projects.ts';
 import { createWorktree, mergeWorktreeIntoParent } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
@@ -158,6 +158,67 @@ describe('a remote project refuses what it cannot do, by name', () => {
     const r = await callTool(baseUrl, 'merge_worktree', { project: 'app', worktree: 'app_worktree_feature' });
     const text = r.content.map(c => c.text).join('\n');
     assert.match(text, /SYSTEM_UNREACHABLE/, text);
+  });
+
+  // ── Bucket 3: the store-sourced post-worktree hook ───────────────────
+
+  // PINS: a hook script that lives in cc's OWN STORE is not run on a remote
+  // system. The argv would be a path that exists only on cc's machine — best
+  // case an exit-127 wearing the shape of a broken hook, worst case a file that
+  // happens to exist at that spelling on the system runs INSTEAD. The marker is
+  // what proves it: the reference provider IS this machine, so a hook that
+  // still ran would find the script and leave the marker behind.
+  test('a store-sourced post-worktree hook refuses on a remote project', async () => {
+    await adoptRemote();
+    const marker = path.join(home, 'store-hook-ran');
+    await fs.mkdir(projectStoreDir('app'), { recursive: true });
+    await fs.writeFile(path.join(projectStoreDir('app'), 'post-worktree-create.sh'),
+      `#!/bin/bash\ntouch ${JSON.stringify(marker)}\n`);
+
+    const wt = await createWorktree('app', { name: 'feature' });
+    const hook = wt.postWorktreeCreate;
+    assert.equal(hook.ran, false, JSON.stringify(hook));
+    assert.equal(hook.source, 'store', 'the report names which hook was found');
+    assert.equal(hook.skipped, 'STORE_HOOK_LOCAL_ONLY',
+      'and why it did not run — a hook that silently does nothing is the defect restated');
+    assert.equal(await exists(marker), false, 'the script really did not execute anywhere');
+  });
+
+  // PINS: an IN-TREE hook still runs on a remote project — it is already on the
+  // system, so nothing about it is local-only. Without this the refusal above
+  // could be implemented by disabling the hook wholesale.
+  test('an in-tree post-worktree hook still runs on a remote project', async () => {
+    const tree = await adoptRemote();
+    await fs.mkdir(path.join(tree, '.code-conductor'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.code-conductor', 'post-worktree-create.sh'),
+      '#!/bin/bash\necho in-tree-hook-ran\n');
+
+    const wt = await createWorktree('app', { name: 'feature' });
+    const hook = wt.postWorktreeCreate;
+    assert.equal(hook.ran, true, JSON.stringify(hook));
+    assert.equal(hook.source, 'in-tree');
+    assert.equal(hook.exitCode, 0);
+    assert.match(hook.output, /in-tree-hook-ran/);
+  });
+
+  // PINS: a store-sourced hook on a LOCAL project is untouched — the refusal is
+  // about the placement, not about the store as a hook source.
+  test('a store-sourced hook still runs on a local project', async () => {
+    await api(baseUrl, 'POST', '/api/projects', { name: 'localone' });
+    const dir = path.join(projectsRoot(), 'localone');
+    await git(dir, 'config', 'user.email', 'test@example.com');
+    await git(dir, 'config', 'user.name', 'Test');
+    await fs.writeFile(path.join(dir, 'f.txt'), 'x\n');
+    await git(dir, 'add', '-A');
+    await git(dir, 'commit', '-q', '-m', 'initial');
+    await fs.mkdir(projectStoreDir('localone'), { recursive: true });
+    await fs.writeFile(path.join(projectStoreDir('localone'), 'post-worktree-create.sh'),
+      '#!/bin/bash\necho store-hook-ran\n');
+
+    const wt = await createWorktree('localone', { name: 'feature' });
+    assert.equal(wt.postWorktreeCreate.ran, true, JSON.stringify(wt.postWorktreeCreate));
+    assert.equal(wt.postWorktreeCreate.source, 'store');
+    assert.match(wt.postWorktreeCreate.output, /store-hook-ran/);
   });
 
   // ── Bucket 3: plugins (the SEVENTH site) ─────────────────────────────

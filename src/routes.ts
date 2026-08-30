@@ -7,7 +7,7 @@ import type { WebSocketServer } from 'ws';
 import {
   listProjects, createProject, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
-  listArchivedGroupedByProject, getProject,
+  listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
   findSessionLocation, writeProjectMeta, projectsBySystem,
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName,
@@ -18,7 +18,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, resolveSystem, tryResolveSystem } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, resolveSystem } from './systems/registry.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
   getCommitDiff, getCommitFileDiff,
@@ -383,11 +383,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // execution. Does NOT include sessionIds or session counts — those are cheap
   // and always computed fresh so they stay live across status changes.
   async function computeGitFacts(p: { name: string; path: string }) {
-    // tryResolveSystem, not resolveSystem: this runs once per project inside the
-    // listing's Promise.all, so a throw here would break the WHOLE list for one
-    // project whose record names an unreachable system. An unresolved system
-    // degrades THIS project's git facts to unknown and says why.
-    const { system, unreachable } = await tryResolveSystem(p.name);
+    // tryResolveProject, not resolveProjectDir: this runs once per project inside
+    // the listing's Promise.all, so a throw here would break the WHOLE list for
+    // one project cc cannot resolve. An unresolved project degrades ITS OWN git
+    // facts to unknown and says why. The whole PROJECT, not just its system: a
+    // record naming a reachable system but carrying no path resolves its system
+    // fine and still has no tree to measure.
+    const { system, unreachable } = await tryResolveProject(p.name);
     // Worktree REGISTRATIONS are store-derived and need no System, so they are
     // still listed for an unreachable project — only their divergence, which is
     // measured with git on the tree, goes unknown.
@@ -532,7 +534,13 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           { statusCode: 400 },
         );
       }
-      const proj = await getProject(req.params.name);
+      // getProjectForDelete, NOT getProject: unregistering must never depend on
+      // reaching the system. getProject resolves it, which made deleteProject's
+      // remote branch — written so a project on a down system is never stranded
+      // — unreachable from this route, and deadlocked the pair (the project
+      // could not be deleted, and removeSystem then refused 409 because that
+      // project still named the system).
+      const proj = await getProjectForDelete(req.params.name);
       let killed = 0;
       if (instances) killed = await instances.removeAllForProject(proj.name);
       await removeAllWorktreesForProject(proj.name);

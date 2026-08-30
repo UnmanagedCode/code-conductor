@@ -354,6 +354,30 @@ export async function resolveProjectDir(name: string): Promise<ResolvedProjectDi
   return { path: real, external: true, system };
 }
 
+// resolveProjectDir for the LISTINGS, where a refusal is a VALUE rather than a
+// throw — the enrichment half of the promise listProjects already makes for its
+// own enumeration, that one bad entry never takes the page down.
+//
+// It resolves the whole PROJECT, not just its system, because "can these git
+// facts be measured?" is exactly "does this project resolve?": a record naming a
+// reachable system but carrying no path resolves its SYSTEM fine and still has
+// no tree to measure, and a row whose facts were quietly measured against an
+// empty path would be wrong rather than absent.
+//
+// It catches everything, not just the refusals: a listing that must render the
+// rest of the list has the same duty for an unexpected fault as for an expected
+// one.
+export async function tryResolveProject(
+  name: string,
+): Promise<{ system: System | null; unreachable: string | null }> {
+  try {
+    const resolved = await resolveProjectDir(name);
+    return { system: resolved?.system ?? localSystem(), unreachable: null };
+  } catch (e) {
+    return { system: null, unreachable: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 // "Is this name usable?" — the shared existing-name test for the two creation
 // paths (createProject, adoptProject). Returns null when the name is free, else
 // a reason naming what actually holds it. It returns a REASON rather than a
@@ -366,12 +390,25 @@ async function heldNameReason(name: string): Promise<string | null> {
   let held: ResolvedProjectDir | null;
   try { held = await resolveProjectDir(name); }
   catch (e) {
-    // resolveProjectDir throws exactly one refusal of its own — a 404 saying
-    // something is at the in-root path and is not a directory. Everything else
-    // it throws is a real fault it deliberately does NOT swallow (EACCES on
-    // `.external/`, a `.external` that is a file), and reporting one of those
-    // as "not a directory" would send the caller hunting a stray file that
-    // isn't there. Those propagate: a broken installation is not a refusal.
+    // A NAME PLACED ON A SYSTEM IS HELD, whatever went wrong resolving it. The
+    // record exists, so the name is taken; the repair is to unregister that
+    // project, not to hunt a stray local file or to fix a system the caller
+    // never named. Letting the refusal through here threw 501s out of
+    // adoptProject and createProject — a purely LOCAL adopt under such a name
+    // failed with a system error instead of the returned PROJECT_EXISTS both
+    // their contracts promise.
+    const { system } = await projectPlacement(name);
+    if (system !== LOCAL_SYSTEM_ID) {
+      return `project '${name}' already exists on system '${system}', which could not be resolved `
+        + `(${errMsg(e)}) — delete it to unregister the name, or pick another name.`;
+    }
+    // resolveProjectDir throws exactly one refusal of its own for a LOCAL
+    // project — a 404 saying something is at the in-root path and is not a
+    // directory. Everything else it throws is a real fault it deliberately does
+    // NOT swallow (EACCES on `.external/`, a `.external` that is a file), and
+    // reporting one of those as "not a directory" would send the caller hunting
+    // a stray file that isn't there. Those propagate: a broken installation is
+    // not a refusal.
     if ((e as { statusCode?: unknown }).statusCode !== 404) throw e;
     return `'${path.join(projectsRoot(), name)}' exists but is not a directory — remove it, or pick another name.`;
   }
@@ -435,15 +472,18 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     const meta = await readProjectMeta(e.name);
     out.push({ name: e.name, path: real, workspace: meta.workspace, external: true, ...placementOf(e.name, meta) });
   }
-  // The store-derived half. A record with no `systemPath` is not a placement
-  // (resolveProjectDir refuses it), so it is not listed as one either — the
-  // listing and the resolver have to agree, and inventing a path here would
-  // make them disagree.
+  // The store-derived half. A record with no `systemPath` is not a placement and
+  // resolveProjectDir refuses it — but it is still LISTED, with an empty `path`
+  // and its `systemPath` left null. Dropping it made it invisible as well as
+  // (then) undeletable, while it went on holding its system row at 409 with
+  // nothing on any page to explain why: exactly the disappearing row the
+  // degraded-listing contract exists to prevent. The enrichment layer resolves
+  // each row and attaches the refusal as its reason, so nothing here has to
+  // invent a path to keep the two consistent.
   for (const [name, placement] of remote) {
-    if (!placement.systemPath) continue;
     out.push({
       name,
-      path: placement.systemPath,
+      path: placement.systemPath ?? '',
       workspace: (await readProjectMeta(name)).workspace,
       external: false,
       ...placement,
@@ -844,6 +884,32 @@ function validatePlacementInput(
 // src/routes.ts). Sessions under ~/.claude/projects/<encoded>/ are
 // deliberately left in place — they might still be referenced by
 // `claude --resume` outside the orchestrator.
+// The project a DELETE addresses, resolved WITHOUT reaching its system.
+//
+// Unregistering needs the name and the placement, never the tree. `getProject`
+// resolves the system, so putting it in front of `deleteProject` made
+// deleteProject's remote branch — written precisely so a project on a system
+// that is down is never stranded — unreachable from the only surface a user
+// has, and turned that into a DEADLOCK: the project stayed registered, and
+// `removeSystem` then refused 409 because that project still named the system.
+//
+// A remote project EXISTS by virtue of its record, including when that record is
+// malformed (a `system` with no `systemPath`): deleting it is the repair for
+// exactly that state, so this must not refuse it. Only the local branch can 404,
+// and resolving a local project never consults a remote system.
+export async function getProjectForDelete(
+  name: string,
+): Promise<{ name: string; system: string; external: boolean }> {
+  validateName(name);
+  const placement = await projectPlacement(name);
+  if (placement.system !== LOCAL_SYSTEM_ID) {
+    return { name, system: placement.system, external: false };
+  }
+  const resolved = await resolveProjectDir(name);
+  if (!resolved) throw httpError(404, `project '${name}' not found`);
+  return { name, system: LOCAL_SYSTEM_ID, external: resolved.external };
+}
+
 export async function deleteProject(name: string): Promise<{ name: string; path: string; system: string }> {
   validateName(name);
   // D11 — THE THIRD BRANCH: DELETING A REMOTE PROJECT UNREGISTERS IT AND
