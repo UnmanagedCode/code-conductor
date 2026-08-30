@@ -28,10 +28,11 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo, git, flakyLaunch } from './remoteSystem.mjs';
 import { adoptProject, worktreeStoreDir } from '../src/projects.ts';
 import {
-  createWorktree, mergeWorktreeIntoParent, removeWorktree, syncWorktree, listWorktrees,
+  createWorktree, mergeWorktreeIntoParent, removeWorktree, syncWorktree, listWorktrees, runGit,
 } from '../src/worktrees.ts';
 import { updateSystem } from '../src/appSettings.ts';
-import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
+import { liveSystemProto } from './systemHandle.mjs';
 
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args) {
@@ -79,6 +80,28 @@ describe('a system that dies mid-operation', () => {
   // Every git call fails from here, but the HANDSHAKE still succeeds, so
   // resolution passes the door and the death happens inside the operation.
   const dieOnEveryGitCall = () => goFlaky({ budget: 0 });
+
+  // A LIVE system on which exactly one command — `git status --porcelain` in
+  // `at` — answers non-zero. This is the other half of the class: git RAN and
+  // failed, so nothing throws and the guard has to notice by itself. Wrapped on
+  // the live handle's own prototype (tests/systemHandle.mjs) so it holds in
+  // whichever System implementation the run is using.
+  async function withFailingStatus(at, body) {
+    const sys = await systemById(remote.id, 'test');
+    const proto = liveSystemProto(sys);
+    const orig = proto.exec;
+    proto.exec = async function (spec, opts) {
+      const argv = spec?.argv ?? [];
+      if (argv.includes('status') && argv.includes('--porcelain') && opts?.cwd === at) {
+        return {
+          code: 1, stdout: '', stderr: 'fatal: could not read status', output: '',
+          timedOut: false, truncated: false, durationMs: 1, spawnError: null,
+        };
+      }
+      return orig.call(this, spec, opts);
+    };
+    try { await body(); } finally { proto.exec = orig; }
+  }
 
   // ── Fix 8: mid-merge ─────────────────────────────────────────────────
 
@@ -143,6 +166,70 @@ describe('a system that dies mid-operation', () => {
       'the refusal names a repair that applies to a half-finished merge');
   });
 
+  // ── The POISONED TAIL: classification must not read the corpse ────────
+  //
+  // A transport failure's message deliberately embeds the dying provider's own
+  // stderr tail, so the refusal can quote why it died. Classifying by substring
+  // over that text then reads the CORPSE as the diagnosis: a provider that dies
+  // of — or merely logs — an errno is misread as the far side answering "I
+  // could not start that command", and the whole throw is skipped.
+  //
+  // This is the normal case, not a freak one: the reference provider's own
+  // fatal() writes to stderr before exiting, and any uncaught Node exception
+  // prints `Error: ENOENT: …`. So the two sources are separated at the
+  // ExecResult seam instead, and the transport one throws whatever its text says.
+  const POISON = 'Error: spawn git ENOENT (provider crash log)';
+
+  // PINS: a transport death whose stderr contains an errno string still throws.
+  // Classified as a local FS answer it came back as `code: 1` — git having run
+  // and said no — and surfaced as a claim about the TREE ("unable to resolve
+  // HEAD"), naming no repair for a system that is gone.
+  test('a transport death with an errno in its stderr still refuses by system', async () => {
+    await goFlaky({ budget: 0, dieStderr: POISON });
+    const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'SYSTEM_UNREACHABLE', JSON.stringify(r));
+    assert.match(r.reason, new RegExp(remote.id));
+    assert.ok(!/unable to resolve HEAD/.test(r.reason),
+      `the provider's dying stderr must not be read as a fact about the tree: ${r.reason}`);
+  });
+
+  // PINS: the same death with a CLEAN tail behaves identically — the pair is
+  // what shows the classification no longer depends on the corpse's text.
+  test('the same death with a clean stderr refuses identically', async () => {
+    await goFlaky({ budget: 0 });
+    const clean = await mergeWorktreeIntoParent('app', wt.worktreeName);
+    assert.equal(clean.code, 'SYSTEM_UNREACHABLE', JSON.stringify(clean));
+  });
+
+  // PINS: it does not decay on the SECOND call. Once the tail is captured the
+  // backoff refusal embeds it too, so a misclassification would spread from one
+  // git call to every later one in the same operation — the guards would go
+  // back to seeing `code: 1` answers instead of throws.
+  test('a poisoned tail does not leak into the backoff refusal either', async () => {
+    await goFlaky({ budget: 0, dieStderr: POISON });
+    await mergeWorktreeIntoParent('app', wt.worktreeName);
+    const second = await mergeWorktreeIntoParent('app', wt.worktreeName);
+    assert.equal(second.code, 'SYSTEM_UNREACHABLE', JSON.stringify(second));
+    await assert.rejects(
+      () => removeWorktree('app', wt.worktreeName),
+      (e) => new RegExp(remote.id).test(e.message),
+      'and a guard on a later call still sees a throw, not an answer',
+    );
+    assert.equal(await exists(wt.worktreePath), true, 'so the worktree is not deleted');
+  });
+
+  // PINS: a COMMAND-level failure keeps FS classification — a cwd that really
+  // does not exist on the system is a real, local, actionable answer about that
+  // command, and calling it unreachability would point at the wrong machine.
+  // This is the half of the discriminator that must NOT change.
+  test('a command that could not start on a live system is still a git answer', async () => {
+    const gone = path.join(remote.root, 'never-existed');
+    const r = await runGit(await systemById(remote.id, 'test'), gone, ['status', '--porcelain']);
+    assert.equal(r.code, 1, 'a live system answering "I could not start that" is not a refusal');
+    assert.match(r.stderr, /ENOENT/);
+  });
+
   // ── Fix 9: a failed check must read as UNKNOWN, never as PASSED ───────
 
   // PINS: `git worktree remove --force` never runs on a worktree whose
@@ -187,6 +274,47 @@ describe('a system that dies mid-operation', () => {
     assert.equal(r.ok, false);
     assert.ok(r.code !== 'PARENT_DIRTY', 'an unread status is not a clean one, nor a dirty one');
     assert.equal(r.code, 'SYSTEM_UNREACHABLE', JSON.stringify(r));
+  });
+
+  // PINS: merge's step-4 guard — the worktree's OWN tree — refuses on an
+  // unmeasurable status like its three siblings. `wtDirty.ok && lines.length`
+  // read a failed check as clean, so with the default allowDirty:false a merge
+  // proceeded and silently did not land uncommitted work, which is the exact
+  // thing step 4 exists to prevent.
+  test('merge refuses when the WORKTREE status could not be read', async () => {
+    // A GIT-level failure on a LIVE system, which is the case the transport
+    // throw does not cover: `git status` answered non-zero (the output fence
+    // firing on a huge status is the realistic trigger) while everything else
+    // works. The double is scoped to that one argv so every earlier step still
+    // really runs — otherwise this would pass on an earlier guard.
+    await withFailingStatus(wt.worktreePath, async () => {
+      const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+      assert.equal(r.ok, false, JSON.stringify(r));
+      assert.equal(r.code, 'WORKTREE_STATUS_UNKNOWN', JSON.stringify(r));
+    });
+  });
+
+  // PINS: the same guard still MERGES when the status reads clean — the refusal
+  // is about the check failing, not about the guard being unconditional.
+  test('merge still proceeds when the worktree status reads clean', async () => {
+    const r = await mergeWorktreeIntoParent('app', wt.worktreeName);
+    assert.equal(r.ok, true, JSON.stringify(r));
+  });
+
+  // PINS: the read surface obeys the same rule — a `git status` that did not
+  // answer must not render as "nothing is dirty", which is a positive claim
+  // about the tree.
+  test('project_status does not render an unreadable tree as clean', async () => {
+    await withFailingStatus(wt.worktreePath, async () => {
+      const r = await callTool(baseUrl, 'project_status', {
+        project: 'app', worktree: wt.worktreeName,
+      });
+      // project_status renders text, so the claim to refute is the heading a
+      // clean tree prints — `DIRTY (0)` — not a JSON field.
+      assert.ok(!/DIRTY \(0\)/.test(r.text),
+        `a status that did not answer rendered as "nothing is dirty": ${r.text}`);
+      assert.match(r.text, /DIRTY \(unknown/, r.text);
+    });
   });
 
   // PINS: syncWorktree names the system instead of blaming the base branch. A
@@ -244,6 +372,36 @@ describe('a system that dies mid-operation', () => {
     await dieOnEveryGitCall();
     const r = await callTool(baseUrl, 'list_projects', {});
     assert.match(r.text, new RegExp(wt.worktreeName), r.text);
+  });
+
+  // PINS: a death in the NARROW window between the row's two git probes still
+  // sets the row's reason. `isGitRepo` succeeded, `hasUnbornHead` did not, and
+  // the catch returned `false` — a git fact invented for a project cc could no
+  // longer measure, on a row carrying no explanation for it.
+  test('a death between the row\'s two git probes still explains the row', async () => {
+    const sys = await systemById(remote.id, 'test');
+    const proto = liveSystemProto(sys);
+    const orig = proto.exec;
+    let seenRepoProbe = false;
+    proto.exec = async function (spec, opts) {
+      const argv = spec?.argv ?? [];
+      if (argv.includes('--git-dir')) { seenRepoProbe = true; return orig.call(this, spec, opts); }
+      // Everything after the repo probe is a dead transport.
+      if (seenRepoProbe && argv[0] === 'git') {
+        return {
+          code: 1, stdout: '', stderr: '', output: '', timedOut: false, truncated: false,
+          durationMs: 1, spawnError: 'provider exited (code 9)', transportFailure: true,
+        };
+      }
+      return orig.call(this, spec, opts);
+    };
+    try {
+      const r = await api(baseUrl, 'GET', '/api/projects');
+      const row = r.body.find(p => p.name === 'app');
+      assert.ok(row, 'the row survives');
+      assert.ok(row.systemUnreachable, `a row missing facts must say why: ${JSON.stringify(row)}`);
+      assert.match(row.systemUnreachable, new RegExp(remote.id));
+    } finally { proto.exec = orig; }
   });
 
   // PINS: one dying project does not take the listing down for the others —

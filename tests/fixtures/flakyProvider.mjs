@@ -24,6 +24,11 @@
 //                  JSON matches — how you target one specific step of a
 //                  multi-step operation, e.g. `git merge`, without having to
 //                  count cc's git calls
+//   --die-stderr S write S to stderr just before dying. cc embeds a dying
+//                  provider's stderr TAIL in the refusal it raises, so this is
+//                  how a transport death is given text that LOOKS like a local
+//                  filesystem answer — the poisoned tail that must not change
+//                  how the failure is classified.
 //
 // `--die-on` forwards the matching frame BEFORE dying, which is the whole
 // point: the command really is running on the far side when the transport
@@ -38,10 +43,12 @@ const REFERENCE = path.resolve(__dirname, '..', '..', 'src', 'systems', 'referen
 
 let budget = null;
 let dieOn = null;
+let dieStderr = null;
 const passThrough = [];
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--budget') budget = Number(process.argv[++i]);
   else if (process.argv[i] === '--die-on') dieOn = new RegExp(process.argv[++i]);
+  else if (process.argv[i] === '--die-stderr') dieStderr = process.argv[++i];
   // Anything the wrapper does not claim is the reference provider's, so a test
   // can still ask for a capability configuration through it.
   else passThrough.push(process.argv[i]);
@@ -56,6 +63,8 @@ const child = spawn(process.execPath, [REFERENCE, ...passThrough], {
 child.stdout.pipe(process.stdout);
 
 function die() {
+  // Written synchronously so it is in the pipe before the exit cc observes.
+  if (dieStderr) { try { process.stderr.write(dieStderr + '\n'); } catch { /* ignore */ } }
   // SIGKILL, not a graceful close: a transport that drops does not get to
   // flush. The child dies with the wrapper so no orphan keeps serving.
   try { child.kill('SIGKILL'); } catch { /* already gone */ }

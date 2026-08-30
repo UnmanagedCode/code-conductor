@@ -26,11 +26,12 @@ export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', '
 // `updateSystem(id, { launch: flakyLaunch({...}) })`, which disposes the live
 // handle, so the next operation gets the flaky process rather than a handle
 // spawned before the test configured anything.
-export function flakyLaunch({ budget, dieOn, flags = [] } = {}) {
+export function flakyLaunch({ budget, dieOn, dieStderr, flags = [] } = {}) {
   return [
     'node', FLAKY_PROVIDER,
     ...(budget === undefined ? [] : ['--budget', String(budget)]),
     ...(dieOn === undefined ? [] : ['--die-on', dieOn]),
+    ...(dieStderr === undefined ? [] : ['--die-stderr', dieStderr]),
     ...flags,
   ];
 }

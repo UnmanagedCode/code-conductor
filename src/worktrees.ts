@@ -176,16 +176,22 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
     // launder in the OTHER direction: a missing cwd or a non-executable git is a
     // real, local, actionable fact about THIS command, and reporting it as
     // "the system could not be reached" would send the reader to the wrong
-    // machine. The shared classifier is the discriminator — a message naming an
-    // FS code (ENOENT on a vanished directory, EACCES) is an answer; anything
-    // else is the far side having stopped answering at all.
+    // machine.
     //
-    // The FS branch keeps the previous shape deliberately: the diagnostic in
-    // `stderr` names the real cause, callers already surface it, and the safety
-    // property still holds because a non-zero code now reads as UNKNOWN at every
-    // guard rather than as "passed". For `local` this branch is the only one
-    // reachable, so local behaviour is unchanged.
-    if (classifySpawnError(r.spawnError) !== 'EUNKNOWN') {
+    // But WHICH it is comes from `transportFailure`, set by the wire layer that
+    // knows its own code paths — NEVER from the message text. A transport
+    // failure's message embeds the dying provider's stderr tail, so classifying
+    // it by substring reads the corpse as the diagnosis: a provider that dies of
+    // (or merely logs) an errno was taken for the far side answering about a
+    // command, and the throw was skipped. That decay compounds, because the tail
+    // is then captured into the backoff refusal every later call gets.
+    //
+    // The command-level branch keeps the previous shape deliberately: the
+    // diagnostic in `stderr` names the real cause, callers already surface it,
+    // and the safety property still holds because a non-zero code now reads as
+    // UNKNOWN at every guard rather than as "passed". `local` never sets
+    // `transportFailure`, so local behaviour is unchanged.
+    if (!r.transportFailure && classifySpawnError(r.spawnError) !== 'EUNKNOWN') {
       return { stdout: r.stdout, stderr: r.stderr || r.spawnError, code: r.code };
     }
     throw httpError(502, `git ${args[0] ?? ''} could not be run on system '${system.id}' in ${cwd}: ${r.spawnError}`,
@@ -931,7 +937,20 @@ export async function mergeWorktreeIntoParent(
   //    land. Overridable: allowDirty:true merges anyway.
   if (!allowDirty) {
     const wtDirty = await worktreeDirtyLines(system, meta.worktreePath);
-    if (wtDirty.ok && wtDirty.lines.length > 0) {
+    // The fifth member of the same class as removeWorktree's gate, the MCP
+    // delete precheck and PARENT_STATUS_UNKNOWN: a check that FAILED is not a
+    // check that passed. Reading `wtDirty.ok && …` merged anyway on an
+    // unreadable tree, silently not landing the uncommitted work this step
+    // exists to protect. `allowDirty:true` is still the deliberate override.
+    if (!wtDirty.ok) {
+      return {
+        ok: false,
+        code: 'WORKTREE_STATUS_UNKNOWN',
+        reason: `could not read the worktree's own working-tree state — refusing rather than merging `
+          + `while uncommitted work there might be silently left behind; pass allowDirty:true to merge anyway`,
+      };
+    }
+    if (wtDirty.lines.length > 0) {
       return {
         ok: false,
         code: 'WORKTREE_DIRTY',

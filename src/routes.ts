@@ -410,19 +410,27 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     // mid-listing death must degrade its own row rather than reject the
     // Promise.all and take the whole page down with it.
     let projIsGitRepo: boolean | undefined;
+    let unborn = false;
     let deadMidListing: string | null = null;
     if (system) {
-      try { projIsGitRepo = await isGitRepo(system, p.path); }
-      catch (e) { if (!isSystemRefusal(e)) throw e; deadMidListing = (e as Error).message; }
+      // BOTH probes inside one try. A death in the window between them used to
+      // invent `unbornHead: false` — a measured-looking fact — on a row that
+      // then carried no reason for its other facts being absent.
+      try {
+        projIsGitRepo = await isGitRepo(system, p.path);
+        if (projIsGitRepo) unborn = await hasUnbornHead(system, p.path);
+      } catch (e) {
+        if (!isSystemRefusal(e)) throw e;
+        deadMidListing = (e as Error).message;
+        projIsGitRepo = undefined;
+      }
     }
     return {
       systemUnreachable: unreachable ?? deadMidListing,
       isGitRepo: projIsGitRepo,
       // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
       // "no commits", so a non-repo reports false and isGitRepo carries it.
-      unbornHead: system && projIsGitRepo
-        ? await hasUnbornHead(system, p.path).catch((e) => { if (!isSystemRefusal(e)) throw e; return false; })
-        : false,
+      unbornHead: unborn,
       worktrees: worktreesWithMerge,
       mergeStatus: system && projIsGitRepo
         ? await getProjectUpstreamStatus(system, p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))

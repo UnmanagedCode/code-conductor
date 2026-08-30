@@ -331,19 +331,27 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
     // resolution: one project's mid-listing death degrades its own row instead
     // of rejecting the Promise.all and failing the tool for every project.
     let projIsGitRepo: boolean | undefined;
+    let unborn = false;
     let deadMidListing: string | null = null;
     if (system) {
-      try { projIsGitRepo = await isGitRepo(system, p.path); }
-      catch (e) { if (!isSystemRefusal(e)) throw e; deadMidListing = (e as Error).message; }
+      // BOTH probes inside one try. A death in the window between them used to
+      // invent `unbornHead: false` — a measured-looking fact — on a row that
+      // then carried no reason for its other facts being absent.
+      try {
+        projIsGitRepo = await isGitRepo(system, p.path);
+        if (projIsGitRepo) unborn = await hasUnbornHead(system, p.path);
+      } catch (e) {
+        if (!isSystemRefusal(e)) throw e;
+        deadMidListing = (e as Error).message;
+        projIsGitRepo = undefined;
+      }
     }
     return {
       ...p,
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
       systemUnreachable: unreachable ?? deadMidListing,
       isGitRepo: projIsGitRepo,
-      unbornHead: system && projIsGitRepo
-        ? await hasUnbornHead(system, p.path).catch((e) => { if (!isSystemRefusal(e)) throw e; return false; })
-        : false,
+      unbornHead: unborn,
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
@@ -2221,6 +2229,9 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     branch?: string | null;
     head?: { sha: string | null; subject: string | null } | null;
     dirty?: string[];
+    // `git status` did not answer. Absent on every ordinary read, so its
+    // presence always means the dirty list below is missing rather than empty.
+    dirtyUnknown?: true;
     dirtyTotal?: number;
     dirtyTruncated?: boolean;
     recentCommits?: string[];
@@ -2253,14 +2264,20 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     out.head = null;
   }
   // Dirty lines (porcelain). For worktrees, filter out our own dotdir.
+  //
+  // A status that did NOT answer is reported as unknown, never as an empty
+  // list: "nothing is dirty" is a positive claim about the tree, and rendering
+  // it for a check that failed is the same read-side defect as the guards that
+  // treated a failed check as a passed one. The realistic trigger is git's own
+  // output fence firing on a pathological tree — precisely the tree least safe
+  // to describe as clean.
   if (worktreeMeta) {
     const d = await worktreeDirtyLines(system, cwd);
-    out.dirty = d.ok ? d.lines : [];
+    if (d.ok) out.dirty = d.lines; else out.dirtyUnknown = true;
   } else {
     const d = await runGit(system, cwd, ['status', '--porcelain']);
-    out.dirty = d.code === 0
-      ? d.stdout.split('\n').map(s => s.trim()).filter(Boolean)
-      : [];
+    if (d.code === 0) out.dirty = d.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+    else out.dirtyUnknown = true;
   }
   // Cap the dirty list so a pathological working tree can't blow up the
   // response (mirrors project_read / project_diff's bounded-output pattern).

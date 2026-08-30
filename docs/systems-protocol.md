@@ -408,7 +408,7 @@ as "no such file" turns one fixable fault into a fleet of misses.
 
 | Situation | cc's behaviour |
 |---|---|
-| The provider will not launch, or dies | Every in-flight operation fails `ETRANSPORT` at once. `exec` still resolves (with a `spawnError`) rather than throwing — its callers all branch on the result. |
+| The provider will not launch, or dies | Every in-flight operation fails `ETRANSPORT` at once. `exec` still resolves (with a `spawnError`) rather than throwing — its callers all branch on the result. The result also carries **`transportFailure: true`**, which is the ONLY way to tell this from the far side answering "I could not start that command": a transport failure's `spawnError` embeds the provider's dying stderr tail, so it may name any errno at all and must never be classified by its text. `runGit` reads exactly that flag to decide between refusing by system and reporting a git answer. |
 | The next operation after a death | Relaunches and redoes the handshake. Supervision is **restart-on-demand**: nothing reconnects a channel nobody is using. |
 | Repeated failures | Exponential backoff, 100 ms doubling to a 5 s ceiling. **Inside the window an operation is refused, not queued** — a caller told "unreachable" now beats one held open across a restart storm. |
 | A malformed frame | The connection is torn down and restarted like a death. |

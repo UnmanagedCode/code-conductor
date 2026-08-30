@@ -92,6 +92,24 @@ export interface ExecResult {
   // else null. Distinguishes "failed to launch" from "ran and exited 1", which
   // callers surface differently.
   spawnError: string | null;
+  // WHOSE failure `spawnError` describes, and the reason it cannot be answered
+  // by reading the message.
+  //
+  // Two different things land in `spawnError`: the far side answering "I could
+  // not start that command" (an errno about a real path on a real machine), and
+  // the TRANSPORT dying (cc never got an answer at all). The second deliberately
+  // embeds the dying provider's stderr TAIL so a refusal can quote why it died —
+  // and a provider that dies OF an FS error, or merely logs one, then puts an
+  // errno in a message that is not about a command at all. A provider's own
+  // fatal() writes to stderr before exiting, and any uncaught Node exception
+  // prints `Error: ENOENT: …`, so this is the ordinary case rather than a freak.
+  //
+  // Classifying that text by substring read the corpse as the diagnosis. So the
+  // wire layer, which knows which of its own code paths produced the failure,
+  // says so here instead. Set ONLY by ProviderSystem's transport paths —
+  // LocalSystem never sets it, because a local spawn error is always about the
+  // command.
+  transportFailure?: true;
   // Set only when cc (or the far side, on a timeout) terminated the command on
   // a system whose provider does NOT advertise `processGroupSignal`: the direct
   // child was signalled and its grandchildren may still be running — the

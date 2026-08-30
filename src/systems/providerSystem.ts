@@ -102,8 +102,11 @@ export class ProviderSystem implements System, ShellHost {
     try { hs = await this.#conn.ensureUp(); }
     catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // TRANSPORT: cc never reached the far side. Flagged as such rather than
+      // left to be classified from `msg`, which embeds the provider's own
+      // dying stderr and may name any errno at all.
       return new ExecOutputCollector({}, () => {}).result(1, {
-        timedOut: false, spawnError: msg, durationMs: Date.now() - started,
+        timedOut: false, spawnError: msg, transportFailure: true, durationMs: Date.now() - started,
       });
     }
     const id = this.#conn.nextId('e');
@@ -117,7 +120,7 @@ export class ProviderSystem implements System, ShellHost {
         });
       });
       const finish = (code: number, extra: {
-        timedOut: boolean; spawnError?: string; descendantsMaySurvive?: boolean;
+        timedOut: boolean; spawnError?: string; transportFailure?: true; descendantsMaySurvive?: boolean;
       }): void => {
         if (settled) return;
         settled = true;
@@ -152,7 +155,10 @@ export class ProviderSystem implements System, ShellHost {
             finish(1, { timedOut: false, spawnError: frameMessage(f) });
           }
         },
-        down: (err) => finish(1, { timedOut: false, spawnError: err.message }),
+        // TRANSPORT: the connection went away mid-command — see the ensureUp
+        // path above. The `error` FRAME beside it is the other kind: the far
+        // side answering about the command, which keeps FS classification.
+        down: (err) => finish(1, { timedOut: false, spawnError: err.message, transportFailure: true }),
       });
       this.#conn.send(execFrame(id, spec, opts, env));
     });
