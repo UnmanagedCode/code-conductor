@@ -16,6 +16,7 @@
 // REPLACES the environment, exactly as node's spawn does, because the local and
 // wire implementations of one primitive cannot differ on what an option means.
 
+import path from 'node:path';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor,
@@ -47,6 +48,31 @@ const EXEC_TIMEOUT_SLACK_MS = 5_000;
 // large tree, a clone) so it can never turn a slow answer into a wrong one.
 // Injectable so a test can assert the fence without waiting for it.
 const DEFAULT_OP_TIMEOUT_MS = 10 * 60_000;
+
+// THE PATH INVARIANT, ENFORCED AT THE WIRE (docs/systems-protocol.md §1: "cc
+// never sends a relative path").
+//
+// Declaring it bought nothing — this class would ship whatever string a caller
+// composed, and a relative path resolves against wherever the PROVIDER process
+// happens to run. A read then answers about a file nobody asked for; a write
+// lands in a directory nobody chose and REPORTS SUCCESS. Both instances of that
+// found so far came from a call site that resolved only the SYSTEM and then
+// composed a path from a project that had none, so `path.join('', x)` produced
+// a bare filename.
+//
+// A relative path arriving here is cc's OWN bug, never a provider's, so it is a
+// hard throw and not a returned refusal: `exec` otherwise never rejects, and
+// swallowing this as a result the caller inspects is exactly how the class
+// stayed invisible. The op name is in the message because the fault is at the
+// call site, not here.
+function requireAbsolute(op: string, what: string, p: string): void {
+  if (!path.isAbsolute(p)) {
+    throw new Error(
+      `${op}: ${what} must be absolute, got ${JSON.stringify(p)} — `
+      + `cc never sends a relative path to a system (docs/systems-protocol.md)`,
+    );
+  }
+}
 
 export interface ProviderSystemOptions extends ConnectionOptions {
   id: string;
@@ -90,6 +116,7 @@ export class ProviderSystem implements System, ShellHost {
   // the provider was launched with would silently answer from a snapshot taken
   // at boot.
   async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
+    requireAbsolute('exec', 'cwd', opts.cwd);
     return this.#exec(spec, opts, opts.env ?? process.env);
   }
 
@@ -158,16 +185,19 @@ export class ProviderSystem implements System, ShellHost {
   // ── readFile / writeFile: the other two primitives ─────────────────
 
   async readFile(filePath: string): Promise<string> {
+    requireAbsolute('readFile', 'path', filePath);
     const { data } = await this.#read(filePath, {});
     return data.toString('utf8');
   }
 
   async readFileBytes(filePath: string, { length }: { length?: number } = {}): Promise<Buffer> {
+    requireAbsolute('readFileBytes', 'path', filePath);
     const { data } = await this.#read(filePath, length === undefined ? {} : { length });
     return data;
   }
 
   async writeFile(filePath: string, data: string, opts: WriteFileOptions = {}): Promise<void> {
+    requireAbsolute('writeFile', 'path', filePath);
     if (opts.atomic && opts.exclusive) {
       // Same refusal as LocalSystem: an atomic write ends in a rename, which
       // overwrites by definition, so the combination has no honest meaning.
@@ -292,6 +322,7 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async stat(p: string): Promise<SystemStat | null> {
+    requireAbsolute('stat', 'path', p);
     // `-L` follows symlinks, matching fs.stat: a broken link is ENOENT on both.
     // `%f` is the RAW mode including the file-type bits, so `kind` is derived
     // from the same number fs.Stats.mode carries rather than from `%F`, whose
@@ -318,6 +349,7 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async readDir(p: string): Promise<SystemDirent[]> {
+    requireAbsolute('readDir', 'path', p);
     // The trailing `/.` is what makes a FILE report ENOTDIR rather than an
     // empty listing — `find <file> -mindepth 1` exits 0 with no output, which
     // would read as "an empty directory".
@@ -327,6 +359,7 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async realpath(p: string): Promise<string> {
+    requireAbsolute('realpath', 'path', p);
     // `-e` requires every component to exist, matching fs.realpath — the
     // default would happily canonicalise a path that is not there.
     const r = await this.#deriveOk(`realpath '${p}'`, ['realpath', '-e', '--', p]);
@@ -334,20 +367,24 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async mkdir(p: string, { recursive = false }: { recursive?: boolean } = {}): Promise<void> {
+    requireAbsolute('mkdir', 'path', p);
     await this.#deriveOk(`mkdir '${p}'`, recursive ? ['mkdir', '-p', '--', p] : ['mkdir', '--', p]);
   }
 
   async removeTree(p: string): Promise<void> {
+    requireAbsolute('removeTree', 'path', p);
     await this.#deriveOk(`removeTree '${p}'`, ['rm', '-rf', '--', p]);
   }
 
   async unlink(p: string): Promise<void> {
+    requireAbsolute('unlink', 'path', p);
     // ONE directory entry, never followed and never recursed — the shape the
     // `.external/<name>` record is deleted with.
     await this.#deriveOk(`unlink '${p}'`, ['unlink', '--', p]);
   }
 
   async chmod(p: string, mode: number): Promise<void> {
+    requireAbsolute('chmod', 'path', p);
     // Callers pass a mode read back from stat, which carries the file-type
     // bits; chmod(1) wants permission bits only.
     const octal = (mode & 0o7777).toString(8).padStart(4, '0');

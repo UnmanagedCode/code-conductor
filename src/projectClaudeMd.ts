@@ -27,8 +27,7 @@
 // workspace block and an empty project part.
 
 import path from 'node:path';
-import { listProjects } from './projects.ts';
-import { resolveSystem } from './systems/registry.ts';
+import { listProjects, resolveProjectDir } from './projects.ts';
 import { composeProjectConventionsBlock, getCatalog } from './projectConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
@@ -117,12 +116,22 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   | { path: string; regenerated: true; missing: string[] }
 > {
   const projects = await listProjects();
-  const proj = projects.find(p => p.name === projectName);
-  if (!proj) return { skipped: 'no-project' };
+  if (!projects.some(p => p.name === projectName)) return { skipped: 'no-project' };
   // This is one of the only two places cc writes INSIDE a project tree, so it
   // reads and writes through the project's system, never with a bare fs call.
-  const system = await resolveSystem(projectName);
-  const target = conventionsTargetPath(proj.path);
+  //
+  // resolveProjectDir, NOT resolveSystem: this needs a PATH as much as a
+  // handle, and the two are not the same question. A record naming a reachable
+  // system with no `systemPath` resolves its system perfectly well and has no
+  // tree — and the listing row it comes from carries an empty path, so
+  // composing against it wrote `CLAUDE.md` and `CONVENTIONS.md` to a bare
+  // filename on the far side, landing wherever the provider ran and reporting
+  // success. Resolving the project refuses instead, and the sweep's
+  // per-project catch turns that into an error entry.
+  const resolved = await resolveProjectDir(projectName);
+  if (!resolved) return { skipped: 'no-project' };
+  const { path: projPath, system } = resolved;
+  const target = conventionsTargetPath(projPath);
 
   let existing: string | null = null;
   try { existing = await system.readFile(target); }
@@ -154,7 +163,7 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
     return { skipped: 'catalog-degraded', missing };
   }
 
-  await ensureConventionsImport(system, proj.path);
+  await ensureConventionsImport(system, projPath);
   const content = await composeProjectConventionsDoc(slugs, missing);
   await system.writeFile(target, content);
   if (log?.log) {

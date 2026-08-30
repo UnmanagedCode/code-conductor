@@ -527,8 +527,15 @@ export async function findSelfProject(selfDir: string = SELF_PROJECT_DIR): Promi
   let selfReal: string;
   try { selfReal = await fs.realpath(selfDir); } catch { return null; }
   for (const p of await listProjects()) {
+    // A row the resolver refuses carries no path (the listing keeps it visible
+    // with an empty one), so there is nothing to compare and nothing to ask a
+    // system about — probing it would send a relative path across the wire.
+    // Skipped explicitly rather than left to the catch below, which exists for a
+    // vanished target, not for a row that was never resolvable.
+    const { system } = await tryResolveProject(p.name);
+    if (!system || !p.path) continue;
     let real: string;
-    try { real = await (await resolveSystem(p.name)).realpath(p.path); } catch { continue; }
+    try { real = await system.realpath(p.path); } catch { continue; }
     if (real === selfReal) return p;
   }
   return null;

@@ -1,0 +1,180 @@
+// cc NEVER SENDS A RELATIVE PATH TO A SYSTEM — enforced, not merely declared.
+//
+// docs/systems-protocol.md §1 states the invariant, and nothing held anyone to
+// it: `ProviderSystem` would ship whatever string a caller composed. Twice now
+// the same defect has been the gap between a guarded resolver and an unguarded
+// one — a call site that resolved only the SYSTEM, then composed a path from a
+// project row that had none, producing `path.join('', 'CONVENTIONS.md')` →
+// `'CONVENTIONS.md'`. A relative path on the wire resolves against wherever the
+// provider process happens to run, so a WRITE lands in a directory nobody chose
+// and the call reports success.
+//
+// A relative path reaching this boundary is cc's OWN bug, never a provider's,
+// so it fails hard and loudly rather than returning a refusal a caller might
+// swallow. This guard is what should have caught both instances.
+//
+// The two halves below are deliberately separate: the boundary guard (does the
+// rule hold at all?) and the call site it was breached at (does the sweep still
+// reach it?).
+
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
+import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
+import { adoptProject, projectStoreDir, listProjects, findSelfProject } from '../src/projects.ts';
+import { regenerateAllProjectConventions, ensureProjectConventionsMd } from '../src/projectClaudeMd.ts';
+import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
+import { addSystem } from '../src/appSettings.ts';
+
+async function exists(p) {
+  try { await fs.lstat(p); return true; } catch { return false; }
+}
+
+async function writeRecord(name, record) {
+  await fs.mkdir(projectStoreDir(name), { recursive: true });
+  await fs.writeFile(path.join(projectStoreDir(name), 'project.json'), JSON.stringify(record, null, 2) + '\n');
+}
+
+describe('the wire boundary refuses a relative path', () => {
+  let home, sys;
+  beforeEach(async () => {
+    ({ home } = await freshProjectsRoot());
+    await addSystem({ id: 'refbox', label: 'Reference', launch: (await import('./remoteSystem.mjs')).referenceLaunch() });
+    sys = await systemById('refbox', 'test');
+  });
+  afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
+
+  // PINS: every path-taking operation refuses a relative path, so no future
+  // call site can silently repeat the defect through a different method.
+  test('every path-taking operation refuses one', async () => {
+    const cases = [
+      ['stat', () => sys.stat('CONVENTIONS.md')],
+      ['readFile', () => sys.readFile('CONVENTIONS.md')],
+      ['readFileBytes', () => sys.readFileBytes('CONVENTIONS.md')],
+      ['writeFile', () => sys.writeFile('CONVENTIONS.md', 'x')],
+      ['readDir', () => sys.readDir('sub')],
+      ['realpath', () => sys.realpath('')],
+      ['mkdir', () => sys.mkdir('sub')],
+      ['removeTree', () => sys.removeTree('sub')],
+      ['unlink', () => sys.unlink('f')],
+      ['chmod', () => sys.chmod('f', 0o755)],
+    ];
+    for (const [name, call] of cases) {
+      await assert.rejects(call, (e) => /absolute/i.test(e.message) && e.message.includes(name),
+        `${name} must refuse a relative path, naming itself`);
+    }
+  });
+
+  // PINS: the empty string is the shape the defect actually took — it is not
+  // absolute, and `path.join('', x)` is what produced it.
+  test("the empty path — the shape the defect took — is refused", async () => {
+    await assert.rejects(() => sys.writeFile('', 'x'), (e) => /absolute/i.test(e.message));
+    await assert.rejects(() => sys.stat(''), (e) => /absolute/i.test(e.message));
+  });
+
+  // PINS: `exec`'s cwd is guarded too — a command run in a relative directory
+  // lands wherever the provider happens to be, exactly like a relative write.
+  test("exec's cwd is guarded as well", async () => {
+    await assert.rejects(() => sys.exec({ argv: ['pwd'] }, { cwd: 'sub' }),
+      (e) => /absolute/i.test(e.message) && /cwd/.test(e.message));
+  });
+
+  // PINS: it is a THROW, not a returned refusal — `exec` otherwise never
+  // rejects, and swallowing cc's own bug as a result the caller inspects is how
+  // this class stays invisible.
+  test('it throws rather than resolving to a result exec callers would inspect', async () => {
+    let threw = false;
+    try { await sys.exec({ argv: ['pwd'] }, { cwd: 'relative' }); } catch { threw = true; }
+    assert.equal(threw, true, 'exec rejects here even though it never rejects otherwise');
+  });
+
+  // PINS: the guard does not touch the normal path — an absolute one works.
+  test('an absolute path is unaffected', async () => {
+    const f = path.join(home, 'ok.txt');
+    await sys.writeFile(f, 'hello');
+    assert.equal(await sys.readFile(f), 'hello');
+    assert.equal((await sys.exec({ argv: ['pwd'] }, { cwd: home })).stdout.trim(), home);
+  });
+});
+
+describe('the conventions sweep never writes to an unresolvable project', () => {
+  let ctx, baseUrl, home, remote;
+  before(async () => { ctx = await bootServer(); ({ baseUrl } = ctx); });
+  after(async () => { await ctx.close(); });
+  beforeEach(async () => {
+    ({ home } = await freshProjectsRoot());
+    ctx.projectsRoot = process.env.PROJECTS_ROOT;
+    remote = await bindRemoteSystem();
+  });
+  afterEach(async () => { await ctx.instances.shutdown(); disposeSystemHandles(); await rmrf(home); });
+
+  // The provider inherits this process's cwd, so a RELATIVE write lands there.
+  // Both sweep tests run under a scratch directory: unguarded, this defect
+  // overwrites `CONVENTIONS.md` and prepends to `CLAUDE.md` in whatever
+  // directory the run started in — which for this suite is the repo itself.
+  async function sweepUnderScratchCwd() {
+    const cwd = await fs.mkdtemp(path.join(home, 'provider-cwd-'));
+    const prev = process.cwd();
+    process.chdir(cwd);
+    try { return { cwd, results: await regenerateAllProjectConventions() }; }
+    finally { process.chdir(prev); }
+  }
+
+  // PINS THE DEFECT: a record naming a REACHABLE system with no `systemPath`
+  // resolves its system fine, so a sweep that resolved only the system composed
+  // `path.join('', …)` and reported `regenerated: true` for a write that went
+  // nowhere anyone chose.
+  test('a record with no systemPath is an error entry, never a success', async () => {
+    await writeRecord('broken', { system: remote.id });
+    const { results } = await sweepUnderScratchCwd();
+    const row = results.find(r => r.name === 'broken');
+    assert.ok(row, `the row is swept, not skipped: ${JSON.stringify(results)}`);
+    assert.equal(row.regenerated, undefined, 'it must not report success');
+    assert.match(String(row.error), /systemPath/,
+      'the sweep records WHY, which is what the per-project catch is for');
+  });
+
+  // PINS: and nothing is written. The report and the filesystem are two separate
+  // claims — the defect got the first one wrong BECAUSE it got the second wrong.
+  test('nothing is written into the provider working directory', async () => {
+    await writeRecord('broken', { system: remote.id });
+    const { cwd } = await sweepUnderScratchCwd();
+    assert.equal(await exists(path.join(cwd, 'CONVENTIONS.md')), false,
+      'a relative write would have landed here');
+    assert.equal(await exists(path.join(cwd, 'CLAUDE.md')), false);
+  });
+
+  // PINS: the single-project form refuses too — the sweep is not the only
+  // caller (adopt and the convention-mutation routes reach it directly).
+  test('ensureProjectConventionsMd refuses that project by name', async () => {
+    await writeRecord('broken', { system: remote.id });
+    await assert.rejects(() => ensureProjectConventionsMd('broken'), (e) => /systemPath/.test(e.message));
+  });
+
+  // PINS: one bad record does not stop the sweep reaching the healthy projects
+  // beside it — the whole point of the per-project catch.
+  test('a healthy project beside it is still regenerated', async () => {
+    const tree = await seedRepo(path.join(remote.root, 'ok'));
+    assert.equal((await adoptProject('ok', tree, { system: remote.id })).ok, true);
+    await api(baseUrl, 'POST', '/api/projects', { name: 'localone' });
+    await writeRecord('broken', { system: remote.id });
+
+    const results = await regenerateAllProjectConventions();
+    assert.equal(results.find(r => r.name === 'ok').regenerated, true);
+    assert.equal(results.find(r => r.name === 'localone').regenerated, true);
+    assert.ok(results.find(r => r.name === 'broken').error);
+    assert.match(await fs.readFile(path.join(tree, 'CONVENTIONS.md'), 'utf8'), /cc:conventions/);
+  });
+
+  // PINS: the other consumer of a listing row's path skips an unresolvable one
+  // rather than sending a relative path across and relying on the far side to
+  // fail. Benign before the guard; a hard throw after it.
+  test('findSelfProject skips an unresolvable row instead of probing it', async () => {
+    await writeRecord('broken', { system: remote.id });
+    assert.ok((await listProjects()).some(p => p.name === 'broken'), 'the row is present to be skipped');
+    assert.equal(await findSelfProject(path.join(home, 'nowhere')), null,
+      'the sweep completes and answers, rather than throwing on the bad row');
+  });
+});
