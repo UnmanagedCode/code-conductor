@@ -26,9 +26,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo, git, flakyLaunch } from './remoteSystem.mjs';
-import { adoptProject, worktreeStoreDir } from '../src/projects.ts';
+import { adoptProject, createProject, worktreeStoreDir } from '../src/projects.ts';
 import {
   createWorktree, mergeWorktreeIntoParent, removeWorktree, syncWorktree, listWorktrees, runGit,
+  getProjectCommits,
 } from '../src/worktrees.ts';
 import { updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
@@ -95,6 +96,44 @@ describe('a system that dies mid-operation', () => {
       if (argv.includes('status') && argv.includes('--porcelain') && opts?.cwd === at) {
         return {
           code: 1, stdout: '', stderr: 'fatal: could not read status', output: '',
+          timedOut: false, truncated: false, durationMs: 1, spawnError: null,
+        };
+      }
+      return orig.call(this, spec, opts);
+    };
+    try { await body(); } finally { proto.exec = orig; }
+  }
+
+  // `git log` in `at` answers non-zero on an otherwise-live system.
+  async function withFailingLog(at, body) {
+    const sys = await systemById(remote.id, 'test');
+    const proto = liveSystemProto(sys);
+    const orig = proto.exec;
+    proto.exec = async function (spec, opts) {
+      const argv = spec?.argv ?? [];
+      if (argv.includes('log') && opts?.cwd === at) {
+        return {
+          code: 1, stdout: '', stderr: 'fatal: could not read object', output: '',
+          timedOut: false, truncated: false, durationMs: 1, spawnError: null,
+        };
+      }
+      return orig.call(this, spec, opts);
+    };
+    try { await body(); } finally { proto.exec = orig; }
+  }
+
+  // The same shape for the uncommitted diff: `git diff … HEAD` (no `...`, which
+  // is the committed half's three-dot range) in `at` answers non-zero, on a
+  // system that is otherwise alive.
+  async function withFailingDiff(at, body) {
+    const sys = await systemById(remote.id, 'test');
+    const proto = liveSystemProto(sys);
+    const orig = proto.exec;
+    proto.exec = async function (spec, opts) {
+      const argv = spec?.argv ?? [];
+      if (argv.includes('diff') && argv.includes('HEAD') && opts?.cwd === at) {
+        return {
+          code: 1, stdout: '', stderr: 'fatal: could not read the index', output: '',
           timedOut: false, truncated: false, durationMs: 1, spawnError: null,
         };
       }
@@ -230,6 +269,55 @@ describe('a system that dies mid-operation', () => {
     assert.match(r.stderr, /ENOENT/);
   });
 
+  // PINS: the DERIVED ops obey the same rule as runGit. `#derive` — the layer
+  // under realpath/stat/mkdir/rm/readdir — read the same tail-embedding message
+  // through the same substring classifier, on the exact result the flag is set
+  // on. So a transport death whose corpse says ENOENT came back as a real FS
+  // answer and adopt asserted TARGET_NOT_FOUND about a tree that was there all
+  // along: the precise regression the previous commit claimed to have killed,
+  // fixed one layer up and missed one layer down.
+  test('a derived op refuses by system when its transport dies with an errno tail', async () => {
+    const other = await seedRepo(path.join(remote.root, 'other'));
+    await goFlaky({ budget: 0, dieStderr: 'Error: spawn realpath ENOENT (provider crash log)' });
+    const r = await adoptProject('other', other, { system: remote.id });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'SYSTEM_UNREACHABLE', JSON.stringify(r));
+    assert.match(r.reason, new RegExp(remote.id));
+  });
+
+  // PINS: the pair — the same death with a clean tail already answered this way,
+  // so the two together show the answer no longer depends on the corpse's text.
+  test('the same derived-op death with a clean tail refuses identically', async () => {
+    const other = await seedRepo(path.join(remote.root, 'other'));
+    await goFlaky({ budget: 0 });
+    const r = await adoptProject('other', other, { system: remote.id });
+    assert.equal(r.code, 'SYSTEM_UNREACHABLE', JSON.stringify(r));
+  });
+
+  // PINS: an EEXIST-shaped corpse does not become a "already exists" answer.
+  // createProject keys its 409 on EEXIST from the remote mkdir, so the same
+  // misclassification told the user a path was taken on a system that was dead.
+  test('a create on a system dying with an EEXIST tail is not told the path exists', async () => {
+    await goFlaky({ budget: 0, dieStderr: 'Error: EEXIST: file already exists' });
+    // The refusal is allowed to QUOTE the corpse — that is what the tail is for
+    // — so the assertion is on the CLAIM: not a 409, and typed as a transport
+    // failure rather than as the far side saying the path was taken.
+    await assert.rejects(
+      () => createProject('fresh', { system: remote.id, systemPath: path.join(remote.root, 'fresh') }),
+      (e) => e.statusCode !== 409 && e.code === 'ETRANSPORT',
+      'a dead system must not be reported as an occupied path',
+    );
+  });
+
+  // PINS: the command-level branch of the DERIVED ops is unchanged — a path that
+  // really is absent on a LIVE system still raises ENOENT, which is what adopt's
+  // TARGET_NOT_FOUND legitimately keys on.
+  test('a derived op on a live system still classifies a real ENOENT', async () => {
+    const r = await adoptProject('ghost', path.join(remote.root, 'never-existed'), { system: remote.id });
+    assert.equal(r.ok, false, JSON.stringify(r));
+    assert.equal(r.code, 'TARGET_NOT_FOUND', JSON.stringify(r));
+  });
+
   // ── Fix 9: a failed check must read as UNKNOWN, never as PASSED ───────
 
   // PINS: `git worktree remove --force` never runs on a worktree whose
@@ -339,6 +427,72 @@ describe('a system that dies mid-operation', () => {
     assert.ok(r.code !== 'TARGET_NOT_FOUND',
       `the target exists; cc simply could not look: ${JSON.stringify(r)}`);
     assert.match(r.reason, new RegExp(remote.id), JSON.stringify(r));
+  });
+
+  // PINS: the commit-log payload does not report "no uncommitted changes" for a
+  // `git status` that never answered. Same rule as project_status, same
+  // realistic trigger — runGit's own 16 MB output fence, which fires on exactly
+  // the tree least safe to describe as clean.
+  test('getProjectCommits does not claim a clean tree it could not read', async () => {
+    await withFailingStatus(tree, async () => {
+      const r = await getProjectCommits('app', {});
+      assert.equal(r.hasUncommitted, undefined,
+        `an unread status must not report as "no uncommitted changes": ${JSON.stringify(r)}`);
+      assert.equal(r.uncommittedUnknown, true);
+    });
+  });
+
+  // PINS: the pair — a status that DOES answer still reports the fact, so the
+  // unknown is not simply always set.
+  test('getProjectCommits still reports a measured clean tree', async () => {
+    const r = await getProjectCommits('app', {});
+    assert.equal(r.hasUncommitted, false);
+    assert.equal('uncommittedUnknown' in r, false);
+  });
+
+  // PINS: project_diff's uncommitted half does not render a failed
+  // `git diff --numstat HEAD` as a zero-file "no uncommitted changes". Its own
+  // committed half throws on the same failure, so the two halves of one function
+  // disagreed about what an unanswered diff means.
+  test('project_diff does not render an unreadable uncommitted diff as empty', async () => {
+    await withFailingDiff(wt.worktreePath, async () => {
+      const r = await callTool(baseUrl, 'project_diff', {
+        project: 'app', worktree: wt.worktreeName, summary: true,
+      });
+      // Summary mode returns JSON, so the false claim to refute is a zeroed
+      // `uncommitted.totals` — "nothing will land if you merge right now",
+      // which is the decision the tool's own description hangs on this field.
+      const body = JSON.parse(r.text);
+      assert.equal(body.uncommitted.unknown, true, r.text);
+      assert.equal('totals' in body.uncommitted, false,
+        `an unreadable uncommitted diff reported zeroed counts: ${r.text}`);
+    });
+  });
+
+  // PINS: a `git log` that failed on a repo WITH commits is not rendered as an
+  // empty history. `git log` exits non-zero for two unrelated reasons — an
+  // unborn HEAD, and not answering at all — and only the first is legitimately
+  // empty. The discriminator costs nothing in the normal case because it is
+  // only asked on the failure path.
+  test('getProjectCommits does not render an unreadable log as empty history', async () => {
+    await withFailingLog(tree, async () => {
+      await assert.rejects(
+        () => getProjectCommits('app', {}),
+        (e) => /could not read/i.test(e.message) || /did not answer/i.test(e.message),
+        'a log that did not answer must not read as "this repo has no commits"',
+      );
+    });
+  });
+
+  // PINS: the pair — a genuinely unborn HEAD still reports an empty history,
+  // which is the behaviour the non-zero branch exists for and must not lose.
+  test('a genuinely unborn repo still reports empty history', async () => {
+    const fresh = path.join(remote.root, 'fresh-repo');
+    await fs.mkdir(fresh, { recursive: true });
+    await git(fresh, 'init', '-q');
+    assert.equal((await adoptProject('fresh', fresh, { system: remote.id })).ok, true);
+    const r = await getProjectCommits('fresh', {});
+    assert.deepEqual(r.commits, []);
   });
 
   // ── Fix 10: registrations are store-derived and survive ───────────────

@@ -1599,7 +1599,11 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     const result: {
       project: string; worktree: string; baseRef: string; head: string | null;
       summary: boolean; ahead: number | null; totals: typeof totals; files: DiffFileRow[];
-      uncommitted?: { totals: typeof totals; files: DiffFileRow[]; untracked: string[] };
+      uncommitted?:
+        | { totals: typeof totals; files: DiffFileRow[]; untracked: string[] }
+        // `unknown` instead of the shape above when the uncommitted diff could
+        // not be read: absent counts, not zeroed ones.
+        | { unknown: true; reason: string };
     } = { project, worktree: wt.worktreeName, baseRef: ref, head, summary: true, ahead, totals, files };
 
     // Staged + unstaged changes vs HEAD (does not include untracked files)
@@ -1607,8 +1611,18 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       runGit(system, wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
       runGit(system, wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
     ]);
-    const uNums = rnu.code === 0 ? parseNumstat(rnu.stdout) : [];
-    const uStats = rnsu.code === 0 ? parseNameStatus(rnsu.stdout) : [];
+    // A diff that did NOT answer is reported as unknown, never as zero files.
+    // The committed half above THROWS on the same failure, so rendering this
+    // half as "no uncommitted changes" made one function give two different
+    // meanings to one unanswered git call — and the tool's own description
+    // names `hasUncommittedChanges` as the signal that nothing will land on a
+    // merge, which is exactly the decision a false zero corrupts.
+    if (rnu.code !== 0 || rnsu.code !== 0) {
+      result.uncommitted = { unknown: true, reason: (rnu.stderr || rnsu.stderr).trim() || 'git diff did not answer' };
+      return result;
+    }
+    const uNums = parseNumstat(rnu.stdout);
+    const uStats = parseNameStatus(rnsu.stdout);
     const uFiles = uStats.map((s, i): DiffFileRow => {
       const n = uNums[i] ?? { additions: 0, deletions: 0, binary: false };
       const entry: DiffFileRow = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };

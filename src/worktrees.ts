@@ -1252,7 +1252,8 @@ interface CommitRow {
 // where each commit is { sha, shortSha, subject, author, relativeDate, isoDate, parents },
 // and `parents` is the array of parent SHAs (empty for the root, ≥2 for a merge) — the
 // frontend uses it to compute the branch/merge graph lanes.
-// hasUncommitted: true when `git status --porcelain` is non-empty.
+// hasUncommitted: true when `git status --porcelain` is non-empty, undefined
+// (with uncommittedUnknown:true) when that status did not answer.
 // aheadCount/aheadOf: how many leading commits are ahead of the base (upstream or
 // worktree base branch), or null when unknown/not applicable.
 export async function getProjectCommits(
@@ -1264,7 +1265,12 @@ export async function getProjectCommits(
   commits: CommitRow[];
   truncated: boolean;
   limit: number;
-  hasUncommitted: boolean;
+  // `undefined` when `git status` did not answer — absent rather than `false`,
+  // because "no uncommitted changes" is a positive claim about the tree.
+  // `uncommittedUnknown` is set in exactly that case, so a consumer that only
+  // checks truthiness is not silently told the tree is clean.
+  hasUncommitted: boolean | undefined;
+  uncommittedUnknown?: true;
   aheadCount: number | null;
   aheadOf: string | null;
 }> {
@@ -1280,11 +1286,15 @@ export async function getProjectCommits(
   const head = await runGit(proj.system, proj.path, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const branch = head.code === 0 ? (head.stdout.trim() || null) : null;
 
-  // Detect uncommitted changes (staged or unstaged).
+  // Detect uncommitted changes (staged or unstaged). A status that did NOT
+  // answer is reported as unknown rather than as `false`: "no uncommitted
+  // changes" is a positive claim about the tree, and the realistic trigger is
+  // runGit's own output fence firing on a pathological working tree — precisely
+  // the tree least safe to describe as clean.
   const statusR = await runGit(proj.system, proj.path, ['status', '--porcelain']);
   const hasUncommitted = statusR.code === 0
     ? (statusR.stdout || '').split('\n').some(l => l.trim().length > 0)
-    : false;
+    : undefined;
 
   // Determine how many leading commits are "ahead" of the base.
   // Try upstream tracking first (normal project with a configured remote).
@@ -1313,10 +1323,21 @@ export async function getProjectCommits(
     '--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%aI%x1f%P',
   ]);
   if (r.code !== 0) {
-    // A fresh repo with no commits exits non-zero — treat as empty history.
+    // `git log` exits non-zero for TWO unrelated reasons, and only ONE of them
+    // is legitimately an empty history: a repo with no commits yet. The other is
+    // git not answering — and rendering that as "this repo has no commits" is
+    // the same read-side defect as an unreadable status rendering as clean.
+    //
+    // The discriminator is asked ONLY on this failure path, so the normal case
+    // pays nothing for it.
+    if (!(await hasUnbornHead(proj.system, proj.path))) {
+      throw httpError(502, `could not read the commit history of '${projectName}' on system `
+        + `'${proj.system.id}': git log exited ${r.code}${r.stderr.trim() ? `: ${r.stderr.trim()}` : ''}`);
+    }
     return {
       project: projectName, branch, commits: [], truncated: false, limit: cap,
-      hasUncommitted, aheadCount, aheadOf,
+      hasUncommitted, ...(hasUncommitted === undefined ? { uncommittedUnknown: true as const } : {}),
+      aheadCount, aheadOf,
     };
   }
   const rows = r.stdout.split('\n').filter(Boolean).map((line) => {
@@ -1330,7 +1351,11 @@ export async function getProjectCommits(
   });
   const truncated = rows.length > cap;
   const commits = truncated ? rows.slice(0, cap) : rows;
-  return { project: projectName, branch, commits, truncated, limit: cap, hasUncommitted, aheadCount, aheadOf };
+  return {
+    project: projectName, branch, commits, truncated, limit: cap,
+    hasUncommitted, ...(hasUncommitted === undefined ? { uncommittedUnknown: true as const } : {}),
+    aheadCount, aheadOf,
+  };
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

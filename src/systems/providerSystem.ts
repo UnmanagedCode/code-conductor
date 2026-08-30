@@ -292,6 +292,18 @@ export class ProviderSystem implements System, ShellHost {
     if (r.spawnError) {
       // A derived command that never started names its errno in the spawn
       // message rather than in strerror() text.
+      // TRANSPORT FIRST, and never classified by text. `spawnError` carries the
+      // dying provider's stderr TAIL, so a provider that dies of — or merely
+      // logs — an errno would be read as the far side answering about the
+      // operation: `realpath` would raise ENOENT and adoptProject would assert
+      // TARGET_NOT_FOUND about a tree that was there all along, `mkdir` would
+      // raise EEXIST and createProject would report a path as taken on a system
+      // that is dead. The flag is set on this very result by the wire paths that
+      // know which of them produced the failure; only the id-addressed `error`
+      // frame — the far side genuinely answering — reaches the classifier.
+      if (r.transportFailure) {
+        throw new SystemError('ETRANSPORT', `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
+      }
       throw new SystemError(classifySpawnError(r.spawnError), `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
     }
     return r;
