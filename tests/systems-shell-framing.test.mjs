@@ -48,6 +48,24 @@ async function withShell(flags, fn, shellOpts = {}) {
   }
 }
 
+// PINS: closing a shell while a command is in flight FAILS that command. A
+// close that lands mid-command — an interrupt, an idle sweep — must not drop
+// the in-flight request, or its caller awaits a promise nothing will settle and
+// the session wedges with no error anywhere.
+test('closing a shell mid-command fails the command instead of dropping it', async () => {
+  await withShell([], async (shell) => {
+    const running = shell.run('sleep 30');
+    // Let the command reach the shell before the close, so the pending request
+    // really is in flight rather than not yet written.
+    await new Promise(r => setTimeout(r, 50));
+    await shell.close();
+    await assert.rejects(running, (e) => {
+      assert.equal(e.code, 'ESHELLGONE');
+      return true;
+    });
+  });
+});
+
 // ── The parser, on its own ───────────────────────────────────────────
 
 test('FIRST MATCH WINS: a second sentinel line cannot move the boundary', () => {

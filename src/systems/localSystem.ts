@@ -44,11 +44,14 @@ function errCode(e: unknown): string | undefined {
 // Concurrent writers to one target are last-write-wins, not merged or locked.
 let atomicWriteSeq = 0;
 
-export async function writeFileAtomic(filePath: string, data: string): Promise<void> {
+export async function writeFileAtomic(filePath: string, data: string, mode?: number): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
   try {
     await fs.writeFile(tmp, data);
+    // On the TEMP file, before the rename: the target must never be observable
+    // with the wrong mode, and after the rename there is no handle to fix.
+    if (mode !== undefined) await fs.chmod(tmp, mode & 0o7777);
     await fs.rename(tmp, filePath);
   } catch (e) {
     await fs.unlink(tmp).catch(() => {});
@@ -92,12 +95,14 @@ export class LocalSystem implements System {
       // an atomic write ends in a rename, which overwrites by definition.
       throw new Error('writeFile: atomic and exclusive are mutually exclusive');
     }
-    if (opts.atomic) return writeFileAtomic(filePath, data);
+    if (opts.atomic) return writeFileAtomic(filePath, data, opts.mode);
     if (opts.exclusive) {
       await fs.writeFile(filePath, data, { encoding: 'utf8', flag: 'wx' });
+      if (opts.mode !== undefined) await fs.chmod(filePath, opts.mode & 0o7777);
       return;
     }
     await fs.writeFile(filePath, data);
+    if (opts.mode !== undefined) await fs.chmod(filePath, opts.mode & 0o7777);
   }
 
   async stat(p: string): Promise<SystemStat | null> {

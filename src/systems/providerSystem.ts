@@ -191,6 +191,7 @@ export class ProviderSystem implements System, ShellHost {
     }
     await this.#request<void>('w', (id) => ({
       type: 'writeFile', id, path: filePath,
+      ...(opts.mode === undefined ? {} : { mode: opts.mode & 0o7777 }),
       ...(opts.atomic ? { atomic: true } : {}),
       ...(opts.exclusive ? { exclusive: true } : {}),
     }), (id, f, resolve) => {

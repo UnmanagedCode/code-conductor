@@ -142,7 +142,16 @@ export interface SystemDirent {
 export interface WriteFileOptions {
   // Write to a temp file and rename over the target, so a reader never sees a
   // torn write. Mirrors writeFileAtomic (src/projects.ts).
+  //
+  // It is also the SYMLINK-SAFE write: a rename replaces the link itself, where
+  // a plain write follows it to whatever it points at. The write-back path
+  // (src/systems/fileBridge.ts) depends on that.
   atomic?: boolean;
+  // POSIX permission bits for the written file, as fs.Stats.mode reports them
+  // (the file-type bits are ignored). Set it to KEEP a mode: an atomic write
+  // ends in a rename, so without this an edited script comes back 0644 and
+  // silently stops being executable.
+  mode?: number;
   // Fail with EEXIST rather than overwriting. The caller catching EEXIST is the
   // point — it is how "create if absent" stays safe against a concurrent writer.
   exclusive?: boolean;

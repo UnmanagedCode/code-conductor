@@ -184,9 +184,13 @@ export class ProviderShell {
         timer = setTimeout(() => {
           // A wedge — an unterminated quote leaves the shell waiting for input
           // that will never come. Reset rather than hang: a shell that cannot
-          // frame a command cannot frame the next one either.
-          this.#tearDown('a command exceeded its deadline');
-          reject(new SystemError('ETIMEDOUT', `no shell sentinel within ${deadline}ms — the shell was reset`));
+          // frame a command cannot frame the next one either. The reset is what
+          // fails this command, with ETIMEDOUT rather than the generic
+          // shell-gone code, because the deadline is what it was.
+          this.#tearDown(
+            'a command exceeded its deadline',
+            new SystemError('ETIMEDOUT', `no shell sentinel within ${deadline}ms — the shell was reset`),
+          );
         }, deadline);
         timer.unref?.();
       });
@@ -228,10 +232,16 @@ export class ProviderShell {
     this.#pending = null;
   }
 
-  #tearDown(reason: string): void {
+  // FAILS the in-flight command, never drops it. A close that lands while a
+  // command is running is the ordinary case, not the freak one — an interrupt
+  // kills the forwarder mid-command, and an idle sweep can race a slow one — and
+  // dropping the pending request leaves its caller awaiting a promise nothing
+  // will ever settle, so the session wedges with no error anywhere to read.
+  #tearDown(reason: string, failWith?: SystemError): void {
     const s = this.#stream;
     this.#stream = null;
     this.#resetReason = reason;
+    this.#pending?.fail(failWith ?? new SystemError('ESHELLGONE', `${reason} — the shell was reset`));
     this.#pending = null;
     try { s?.close(); } catch { /* already gone */ }
   }
