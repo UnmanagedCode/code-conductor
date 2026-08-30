@@ -17,7 +17,23 @@ import { addSystem } from '../src/appSettings.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+export const FLAKY_PROVIDER = path.join(__dirname, 'fixtures', 'flakyProvider.mjs');
 export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', 'referenceProvider.ts');
+
+// The FLAKY wrapper's launch argv: the same real provider behind a passthrough
+// that dies mid-operation. The behaviour is in the ARGV, so it is baked into the
+// registry row — a test swaps a healthy system for a flaky one with
+// `updateSystem(id, { launch: flakyLaunch({...}) })`, which disposes the live
+// handle, so the next operation gets the flaky process rather than a handle
+// spawned before the test configured anything.
+export function flakyLaunch({ budget, dieOn, flags = [] } = {}) {
+  return [
+    'node', FLAKY_PROVIDER,
+    ...(budget === undefined ? [] : ['--budget', String(budget)]),
+    ...(dieOn === undefined ? [] : ['--die-on', dieOn]),
+    ...flags,
+  ];
+}
 
 export function referenceLaunch(...flags) {
   return ['node', REFERENCE_PROVIDER, ...flags];

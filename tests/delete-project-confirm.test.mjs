@@ -92,3 +92,23 @@ test('a remote project does not promise to remove its worktree directories', asy
     'the cascade unregisters them on a system; the dialog must not claim otherwise');
   assert.match(shown, /unregister 1 worktree/i);
 });
+
+// PINS: the dialog counts exactly the registrations it is handed. The undercount
+// the reviewer saw came from the LISTING (a degraded row carried `worktrees: []`
+// for a project that had one, pinned in systems-mid-operation-death), and the
+// last thing a user read before a destructive action was "unregister 0
+// worktrees". This is the dialog's half of that pair: no invented zero.
+test('the confirmation counts every registered worktree it is given', async () => {
+  const { shown } = await promptFor(base({
+    system: 'prod-box', systemPath: '/app', path: '/app',
+    worktrees: [{ worktreeName: 'demo_worktree_a' }, { worktreeName: 'demo_worktree_b' }],
+  }));
+  assert.match(shown, /unregister 2 worktrees/i);
+});
+
+// PINS: zero is only said when zero is true — the assertion the one above pairs
+// with, so neither can pass by printing a constant.
+test('a project with no worktrees says zero', async () => {
+  const { shown } = await promptFor(base({ system: 'prod-box', systemPath: '/app', path: '/app' }));
+  assert.match(shown, /unregister 0 worktrees/i);
+});

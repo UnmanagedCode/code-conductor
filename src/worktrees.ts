@@ -13,11 +13,12 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { httpError } from './httpError.ts';
 import {
-  projectsRoot, getProject, projectStoreDir, worktreeStoreDir, listProjects,
+  projectsRoot, getProject, projectStoreDir, worktreeStoreDir, worktreesStoreRoot, listProjects,
   EXTERNAL_DIRNAME,
   type ProjectInfo,
 } from './projects.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
+import { classifySpawnError } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
@@ -150,14 +151,47 @@ interface GitResult {
 // Measured: 37 MB of output retained a 37 MB string at 248 MB RSS.
 export const GIT_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 
+// A SPAWN ERROR IS NOT A GIT RESULT, and shaping it like one is the single
+// root cause of an entire family of wrong answers.
+//
+// This used to return `code: 1` with the transport diagnostic in `stderr` —
+// byte-for-byte the shape of git having RUN and said no. Every caller checks
+// `code !== 0`, so "the command never ran" became a fact about a repository:
+// `listWorktrees` invented a worktree's absence, a merge reported a git-conflict
+// code carrying a transport cause, and — worst — safety checks whose FAILURE
+// read as PASS, deleting a worktree whose dirtiness was never measured.
+//
+// So it THROWS, and the throw is tagged as a system refusal so the structured
+// vocabularies (merge, sync, adopt, the listings) can convert it to their own
+// named entry. A marker on the result would not do: 57 call sites already treat
+// a non-zero code as git's answer, and the default behaviour of an unaudited one
+// has to be LOUD, not silently wrong.
+//
+// This covers the local system too. `system 'local'` in the message is honest —
+// a git binary that could not be started is not git saying no there either.
 export async function runGit(system: System, cwd: string, args: string[]): Promise<GitResult> {
   const r = await system.exec({ argv: ['git', '-C', cwd, ...args] }, { cwd, maxBufferBytes: GIT_OUTPUT_LIMIT_BYTES });
-  // DELIBERATE, ACCEPTED DEVIATION from the pre-System behaviour, whose bar was
-  // zero behaviour change: a git that never started used to leave `stderr`
-  // empty, and now carries the spawn diagnostic. It differs only when the spawn
-  // itself fails, no caller parses this field, and the alternative is a failure
-  // with no message at all.
-  return { stdout: r.stdout, stderr: r.stderr || r.spawnError || '', code: r.code };
+  if (r.spawnError) {
+    // NOT every spawn failure is a transport failure, and conflating them would
+    // launder in the OTHER direction: a missing cwd or a non-executable git is a
+    // real, local, actionable fact about THIS command, and reporting it as
+    // "the system could not be reached" would send the reader to the wrong
+    // machine. The shared classifier is the discriminator — a message naming an
+    // FS code (ENOENT on a vanished directory, EACCES) is an answer; anything
+    // else is the far side having stopped answering at all.
+    //
+    // The FS branch keeps the previous shape deliberately: the diagnostic in
+    // `stderr` names the real cause, callers already surface it, and the safety
+    // property still holds because a non-zero code now reads as UNKNOWN at every
+    // guard rather than as "passed". For `local` this branch is the only one
+    // reachable, so local behaviour is unchanged.
+    if (classifySpawnError(r.spawnError) !== 'EUNKNOWN') {
+      return { stdout: r.stdout, stderr: r.stderr || r.spawnError, code: r.code };
+    }
+    throw httpError(502, `git ${args[0] ?? ''} could not be run on system '${system.id}' in ${cwd}: ${r.spawnError}`,
+      { code: 'GIT_DID_NOT_RUN', systemRefusal: true });
+  }
+  return { stdout: r.stdout, stderr: r.stderr, code: r.code };
 }
 
 export async function isGitRepo(system: System, projectPath: string): Promise<boolean> {
@@ -512,21 +546,48 @@ export async function createWorktree(
 // List every worktree on disk that we own for a given project. Reads
 // the parent repo's `git worktree list --porcelain` and filters down to
 // entries whose dir has a matching record in the central store.
+// STORE-DERIVED, with git as an optional FILTER rather than the source.
+//
+// A worktree's REGISTRATION is cc's own record, not a git fact, so it must list
+// whether or not the system can be reached — which is the contract the listing
+// callers' comments already state ("worktree registrations are store-derived and
+// need no System, so they still list; only their git-measured divergence goes
+// unknown"). Gating the whole enumeration on `isGitRepo` broke that silently: a
+// project on a down system showed NO worktrees, and the delete dialog then told
+// the user it was about to unregister zero of them while one was registered.
+//
+// git is still consulted when it can answer, and only to PRUNE: a worktree
+// removed outside cc should stop listing. When git cannot answer, no filter is
+// applied — every registration lists, which is the honest answer, because the
+// registration is exactly what cc knows without asking the system.
 export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]> {
-  const proj = await getProject(projectName);
-  if (!(await isGitRepo(proj.system, proj.path))) return [];
-  const r = await runGit(proj.system, proj.path, ['worktree', 'list', '--porcelain']);
-  if (r.code !== 0) return [];
-  const candidates: string[] = [];
-  for (const line of r.stdout.split('\n')) {
-    if (line.startsWith('worktree ')) {
-      candidates.push(line.slice('worktree '.length));
+  let live: Set<string> | null = null;
+  try {
+    const proj = await getProject(projectName);
+    if (await isGitRepo(proj.system, proj.path)) {
+      const r = await runGit(proj.system, proj.path, ['worktree', 'list', '--porcelain']);
+      if (r.code === 0) {
+        live = new Set(
+          r.stdout.split('\n')
+            .filter(l => l.startsWith('worktree '))
+            .map(l => path.basename(l.slice('worktree '.length))),
+        );
+      }
     }
+  } catch (e) {
+    // Only a system refusal degrades to "no filter". Anything else is a real
+    // fault and must not be swallowed into a silently unfiltered listing.
+    if (!isSystemRefusal(e)) throw e;
   }
+
   const out: WorktreeMeta[] = [];
-  for (const wtPath of candidates) {
-    // Skip the parent repo itself (no store entry).
-    const dirName = path.basename(wtPath);
+  let names: string[];
+  try {
+    names = (await fs.readdir(worktreesStoreRoot(projectName), { withFileTypes: true }))
+      .filter(e => e.isDirectory()).map(e => e.name);
+  } catch { return out; }
+  for (const dirName of names) {
+    if (live && !live.has(dirName)) continue;
     const meta = await readMeta(projectName, dirName).catch(() => null);
     if (meta && meta.parentProject === projectName) out.push(meta);
   }
@@ -611,7 +672,19 @@ export async function removeWorktree(
       throw httpError(409, dependentsRefusal(worktreeName, dependents, 'deleting').reason);
     }
     const dirty = await worktreeDirtyLines(system, meta.worktreePath);
-    if (dirty.ok && dirty.lines.length > 0) {
+    // A check that FAILED is not a check that passed. This read `dirty.ok &&
+    // …`, so a `git status` that never answered fell through to
+    // `git worktree remove --force`, deleting a tree whose dirtiness had never
+    // been measured. Unknown refuses; force is still the deliberate override.
+    if (!dirty.ok) {
+      throw httpError(
+        409,
+        `could not check whether worktree '${worktreeName}' has uncommitted changes on system `
+        + `'${system.id}' — refusing rather than deleting a worktree cc has not measured; `
+        + `pass force=true to delete it anyway`,
+      );
+    }
+    if (dirty.lines.length > 0) {
       throw httpError(
         409,
         `worktree '${worktreeName}' has uncommitted changes — commit / discard them, or pass force=true`,
@@ -739,23 +812,40 @@ export async function mergeWorktreeIntoParent(
   worktreeName: string,
   { allowDirty = false }: { allowDirty?: boolean } = {},
 ): Promise<MergeSuccess | MergeFailure> {
-  // R9's mid-merge case, and the reason this prelude sits inside a try: every
-  // other blocker here is a RETURNED refusal carrying its own code, and callers
-  // render the code — a throw would surface as a 500 with nothing to render and
-  // nothing to act on. Nothing has run yet, and git's steps are individually
-  // atomic anyway, so there is nothing to roll back.
+  // THE WHOLE BODY sits inside this try, not just the prelude.
   //
-  // getWorktree is inside it because it reads the project too: an unreachable
-  // system refuses there first, before this function reaches its own resolve.
-  let meta: WorktreeMeta | null;
-  let system: System;
+  // The prelude-only version caught a system that was unreachable AT ENTRY —
+  // the case that already worked — and left every step after it laundering a
+  // dead transport into a git answer. Callers here are promised a RETURNED
+  // refusal carrying a code they render; a throw would surface as a 500 with
+  // nothing to act on.
+  //
+  // `mergeStarted` is the uncertainty this function owes its caller. The design
+  // assumed git's steps are individually atomic, and for `git merge` THAT IS
+  // FALSE: killed mid-merge, the orphaned command was observed completing the
+  // merge commit AFTER cc had already reported failure, leaving the parent's
+  // HEAD moved, MERGE_HEAD set, and the worktree branch never fast-forwarded. So
+  // once step 6 is issued, a refusal must say the merge MAY have landed — the
+  // same rule as descendantsMaySurvive, applied to a merge.
+  let mergeStarted = false;
   try {
-    meta = await getWorktree(projectName, worktreeName);
-    system = await resolveSystem(projectName);
+    return await runMerge();
   } catch (e) {
     if (!isSystemRefusal(e)) throw e;
-    return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: e.message };
+    return {
+      ok: false,
+      code: 'SYSTEM_UNREACHABLE',
+      reason: (e as Error).message + (mergeStarted
+        ? ' — the merge had already been started on the system, so it MAY have completed there; '
+          + 'check the parent repo before retrying'
+        : ''),
+      ...(mergeStarted ? { mayHaveCompleted: true as const } : {}),
+    };
   }
+
+  async function runMerge(): Promise<MergeSuccess | MergeFailure> {
+  const meta = await getWorktree(projectName, worktreeName);
+  const system = await resolveSystem(projectName);
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
   }
@@ -805,8 +895,31 @@ export async function mergeWorktreeIntoParent(
   //    otherwise, but the error message is friendlier from us. Note there is no
   //    override: a worktree used as a base is a merge target, so it has to be
   //    kept clean.
+  // A parent left MID-MERGE reads as dirty to `status`, and "commit or stash
+  // them" is a repair that does not apply to it — so it is checked first and
+  // named for what it is. This is the state a merge killed mid-flight leaves
+  // behind, which is exactly when a caller most needs the right instruction.
+  const midMerge = await runGit(system, meta.parentPath, ['rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
+  if (midMerge.code === 0) {
+    return {
+      ok: false,
+      code: 'PARENT_MID_MERGE',
+      reason: `parent repo is in the middle of a merge (MERGE_HEAD is set) — finish it with 'git commit', `
+        + `or abandon it with 'git merge --abort', before merging again`,
+    };
+  }
   const dirty = await runGit(system, meta.parentPath, ['status', '--porcelain']);
-  if (dirty.code === 0 && dirty.stdout.trim().length > 0) {
+  // A status that FAILED is not a clean one. Skipping the guard on a non-zero
+  // code merged into a tree whose state had never been read.
+  if (dirty.code !== 0) {
+    return {
+      ok: false,
+      code: 'PARENT_STATUS_UNKNOWN',
+      reason: `could not read the parent repo's working-tree state (git status exited ${dirty.code}: `
+        + `${dirty.stderr.trim() || 'no output'}) — refusing rather than merging into a tree cc has not measured`,
+    };
+  }
+  if (dirty.stdout.trim().length > 0) {
     return {
       ok: false,
       code: 'PARENT_DIRTY',
@@ -840,6 +953,8 @@ export async function mergeWorktreeIntoParent(
   // 6. Attempt the merge. --no-ff forces a merge commit even when FF would
   //    be possible; --no-edit makes git use its default message non-
   //    interactively (we'd hang otherwise waiting on an editor).
+  // PAST THIS LINE cc can no longer be sure nothing happened (see the header).
+  mergeStarted = true;
   const merge = await runGit(system, meta.parentPath, ['merge', '--no-ff', '--no-edit', meta.branch]);
   if (merge.code !== 0) {
     return {
@@ -866,6 +981,7 @@ export async function mergeWorktreeIntoParent(
     newSha: newHead.stdout.trim(),
     worktreeFastForwarded: ff.code === 0,
   };
+  }
 }
 
 type SyncResult =
@@ -909,6 +1025,18 @@ function rebaseBlocked(meta: WorktreeMeta, action: 'commit-required' | 'rebase-c
 //               branch, baseBranch, baseSha, rebasePrompt }
 //   { ok:false, reason: "..." }
 export async function syncWorktree(projectName: string, worktreeName: string): Promise<SyncResult> {
+  // Same rule as the merge: callers are promised a RETURNED refusal carrying a
+  // reason they render. A dead transport used to null out ahead/behind, which
+  // this function then reported as "base branch may have been deleted or
+  // renamed" — a repair aimed at a branch cc never managed to ask about.
+  try {
+    return await runSync();
+  } catch (e) {
+    if (!isSystemRefusal(e)) throw e;
+    return { ok: false, reason: (e as Error).message };
+  }
+
+  async function runSync(): Promise<SyncResult> {
   const meta = await getWorktree(projectName, worktreeName);
   if (!meta) {
     throw httpError(404, `worktree '${worktreeName}' not found under project '${projectName}'`);
@@ -987,6 +1115,7 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   // Abort unconditionally — safe no-op if rebase never started.
   await runGit(system, meta.worktreePath, ['rebase', '--abort']);
   return rebaseBlocked(meta, 'rebase-conflict', ahead, behind);
+  }
 }
 
 // The prompt text a caller sends to the worktree's agent when git could not land

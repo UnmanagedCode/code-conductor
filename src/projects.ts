@@ -105,8 +105,15 @@ export function projectStoreDir(name: string): string {
   return path.join(orchStoreRoot(), 'projects', name);
 }
 
+// Where a project's worktree REGISTRATIONS live. This directory is the
+// authoritative list — listWorktrees enumerates it rather than asking git, so a
+// registration survives a system cc cannot reach.
+export function worktreesStoreRoot(projectName: string): string {
+  return path.join(projectStoreDir(projectName), 'worktrees');
+}
+
 export function worktreeStoreDir(projectName: string, worktreeName: string): string {
-  return path.join(projectStoreDir(projectName), 'worktrees', worktreeName);
+  return path.join(worktreesStoreRoot(projectName), worktreeName);
 }
 
 export function claudeProjectsRoot(): string {
@@ -1026,6 +1033,16 @@ export type AdoptResult =
 //
 // Every check runs BEFORE any filesystem mutation; the mkdir + symlink are the
 // last two statements, so a refused adopt leaves no link behind.
+// The refusal for a system that answered nothing. Separate from every code that
+// asserts something about the TREE: those are facts, and cc has none here.
+function unreachableDuring(systemId: string, what: string, e: unknown): AdoptResult {
+  return {
+    ok: false,
+    code: 'SYSTEM_UNREACHABLE',
+    reason: `could not ${what} on system '${systemId}': ${errMsg(e)}`,
+  };
+}
+
 export async function adoptProject(
   name: unknown,
   target: unknown,
@@ -1066,12 +1083,22 @@ export async function adoptProject(
   } else {
     system = localSystem();
   }
+  // TARGET_NOT_FOUND is a claim ABOUT THE TREE, so it is only made when the
+  // system actually answered "no such path". A transport that died mid-probe
+  // asserted a fact cc never got to ask about — and sent the user hunting for a
+  // missing directory that was there all along.
   let real: string;
   try { real = await system.realpath(target); }
-  catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot resolve '${target}': ${errMsg(e)}` }; }
+  catch (e) {
+    if (errCode(e) !== 'ENOENT') return unreachableDuring(system.id, `resolve '${target}'`, e);
+    return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot resolve '${target}': ${errMsg(e)}` };
+  }
   let targetStat;
   try { targetStat = await system.stat(real); }
-  catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` }; }
+  catch (e) {
+    if (errCode(e) !== 'ENOENT') return unreachableDuring(system.id, `stat '${real}'`, e);
+    return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` };
+  }
   // Absent after a successful realpath is a raced deletion, not a bad shape —
   // same code the throwing form reported.
   if (!targetStat) {

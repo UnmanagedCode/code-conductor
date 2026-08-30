@@ -327,13 +327,23 @@ export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
     // undefined, not false — "could not look" must not print as the claim
     // `! not a git repo`. deviations() skips an absent field, and the
     // `! system unreachable` line beside it says why it is absent.
-    const projIsGitRepo = system ? await isGitRepo(system, p.path) : undefined;
+    // The try covers a system that dies DURING the listing rather than at
+    // resolution: one project's mid-listing death degrades its own row instead
+    // of rejecting the Promise.all and failing the tool for every project.
+    let projIsGitRepo: boolean | undefined;
+    let deadMidListing: string | null = null;
+    if (system) {
+      try { projIsGitRepo = await isGitRepo(system, p.path); }
+      catch (e) { if (!isSystemRefusal(e)) throw e; deadMidListing = (e as Error).message; }
+    }
     return {
       ...p,
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
-      systemUnreachable: unreachable,
+      systemUnreachable: unreachable ?? deadMidListing,
       isGitRepo: projIsGitRepo,
-      unbornHead: system && projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
+      unbornHead: system && projIsGitRepo
+        ? await hasUnbornHead(system, p.path).catch((e) => { if (!isSystemRefusal(e)) throw e; return false; })
+        : false,
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
@@ -1720,8 +1730,20 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
     const dependents = await listDependentWorktrees(project, wtName);
     if (dependents.length > 0) return dependentsRefusal(worktree, dependents, 'deleting');
     if (wt) {
-      const dirty = await worktreeDirtyLines(await resolveSystem(project), wt.worktreePath);
-      if (dirty.ok && dirty.lines.length > 0) {
+      const sys = await resolveSystem(project);
+      const dirty = await worktreeDirtyLines(sys, wt.worktreePath);
+      // A check that FAILED is not a check that passed — see removeWorktree's
+      // twin guard. Unknown refuses; force is still the deliberate override.
+      if (!dirty.ok) {
+        return {
+          ok: false,
+          code: 'WORKTREE_DIRTY_UNKNOWN',
+          reason: `could not check whether worktree '${worktree}' has uncommitted changes on system `
+            + `'${sys.id}' — refusing rather than deleting a worktree cc has not measured; `
+            + `pass force=true to delete it anyway`,
+        };
+      }
+      if (dirty.lines.length > 0) {
         return {
           ok: false,
           code: 'WORKTREE_DIRTY',

@@ -129,13 +129,20 @@ describe('a remote project refuses what it cannot do, by name', () => {
     }
   });
 
-  // ── Failure state: mid-merge ─────────────────────────────────────────
+  // ── Failure state: unreachable AT ENTRY, on the merge path ───────────
+  //
+  // These two pin the ENTRY guard only: the system is already gone before the
+  // call, so the refusal comes from resolution rather than from a step that
+  // died mid-flight. The mid-OPERATION cases — including the merge that may
+  // have completed on the far side — are in
+  // tests/systems-mid-operation-death.test.mjs, which needs a provider that
+  // dies while working rather than one that was never there.
 
   // PINS: an unreachable system reaches mergeWorktreeIntoParent as a STRUCTURED
   // refusal carrying its own code, not as a throw. Every other blocker there is
   // a returned {ok:false, code}, and callers render the code — one that threw
   // instead would surface as a 500 with no code to render.
-  test('a merge on an unreachable system returns SYSTEM_UNREACHABLE, not a throw', async () => {
+  test('a merge on a system unreachable AT ENTRY returns SYSTEM_UNREACHABLE, not a throw', async () => {
     const tree = await adoptRemote();
     await createWorktree('app', { name: 'feature' });
     await fs.writeFile(path.join(tree, '..', 'x'), 'x').catch(() => {});
@@ -150,7 +157,7 @@ describe('a remote project refuses what it cannot do, by name', () => {
 
   // PINS: the merge refusal survives the MCP surface as a rendered refusal
   // rather than a tool error, which is what lets a conductor act on it.
-  test('merge_worktree renders the SYSTEM_UNREACHABLE refusal', async () => {
+  test('merge_worktree renders the at-entry SYSTEM_UNREACHABLE refusal', async () => {
     await adoptRemote();
     await createWorktree('app', { name: 'feature' });
     disposeSystemHandles();

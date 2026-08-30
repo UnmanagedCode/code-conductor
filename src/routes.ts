@@ -18,7 +18,7 @@ import {
   attachmentsDir, getWorktreeMergeStatus, syncWorktree, worktreeDirtyLines,
   getProjectUpstreamStatus, getProjectCommits,
 } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID, resolveSystem } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from './systems/registry.ts';
 import {
   getWorktreeDiff, getWorktreeFileDiff,
   getCommitDiff, getCommitFileDiff,
@@ -404,13 +404,25 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     // claim "not a git repo". The key is simply absent from the response, which
     // every client already reads as falsy, and `systemUnreachable` carries the
     // reason so absence is never ambiguous.
-    const projIsGitRepo = system ? await isGitRepo(system, p.path) : undefined;
+    //
+    // The try covers a system that dies DURING the listing rather than at
+    // resolution: `runGit` throws a system refusal now, and one project's
+    // mid-listing death must degrade its own row rather than reject the
+    // Promise.all and take the whole page down with it.
+    let projIsGitRepo: boolean | undefined;
+    let deadMidListing: string | null = null;
+    if (system) {
+      try { projIsGitRepo = await isGitRepo(system, p.path); }
+      catch (e) { if (!isSystemRefusal(e)) throw e; deadMidListing = (e as Error).message; }
+    }
     return {
-      systemUnreachable: unreachable,
+      systemUnreachable: unreachable ?? deadMidListing,
       isGitRepo: projIsGitRepo,
       // Guarded on projIsGitRepo — hasUnbornHead() cannot tell "no repo" from
       // "no commits", so a non-repo reports false and isGitRepo carries it.
-      unbornHead: system && projIsGitRepo ? await hasUnbornHead(system, p.path) : false,
+      unbornHead: system && projIsGitRepo
+        ? await hasUnbornHead(system, p.path).catch((e) => { if (!isSystemRefusal(e)) throw e; return false; })
+        : false,
       worktrees: worktreesWithMerge,
       mergeStatus: system && projIsGitRepo
         ? await getProjectUpstreamStatus(system, p.path).catch(() => ({ ahead: null, behind: null, upstream: null }))
