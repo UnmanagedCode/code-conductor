@@ -96,6 +96,74 @@ test('the redirected shell carries cwd and exports between commands', async () =
   assert.equal(echo.stdout.trim(), 'carried');
 });
 
+// A sink that records what arrived and WHEN, relative to the promise settling.
+function recordingSink(state) {
+  const seen = [];
+  return {
+    seen,
+    sink: {
+      notice: (t) => seen.push({ k: 'notice', t, settled: state.settled }),
+      out: (t) => seen.push({ k: 'out', t, settled: state.settled }),
+      err: (t) => seen.push({ k: 'err', t, settled: state.settled }),
+    },
+    textOf: (k) => seen.filter(x => x.k === k).map(x => x.t).join(''),
+  };
+}
+
+// PINS: a forwarded command's output reaches the sink BEFORE the command
+// finishes, and what the sink received is byte-identical to the aggregate. This
+// is the whole of what "the worker sees output as it arrives" means one layer
+// down. Asserted by ORDER against the promise settling, not by wall clock.
+test('a forwarded command streams its output before it finishes', async () => {
+  const state = { settled: false };
+  const { seen, sink, textOf } = recordingSink(state);
+  const p = redirect.runForwarded(
+    'printf "part1\n"; printf "e1\n" >&2; sleep 0.4; printf "part2\n"',
+    { sink },
+  );
+  const r = await p;
+  state.settled = true;
+
+  assert.ok(seen.some(x => !x.settled && x.t.includes('part1')),
+    'the first half arrived while the command was still running');
+  assert.equal(textOf('out'), r.stdout, 'and the stream is byte-identical to the aggregate');
+  assert.equal(textOf('err'), r.stderr);
+  assert.equal(r.stdout, 'part1\npart2\n');
+  assert.equal(r.code, 0);
+});
+
+// PINS: the R5 reset notice reaches the sink FIRST, ahead of the command's own
+// output. A shell that lost its exports has to say so before the output that
+// might be wrong because of it.
+test('the reset notice reaches the sink before any of the command output', async () => {
+  await bash('export CC_PROBE=before');
+  await bash('exit');
+
+  const state = { settled: false };
+  const { seen, sink } = recordingSink(state);
+  const r = await redirect.runForwarded('echo after', { sink });
+  state.settled = true;
+
+  assert.equal(seen[0].k, 'notice', 'the notice is the FIRST thing the sink saw');
+  assert.match(seen[0].t, /restarted/);
+  assert.equal(r.notice, seen[0].t, 'and it is the same notice the aggregate carries');
+  assert.match(seen.filter(x => x.k === 'out').map(x => x.t).join(''), /after/);
+});
+
+// PINS: cc's own failure text reaches the sink too. The route no longer writes
+// the aggregate — it has already streamed — so a failure that only landed in
+// the return value would reach the worker as an empty result.
+test('a command that kills the shell reports its failure through the sink', async () => {
+  const state = { settled: false };
+  const { sink, textOf } = recordingSink(state);
+  const r = await redirect.runForwarded('exit', { sink });
+  state.settled = true;
+
+  assert.notEqual(r.code, 0);
+  assert.equal(textOf('err'), r.stderr, 'the sink carries the same diagnostic as the aggregate');
+  assert.match(textOf('err'), /cc:/);
+});
+
 // PINS: exit codes are the command's own, not the forwarder's.
 test('a forwarded command reports the real exit code', async () => {
   assert.equal((await bash('true')).code, 0);

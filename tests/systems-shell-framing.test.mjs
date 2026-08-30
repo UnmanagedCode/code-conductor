@@ -19,7 +19,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { ProviderShell } from '../src/systems/providerShell.ts';
 import {
-  beginFor, frameCommand, newNonce, parseFramedStderr, parseFramedStdout, sentinelFor,
+  FramedStreamFilter, beginFor, frameCommand, newNonce,
+  parseFramedStderr, parseFramedStdout, sentinelFor,
 } from '../src/systems/shellFraming.ts';
 import { makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
@@ -64,6 +65,143 @@ test('closing a shell mid-command fails the command instead of dropping it', asy
       return true;
     });
   });
+});
+
+// ── Streaming the same frame, without leaking it ─────────────────────
+//
+// A redirected Bash must show its output as it arrives, which means forwarding
+// bytes BEFORE the frame boundary has been seen. FramedStreamFilter is the one
+// piece that makes that safe, and the only property that matters is that it
+// agrees with the parser exactly: whatever it emits, concatenated, must be the
+// same string the parser would have produced from the whole stream at the end.
+//
+// The framing itself is UNCHANGED. Everything below is derived from rules the
+// parser already has — nothing before the opening sentinel is the command's,
+// the closing sentinel must start a line, first match wins, and cc's injected
+// newline is stripped — so the streaming path cannot drift from the buffered
+// one without one of these failing.
+
+// Every way a stream can be cut into chunks, for a handful of representative
+// splits: one byte at a time (the worst case for a partial sentinel), and every
+// single cut point.
+function* splittings(text) {
+  yield [...text];                                  // byte by byte
+  for (let i = 0; i <= text.length; i++) yield [text.slice(0, i), text.slice(i)];
+}
+
+function drain(filter, chunks) {
+  return chunks.map(c => filter.push(c)).join('');
+}
+
+// The bytes a real shell would produce for one framed command: a login banner
+// the command never wrote, the command's own output, then the frame.
+function stdoutStream(nonce, { banner = '', body = '', code = 0, cwd = '/app' } = {}) {
+  return `${banner}\n${beginFor(nonce)}\n${body}`
+    + `\n${sentinelFor(nonce)} ${code} ${Buffer.from(cwd).toString('base64')}\n`;
+}
+
+function stderrStream(nonce, { banner = '', body = '' } = {}) {
+  return `${banner}\n${beginFor(nonce)}\n${body}\n${sentinelFor(nonce)}\n`;
+}
+
+const BODIES = [
+  '',                                   // a command that printed nothing
+  'one line\n',                         // the ordinary case: a trailing newline
+  'no trailing newline',                // and the case cc's injected \n exists for
+  'a\nb\nc\n',
+  'blank line follows\n\n',
+  // A command that ECHOES the sentinel — the measured desync. Mid-line and at a
+  // line start with a non-matching tail: both are OUTPUT, not a boundary.
+  'echoing MARKER mid-line\nMARKER not-a-frame\ndone\n',
+  // A line that starts like the sentinel but is a different marker.
+  'MARKER_EXTRA 0 x\n',
+];
+
+// PINS THE WHOLE CONTRACT: for every body and every way of cutting the stream,
+// what the filter emits equals what the parser extracts. One property, and it
+// is the only thing the streaming path has to get right.
+test('the stream filter emits exactly what the parser would extract, under every split', () => {
+  const nonce = newNonce();
+  const marker = sentinelFor(nonce);
+  for (const raw of BODIES) {
+    const body = raw.replaceAll('MARKER', marker);
+    for (const banner of ['', 'nvm banner\n', 'unterminated banner']) {
+      const text = stdoutStream(nonce, { banner, body });
+      const expected = parseFramedStdout(text, nonce).text;
+      for (const chunks of splittings(text)) {
+        assert.equal(drain(new FramedStreamFilter(nonce, 'out'), chunks), expected,
+          `stdout body=${JSON.stringify(body)} banner=${JSON.stringify(banner)}`);
+      }
+      const errText = stderrStream(nonce, { banner, body });
+      const errExpected = parseFramedStderr(errText, nonce).text;
+      for (const chunks of splittings(errText)) {
+        assert.equal(drain(new FramedStreamFilter(nonce, 'err'), chunks), errExpected,
+          `stderr body=${JSON.stringify(body)}`);
+      }
+    }
+  }
+});
+
+// PINS: no fragment of a sentinel, or of the opening marker, ever reaches the
+// worker — not even split across two chunks, which is the whole hazard
+// streaming introduces. The login banner never reaches it either.
+test('no part of the framing, and nothing before it, is ever emitted', () => {
+  const nonce = newNonce();
+  const text = stdoutStream(nonce, { banner: 'PROFILE BANNER\n', body: 'real output\n' });
+  for (const chunks of splittings(text)) {
+    const filter = new FramedStreamFilter(nonce, 'out');
+    for (const c of chunks) {
+      const emitted = filter.push(c);
+      assert.ok(!emitted.includes('__CC_'), `leaked framing: ${JSON.stringify(emitted)}`);
+      assert.ok(!emitted.includes('PROFILE'), `leaked the shell banner: ${JSON.stringify(emitted)}`);
+    }
+  }
+});
+
+// PINS: output really does come out EARLY. The property test above would be
+// satisfied by a filter that emitted everything at the end, which is exactly
+// the behaviour being replaced.
+test('the filter emits a complete line before the frame closes', () => {
+  const nonce = newNonce();
+  const filter = new FramedStreamFilter(nonce, 'out');
+  assert.equal(filter.push(`\n${beginFor(nonce)}\n`), '');
+  assert.equal(filter.push('part1\n'), 'part1', 'the line is out; only cc\'s possible injected newline is held');
+  assert.equal(filter.push('part2\n'), '\npart2');
+  assert.equal(filter.push(`\n${sentinelFor(nonce)} 0 ${Buffer.from('/app').toString('base64')}\n`), '\n');
+});
+
+// PINS: when the frame NEVER closes — the command took the shell with it — what
+// the command did print is still released, and still without any fragment of
+// the framing. Held-back bytes are held pending a sentinel; once no sentinel can
+// arrive, they are the command's own output and belong to the worker.
+test('flushing an unclosed frame releases the output but never a partial sentinel', () => {
+  const nonce = newNonce();
+  const s = sentinelFor(nonce);
+
+  const clean = new FramedStreamFilter(nonce, 'out');
+  assert.equal(clean.push(`\n${beginFor(nonce)}\nO\nO2\n`), 'O\nO2');
+  assert.equal(clean.flush(), '\n', 'the newline held pending a sentinel that never came');
+
+  // The shell died PART WAY THROUGH writing the sentinel. Those bytes are
+  // framing, not output, and must not be released by the flush.
+  const cut = new FramedStreamFilter(nonce, 'out');
+  cut.push(`\n${beginFor(nonce)}\nmine\n\n${s.slice(0, 12)}`);
+  assert.ok(!cut.flush().includes('__CC_'), 'no fragment of the sentinel escapes');
+
+  // And a flush is terminal, like the boundary.
+  assert.equal(clean.flush(), '');
+  assert.equal(clean.push('later'), '');
+});
+
+// PINS: once the frame has closed the filter goes quiet. A forgery's trailing
+// output belongs to nobody, and letting it through would attribute it to the
+// NEXT command — the desync the parser's first-match-wins rule exists to
+// confine to one command.
+test('the filter stops at the boundary and emits nothing after it', () => {
+  const nonce = newNonce();
+  const filter = new FramedStreamFilter(nonce, 'out');
+  filter.push(stdoutStream(nonce, { body: 'mine\n' }));
+  assert.equal(filter.push('output belonging to nobody\n'), '');
 });
 
 // ── The parser, on its own ───────────────────────────────────────────
@@ -136,6 +274,84 @@ test('the nonce is fresh per command, and the script keeps cd and export in the 
 // ── End to end, in both capability modes ─────────────────────────────
 
 for (const mode of MODES) {
+  // PINS: output reaches the caller BEFORE the command finishes, and what it
+  // received is byte-identical to the buffered result. Asserted by ORDER, not
+  // by wall clock — the first chunk must have arrived while `run()` was still
+  // pending — so it is deterministic and cannot flake on a slow machine.
+  //
+  // Run in BOTH capability modes deliberately: a redirected Bash streams
+  // whether or not the system carries a persistent shell, so the fallback is
+  // not a version of the feature with the streaming quietly missing.
+  test(`[${mode.name}] a command's output streams as it arrives, and matches the buffered result`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const seen = [];
+      let settled = false;
+      const run = sh.run(
+        'printf "part1\\n"; printf "e1\\n" >&2; sleep 0.4; printf "part2\\n"; printf "e2\\n" >&2',
+        {
+          onOut: (t) => seen.push({ which: 'out', t, settled }),
+          onErr: (t) => seen.push({ which: 'err', t, settled }),
+        },
+      );
+      const r = await run;
+      settled = true;
+
+      const early = seen.filter(c => !c.settled);
+      assert.ok(early.length > 0, 'something arrived while the command was still running');
+      assert.match(early.map(c => c.t).join(''), /part1/, 'and it was the FIRST half, not the last');
+
+      const streamed = (which) => seen.filter(c => c.which === which).map(c => c.t).join('');
+      assert.equal(streamed('out'), r.stdout, 'the streamed stdout is byte-identical to the buffered one');
+      assert.equal(streamed('err'), r.stderr, 'and so is stderr');
+      assert.equal(r.stdout, 'part1\npart2\n');
+      assert.equal(r.stderr, 'e1\ne2\n');
+    });
+  });
+
+  // PINS: the two streams stay SEPARATE. Merging them would make a caller that
+  // reads stderr for a diagnostic read the command's stdout instead — and the
+  // buffered path has always kept them apart for free.
+  test(`[${mode.name}] streamed stdout and stderr are never mixed`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const out = [];
+      const err = [];
+      await sh.run('printf "O\\n"; printf "E\\n" >&2; printf "O2\\n"',
+        { onOut: (t) => out.push(t), onErr: (t) => err.push(t) });
+      assert.equal(out.join(''), 'O\nO2\n');
+      assert.equal(err.join(''), 'E\n');
+    });
+  });
+
+  // PINS: nothing a streaming caller receives contains the framing or the login
+  // shell's own banner — the property the filter exists for, asserted here
+  // against a REAL shell rather than a synthesised stream.
+  test(`[${mode.name}] a real shell's framing and banner never reach a streaming caller`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const chunks = [];
+      const push = (t) => chunks.push(t);
+      await sh.run('echo real-output', { onOut: push, onErr: push });
+      for (const c of chunks) assert.ok(!c.includes('__CC_'), `leaked framing: ${JSON.stringify(c)}`);
+      assert.equal(chunks.join(''), 'real-output\n');
+    });
+  });
+
+  // PINS: a command that takes the shell with it still delivers what it printed
+  // BEFORE it died. The buffered result cannot carry that output — there is no
+  // frame to parse it out of — so the streamed path is the only way the worker
+  // ever sees it, and dropping it would make the failure look emptier than it
+  // was.
+  test(`[${mode.name}] a command that kills the shell still streams what it printed`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const out = [];
+      await assert.rejects(
+        sh.run('printf "printed-before-dying\\n"; exit 3', { onOut: (t) => out.push(t) }),
+        (e) => { assert.equal(e.code, 'ESHELLGONE'); return true; },
+      );
+      assert.equal(out.join(''), 'printed-before-dying\n');
+      for (const c of out) assert.ok(!c.includes('__CC_'), 'and no framing came with it');
+    });
+  });
+
   test(`[${mode.name}] cd persists across commands, read back from the shell`, async () => {
     await withShell(mode.flags, async (sh, cwd) => {
       assert.equal(sh.persistent, mode.persistent, 'the mode under test is the one negotiated');

@@ -37,8 +37,26 @@ function runAsTheCliWould(command, cwd) {
   });
 }
 
+// The same, but recording each write SEPARATELY rather than concatenating. A
+// forwarder that buffers to completion necessarily coalesces the whole output
+// into one write, so "part1 arrived in a write that did not also carry part2"
+// is a structural test for streaming — no wall clock, nothing to flake on.
+function runAsTheCliWouldStreaming(command, cwd) {
+  return new Promise((resolve) => {
+    const child = spawn('bash', ['-c', command], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const writes = [];
+    let code = null;
+    child.stdout.on('data', (b) => writes.push({ fd: 'out', text: String(b) }));
+    child.stderr.on('data', (b) => writes.push({ fd: 'err', text: String(b) }));
+    child.on('exit', (c) => { code = c; });
+    // `close`, not `exit`: stdout can still be draining when the process exits,
+    // and resolving early would drop the very writes under test.
+    child.on('close', () => resolve({ writes, code, of: (fd) => writes.filter(w => w.fd === fd).map(w => w.text).join('') }));
+  });
+}
+
 describe('a worker session on a remote system', () => {
-  let ctx, baseUrl, instances, home, remote, tree, instId, root;
+  let ctx, baseUrl, instances, home, remote, tree, instId, root, r0;
 
   before(async () => { ctx = await bootServer(); ({ baseUrl, instances } = ctx); });
   after(async () => { await ctx.close(); });
@@ -56,6 +74,10 @@ describe('a worker session on a remote system', () => {
     instId = r.body.id;
     root = sessionRootPath(remote.id, 'app', null);
     await waitFor(() => instances.get(instId).status === 'idle');
+    r0 = await api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
+      session_id: 's', hook_event_name: 'PreToolUse', tool_use_id: 'tu0',
+      tool_name: 'Bash', tool_input: { command: 'true' },
+    });
   });
 
   afterEach(async () => {
@@ -134,6 +156,61 @@ describe('a worker session on a remote system', () => {
     await assert.rejects(fs.readFile(inSession('out.txt')));
   });
 
+  // PINS THE PHASE'S POINT: the worker sees output AS IT ARRIVES. The whole
+  // chain is live here — the hook's rewrite, a real shell running it, the real
+  // forwarder process, the real streaming endpoint, the real shell on the
+  // system — and the assertion is structural: a forwarder that buffered to exit
+  // would deliver part1 and part2 in one write.
+  test('a redirected Bash streams its output instead of delivering it at exit', async () => {
+    const r = await hook({ tool_name: 'Bash', tool_input: {
+      command: 'printf "part1\\n"; sleep 0.5; printf "part2\\n"',
+    } });
+    const ran = await runAsTheCliWouldStreaming(r.body.hookSpecificOutput.updatedInput.command, root);
+
+    assert.equal(ran.code, 0, ran.of('err'));
+    assert.equal(ran.of('out'), 'part1\npart2\n', 'and the bytes are exactly right');
+    assert.ok(
+      ran.writes.some(w => w.text.includes('part1') && !w.text.includes('part2')),
+      `part1 was never delivered on its own: ${JSON.stringify(ran.writes)}`,
+    );
+  });
+
+  // PINS: stdout and stderr stay on their own file descriptors through the
+  // streamed path. Merging them would put a command's output into the channel a
+  // caller reads diagnostics from.
+  test('streamed stdout and stderr arrive on their own descriptors', async () => {
+    const r = await hook({ tool_name: 'Bash', tool_input: {
+      command: 'printf "to-out\\n"; printf "to-err\\n" >&2; sleep 0.3; printf "more-out\\n"',
+    } });
+    const ran = await runAsTheCliWouldStreaming(r.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ran.of('out'), 'to-out\nmore-out\n');
+    assert.equal(ran.of('err'), 'to-err\n');
+  });
+
+  // PINS: the framing never reaches the worker on the streamed path either.
+  // Streaming forwards bytes before the frame boundary has been seen, which is
+  // exactly when a sentinel could leak.
+  test('no framing leaks into a streamed result, even when the command echoes one', async () => {
+    const r = await hook({ tool_name: 'Bash', tool_input: {
+      command: 'printf "__CC_deadbeef__ 0 Lw==\\n"; sleep 0.3; printf "still here\\n"',
+    } });
+    const ran = await runAsTheCliWouldStreaming(r.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ran.of('out'), '__CC_deadbeef__ 0 Lw==\nstill here\n',
+      'a forged sentinel is the command\'s own output and survives verbatim');
+    assert.equal(ran.code, 0);
+  });
+
+  // PINS: cc's own refusals still reach the worker. The endpoint answers in
+  // frames now, so a refusal written in the old single-object shape would be
+  // silently ignored by the forwarder and surface as an unexplained failure.
+  test('a forwarder pointed at a session that is not redirected says so', async () => {
+    const bogus = r0.body.hookSpecificOutput.updatedInput.command
+      .replace(`/instances/${instId}/`, '/instances/no-such-instance/');
+    const ran = await runAsTheCliWouldStreaming(bogus, root);
+    assert.equal(ran.code, 1);
+    assert.match(ran.of('err'), /not redirected to a system/);
+  });
+
   // PINS: the full Read → Edit → write-back round trip over the REST hooks,
   // with the note that says where it landed.
   test('Read pulls and Edit pushes back, through the hook endpoint', async () => {
@@ -187,9 +264,12 @@ describe('a worker session on a remote system', () => {
     child.kill('SIGKILL');
 
     const next = await hook({ tool_name: 'Bash', tool_input: { command: 'echo back' } });
-    const ran = await runAsTheCliWould(next.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ran.stdout, 'back\n');
-    assert.match(ran.stderr, /was restarted/);
+    const ran = await runAsTheCliWouldStreaming(next.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ran.of('out'), 'back\n');
+    assert.match(ran.of('err'), /was restarted/);
+    // FIRST on stderr, ahead of anything else there: a shell that lost its
+    // exports has to say so before output that may be wrong because of it.
+    assert.match(ran.writes.filter(w => w.fd === 'err')[0].text, /^\[cc\]/);
     // The command really was stopped, not merely abandoned.
     await assert.rejects(fs.stat(marker));
   });

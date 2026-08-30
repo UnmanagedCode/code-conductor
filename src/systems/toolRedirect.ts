@@ -56,6 +56,21 @@ export interface ForwardedResult {
   notice: string | null;
 }
 
+// Where a forwarded command's output goes AS IT ARRIVES. The route hands one of
+// these to `runForwarded` and turns each call into a frame on the open HTTP
+// response, which the forwarder replays onto its own stdout/stderr — so the
+// worker sees a long command's output while it is still running instead of at
+// exit.
+//
+// The three are separate rather than one interleaved callback because the
+// forwarder has to write each to a different file descriptor, and because the
+// R5 notice must precede the command's own output rather than be mixed into it.
+export interface ForwardSink {
+  notice(text: string): void;
+  out(text: string): void;
+  err(text: string): void;
+}
+
 // The tools whose file_path this module owns. NotebookEdit carries its path
 // under a different key, which is the only reason the map is not a set.
 const FILE_TOOLS: Record<string, string> = {
@@ -257,8 +272,13 @@ export class SessionRedirect {
   // one — comes back as a non-zero exit with the reason on stderr, because that
   // is the channel the worker actually reads. A rejected HTTP request would
   // reach it as an opaque forwarder crash instead.
-  async runForwarded(command: string, { timeoutMs, signal }: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<ForwardedResult> {
+  async runForwarded(command: string, { timeoutMs, signal, sink }: { timeoutMs?: number; signal?: AbortSignal; sink?: ForwardSink } = {}): Promise<ForwardedResult> {
     const shell = this.#ensureShell();
+    // Taken BEFORE the command runs, and emitted first: a shell that lost its
+    // exports has to say so ahead of output that may be wrong because of it.
+    // The aggregate still carries it, so a non-streaming caller is unchanged.
+    const notice = this.#takeNotice();
+    if (notice) sink?.notice(notice);
     // The idle timer is armed only AFTER the command, never before it: a sweep
     // that fires mid-command would close the shell out from under a command
     // that is still running, which is a reset the worker did not earn.
@@ -271,15 +291,23 @@ export class SessionRedirect {
     const onAbort = () => { void this.#resetShell('the command was interrupted'); };
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      const r = await shell.run(command, timeoutMs === undefined ? {} : { timeoutMs });
-      return { stdout: r.stdout, stderr: r.stderr, code: r.code, notice: this.#takeNotice() };
+      const r = await shell.run(command, {
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        ...(sink ? { onOut: (t: string) => sink.out(t), onErr: (t: string) => sink.err(t) } : {}),
+      });
+      return { stdout: r.stdout, stderr: r.stderr, code: r.code, notice };
     } catch (e) {
       // A reset already happened inside ProviderShell for the wedge modes; note
       // it so the NEXT command tells the worker what it lost. An abort got
       // there FIRST and set a more specific reason — keep that one, since "the
       // command was interrupted" says more than the failure it caused.
       this.#pendingNotice ??= this.#resetNotice(errMsg(e));
-      return { stdout: '', stderr: `cc: ${errMsg(e)}\n`, code: 1, notice: null };
+      // Through the SINK as well: the route has already streamed and will not
+      // write the aggregate, so a diagnostic that only landed in the return
+      // value would reach the worker as an empty result.
+      const stderr = `cc: ${errMsg(e)}\n`;
+      sink?.err(stderr);
+      return { stdout: '', stderr, code: 1, notice };
     } finally {
       signal?.removeEventListener('abort', onAbort);
       this.#armIdle();

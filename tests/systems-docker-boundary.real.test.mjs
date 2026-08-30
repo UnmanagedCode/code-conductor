@@ -52,13 +52,27 @@ const docker = (...args) => run([...DOCKER, ...args]);
 // this test trusts about the system's state.
 const inCtr = async (sh) => (await docker('exec', CTR, 'sh', '-lc', sh)).stdout;
 
+// Each write kept SEPARATE, with the moment it arrived. A forwarder that
+// buffered to completion would coalesce a whole command's output into one
+// write, so the split itself is the evidence of streaming — no wall clock
+// needed for the primary assertion.
 function runAsTheCliWould(command, cwd) {
   return new Promise((resolve) => {
     const child = spawn('bash', ['-c', command], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', (b) => { stdout += b; });
-    child.stderr.on('data', (b) => { stderr += b; });
-    child.on('exit', (code) => resolve({ stdout, stderr, code }));
+    const started = Date.now();
+    const writes = [];
+    let code = null;
+    child.stdout.on('data', (b) => writes.push({ fd: 'out', text: String(b), at: Date.now() - started }));
+    child.stderr.on('data', (b) => writes.push({ fd: 'err', text: String(b), at: Date.now() - started }));
+    child.on('exit', (c) => { code = c; });
+    // `close`, not `exit`: stdout can still be draining when the process exits,
+    // and resolving early would drop the very writes under test.
+    child.on('close', () => resolve({
+      writes, code, endedAt: Date.now() - started,
+      of: (fd) => writes.filter(w => w.fd === fd).map(w => w.text).join(''),
+      get stdout() { return this.of('out'); },
+      get stderr() { return this.of('err'); },
+    }));
   });
 }
 
@@ -145,6 +159,42 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.notEqual(host, ccHostname.trim());
     assert.equal(marker, 'system-side');
     assert.equal(cwd, '/app', 'in a directory that exists only there');
+  });
+
+  // PINS STREAMING ACROSS THE MACHINE BOUNDARY: output produced inside the
+  // container reaches the worker while the command is still running, not at
+  // exit. Two independent witnesses, because either alone can be satisfied by
+  // the wrong thing — the SPLIT (a buffering forwarder coalesces the whole
+  // output into one write) and the GAP (the first write lands well before the
+  // process ends). The command forces a pause the buffering is visible in.
+  test('a command inside the container streams its output as it is produced', async () => {
+    const r = await hook({ tool_name: 'Bash', tool_input: {
+      command: 'printf "part1 from $(hostname)\\n"; sleep 2; printf "part2\\n"',
+    } });
+    const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
+    const ctrHost = (await inCtr('hostname')).trim();
+
+    assert.equal(ran.code, 0, ran.of('err'));
+    assert.equal(ran.of('out'), `part1 from ${ctrHost}\npart2\n`, 'the bytes are right, and from the container');
+    const first = ran.writes.find(w => w.text.includes('part1'));
+    assert.ok(first, 'part1 arrived');
+    assert.ok(!first.text.includes('part2'),
+      `part1 and part2 arrived in ONE write — the output was buffered: ${JSON.stringify(ran.writes)}`);
+    assert.ok(ran.endedAt - first.at > 1000,
+      `part1 arrived only ${ran.endedAt - first.at}ms before the end; it should lead by the whole pause`);
+  });
+
+  // PINS: streaming across the boundary keeps the two descriptors apart and
+  // still ends with the command's own exit code — the two things a rewrite of
+  // the transport is most likely to lose.
+  test('a streamed command keeps stdout and stderr apart and still reports its exit code', async () => {
+    const r = await hook({ tool_name: 'Bash', tool_input: {
+      command: 'printf "O\\n"; printf "E\\n" >&2; sleep 1; printf "O2\\n"; bash -c "exit 3"',
+    } });
+    const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ran.of('out'), 'O\nO2\n');
+    assert.equal(ran.of('err'), 'E\n');
+    assert.equal(ran.code, 3, 'the command\'s own code, not the forwarder\'s');
   });
 
   // PINS: the session root is a cc-owned LOCAL directory and stays one. Its

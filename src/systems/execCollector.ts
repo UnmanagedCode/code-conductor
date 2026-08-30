@@ -10,9 +10,9 @@
 // bug fixed in one of them.
 
 import { StringDecoder } from 'node:string_decoder';
-import type { ExecOptions, ExecResult } from './system.ts';
+import type { ExecOptions, ExecResult, ExecStream } from './system.ts';
 
-export type StreamName = 'out' | 'err';
+export type StreamName = ExecStream;
 
 // The accounting subset of ExecOptions. Taking the whole ExecOptions would drag
 // cwd/env/timeout in, which are the SPAWN half and belong to the caller.
@@ -78,7 +78,10 @@ export class ExecOutputCollector {
     if (which === 'out') this.#stdout = this.#clip(this.#stdout + s);
     else this.#stderr = this.#clip(this.#stderr + s);
     this.#output = this.#clip(this.#output + s);
-    onChunk?.(s);
+    // AFTER the caps, deliberately: a streaming consumer must see exactly what
+    // is retained, or a capped command would show a live tail the buffered
+    // result does not contain.
+    onChunk?.(s, which);
   }
 
   // On a spawn error the message becomes the diagnostic. It fills whichever

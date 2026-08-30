@@ -25,8 +25,17 @@ import {
   FS_ERROR_CODES, SystemError, classifySpawnError,
   type Capabilities, type SystemDescriptor, type SystemErrorCode,
 } from './protocol.ts';
-import { frameCommand, newNonce, parseFramedStderr, parseFramedStdout } from './shellFraming.ts';
+import { FramedStreamFilter, frameCommand, newNonce, parseFramedStderr, parseFramedStdout } from './shellFraming.ts';
 import type { ExecOptions, ExecResult, ExecSpec } from './system.ts';
+
+// Live output, per stream, as it arrives. A caller that passes these gets the
+// SAME bytes it would have read from the result at the end — FramedStreamFilter
+// is what guarantees that — only sooner, and with the framing and the login
+// shell's own banner already removed.
+export interface ShellStreamSink {
+  onOut?: (text: string) => void;
+  onErr?: (text: string) => void;
+}
 
 export interface ShellStreamHandlers {
   onStdout(chunk: Buffer): void;
@@ -112,13 +121,14 @@ export class ProviderShell {
   // difference of the fallback, so it is readable rather than inferred.
   get persistent(): boolean { return this.#host.capabilities.persistentShell; }
 
-  async run(command: string, { timeoutMs }: { timeoutMs?: number } = {}): Promise<ShellResult> {
+  async run(command: string, { timeoutMs, onOut, onErr }: { timeoutMs?: number } & ShellStreamSink = {}): Promise<ShellResult> {
     await this.#acquire();
     try {
       const deadline = timeoutMs ?? this.#commandTimeoutMs;
+      const sink: ShellStreamSink = { ...(onOut ? { onOut } : {}), ...(onErr ? { onErr } : {}) };
       return this.persistent
-        ? await this.#runPersistent(command, deadline)
-        : await this.#runOneShot(command, deadline);
+        ? await this.#runPersistent(command, deadline, sink)
+        : await this.#runOneShot(command, deadline, sink);
     } finally {
       this.#releaseTurn();
     }
@@ -163,17 +173,17 @@ export class ProviderShell {
 
   // ── Persistent mode ────────────────────────────────────────────────
 
-  async #runPersistent(command: string, deadline: number): Promise<ShellResult> {
+  async #runPersistent(command: string, deadline: number, sink: ShellStreamSink): Promise<ShellResult> {
     const stream = await this.#ensureStream();
-    const r = await this.#exchange(stream, command, deadline);
+    const r = await this.#exchange(stream, command, deadline, sink);
     this.#cwd = r.cwd || this.#cwd;
     return { ...r, cwd: this.#cwd };
   }
 
   // One framed command over an open shell.
-  async #exchange(stream: ShellStream, command: string, deadline: number): Promise<ShellResult> {
+  async #exchange(stream: ShellStream, command: string, deadline: number, sink: ShellStreamSink): Promise<ShellResult> {
     const nonce = newNonce();
-    const pending = new PendingCommand(nonce);
+    const pending = new PendingCommand(nonce, sink);
     this.#pending = pending;
     stream.retain();
     let timer: NodeJS.Timeout | null = null;
@@ -253,16 +263,28 @@ export class ProviderShell {
 
   // ── Fallback mode: one framed exec per command ─────────────────────
 
-  async #runOneShot(command: string, deadline: number): Promise<ShellResult> {
+  async #runOneShot(command: string, deadline: number, sink: ShellStreamSink): Promise<ShellResult> {
     const nonce = newNonce();
+    // The SAME filters the persistent path uses, over `exec`'s own streaming
+    // hook — so the fallback is not a version of the feature with the live
+    // output quietly missing, and it cannot filter differently from the path it
+    // falls back from.
+    const filters = { out: new FramedStreamFilter(nonce, 'out'), err: new FramedStreamFilter(nonce, 'err') };
     const r = await this.#host.execOneShot(
       { shell: frameCommand(nonce, command) },
       {
         cwd: this.#cwd, ...(this.#env ? { env: this.#env } : {}),
         timeoutMs: deadline, stdin: 'ignore',
+        ...((sink.onOut || sink.onErr) ? {
+          onChunk: (text: string, which: 'out' | 'err') => {
+            const safe = filters[which].push(text);
+            if (safe) (which === 'out' ? sink.onOut : sink.onErr)?.(safe);
+          },
+        } : {}),
       },
     );
     if (r.timedOut) {
+      flushFilters(filters, sink);
       throw new SystemError('ETIMEDOUT', `no shell sentinel within ${deadline}ms — the shell was reset`);
     }
     if (r.spawnError) {
@@ -283,6 +305,10 @@ export class ProviderShell {
     const out = parseFramedStdout(r.stdout, nonce);
     const err = parseFramedStderr(r.stderr, nonce);
     if (!out || !err) {
+      // Same reason as the persistent path's fail(): the command printed
+      // something before it took the shell with it, and no frame survived to
+      // carry it in the result.
+      flushFilters(filters, sink);
       // No sentinel and the shell is already gone: the command took the shell
       // with it (an `exit`, or a syntax error that never reached the framing).
       this.#resetReason = 'the command ended the shell before it could be framed';
@@ -297,6 +323,18 @@ export class ProviderShell {
   }
 }
 
+function flushFilters(
+  filters: { out: FramedStreamFilter; err: FramedStreamFilter },
+  sink: ShellStreamSink,
+): void {
+  for (const which of ['out', 'err'] as const) {
+    const to = which === 'out' ? sink.onOut : sink.onErr;
+    if (!to) continue;
+    const rest = filters[which].flush();
+    if (rest) to(rest);
+  }
+}
+
 // One in-flight command's accumulating streams. It owns the parse so the
 // first-match-wins rule lives in exactly one place per stream.
 class PendingCommand {
@@ -308,12 +346,23 @@ class PendingCommand {
   #outDone: { text: string; code: number; cwd: string } | null = null;
   #errDone: string | null = null;
   #settled = false;
+  // The accumulated buffers above are what the PARSER reads, and they stay:
+  // first-match-wins is a rule about the whole stream. These two answer the
+  // other question — what is safe to hand a live consumer right now — from the
+  // same rules, so the two can never disagree.
+  readonly #filters: { out: FramedStreamFilter; err: FramedStreamFilter };
+  readonly #sink: ShellStreamSink;
 
-  constructor(nonce: string) { this.nonce = nonce; }
+  constructor(nonce: string, sink: ShellStreamSink = {}) {
+    this.nonce = nonce;
+    this.#sink = sink;
+    this.#filters = { out: new FramedStreamFilter(nonce, 'out'), err: new FramedStreamFilter(nonce, 'err') };
+  }
 
   pushOut(text: string): void {
     if (this.#settled || this.#outDone || text === '') return;
     this.#out += text;
+    this.#emit('out', text);
     const m = parseFramedStdout(this.#out, this.nonce);
     if (!m) return;
     this.#outDone = { text: m.text, code: m.code, cwd: m.cwd };
@@ -323,10 +372,21 @@ class PendingCommand {
   pushErr(text: string): void {
     if (this.#settled || this.#errDone !== null || text === '') return;
     this.#err += text;
+    this.#emit('err', text);
     const m = parseFramedStderr(this.#err, this.nonce);
     if (!m) return;
     this.#errDone = m.text;
     this.#maybeSettle();
+  }
+
+  // BEFORE the parse, so the last chunk of a command — the one carrying its
+  // final bytes AND the sentinel — is still delivered live rather than only in
+  // the result. The filter stops itself at the boundary.
+  #emit(which: 'out' | 'err', text: string): void {
+    const to = which === 'out' ? this.#sink.onOut : this.#sink.onErr;
+    if (!to) return;
+    const safe = this.#filters[which].push(text);
+    if (safe) to(safe);
   }
 
   #maybeSettle(): void {
@@ -338,6 +398,19 @@ class PendingCommand {
   fail(e: Error): void {
     if (this.#settled) return;
     this.#settled = true;
+    // Release what the command printed before it died. There is no frame to
+    // parse it out of, so the rejected result carries none of it — the stream
+    // is the only channel it has.
+    this.#flush();
     this.reject(e);
+  }
+
+  #flush(): void {
+    for (const which of ['out', 'err'] as const) {
+      const to = which === 'out' ? this.#sink.onOut : this.#sink.onErr;
+      if (!to) continue;
+      const rest = this.#filters[which].flush();
+      if (rest) to(rest);
+    }
   }
 }

@@ -1466,35 +1466,62 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     // THE REDIRECTED BASH. A worker on a remote system has its Bash command
     // rewritten into an invocation of src/systems/bashForwarder.ts, which posts
     // the ORIGINAL command here; cc runs it in that session's long-lived shell
-    // on the system and answers with the result, which the forwarder replays as
+    // on the system and STREAMS the result back, which the forwarder replays as
     // its own stdout/stderr/exit code.
+    //
+    // NDJSON, one frame per line, not a single JSON object: a build or a test
+    // run has to reach the worker while it is still running, and an object
+    // cannot be parsed until its last byte. `application/x-ndjson` +
+    // `flushHeaders()` is the same streaming shape the plugin-library routes use
+    // (src/plugins/api.ts). The frames are `{t:'notice'|'out'|'err', text}` and
+    // a terminal `{t:'exit', code}`; the two output streams are separate frames
+    // because the forwarder writes each to a different file descriptor.
     //
     // The socket closing is load-bearing, not incidental: the CLI kills the
     // forwarder on a tool timeout or an interrupt, and that abort is cc's only
     // signal to stop the command on the far side.
     r.post('/instances/:id/bash-forward', async (req, res) => {
+      // A REFUSAL IS FRAMED TOO. The forwarder reads frames and ignores anything
+      // else, so a refusal written in some other shape would reach the worker as
+      // an unexplained failure instead of as its reason.
+      const refuse = (status: number, why: string) => {
+        res.status(status).type('application/x-ndjson')
+          .send(`${JSON.stringify({ t: 'err', text: `cc: ${why}\n` })}\n${JSON.stringify({ t: 'exit', code: 1 })}\n`);
+      };
       const inst = instances.get(req.params.id);
       const redirect = inst?._redirect;
-      if (!redirect) {
-        res.status(404).json({ stdout: '', stderr: 'cc: this session is not redirected to a system\n', code: 1 });
-        return;
-      }
+      if (!redirect) { refuse(404, 'this session is not redirected to a system'); return; }
       const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown };
       const command = typeof body.command === 'string' ? body.command : '';
-      if (!command) {
-        res.status(400).json({ stdout: '', stderr: 'cc: the forwarder sent no command\n', code: 1 });
-        return;
-      }
+      if (!command) { refuse(400, 'the forwarder sent no command'); return; }
       const abort = new AbortController();
+      // Unchanged by streaming: `close` fires both on a normal end and on a
+      // client disconnect, and `writableEnded` is what tells them apart.
       res.on('close', () => { if (!res.writableEnded) abort.abort(); });
+      res.status(200);
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-store');
+      res.flushHeaders();
+      const write = (frame: unknown) => {
+        if (res.writableEnded || res.destroyed) return;
+        res.write(`${JSON.stringify(frame)}\n`);
+      };
       const timeoutMs = Number(body.timeoutMs);
       // runForwarded never rejects: every failure comes back as a non-zero exit
-      // with its reason on stderr, which is the channel the worker reads.
+      // with its reason streamed on `err`, which is the channel the worker reads.
       const result = await redirect.runForwarded(command, {
         signal: abort.signal,
+        sink: {
+          notice: (text) => write({ t: 'notice', text }),
+          out: (text) => write({ t: 'out', text }),
+          err: (text) => write({ t: 'err', text }),
+        },
         ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
       });
-      if (!res.writableEnded) res.status(200).json(result);
+      // ONLY the code: the text has already gone out through the sink, and
+      // writing the aggregate here would deliver every byte twice.
+      write({ t: 'exit', code: result.code });
+      if (!res.writableEnded) res.end();
     });
   }
 

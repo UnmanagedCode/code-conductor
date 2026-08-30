@@ -151,3 +151,157 @@ export function parseFramedStderr(text: string, nonce: string): FramedStderr | n
     return { text: before, consumed: start + nl + 1 };
   }
 }
+
+// ── Streaming the same frame, without leaking it ─────────────────────
+
+// The parser above answers "what did this command print" once the whole frame
+// has arrived. A redirected `Bash` also has to show output AS IT ARRIVES, which
+// means forwarding bytes before the boundary has been seen — and that is the
+// one place the framing can leak into a worker's output.
+//
+// THE CONTRACT, and the only one worth stating: whatever this emits,
+// concatenated, is byte-identical to what the parser extracts from the same
+// stream. Every rule below is the parser's own, applied incrementally rather
+// than at the end, so the streaming and buffered paths cannot disagree:
+//
+//   * nothing before the OPENING sentinel is the command's (a login shell's
+//     profile banner is not this command's stdout);
+//   * the closing sentinel only counts when it STARTS a line, so a command that
+//     echoes it mid-line is output;
+//   * FIRST MATCH WINS, and everything after the boundary is discarded;
+//   * cc's injected newline before the sentinel is stripped.
+//
+// Three things are therefore held back rather than emitted, each until the next
+// byte resolves it:
+//   1. a tail that is a PREFIX of the sentinel at a line start — it may be the
+//      boundary arriving one byte at a time;
+//   2. a COMPLETE sentinel at a line start whose line has not ended — its tail
+//      decides whether it is the boundary or a forgery, and it has not arrived;
+//   3. a trailing newline at the very end of the buffer — it may be the one cc
+//      injected before the sentinel, which the parser strips.
+// (3) is why a paused command's last line arrives without its newline until the
+// next output: emitting it eagerly would put one byte in the stream that the
+// buffered result does not contain, and byte-equality is the contract.
+//
+// One filter per (command, stream): stdout and stderr carry separate sentinels
+// and must be filtered separately, which is also what keeps them separable
+// downstream.
+export class FramedStreamFilter {
+  readonly #sentinel: string;
+  readonly #begin: string;
+  readonly #kind: 'out' | 'err';
+  #buf = '';
+  #started = false;
+  #done = false;
+  // Whether the next character of `#buf` sits at the start of a line. Tracked
+  // rather than read from `#buf[-1]`, because emitted text has already left the
+  // buffer — without it a mid-line `__CC_…` in the next chunk would be read as
+  // a line-start sentinel.
+  #atLineStart = true;
+
+  constructor(nonce: string, kind: 'out' | 'err') {
+    this.#sentinel = sentinelFor(nonce);
+    this.#begin = beginFor(nonce);
+    this.#kind = kind;
+  }
+
+  // True once the boundary has been seen. Nothing more will ever be emitted.
+  get done(): boolean { return this.#done; }
+
+  push(delta: string): string {
+    if (this.#done || delta === '') return '';
+    this.#buf += delta;
+    if (!this.#started) {
+      const at = afterMarkerLine(this.#buf, this.#begin);
+      // Still inside the shell's own preamble: keep buffering it, and emit
+      // nothing. It is small and bounded by whatever the login profile prints.
+      if (at === -1) return '';
+      this.#buf = this.#buf.slice(at);
+      this.#started = true;
+      this.#atLineStart = true;
+    }
+    const s = this.#sentinel;
+    let from = 0;
+    for (;;) {
+      const at = this.#buf.indexOf(s, from);
+      if (at === -1) break;
+      if (!this.#lineStartAt(at)) { from = at + s.length; continue; }
+      const nl = this.#buf.indexOf('\n', at);
+      // Rule 2: a complete sentinel at a line start whose line has not ended.
+      if (nl === -1) return this.#take(this.#withInjectedNewline(at));
+      if (this.#matchesTail(this.#buf.slice(at + s.length, nl))) {
+        const out = this.#buf.slice(0, this.#withInjectedNewline(at));
+        this.#buf = '';
+        this.#done = true;
+        return out;
+      }
+      // A forgery. It is the command's own output, so keep scanning — exactly
+      // what the parser does.
+      from = nl + 1;
+    }
+    return this.#take(this.#holdFrom());
+  }
+
+  // No sentinel can arrive any more — the shell died, or the command's deadline
+  // passed. Whatever is still held was held PENDING a boundary, so it is the
+  // command's own output and belongs to the worker: the buffered result cannot
+  // carry it (there is no frame to parse it out of), which makes this the only
+  // way that output is ever seen.
+  //
+  // Rules 1 and 2 still apply. A shell that died PART WAY THROUGH writing the
+  // sentinel leaves a fragment of the framing in the buffer, and "the shell
+  // died" is not a licence to leak it.
+  flush(): string {
+    if (this.#done) return '';
+    this.#done = true;
+    const b = this.#buf;
+    this.#buf = '';
+    if (b.length === 0) return '';
+    const lineStart = b.lastIndexOf('\n') + 1;
+    const tail = b.slice(lineStart);
+    const atLineStart = lineStart > 0 || this.#atLineStart;
+    if (tail.length > 0 && atLineStart && (this.#sentinel.startsWith(tail) || tail.startsWith(this.#sentinel))) {
+      // Drop cc's injected newline with it: a sentinel that was mid-flight is
+      // still a sentinel, and the newline before it was never the command's.
+      return b.slice(0, lineStart > 0 ? lineStart - 1 : 0);
+    }
+    return b;
+  }
+
+  #matchesTail(tail: string): boolean {
+    return this.#kind === 'out' ? /^ (\d+) (\S*)$/.test(tail) : tail === '';
+  }
+
+  #lineStartAt(at: number): boolean {
+    return at === 0 ? this.#atLineStart : this.#buf[at - 1] === '\n';
+  }
+
+  // The index to cut at so cc's injected newline — the one the parser strips —
+  // is never emitted.
+  #withInjectedNewline(at: number): number {
+    return at > 0 && this.#buf[at - 1] === '\n' ? at - 1 : at;
+  }
+
+  #holdFrom(): number {
+    const b = this.#buf;
+    if (b.length === 0) return 0;
+    const lineStart = b.lastIndexOf('\n') + 1;
+    const tail = b.slice(lineStart);
+    // Rule 3: a trailing newline may be the injected one.
+    if (tail.length === 0) return b.length - 1;
+    // Rule 1: a partial sentinel, but only where a sentinel could legally start.
+    const atLineStart = lineStart > 0 || this.#atLineStart;
+    if (atLineStart && this.#sentinel.startsWith(tail)) {
+      return lineStart > 0 ? lineStart - 1 : 0;
+    }
+    return b.length;
+  }
+
+  #take(cut: number): string {
+    if (cut <= 0) return '';
+    const out = this.#buf.slice(0, cut);
+    this.#buf = this.#buf.slice(cut);
+    this.#atLineStart = out.endsWith('\n');
+    return out;
+  }
+}

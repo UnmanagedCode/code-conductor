@@ -49,6 +49,9 @@ export function requireAbsolute(op: string, what: string, p: string): void {
 // it may contain pipes, `&&`, or rely on shell PATH).
 export type ExecSpec = { argv: string[] } | { shell: string };
 
+// Which of a command's two output streams a chunk came from.
+export type ExecStream = 'out' | 'err';
+
 export interface ExecOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -68,7 +71,17 @@ export interface ExecOptions {
   // which is worse than a reported failure. runGit is the caller
   // (src/worktrees.ts); omitting it means unbounded retention in this process.
   maxBufferBytes?: number;
-  onChunk?: (text: string) => void;
+  // Called with each decoded chunk AS IT ARRIVES, and with the stream it came
+  // from — the streaming hook every caller that shows live output uses. It
+  // fires AFTER the caps above have had their say, so a consumer sees exactly
+  // what is retained: nothing past `headCapBytes`, and nothing past the
+  // `maxBufferBytes` fence.
+  //
+  // `which` exists because a caller that must keep the two streams apart — the
+  // redirected Bash forwards each to the worker's own stdout/stderr — cannot
+  // recover the split from an interleaved callback. Every other caller ignores
+  // the second argument.
+  onChunk?: (text: string, which: ExecStream) => void;
   killGraceMs?: number;
   // 'ignore' hands the command a closed stdin, so an interactive command sees
   // EOF instead of hanging until the timeout. Load-bearing for project_bash and
