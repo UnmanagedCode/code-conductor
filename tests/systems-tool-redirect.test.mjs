@@ -442,6 +442,28 @@ test('an idle shell is closed on its TTL', async () => {
   assert.equal((await bash('echo alive')).stdout.trim(), 'alive');
 });
 
+// PINS C6: an idle-TTL close TELLS the next command, exactly as a wedge or an
+// interrupt does. The sweep is cc's own decision, made while the worker was
+// away, so a shell that silently looks continuous while its exports are gone is
+// the same R5 violation — and this path used to be the silent one.
+test('an idle-TTL close tells the next command what it lost', async () => {
+  await redirect.close();
+  await build({ idleTtlMs: 40 });
+  await bash('export CC_PROBE=before');
+  await waitFor(() => redirect.shellOpen === false, { timeout: 4000 });
+
+  const notices = [];
+  const after = await redirect.runForwarded('echo "[$CC_PROBE]"', {
+    sink: { notice: (t) => notices.push(t), out: () => {}, err: () => {} },
+  });
+  assert.equal(after.stdout, '[]\n', 'it really did run on a shell that had lost the export');
+  assert.equal(notices.length, 1, 'the idle close is reported, not silent');
+  assert.match(notices[0], /restarted/);
+  assert.equal(after.notice, notices[0]);
+  // And once only.
+  assert.equal((await bash('echo again')).notice, null);
+});
+
 // PINS: `@mention` pre-hydration pulls the named file into the session root
 // BEFORE the prompt reaches the CLI — the CLI expands a mention with no hook,
 // so a file that is not already local is simply absent from the turn.

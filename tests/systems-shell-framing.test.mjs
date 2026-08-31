@@ -510,6 +510,24 @@ for (const mode of MODES) {
     }, { maxOutputBytes: 8192 });
   });
 
+  // PINS C4: the fence counts BYTES in both modes. The persistent path counted
+  // UTF-16 units, so multibyte output rode up to ~2-4x past the limit the fence
+  // exists to hold — while the fallback counted bytes, making the two modes
+  // disagree about the one number that keeps cc's heap bounded.
+  test(`[${mode.name}] the fence counts bytes, not characters`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const streamed = [];
+      // 3 bytes per character in UTF-8, one UTF-16 unit each: a
+      // character-counting fence admits three times the bytes it promises.
+      await assert.rejects(
+        () => sh.run('for i in $(seq 1 4000); do printf "\u4e2d\u6587\u5b57"; done', { onOut: (t) => streamed.push(t) }),
+        (e) => { assert.equal(e.code, 'EFBIG', `got ${e.code}: ${e.message}`); return true; },
+      );
+      assert.ok(Buffer.byteLength(streamed.join(''), 'utf8') <= 8192 * 2,
+        `streamed ${Buffer.byteLength(streamed.join(''), 'utf8')} bytes past an 8192-BYTE fence`);
+    }, { maxOutputBytes: 8192 });
+  });
+
   // PINS: the fence does not clip an ordinary command. A fence that fired early
   // would turn every normal result into a failure.
   test(`[${mode.name}] output below the fence is untouched`, async () => {

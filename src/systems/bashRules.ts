@@ -115,6 +115,24 @@ export async function findDisabledHooks(sources: string[]): Promise<string[]> {
   return out;
 }
 
+// Which of the CLI's settings layers a source is, in words. The path alone does
+// not say: `/etc/claude-code/managed-settings.json` is ADMIN-OWNED, so "remove
+// the setting" is advice the operator reading the refusal may have no power to
+// act on, and the two project files are copies cc pulled off the system rather
+// than anything on this machine.
+function layerLabel(source: string, systemId: string): string {
+  if (source === MANAGED_POLICY_PATH) return 'managed policy — admin-owned, so an administrator has to change it';
+  if (source.startsWith(path.join(os.homedir(), '.claude') + path.sep)) return 'your user settings';
+  if (source.endsWith('settings.local.json')) return `project local settings, pulled from '${systemId}'`;
+  return `project settings, pulled from '${systemId}'`;
+}
+
+// One line per offending file: the path, because the repair is to edit it, and
+// the layer, because who can edit it differs.
+function attribute(sources: string[], systemId: string): string {
+  return sources.map(s => `  ${s}\n    (${layerLabel(s, systemId)})`).join('\n');
+}
+
 // The refusal text. Names the file, because the repair is to edit it, and names
 // the CONSEQUENCE, because "cc cannot run this session" without it reads as a cc
 // bug rather than as the protection it is.
@@ -122,7 +140,7 @@ export function hooksDisabledRefusal(systemId: string, sources: string[]): strin
   return `REDIRECT_HOOKS_DISABLED: this session would run on system '${systemId}', where every `
     + `Bash command, Read, Write and Edit is redirected by a PreToolUse hook. These settings files `
     + `set "disableAllHooks": true, which turns all of that off:\n`
-    + `${sources.map(s => `  ${s}`).join('\n')}\n`
+    + `${attribute(sources, systemId)}\n`
     + `With hooks off the worker's own commands would run on the orchestrator's machine, in this `
     + `session's local directory, while every result told it they ran on '${systemId}' — and no edit `
     + `would ever reach the system. cc refuses the session rather than let that happen. Remove the `
@@ -155,7 +173,9 @@ export async function findUnenforceableBashRules(sources: string[]): Promise<Une
 // edit one of them — and says what redirection did to it, because "cc cannot
 // enforce this" without the reason reads as a cc bug.
 export function bashRulesRefusal(systemId: string, found: UnenforceableRule[]): string {
-  const lines = found.map(f => `  ${f.rule}  (${f.source})`).join('\n');
+  // Same attribution as the hooks refusal, for the same reason: a rule in the
+  // managed-policy layer is not the operator's to remove.
+  const lines = found.map(f => `  ${f.rule}\n    in ${f.source}\n    (${layerLabel(f.source, systemId)})`).join('\n');
   return `BASH_RULES_NOT_ENFORCEABLE: this session would run on system '${systemId}', where every `
     + `Bash command is rewritten into one forwarder invocation — so the Claude CLI, which matches `
     + `permission rules against the rewritten command, can no longer tell two commands apart. `

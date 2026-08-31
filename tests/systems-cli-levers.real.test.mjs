@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { allow, fixture, hookServer, run, runClaude, settingsJSON, t } from './cliContractCase.mjs';
+import { allow, fixture, hookServer, run, runClaude, runClaudeEnv, settingsJSON, t } from './cliContractCase.mjs';
 
 // PINS: `disableAllHooks: true` really does suppress the injected hooks — the
 // premise of `REDIRECT_HOOKS_DISABLED`. If a CLI upgrade stopped honouring it,
@@ -82,16 +82,47 @@ t('includeGitInstructions:false still suppresses the CLI git instructions', asyn
     await run(['git', 'add', '-A'], dir);
     await run(['git', 'commit', '-q', '-m', 'initial'], dir);
 
-    const ask = 'Reply with ONLY the words in your system prompt that state the current git branch, or NONE.';
-    const control = await runClaude(dir, settingsJSON(hooks.url, { pre: ['Bash'] }), ask);
-    const off = await runClaude(dir,
-      settingsJSON(hooks.url, { pre: ['Bash'], extra: { includeGitInstructions: false } }), ask);
+    // THE MECHANICAL CHANNEL: the CLI SHELLS OUT to git to build that block, so
+    // a shim earlier on PATH records whether it did. Asked the model instead,
+    // the answer is prose about its own prompt — which the harness's own rules
+    // say not to rely on where a mechanical channel exists, and which cannot
+    // distinguish "not in my prompt" from "I declined to quote it".
+    //
+    // MEASURED (2.1.250): `status --short`, `log --oneline` and `config
+    // user.name` run only when the block is built. Five other git calls (the
+    // skills scan, remote/email lookups, a settings `ls-files`) happen either
+    // way, which is why the assertion names the three and not the count.
+    const bin = path.join(dir, 'shim');
+    await fs.mkdir(bin, { recursive: true });
+    const realGit = (await run(['sh', '-c', 'command -v git'], dir)).trim();
+    await fs.writeFile(path.join(bin, 'git'),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> "$GIT_SHIM_LOG"\nexec ${realGit} "$@"\n`);
+    await fs.chmod(path.join(bin, 'git'), 0o755);
 
-    // The mechanical half: the CLI reports how many tokens of system prompt it
-    // built, and dropping a whole gitStatus block is visible in it.
-    assert.ok(/main|master/i.test(control.result),
-      `the control saw the branch in its prompt (got ${JSON.stringify(control.result).slice(0, 300)})`);
-    assert.ok(!/main|master/i.test(off.result),
-      `with the key off the branch is not in the prompt (got ${JSON.stringify(off.result).slice(0, 300)})`);
+    const gitCalls = async (extra, tag) => {
+      const log = path.join(dir, `git-${tag}.log`);
+      await fs.writeFile(log, '');
+      await runClaudeEnv(dir, settingsJSON(hooks.url, { pre: ['Bash'], ...(extra ? { extra } : {}) }),
+        'Reply with the single word OK.',
+        { PATH: `${bin}:${process.env.PATH}`, GIT_SHIM_LOG: log });
+      return fs.readFile(log, 'utf8');
+    };
+
+    // CONTROL first: without the key the block IS built, so the assertion below
+    // is about the key and not about a CLI that stopped calling git at all.
+    const control = await gitCalls(null, 'control');
+    for (const probe of ['status --short', 'log --oneline']) {
+      assert.ok(control.includes(probe),
+        `the control built the git block (no '${probe}' in ${JSON.stringify(control).slice(0, 400)})`);
+    }
+
+    const off = await gitCalls({ includeGitInstructions: false }, 'off');
+    for (const probe of ['status --short', 'log --oneline']) {
+      assert.ok(!off.includes(probe),
+        `with the key off the CLI must not probe git for '${probe}' (got ${JSON.stringify(off).slice(0, 400)})`);
+    }
+    // Not vacuous in the other direction either: the shim WAS on PATH and the
+    // CLI did still use git for its other startup work.
+    assert.ok(off.trim().length > 0, 'the shim was reached at all');
   } finally { await hooks.close(); await clean(); }
 });

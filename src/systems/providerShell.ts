@@ -125,7 +125,7 @@ export class ProviderShell {
 
   constructor(host: ShellHost, opts: {
     cwd: string; env?: NodeJS.ProcessEnv; commandTimeoutMs?: number;
-    // A FENCE on one command's total output, not a truncation: past it the
+    // A FENCE on one command's total output in BYTES, not a truncation: past it the
     // command is killed and the call FAILS. cc accumulates a framed command's
     // bytes in its own heap — the parser's first-match-wins rule is about the
     // whole stream — so without a bound one runaway command takes the
@@ -492,7 +492,12 @@ class PendingCommand {
   // this command can cost is bounded by the fence plus one chunk.
   #past(text: string): boolean {
     if (this.#maxBytes === undefined || this.#overflowed) return this.#overflowed;
-    this.#bytes += text.length;
+    // BYTES, not UTF-16 units. `text.length` counts characters, so multibyte
+    // output rode up to ~4x past the limit — and the fallback path counts bytes
+    // through ExecOutputCollector, so the two modes disagreed about the one
+    // number that keeps cc's heap bounded. The decoder hands whole characters
+    // across chunk boundaries, so this is the exact byte count that arrived.
+    this.#bytes += Buffer.byteLength(text, 'utf8');
     if (this.#bytes <= this.#maxBytes) return false;
     this.#overflowed = true;
     this.#onOverflow();

@@ -132,6 +132,28 @@ test('the refusal names the file and what it would have cost', async () => {
   assert.match(msg, /orchestrator|this machine|locally/i);
 });
 
+// PINS C9: the refusal names WHICH LAYER the setting came from. "Remove the
+// setting" is unactionable advice when the file is `/etc/claude-code/managed-
+// settings.json` — that layer is admin-owned, and the operator reading the
+// refusal may not be the person who can edit it.
+test('the refusal names the settings layer, and says so for an admin-owned one', async () => {
+  // `admin-owned` cannot come from any path, so this is about cc LABELLING the
+  // layer rather than about the filename happening to contain a word.
+  const managed = hooksDisabledRefusal('prod-box', ['/etc/claude-code/managed-settings.json']);
+  assert.match(managed, /admin-owned/, 'the managed-policy layer is labelled admin-owned');
+
+  // And an ordinary layer is not mislabelled as admin-owned. The path below
+  // contains no layer word either, so the label has to come from cc.
+  const project = hooksDisabledRefusal('prod-box', ['/store/sessions/app/.claude/settings.json']);
+  assert.ok(!/admin-owned/.test(project), project);
+  assert.match(project, /project settings/, 'the project layer is labelled too');
+
+  // The user layer, likewise labelled rather than inferred from its path.
+  const user = hooksDisabledRefusal('prod-box', [path.join(os.homedir(), '.claude', 'settings.json')]);
+  assert.match(user, /user settings/);
+  assert.ok(!/admin-owned/.test(user), user);
+});
+
 // PINS: the scan shares its sources with the Bash-rule scan. Both answer the
 // same question at the same moment about the same two pulled files, so a source
 // added for one must be read by the other.
