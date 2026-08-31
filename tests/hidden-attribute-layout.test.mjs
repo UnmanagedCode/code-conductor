@@ -49,7 +49,7 @@ async function renderIndex() {
   const style = document.createElement('style');
   style.textContent = css;
   document.head.appendChild(style);
-  return { window, document };
+  return { window, document, style };
 }
 
 const displayOf = (window, el) => window.getComputedStyle(el).display;
@@ -103,14 +103,9 @@ function authorDisplaySelectors(document) {
 // default. Asking "does an author `display` match, and does it resolve to
 // something other than none?" is therefore both the faithful question and the
 // invariant itself.
-test('nothing in index.html lays out while carrying the hidden attribute', async () => {
-  const { window, document } = await renderIndex();
+function sweep(window, document) {
   const selectors = authorDisplaySelectors(document);
-  assert.ok(selectors.length > 0, 'sanity: styles.css declares display somewhere');
-
   const hidden = [...document.querySelectorAll('[hidden]')];
-  assert.ok(hidden.length > 0, 'sanity: index.html ships elements with a hidden attribute');
-
   const offenders = hidden
     .filter(el => !RENDERS_WHILE_HIDDEN.has(el.id))
     // An author display resolving to `none` is the paired reset doing its job.
@@ -118,11 +113,39 @@ test('nothing in index.html lays out while carrying the hidden attribute', async
     .filter(el => selectors.some(sel => { try { return el.matches(sel); } catch { return false; } }))
     .map(el => `${el.tagName.toLowerCase()}#${el.id || '(no id)'}.${el.className || '(no class)'}`
       + ` → author display:${displayOf(window, el)}`);
+  return { selectors, hidden, offenders };
+}
+
+test('nothing in index.html lays out while carrying the hidden attribute', async () => {
+  const { window, document, style } = await renderIndex();
+  const { selectors, hidden, offenders } = sweep(window, document);
+  assert.ok(selectors.length > 0, 'sanity: styles.css declares display somewhere');
+  assert.ok(hidden.length > 0, 'sanity: index.html ships elements with a hidden attribute');
 
   assert.deepEqual(
     offenders, [],
     'these ship `hidden` but an author `display` outranks the UA [hidden] rule, so they lay out anyway. '
     + 'Add a `[hidden] { display: none }` reset beside the rule that sets each one\'s display, '
     + `or name it in RENDERS_WHILE_HIDDEN with a reason:\n  ${offenders.join('\n  ')}`,
+  );
+
+  // POSITIVE CONTROL. An empty offender list is the passing answer, so this
+  // assertion is worthless unless a real collision would have shown up in it —
+  // and the two sanity checks above only pin that the collector and the document
+  // are non-empty. Break the MATCHER while collection stays healthy (a happy-dom
+  // upgrade changing `matches` semantics, or a selector form that makes the
+  // `catch` above swallow every attempt) and the sweep goes quietly blind.
+  //
+  // So: introduce a collision in the in-memory sheet and demand the same
+  // pipeline reports it. `dialog .hint` is chosen because #gd-empty-hint is
+  // reachable ONLY by descendant match — no id or class selector would find it —
+  // so nothing but real selector matching can produce this hit.
+  style.textContent += '\ndialog .hint { display: block; }';
+  const control = sweep(window, document);
+  assert.ok(
+    control.offenders.some(o => o.includes('#gd-empty-hint')),
+    'positive control failed: a deliberate `dialog .hint { display: block }` collision against '
+    + '<p class="hint" id="gd-empty-hint" hidden> went unreported, so the sweep above cannot be '
+    + `trusted to report a real one. Selector matching is broken, not the sheet.\n  saw: ${JSON.stringify(control.offenders)}`,
   );
 });
