@@ -988,7 +988,7 @@ export async function setProjectRemote(
     throw httpError(
       409,
       `project '${name}' cannot change target while it has ${parts.join(' and ')}. `
-      + `A live session's shell and session root are coherent only against the target they were opened on, `
+      + `A live session's shells and session root are coherent only against the target they were opened on, `
       + `and a worktree re-derives its target from this project. Clear them first.`,
       { code: 'PROJECT_PLACEMENT_IN_USE', systemRefusal: true, instances, worktrees },
     );

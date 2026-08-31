@@ -83,9 +83,10 @@ test('a forwarded command runs on the system and not on cc', async () => {
   assert.notEqual(miss.code, 0);
 });
 
-// PINS: the shell is one long-lived shell per session — `cd` and `export` carry
-// between commands, and cwd is read back from the shell rather than parsed out
-// of the command.
+// PINS: ONE AGENT's shell is long-lived — `cd` and `export` carry between that
+// agent's commands, and cwd is read back from the shell rather than parsed out of
+// the command. Every call here is the main agent's; the isolation BETWEEN agents
+// is tests/systems-agent-shells.test.mjs's subject.
 test('the redirected shell carries cwd and exports between commands', async () => {
   await fs.mkdir(onSystem('sub'), { recursive: true });
   await bash('cd sub');

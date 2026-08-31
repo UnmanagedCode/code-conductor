@@ -41,7 +41,14 @@ export const PROTOCOL_ERROR_CODES = [
   'ETRANSPORT',    // the connection is gone (provider exited, pipe broke)
   'ETIMEDOUT',     // a bounded wait elapsed
   'EUNSUPPORTED',  // an optional capability the provider does not advertise
-  'EBUSY',         // shell serialisation: the wait for the shell exceeded its bound
+  // TWO PRODUCERS, different causes and different timings. providerShell.ts:
+  // one shell serialises its commands and a wait past its bound is refused
+  // rather than queued forever. toolRedirect.ts: a new subagent wants a shell,
+  // the per-session cap is reached and every existing one is running a
+  // command — that one waits for nothing and is raised IMMEDIATELY. Neither
+  // reaches a worker as a protocol error frame; both surface as a non-zero exit
+  // with the reason on stderr.
+  'EBUSY',
   'ESHELLGONE',    // the long-lived shell died or never framed the command
   'EFBIG',         // a file above MAX_FILE_BYTES, or output above a caller's fence
   'ECANCELLED',    // the caller went away: an interrupt, or a tool timeout

@@ -12,13 +12,12 @@
 //
 // So the three tool families are handled, and nothing is left to fall through:
 //   Bash          — REWRITTEN into a local forwarder that runs the command in
-//                   this session's shell on the system (src/systems/bashForwarder.ts).
-//                   ONE SHELL PER AGENT, not per session: the main agent and
-//                   each subagent get their own, keyed off the `agent_id` the
-//                   hook carries, because a subagent's `cd` re-basing the main
-//                   agent's next command is the same silent divergence this
-//                   module exists to prevent — and locally the CLI gives every
-//                   Bash call a fresh shell anyway.
+//                   THAT AGENT's shell on the system, one per agent and keyed
+//                   off the `agent_id` the hook carries
+//                   (src/systems/bashForwarder.ts). A subagent's `cd` re-basing
+//                   the main agent's next command is the same silent divergence
+//                   this module exists to prevent — and locally the CLI gives
+//                   every Bash call a fresh shell anyway.
 //   Read/Write/    — PULL-THEN-PUSH through src/systems/fileBridge.ts, at the
 //   Edit/Notebook    path the CLI is about to open. Never rewritten.
 //   Glob/Grep     — removed from the tool registry by the injected settings
@@ -93,7 +92,8 @@ const READ_ONLY_FILE_TOOLS = new Set(['Read']);
 // than the system, and a refusal naming the alternative is the honest reply.
 const UNREDIRECTABLE_TOOLS = new Set(['Glob', 'Grep']);
 
-// How long a session's shell may sit unused before cc closes it. A worker
+// How long ONE AGENT's shell may sit unused before cc closes it — the timer is
+// per entry, so a busy agent does not keep an idle one's shell alive. A worker
 // between turns is idle for as long as its user is away, and a shell held open
 // for that is a process on someone else's machine doing nothing.
 const DEFAULT_IDLE_TTL_MS = 15 * 60_000;

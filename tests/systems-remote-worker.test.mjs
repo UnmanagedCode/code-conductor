@@ -541,11 +541,16 @@ describe('a worker session on a remote system', () => {
     await assert.rejects(fs.stat(marker));
   });
 
-  // PINS: removing the session closes its shell on the system. A shell left
-  // open is a process on someone else's machine keyed to a session that is
-  // gone — and removal has to do it independently of the process teardown,
-  // since a crashed or already-exited session has no process left to kill.
-  test('removing the session closes its shell on the system', async () => {
+  // PINS: removing the session reaches the redirect's teardown at all, with NO
+  // live process left to kill — a crashed or already-exited session has none,
+  // and a shell left open is a process on someone else's machine keyed to a
+  // session that is gone. `close()` reaps every agent's shell, not just the main
+  // agent's; only the main agent's is open here.
+  //
+  // NOT CLAIMING that the far-side shell processes actually die — `shellOpen`
+  // answers from cc's entry map, which teardown clears either way. That is pinned
+  // by pid in tests/systems-agent-shells.test.mjs.
+  test('removing the session reaches the shell teardown with no process left', async () => {
     const r = await hook({ tool_name: 'Bash', tool_input: { command: 'echo hi' } });
     await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
     const redirect = instances.get(instId)._redirect;
@@ -649,10 +654,10 @@ describe('a worker session on a remote system', () => {
   });
 });
 
-// ── The session's shell, on a system that serves many targets ────────
+// ── A session's shell, on a system that serves many targets ────────
 //
-// The shell is opened with an `exec` on the project's bound handle, so its
-// commands must land on the project's target — not on the provider's default,
+// Every agent's shell is opened with an `exec` on the project's bound handle, so
+// its commands must land on the project's target — not on the provider's default,
 // and not on a sibling project's. Asserted with CC_REMOTE, because on a machine
 // where every target is one filesystem "the command worked" is exactly what the
 // wrong target produces too.
@@ -685,7 +690,7 @@ describe('a worker session on a system serving many targets', () => {
 
   // PINS: a redirected Bash command runs on the project's OWN target, all the
   // way through the real hook, the real forwarder and the real shell.
-  test("the session shell's commands land on the project's target", async () => {
+  test("a session shell's commands land on the project's target", async () => {
     const r = await api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
       session_id: 's', hook_event_name: 'PreToolUse', tool_use_id: 'tu-remote',
       tool_name: 'Bash', tool_input: { command: 'echo "$CC_REMOTE"' },
