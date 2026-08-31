@@ -370,6 +370,44 @@ describe('a worker session on a remote system', () => {
     assert.notEqual(ran2.code, 0);
   });
 
+  // PINS ALL FOUR HOPS of the agent id at once — hook envelope → forwarder argv
+  // → forwarder POST body → runForwarded — by the only witness that cannot be
+  // faked by a hop that dropped it: the far-side shell's OWN pid.
+  //
+  // THIS IS THE FAIL-OPEN CATCHER. If `--agent` is lost anywhere on that path,
+  // the subagent's command still runs and still exits zero; it just runs on the
+  // main agent's shell, and the two pids become equal.
+  //
+  // NOT CLAIMING that the CLI populates `agent_id` — this test supplies it. That
+  // contract is the gated tests/systems-cli-contract.real.test.mjs's subject.
+  test("a subagent's Bash runs on its own shell, end to end", async () => {
+    const shellPid = async (over) => {
+      const r = await hook({ tool_name: 'Bash', tool_input: { command: 'echo $$' }, ...over });
+      const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
+      assert.equal(ran.code, 0, ran.stderr);
+      assert.match(ran.stdout.trim(), /^\d+$/, ran.stdout);
+      return ran.stdout.trim();
+    };
+
+    const sub = await shellPid({ agent_id: 'a8620fbbffcb7f234' });
+    const main = await shellPid({});
+    assert.notEqual(sub, main, "the subagent's command ran in a shell of its own");
+    assert.equal(await shellPid({}), main, 'and the main agent keeps its shell across calls');
+    assert.equal(await shellPid({ agent_id: 'a8620fbbffcb7f234' }), sub, 'as does the subagent');
+
+    // The state half, through the same four hops: the subagent moves its own
+    // shell and the main agent's is still standing in the project tree.
+    const moved = await hook({
+      tool_name: 'Bash', tool_input: { command: 'cd / && pwd' }, agent_id: 'a8620fbbffcb7f234',
+    });
+    const ranMoved = await runAsTheCliWould(moved.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ranMoved.stdout.trim(), '/', ranMoved.stderr);
+
+    const where = await hook({ tool_name: 'Bash', tool_input: { command: 'pwd' } });
+    const ranWhere = await runAsTheCliWould(where.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ranWhere.stdout.trim(), tree, "the main agent's shell never moved");
+  });
+
   // PINS: quoting survives the rewrite. The command travels through a shell as
   // one argv element, so a command containing quotes, `$` or a newline must
   // arrive byte-identical or the worker silently runs something else.
@@ -531,7 +569,7 @@ describe('a worker session on a remote system', () => {
   // locally. It must say files are read and edited at their LOCAL paths and that
   // system paths appear only in command output.
   
-  test('a remote project discloses its system in one sentence pair, and a local one says nothing', async () => {
+  test('a remote project discloses its system, and a local one says nothing', async () => {
     const doc = await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } });
     const block = doc.split('# Workspace conventions')[0];
   
@@ -563,6 +601,41 @@ describe('a worker session on a remote system', () => {
     // same file as its local counterpart.
     assert.match(block, /never/i);
     assert.match(block, /same file/);
+  });
+
+  // PINS AC6: the disclosure states that shell state is PER AGENT. On a remote
+  // system `export` persists across an agent's own commands — better than local
+  // — which invites the false generalisation that a dispatched subagent inherits
+  // it; told, the agent passes the value in the subagent's prompt instead, and
+  // told the converse it stops treating a subagent's `cd` as a hazard to its own
+  // state. Nothing else volunteers either half: a missing export in a subagent
+  // looks like an ordinary unset variable, and a subagent's `cd` NOT reaching the
+  // parent is unobservable by construction.
+  //
+  // The two negative assertions are the two clauses deliberately CUT from the
+  // draft, pinned so a later editor does not re-add them. "a subagent's Bash
+  // starts at <systemPath>" is true only of that subagent's FIRST command, so a
+  // subagent reading it would hold a false statement about itself — and neither
+  // reader needs to know where the other starts, only that state does not cross.
+  // "background jobs" is non-vacuously true in only one of the two capability
+  // modes, and changes nothing the cwd/exports clause does not already change;
+  // the facts a worker acts on about background jobs are delivered at the point
+  // of use, by the reset notice and docs/features.md.
+  //
+  // NOT CLAIMING that the model obeys it.
+  test('the disclosure states that each agent has its own shell', async () => {
+    const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
+      .split('# Workspace conventions')[0];
+
+    assert.match(block, /Each agent has its own shell here/);
+    assert.match(block, /not shared with a subagent you dispatch/);
+    assert.match(block, /in either direction/);
+
+    assert.ok(!/starts/.test(block), `it makes no claim about where a subagent's Bash starts: ${block}`);
+    assert.ok(!/background/i.test(block), `it makes no claim about background jobs: ${block}`);
+
+    // And a local project still says nothing at all.
+    assert.ok(!/^# System$/m.test(await composeProjectConventionsDoc([])));
   });
 
   // PINS: the sentence really reaches the worker — it is written into the
