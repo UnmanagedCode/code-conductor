@@ -63,6 +63,15 @@ describe('changing a project target', () => {
     return path.join(sandbox, name);
   };
 
+  // A REAL session root, composed the way a spawn composes one. Asserting about
+  // a root that was never created would be vacuous — the whole question is
+  // whether an existing one survives.
+  const composeRootFor = async (systemPath, worktree = null) => composeSessionRoot({
+    system: await systemById(remote.id, 'a', 'test'),
+    systemId: remote.id, systemPath, project: 'app', worktree,
+  });
+  const manifestOf = (worktree = null) => `${sessionRootPath(remote.id, 'app', worktree)}.manifest.json`;
+
   // ── The happy change ─────────────────────────────────────────────────
 
   // PINS: a permitted change rewrites the record and every later resolution
@@ -122,6 +131,12 @@ describe('changing a project target', () => {
     assert.equal((await adoptProject('app', tree, { system: remote.id, remoteId: 'a' })).ok, true);
     const wt = await createWorktree('app', { name: 'feature' });
     const before = await readRecord('app');
+    // Real roots for the project AND its worktree: the removal a permitted
+    // change performs is one call plus a loop over the registered worktrees, so
+    // both have to be shown surviving.
+    const { root } = await composeRootFor(tree);
+    const { root: wtRoot } = await composeRootFor(tree, wt.worktreeName);
+    assert.equal(await exists(manifestOf()), true, 'the fixture really composed a root');
 
     await assert.rejects(
       () => setProjectRemote('app', 'b', NO_INSTANCES),
@@ -135,6 +150,14 @@ describe('changing a project target', () => {
     );
     assert.deepEqual(await readRecord('app'), before);
     assert.equal((await projectPlacement('app')).remoteId, 'a', 'the worktree still re-derives to its own target');
+    // A REFUSAL LEAVES THE SESSION ROOT AND MANIFEST INTACT. Removing a session
+    // root is destructive, and the 409 fires precisely BECAUSE live sessions and
+    // registered worktrees exist — the state where destroying one does the most
+    // damage. Nothing else in this file would notice the removal being reordered
+    // above the guard.
+    assert.equal(await exists(root), true, "a refused change keeps the project's session root");
+    assert.equal(await exists(manifestOf()), true, 'and its manifest');
+    assert.equal(await exists(wtRoot), true, "and the worktree's, which the removal loop would take too");
   });
 
   // ── Verify before persist ────────────────────────────────────────────
@@ -142,13 +165,22 @@ describe('changing a project target', () => {
   // PINS: a target the provider does not serve is refused with NOTHING written
   // — the same "verify before persist" shape addSystem already has.
   test('an unknown target refuses REMOTE_NOT_FOUND and writes nothing', async () => {
-    await seed();
+    const tree = await seed();
     const before = await readRecord('app');
+    const { root } = await composeRootFor(tree);
+    assert.equal(await exists(manifestOf()), true, 'the fixture really composed a root');
+
     await assert.rejects(
       () => setProjectRemote('app', 'typo', NO_INSTANCES),
       (e) => e.statusCode === 502 && e.code === 'REMOTE_NOT_FOUND',
     );
     assert.deepEqual(await readRecord('app'), before);
+    // The SECOND refusal position, and a distinct ordering: this one is raised
+    // by the verify-before-persist check, which sits between the guard and the
+    // removal. A removal reordered above only the verify would clear the 409
+    // test above and still be caught here.
+    assert.equal(await exists(root), true, 'a refused change keeps the session root');
+    assert.equal(await exists(manifestOf()), true, 'and its manifest');
   });
 
   // PINS: a provider with no `remotes` capability refuses by name at set time,
