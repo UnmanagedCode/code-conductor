@@ -1511,9 +1511,10 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
 
     // THE REDIRECTED BASH. A worker on a remote system has its Bash command
     // rewritten into an invocation of src/systems/bashForwarder.ts, which posts
-    // the ORIGINAL command here; cc runs it in that session's long-lived shell
-    // on the system and STREAMS the result back, which the forwarder replays as
-    // its own stdout/stderr/exit code.
+    // the ORIGINAL command here; cc runs it in the long-lived shell belonging to
+    // the AGENT the body names — one per agent, the session's main agent when
+    // `agentId` is absent — and STREAMS the result back, which the forwarder
+    // replays as its own stdout/stderr/exit code.
     //
     // NDJSON, one frame per line, not a single JSON object: a build or a test
     // run has to reach the worker while it is still running, and an object
@@ -1537,9 +1538,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const inst = instances.get(req.params.id);
       const redirect = inst?._redirect;
       if (!redirect) { refuse(404, 'this session is not redirected to a system'); return; }
-      const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown };
+      const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown; agentId?: unknown };
       const command = typeof body.command === 'string' ? body.command : '';
       if (!command) { refuse(400, 'the forwarder sent no command'); return; }
+      // WHICH AGENT'S SHELL this command runs in. Absent for the session's main
+      // agent, which is also what an empty string means.
+      const agentId = typeof body.agentId === 'string' && body.agentId ? body.agentId : null;
       const abort = new AbortController();
       // Unchanged by streaming: `close` fires both on a normal end and on a
       // client disconnect, and `writableEnded` is what tells them apart.
@@ -1556,6 +1560,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // runForwarded never rejects: every failure comes back as a non-zero exit
       // with its reason streamed on `err`, which is the channel the worker reads.
       const result = await redirect.runForwarded(command, {
+        agentId,
         signal: abort.signal,
         sink: {
           notice: (text) => write({ t: 'notice', text }),

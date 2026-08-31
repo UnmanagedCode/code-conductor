@@ -2465,9 +2465,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     // gone, so the tool won't run anyway, but we still need to free
     // the held-open HTTP responses.
     this._hooks.discardAll();
-    // And close this session's shell on the remote system. It is a process on
+    // And close EVERY shell this session opened on the remote system — the main
+    // agent's plus one per subagent that ran a command. Each is a process on
     // someone else's machine keyed to a session that no longer exists; nothing
-    // will ever write to it again.
+    // will ever write to any of them again.
     void this._redirect?.close();
     this._closeDebugStreams();
     // `_suppressTempDelete` is set by the resume-restart path
@@ -5105,8 +5106,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     if (inst.proc) await inst.kill({ graceMs: 500 });
     // Independently of the kill: an instance can be removed with no live
-    // process (it crashed, or it already exited), and its shell on the remote
-    // system would then outlive every reference to the session that owns it.
+    // process (it crashed, or it already exited), and its shells on the remote
+    // system — one per agent — would then outlive every reference to the session
+    // that owns them.
     await inst._redirect?.close();
     // And the per-session tmp root cc created for it (see spawn()). One
     // directory per redirected session, never reclaimed, is a leak that grows
@@ -5148,8 +5150,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const all = [...this.byId.values()];
     this.byId.clear();
     await Promise.all(all.map(i => i.kill({ graceMs: 200 }).catch(() => {})));
-    // Every session's shell on a remote system, for the same reason remove()
-    // does it: the process is on another machine and nothing else will reap it.
+    // Every shell of every session on a remote system — per session that is the
+    // main agent's plus one per subagent — for the same reason remove() does it:
+    // the processes are on another machine and nothing else will reap them.
     await Promise.all(all.map(i => i._redirect?.close().catch(() => {})));
     // And every session-tmp directory. An instance id is never reused across
     // processes, so nothing here can be wanted after this returns; a KILLED

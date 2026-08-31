@@ -128,3 +128,62 @@ t('a Bash pattern deny is still enforced under bypassPermissions', async () => {
       'and the CLI reported it as a permission denial');
   } finally { await hooks.close(); await clean(); }
 });
+
+// PINS THE UNDOCUMENTED SURFACE A SHELL-PER-AGENT RESTS ON: a SUBAGENT's
+// `PreToolUse` payload carries a non-empty string `agent_id`, and the main
+// agent's does not carry the field at all. That difference is the only thing
+// that tells cc which shell a redirected command belongs in.
+//
+// SILENT IF IT REGRESSES, which is why it is here. A CLI upgrade that stopped
+// sending `agent_id` would collapse every subagent back onto the main agent's
+// shell — a subagent's `cd` would re-base the main agent's next command — and
+// every command would still succeed. One that started sending it for the main
+// agent too would give main its own consistent shell, still isolated; harmless,
+// and this test would say so rather than leaving it to be discovered.
+//
+// Asserted over the hook envelopes, never the model's prose: what is pinned is
+// what the CLI put on the wire.
+//
+// NOT CLAIMING: the id's format (opaque to cc — it is only ever a map key), nor
+// anything about NESTED subagents, for which no clean two-level sample exists,
+// nor that the CLI would refuse to reorder the two steps — if it ever ran the
+// dispatch first this fails, and re-reading the prompt is the right response.
+t('a subagent PreToolUse payload carries agent_id and the main agent does not', async () => {
+  const { dir, clean } = await fixture();
+  const hooks = await hookServer(() => allow());
+  try {
+    await runClaude(dir, settingsJSON(hooks.url, { pre: ['Bash', 'Task'], post: ['Bash'] }),
+      'Do exactly two things, in order. (1) Use the Bash tool yourself to run `echo MAIN_AGENT_HERE`. '
+      + '(2) Use the Task tool to dispatch one general-purpose subagent, instructing it to run the '
+      + 'Bash command `echo SUB_AGENT_HERE` and report the output. Do not run the subagent\'s command yourself.');
+
+    const bash = hooks.of('PreToolUse', 'Bash');
+    assert.ok(bash.length >= 2, `both Bash calls were hooked (got ${bash.length})`);
+
+    // The field is EITHER a non-empty string OR entirely absent. An empty
+    // string, a null or a number would each need cc to decide what it meant.
+    for (const e of bash) {
+      const named = typeof e.agent_id === 'string' && e.agent_id.length > 0;
+      assert.ok(named || !('agent_id' in e),
+        `agent_id is a non-empty string or absent, got ${JSON.stringify(e.agent_id)}`);
+    }
+
+    const sub = bash.filter(e => typeof e.agent_id === 'string' && e.agent_id.length > 0);
+    const main = bash.filter(e => !('agent_id' in e));
+    assert.ok(sub.length >= 1, `at least one Bash call carried an agent_id: ${JSON.stringify(bash.map(e => e.agent_id))}`);
+    assert.ok(main.length >= 1, `at least one Bash call carried none: ${JSON.stringify(bash.map(e => e.agent_id))}`);
+    assert.equal(sub.length + main.length, bash.length, 'and the two sets partition the calls');
+
+    // WHICH WAY ROUND, and this is the half that matters. The prompt fixes the
+    // order — the main agent's own Bash call is step (1), the dispatch is step
+    // (2) — so the FIRST envelope to arrive is provably the main agent's. Both
+    // sets being non-empty is equally true of a CLI that swapped the semantics
+    // (subagents omit the field, the main agent carries one), and cc reading it
+    // that way is the silent collapse this case exists to catch: every subagent
+    // would land on the main agent's shell while every command still succeeded.
+    assert.ok(!('agent_id' in bash[0]),
+      `the main agent's own call came first and carries no agent_id, got ${JSON.stringify(bash[0].agent_id)}`);
+    assert.ok(bash.slice(1).some(e => typeof e.agent_id === 'string' && e.agent_id.length > 0),
+      'and a later call — the dispatched subagent\'s — carries one');
+  } finally { await hooks.close(); await clean(); }
+});

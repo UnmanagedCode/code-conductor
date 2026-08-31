@@ -3,7 +3,7 @@
 // `PreToolUse` rewrites the worker's command into an invocation of THIS script
 // (src/systems/toolRedirect.ts). The CLI runs it on cc's machine, as it runs
 // every Bash command; the script hands the original command to cc over
-// loopback, cc runs it in the session's long-lived shell on the system and
+// loopback, cc runs it in that AGENT's long-lived shell on the system and
 // STREAMS the output back, and the script replays it as its own — stdout on
 // stdout, stderr on stderr, exit code as its exit code. To the CLI and to the
 // model it is an ordinary Bash call whose output happens to describe the other
@@ -35,23 +35,34 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-function parseArgs(argv: string[]): { url: string; timeoutMs: number | null; command: string } {
+// `--agent` names the AGENT whose shell this command belongs to — the main
+// agent's invocation carries none. It is on the argv because the rewrite is the
+// only place cc knows it: the hook that carried `agent_id` is long finished by
+// the time the CLI spawns this process, so the id has to travel out on the
+// command line and back on the request body.
+function parseArgs(argv: string[]): { url: string; timeoutMs: number | null; agentId: string | null; command: string } {
   let url = '';
   let timeoutMs: number | null = null;
+  let agentId: string | null = null;
   let i = 0;
   for (; i < argv.length; i++) {
     if (argv[i] === '--url') { url = argv[++i] ?? ''; continue; }
     if (argv[i] === '--timeout') { timeoutMs = Number(argv[++i]); continue; }
+    if (argv[i] === '--agent') { agentId = argv[++i] ?? null; continue; }
     if (argv[i] === '--') { i++; break; }
     break;
   }
-  return { url, timeoutMs, command: argv.slice(i).join(' ') };
+  return { url, timeoutMs, agentId, command: argv.slice(i).join(' ') };
 }
 
-const { url, timeoutMs, command } = parseArgs(process.argv.slice(2));
+const { url, timeoutMs, agentId, command } = parseArgs(process.argv.slice(2));
 if (!url || !command) fail('malformed forwarder invocation');
 
-const body = JSON.stringify({ command, ...(timeoutMs && Number.isFinite(timeoutMs) ? { timeoutMs } : {}) });
+const body = JSON.stringify({
+  command,
+  ...(timeoutMs && Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
+  ...(agentId ? { agentId } : {}),
+});
 const req = http.request(url, {
   method: 'POST',
   headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
