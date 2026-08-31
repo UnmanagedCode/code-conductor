@@ -19,6 +19,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject, orchStoreRoot } from '../src/projects.ts';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
@@ -572,5 +573,66 @@ describe('a worker session on a remote system', () => {
     assert.match(onSys, /^# System$/m);
     assert.match(onSys, new RegExp(remote.id));
     assert.equal(await fs.readFile(path.join(root, 'CONVENTIONS.md'), 'utf8'), onSys);
+  });
+});
+
+// ── The session's shell, on a system that serves many targets ────────
+//
+// The shell is opened with an `exec` on the project's bound handle, so its
+// commands must land on the project's target — not on the provider's default,
+// and not on a sibling project's. Asserted with CC_REMOTE, because on a machine
+// where every target is one filesystem "the command worked" is exactly what the
+// wrong target produces too.
+describe('a worker session on a system serving many targets', () => {
+  let ctx, baseUrl, instances, home, sandbox, remote, tree, instId, root;
+
+  before(async () => { ctx = await bootServer(); ({ baseUrl, instances } = ctx); });
+  after(async () => { await ctx.close(); });
+
+  beforeEach(async () => {
+    ({ home } = await freshProjectsRoot());
+    sandbox = await fs.realpath(await mkdtemp('cc-remote-'));
+    remote = await bindRemoteSystem({ flags: ['--remote', `a=${sandbox}`, '--remote', `b=${sandbox}`] });
+    tree = await seedRepo(path.join(sandbox, 'app'));
+    // Bound to `b` deliberately: the FIRST target would also be what a
+    // defaulting bug picked.
+    assert.equal((await adoptProject('app', tree, { system: remote.id, remoteId: 'b' })).ok, true);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    instId = r.body.id;
+    root = sessionRootPath(remote.id, 'app', null);
+    await waitFor(() => instances.get(instId).status === 'idle');
+  });
+
+  afterEach(async () => {
+    await ctx.instances.shutdown();
+    disposeSystemHandles();
+    await rmrf(home);
+  });
+
+  // PINS: a redirected Bash command runs on the project's OWN target, all the
+  // way through the real hook, the real forwarder and the real shell.
+  test("the session shell's commands land on the project's target", async () => {
+    const r = await api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
+      session_id: 's', hook_event_name: 'PreToolUse', tool_use_id: 'tu-remote',
+      tool_name: 'Bash', tool_input: { command: 'echo "$CC_REMOTE"' },
+    });
+    const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ran.code, 0, ran.stderr);
+    assert.equal(ran.stdout.trim(), 'b');
+  });
+
+  // PINS: the file bridge is bound too — a hooked Read pulls through the
+  // project's target, so the bytes the worker sees came from the right machine.
+  test('a hooked Read pulls through the bound target', async () => {
+    await fs.writeFile(path.join(tree, 'note.txt'), 'from target b\n');
+    const local = path.join(root, 'note.txt');
+    const d = await api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
+      session_id: 's', hook_event_name: 'PreToolUse', tool_use_id: 'tu-read',
+      tool_name: 'Read', tool_input: { file_path: local },
+    });
+    assert.equal(d.body.hookSpecificOutput.permissionDecision, 'allow',
+      d.body.hookSpecificOutput.permissionDecisionReason);
+    assert.equal(await fs.readFile(local, 'utf8'), 'from target b\n');
   });
 });
