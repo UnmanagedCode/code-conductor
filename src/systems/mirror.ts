@@ -17,7 +17,7 @@
 
 import path from 'node:path';
 import { httpError } from '../httpError.ts';
-import { MIRROR_EXCLUDE_MAX } from './protocol.ts';
+import { MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX } from './protocol.ts';
 
 // What a provider said, after validation. `mirrorRoot: null` is the valid
 // "I advertise nothing" — the overwhelmingly common answer, and the one every
@@ -71,7 +71,7 @@ export function isExcluded(systemAbs: string, exclude: readonly string[]): strin
   return null;
 }
 
-// ── §2.4: what cc will and will not believe ──────────────────────────
+// ── card 2026-0259 §2.4: what cc will and will not believe ───────────
 
 function invalid(systemId: string, detail: string): Error {
   // 502 for the reason REMOTE_NOT_FOUND is: the far side ANSWERED, and answered
@@ -87,6 +87,15 @@ function invalid(systemId: string, detail: string): Error {
 // `/app` are two spellings of one place that would compare unequal in a
 // manifest. `/` is its own normal form despite the trailing separator.
 function normalAbsolute(p: string): boolean {
+  // A NUL is refused rather than carried. It is INERT everywhere downstream
+  // today — nothing splits on it — which is exactly why it is dangerous: a
+  // provider that meant `/proc` and sent `/proc\0` would advertise an exclude
+  // that silently matches nothing, and the byte would ride verbatim into
+  // refusal prose. There is no reading of it that is safely wrong.
+  if (p.includes('\0')) return false;
+  // Bounded before it can reach the manifest, the path map and every refusal
+  // string composed from it.
+  if (p.length > MIRROR_PATH_MAX) return false;
   // `normalize` PRESERVES a trailing separator ('/app/' normalizes to itself),
   // so it is tested separately rather than left to the round trip.
   if (p !== '/' && p.endsWith('/')) return false;

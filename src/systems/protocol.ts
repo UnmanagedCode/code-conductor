@@ -32,6 +32,12 @@ export const BINARY_SNIFF_BYTES = 8 * 1024;
 // rather than discovering it as a refusal.
 export const MIRROR_EXCLUDE_MAX = 64;
 
+// The longest path cc will accept in a mirror advertisement. A fence on what cc
+// will HOLD AND REPEAT — the root is carried into the session-root manifest,
+// into every path the map composes, and verbatim into refusal prose a model
+// reads — not a claim about any filesystem's PATH_MAX, which it sits far above.
+export const MIRROR_PATH_MAX = 4096;
+
 // A single NDJSON line longer than this is EPROTO. It is a framing fence, not a
 // payload budget: MAX_FILE_BYTES caps content, and one chunk frame is
 // CHUNK_BYTES * 4/3 plus a small envelope, so this leaves an order of magnitude

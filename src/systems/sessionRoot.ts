@@ -293,6 +293,19 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   let total = 0;
 
   for (const entry of listing) {
+    // THE LAST GATE BEFORE BYTES LAND ON DISK. Unreachable by construction —
+    // findManifest drops an excluded record — and kept because this loop is
+    // where any enumeration leak, present or future, would become a file the
+    // CLI's unhooked channels can read. A THROW rather than a skip: it can only
+    // mean cc grew a listing source that bypassed the walk, which is a bug in
+    // cc, not a condition a provider can cause.
+    const covered = isExcluded(entry.abs, mirror.exclude);
+    if (covered !== null) {
+      throw new Error(
+        `cc: the session-root pull reached '${entry.abs}', which system '${systemId}' `
+        + `advertises as excluded under '${covered}'`,
+      );
+    }
     if (entry.size > SESSION_ROOT_FILE_CAP_BYTES) {
       skipped.push({ path: entry.rel, reason: `${entry.size} bytes is over the ${SESSION_ROOT_FILE_CAP_BYTES}-byte per-file cap` });
       continue;
@@ -353,33 +366,68 @@ interface Listed { rel: string; abs: string; size: number; mtimeMs: number }
 // files and three fixed directories, plus a second pass for the `@`-imports the
 // first pass's CLAUDE.md names. Two round trips at spawn, not one per entry.
 async function listAllowed(system: System, systemPath: string, mirror: MirrorScope): Promise<Listed[]> {
-  // CRITERION 7's only work, and it is one line reusing one predicate: an
-  // advertised exclude that lands inside the project's own config surface drops
-  // that target before the `find` is sent, so it is never enumerated. There is
-  // no pruning machinery below this — the walk has seven fixed targets, and
-  // `/proc` and `/dev` are not among them and cannot become so by widening a
-  // mirror root.
-  const targets = [...ALLOW_FILES, ...ALLOW_DIRS]
-    .map(rel => path.posix.join(systemPath, rel))
-    .filter(abs => isExcluded(abs, mirror.exclude) === null);
-  const first = await findManifest(system, systemPath, targets);
+  const targets = [...ALLOW_FILES, ...ALLOW_DIRS].map(rel => path.posix.join(systemPath, rel));
+  const first = await findManifest(system, systemPath, targets, mirror.exclude);
   const claude = first.find(e => e.rel === 'CLAUDE.md');
   if (!claude) return first;
   const imports = parseImports(await system.readFile(claude.abs), systemPath);
   if (imports.length === 0) return first;
   const have = new Set(first.map(e => e.rel));
-  const extra = (await findManifest(system, systemPath, imports)).filter(e => !have.has(e.rel));
+  // THE SECOND PASS IS BOUND BY THE SAME LIST. An import names an arbitrary
+  // path in the project, so it is exactly the case a target-shaped filter
+  // misses; passing `exclude` here rather than pre-filtering keeps ONE gate.
+  const extra = (await findManifest(system, systemPath, imports, mirror.exclude))
+    .filter(e => !have.has(e.rel));
   return [...first, ...extra];
 }
 
-async function findManifest(system: System, systemPath: string, targets: string[]): Promise<Listed[]> {
-  if (targets.length === 0) return [];
+// `-path` matches with fnmatch, so a path containing a glob metacharacter would
+// otherwise be a PATTERN rather than the literal cc means. Backslash escapes it
+// (fnmatch without FNM_NOESCAPE, which is what find uses).
+function globLiteral(p: string): string {
+  return p.replace(/[\\*?[\]]/g, m => `\\${m}`);
+}
+
+// CRITERION 7, at both granularities and with a backstop behind them.
+//
+// THE TARGET FILTER IS NOT ENOUGH, and that was measured rather than reasoned:
+// an exclude covering something DEEPER than one of the seven targets leaves the
+// target in the argv, so `find` enumerates the excluded file anyway. Three
+// gates, narrowest first:
+//
+//   1. a target the exclude covers is never sent;
+//   2. an exclude that could intersect the walk is a `-prune` operand, so the
+//      far side never descends into it — enumeration leaks names, sizes and
+//      mtimes into the manifest even when the bytes are withheld;
+//   3. every RECORD is checked on arrival, because (2) is the far side's
+//      behaviour and cc's answer must be correct whatever `find` did.
+//
+// Gate 3 is the one that closes the class: it is the single point every listing
+// flows through, so a future caller cannot reintroduce the leak by finding a
+// fourth way to name a path.
+async function findManifest(
+  system: System, systemPath: string, targets: string[], exclude: readonly string[],
+): Promise<Listed[]> {
+  const wanted = targets.filter(abs => isExcluded(abs, exclude) === null);
+  if (wanted.length === 0) return [];
+  // Only the entries that could match something under the walk. An exclude
+  // outside the project cannot, so the argv stays bounded by the tree rather
+  // than by the advertisement's length — and with none in scope the argv is
+  // byte-identical to what it was before excludes existed.
+  const prunable = exclude.filter(e => withinPosix(e, systemPath) !== null);
+  const prune = prunable.length === 0 ? [] : [
+    '(',
+    ...prunable.flatMap((e, i) => [
+      ...(i === 0 ? [] : ['-o']), '-path', globLiteral(e), '-o', '-path', `${globLiteral(e)}/*`,
+    ]),
+    ')', '-prune', '-o',
+  ];
   // NUL-terminated records, so a filename containing a newline is unambiguous
   // rather than a malformed line cc has to decide what to do with. `find` exits
   // non-zero for each absent target and still reports the ones that exist, so
   // the exit code is not the answer here — the records are.
   const r = await system.exec(
-    { argv: ['find', ...targets, '-type', 'f', '-printf', '%s\\t%T@\\t%p\\0'] },
+    { argv: ['find', ...wanted, ...prune, '-type', 'f', '-printf', '%s\\t%T@\\t%p\\0'] },
     { cwd: systemPath, stdin: 'ignore' },
   );
   if (r.spawnError) {
@@ -396,6 +444,10 @@ async function findManifest(system: System, systemPath: string, targets: string[
     // this project's config surface — dropped rather than written to a local
     // path composed from `..`.
     if (rel === null || rel === '') continue;
+    // GATE 3. A provider whose `find` ignored `-prune`, or reached the record by
+    // some route cc did not anticipate, still cannot get an excluded path into
+    // the listing — and therefore into the manifest or onto disk.
+    if (isExcluded(abs, exclude) !== null) continue;
     out.push({ rel, abs, size: Number(m[1]), mtimeMs: Math.round(Number(m[2]) * 1000) });
   }
   return out;

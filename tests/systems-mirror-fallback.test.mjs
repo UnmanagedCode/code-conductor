@@ -37,8 +37,9 @@ async function wire(file) {
   return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
 }
 
-// The whole allow-list plus content that must not be pulled, written by hand so
-// the expected layout below is a literal and not a snapshot.
+// The allow-list entries this layout names, plus content that must not be
+// pulled, written by hand so the expected layout below is a literal and not a
+// snapshot.
 async function seedTree(root) {
   const w = async (rel, body) => {
     await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });

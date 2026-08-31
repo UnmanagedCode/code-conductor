@@ -47,7 +47,8 @@ Provider MUSTs:
 ### The POSIX assumption
 
 The target is a **competent POSIX environment with GNU coreutils**: `stat`,
-`find` with `-printf`, `mkdir`, `rm`, `unlink`, `realpath`, `chmod`, `base64`,
+`find` with `-printf` (and POSIX `-path`/`-prune`, which the session-root walk
+uses to skip an advertised exclude), `mkdir`, `rm`, `unlink`, `realpath`, `chmod`, `base64`,
 `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
 provider contract to **three** operations: everything else on cc's own `System`
 interface (`src/systems/system.ts` — the members beyond `exec`, `readFile` and
@@ -179,7 +180,7 @@ the mirror):
 |---|---|
 | the mirror root is not an ancestor of, or equal to, the project path | **`MIRROR_ROOT_EXCLUDES_PROJECT`** (501) |
 | an exclude entry covers or equals the project path | **`MIRROR_EXCLUDE_COVERS_PROJECT`** (501) |
-| an exclude entry lies outside the mirror root | **inert** — reported once on the session's event stream, never a refusal |
+| an exclude entry lies outside the mirror root | **inert** — reported on the session's event stream, once per launch, never a refusal |
 
 Containment throughout is `path.posix.relative`, never a string prefix, so
 `/app-backup` is not inside `/app`. cc **never stats the mirror root**: it is a

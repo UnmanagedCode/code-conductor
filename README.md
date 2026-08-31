@@ -134,7 +134,7 @@ Two Systems suites are opt-in because they need something the repo does not ship
 **On-disk state you will see.** A worker session on a system gets a cc-owned **local session root**:
 
 - **`<store>/systems/<id>/sessions/<project>[--<worktree>]/`** — the CLI's cwd for that session.
-- It holds **the config surface the CLI reads implicitly and cannot hook**, pulled one way from the system before every spawn and resume, plus whatever a hooked file tool has since fetched. It is a **sparse image, never a copy of the tree** — and how much of the system it is an image *of* is the provider's to advertise, so a worker can be given reach outside the project tree without one.
+- It holds **the config surface the CLI reads implicitly and cannot hook**, pulled one way from the system before every spawn and resume, plus whatever a hooked file tool has since fetched. It is a **sparse image, never a copy of the tree** — and how much of the system it is an image *of* is the provider's to advertise, so a worker gets reach outside the project tree without a copy of it.
 - Beside it, a **`.manifest.json` sidecar** records what was last pulled, **from which target**, and **under which mirror geometry**.
 - A change of either **wipes the whole root and re-pulls** — a root kept across a target change would hand the worker the old machine's `CLAUDE.md` and push its edits to the new machine, and one kept across a geometry change would describe a layout the next spawn does not look in.
 

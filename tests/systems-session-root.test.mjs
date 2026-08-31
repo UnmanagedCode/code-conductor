@@ -2,10 +2,10 @@
 // the boundary.
 //
 // A session root is the Claude CLI's cwd for a worker on a remote project. It
-// is NOT a mirror of the tree — it holds exactly the config surface the CLI
-// reads implicitly and can never be hooked (§3.2's allow-list), pulled one way
-// from the system. Everything else the worker touches arrives through a hooked
-// tool.
+// is NOT a copy of the tree — what is pulled ahead of time is exactly the
+// config surface the CLI reads implicitly and can never be hooked (§3.2's
+// allow-list), one way from the system; everything else the worker touches
+// arrives through a hooked tool and materialises in the root.
 //
 // The fixture keeps the two sides distinguishable: the system's tree carries
 // ONLY-ON-SYSTEM.txt, so a composer that accidentally read cc's own disk would
@@ -365,13 +365,26 @@ test('a wider mirror puts the pulled config under the cwd, not the image root', 
     'and nothing was written at the image root');
 });
 
-// PINS CRITERION 7's only work: an advertised exclude that lands inside the
-// project's own config surface drops that target from the `find` argv, so it is
-// never enumerated. Same containment predicate as everything else, one line.
+// The paths `find` was pointed AT — the operands before the expression starts.
+// Separated from the prune operands, which name the same kind of thing in a
+// different role.
+const findTargets = (argv) => {
+  const end = argv.findIndex(a => a === '(' || a === '-type');
+  return argv.slice(1, end === -1 ? argv.length : end);
+};
+
+// PINS CRITERION 7 at target granularity: an advertised exclude covering one of
+// the seven walked targets drops it from what `find` is pointed at, and nothing
+// under it is pulled.
 //
-// NOT CLAIMING: that anything is pruned WITHIN a walked directory. The walk has
-// seven fixed targets and no pruning machinery; `/proc` and `/dev` are not
-// among them and cannot become so.
+// PINS, rather than disclaims, the within-a-walked-directory case: it is
+// covered by its own test above ('an exclude beneath a walked target is neither
+// enumerated nor pulled'), which this one is the coarse-grained half of.
+//
+// NOT CLAIMING: that the walk's targets are ever anything but the seven fixed
+// allow-list entries. They are built from ALLOW_FILES/ALLOW_DIRS relative to
+// the project, so `/proc` and `/dev` cannot become targets by widening a mirror
+// root however wide it goes — asserted differentially two tests up.
 test('an exclude covering an allow-list target drops it from the walk', async () => {
   await seedTree(remote.root);
   const skills = path.join(remote.root, '.claude/skills');
@@ -384,8 +397,9 @@ test('an exclude covering an allow-list target drops it from the walk', async ()
 
   const [argv] = await findArgvs(rec);
   assert.ok(argv, 'a walk happened');
-  assert.ok(!argv.includes(skills), `the excluded target is gone from ${JSON.stringify(argv)}`);
-  assert.ok(argv.includes(path.join(remote.root, 'CLAUDE.md')), 'the rest are still there');
+  const targets = findTargets(argv);
+  assert.ok(!targets.includes(skills), `the excluded target is gone from ${JSON.stringify(targets)}`);
+  assert.ok(targets.includes(path.join(remote.root, 'CLAUDE.md')), 'the rest are still there');
   await assert.rejects(fs.readFile(path.join(composed.cwd, '.claude/skills/deploy/SKILL.md')),
     'and nothing under it was pulled');
 });
@@ -466,4 +480,114 @@ test('a mirror root that does not contain the project refuses the composition', 
     }),
     (e) => e.code === 'MIRROR_ROOT_EXCLUDES_PROJECT' && e.statusCode === 501,
   );
+});
+
+// ── THE EXCLUDE BYPASS CLASS (card 2026-0259, review round 1) ────────
+//
+// Filtering the walk's TARGETS is not filtering the walk. Two ways past it were
+// measured on a live provider, and they are the same defect at two granularities:
+// an exclude that names something the seven fixed targets do not name is not a
+// target, so it never met the target filter, and the pull loop that turns a
+// record into bytes on disk had no gate of its own.
+//
+// Both halves are asserted for each: NOT ENUMERATED (absent from the manifest,
+// which is the enumeration record and is written to disk beside the root) and
+// NOT ON DISK. A fix that gated only the pull would still fail the first.
+
+const readManifestJson = async (systemId, project) =>
+  JSON.parse(await fs.readFile(`${sessionRootPath(systemId, project, null)}.manifest.json`, 'utf8'));
+
+// PINS INSTANCE 2: an exclude covering a subpath BENEATH one of the seven
+// walked targets withholds that subpath — it is absent from the manifest and
+// absent from disk — while its siblings under the same target are still pulled.
+// The excluded target's parent stays in the walk, so this cannot be satisfied
+// by dropping the target.
+//
+// NOT CLAIMING: that the far side's `find` process physically declined to
+// stat the file. The prune operands are asserted structurally below; what is
+// measured here is that nothing about the excluded path survives into cc.
+test('an exclude beneath a walked target is neither enumerated nor pulled', async () => {
+  await seedTree(remote.root);
+  const secret = path.join(remote.root, '.claude/skills/secret');
+  await fs.mkdir(secret, { recursive: true });
+  await fs.writeFile(path.join(secret, 'sk.md'), 'SECRET-SKILL-BYTES');
+
+  const { sys } = await recordingSystem('deep', [
+    '--mirror', path.dirname(remote.root), '--exclude', secret,
+  ]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'deep', systemPath: remote.root, project: 'app',
+  });
+
+  const entries = Object.keys((await readManifestJson('deep', 'app')).entries);
+  assert.ok(entries.includes('.claude/skills/deploy/SKILL.md'),
+    `the sibling under the same walked target is still pulled: ${JSON.stringify(entries)}`);
+  assert.ok(!entries.includes('.claude/skills/secret/sk.md'),
+    `the excluded subpath was ENUMERATED into the manifest: ${JSON.stringify(entries)}`);
+  await assert.rejects(fs.readFile(path.join(composed.cwd, '.claude/skills/secret/sk.md')),
+    'and its bytes are not on disk');
+});
+
+// PINS INSTANCE 1: the second `find` pass, over the `@`-imports named by the
+// pulled CLAUDE.md, is bound by the same exclude list as the first — an
+// imported file under an exclude is neither enumerated nor pulled, while an
+// imported file that is not excluded still is.
+//
+// NOT CLAIMING: anything about how imports are PARSED; the unexcluded import
+// arriving is what shows the pass ran at all.
+test('an exclude covering an @-imported file binds the second walk too', async () => {
+  await seedTree(remote.root);
+  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(remote.root, 'docs/shared.md'), 'SECRET-IMPORT-BYTES');
+  await fs.writeFile(path.join(remote.root, 'docs/open.md'), 'PUBLIC-IMPORT-BYTES');
+  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'),
+    '@CONVENTIONS.md\n@docs/shared.md\n@docs/open.md\n');
+
+  const { sys } = await recordingSystem('imports', [
+    '--mirror', path.dirname(remote.root), '--exclude', path.join(remote.root, 'docs/shared.md'),
+  ]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'imports', systemPath: remote.root, project: 'app',
+  });
+
+  const entries = Object.keys((await readManifestJson('imports', 'app')).entries);
+  assert.ok(entries.includes('docs/open.md'),
+    `the unexcluded import still arrives, so the second pass ran: ${JSON.stringify(entries)}`);
+  assert.ok(!entries.includes('docs/shared.md'),
+    `the excluded import was ENUMERATED into the manifest: ${JSON.stringify(entries)}`);
+  await assert.rejects(fs.readFile(path.join(composed.cwd, 'docs/shared.md')),
+    'and its bytes are not on disk');
+});
+
+// PINS: an exclude that could match something under a walked target is carried
+// into the `find` itself as a prune operand, so the far side never descends
+// into it — enumeration leaks names, sizes and mtimes even when the bytes are
+// withheld. Both spellings are present: the entry itself and everything under
+// it. Excludes that cannot intersect the project are NOT sent, so the argv
+// stays bounded by the tree rather than by the advertisement's length.
+//
+// NOT CLAIMING: that `find` honours the operands — that is the far side's
+// behaviour, and the per-record gate behind it is what makes cc's answer
+// correct either way. The two tests above measure the outcome.
+test('an exclude inside the project is pruned at the find; one outside it is not sent', async () => {
+  await seedTree(remote.root);
+  const secret = path.join(remote.root, '.claude/skills/secret');
+  const { rec, sys } = await recordingSystem('pruned', [
+    '--mirror', '/', '--exclude', secret, '--exclude', '/proc',
+  ]);
+  await composeSessionRoot({
+    system: sys, systemId: 'pruned', systemPath: remote.root, project: 'app',
+  });
+
+  const [argv] = await findArgvs(rec);
+  assert.ok(argv.includes('-prune'), `no prune in ${JSON.stringify(argv)}`);
+  // The prune operands, read out of the expression rather than off the whole
+  // argv — the excluded path also appears as a dropped TARGET in other shapes.
+  const pruned = argv.slice(argv.indexOf('('), argv.indexOf('-prune'));
+  assert.ok(pruned.includes(secret), `the entry itself is a prune operand: ${JSON.stringify(pruned)}`);
+  assert.ok(pruned.includes(`${secret}/*`), 'and so is everything under it');
+  assert.ok(!argv.includes('/proc') && !argv.includes('/proc/*'),
+    `an exclude that cannot intersect the project is not sent: ${JSON.stringify(argv)}`);
+  assert.ok(argv.includes(path.join(remote.root, '.claude/skills')),
+    'the parent target stays in the walk, so this is not the target filter');
 });

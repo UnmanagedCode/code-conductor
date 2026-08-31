@@ -24,7 +24,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, referenceLaunch } from './remoteSystem.mjs';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
-import { MIRROR_EXCLUDE_MAX } from '../src/systems/protocol.ts';
+import { MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX } from '../src/systems/protocol.ts';
 import {
   noMirror, resolveMirrorScope, validateAdvertisement, isExcluded, withinPosix,
 } from '../src/systems/mirror.ts';
@@ -43,9 +43,9 @@ describe('the mirror advertisement', () => {
   beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
   afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
 
-  // ── §2.4, shape ─────────────────────────────────────────────────────
+  // ── card 2026-0259 §2.4, shape ──────────────────────────────────────
 
-  // PINS: every malformed advertisement in §2.4's table is refused
+  // PINS: every malformed advertisement in card 2026-0259 §2.4's table is refused
   // MIRROR_ADVERTISEMENT_INVALID with the offending value quoted, and every
   // valid one resolves. cc never normalises on the provider's behalf: a
   // normalised-away `..` is exactly how a hostile root would be smuggled past a
@@ -108,6 +108,41 @@ describe('the mirror advertisement', () => {
       { mirrorRoot: '/', exclude: ['/'] });
   });
 
+  // PINS: a path carrying an embedded NUL is refused. Traced INERT today —
+  // nothing downstream splits on it — but a provider that meant `/proc` and
+  // sent `/proc\0` would silently exclude nothing while looking correct, and
+  // the byte rides into refusal prose read by a model. Refusing is the only
+  // reading that cannot be silently wrong.
+  //
+  // NOT CLAIMING: that any current provider can produce one. It is a wire
+  // field, and cc validates what arrives rather than what it expects.
+  test('a path with an embedded NUL is refused, in the root and in an exclude', () => {
+    for (const bad of [{ mirrorRoot: '/app\u0000x' }, { mirrorRoot: '/app', exclude: ['/proc\u0000'] }]) {
+      assert.throws(
+        () => validateAdvertisement('box', bad),
+        (e) => e.code === 'MIRROR_ADVERTISEMENT_INVALID',
+        JSON.stringify(bad),
+      );
+    }
+  });
+
+  // PINS: a path longer than the cap is refused rather than carried into the
+  // manifest, the path map and every refusal string built from it. Exercised
+  // from both sides so it is a real edge, not an inequality that happens to
+  // hold.
+  //
+  // NOT CLAIMING: that the cap matches any filesystem's PATH_MAX. It is a fence
+  // on what cc will hold and repeat, and it sits far above any real path.
+  test('an absurdly long path is refused; one at the cap is not', () => {
+    const at = `/${'a'.repeat(MIRROR_PATH_MAX - 1)}`;
+    assert.equal(at.length, MIRROR_PATH_MAX);
+    assert.equal(validateAdvertisement('box', { mirrorRoot: at }).mirrorRoot, at);
+    assert.throws(() => validateAdvertisement('box', { mirrorRoot: `${at}a` }),
+      (e) => e.code === 'MIRROR_ADVERTISEMENT_INVALID');
+    assert.throws(() => validateAdvertisement('box', { mirrorRoot: '/app', exclude: [`${at}a`] }),
+      (e) => e.code === 'MIRROR_ADVERTISEMENT_INVALID');
+  });
+
   // PINS: the exclude list is fenced at MIRROR_EXCLUDE_MAX, and the fence is
   // exclusive of the limit itself — exactly MAX entries is accepted, MAX+1 is
   // refused.
@@ -123,9 +158,9 @@ describe('the mirror advertisement', () => {
     );
   });
 
-  // ── §3, geometry, and §2.4's two project-relative refusals ──────────
+  // ── card 2026-0259 §3, geometry, and §2.4's two refusals ────────────
 
-  // PINS: the offset table in §3, including the prefix-SHARING sibling
+  // PINS: the offset table in card 2026-0259 §3, including the prefix-SHARING sibling
   // (`/app` vs `/app-backup`) that a string prefix would wrongly claim.
   // Containment is decided with path.posix.relative, never startsWith.
   //
@@ -273,8 +308,8 @@ describe('the mirror advertisement', () => {
   //
   // NOT CLAIMING: that any real provider does this.
   test('a provider that advertises the capability and then refuses resolves to nothing', async () => {
-    const fixture = path.join(__dirname, 'fixtures', 'unsupportedMirrorProvider.mjs');
-    await addSystem({ id: 'liar', label: 'liar', launch: ['node', fixture] });
+    const fixture = path.join(__dirname, 'fixtures', 'mirrorFixtureProvider.mjs');
+    await addSystem({ id: 'liar', label: 'liar', launch: ['node', fixture, '--lie-remote-descriptors'] });
     const sys = await systemById('liar', null, 'test');
     assert.equal(sys.handshake.capabilities.remoteDescriptors, true, 'it really does advertise it');
     assert.deepEqual(await sys.mirror(), { mirrorRoot: null, exclude: [] });
@@ -313,6 +348,37 @@ describe('the mirror advertisement', () => {
     const hb = await systemById('many', 'b', 'test');
     assert.deepEqual(await ha.mirror(), { mirrorRoot: a, exclude: [] });
     assert.deepEqual(await hb.mirror(), { mirrorRoot: b, exclude: [path.join(b, 'skip')] });
+  });
+
+  // PINS THE FLAG SEPARATION, which is the whole reason `--mirror` is not
+  // `--remote`'s root: a target may advertise a mirror WIDER than the fence it
+  // is scoped to, cc consumes the ADVERTISEMENT rather than deriving geometry
+  // from the fence, and the fence still refuses what lies outside it. The two
+  // are independent knobs and this is the configuration that proves it.
+  //
+  // NOT CLAIMING: that a real provider should be configured this way. It is the
+  // discriminating case — a cc that read the fence instead of the advertisement
+  // would produce `mirrorRoot === narrow` and pass every other test in this
+  // file.
+  test('a mirror root wider than the remote fence is consumed, and the fence still binds', async () => {
+    const narrow = await fs.realpath(await mkdtemp('cc-fenced-'));
+    await addSystem({
+      id: 'fenced', label: 'fenced',
+      launch: referenceLaunch('--remote', `a=${narrow}`, '--mirror', 'a=/'),
+    });
+    const h = await systemById('fenced', 'a', 'test');
+
+    // The advertisement is the whole filesystem, not the fence.
+    assert.deepEqual(await h.mirror(), { mirrorRoot: '/', exclude: [] });
+    assert.notEqual(narrow, '/', 'the two really differ, or the assertion is vacuous');
+
+    // And the fence is untouched by the advertisement: inside it reads, outside
+    // it refuses EACCES.
+    await fs.writeFile(path.join(narrow, 'inside.txt'), 'fenced-bytes');
+    assert.equal(String(await h.readFile(path.join(narrow, 'inside.txt'))), 'fenced-bytes');
+    const outside = path.join(await fs.realpath(await mkdtemp('cc-outside-')), 'x.txt');
+    await fs.writeFile(outside, 'not-yours');
+    await assert.rejects(() => h.readFile(outside), (e) => e.code === 'EACCES');
   });
 
   // PINS: an unknown remote's describeRemote is answered ENOREMOTE and
