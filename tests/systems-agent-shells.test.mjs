@@ -254,6 +254,48 @@ test("a subagent's command timing out does not disturb the main agent's shell", 
   assert.match(back.notice ?? '', /deadline/, "the subagent's own next command is told why");
 });
 
+// PINS THAT A RESET NOTICE NAMES THE RESTARTED AGENT'S OWN WORKING DIRECTORY.
+// The notice tells a worker "Its working directory is still X" — the one thing in
+// it a worker acts on directly — so a notice that reported some other agent's cwd
+// would be a false statement about the reader's own state, which is exactly what
+// R5 exists to forbid.
+//
+// BOTH DIRECTIONS, because the two cwds must be observed DISAGREEING: every other
+// notice in these suites is taken with the agent standing at the project root,
+// where a per-agent read and a session-wide one coincide and neither can be told
+// from the other. Here the subagent has `cd`'d first, so the main agent's shell
+// and the subagent's are in different directories when both are reset.
+//
+// NOT CLAIMING: anything about the rest of the notice's text (the reset-reason
+// wording and its once-only delivery are pinned in
+// tests/systems-tool-redirect.test.mjs), nor that cwd is RESTORED after a reset —
+// it is; what is pinned is what the worker is told.
+test("a reset notice names the restarted agent's own working directory", async () => {
+  await run('a1', 'cd sub');
+  assert.equal((await run('a1', 'pwd')).stdout.trim(), onSystem('sub'));
+  assert.equal((await run(null, 'pwd')).stdout.trim(), remote.root,
+    'the premise: the two agents are standing in different directories');
+
+  assert.notEqual((await run('a1', 'exit')).code, 0, "the subagent's shell died");
+  assert.notEqual((await run(null, 'exit')).code, 0, "and so did the main agent's");
+
+  const sub = await run('a1', 'echo s');
+  const main = await run(null, 'echo m');
+  assert.match(sub.notice ?? '', /restarted/);
+  assert.match(main.notice ?? '', /restarted/);
+
+  // Anchored on the sentence's own wording and terminated by the comma, so
+  // `<root>/sub` cannot satisfy the `<root>` assertion by being a prefix of it.
+  assert.ok(sub.notice.includes(`still ${onSystem('sub')},`),
+    `the subagent is told its OWN cwd: ${sub.notice}`);
+  assert.ok(!sub.notice.includes(`still ${remote.root},`),
+    `and not the main agent's: ${sub.notice}`);
+  assert.ok(main.notice.includes(`still ${remote.root},`),
+    `the main agent is told its own: ${main.notice}`);
+  assert.ok(!main.notice.includes(`still ${onSystem('sub')},`),
+    `and not the subagent's: ${main.notice}`);
+});
+
 // PINS: the idle sweep reaches every agent's shell, and each entry survives its
 // own close so its own next command is told what it lost. A single shared timer
 // fails the first half; a single shared notice fails the second.
@@ -369,6 +411,40 @@ test('an evicted agent comes back to a fresh shell and is told nothing', async (
   assert.equal(back.code, 0, back.stderr);
   assert.equal(back.stdout.trim(), 'alive');
   assert.equal(back.notice, null, 'and it is told about no reset — nothing it had was lost');
+});
+
+// PINS THAT AN EVICTION CLOSES THE VICTIM'S SHELL PROCESS, not just its map
+// entry. Dropping the entry without closing the shell leaks a `$SHELL -l` on
+// someone else's machine plus an unreachable `exec` stream, for the life of the
+// session — the resource the cap exists to bound, still consumed.
+//
+// THE OBSERVABLE HAS TO BE THE FAR-SIDE PID. `liveShellCount` iterates ENTRIES,
+// and eviction has already removed the victim's, so it reads a correct-looking
+// count while the process is still alive; no assertion about entries or counts
+// can distinguish the two. The survivors' pids are asserted still alive in the
+// same breath, so an eviction that closed everything fails too.
+//
+// NOT CLAIMING: which pid the victim's agent gets if it returns (a fresh shell,
+// unrelated), nor anything about the `exec` stream beyond the process it ran.
+test("evicting a subagent shell closes its process on the system", async () => {
+  await rebuild({ maxAgentShells: 2 });
+  const pidOf = async (agent) => {
+    const pid = Number((await run(agent, 'echo $$')).stdout.trim());
+    assert.ok(Number.isInteger(pid) && pid > 0, `agent ${agent} reported a pid`);
+    return pid;
+  };
+  const p1 = await pidOf('a1');
+  const p2 = await pidOf('a2');
+  await run('a1', 'true');            // recency: a2 is now the LRU entry
+  const p3 = await pidOf('a3');       // …and creating a3 evicts it
+  assert.equal(new Set([p1, p2, p3]).size, 3, 'three distinct shell processes');
+  assert.equal(redirect.shellOpenFor('a2'), false, 'a2 was the evicted one');
+
+  // waitFor, not an immediate assert: the far side's exit is a signal delivery,
+  // not something cc's await ordering guarantees.
+  await waitFor(() => !alive(p2), { timeout: 4000 });
+  assert.equal(alive(p1), true, "the surviving agents' shells are untouched");
+  assert.equal(alive(p3), true);
 });
 
 // PINS: an in-flight subagent shell is never the eviction victim, and a new
