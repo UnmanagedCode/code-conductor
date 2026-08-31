@@ -1220,6 +1220,11 @@ body.lightbox-open { overflow: hidden; }
 .composer-attachments {
   display: flex; flex-wrap: wrap; gap: 6px;
 }
+/* Same trap as `dialog label` below: the author `display` above outranks the
+   UA's `[hidden] { display: none }`. Symptom-free only because composer.js
+   hides this exactly when it is empty and an empty flex box has no footprint —
+   a coincidence of two facts, not a guarantee. */
+.composer-attachments[hidden] { display: none; }
 .composer-attachment-chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 6px 4px 4px;
@@ -1267,6 +1272,10 @@ dialog {
 dialog::backdrop { background: rgba(0,0,0,.5); }
 dialog h3 { margin: 0 0 10px 0; }
 dialog label { display: block; margin-bottom: 10px; font-size: 12px; }
+/* The `display: block` above outranks the UA's `[hidden] { display: none }`, so
+   a conditionally-shown label (#np-system-path-row) renders regardless of its
+   `hidden` attribute. Restore the expected behaviour explicitly. */
+dialog label[hidden] { display: none; }
 dialog input, dialog select { width: 100%; margin-top: 4px; }
 dialog .hint { font-size: 11px; color: var(--muted); }
 dialog .error { color: var(--red); font-size: 12px; min-height: 1em; }
