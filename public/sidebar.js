@@ -151,7 +151,7 @@ export class Sidebar {
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
     onDeleteSession, onEditWorkspace, onPromoteSession,
-    onReviewWorktree,
+    onReviewWorktree, onEditProjectRemote,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -164,6 +164,7 @@ export class Sidebar {
     this.onEditWorkspace = onEditWorkspace;
     this.onPromoteSession = onPromoteSession;
     this.onReviewWorktree = onReviewWorktree;
+    this.onEditProjectRemote = onEditProjectRemote;
     this.projects = [];
     this.instances = [];
     // Names of registered workspaces (from GET /api/workspaces). Render
@@ -685,7 +686,26 @@ export class Sidebar {
       // reach it — that this is why the row carries no git facts. Without it the
       // row degrades to something indistinguishable from a plain non-git
       // project, which is a wrong answer wearing the shape of an answer.
-      row._systemPill = el('span', { class: 'system-pill' });
+      // Clickable when — and only when — the target can actually be changed:
+      // the change verifies the new target on the system before persisting, so
+      // on an unreachable one it could only refuse, and the pill stays a REASON
+      // rather than becoming a control that fails. `role`/`tabindex` are set per
+      // render for the same reason, alongside the class.
+      row._systemPill = el('span', {
+        class: 'system-pill',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (row._systemPill.getAttribute('role') !== 'button') return;
+          this.onEditProjectRemote?.(holder.p);
+        },
+        onkeydown: (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          if (row._systemPill.getAttribute('role') !== 'button') return;
+          e.preventDefault();
+          e.stopPropagation();
+          this.onEditProjectRemote?.(holder.p);
+        },
+      });
       row._nameSpan = nameSpan;
       row._pill = el('span', { class: 'wt-unmerged' });
       // Its own element, not a second mode of _pill: the two are independent
@@ -734,12 +754,27 @@ export class Sidebar {
       noCommits.remove();
     }
     if (remote || unreachable) {
-      systemPill.textContent = p.system || 'unknown system';
+      // One system can serve many targets, so the pill names WHICH — a pill
+      // saying only the system would leave the row silent about which machine
+      // its facts came from.
+      const where = p.remoteId
+        ? `remote '${p.remoteId}' of system '${p.system}'`
+        : `system '${p.system}'`;
+      systemPill.textContent = p.remoteId ? `${p.system}/${p.remoteId}` : (p.system || 'unknown system');
       systemPill.title = unreachable
         ? unreachable
-        : `this project's tree, git repo and commands live on system '${p.system}' at ${p.systemPath}`
-          + ` — a worker session runs the claude CLI here and redirects its shell and file tools there`;
+        : `this project's tree, git repo and commands live on ${where} at ${p.systemPath}`
+          + ` — a worker session runs the claude CLI here and redirects its shell and file tools there.`
+          + ` Click to change which target it is on.`;
       systemPill.classList.toggle('system-pill-unreachable', !!unreachable);
+      const clickable = remote && !unreachable && !!this.onEditProjectRemote;
+      if (clickable) {
+        systemPill.setAttribute('role', 'button');
+        systemPill.setAttribute('tabindex', '0');
+      } else {
+        systemPill.removeAttribute('role');
+        systemPill.removeAttribute('tabindex');
+      }
       if (!systemPill.isConnected) {
         (noCommits.isConnected ? noCommits : pill.isConnected ? pill : nameSpan).after(systemPill);
       }

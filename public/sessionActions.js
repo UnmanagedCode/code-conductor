@@ -170,8 +170,10 @@ export function installSessionActions({
     const wts = project.worktrees ?? [];
     const remoteSystem = project.system && project.system !== 'local' ? project.system : null;
     const unregisterOnly = !!remoteSystem || !!project.external;
+    // One system can serve many targets, so "on prod-box" would not say which
+    // machine is being left alone — the whole point of the sentence.
     const where = remoteSystem
-      ? `${project.path} on system '${remoteSystem}'`
+      ? `${project.path} on ${project.remoteId ? `remote '${project.remoteId}' of ` : ''}system '${remoteSystem}'`
       : project.path;
     const summary = [
       unregisterOnly ? `Unregister project '${project.name}'?` : `Delete project '${project.name}'?`,

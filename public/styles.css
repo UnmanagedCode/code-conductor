@@ -325,6 +325,28 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
   border-color: var(--red);
 }
 
+/* The pill doubles as the change-target control, but ONLY when it carries
+   role="button" — sidebar.js sets that per render, and withholds it on a system
+   that cannot be reached, where the change could only refuse.
+   NO `display` here, deliberately: .system-pill matches an element that is
+   added and removed rather than hidden today, but an author `display` on any
+   selector that could ever match a `[hidden]` element outranks the UA's
+   `[hidden] { display: none }` — origin decides that, not specificity. See
+   tests/hidden-attribute-layout.test.mjs. */
+.system-pill[role="button"] { cursor: pointer; }
+.system-pill[role="button"]:hover { color: var(--text); border-color: var(--text); }
+
+/* The 409 from PUT /projects/:name/remote, rendered as the list of sessions and
+   worktrees to clear. Same rule as above: no `display`, so the UA's
+   `[hidden] { display: none }` governs it while the list is empty. */
+.pr-blockers {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--red);
+}
+
 .wt-unmerged, .no-commits-pill {
   font-family: ui-monospace, monospace;
   font-size: 10px;

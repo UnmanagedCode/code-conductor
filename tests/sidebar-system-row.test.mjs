@@ -38,7 +38,7 @@ async function setupSidebar() {
   const { Sidebar } = await import(pathToFileURL(path.join(PUB, 'sidebar.js')).href);
   document.body.innerHTML = '<ul id="root"></ul>';
   const root = document.getElementById('root');
-  const calls = { create: [], deleteProject: [] };
+  const calls = { create: [], deleteProject: [], editRemote: [] };
   const sidebar = new Sidebar({
     rootList: root,
     onSelectInstance: () => {},
@@ -49,6 +49,7 @@ async function setupSidebar() {
     onLoadSessions: async () => [],
     onEditWorkspace: () => {},
     onQuickSpawn: () => {},
+    onEditProjectRemote: (p) => calls.editRemote.push(p),
   });
   return { root, sidebar, calls };
 }
@@ -56,7 +57,7 @@ async function setupSidebar() {
 const baseProject = (over = {}) => ({
   name: 'demo', path: '/p/demo', sessionIds: [], worktrees: [],
   sessions: { count: 0, lastActivity: 0 },
-  system: 'local', systemPath: null, systemUnreachable: null, isGitRepo: true,
+  system: 'local', remoteId: null, systemPath: null, systemUnreachable: null, isGitRepo: true,
   ...over,
 });
 
@@ -127,6 +128,47 @@ test('a reachable remote project keeps every affordance, spawn included', async 
   assert.equal(root.querySelectorAll('.delete-project').length, 1);
   assert.equal(root.querySelectorAll('.add-instance').length, 1,
     'and a worker can run there, so the button is offered');
+});
+
+// PINS: the pill names WHICH TARGET of the system the row's facts came from. On
+// a system serving ten containers, naming only the system would leave the row
+// saying nothing about which machine it is describing.
+test('the pill names the target when the project is on one', async () => {
+  const { root } = await render(baseProject({
+    system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app', isGitRepo: true,
+  }));
+  const pill = root.querySelector('.system-pill');
+  assert.match(pill.textContent, /prod-box/);
+  assert.match(pill.textContent, /ctr-7/);
+  assert.match(pill.getAttribute('title') ?? '', /ctr-7/, 'and the tooltip spells it out');
+});
+
+// PINS: the pill IS the affordance for changing which target a project is on,
+// and it carries the row's own project — the one thing a shared handler can get
+// wrong when the list re-renders under it.
+test('clicking the pill opens the change-target flow for that project', async () => {
+  const { root, calls } = await render(baseProject({
+    system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app', isGitRepo: true,
+  }));
+  const pill = root.querySelector('.system-pill');
+  assert.equal(pill.getAttribute('role'), 'button', 'reachable by keyboard, not just by mouse');
+  pill.click();
+  assert.deepEqual(calls.editRemote.map(p => p.name), ['demo']);
+});
+
+// PINS: the same rule the rest of this row follows — an affordance that could
+// only refuse is not offered. Changing the target verifies the new one on the
+// system before persisting, so on a system that cannot be reached it can only
+// fail; the pill stays as a REASON, not as a control.
+test('an unreachable system offers no change-target affordance', async () => {
+  const { root, calls } = await render(baseProject({
+    system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app',
+    systemUnreachable: 'down', isGitRepo: undefined,
+  }));
+  const pill = root.querySelector('.system-pill');
+  assert.equal(pill.hasAttribute('role'), false);
+  pill.click();
+  assert.deepEqual(calls.editRemote, []);
 });
 
 // PINS: the row is reconciled, not rebuilt — a system that comes back must clear
