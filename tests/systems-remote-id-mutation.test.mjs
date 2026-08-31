@@ -156,11 +156,15 @@ describe('changing a project target', () => {
   test('a system that serves no targets refuses SYSTEM_NO_REMOTES', async () => {
     const bare = await bindRemoteSystem({ id: 'bare' });
     await createProject('plain', { system: bare.id, systemPath: path.join(bare.root, 'plain') });
+    const before = await readRecord('plain');
     await assert.rejects(
       () => setProjectRemote('plain', 'a', NO_INSTANCES),
       (e) => e.statusCode === 501 && e.code === 'SYSTEM_NO_REMOTES',
     );
-    assert.equal('remoteId' in (await readRecord('plain')), false);
+    // The WHOLE record, as every other refusal here reads it: asserting only
+    // that `remoteId` is still absent would pass a refusal that had cleared the
+    // systemPath on its way out.
+    assert.deepEqual(await readRecord('plain'), before);
   });
 
   // PINS: a LOCAL project has no target to name, so the operation is refused
