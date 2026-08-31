@@ -32,6 +32,10 @@
 //                  run `env LC_ALL=C …` in `/`, so a real spawn there never
 //                  fails. The frame is exactly what a provider emits for an
 //                  unstartable command; nothing is simulated but the trigger.
+//   --error-code C which code that frame carries (default ENOENT). What a
+//                  refusal MEANS is the whole question for cc's remote probe —
+//                  ENOREMOTE is a no and every other code is a yes — so a test
+//                  of that rule has to be able to name the code.
 //   --die-stderr S write S to stderr just before dying. cc embeds a dying
 //                  provider's stderr TAIL in the refusal it raises, so this is
 //                  how a transport death is given text that LOOKS like a local
@@ -53,12 +57,14 @@ let budget = null;
 let dieOn = null;
 let dieStderr = null;
 let errorFrame = null;
+let errorCode = 'ENOENT';
 const passThrough = [];
 for (let i = 2; i < process.argv.length; i++) {
   if (process.argv[i] === '--budget') budget = Number(process.argv[++i]);
   else if (process.argv[i] === '--die-on') dieOn = new RegExp(process.argv[++i]);
   else if (process.argv[i] === '--die-stderr') dieStderr = process.argv[++i];
   else if (process.argv[i] === '--error-frame') errorFrame = new RegExp(process.argv[++i]);
+  else if (process.argv[i] === '--error-code') errorCode = process.argv[++i];
   // Anything the wrapper does not claim is the reference provider's, so a test
   // can still ask for a capability configuration through it.
   else passThrough.push(process.argv[i]);
@@ -104,7 +110,7 @@ process.stdin.on('data', (chunk) => {
     if (isExec && errorFrame?.test(line)) {
       const id = JSON.parse(line).id;
       process.stdout.write(JSON.stringify({
-        type: 'error', id, code: 'ENOENT', message: 'spawn env ENOENT',
+        type: 'error', id, code: errorCode, message: `refused: ${errorCode}`,
       }) + '\n');
       continue;
     }

@@ -21,7 +21,8 @@
 // advertises `remotes`, requires every request to name a known target, and
 // scopes each target to its own root. The root scoping is what makes a
 // wrong-target bug impossible to mistake for success on a machine where every
-// target is in fact the same filesystem.
+// target is in fact the same filesystem: a cross-target read is REFUSED rather
+// than answered with plausible bytes.
 //
 // Speaks NDJSON on stdin/stdout and EXITS WHEN STDIN CLOSES, which is how a
 // provider is reaped when cc goes away.
@@ -41,6 +42,26 @@ const KILL_GRACE_MS = 100;
 // The frames that OPEN an operation, and therefore the only ones that name a
 // remote. Everything else inherits the binding through its `id`.
 const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile']);
+
+// THE ONE CWD A REMOTE'S ROOT DOES NOT FENCE, and it is cc's, not this
+// emulation's: every DERIVED operation (`stat`, `realpath`, `mkdir`, `readDir`,
+// `rm`, `unlink`, `chmod`) runs at `/` as a PLACEHOLDER and carries its real
+// target in argv — the far side's notion of "here" is not cc's. Fencing it
+// would refuse every derivation on any target not rooted at `/` while buying
+// nothing, because a provider cannot fence argv.
+//
+// What guards the derivations instead is the `remoteId` on their frames, and
+// that is asserted on the WIRE (tests/systems-remote-id.test.mjs) rather than
+// inferred from an operation succeeding.
+const PLACEHOLDER_CWD = '/';
+
+// Is `p` the remote's root, or inside it? path.relative rather than a string
+// prefix, which claims a merely prefix-SHARING sibling (`<root>-backup`) is
+// inside. Resolved first so `<root>/../elsewhere` cannot walk out.
+function withinRoot(root: string, p: string): boolean {
+  const rel = path.relative(root, path.resolve(p));
+  return rel === '' || (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`));
+}
 
 interface Options {
   persistentShell: boolean;
@@ -159,6 +180,19 @@ export class ReferenceProvider {
         this.#fail(String(f.id), 'ENOREMOTE', named === null
           ? `this provider serves named remotes (${[...this.#opts.remotes.keys()].join(', ')}) and the request named none`
           : `no such remote '${named}' — this provider serves ${[...this.#opts.remotes.keys()].join(', ')}`);
+        return;
+      }
+      // THE ROOT SCOPE. A path or a cwd belonging to another target is refused,
+      // never served: on a machine where every target is one filesystem that
+      // refusal is the only thing standing between a mis-bound operation and a
+      // plausible-looking answer.
+      const root = this.#opts.remotes.get(named) as string;
+      const reach = f.type === 'exec' ? f.cwd : f.path;
+      if (typeof reach === 'string'
+        && !(f.type === 'exec' && reach === PLACEHOLDER_CWD)
+        && !withinRoot(root, reach)) {
+        this.#fail(String(f.id), 'EACCES',
+          `'${reach}' is not on remote '${named}' (rooted at '${root}')`);
         return;
       }
     }

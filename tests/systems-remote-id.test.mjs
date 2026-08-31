@@ -21,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { bindRemoteSystem, referenceLaunch } from './remoteSystem.mjs';
+import { bindRemoteSystem, flakyLaunch } from './remoteSystem.mjs';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 
@@ -227,22 +227,126 @@ describe('remoteId: one system, many targets', () => {
   });
 
   // PINS: the probe asks ONE question — "do you serve this remote?" — and
-  // ENOREMOTE is its only failure. Every other answer, including a refusal, is
-  // the provider answering ABOUT that remote, which is itself proof it serves
-  // it. Asserted head-on so that "fixing" the ignored refusal breaks a test
-  // that says why.
-  test('a probe the provider REFUSES still resolves — only ENOREMOTE is a no', async () => {
+  // ENOREMOTE is its only failure. A refusal with any OTHER code is the
+  // provider answering ABOUT that remote, which is itself proof it serves it,
+  // so resolution proceeds. Asserted head-on, and against a provider that
+  // refuses the probe DELIBERATELY, so that "fixing" the ignored refusal into
+  // a failure breaks a test that says why.
+  test('a probe the provider refuses EACCES still resolves — only ENOREMOTE is a no', async () => {
+    await addSystem({
+      id: 'boxes', label: 'Boxes',
+      launch: flakyLaunch({
+        // The probe is the first exec on the connection, and it is the only
+        // one that runs `true`.
+        errorFrame: '"argv":\\["true"\\]', errorCode: 'EACCES',
+        flags: ['--remote', `a=${rootA}`],
+      }),
+    });
+    const sys = await systemById('boxes', 'a', 'test');
+    assert.equal(sys.remoteId, 'a', 'a refused probe is not a refused remote');
+    assert.equal(sys.id, 'boxes');
+  });
+
+  // PINS: the one answer that IS a no. Same fixture, same shape, one code
+  // different — so the pair together says the rule rather than one example.
+  test('a probe the provider refuses ENOREMOTE does not resolve', async () => {
+    await addSystem({
+      id: 'boxes', label: 'Boxes',
+      launch: flakyLaunch({
+        errorFrame: '"argv":\\["true"\\]', errorCode: 'ENOREMOTE',
+        flags: ['--remote', `a=${rootA}`],
+      }),
+    });
+    await assert.rejects(
+      () => systemById('boxes', 'a', `project 'p'`),
+      (e) => e.statusCode === 502 && e.code === 'REMOTE_NOT_FOUND',
+    );
+  });
+
+  // ── Root scoping: a cross-target operation is refused, not answered ──
+
+  // PINS: a file operation naming a path in ANOTHER target's tree is refused
+  // rather than served. On a machine where every target is one filesystem this
+  // is what stops a mis-bound read from returning plausible bytes.
+  test('a path belonging to another target is refused, not read', async () => {
+    const remote = await bindRemoteSystem({
+      id: 'boxes', flags: ['--remote', `a=${rootA}`, '--remote', `b=${rootB}`],
+    });
+    const a = await systemById(remote.id, 'a', 'test');
+    const b = await systemById(remote.id, 'b', 'test');
+    await fs.writeFile(path.join(rootA, 'marker'), 'A');
+    await fs.writeFile(path.join(rootB, 'marker'), 'B');
+
+    assert.equal(await a.readFile(path.join(rootA, 'marker')), 'A');
+    assert.equal(await b.readFile(path.join(rootB, 'marker')), 'B');
+    await assert.rejects(
+      () => b.readFile(path.join(rootA, 'marker')),
+      (e) => e.code === 'EACCES',
+      "the OTHER target's file is refused rather than answered",
+    );
+    await assert.rejects(
+      () => b.writeFile(path.join(rootA, 'marker'), 'clobbered'),
+      (e) => e.code === 'EACCES',
+    );
+    assert.equal(await fs.readFile(path.join(rootA, 'marker'), 'utf8'), 'A', 'and nothing was written');
+  });
+
+  // PINS: a command's cwd is scoped to its target too — EXCEPT the exact path
+  // `/`, which is cc's placeholder for a derived command that carries its real
+  // target in argv. Fencing that would refuse every stat, realpath and mkdir
+  // while buying nothing, since a provider cannot fence argv.
+  test("a command's cwd is scoped, and the placeholder / is exempt", async () => {
+    const remote = await bindRemoteSystem({
+      id: 'boxes', flags: ['--remote', `a=${rootA}`, '--remote', `b=${rootB}`],
+    });
+    const a = await systemById(remote.id, 'a', 'test');
+
+    const wrong = await a.exec({ argv: ['true'] }, { cwd: rootB });
+    assert.equal(wrong.spawnErrorCode, 'EACCES', "another target's directory is not a cwd this remote has");
+
+    const own = await a.exec({ argv: ['true'] }, { cwd: rootA });
+    assert.equal(own.code, 0);
+
+    const placeholder = await a.exec({ argv: ['true'] }, { cwd: '/' });
+    assert.equal(placeholder.spawnErrorCode, undefined, 'the placeholder cwd is not a reach into anything');
+    assert.equal(placeholder.code, 0);
+  });
+
+  // PINS: every DERIVED operation's exec frame carries the binding of the
+  // handle it was issued through. This is measured on the wire and not inferred
+  // from an operation succeeding, because the derivations run at the exempt
+  // cwd and carry their real target in argv — which the provider's fence never
+  // inspects — so a mis-bound one would otherwise succeed silently against the
+  // wrong target.
+  test('every derived operation carries its binding on the wire', async () => {
     const rec = path.join(home, 'wire.ndjson');
     await addSystem({
       id: 'boxes', label: 'Boxes',
-      // The remote is real; its root refuses the probe's `/` cwd. That is an
-      // answer about the remote, so it is a pass.
-      launch: ['node', RECORDER, '--record', rec, '--remote', `a=${rootA}`],
+      launch: ['node', RECORDER, '--record', rec, '--remote', `a=${rootA}`, '--remote', `b=${rootB}`],
     });
-    const sys = await systemById('boxes', 'a', 'test');
-    assert.equal(sys.remoteId, 'a');
-    const probe = (await wire(rec)).find(f => f.type === 'exec' && f.cwd === '/');
-    assert.ok(probe, 'the probe really ran');
-    assert.equal(probe.remoteId, 'a', 'and it asked about THIS remote');
+    const a = await systemById('boxes', 'a', 'test');
+
+    const dir = path.join(rootA, 'derived');
+    const file = path.join(dir, 'f.txt');
+    await a.mkdir(dir, { recursive: true });
+    await a.writeFile(file, 'x');
+    await a.stat(file);
+    await a.readDir(dir);
+    await a.realpath(dir);
+    await a.chmod(file, 0o600);
+    await a.unlink(file);
+    await a.removeTree(dir);
+
+    const execs = (await wire(rec)).filter(f => f.type === 'exec');
+    // `env LC_ALL=C <tool>` is the derivation shape; the probe is the only
+    // other exec, and it is bound too.
+    const derived = execs.filter(f => Array.isArray(f.argv) && f.argv[0] === 'env');
+    const tools = derived.map(f => f.argv[2]);
+    for (const tool of ['mkdir', 'stat', 'find', 'realpath', 'chmod', 'unlink', 'rm']) {
+      assert.ok(tools.includes(tool), `the ${tool} derivation was issued`);
+    }
+    for (const f of execs) {
+      assert.equal(f.remoteId, 'a', `an exec running ${JSON.stringify(f.argv)} must name its target`);
+    }
   });
 });
