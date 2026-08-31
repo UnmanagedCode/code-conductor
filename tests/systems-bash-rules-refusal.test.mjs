@@ -21,7 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { findUnenforceableBashRules } from '../src/systems/bashRules.ts';
+import { findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from '../src/systems/bashRules.ts';
 
 let dir;
 beforeEach(async () => { dir = await mkdtemp('cc-bashrules-'); });
@@ -82,4 +82,61 @@ test('the user settings path is included in the default source list', async () =
   assert.ok(sources.includes(path.join(os.homedir(), '.claude', 'settings.json')));
   assert.ok(sources.includes(path.join('/session/root', '.claude', 'settings.json')));
   assert.ok(sources.includes(path.join('/session/root', '.claude', 'settings.local.json')));
+});
+
+// ── B4: the one key that turns the whole redirect off ────────────────
+//
+// MEASURED against 2.1.250 with cc's exact settings shape: baseline the hook
+// fires once and the command is the rewritten one; with `disableAllHooks: true`
+// present, the hook fires ZERO times and the WORKER'S OWN command runs — on the
+// orchestrator's machine, in the session root — while every result tells it the
+// command ran on the system. The PostToolUse write-back dies with it: no pulls,
+// no pushes, no notes.
+//
+// It does NOT disable `permissions.*`, so the injected denies still fire and the
+// session does not fail loudly anywhere. It silently diverges, which is the one
+// outcome the redirect exists to prevent. And the file is PULLED OFF THE SYSTEM
+// every spawn (§3.4), so its content is not cc's — a user who disabled hooks
+// locally and committed the file is enough.
+//
+// The other suppression shapes were tested and do NOT work: `{"hooks":{}}`,
+// `{"hooks":null}` and `{"hooks":{"PreToolUse":[]}}` all leave the injected
+// hooks firing. This is the single live lever.
+
+// PINS: `disableAllHooks: true` is found in any of the scanned files, and
+// attributed to the one it came from — the operator has to know which to edit.
+test('disableAllHooks is found and attributed to its file', async () => {
+  const a = await write('.claude/settings.json', { disableAllHooks: true });
+  const b = await write('user/settings.json', { permissions: { deny: [] } });
+  assert.deepEqual(await findDisabledHooks([a, b]), [a]);
+});
+
+// PINS: only the value that actually disables hooks counts. Refusing on a
+// `false` — or on the key merely being present — would block sessions whose
+// settings say hooks are ON.
+test('only a true disableAllHooks refuses', async () => {
+  const off = await write('.claude/settings.json', { disableAllHooks: false });
+  const absent = await write('user/settings.json', { permissions: {} });
+  assert.deepEqual(await findDisabledHooks([off, absent]), []);
+});
+
+// PINS: the refusal names the file and says what would have happened. "cc
+// refuses" without the consequence reads as a cc bug rather than as the
+// protection it is.
+test('the refusal names the file and what it would have cost', async () => {
+  const msg = hooksDisabledRefusal('prod-box', ['/root/.claude/settings.json']);
+  assert.match(msg, /REDIRECT_HOOKS_DISABLED/);
+  assert.match(msg, /\/root\/\.claude\/settings\.json/);
+  assert.match(msg, /prod-box/);
+  // The consequence, in the words that matter: the command would run HERE.
+  assert.match(msg, /orchestrator|this machine|locally/i);
+});
+
+// PINS: the scan shares its sources with the Bash-rule scan. Both answer the
+// same question at the same moment about the same two pulled files, so a source
+// added for one must be read by the other.
+test('both scans read the same files', async () => {
+  const p = await write('.claude/settings.json', { disableAllHooks: true, permissions: { deny: ['Bash(rm:*)'] } });
+  assert.deepEqual(await findDisabledHooks([p]), [p]);
+  assert.deepEqual((await findUnenforceableBashRules([p])).map(f => f.source), [p]);
 });

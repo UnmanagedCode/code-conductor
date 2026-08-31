@@ -351,6 +351,29 @@ test('Glob and Grep are refused by name if they ever reach the hook', async () =
   }
 });
 
+// PINS S6: a file tool whose path is not absolute is REFUSED rather than let
+// through. The CLI was measured resolving to absolute before the hook fires, so
+// this is unreachable today — but letting it through meant PreToolUse skipped
+// the pull while PostToolUse would still have pushed, and the invariant should
+// not depend on an undocumented CLI behaviour staying put.
+test('a relative file path is refused rather than passed through unpulled', async () => {
+  for (const tool of ['Read', 'Write', 'Edit']) {
+    const d = await pre(tool, { file_path: 'relative/path.txt' });
+    assert.equal(d.decision, 'deny', `${tool} let a relative path through`);
+    assert.match(d.reason, /absolute/);
+  }
+  const nb = await pre('NotebookEdit', { notebook_path: './nb.ipynb' });
+  assert.equal(nb.decision, 'deny');
+});
+
+// PINS: and nothing is pushed for one either, so the two halves cannot
+// disagree about which paths they handle.
+test('a relative path is never pushed back', async () => {
+  await fs.writeFile(path.join(root, 'rel.txt'), 'local only\n');
+  assert.equal(await post('Edit', { file_path: 'rel.txt' }, {}), null);
+  await assert.rejects(fs.stat(onSystem('rel.txt')), 'nothing was written to the system');
+});
+
 // PINS: R2's annotation is TARGETED — it fires only when the output actually
 // shows a system path, so the model is not fed a note on every command.
 test('a Bash result is annotated only when it actually shows a system path', async () => {

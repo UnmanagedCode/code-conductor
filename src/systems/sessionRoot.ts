@@ -31,11 +31,17 @@ export function sessionRootsDir(systemId: string): string {
 //
 // The CLI probes for a containing repo at startup by walking UP from its cwd. A
 // session root inside one would make every session on this system report cc's
-// own store's repo as the project's — git state from the wrong tree, with no
-// env lever to turn the probe off. Placing session roots under the store is
-// what normally makes this true; asserting it is what makes a store that was
-// checked into a repo a REFUSAL at registration instead of a wrong answer at
-// every later spawn.
+// own store's repo as the project's — git state from the wrong tree.
+//
+// NO LONGER THE ONLY DEFENCE, and deliberately kept. src/settings.ts injects
+// `includeGitInstructions: false` for every redirected session, which is
+// per-session and needs no property of the store's placement to hold; this check
+// refuses at REGISTRATION only, so a store moved under a repository afterwards
+// would slip past it. Two levers exist for the probe (the settings key and
+// CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS — see src/settings.ts for why the key is
+// the one cc uses), so this check has stopped being load-bearing. It stays
+// because a store inside a repo is worth refusing on its own account: it is
+// where the transcripts, the session roots and every sidecar live.
 //
 // A decoy `.git` in the session root is deliberately NOT the fix: it would stop
 // the walk by making the CLI believe the session root is itself a repo.

@@ -70,6 +70,28 @@ test('a redirected session hooks Read and PostToolUse and removes Glob/Grep', ()
   assert.match(s.hooks.PreToolUse[0].matcher, /\bGrep\b/);
 });
 
+// PINS S3: a redirected session asks the CLI NOT to inject its dynamic git
+// instructions. The CLI derives them from its own cwd, which for a redirected
+// session is cc's session root — a directory holding the project's config
+// surface and nothing else — so the guidance it produces describes the wrong
+// repository. Measured against 2.1.250, whose own logic is
+// `settings.includeGitInstructions ?? true`.
+//
+// Chosen over the CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS env var deliberately:
+// that var's test is `e !== undefined ? !e : …`, so "0" disables while an EMPTY
+// STRING re-enables — a footgun the moment anything sets it to a computed value.
+test('a redirected session suppresses the CLI dynamic git instructions', () => {
+  const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h', redirect: true }));
+  assert.equal(s.includeGitInstructions, false);
+});
+
+// PINS: a local session is unchanged — its cwd IS the repo, so the CLI's
+// guidance is correct there and suppressing it would be a regression.
+test('a local session keeps the CLI git instructions', () => {
+  const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h' }));
+  assert.equal(s.includeGitInstructions, undefined);
+});
+
 // PINS: the rewrite reaches the CLI. Without `updatedInput` on the response the
 // worker's own command runs — locally, in the session root — which is the one
 // failure mode worse than refusing.

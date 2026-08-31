@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import readline from 'node:readline';
-import { promises as fsp, mkdirSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
+import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
@@ -36,7 +36,7 @@ import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, res
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { composeSessionRoot } from './systems/sessionRoot.ts';
-import { bashRuleSources, bashRulesRefusal, findUnenforceableBashRules } from './systems/bashRules.ts';
+import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
@@ -607,6 +607,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   _mutating: boolean;
   _skipUsageSeed: boolean;
   _spawnArgv: string[] | null;
+  // The env the last launch actually used. Recorded for the same reason as
+  // _spawnArgv: it is what a test and a debug capture can read back, and the
+  // redirected tmp-root pin lives in it.
+  _spawnEnv: NodeJS.ProcessEnv;
   _overageGate: (() => { active: boolean; resetsAt: number | null }) | null;
 
   constructor({ id, project, cwd, mode, effort, thinking, model, contextWindowTokens = null, backend = CLAUDE_BACKEND_ID, hookCallbackUrl = null, mcpServerUrl = null, worktree = null, temp = false, conducted = false, callerInstanceId = null, debug = false, claudePluginDirs = [], launcher = defaultClaudeLauncher }: InstanceConstructorInput) {
@@ -965,6 +969,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._mutating = false;   // claimed synchronously by rewind/fork/prune
     this._skipUsageSeed = false; // one-shot: suppress the pre-prune ctx seed on replay
     this._spawnArgv = null;   // full launch argv, remembered for enableDebug's meta.json
+    this._spawnEnv = {};
     this._overageGate = null; // live global-overage gate, injected by the manager
   }
 
@@ -1895,6 +1900,32 @@ export class Instance extends EventEmitter implements InstanceLike {
     // BEFORE the cc-managed context vars below so those always win — they are
     // deliberately not exposed in the Backends UI.
     Object.assign(spawnEnv, backendEnvVars);
+    // REDIRECTED SESSIONS ONLY: pin the CLI's per-uid tmp root to a cc-owned
+    // per-session directory.
+    //
+    // A backgrounded Bash's tool result tells the worker, verbatim, to `Read`
+    // the task file it names under that root — a path on THIS machine. The
+    // redirect refuses any file path outside the session root and cc's known
+    // local roots, so without this the worker cannot read its own command's
+    // interim output, and the refusal's advice ("use Bash") is wrong because the
+    // file is not on the system at all.
+    //
+    // Under the store, which is already a known local root — so the Read is
+    // allowed with no path special-casing. NOT inside the session root: that
+    // would make the task file a MAPPED path, and the pull would stat it on the
+    // system, find it absent, and delete the worker's own output.
+    //
+    // Per session, and 0700: the CLI validates the override's ownership and
+    // mode, and one session must not be able to read another's task output.
+    if (this._redirect) {
+      const tmpRoot = path.join(orchStoreRoot(), 'session-tmp', this.id);
+      // Sync, because spawn() is: the same reason the debug-capture directory
+      // beside it uses mkdirSync. chmod separately, because `mode` on mkdir is
+      // masked by the process umask and the CLI checks the mode it finds.
+      mkdirSync(tmpRoot, { recursive: true });
+      chmodSync(tmpRoot, 0o700);
+      spawnEnv.CLAUDE_CODE_TMPDIR = tmpRoot;
+    }
     // SUBSTITUTION-backend sessions: honour the model's native context window so
     // the CLI auto-compacts at the real limit instead of its ~200k default.
     // AUTO_COMPACT_WINDOW alone is not enough: the CLI clamps it to
@@ -1953,6 +1984,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._spawnArgv = [command, ...args];
     this._openDebugStreams(this._spawnArgv);
 
+    this._spawnEnv = spawnEnv;
     this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv });
     this.pid = this.proc.pid ?? null;
 
@@ -4258,7 +4290,18 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // restart) which never comes back through here. The second pass is a
       // manifest hit — one `find`, no transfers.
       cwd = (await composeSessionRoot(redirectPlacement)).root;
-      const unenforceable = await findUnenforceableBashRules(bashRuleSources(cwd));
+      const sources = bashRuleSources(cwd);
+      // FIRST, because it is the bigger failure: `disableAllHooks` turns the
+      // entire redirect off, and a session that ran with it would execute the
+      // worker's own commands on THIS machine while reporting the system.
+      const hooksOff = await findDisabledHooks(sources);
+      if (hooksOff.length > 0) {
+        throw Object.assign(
+          new Error(hooksDisabledRefusal(proj.system.id, hooksOff)),
+          { statusCode: 501, code: 'REDIRECT_HOOKS_DISABLED' },
+        );
+      }
+      const unenforceable = await findUnenforceableBashRules(sources);
       if (unenforceable.length > 0) {
         throw Object.assign(
           new Error(bashRulesRefusal(proj.system.id, unenforceable)),
@@ -5011,6 +5054,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // process (it crashed, or it already exited), and its shell on the remote
     // system would then outlive every reference to the session that owns it.
     await inst._redirect?.close();
+    // And the per-session tmp root cc created for it (see spawn()). One
+    // directory per redirected session, never reclaimed, is a leak that grows
+    // for the life of the install.
+    if (inst._redirect) {
+      rmSync(path.join(orchStoreRoot(), 'session-tmp', inst.id), { recursive: true, force: true });
+    }
     this.byId.delete(id);
     this._cancelAutoResume(id);
     this._purgeIdleFor(id);

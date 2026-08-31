@@ -1,3 +1,26 @@
+// The two ways a settings file can silently break a redirected session, and the
+// refusals that keep either from happening quietly.
+//
+// Both are read from the SAME files at the SAME moment — before the CLI is
+// launched, after the session root has been composed — because both are
+// questions about settings the CLI is about to obey and cc cannot override.
+//
+//   1. A `Bash(...)` permission rule, which the forwarder rewrite makes
+//      undiscriminating (below).
+//   2. `disableAllHooks: true`, which turns the ENTIRE redirect off.
+//
+// THE SECOND IS THE WORSE ONE. Measured against 2.1.250 with cc's exact settings
+// shape: with the key present the PreToolUse hook fires zero times and the
+// WORKER'S OWN command runs — on the orchestrator's machine, in the session root
+// — while every result tells the worker it ran on the system. The write-back
+// dies with it. And it does NOT disable `permissions.*`, so cc's injected denies
+// still fire and nothing anywhere fails loudly: the session silently diverges,
+// which is the one outcome the redirect exists to prevent.
+//
+// It needs no malice. `.claude/settings.json` is PULLED OFF THE SYSTEM every
+// spawn (§3.4), so a user who turned hooks off locally and committed the file
+// is enough.
+
 // The one permission rule redirection breaks, and how cc refuses to break it
 // quietly.
 //
@@ -36,18 +59,74 @@ export interface UnenforceableRule { rule: string; source: string }
 // redirection leaves it working exactly as before.
 const BASH_PATTERN_RULE = /^Bash\(.*\)$/;
 
+// Where the CLI's managed policy lives. 2.1.250's own layer list is
+// `["userSettings","projectSettings","localSettings","flagSettings",
+// "policySettings"]`, and `policySettings` is this file.
+//
+// IT IS THE MOST AUTHORITATIVE LAYER AND THE ONE THAT FAILS WORST. A
+// `Bash(touch:*)` deny there is enforced today; under redirection the forwarder
+// rewrite makes it silently dead. It is the operator's least-revocable safety
+// decision, so skipping it would leave exactly the gap this module exists to
+// close.
+//
+// Linux only, which is the only platform cc supports for a host; on anything
+// else the path simply does not exist and the read is skipped like any other
+// absent file.
+const MANAGED_POLICY_PATH = '/etc/claude-code/managed-settings.json';
+
 // The settings files cc can see for a redirected session, in the CLI's own
 // precedence order. The project pair are the copies cc PULLED from the system
 // into the session root, so they are the project's real rules rather than a
-// guess. An enterprise managed-policy file is not read: it is OS-specific and
-// cc has never known where it is, so a rule there produces no refusal — the
-// same silence as today, not a new claim of coverage.
+// guess.
+//
+// `flagSettings` — the CLI's own `--settings` argument — is deliberately absent:
+// that one is cc's, built by src/settings.ts, and cc does not put Bash rules or
+// `disableAllHooks` in it.
 export function bashRuleSources(sessionRoot: string): string[] {
   return [
     path.join(sessionRoot, '.claude', 'settings.local.json'),
     path.join(sessionRoot, '.claude', 'settings.json'),
     path.join(os.homedir(), '.claude', 'settings.json'),
+    MANAGED_POLICY_PATH,
   ];
+}
+
+// Parse one settings file, or null for one that is absent or unreadable. An
+// absent or malformed file is SKIPPED rather than refused: most installs have no
+// project settings at all, and a file cc cannot parse is the CLI's to complain
+// about — blocking a session over it would refuse for a fault that is not this
+// one.
+async function readSettings(source: string): Promise<Record<string, unknown> | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(source, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+  } catch { return null; }
+}
+
+// Every scanned file that turns hooks off outright. Only `true` counts: the key
+// present-and-false says hooks are ON, and refusing on it would block a session
+// whose settings agree with cc.
+export async function findDisabledHooks(sources: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const source of sources) {
+    const parsed = await readSettings(source);
+    if (parsed?.disableAllHooks === true) out.push(source);
+  }
+  return out;
+}
+
+// The refusal text. Names the file, because the repair is to edit it, and names
+// the CONSEQUENCE, because "cc cannot run this session" without it reads as a cc
+// bug rather than as the protection it is.
+export function hooksDisabledRefusal(systemId: string, sources: string[]): string {
+  return `REDIRECT_HOOKS_DISABLED: this session would run on system '${systemId}', where every `
+    + `Bash command, Read, Write and Edit is redirected by a PreToolUse hook. These settings files `
+    + `set "disableAllHooks": true, which turns all of that off:\n`
+    + `${sources.map(s => `  ${s}`).join('\n')}\n`
+    + `With hooks off the worker's own commands would run on the orchestrator's machine, in this `
+    + `session's local directory, while every result told it they ran on '${systemId}' — and no edit `
+    + `would ever reach the system. cc refuses the session rather than let that happen. Remove the `
+    + `setting, or scope it to the projects that run locally.`;
 }
 
 // Every `Bash(...)` deny/ask rule in the given settings files, each attributed
@@ -58,10 +137,8 @@ export function bashRuleSources(sessionRoot: string): string[] {
 export async function findUnenforceableBashRules(sources: string[]): Promise<UnenforceableRule[]> {
   const out: UnenforceableRule[] = [];
   for (const source of sources) {
-    let parsed: unknown;
-    try { parsed = JSON.parse(await fs.readFile(source, 'utf8')); }
-    catch { continue; }
-    const perms = (parsed as { permissions?: unknown } | null)?.permissions;
+    const parsed = await readSettings(source);
+    const perms = parsed?.permissions;
     if (!perms || typeof perms !== 'object') continue;
     for (const bucket of ['deny', 'ask'] as const) {
       const list = (perms as Record<string, unknown>)[bucket];

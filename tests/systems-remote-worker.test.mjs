@@ -110,6 +110,39 @@ describe('a worker session on a remote system', () => {
     await assert.rejects(fs.readFile(inSession('ONLY-ON-SYSTEM.txt')));
   });
 
+  // PINS B4 AT THE SPAWN: a session whose pulled settings turn hooks off is
+  // REFUSED by name. Running it would execute the worker's own commands on the
+  // orchestrator's machine while every result claimed the system — and because
+  // `disableAllHooks` leaves `permissions.*` working, nothing else would fail
+  // loudly. The file is pulled off the system, so its content is not cc's.
+  test('a project whose settings disable hooks refuses the spawn', async () => {
+    const before = instances.list().length;
+    await fs.mkdir(path.join(tree, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.claude', 'settings.json'),
+      JSON.stringify({ disableAllHooks: true }));
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 501, JSON.stringify(r.body));
+    const why = JSON.stringify(r.body);
+    assert.match(why, /REDIRECT_HOOKS_DISABLED/);
+    assert.match(why, /disableAllHooks/);
+    // And it names the file it read, which is what the operator edits on the
+    // system.
+    assert.match(why, /settings\.json/);
+    // No session was registered: a refusal that left a phantom instance behind
+    // would be resumable into the very state it refused.
+    assert.equal(instances.list().length, before);
+  });
+
+  // PINS: the refusal is about the setting, not about remote projects. Hooks
+  // that are ON must not block anything.
+  test('settings that leave hooks on spawn normally', async () => {
+    await fs.mkdir(path.join(tree, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.claude', 'settings.json'),
+      JSON.stringify({ disableAllHooks: false }));
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+  });
+
   // PINS: the injected settings widen the hook surface AND remove Glob/Grep.
   // A redirected session that still offered Grep would answer searches from a
   // session root holding the config surface and nothing else.
@@ -119,6 +152,64 @@ describe('a worker session on a remote system', () => {
     assert.deepEqual(settings.permissions.deny, ['Glob', 'Grep']);
     assert.match(settings.hooks.PreToolUse[0].matcher, /\bRead\b/);
     assert.ok(settings.hooks.PostToolUse);
+  });
+
+  // PINS B5: a worker can read its OWN backgrounded command's interim output.
+  // The CLI's background-Bash result tells the worker verbatim to Read the task
+  // file it names under the per-uid tmp root — a path on the ORCHESTRATOR — and
+  // the redirect refused it, with a suggestion ("use Bash") that is wrong
+  // because the file is not on the system at all.
+  //
+  // The fix relocates the whole per-uid tmp root with CLAUDE_CODE_TMPDIR, so the
+  // task file lands somewhere cc chose and already trusts. Pointing it INSIDE
+  // the session root would be worse than the bug: the file would become a
+  // "mapped" path, the pull would stat it on the system, find it absent, and
+  // `fs.rm` the worker's own output.
+  test('the task-output root is cc-owned, outside the session root, and readable', async () => {
+    const inst = instances.get(instId);
+    const tmpRoot = inst._spawnEnv.CLAUDE_CODE_TMPDIR;
+    assert.ok(tmpRoot, 'the session pins its own tmp root');
+
+    // Outside the session root — see above.
+    assert.equal(path.relative(root, tmpRoot).startsWith('..'), true,
+      `${tmpRoot} must not be inside the session root ${root}`);
+    // cc-owned and 0700: the CLI validates ownership and mode on the override,
+    // and one session must not be able to read another's task output.
+    const st = await fs.stat(tmpRoot);
+    assert.equal(st.mode & 0o777, 0o700);
+    assert.ok(tmpRoot.includes(instId), 'per session, so the dirs cannot be shared');
+
+    // And a Read of a file under it is ALLOWED by the redirect — the whole
+    // point. Asserted through the real hook endpoint.
+    const taskFile = path.join(tmpRoot, 'tasks', 'probe.output');
+    await fs.mkdir(path.dirname(taskFile), { recursive: true });
+    await fs.writeFile(taskFile, 'interim output\n');
+    const d = await hook({ tool_name: 'Read', tool_input: { file_path: taskFile } });
+    assert.equal(d.body.hookSpecificOutput.permissionDecision, 'allow',
+      d.body.hookSpecificOutput.permissionDecisionReason);
+    // Untouched: it is a local path, so nothing pulls or deletes it.
+    assert.equal(await fs.readFile(taskFile, 'utf8'), 'interim output\n');
+  });
+
+  // PINS: the per-session tmp root is REMOVED with the session. cc creates one
+  // dir per redirected session under its own store; never removing them is a
+  // leak that grows for the life of the install.
+  test('removing the session removes its tmp root', async () => {
+    const tmpRoot = instances.get(instId)._spawnEnv.CLAUDE_CODE_TMPDIR;
+    assert.ok((await fs.stat(tmpRoot)).isDirectory());
+    await api(baseUrl, 'DELETE', `/api/instances/${instId}`);
+    await assert.rejects(fs.stat(tmpRoot), 'the session-tmp directory is gone');
+  });
+
+  // PINS: a LOCAL session's tmp root is not touched. The override exists for the
+  // redirect's path policy; changing it for every session would move the CLI's
+  // per-uid tmp root for reasons that have nothing to do with this feature.
+  test('a local session gets no tmp-root override', async () => {
+    const local = await seedRepo(path.join(home, 'projects', 'plain'));
+    assert.equal((await adoptProject('plain', local)).ok, true);
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'plain', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(instances.get(r.body.id)._spawnEnv.CLAUDE_CODE_TMPDIR, process.env.CLAUDE_CODE_TMPDIR);
   });
 
   // PINS THE HOT PATH, end to end: the rewritten command, run by a real shell
@@ -310,16 +401,32 @@ describe('a worker session on a remote system', () => {
     assert.match(block, /^# System$/m);
     assert.match(block, /\/app.*prod-box/s);
     assert.match(block, /Bash.*run/s);
-    // The correction: local paths for reading and editing, system paths only in
-    // output. A doc that says the opposite is worse than saying nothing.
+    // The correction: local paths for reading and editing, and a prohibition on
+    // opening a system path. A doc that says the opposite is worse than saying
+    // nothing.
     assert.match(block, /working directory/);
-    assert.match(block, /only in command output/);
+    assert.match(block, /never at their `\/app` paths/);
     assert.ok(!/Read `?\/app/.test(block), 'it never suggests reading a system path');
   
     const local = await composeProjectConventionsDoc([]);
     assert.ok(!/^# System$/m.test(local), 'a local project carries no such section');
   });
   
+  // PINS S5: the pair says nothing false. The earlier wording claimed a system
+  // path "appears only in command output" — and cc's own PostToolUse note puts
+  // one on a tool RESULT ("Saved to /app/… on system '<id>'."), which is not
+  // command output. A worker holding a false statement from its system prompt
+  // has to decide which of the two to trust.
+  test('the disclosure does not claim system paths appear only in command output', async () => {
+    const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
+      .split('# Workspace conventions')[0];
+    assert.ok(!/only in command output/.test(block), block);
+    // The behavioural half survives: never open a system path, and it names the
+    // same file as its local counterpart.
+    assert.match(block, /never/i);
+    assert.match(block, /same file/);
+  });
+
   // PINS: the sentence really reaches the worker — it is written into the
   // project's CONVENTIONS.md on the SYSTEM and pulled into the session root,
   // which is where the CLI's `@CONVENTIONS.md` import reads it from.

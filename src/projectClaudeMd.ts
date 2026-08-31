@@ -54,11 +54,15 @@ const PROJECT_HEADING = '# Project conventions';
 //     time a command prints a path. Told, a worker did the task and remarked on
 //     nothing; untold, it took a system path from a stack trace, tried to read
 //     it, and spent a call recovering.
-//   * The second is a CORRECTION. An earlier wording said system paths "are the
-//     system's copies of what you see locally" and sent the model straight to
-//     `Read /app/greeting.py` — which cannot work, because the CLI reads on
-//     cc's machine. It has to say files are read and edited at their LOCAL
-//     paths, and that a system path appears only in command output.
+//   * The second is a CORRECTION, twice over. An earlier wording said system
+//     paths "are the system's copies of what you see locally" and sent the model
+//     straight to `Read /app/greeting.py` — which cannot work, because the CLI
+//     reads on cc's machine. It has to say files are read and edited at their
+//     LOCAL paths. A later wording then said a system path "appears only in
+//     command output", which is FALSE: cc's own PostToolUse note puts one on a
+//     tool result ("Saved to /app/… on system '<id>'."). The prohibition is what
+//     carries the behaviour, so it says NEVER OPEN one — true wherever the path
+//     came from — rather than making a claim about where such paths can appear.
 //
 // Nothing more. `Glob`/`Grep` being gone is volunteered by the tool registry; a
 // write outside the session root is named by its own refusal; a failed
@@ -68,8 +72,8 @@ const PROJECT_HEADING = '# Project conventions';
 function systemDisclosure(system: { id: string; path: string }): string {
   return `# System\n\n`
     + `This project's tree is at \`${system.path}\` on system \`${system.id}\`, where \`Bash\` commands run. `
-    + `Read, write and edit files at their paths under this session's working directory; `
-    + `a \`${system.path}\` path appears only in command output, and names the same file as its counterpart here.\n`;
+    + `Read, write and edit files at their paths under this session's working directory — `
+    + `never at their \`${system.path}\` paths, which name the same files seen from the system.\n`;
 }
 
 // The disclosure argument for a project being CREATED on a system, from the two

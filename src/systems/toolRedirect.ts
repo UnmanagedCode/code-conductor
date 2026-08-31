@@ -194,11 +194,21 @@ export class SessionRedirect {
 
   async #redirectFile(toolName: string, key: string, toolInput: Record<string, unknown>): Promise<RedirectDecision> {
     const p = toolInput[key];
-    // The CLI resolves a Read's path to an absolute one before the hook sees
-    // it. A relative path here is therefore not a path into the session — it is
-    // the CLI's own business, and rewriting cc's guess of it would be worse
-    // than letting the tool answer for itself.
-    if (typeof p !== 'string' || !path.isAbsolute(p)) return { decision: 'allow' };
+    // REFUSED, not passed through. The CLI was measured resolving every file
+    // path to an absolute one before the hook fires, so this is unreachable
+    // today — but allowing it made the two halves disagree: PreToolUse skipped
+    // the pull while postToolUse would still have resolved and PUSHED the path,
+    // so an Edit could reach the system from a base that was never fetched. cc
+    // does not get to guess which machine a relative path means, and the
+    // invariant should not rest on an undocumented CLI behaviour staying put.
+    if (typeof p !== 'string' || !path.isAbsolute(p)) {
+      return {
+        decision: 'deny',
+        reason: `cc: ${toolName} needs an absolute path on a project hosted on system `
+          + `'${this.systemId}' — ${JSON.stringify(p)} could name a file on either machine. `
+          + `Use a path under ${this.map.root}.`,
+      };
+    }
 
     if (this.map.toSystem(p) === null) {
       if (this.#isKnownLocal(p)) return { decision: 'allow' };
@@ -248,7 +258,11 @@ export class SessionRedirect {
     const key = FILE_TOOLS[toolName];
     if (key === undefined || READ_ONLY_FILE_TOOLS.has(toolName)) return null;
     const p = toolInput[key];
-    if (typeof p !== 'string' || this.map.toSystem(p) === null) return null;
+    // The ABSOLUTE check matches #redirectFile's refusal exactly, so the two
+    // halves cannot disagree about which paths they handle: `toSystem` would
+    // resolve a relative path against the session root and push a file
+    // PreToolUse never pulled.
+    if (typeof p !== 'string' || !path.isAbsolute(p) || this.map.toSystem(p) === null) return null;
     try {
       await this.#bridge.push(p);
       return `Saved to ${this.map.toSystem(p)} on system '${this.systemId}'.`;

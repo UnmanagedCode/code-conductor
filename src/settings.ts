@@ -88,6 +88,23 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
   // Not `--disallowedTools`: that flag is variadic and swallows the following
   // prompt argument.
   if (redirect) out.permissions = { deny: REDIRECT_DENIED_TOOLS };
+  // THE CLI'S DYNAMIC GIT INSTRUCTIONS, off for a redirected session.
+  //
+  // The CLI derives them from its OWN cwd, which for a redirected session is
+  // cc's session root — a cc-owned directory holding the project's config
+  // surface and nothing else. The guidance it produces therefore describes the
+  // wrong repository, and if the store happens to sit inside a git repo it
+  // describes cc's repo to a worker whose project is on another machine.
+  //
+  // Per session, which is the point: cc's only other defence is
+  // assertSessionRootsPlaceable, and that refuses at REGISTRATION — a store
+  // moved under a repo afterwards would poison every later session.
+  //
+  // Chosen over CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: 2.1.250 reads that var as
+  // `e !== undefined ? !e : settings.includeGitInstructions ?? true`, so "0"
+  // disables while an EMPTY STRING re-enables — a footgun the moment anything
+  // sets it to a computed value.
+  if (redirect) out.includeGitInstructions = false;
   return JSON.stringify(out);
 }
 
