@@ -213,6 +213,36 @@ test('interrupting the in-flight command stops it on the system', async () => {
   await assert.rejects(fs.stat(witness), 'the interrupted command is not still running');
 });
 
+// PINS B2 IN THE FALLBACK MODE, at the redirect layer. R5's abort was
+// implemented only as a shell close, and in `persistentShell:false` there is no
+// live stream and no retained exec id — so the close reached nothing and the
+// interrupted command ran to completion on the system, bounded only by the
+// worker's own Bash timeout. D10 makes the fallback the deliverable, not a
+// degraded mode, so an interrupt that does nothing there fails the phase.
+test('[persistentShell:false] interrupting stops the command, and a queued one never runs', async () => {
+  await build({ flags: ['--no-persistent-shell'] });
+  const running = onSystem('FB_STILL_RUNNING');
+  const queued = onSystem('FB_QUEUED_RAN');
+
+  const inFlight = redirect.runForwarded(`sleep 0.5; touch ${JSON.stringify(running)}`, {});
+  const ac = new AbortController();
+  const q = redirect.runForwarded(`touch ${JSON.stringify(queued)}`, { signal: ac.signal });
+  ac.abort();
+  assert.notEqual((await q).code, 0);
+  await inFlight;
+  await assert.rejects(fs.stat(queued), 'the cancelled queued command never ran');
+
+  // And the in-flight half: interrupt one that is actually running.
+  const ac2 = new AbortController();
+  const p = redirect.runForwarded(`sleep 0.5; touch ${JSON.stringify(running)}`, { signal: ac2.signal });
+  await new Promise(r => setTimeout(r, 120));
+  ac2.abort();
+  assert.notEqual((await p).code, 0);
+  await fs.rm(running, { force: true });
+  await new Promise(r => setTimeout(r, 700));
+  await assert.rejects(fs.stat(running), 'the interrupted command is not still running on the system');
+});
+
 // PINS S1: the reset notice goes to the command that RUNS on the fresh shell,
 // not to whichever call was constructed next. Here the aborted command resets
 // the shell and a call that was already queued behind it is the one that runs

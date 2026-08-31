@@ -70,12 +70,23 @@ async function hookServer(reply) {
   };
 }
 
-function settingsJSON(url, { pre, post = [], deny }) {
+function settingsJSON(url, { pre, post = [], deny, extra }) {
   const hooks = [{ type: 'http', url, timeout: 60 }];
   const out = { hooks: { PreToolUse: [{ matcher: pre.join('|'), hooks }] } };
   if (post.length) out.hooks.PostToolUse = [{ matcher: post.join('|'), hooks }];
   if (deny) out.permissions = { deny };
-  return JSON.stringify(out);
+  return JSON.stringify({ ...out, ...extra });
+}
+
+function runClaudeEnv(cwd, settings, prompt, env) {
+  return new Promise((resolve, reject) => {
+    execFile('claude', claudeArgs(settings, prompt, ['--output-format', 'json']),
+      { cwd, env: { ...process.env, ...env }, timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err && !stdout) { reject(err); return; }
+        try { resolve(JSON.parse(stdout)); } catch { reject(new Error(`unparseable CLI output: ${stdout.slice(0, 500)}`)); }
+      });
+  });
 }
 
 // cc's OWN launch flags, including `--permission-prompt-tool stdio`. The
@@ -115,6 +126,13 @@ function toolRegistry(cwd, settings) {
         }
         reject(new Error(`no system/init frame with a tool list: ${stdout.slice(0, 500)}`));
       });
+  });
+}
+
+// A plain command in a directory — the git fixture below is the only user.
+function run(argv, cwd) {
+  return new Promise((resolve, reject) => {
+    execFile(argv[0], argv.slice(1), { cwd }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
   });
 }
 
@@ -231,4 +249,129 @@ t('a Bash pattern deny is still enforced under bypassPermissions', async () => {
     assert.equal(Array.isArray(r.permission_denials) && r.permission_denials.length >= 1, true,
       'and the CLI reported it as a permission denial');
   } finally { await hooks.close(); await clean(); }
+});
+
+// ── The two behaviours the refine round added a dependency on ────────
+
+// PINS: `disableAllHooks: true` really does suppress the injected hooks — the
+// premise of `REDIRECT_HOOKS_DISABLED`. If a CLI upgrade stopped honouring it,
+// cc would be refusing spawns to protect against a setting that no longer does
+// anything, and the refusal should go. And if the key is RENAMED, this test
+// keeps passing while cc's scan silently stops finding the live lever — which is
+// why the sibling assertion below checks that the hook fires WITHOUT it, so the
+// zero-hit result is attributable to the key and not to a broken fixture.
+t('disableAllHooks still suppresses the injected hooks', async () => {
+  const { dir, clean } = await fixture();
+  const on = await hookServer((e) => (
+    e.tool_name === 'Bash' ? allow({ ...e.tool_input, command: 'echo REWRITTEN_BY_CC_HOOK' }) : {}
+  ));
+  try {
+    // CONTROL: the same settings without the key. Without this the assertion
+    // below is satisfied by any fixture that never fires a hook at all.
+    await runClaude(dir, settingsJSON(on.url, { pre: ['Bash'], post: ['Bash'] }),
+      'Run the Bash command `echo ORIGINAL_WORKER_COMMAND`.');
+    assert.ok(on.of('PreToolUse', 'Bash').length >= 1, 'the control fired the hook');
+    const post = on.of('PostToolUse', 'Bash');
+    assert.equal(post[0].tool_response.stdout.trim(), 'REWRITTEN_BY_CC_HOOK',
+      'and the control really redirected the command');
+  } finally { await on.close(); await clean(); }
+
+  const { dir: dir2, clean: clean2 } = await fixture();
+  const off = await hookServer((e) => (
+    e.tool_name === 'Bash' ? allow({ ...e.tool_input, command: 'echo REWRITTEN_BY_CC_HOOK' }) : {}
+  ));
+  try {
+    const r = await runClaude(dir2,
+      settingsJSON(off.url, { pre: ['Bash'], post: ['Bash'], extra: { disableAllHooks: true } }),
+      'Run the Bash command `echo ORIGINAL_WORKER_COMMAND`.');
+    assert.equal(off.seen.length, 0, `the hook fired ${off.seen.length} times with hooks disabled`);
+    // The worker's OWN command ran, locally. This is exactly the divergence
+    // REDIRECT_HOOKS_DISABLED exists to refuse.
+    assert.match(r.result, /ORIGINAL_WORKER_COMMAND/);
+  } finally { await off.close(); await clean2(); }
+});
+
+// PINS: `includeGitInstructions: false` still turns off the CLI's dynamic git
+// guidance. A redirected session's cwd is cc's session root, so that guidance
+// describes the wrong repository; if the key stops working, every worker on a
+// remote project gets git instructions about a directory holding the project's
+// config surface and nothing else.
+//
+// Asserted from the CLI's own system prompt, and with a CONTROL that shows the
+// fixture does produce the instructions when the key is absent — otherwise a
+// renamed key would leave this passing for the wrong reason.
+t('includeGitInstructions:false still suppresses the CLI git instructions', async () => {
+  const { dir, clean } = await fixture();
+  const hooks = await hookServer(() => allow());
+  try {
+    // A real repo, so the CLI's probe has something to find.
+    await run(['git', 'init', '-q'], dir);
+    await run(['git', 'config', 'user.email', 't@e'], dir);
+    await run(['git', 'config', 'user.name', 'T'], dir);
+    await fs.writeFile(path.join(dir, 'f.txt'), 'x\n');
+    await run(['git', 'add', '-A'], dir);
+    await run(['git', 'commit', '-q', '-m', 'initial'], dir);
+
+    const ask = 'Reply with ONLY the words in your system prompt that state the current git branch, or NONE.';
+    const control = await runClaude(dir, settingsJSON(hooks.url, { pre: ['Bash'] }), ask);
+    const off = await runClaude(dir,
+      settingsJSON(hooks.url, { pre: ['Bash'], extra: { includeGitInstructions: false } }), ask);
+
+    // The mechanical half: the CLI reports how many tokens of system prompt it
+    // built, and dropping a whole gitStatus block is visible in it.
+    assert.ok(/main|master/i.test(control.result),
+      `the control saw the branch in its prompt (got ${JSON.stringify(control.result).slice(0, 300)})`);
+    assert.ok(!/main|master/i.test(off.result),
+      `with the key off the branch is not in the prompt (got ${JSON.stringify(off.result).slice(0, 300)})`);
+  } finally { await hooks.close(); await clean(); }
+});
+
+// PINS: CLAUDE_CODE_TMPDIR still relocates the root the task-output file lands
+// under. cc points it at a directory it owns so a worker can Read its own
+// backgrounded command's interim output; if the var stops being honoured the
+// file goes back under the per-uid tmp root and the redirect refuses it again.
+t('CLAUDE_CODE_TMPDIR still relocates the task-output root', async () => {
+  const backgrounded = 'Use the Bash tool to start `sleep 3; echo done` in the BACKGROUND '
+    + '(run_in_background: true). Then reply with the single word STARTED. Do not wait for it.';
+  // Asserted from the FILESYSTEM, not from the model's prose: the model was
+  // measured reporting "the background task completed" instead of relaying the
+  // path, and what cc depends on is where the CLI PUTS the file.
+  const taskFiles = async (dir) => {
+    const out = [];
+    const walk = async (d) => {
+      for (const e of await fs.readdir(d, { withFileTypes: true }).catch(() => [])) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) await walk(p);
+        else if (path.basename(path.dirname(p)) === 'tasks') out.push(p);
+      }
+    };
+    await walk(dir);
+    return out;
+  };
+
+  const { dir, clean } = await fixture();
+  const tmpRoot = path.join(dir, 'cc-owned-tmp');
+  await fs.mkdir(tmpRoot, { recursive: true });
+  await fs.chmod(tmpRoot, 0o700);
+  const hooks = await hookServer(() => allow());
+  try {
+    await runClaudeEnv(dir, settingsJSON(hooks.url, { pre: ['Bash'] }), backgrounded,
+      { CLAUDE_CODE_TMPDIR: tmpRoot });
+    const found = await taskFiles(tmpRoot);
+    assert.ok(found.length >= 1,
+      `a tasks/ output file landed under the override (found nothing under ${tmpRoot})`);
+  } finally { await hooks.close(); await clean(); }
+
+  // CONTROL: without the override nothing lands under that directory, so the
+  // assertion above is about the variable and not about the CLI happening to
+  // write into its own cwd.
+  const { dir: dir2, clean: clean2 } = await fixture();
+  const tmpRoot2 = path.join(dir2, 'cc-owned-tmp');
+  await fs.mkdir(tmpRoot2, { recursive: true });
+  const hooks2 = await hookServer(() => allow());
+  try {
+    await runClaudeEnv(dir2, settingsJSON(hooks2.url, { pre: ['Bash'] }), backgrounded, {});
+    assert.deepEqual(await taskFiles(tmpRoot2), [],
+      'with no override the task file goes somewhere else entirely');
+  } finally { await hooks2.close(); await clean2(); }
 });

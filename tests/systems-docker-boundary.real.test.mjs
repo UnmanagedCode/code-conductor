@@ -23,6 +23,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
+import http from 'node:http';
 import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -195,6 +196,56 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.equal(ran.of('out'), 'O\nO2\n');
     assert.equal(ran.of('err'), 'E\n');
     assert.equal(ran.code, 3, 'the command\'s own code, not the forwarder\'s');
+  });
+
+  // PINS B1 ACROSS THE BOUNDARY: interrupting one call cancels that call and
+  // nothing else. Witnessed from INSIDE the container, which is the only witness
+  // that can tell "was not run" from "was run and the result discarded" — the
+  // whole defect was that a cancelled command's effects landed on the system.
+  //
+  // The cancelled call is driven straight at the endpoint rather than through a
+  // forwarder process, so the ORDERING is exact: its request is established
+  // (headers flushed) while the shell is demonstrably busy, so it is certainly
+  // QUEUED when the socket dies. Two forwarder processes could have reached cc in
+  // either order, which would test nothing. That a killed forwarder closes this
+  // same socket is pinned separately, below.
+  test('interrupting a queued call runs neither it nor over the one in flight', async () => {
+    await inCtr('rm -f /app/Q_WITNESS /app/SURVIVOR /app/INFLIGHT');
+    const inFlight = bashAsWorker('touch /app/INFLIGHT; sleep 4; touch /app/SURVIVOR');
+    // The shell is now demonstrably occupied — witnessed from inside.
+    await waitFor(async () => /INFLIGHT/.test(await inCtr('ls /app')), { timeout: 15000 });
+
+    const req = http.request(`${baseUrl}/api/instances/${instId}/bash-forward`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+    });
+    // The route flushes headers before it runs anything, so `response` means the
+    // handler is live; one macrotask later its waiter is on the queue.
+    const established = new Promise((r) => req.on('response', r));
+    req.on('error', () => {});
+    req.end(JSON.stringify({ command: 'touch /app/Q_WITNESS' }));
+    await established;
+    await new Promise(r => setTimeout(r, 50));
+    req.destroy();
+
+    const survived = await inFlight;
+    assert.equal(survived.code, 0, `the unrelated in-flight command was untouched: ${survived.of('err')}`);
+    const ls = await inCtr('ls /app');
+    assert.match(ls, /SURVIVOR/, 'and it finished its work');
+    assert.ok(!/Q_WITNESS/.test(ls), 'the cancelled command never ran inside the container');
+  });
+
+  // PINS B3 ACROSS THE BOUNDARY: a runaway command on the far side is a named
+  // failure here, not an orchestrator that runs out of memory. The output is
+  // produced INSIDE the container, so the bytes really do cross the wire.
+  test('a runaway command inside the container is fenced, not accumulated', async () => {
+    const before = process.memoryUsage().heapUsed;
+    const r = await bashAsWorker('head -c 40000000 /dev/zero | base64');
+    assert.notEqual(r.code, 0, 'a fence is a failure, not a truncated success');
+    assert.match(r.of('err'), /output exceeded the \d+-byte limit/);
+    assert.ok(process.memoryUsage().heapUsed - before < 300 * 1024 * 1024,
+      `heap grew by ${(process.memoryUsage().heapUsed - before) >> 20}MB`);
+    // And the session survives it.
+    assert.equal((await bashAsWorker('echo alive')).of('out'), 'alive\n');
   });
 
   // PINS: the session root is a cc-owned LOCAL directory and stays one. Its
