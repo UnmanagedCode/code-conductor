@@ -528,7 +528,25 @@ of them. **Three things it is not thin about**, worth knowing before starting on
    this protocol cannot detect; a provider that cannot is expected to advertise
    `false` and let cc take the documented fallback.
 3. **The base image has to satisfy §1's POSIX assumption.** Alpine — the most
-   likely image a reader reaches for — is busybox, whose `find` has no `-printf`
-   and whose `stat` has no `-c`, so every §7 derivation fails on it. That is
-   out of scope by §1 rather than a gap in the mapping, but it is exactly where
-   a reader will discover it.
+   likely image a reader reaches for — is busybox, and it fails that assumption
+   in three ways, only two of which announce themselves. Measured against
+   **BusyBox v1.38.0**, running each §7 derivation in the exact form cc sends it
+   (busybox's getopt honours `--` throughout, so the `--` is never what breaks):
+   - `env LC_ALL=C find <p>/. -mindepth 1 -maxdepth 1 -printf '%y\t%f\n'` →
+     `find: unrecognized: -printf`, exit 1. **`readDir` fails outright.**
+   - `env LC_ALL=C realpath -e -- <p>` → busybox `realpath` implements neither
+     `-e` nor `--`, so it reads both as operands and reports each as missing
+     before resolving the real one: exit 1. **`realpath` fails outright.**
+   - `env LC_ALL=C stat -L -c '%f %s %.3Y' -- <p>` → **succeeds, and is wrong.**
+     busybox `stat` does implement `-c`, but ignores the `.3` precision. On one
+     file: GNU answers `81a4 2 1788194735.064`, busybox `81a4 2 1788194735`, so
+     `mtimeMs` comes back at one-second granularity with no error anywhere. This
+     is the dangerous one — a silent degradation, not a refusal.
+
+   The other four derivations are fine, measured in the same forms: `mkdir --`,
+   `mkdir -p --`, `chmod <octal> --` and `rm -rf --` all exit 0, and `unlink --`
+   removes a symlink without following it and refuses a directory with the
+   POSIX `Is a directory` tail §8's classifier already matches. So busybox is a
+   PARTIAL failure, not a total one, which is exactly what makes it worth
+   stating. It is out of scope by §1 rather than a gap in the mapping, but it is
+   exactly where a reader will discover it.

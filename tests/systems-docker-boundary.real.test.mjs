@@ -40,7 +40,10 @@ const IMAGE = process.env.CC_DOCKER_IMAGE ?? 'node:24-slim';
 const DOCKER = (process.env.CC_DOCKER ?? 'docker').split(/\s+/);
 const CTR = `cc-systems-p5-${process.pid}`;
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-// The provider and the three modules it imports — nothing else crosses in.
+// Copied into the container. The provider's ENTIRE local import closure is
+// `protocol.ts` and nothing else, so the first two files are all it needs to
+// run; `execCollector.ts` and `system.ts` are inert here and are carried only
+// so the copied set matches the module's siblings. Nothing else crosses in.
 const PROVIDER_FILES = ['referenceProvider.ts', 'protocol.ts', 'execCollector.ts', 'system.ts'];
 
 const run = (argv, opts = {}) => new Promise((resolve, reject) => {
