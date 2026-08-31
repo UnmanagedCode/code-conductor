@@ -145,7 +145,9 @@ t('a Bash pattern deny is still enforced under bypassPermissions', async () => {
 // what the CLI put on the wire.
 //
 // NOT CLAIMING: the id's format (opaque to cc — it is only ever a map key), nor
-// anything about NESTED subagents, for which no clean two-level sample exists.
+// anything about NESTED subagents, for which no clean two-level sample exists,
+// nor that the CLI would refuse to reorder the two steps — if it ever ran the
+// dispatch first this fails, and re-reading the prompt is the right response.
 t('a subagent PreToolUse payload carries agent_id and the main agent does not', async () => {
   const { dir, clean } = await fixture();
   const hooks = await hookServer(() => allow());
@@ -171,5 +173,17 @@ t('a subagent PreToolUse payload carries agent_id and the main agent does not', 
     assert.ok(sub.length >= 1, `at least one Bash call carried an agent_id: ${JSON.stringify(bash.map(e => e.agent_id))}`);
     assert.ok(main.length >= 1, `at least one Bash call carried none: ${JSON.stringify(bash.map(e => e.agent_id))}`);
     assert.equal(sub.length + main.length, bash.length, 'and the two sets partition the calls');
+
+    // WHICH WAY ROUND, and this is the half that matters. The prompt fixes the
+    // order — the main agent's own Bash call is step (1), the dispatch is step
+    // (2) — so the FIRST envelope to arrive is provably the main agent's. Both
+    // sets being non-empty is equally true of a CLI that swapped the semantics
+    // (subagents omit the field, the main agent carries one), and cc reading it
+    // that way is the silent collapse this case exists to catch: every subagent
+    // would land on the main agent's shell while every command still succeeded.
+    assert.ok(!('agent_id' in bash[0]),
+      `the main agent's own call came first and carries no agent_id, got ${JSON.stringify(bash[0].agent_id)}`);
+    assert.ok(bash.slice(1).some(e => typeof e.agent_id === 'string' && e.agent_id.length > 0),
+      'and a later call — the dispatched subagent\'s — carries one');
   } finally { await hooks.close(); await clean(); }
 });
