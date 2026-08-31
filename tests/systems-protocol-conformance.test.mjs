@@ -107,6 +107,19 @@ for (const config of CAPABILITY_CONFIGS) {
     });
   });
 
+  // PINS: the CODE on a provider's id-addressed `error` frame reaches the
+  // caller as `spawnErrorCode`, rather than being thrown away and re-derived
+  // from the message prose.
+  test(`${tag} a command that cannot start carries the provider's own error code`, async () => {
+    await withSystem(config.flags, async (sys) => {
+      const r = await sys.exec({ argv: ['true'] }, { cwd: '/definitely-not-a-real-directory-xyz' });
+      assert.equal(r.code, 1);
+      assert.ok(r.spawnError);
+      assert.equal(r.spawnErrorCode, 'ENOENT', 'the structured code the far side sent, not a parse of its message');
+      assert.equal(r.transportFailure, undefined, 'the far side ANSWERED — this is not a dead channel');
+    });
+  });
+
   test(`${tag} a timeout is exit 124 with timedOut set`, async () => {
     await withSystem(config.flags, async (sys, root) => {
       const r = await sys.exec({ argv: ['sleep', '10'] }, { cwd: root, timeoutMs: 250 });

@@ -19,7 +19,7 @@
 import path from 'node:path';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
-  type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor,
+  type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
@@ -120,7 +120,8 @@ export class ProviderSystem implements System, ShellHost {
         });
       });
       const finish = (code: number, extra: {
-        timedOut: boolean; spawnError?: string; transportFailure?: true; descendantsMaySurvive?: boolean;
+        timedOut: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode;
+        transportFailure?: true; descendantsMaySurvive?: boolean;
       }): void => {
         if (settled) return;
         settled = true;
@@ -165,8 +166,14 @@ export class ProviderSystem implements System, ShellHost {
               descendantsMaySurvive: f.descendantsMaySurvive === true,
             });
           } else if (f.type === 'error') {
-            // An error frame on an exec id means the command NEVER STARTED.
-            finish(1, { timedOut: false, spawnError: frameMessage(f) });
+            // An error frame on an exec id means the command NEVER STARTED. Its
+            // CODE is kept beside the message: the far side answered, so its own
+            // classification is the answer, and re-deriving one from the prose
+            // loses every reason that has no errno in its wording.
+            finish(1, {
+              timedOut: false, spawnError: frameMessage(f),
+              ...(isSystemErrorCode(f.code) ? { spawnErrorCode: f.code } : {}),
+            });
           }
         },
         // TRANSPORT: the connection went away mid-command — see the ensureUp
@@ -341,7 +348,15 @@ export class ProviderSystem implements System, ShellHost {
       if (r.transportFailure) {
         throw new SystemError('ETRANSPORT', `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
       }
-      throw new SystemError(classifySpawnError(r.spawnError), `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr });
+      // The far side's own code when it sent one; the message parse only when it
+      // did not. For every code that predates this field the two agree — the
+      // provider sends fsCode(e) and the classifier reads the same errno token
+      // back out of the message — so this preserves behaviour and stops a
+      // STRUCTURED code being re-derived from prose.
+      throw new SystemError(
+        r.spawnErrorCode ?? classifySpawnError(r.spawnError),
+        `${what}: ${r.spawnError}`, { exitCode: r.code, stderr: r.stderr },
+      );
     }
     return r;
   }
