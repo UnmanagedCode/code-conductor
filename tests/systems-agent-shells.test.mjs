@@ -296,6 +296,38 @@ test("a reset notice names the restarted agent's own working directory", async (
     `and not the subagent's: ${main.notice}`);
 });
 
+// THE SAME INVARIANT WITH THE ROLES SWAPPED: the notice names the agent whose
+// shell it was, when the displaced agent is the MAIN one. The test above leaves
+// main standing at the project root, where a notice reporting main's own cwd and
+// one reporting the project root are the same string — so a notice that lied
+// about MAIN's whereabouts specifically, and only about main's, would be
+// invisible. Here main has `cd`'d away and the subagent is the one at the root.
+//
+// NOT CLAIMING anything the test above already claims (nothing about the rest of
+// the notice's text, and nothing about cwd being restored after the reset); this
+// exists only to remove the main agent's exemption from that test's premise.
+test("a displaced MAIN agent's reset notice names its own working directory", async () => {
+  await run(null, 'cd sub');
+  assert.equal((await run(null, 'pwd')).stdout.trim(), onSystem('sub'));
+  assert.equal((await run('a1', 'pwd')).stdout.trim(), remote.root,
+    'the premise, inverted: this time it is the main agent that has moved');
+
+  assert.notEqual((await run(null, 'exit')).code, 0, "the main agent's shell died");
+  assert.notEqual((await run('a1', 'exit')).code, 0, "and so did the subagent's");
+
+  const main = await run(null, 'echo m');
+  const sub = await run('a1', 'echo s');
+  assert.match(main.notice ?? '', /restarted/);
+  assert.match(sub.notice ?? '', /restarted/);
+
+  assert.ok(main.notice.includes(`still ${onSystem('sub')},`),
+    `the main agent is told its OWN cwd, not the project root: ${main.notice}`);
+  assert.ok(!main.notice.includes(`still ${remote.root},`), main.notice);
+  assert.ok(sub.notice.includes(`still ${remote.root},`),
+    `and the subagent is told its own: ${sub.notice}`);
+  assert.ok(!sub.notice.includes(`still ${onSystem('sub')},`), sub.notice);
+});
+
 // PINS: the idle sweep reaches every agent's shell, and each entry survives its
 // own close so its own next command is told what it lost. A single shared timer
 // fails the first half; a single shared notice fails the second.
