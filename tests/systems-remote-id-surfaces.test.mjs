@@ -116,13 +116,14 @@ describe('remoteId across REST and MCP', () => {
       name: 'app', path: tree, system: remote.id, remoteId: 'a',
     });
     const wt = await createWorktree('app', { name: 'feature' });
+    const before = await readRecord('app');
 
     const r = await api(baseUrl, 'PUT', '/api/projects/app/remote', { remoteId: 'b' });
     assert.equal(r.status, 409);
     assert.equal(r.body.code, 'PROJECT_PLACEMENT_IN_USE');
     assert.deepEqual(r.body.worktrees, [wt.worktreeName]);
     assert.deepEqual(r.body.instances, []);
-    assert.equal((await readRecord('app')).remoteId, 'a');
+    assert.deepEqual(await readRecord('app'), before, 'a refused change writes nothing at all');
   });
 
   // ── set_project_remote ───────────────────────────────────────────────
@@ -146,6 +147,7 @@ describe('remoteId across REST and MCP', () => {
       name: 'app', path: tree, system: remote.id, remoteId: 'a',
     });
     const wt = await createWorktree('app', { name: 'feature' });
+    const before = await readRecord('app');
 
     const rest = await api(baseUrl, 'PUT', '/api/projects/app/remote', { remoteId: 'b' });
     const mcp = await callTool(baseUrl, 'set_project_remote', { project: 'app', remoteId: 'b' });
@@ -156,7 +158,58 @@ describe('remoteId across REST and MCP', () => {
     const text = mcp.content.map(c => c.text).join('\n');
     assert.match(text, /PROJECT_PLACEMENT_IN_USE/);
     assert.match(text, new RegExp(wt.worktreeName));
-    assert.equal((await readRecord('app')).remoteId, 'a', 'neither surface wrote anything');
+    assert.deepEqual(await readRecord('app'), before, 'neither surface wrote anything');
+  });
+
+  // ── Clearing is an EXPLICIT act on both surfaces ─────────────────────
+
+  // PINS: an ABSENT remoteId is refused, naming the field — it must not read as
+  // "clear the target". `set_project_remote({project})` with no target at all is
+  // the shape a caller reaches by accident, and silently unbinding the project
+  // is the most destructive reading available.
+  test('PUT /projects/:name/remote refuses a body with no remoteId at all', async () => {
+    await api(baseUrl, 'POST', '/api/projects', {
+      name: 'app', system: remote.id, remoteId: 'a', systemPath: path.join(sandbox, 'app'),
+    });
+    const before = await readRecord('app');
+    const r = await api(baseUrl, 'PUT', '/api/projects/app/remote', {});
+    assert.equal(r.status, 400, JSON.stringify(r.body));
+    assert.match(r.body.error, /remoteId/, 'the refusal names the missing field');
+    assert.deepEqual(await readRecord('app'), before, 'and nothing was cleared');
+  });
+
+  // PINS: the documented way to clear still works — the refusal above is about
+  // OMISSION, not about clearing, and an explicit null or empty string is how a
+  // project falls back to the provider's own default target.
+  test('PUT /projects/:name/remote clears on an explicit null or empty string', async () => {
+    for (const value of [null, '']) {
+      await api(baseUrl, 'DELETE', '/api/projects/app');
+      await api(baseUrl, 'POST', '/api/projects', {
+        name: 'app', system: remote.id, remoteId: 'a', systemPath: path.join(sandbox, `app-${String(value)}`),
+      });
+      const r = await api(baseUrl, 'PUT', '/api/projects/app/remote', { remoteId: value });
+      assert.equal(r.status, 200, `${JSON.stringify(value)}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.remoteId, null);
+      assert.equal('remoteId' in (await readRecord('app')), false, `${JSON.stringify(value)} clears the field`);
+    }
+  });
+
+  // PINS: the MCP twin enforces the same thing STRUCTURALLY — the schema marks
+  // remoteId required, so an omitted one never reaches the handler at all.
+  test('set_project_remote refuses an omitted remoteId and clears on an explicit null', async () => {
+    await api(baseUrl, 'POST', '/api/projects', {
+      name: 'app', system: remote.id, remoteId: 'a', systemPath: path.join(sandbox, 'app'),
+    });
+    const before = await readRecord('app');
+
+    const omitted = await callTool(baseUrl, 'set_project_remote', { project: 'app' });
+    assert.equal(omitted.isError, true, JSON.stringify(omitted));
+    assert.match(omitted.content.map(c => c.text).join('\n'), /remoteId/);
+    assert.deepEqual(await readRecord('app'), before, 'nothing was cleared');
+
+    const cleared = await callTool(baseUrl, 'set_project_remote', { project: 'app', remoteId: null });
+    assert.equal(cleared.isError, undefined, JSON.stringify(cleared));
+    assert.equal('remoteId' in (await readRecord('app')), false);
   });
 
   // PINS: create_project over MCP carries the target too, so a conductor's

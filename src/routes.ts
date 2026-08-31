@@ -620,7 +620,18 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // two callers that owe that contract.
   r.put('/projects/:name/remote', async (req, res, next) => {
     try {
-      const raw = jsonBody(req).remoteId;
+      const body = jsonBody(req);
+      // OMISSION IS NOT CLEARING. A body with no `remoteId` at all is the shape
+      // a caller reaches by accident, and reading it as "unbind this project"
+      // is the most destructive reading available — so it is refused by name.
+      // Clearing stays explicit, which is what this tool's description promises.
+      // The MCP twin gets the same rule structurally, from `required` in its
+      // schema (src/mcp/tools.ts).
+      if (!('remoteId' in body)) {
+        throw httpError(400, `remoteId is required — pass null (or "") to clear the target, `
+          + `which is the only way to put the project back on its system's default`);
+      }
+      const raw = body.remoteId;
       const result = await setProjectRemote(
         req.params.name,
         raw === '' || raw === undefined ? null : raw,

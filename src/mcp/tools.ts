@@ -744,7 +744,11 @@ export function buildTools(): Tool[] {
             description: 'The target on the project\'s system, or null/empty-string to fall back to the provider\'s default target.',
           },
         },
-        required: ['project'],
+        // REQUIRED, so OMITTING it is a validation failure rather than a silent
+        // clear. Clearing is an explicit act — this tool's description says so —
+        // and `{project}` with no target named is the shape a caller reaches by
+        // accident. An explicit null (or "") still clears.
+        required: ['project', 'remoteId'],
       },
       handler: h.setProjectRemote,
       annotations: { idempotentHint: true },
