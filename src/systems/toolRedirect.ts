@@ -13,6 +13,12 @@
 // So the three tool families are handled, and nothing is left to fall through:
 //   Bash          — REWRITTEN into a local forwarder that runs the command in
 //                   this session's shell on the system (src/systems/bashForwarder.ts).
+//                   ONE SHELL PER AGENT, not per session: the main agent and
+//                   each subagent get their own, keyed off the `agent_id` the
+//                   hook carries, because a subagent's `cd` re-basing the main
+//                   agent's next command is the same silent divergence this
+//                   module exists to prevent — and locally the CLI gives every
+//                   Bash call a fresh shell anyway.
 //   Read/Write/    — PULL-THEN-PUSH through src/systems/fileBridge.ts, at the
 //   Edit/Notebook    path the CLI is about to open. Never rewritten.
 //   Glob/Grep     — removed from the tool registry by the injected settings
@@ -26,6 +32,7 @@
 
 import path from 'node:path';
 import { FileBridge } from './fileBridge.ts';
+import { SystemError } from './protocol.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
 import { SessionPathMap } from './sessionRoot.ts';
 import type { System } from './system.ts';
@@ -102,6 +109,42 @@ const DEFAULT_IDLE_TTL_MS = 15 * 60_000;
 // far below what threatens the process.
 const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
+// THE SUBAGENT SHELL CEILING. Each entry is a `$SHELL -l` process on someone
+// else's machine plus an open `exec` stream on the connection, and a turn that
+// fans out N subagents opens N of them at once while the idle TTL only reclaims
+// them fifteen minutes later — so without a bound the ceiling is however many
+// subagents the model decides to dispatch. 16 is far above real fan-out and far
+// below what threatens the far side, the same argument as the output fence's.
+//
+// IT COUNTS ENTRIES, NOT OPEN SHELLS. In the `persistentShell:false` fallback no
+// shell is ever `open`, so a bound on open shells would be permanently inert
+// there while the entry map grew without limit; counting entries bounds both
+// modes with one rule, and in persistent mode entries ≥ open shells so the
+// process bound holds a fortiori. The MAIN agent is never counted and never
+// evicted.
+const DEFAULT_MAX_AGENT_SHELLS = 16;
+
+// The main agent's shell key. Every subagent's is `agent:<id>`, and the prefix
+// is namespacing rather than decoration: a bare `agentId ?? 'main'` would put an
+// agent whose id is literally `main` on the MAIN agent's shell.
+const MAIN_SHELL_KEY = 'main';
+
+function shellKey(agentId: string | null): string {
+  return agentId ? `agent:${agentId}` : MAIN_SHELL_KEY;
+}
+
+// One agent's shell and the bookkeeping the TTL and the cap need. `inFlight` is
+// incremented SYNCHRONOUSLY on acquisition, before the first await, which is
+// what makes "never evict a shell with a command on it" a fact rather than a
+// race; `lastUsed` is a monotonic tick rather than a clock, so two acquisitions
+// in the same millisecond still have an order.
+interface ShellEntry {
+  shell: ProviderShell;
+  idleTimer: NodeJS.Timeout | null;
+  inFlight: number;
+  lastUsed: number;
+}
+
 const FORWARDER = path.join(path.dirname(new URL(import.meta.url).pathname), 'bashForwarder.ts');
 
 export interface SessionRedirectOptions {
@@ -127,6 +170,7 @@ export interface SessionRedirectOptions {
   idleTtlMs?: number;
   shellCommandTimeoutMs?: number;
   maxOutputBytes?: number;
+  maxAgentShells?: number;
 }
 
 export class SessionRedirect {
@@ -141,9 +185,13 @@ export class SessionRedirect {
   readonly #idleTtlMs: number;
   readonly #shellCommandTimeoutMs: number | undefined;
   readonly #maxOutputBytes: number;
+  readonly #maxAgentShells: number;
 
-  #shell: ProviderShell | null = null;
-  #idleTimer: NodeJS.Timeout | null = null;
+  // Keyed by shellKey(): the main agent's shell plus one per subagent that has
+  // run a command. An idle-TTL close KEEPS its entry, so the next command on
+  // that shell still gets its reset notice; only eviction and close() drop one.
+  readonly #shells = new Map<string, ShellEntry>();
+  #useTick = 0;
   #closed = false;
 
   constructor(opts: SessionRedirectOptions) {
@@ -157,15 +205,37 @@ export class SessionRedirect {
     this.#idleTtlMs = opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
     this.#shellCommandTimeoutMs = opts.shellCommandTimeoutMs;
     this.#maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.#maxAgentShells = opts.maxAgentShells ?? DEFAULT_MAX_AGENT_SHELLS;
   }
 
-  // True while a shell process is live on the system. Read by the idle-TTL test
-  // and by diagnostics; nothing in the policy branches on it.
-  get shellOpen(): boolean { return this.#shell?.open === true; }
+  // Diagnostics and tests only — nothing in the policy branches on any of these.
+  // `shellOpen` keeps its original meaning: the MAIN agent's shell.
+  get shellOpen(): boolean { return this.shellOpenFor(null); }
+
+  shellOpenFor(agentId: string | null): boolean {
+    return this.#shells.get(shellKey(agentId))?.shell.open === true;
+  }
+
+  // Shell PROCESSES live on the system right now — always 0 in the
+  // `persistentShell:false` fallback, where nothing outlives a command.
+  get liveShellCount(): number {
+    let n = 0;
+    for (const e of this.#shells.values()) if (e.shell.open) n += 1;
+    return n;
+  }
 
   // ── PreToolUse ─────────────────────────────────────────────────────
 
-  async preToolUse(toolName: string, toolInput: Record<string, unknown>): Promise<RedirectDecision> {
+  // `agentId` is the dispatching subagent's `agent_id` off the CLI's hook
+  // envelope, or null for the session's main agent (the field is ABSENT on the
+  // main agent's payload — measured). It selects which shell the command runs
+  // in; nothing else branches on it. Defaulted so a caller that has no agent to
+  // name does not have to say so.
+  async preToolUse(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    agentId: string | null = null,
+  ): Promise<RedirectDecision> {
     if (UNREDIRECTABLE_TOOLS.has(toolName)) {
       return {
         decision: 'deny',
@@ -173,13 +243,13 @@ export class SessionRedirect {
           + `project's files are. Use \`find\` or \`grep\` through Bash, which runs there.`,
       };
     }
-    if (toolName === 'Bash') return this.#redirectBash(toolInput);
+    if (toolName === 'Bash') return this.#redirectBash(toolInput, agentId);
     const key = FILE_TOOLS[toolName];
     if (key === undefined) return { decision: 'allow' };
     return this.#redirectFile(toolName, key, toolInput);
   }
 
-  #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {
+  #redirectBash(toolInput: Record<string, unknown>, agentId: string | null): RedirectDecision {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     if (!command) return { decision: 'allow' };
     // The tool's own timeout becomes the shell's deadline. Without it a worker
@@ -191,6 +261,13 @@ export class SessionRedirect {
       shQuote(process.execPath), shQuote(FORWARDER),
       '--url', shQuote(this.#forwarderUrl),
       ...(Number.isFinite(timeout) && timeout > 0 ? ['--timeout', String(Math.floor(timeout))] : []),
+      // THE ONLY CHANNEL the agent id has. `agent_id` arrives on the hook, but
+      // the command does not run there: the CLI later spawns the forwarder as
+      // its own process, which POSTs the command back to cc. So the id rides
+      // the forwarder's argv and returns on its request body. Omitted entirely
+      // for the main agent, so a forwarder invocation and a body without it
+      // both mean the same thing.
+      ...(agentId ? ['--agent', shQuote(agentId)] : []),
       '--', shQuote(command),
     ];
     // Spread the original: `updatedInput` REPLACES the tool input, so a field
@@ -295,36 +372,54 @@ export class SessionRedirect {
 
   // ── The forwarded command ──────────────────────────────────────────
 
-  // Run one command in this session's shell on the system. Called by the
-  // forwarder's HTTP request, one at a time per session — ProviderShell
-  // serialises, so a subagent's command queues behind the parent's.
+  // Run one command in the shell belonging to the AGENT that asked for it —
+  // `agentId` null for the session's main agent. Called by the forwarder's HTTP
+  // request, which carries the id back from the rewrite.
   //
-  // NEVER REJECTS. Every failure — a wedged shell, a dead provider, a busy
-  // one — comes back as a non-zero exit with the reason on stderr, because that
-  // is the channel the worker actually reads. A rejected HTTP request would
-  // reach it as an opaque forwarder crash instead.
-  async runForwarded(command: string, { timeoutMs, signal, sink }: { timeoutMs?: number; signal?: AbortSignal; sink?: ForwardSink } = {}): Promise<ForwardedResult> {
-    const shell = this.#ensureShell();
-    // The idle timer is armed only AFTER the command, never before it: a sweep
-    // that fires mid-command would close the shell out from under a command
-    // that is still running, which is a reset the worker did not earn.
-    this.#disarmIdle();
-    // THE NOTICE IS TAKEN AT ACQUISITION, not here. A command may queue behind
-    // others, and the shell it eventually runs on is not necessarily the one
-    // that existed when its request arrived — reading the reason now attaches
-    // it to the wrong command, leaving the one that actually ran on the fresh
-    // shell saying nothing about the state it lost. R5's rule is about the
-    // command that runs.
+  // TWO COMMANDS OF ONE SESSION NOW GENUINELY OVERLAP, where before every
+  // command of a session queued on its single shell. That holds because the
+  // layers below are multiplexed, which was measured rather than assumed: each
+  // `exec` owns its own never-reused id on the connection, every frame is routed
+  // by that id BEFORE any decoder sees the bytes, and each ProviderShell owns
+  // its own decoders and its own pending command — so two shells' bytes never
+  // enter one parser even though a single read from the provider was observed
+  // carrying frames for both. The per-command nonce defends something else
+  // (forgery within one stream) and is not what makes this safe.
+  //
+  // NEVER REJECTS. Every failure — a wedged shell, a dead provider, a busy one,
+  // the subagent-shell cap — comes back as a non-zero exit with the reason on
+  // stderr, because that is the channel the worker actually reads. A rejected
+  // HTTP request would reach it as an opaque forwarder crash instead. That is
+  // why acquisition happens INSIDE the try.
+  async runForwarded(command: string, { timeoutMs, signal, sink, agentId }: { timeoutMs?: number; signal?: AbortSignal; sink?: ForwardSink; agentId?: string | null } = {}): Promise<ForwardedResult> {
     let notice: string | null = null;
-    const onStart = () => {
-      const reason = shell.takeResetReason();
-      if (!reason) return;
-      notice = this.#resetNotice(reason);
-      // FIRST, ahead of the command's own output: a shell that lost its exports
-      // has to say so before output that may be wrong because of it.
-      sink?.notice(notice);
-    };
+    let entry: ShellEntry | null = null;
     try {
+      entry = this.#ensureShell(shellKey(agentId ?? null));
+      // SYNCHRONOUS, before the first await: this is what the cap's
+      // "never evict a shell with a command on it" rule reads.
+      entry.inFlight += 1;
+      entry.lastUsed = ++this.#useTick;
+      // The idle timer is armed only AFTER the command, never before it: a sweep
+      // that fires mid-command would close the shell out from under a command
+      // that is still running, which is a reset the worker did not earn.
+      this.#disarmIdle(entry);
+      const shell = entry.shell;
+      const held = entry;
+      // THE NOTICE IS TAKEN AT ACQUISITION, not here. A command may queue behind
+      // others, and the shell it eventually runs on is not necessarily the one
+      // that existed when its request arrived — reading the reason now attaches
+      // it to the wrong command, leaving the one that actually ran on the fresh
+      // shell saying nothing about the state it lost. R5's rule is about the
+      // command that runs.
+      const onStart = () => {
+        const reason = shell.takeResetReason();
+        if (!reason) return;
+        notice = this.#resetNotice(held, reason);
+        // FIRST, ahead of the command's own output: a shell that lost its exports
+        // has to say so before output that may be wrong because of it.
+        sink?.notice(notice);
+      };
       // The CLI kills the forwarder on a tool timeout or an interrupt, which
       // closes the socket. That is cc's only signal that the worker no longer
       // wants THIS command, and the shell is what decides what to do with it:
@@ -349,18 +444,68 @@ export class SessionRedirect {
       sink?.err(stderr);
       return { stdout: '', stderr, code: 1, notice };
     } finally {
-      this.#armIdle();
+      if (entry) {
+        entry.inFlight -= 1;
+        this.#armIdle(entry);
+      }
     }
   }
 
-  #ensureShell(): ProviderShell {
-    if (this.#shell) return this.#shell;
-    this.#shell = new ProviderShell(this.#system, {
-      cwd: this.map.systemPath,
-      maxOutputBytes: this.#maxOutputBytes,
-      ...(this.#shellCommandTimeoutMs === undefined ? {} : { commandTimeoutMs: this.#shellCommandTimeoutMs }),
-    });
-    return this.#shell;
+  // The agent's shell, created on first use. A NEW AGENT'S SHELL IS SEEDED FROM
+  // THE PROJECT ROOT with no inherited environment, exactly as the main agent's
+  // is: exports live inside the parent's shell PROCESS and reading them means
+  // running a command in it, which serialises behind whatever it is doing and
+  // races its next command — and carrying the cwd alone while the environment
+  // silently did not come along is the invisible divergence R5 exists to forbid.
+  // Locally a subagent inherits nothing from its parent either.
+  #ensureShell(key: string): ShellEntry {
+    const existing = this.#shells.get(key);
+    if (existing) return existing;
+    if (key !== MAIN_SHELL_KEY) this.#makeRoomForAgentShell();
+    const entry: ShellEntry = {
+      shell: new ProviderShell(this.#system, {
+        cwd: this.map.systemPath,
+        maxOutputBytes: this.#maxOutputBytes,
+        ...(this.#shellCommandTimeoutMs === undefined ? {} : { commandTimeoutMs: this.#shellCommandTimeoutMs }),
+      }),
+      idleTimer: null,
+      inFlight: 0,
+      lastUsed: ++this.#useTick,
+    };
+    this.#shells.set(key, entry);
+    return entry;
+  }
+
+  // Enforce the subagent cap before adding one more. Past it the
+  // least-recently-used subagent entry with NO command in flight is closed and
+  // dropped; if every one is busy the new command is REFUSED by name rather than
+  // queued, because queueing here would invent a second serialisation layer
+  // beside ProviderShell's own.
+  //
+  // An evicted agent that comes back gets a fresh shell and NO reset notice.
+  // Keeping the notice would mean retaining an entry per distinct agent id for
+  // the life of the session — the unbounded map this cap exists to prevent — and
+  // only the least-recently-used agent past the cap is affected. The ordinary
+  // path is unchanged: an idle-TTL close keeps its entry, so its next command is
+  // still told.
+  #makeRoomForAgentShell(): void {
+    let subagents = 0;
+    let victimKey: string | null = null;
+    let victim: ShellEntry | null = null;
+    for (const [key, entry] of this.#shells) {
+      if (key === MAIN_SHELL_KEY) continue;
+      subagents += 1;
+      if (entry.inFlight > 0) continue;
+      if (!victim || entry.lastUsed < victim.lastUsed) { victim = entry; victimKey = key; }
+    }
+    if (subagents < this.#maxAgentShells) return;
+    if (!victim || victimKey === null) {
+      throw new SystemError('EBUSY', `this session already has its ${this.#maxAgentShells} subagent shells `
+        + `open on system '${this.systemId}' and every one of them is running a command`);
+    }
+    this.#disarmIdle(victim);
+    this.#shells.delete(victimKey);
+    void victim.shell.close();
   }
 
 
@@ -368,22 +513,25 @@ export class SessionRedirect {
   // saying nothing hands it something that looks continuous while the rest of
   // the state is silently gone — the invisible divergence that costs a session
   // its trust in its own results.
-  #resetNotice(reason: string): string {
-    const cwd = this.#shell?.cwd ?? this.map.systemPath;
+  #resetNotice(entry: ShellEntry, reason: string): string {
+    const cwd = entry.shell.cwd;
     return `[cc] the shell on system '${this.systemId}' was restarted (${reason}). `
       + `Its working directory is still ${cwd}, but exported variables, shell functions and `
       + `background jobs from earlier commands are gone.`;
   }
 
-  #armIdle(): void {
-    this.#disarmIdle();
+  // PER ENTRY, so no agent's shell is held open by another agent's activity and
+  // none is exempt from the sweep. The close KEEPS the entry: the reset it
+  // records is what the next command on that shell is told about.
+  #armIdle(entry: ShellEntry): void {
+    this.#disarmIdle(entry);
     if (this.#closed) return;
-    this.#idleTimer = setTimeout(() => { void this.#shell?.close(); }, this.#idleTtlMs);
-    this.#idleTimer.unref?.();
+    entry.idleTimer = setTimeout(() => { entry.idleTimer = null; void entry.shell.close(); }, this.#idleTtlMs);
+    entry.idleTimer.unref?.();
   }
 
-  #disarmIdle(): void {
-    if (this.#idleTimer) { clearTimeout(this.#idleTimer); this.#idleTimer = null; }
+  #disarmIdle(entry: ShellEntry): void {
+    if (entry.idleTimer) { clearTimeout(entry.idleTimer); entry.idleTimer = null; }
   }
 
   // ── @mention pre-hydration ─────────────────────────────────────────
@@ -406,14 +554,14 @@ export class SessionRedirect {
 
   // ── Lifecycle ──────────────────────────────────────────────────────
 
-  // Close the session's shell. Called on instance exit, kill and discardAll.
+  // Close EVERY agent's shell. Called on instance exit, kill and discardAll.
   // Idempotent.
   async close(): Promise<void> {
     this.#closed = true;
-    this.#disarmIdle();
-    const shell = this.#shell;
-    this.#shell = null;
-    await shell?.close();
+    const entries = [...this.#shells.values()];
+    this.#shells.clear();
+    for (const entry of entries) this.#disarmIdle(entry);
+    await Promise.all(entries.map(entry => entry.shell.close()));
   }
 }
 

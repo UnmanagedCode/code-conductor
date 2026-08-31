@@ -56,7 +56,7 @@ afterEach(async () => {
 
 const onSystem = (rel) => path.join(remote.root, rel);
 const inSession = (rel) => path.join(root, rel);
-const pre = (tool, input) => redirect.preToolUse(tool, input);
+const pre = (tool, input, agentId) => redirect.preToolUse(tool, input, agentId);
 const post = (tool, input, response = {}) => redirect.postToolUse(tool, input, response);
 const bash = (command) => redirect.runForwarded(command, {});
 
@@ -571,4 +571,45 @@ test('the persistentShell fallback still runs commands and carries cwd', async (
   // Exactly the local CLI's own behaviour: cwd carries, exports do not.
   await bash('export CC_PROBE=gone');
   assert.equal((await bash('echo "[$CC_PROBE]"')).stdout.trim(), '[]');
+});
+
+// PINS HOP 1 OF 4 of the agent id's journey (PreToolUse → argv → forwarder POST
+// → runForwarded): the rewritten command carries the dispatching subagent's id,
+// and carries no `--agent` at all for the main agent.
+//
+// A POSITIVE CONTROL PER INPUT SHAPE, because the failure here is FAIL-OPEN: if
+// `--agent` is dropped the subagent's command still runs, just on the main
+// agent's shell, and every assertion about "it worked" still passes. Both
+// shapes drive the same rewrite, so a guard that fails open on the absent case
+// cannot hide behind the present one.
+//
+// NOT CLAIMING: that the forwarder parses the flag (the end-to-end test in
+// tests/systems-remote-worker.test.mjs), that the shell it selects is a
+// different one (the per-agent shell tests), or that the CLI populates
+// `agent_id` at all (the gated CLI-contract suite).
+test('the rewrite carries the agent id, and carries none for the main agent', async () => {
+  const sub = await pre('Bash', { command: 'ls' }, 'a8620fbbffcb7f234');
+  assert.equal(sub.decision, 'allow');
+  assert.match(sub.updatedInput.command, /--agent 'a8620fbbffcb7f234'/);
+
+  const main = await pre('Bash', { command: 'ls' }, null);
+  assert.equal(main.decision, 'allow');
+  assert.ok(!main.updatedInput.command.includes('--agent'),
+    `the main agent's rewrite carries no --agent: ${main.updatedInput.command}`);
+
+  // The default is the main agent's shape, so a caller that never learned about
+  // agents cannot accidentally name one.
+  const legacy = await pre('Bash', { command: 'ls' });
+  assert.ok(!legacy.updatedInput.command.includes('--agent'));
+});
+
+// PINS: an agent id is quoted like every other argv element, so an id
+// containing a shell metacharacter cannot break out of the rewritten command.
+// The CLI's ids are hex today; the rewrite runs through a shell either way.
+//
+// NOT CLAIMING: anything about what the CLI's ids actually look like, nor that
+// cc validates them — it quotes them.
+test('an agent id with shell metacharacters is quoted, not interpolated', async () => {
+  const d = await pre('Bash', { command: 'echo hi' }, "a'; touch /tmp/pwned; '");
+  assert.match(d.updatedInput.command, /--agent 'a'\\''; touch \/tmp\/pwned; '\\''/);
 });

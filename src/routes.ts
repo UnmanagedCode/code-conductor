@@ -1537,9 +1537,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const inst = instances.get(req.params.id);
       const redirect = inst?._redirect;
       if (!redirect) { refuse(404, 'this session is not redirected to a system'); return; }
-      const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown };
+      const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown; agentId?: unknown };
       const command = typeof body.command === 'string' ? body.command : '';
       if (!command) { refuse(400, 'the forwarder sent no command'); return; }
+      // WHICH AGENT'S SHELL this command runs in. Absent for the session's main
+      // agent, which is also what an empty string means.
+      const agentId = typeof body.agentId === 'string' && body.agentId ? body.agentId : null;
       const abort = new AbortController();
       // Unchanged by streaming: `close` fires both on a normal end and on a
       // client disconnect, and `writableEnded` is what tells them apart.
@@ -1556,6 +1559,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // runForwarded never rejects: every failure comes back as a non-zero exit
       // with its reason streamed on `err`, which is the channel the worker reads.
       const result = await redirect.runForwarded(command, {
+        agentId,
         signal: abort.signal,
         sink: {
           notice: (text) => write({ t: 'notice', text }),
