@@ -49,8 +49,10 @@ Provider MUSTs:
 The target is a **competent POSIX environment with GNU coreutils**: `stat`,
 `find` with `-printf`, `mkdir`, `rm`, `unlink`, `realpath`, `chmod`, `base64`,
 `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
-provider contract from fifteen operations to three — everything else is derived
-by cc over `exec` (§6).
+provider contract to **three** operations: everything else on cc's own `System`
+interface (`src/systems/system.ts` — the members beyond `exec`, `readFile` and
+`readFileBytes`/`writeFile`) is DERIVED by cc over `exec`, listed in §7. The
+interface owns that count; nothing here restates it.
 
 **Non-POSIX targets, and non-GNU coreutils, are out of scope.** cc ships no BSD
 dialect: an untested second code path is worse than a refusal.
@@ -115,7 +117,7 @@ a user-visible difference, **and a test that runs the fallback**.
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the entire existing suite under `npm run gate:systems` |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
-| `rename`, `symlink` | **not capabilities** | — | `mv` / `ln -s` over `exec`; **cc-side helpers, not provider surface** | Covered by §6 |
+| `rename`, `symlink` | **not in the protocol** | — | cc issues neither: nothing on the `System` interface renames or symlinks on a system, so a provider is never asked to | — |
 
 ## 3. Frames
 
@@ -347,12 +349,38 @@ asked to run, and so the POSIX assumption is concrete.
 | `removeTree` | `rm -rf -- <path>` |
 | `unlink` | `unlink -- <path>` — one directory entry, never followed, never recursed |
 | `chmod` | `chmod <octal> -- <path>` |
-| `rename` / `symlink` | `mv -- <a> <b>` / `ln -s -- <target> <link>` |
+
+That is the whole list — it is what `System`'s derived members compile to, and a
+provider's `exec` is asked to run nothing else on cc's behalf.
 
 Derived commands carry **no `env` frame field**: they are cc's own plumbing, so
 they inherit the far side's environment (its PATH, its toolchain) and get
 `LC_ALL=C` from `env(1)` so the `strerror()` text stays untranslated for §8's
 classifier.
+
+### Every derivation is sent with `cwd: "/"`, and a provider MUST accept it
+
+**`cwd` on a derived command is a PLACEHOLDER, not a location.** Each command
+above carries its real target as an absolute path in `argv`; the far side's
+notion of "here" is not cc's, so there is no meaningful directory for cc to
+name. It sends `/` — chosen precisely because cc has no expectation about it.
+
+**A provider MUST NOT refuse `cwd: "/"`**, and in particular must not fence it
+against a remote's root. That matters most for exactly the provider §11
+describes: a `docker exec -w <cwd>` mapping that scoped `<cwd>` to a container's
+project root would refuse **every** derived operation — `stat`, `readDir`,
+`realpath`, `mkdir`, `removeTree`, `unlink`, `chmod`, all of them — while `exec`
+and the two file primitives kept working, which reads as cc being broken rather
+than as a fence doing its job. Fencing it also buys nothing: a provider cannot
+fence `argv`, and `argv` is where the real path is.
+
+**What routes a derivation instead is `remoteId`,** which every one of these
+frames carries like any other `exec` (§3). That is the compensating guarantee,
+and it is asserted on the wire rather than inferred from an operation
+succeeding: see `tests/systems-remote-id.test.mjs` → "every derived operation
+carries its binding on the wire". A provider that wants to scope a remote should
+scope `readFile`/`writeFile` `path` and a **non-placeholder** `exec` `cwd`; cc's
+own reference provider does exactly that.
 
 Costs cc accepts for the shrink, stated rather than hidden:
 
