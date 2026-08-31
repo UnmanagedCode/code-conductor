@@ -528,7 +528,21 @@ of them. **Three things it is not thin about**, worth knowing before starting on
    this protocol cannot detect; a provider that cannot is expected to advertise
    `false` and let cc take the documented fallback.
 3. **The base image has to satisfy §1's POSIX assumption.** Alpine — the most
-   likely image a reader reaches for — is busybox, whose `find` has no `-printf`
-   and whose `stat` has no `-c`, so every §7 derivation fails on it. That is
-   out of scope by §1 rather than a gap in the mapping, but it is exactly where
-   a reader will discover it.
+   likely image a reader reaches for — is busybox, and it fails that assumption
+   in three different ways, which is worth spelling out because only two of them
+   announce themselves. Measured against busybox v1.38.0:
+   - `find . -printf '%p\n'` → `find: unrecognized: -printf`, exit 1. **`readDir`
+     fails outright.**
+   - `realpath -e -- <path>` → busybox `realpath` implements neither `-e` nor
+     `--`, so it reads both as operands: `realpath: -e: No such file or
+     directory`, exit 1. **`realpath` fails outright.**
+   - `stat -L -c '%f %s %.3Y' -- <path>` → **succeeds, and is wrong.** busybox
+     `stat` does implement `-c`, but ignores the `.3` precision: GNU answers
+     `81a4 13 1788193974.101` and busybox `81a4 13 1788193974`, so `mtimeMs`
+     comes back at one-second granularity with no error anywhere. This is the
+     dangerous one — a silent degradation, not a refusal.
+
+   `mkdir -p`, `rm -rf`, `unlink` and `chmod` are all fine on busybox, so this is
+   a partial failure rather than a total one, which is precisely what makes it
+   worth stating. It is out of scope by §1 rather than a gap in the mapping, but
+   it is exactly where a reader will discover it.
