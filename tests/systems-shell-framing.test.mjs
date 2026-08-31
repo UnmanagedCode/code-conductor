@@ -469,15 +469,149 @@ for (const mode of MODES) {
     });
   });
 
-  test(`[${mode.name}] cc serialises per shell, and a wait past its bound is EBUSY`, async () => {
+  // PINS: cc serialises per shell, and the wait a queued call is willing to
+  // spend is ITS OWN timeout — a call that would only run for 30ms gives up
+  // waiting after 30ms, with EBUSY.
+  test(`[${mode.name}] cc serialises per shell, and a wait past the call's own timeout is EBUSY`, async () => {
     await withShell(mode.flags, async (sh) => {
       const slow = sh.run('sleep 0.5; echo slow');
-      await assert.rejects(() => sh.run('echo fast'), (e) => {
+      await assert.rejects(() => sh.run('echo fast', { timeoutMs: 30 }), (e) => {
         assert.equal(e.code, 'EBUSY', `got ${e.code}: ${e.message}`);
         return true;
       });
       assert.equal((await slow).stdout, 'slow\n', 'the command that held the shell still completes');
-    }, { busyWaitMs: 30 });
+    });
+  });
+
+  // PINS B3: a command that produces more output than the fence allows is
+  // KILLED and reported as a failure. Without a fence cc accumulates every byte
+  // the command produces in its own heap, so one runaway command on one session
+  // takes the orchestrator — and every other session on it — down with it. A
+  // reported failure is the whole point: a truncated success would be read as
+  // the command's real output.
+  test(`[${mode.name}] a command past the output fence is killed and reported, not accumulated`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const streamed = [];
+      await assert.rejects(
+        () => sh.run('head -c 200000 /dev/zero | base64', { onOut: (t) => streamed.push(t) }),
+        (e) => {
+          assert.equal(e.code, 'EFBIG', `got ${e.code}: ${e.message}`);
+          assert.match(e.message, /8192/, 'the failure names the limit it hit');
+          return true;
+        },
+      );
+      // Bounded, not merely "less than everything": nothing past the fence is
+      // streamed either, so a live consumer cannot see output cc did not keep.
+      assert.ok(streamed.join('').length <= 8192 * 2,
+        `streamed ${streamed.join('').length} bytes past an 8192-byte fence`);
+      // And the shell recovers.
+      assert.equal((await sh.run('echo alive')).stdout, 'alive\n');
+    }, { maxOutputBytes: 8192 });
+  });
+
+  // PINS: the fence does not clip an ordinary command. A fence that fired early
+  // would turn every normal result into a failure.
+  test(`[${mode.name}] output below the fence is untouched`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const r = await sh.run('head -c 4000 /dev/zero | tr "\\0" "x"');
+      assert.equal(r.stdout.length, 4000);
+      assert.equal(r.code, 0);
+    }, { maxOutputBytes: 8192 });
+  });
+
+  // ── Cancellation ───────────────────────────────────────────────────
+
+  // PINS: cancelling a QUEUED call cancels that call and NOTHING ELSE. The
+  // in-flight command finishes normally, and — the part that matters — the
+  // cancelled command never runs, so its effects never land on the system. An
+  // interrupt whose command executes anyway defeats the point of interrupting.
+  test(`[${mode.name}] cancelling a queued command runs neither it nor over the one in flight`, async () => {
+    await withShell(mode.flags, async (sh, cwd) => {
+      const witness = path.join(cwd, 'QUEUED_RAN');
+      const inFlight = sh.run('sleep 0.4; echo survivor');
+      const ac = new AbortController();
+      const queued = sh.run(`touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+      // Abort while it is still waiting for its turn.
+      ac.abort();
+
+      await assert.rejects(() => queued, (e) => {
+        assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+        return true;
+      });
+      const r = await inFlight;
+      assert.equal(r.stdout, 'survivor\n', 'the unrelated in-flight command was untouched');
+      assert.equal(r.code, 0);
+      await assert.rejects(fs.stat(witness), 'the cancelled command never ran');
+    });
+  });
+
+  // PINS: cancelling the IN-FLIGHT call stops the command itself — including in
+  // the fallback mode, where there is no live stream to close and cc has to
+  // reach the far side through `exec`'s own cancellation. Asserted by the
+  // command's own witness file, written after a delay: a command still running
+  // when the assertion is made will have written it.
+  test(`[${mode.name}] cancelling the in-flight command actually stops it`, async () => {
+    await withShell(mode.flags, async (sh, cwd) => {
+      const witness = path.join(cwd, 'STILL_RUNNING');
+      const ac = new AbortController();
+      const running = sh.run(`sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+      // Let it start, then interrupt it well before its own sleep elapses.
+      await new Promise(r => setTimeout(r, 120));
+      ac.abort();
+      await assert.rejects(() => running, (e) => {
+        assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+        return true;
+      });
+      // Past when the command would have written it, had it survived.
+      await new Promise(r => setTimeout(r, 500));
+      await assert.rejects(fs.stat(witness), 'the interrupted command is not still running on the system');
+    });
+  });
+
+  // PINS: a signal that is already aborted never starts the command at all.
+  test(`[${mode.name}] a pre-aborted signal never reaches the system`, async () => {
+    await withShell(mode.flags, async (sh, cwd) => {
+      const witness = path.join(cwd, 'PRE_ABORTED');
+      await assert.rejects(
+        () => sh.run(`touch ${JSON.stringify(witness)}`, { signal: AbortSignal.abort() }),
+        (e) => { assert.equal(e.code, 'ECANCELLED'); return true; },
+      );
+      await assert.rejects(fs.stat(witness));
+    });
+  });
+
+  // PINS S2: the queue wait is the CALL'S OWN timeout, not a fixed bound. A
+  // long command must not make a queued call that was willing to wait for it
+  // fail with "the shell is busy" while everything is healthy.
+  test(`[${mode.name}] a queued call waits as long as its own timeout allows`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const slow = sh.run('sleep 0.4; echo first');
+      // Past the 30ms default bound, inside its own 10s one.
+      const queued = await sh.run('echo second', { timeoutMs: 10_000 });
+      assert.equal(queued.stdout, 'second\n', 'it waited for its turn instead of failing EBUSY');
+      assert.equal((await slow).stdout, 'first\n');
+    });
+  });
+
+  // PINS S1: the reset reason is delivered to the command that RUNS on the new
+  // shell, not to whichever call happened to be constructed next. R5's rule is
+  // that a reconnected shell SAYS it lost state — a notice attached to the
+  // wrong command means the command that actually ran on the fresh shell said
+  // nothing.
+  test(`[${mode.name}] the reset reason goes to the next command to acquire the shell`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      assert.equal(sh.takeResetReason(), null, 'a healthy shell has nothing to report');
+      await assert.rejects(() => sh.run('exit 3'));
+
+      const seen = [];
+      await sh.run('echo after', { onStart: () => seen.push(sh.takeResetReason()) });
+      assert.equal(seen.length, 1);
+      assert.match(seen[0] ?? '', /shell|exit/i, 'the command that ran on the fresh shell was told why');
+      // And exactly once: the next command has nothing to report.
+      const again = [];
+      await sh.run('echo later', { onStart: () => again.push(sh.takeResetReason()) });
+      assert.deepEqual(again, [null]);
+    });
   });
 }
 

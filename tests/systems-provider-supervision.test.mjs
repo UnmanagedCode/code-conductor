@@ -355,3 +355,21 @@ test('one failed launch is ONE failure, however many callers were waiting on it'
     } finally { sys.dispose(); }
   });
 });
+
+// PINS: cc bounds what it KEEPS from a readFile, whatever the provider sends.
+// The per-file cap validates the length cc ASKS for; it does nothing about a
+// provider that over-sends, or a file that grew since the stat — and the file
+// bridge's own cap protects the worker, not the orchestrator's heap. The
+// accumulation happens in cc, so the fence has to be in cc.
+test('a readFile that floods cc is refused by name rather than accumulated', async () => {
+  const sys = fakeSystem('flood-read');
+  try {
+    await assert.rejects(() => sys.readFileBytes('/whatever', { length: 8 }), (e) => {
+      assert.equal(e.code, 'EFBIG', `got ${e.code}: ${e.message}`);
+      return true;
+    });
+    // The heap the operation could cost is bounded by the fence, not by how
+    // long the provider keeps talking.
+    assert.ok(process.memoryUsage().heapUsed < 900 * 1024 * 1024, 'cc did not accumulate without bound');
+  } finally { sys.dispose(); }
+});

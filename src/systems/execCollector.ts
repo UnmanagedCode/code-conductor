@@ -120,6 +120,7 @@ export class ExecOutputCollector {
       spawnError: spawnError ?? null,
       ...(transportFailure ? { transportFailure: true as const } : {}),
       ...(descendantsMaySurvive ? { descendantsMaySurvive: true as const } : {}),
+      ...(this.#overflowed ? { outputOverflowed: true as const } : {}),
     };
   }
 }

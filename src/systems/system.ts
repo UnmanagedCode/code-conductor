@@ -82,6 +82,14 @@ export interface ExecOptions {
   // recover the split from an interleaved callback. Every other caller ignores
   // the second argument.
   onChunk?: (text: string, which: ExecStream) => void;
+  // Cancel the command. Aborting KILLS it on the far side — the in-process
+  // runner signals the process group, the wire one sends `close`, which is the
+  // provider's instruction to kill it hard — rather than merely abandoning the
+  // promise. Without that, a caller who has gone away leaves a command running
+  // on someone else's machine until its own deadline, with nobody to read the
+  // result. The result still resolves (exec never rejects), so the caller
+  // decides what an aborted command MEANS by re-checking `signal.aborted`.
+  signal?: AbortSignal;
   killGraceMs?: number;
   // 'ignore' hands the command a closed stdin, so an interactive command sees
   // EOF instead of hanging until the timeout. Load-bearing for project_bash and
@@ -130,6 +138,11 @@ export interface ExecResult {
   // the normal answer, including for every local command, because the local
   // runner always leads its own process group.
   descendantsMaySurvive?: true;
+  // The `maxBufferBytes` fence fired: the command was killed for producing too
+  // much output. A FLAG rather than something a caller sniffs out of `stderr`,
+  // because the redirected shell has to turn it into its own named failure and
+  // classifying it by message text is how that drifts.
+  outputOverflowed?: true;
 }
 
 export type SystemEntryKind = 'file' | 'dir' | 'symlink' | 'other';

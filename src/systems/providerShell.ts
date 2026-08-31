@@ -19,6 +19,13 @@
 //                 `exit`, a syntax error that takes the shell with it), so no
 //                 sentinel can arrive. Also a reset.
 //   EUNSUPPORTED— asking for a persistent shell on a provider that has none.
+//   ECANCELLED  — the caller went away (an interrupt, a tool timeout). PER
+//                 CALL, not per shell: a cancelled call that was still QUEUED
+//                 never runs at all, and an unrelated in-flight command is
+//                 untouched. Cancelling the in-flight one does reset the shell,
+//                 because a framed command shares the shell's process group and
+//                 has no exec id of its own to signal — see the deviation note
+//                 on background jobs in docs/architecture.md.
 
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -76,15 +83,31 @@ function isFsErrorCode(code: SystemErrorCode): boolean {
 }
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
-const DEFAULT_BUSY_WAIT_MS = 60_000;
 
-interface Waiter { resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+// Everything a caller can say about one command. `signal` cancels THIS call;
+// `onStart` fires once it owns the shell, which is where a caller learns whether
+// the shell it is about to use was reset since the last command.
+export interface ShellRunOptions extends ShellStreamSink {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onStart?: () => void;
+}
+
+function cancelled(): SystemError {
+  return new SystemError('ECANCELLED', 'the command was cancelled by its caller');
+}
+
+function overflowed(limit: number | undefined): SystemError {
+  return new SystemError('EFBIG', `output exceeded the ${limit}-byte limit — the command was killed`);
+}
+
+interface Waiter { resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout; drop: () => void }
 
 export class ProviderShell {
   readonly #host: ShellHost;
   readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #commandTimeoutMs: number;
-  readonly #busyWaitMs: number;
+  readonly #maxOutputBytes: number | undefined;
 
   #cwd: string;
   #stream: ShellStream | null = null;
@@ -101,13 +124,20 @@ export class ProviderShell {
   #resetReason: string | null = null;
 
   constructor(host: ShellHost, opts: {
-    cwd: string; env?: NodeJS.ProcessEnv; commandTimeoutMs?: number; busyWaitMs?: number;
+    cwd: string; env?: NodeJS.ProcessEnv; commandTimeoutMs?: number;
+    // A FENCE on one command's total output, not a truncation: past it the
+    // command is killed and the call FAILS. cc accumulates a framed command's
+    // bytes in its own heap — the parser's first-match-wins rule is about the
+    // whole stream — so without a bound one runaway command takes the
+    // orchestrator, and every other session on it, down with it. Omitted means
+    // unbounded, which is only safe for a caller that controls the command.
+    maxOutputBytes?: number;
   }) {
     this.#host = host;
     this.#cwd = opts.cwd;
     this.#env = opts.env;
     this.#commandTimeoutMs = opts.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-    this.#busyWaitMs = opts.busyWaitMs ?? DEFAULT_BUSY_WAIT_MS;
+    this.#maxOutputBytes = opts.maxOutputBytes;
   }
 
   // The shell's real cwd, carried from the last command's sentinel.
@@ -121,14 +151,26 @@ export class ProviderShell {
   // difference of the fallback, so it is readable rather than inferred.
   get persistent(): boolean { return this.#host.capabilities.persistentShell; }
 
-  async run(command: string, { timeoutMs, onOut, onErr }: { timeoutMs?: number } & ShellStreamSink = {}): Promise<ShellResult> {
-    await this.#acquire();
+  async run(command: string, { timeoutMs, onOut, onErr, signal, onStart }: ShellRunOptions = {}): Promise<ShellResult> {
+    const deadline = timeoutMs ?? this.#commandTimeoutMs;
+    if (signal?.aborted) throw cancelled();
+    // ONE KNOB, and it is the call's own deadline. A call willing to RUN for
+    // ten minutes is willing to wait that long for its turn; a fixed 60s bound
+    // made a long healthy command fail every queued call behind it with "the
+    // shell is busy" while nothing was wrong. A separate wait bound could only
+    // ever contradict the timeout the caller already stated.
+    await this.#acquire(deadline, signal);
     try {
-      const deadline = timeoutMs ?? this.#commandTimeoutMs;
+      // RE-CHECKED AFTER ACQUISITION, and this is the whole of why a cancelled
+      // queued call does not run: the caller may have gone away during the
+      // wait, and the command's effects would land on the system with nobody
+      // left to read the result.
+      if (signal?.aborted) throw cancelled();
+      onStart?.();
       const sink: ShellStreamSink = { ...(onOut ? { onOut } : {}), ...(onErr ? { onErr } : {}) };
       return this.persistent
-        ? await this.#runPersistent(command, deadline, sink)
-        : await this.#runOneShot(command, deadline, sink);
+        ? await this.#runPersistent(command, deadline, sink, signal)
+        : await this.#runOneShot(command, deadline, sink, signal);
     } finally {
       this.#releaseTurn();
     }
@@ -149,44 +191,69 @@ export class ProviderShell {
 
   // ── Serialisation ──────────────────────────────────────────────────
 
-  #acquire(): Promise<void> {
+  #acquire(waitMs: number, signal?: AbortSignal): Promise<void> {
     if (!this.#busy) { this.#busy = true; return Promise.resolve(); }
     return new Promise<void>((resolve, reject) => {
       const waiter: Waiter = {
         resolve, reject,
         timer: setTimeout(() => {
+          waiter.drop();
+          reject(new SystemError('EBUSY', `the shell is busy — waited ${waitMs}ms for its turn`));
+        }, waitMs),
+        // Leaving the shell UNTOUCHED. A waiter that gives up — timed out or
+        // cancelled — has never owned the turn, so it must not release one:
+        // #releaseTurn would hand the shell to the next waiter while the
+        // in-flight command is still using it.
+        drop: () => {
+          clearTimeout(waiter.timer);
           this.#waiters = this.#waiters.filter(w => w !== waiter);
-          reject(new SystemError('EBUSY', `the shell is busy — waited ${this.#busyWaitMs}ms for its turn`));
-        }, this.#busyWaitMs),
+          signal?.removeEventListener('abort', onAbort);
+        },
       };
+      const onAbort = () => { waiter.drop(); reject(cancelled()); };
       waiter.timer.unref?.();
       this.#waiters.push(waiter);
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 
   #releaseTurn(): void {
     const next = this.#waiters.shift();
     if (!next) { this.#busy = false; return; }
-    clearTimeout(next.timer);
+    // `drop()` also detaches its abort listener, so a waiter that has been
+    // handed the turn can no longer be cancelled out from under itself — the
+    // post-acquisition re-check in run() is what cancels it from here on.
+    next.drop();
+    this.#waiters.unshift();
     next.resolve();
   }
 
   // ── Persistent mode ────────────────────────────────────────────────
 
-  async #runPersistent(command: string, deadline: number, sink: ShellStreamSink): Promise<ShellResult> {
+  async #runPersistent(command: string, deadline: number, sink: ShellStreamSink, signal?: AbortSignal): Promise<ShellResult> {
     const stream = await this.#ensureStream();
-    const r = await this.#exchange(stream, command, deadline, sink);
+    const r = await this.#exchange(stream, command, deadline, sink, signal);
     this.#cwd = r.cwd || this.#cwd;
     return { ...r, cwd: this.#cwd };
   }
 
   // One framed command over an open shell.
-  async #exchange(stream: ShellStream, command: string, deadline: number, sink: ShellStreamSink): Promise<ShellResult> {
+  async #exchange(stream: ShellStream, command: string, deadline: number, sink: ShellStreamSink, signal?: AbortSignal): Promise<ShellResult> {
     const nonce = newNonce();
-    const pending = new PendingCommand(nonce, sink);
+    const pending = new PendingCommand(nonce, sink, this.#maxOutputBytes, () => {
+      // Killing the shell is what stops the command — it has no exec id of its
+      // own — so the fence is a reset, exactly like a deadline.
+      this.#tearDown('a command exceeded its output limit', overflowed(this.#maxOutputBytes));
+    });
     this.#pending = pending;
     stream.retain();
     let timer: NodeJS.Timeout | null = null;
+    // Installed ONLY for the span this command owns the shell. Closing the
+    // shell is the only way to stop a framed command — it shares the shell's
+    // process group and has no exec id of its own — so a cancellation here is a
+    // reset, and it is scoped to the caller that asked for it.
+    const onAbort = () => this.#tearDown('the command was interrupted by its caller', cancelled());
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const settled = new Promise<ShellResult>((resolve, reject) => {
         pending.resolve = resolve;
@@ -207,6 +274,7 @@ export class ProviderShell {
       stream.write(frameCommand(nonce, command));
       return await settled;
     } finally {
+      signal?.removeEventListener('abort', onAbort);
       if (timer) clearTimeout(timer);
       if (this.#pending === pending) this.#pending = null;
       stream.release();
@@ -261,9 +329,21 @@ export class ProviderShell {
   // cwd and look continuous.
   get resetReason(): string | null { return this.#resetReason; }
 
+  // The same reason, CONSUMED. Called from `onStart` — the moment a command owns
+  // the shell — so the notice lands on the command that actually runs on the
+  // fresh shell. Reading it when the call was merely CONSTRUCTED attaches it to
+  // whichever call entered next, which may queue behind others and may never run
+  // on that shell at all; the command that did run then says nothing, which is
+  // exactly what R5 forbids.
+  takeResetReason(): string | null {
+    const r = this.#resetReason;
+    this.#resetReason = null;
+    return r;
+  }
+
   // ── Fallback mode: one framed exec per command ─────────────────────
 
-  async #runOneShot(command: string, deadline: number, sink: ShellStreamSink): Promise<ShellResult> {
+  async #runOneShot(command: string, deadline: number, sink: ShellStreamSink, signal?: AbortSignal): Promise<ShellResult> {
     const nonce = newNonce();
     // The SAME filters the persistent path uses, over `exec`'s own streaming
     // hook — so the fallback is not a version of the feature with the live
@@ -275,6 +355,15 @@ export class ProviderShell {
       {
         cwd: this.#cwd, ...(this.#env ? { env: this.#env } : {}),
         timeoutMs: deadline, stdin: 'ignore',
+        // The SAME fence, through the accounting the buffered path already owns
+        // (ExecOutputCollector), so the fallback cannot bound differently from
+        // the path it falls back from.
+        ...(this.#maxOutputBytes === undefined ? {} : { maxBufferBytes: this.#maxOutputBytes }),
+        // THE FALLBACK'S CANCELLATION. There is no live stream here to close,
+        // so an abort has to reach the far side through `exec` itself — without
+        // it the command runs to completion on someone else's machine, bounded
+        // only by the deadline, with nobody left to read the result.
+        ...(signal ? { signal } : {}),
         ...((sink.onOut || sink.onErr) ? {
           onChunk: (text: string, which: 'out' | 'err') => {
             const safe = filters[which].push(text);
@@ -283,6 +372,19 @@ export class ProviderShell {
         } : {}),
       },
     );
+    // Checked FIRST: a cancelled command's exec was killed, so it also looks
+    // timed-out or unframed, and reporting either of those would describe the
+    // consequence instead of the cause.
+    if (signal?.aborted) {
+      flushFilters(filters, sink);
+      this.#resetReason = 'the command was interrupted by its caller';
+      throw cancelled();
+    }
+    if (r.outputOverflowed) {
+      flushFilters(filters, sink);
+      this.#resetReason = 'a command exceeded its output limit';
+      throw overflowed(this.#maxOutputBytes);
+    }
     if (r.timedOut) {
       flushFilters(filters, sink);
       throw new SystemError('ETIMEDOUT', `no shell sentinel within ${deadline}ms — the shell was reset`);
@@ -352,15 +454,36 @@ class PendingCommand {
   // same rules, so the two can never disagree.
   readonly #filters: { out: FramedStreamFilter; err: FramedStreamFilter };
   readonly #sink: ShellStreamSink;
+  // The fence, and the bytes seen against it across BOTH streams. Once it fires
+  // nothing more is accumulated OR streamed: a live consumer must not see
+  // output the result does not contain.
+  readonly #maxBytes: number | undefined;
+  readonly #onOverflow: () => void;
+  #bytes = 0;
+  #overflowed = false;
 
-  constructor(nonce: string, sink: ShellStreamSink = {}) {
+  constructor(nonce: string, sink: ShellStreamSink = {}, maxBytes?: number, onOverflow: () => void = () => {}) {
     this.nonce = nonce;
     this.#sink = sink;
+    this.#maxBytes = maxBytes;
+    this.#onOverflow = onOverflow;
     this.#filters = { out: new FramedStreamFilter(nonce, 'out'), err: new FramedStreamFilter(nonce, 'err') };
+  }
+
+  // True once the fence has fired. Everything after it is dropped, so the heap
+  // this command can cost is bounded by the fence plus one chunk.
+  #past(text: string): boolean {
+    if (this.#maxBytes === undefined || this.#overflowed) return this.#overflowed;
+    this.#bytes += text.length;
+    if (this.#bytes <= this.#maxBytes) return false;
+    this.#overflowed = true;
+    this.#onOverflow();
+    return true;
   }
 
   pushOut(text: string): void {
     if (this.#settled || this.#outDone || text === '') return;
+    if (this.#past(text)) return;
     this.#out += text;
     this.#emit('out', text);
     const m = parseFramedStdout(this.#out, this.nonce);
@@ -371,6 +494,7 @@ class PendingCommand {
 
   pushErr(text: string): void {
     if (this.#settled || this.#errDone !== null || text === '') return;
+    if (this.#past(text)) return;
     this.#err += text;
     this.#emit('err', text);
     const m = parseFramedStderr(this.#err, this.nonce);

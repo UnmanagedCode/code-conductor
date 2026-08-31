@@ -64,7 +64,7 @@ export type GroupedCommandSpec = ExecSpec;
 
 export function runGroupedCommand(
   spec: GroupedCommandSpec,
-  { cwd, env = process.env, timeoutMs, cap, headCapBytes, maxBufferBytes, onChunk, killGraceMs, stdin }: GroupedCommandOptions,
+  { cwd, env = process.env, timeoutMs, cap, headCapBytes, maxBufferBytes, onChunk, killGraceMs, stdin, signal }: GroupedCommandOptions,
 ): Promise<GroupedCommandResult> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -98,13 +98,23 @@ export function runGroupedCommand(
     proc.stderr?.on('data', (chunk: Buffer) => collector.push('err', chunk));
 
     let timedOut = false;
+    const kill = () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) });
     const timer = timeoutMs === undefined ? null : setTimeout(() => {
       timedOut = true;
-      killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig) });
+      kill();
     }, timeoutMs);
+    // Cancellation KILLS, it does not merely abandon: the caller has gone away,
+    // so nothing will ever read this command's output and letting it run to
+    // completion leaves its EFFECTS behind.
+    const onAbort = () => kill();
+    if (signal) {
+      if (signal.aborted) kill();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
 
     const finish = (code: number, spawnError?: string): void => {
       if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       resolve(collector.result(code, { timedOut, spawnError, durationMs: Date.now() - start }));
     };
 

@@ -91,6 +91,17 @@ const UNREDIRECTABLE_TOOLS = new Set(['Glob', 'Grep']);
 // for that is a process on someone else's machine doing nothing.
 const DEFAULT_IDLE_TTL_MS = 15 * 60_000;
 
+// THE OUTPUT FENCE for one redirected command, and the reason the redirected
+// Bash cannot be the one `exec` path with no bound.
+//
+// cc accumulates a framed command's bytes in its own heap while the command
+// runs, so `head -c 40M /dev/zero | base64` — a plausible accident, not an
+// attack — was measured taking cc's server heap from 29MB to 822MB and would
+// take EVERY session on the host with it. A fence turns that into one command's
+// named failure. 8 MiB is far above any output a model can usefully read and
+// far below what threatens the process.
+const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+
 const FORWARDER = path.join(path.dirname(new URL(import.meta.url).pathname), 'bashForwarder.ts');
 
 export interface SessionRedirectOptions {
@@ -109,6 +120,7 @@ export interface SessionRedirectOptions {
   emit: (ev: unknown) => void;
   idleTtlMs?: number;
   shellCommandTimeoutMs?: number;
+  maxOutputBytes?: number;
 }
 
 export class SessionRedirect {
@@ -122,13 +134,11 @@ export class SessionRedirect {
   readonly #emit: (ev: unknown) => void;
   readonly #idleTtlMs: number;
   readonly #shellCommandTimeoutMs: number | undefined;
+  readonly #maxOutputBytes: number;
 
   #shell: ProviderShell | null = null;
   #idleTimer: NodeJS.Timeout | null = null;
   #closed = false;
-  // Set when the shell was restarted, cleared by the command that reports it —
-  // so the worker is told ONCE, in band, rather than never or every time.
-  #pendingNotice: string | null = null;
 
   constructor(opts: SessionRedirectOptions) {
     this.map = new SessionPathMap(opts.sessionRoot, opts.systemPath);
@@ -140,6 +150,7 @@ export class SessionRedirect {
     this.#emit = opts.emit;
     this.#idleTtlMs = opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
     this.#shellCommandTimeoutMs = opts.shellCommandTimeoutMs;
+    this.#maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   }
 
   // True while a shell process is live on the system. Read by the idle-TTL test
@@ -274,42 +285,50 @@ export class SessionRedirect {
   // reach it as an opaque forwarder crash instead.
   async runForwarded(command: string, { timeoutMs, signal, sink }: { timeoutMs?: number; signal?: AbortSignal; sink?: ForwardSink } = {}): Promise<ForwardedResult> {
     const shell = this.#ensureShell();
-    // Taken BEFORE the command runs, and emitted first: a shell that lost its
-    // exports has to say so ahead of output that may be wrong because of it.
-    // The aggregate still carries it, so a non-streaming caller is unchanged.
-    const notice = this.#takeNotice();
-    if (notice) sink?.notice(notice);
     // The idle timer is armed only AFTER the command, never before it: a sweep
     // that fires mid-command would close the shell out from under a command
     // that is still running, which is a reset the worker did not earn.
     this.#disarmIdle();
-    // The CLI kills the forwarder on a tool timeout or an interrupt, which
-    // closes the socket. That is cc's only signal that the worker no longer
-    // wants the command — and the only way to stop it is to close the shell,
-    // since the framed command shares the shell's process group and has no exec
-    // id of its own to signal.
-    const onAbort = () => { void this.#resetShell('the command was interrupted'); };
-    signal?.addEventListener('abort', onAbort, { once: true });
+    // THE NOTICE IS TAKEN AT ACQUISITION, not here. A command may queue behind
+    // others, and the shell it eventually runs on is not necessarily the one
+    // that existed when its request arrived — reading the reason now attaches
+    // it to the wrong command, leaving the one that actually ran on the fresh
+    // shell saying nothing about the state it lost. R5's rule is about the
+    // command that runs.
+    let notice: string | null = null;
+    const onStart = () => {
+      const reason = shell.takeResetReason();
+      if (!reason) return;
+      notice = this.#resetNotice(reason);
+      // FIRST, ahead of the command's own output: a shell that lost its exports
+      // has to say so before output that may be wrong because of it.
+      sink?.notice(notice);
+    };
     try {
+      // The CLI kills the forwarder on a tool timeout or an interrupt, which
+      // closes the socket. That is cc's only signal that the worker no longer
+      // wants THIS command, and the shell is what decides what to do with it:
+      // a call still waiting for its turn is simply dropped, and only the
+      // in-flight one costs a reset. Closing the shell from here instead would
+      // kill whatever unrelated command happened to be running and still let
+      // the cancelled one execute when its turn came.
       const r = await shell.run(command, {
+        onStart,
+        ...(signal ? { signal } : {}),
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
         ...(sink ? { onOut: (t: string) => sink.out(t), onErr: (t: string) => sink.err(t) } : {}),
       });
       return { stdout: r.stdout, stderr: r.stderr, code: r.code, notice };
     } catch (e) {
-      // A reset already happened inside ProviderShell for the wedge modes; note
-      // it so the NEXT command tells the worker what it lost. An abort got
-      // there FIRST and set a more specific reason — keep that one, since "the
-      // command was interrupted" says more than the failure it caused.
-      this.#pendingNotice ??= this.#resetNotice(errMsg(e));
       // Through the SINK as well: the route has already streamed and will not
       // write the aggregate, so a diagnostic that only landed in the return
-      // value would reach the worker as an empty result.
+      // value would reach the worker as an empty result. Whatever reset the
+      // shell has already recorded its own reason on it, so the NEXT command to
+      // acquire the shell is the one that reports it.
       const stderr = `cc: ${errMsg(e)}\n`;
       sink?.err(stderr);
       return { stdout: '', stderr, code: 1, notice };
     } finally {
-      signal?.removeEventListener('abort', onAbort);
       this.#armIdle();
     }
   }
@@ -318,16 +337,12 @@ export class SessionRedirect {
     if (this.#shell) return this.#shell;
     this.#shell = new ProviderShell(this.#system, {
       cwd: this.map.systemPath,
+      maxOutputBytes: this.#maxOutputBytes,
       ...(this.#shellCommandTimeoutMs === undefined ? {} : { commandTimeoutMs: this.#shellCommandTimeoutMs }),
     });
     return this.#shell;
   }
 
-  #takeNotice(): string | null {
-    const n = this.#pendingNotice;
-    this.#pendingNotice = null;
-    return n;
-  }
 
   // R5: a reconnected shell TELLS the worker. Restoring only the cwd and
   // saying nothing hands it something that looks continuous while the rest of
@@ -338,12 +353,6 @@ export class SessionRedirect {
     return `[cc] the shell on system '${this.systemId}' was restarted (${reason}). `
       + `Its working directory is still ${cwd}, but exported variables, shell functions and `
       + `background jobs from earlier commands are gone.`;
-  }
-
-  async #resetShell(reason: string): Promise<void> {
-    if (!this.#shell) return;
-    this.#pendingNotice = this.#resetNotice(reason);
-    await this.#shell.close();
   }
 
   #armIdle(): void {

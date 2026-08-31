@@ -25,7 +25,7 @@ import { SessionRedirect } from '../src/systems/toolRedirect.ts';
 
 let home, remote, redirect, root, events;
 
-async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs } = {}) {
+async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs, maxOutputBytes } = {}) {
   ({ home } = await freshProjectsRoot());
   remote = await bindRemoteSystem({ flags });
   root = path.join(home, 'session-root');
@@ -43,6 +43,7 @@ async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs } = {}) {
     emit: (ev) => events.push(ev),
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
+    ...(maxOutputBytes === undefined ? {} : { maxOutputBytes }),
   });
 }
 
@@ -162,6 +163,91 @@ test('a command that kills the shell reports its failure through the sink', asyn
   assert.notEqual(r.code, 0);
   assert.equal(textOf('err'), r.stderr, 'the sink carries the same diagnostic as the aggregate');
   assert.match(textOf('err'), /cc:/);
+});
+
+// PINS B3 AT THE REDIRECT LAYER: a runaway command reaches the WORKER as a
+// named failure on stderr and a non-zero exit — the channel a worker reads —
+// rather than as an orchestrator that ran out of heap and took every other
+// session with it.
+test('a runaway command is refused by name instead of exhausting the orchestrator', async () => {
+  await build({ maxOutputBytes: 8192 });
+  const r = await bash('head -c 200000 /dev/zero | base64');
+  assert.notEqual(r.code, 0, 'a fence is a FAILURE, not a truncated success');
+  assert.match(r.stderr, /output exceeded the 8192-byte limit/);
+  // And the session is still usable.
+  assert.equal((await bash('echo alive')).stdout, 'alive\n');
+});
+
+// PINS B1 AT THE REDIRECT LAYER: an interrupt cancels THAT call and nothing
+// else. The unrelated in-flight command completes normally, and the cancelled
+// one never runs on the system — its effects must not land when its caller has
+// gone away.
+test('interrupting a queued command leaves the in-flight one alone and never runs it', async () => {
+  const witness = onSystem('QUEUED_RAN');
+  const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
+  const ac = new AbortController();
+  const queued = redirect.runForwarded(`touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+  ac.abort();
+
+  const cancelled = await queued;
+  assert.notEqual(cancelled.code, 0, 'the cancelled call reports a failure');
+  const survived = await inFlight;
+  assert.equal(survived.code, 0, 'the unrelated in-flight command was untouched');
+  assert.equal(survived.stdout, 'survivor\n');
+  await assert.rejects(fs.stat(witness), 'the cancelled command never ran on the system');
+});
+
+// PINS B2: interrupting the IN-FLIGHT command stops it on the system — in both
+// capability modes, including the fallback where there is no live stream to
+// close. A worker's interrupt that leaves the command running is not an
+// interrupt.
+test('interrupting the in-flight command stops it on the system', async () => {
+  const witness = onSystem('STILL_RUNNING');
+  const ac = new AbortController();
+  const running = redirect.runForwarded(`sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+  await new Promise(r => setTimeout(r, 120));
+  ac.abort();
+  const r = await running;
+  assert.notEqual(r.code, 0);
+  await new Promise(r2 => setTimeout(r2, 500));
+  await assert.rejects(fs.stat(witness), 'the interrupted command is not still running');
+});
+
+// PINS S1: the reset notice goes to the command that RUNS on the fresh shell,
+// not to whichever call was constructed next. Here the aborted command resets
+// the shell and a call that was already queued behind it is the one that runs
+// on the replacement — so it is the one that must be told its exports are gone.
+test('the reset notice lands on the command that runs on the new shell', async () => {
+  await bash('export CC_PROBE=before');
+  const notices = [];
+  const mkSink = (tag) => ({
+    notice: (t) => notices.push({ tag, t }),
+    out: () => {}, err: () => {},
+  });
+
+  const ac = new AbortController();
+  const doomed = redirect.runForwarded('sleep 0.4; echo doomed', { signal: ac.signal, sink: mkSink('doomed') });
+  const queued = redirect.runForwarded('echo "[$CC_PROBE]"', { sink: mkSink('queued') });
+  await new Promise(r => setTimeout(r, 120));
+  ac.abort();
+  await doomed;
+  const after = await queued;
+
+  assert.equal(after.stdout, '[]\n', 'it really did run on a shell that had lost the export');
+  assert.deepEqual(notices.map(n => n.tag), ['queued'],
+    'exactly one notice, and it went to the command that ran on the new shell');
+  assert.match(notices[0].t, /restarted/);
+  assert.equal(after.notice, notices[0].t);
+});
+
+// PINS: a notice is delivered ONCE. A command that follows a reported reset
+// must not be told about a reset it never experienced.
+test('a reset is reported exactly once', async () => {
+  await bash('exit');
+  const first = await bash('echo one');
+  assert.match(first.notice ?? '', /restarted/);
+  const second = await bash('echo two');
+  assert.equal(second.notice, null);
 });
 
 // PINS: exit codes are the command's own, not the forwarder's.

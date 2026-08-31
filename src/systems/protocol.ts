@@ -43,7 +43,8 @@ export const PROTOCOL_ERROR_CODES = [
   'EUNSUPPORTED',  // an optional capability the provider does not advertise
   'EBUSY',         // shell serialisation: the wait for the shell exceeded its bound
   'ESHELLGONE',    // the long-lived shell died or never framed the command
-  'EFBIG',         // a file above MAX_FILE_BYTES
+  'EFBIG',         // a file above MAX_FILE_BYTES, or output above a caller's fence
+  'ECANCELLED',    // the caller went away: an interrupt, or a tool timeout
 ] as const;
 
 export const FS_ERROR_CODES = [
