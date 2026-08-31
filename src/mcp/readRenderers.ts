@@ -111,6 +111,9 @@ const PROJECT_DEVIANT: DeviantSpec[] = [
   // common listing stays short and a project on another machine says so — with
   // the path on that machine, which the `▸` header does not carry.
   { key: 'system', default: 'local', label: 'system' },
+  // WHICH TARGET of that system. Deviant on the same footing: absence is the
+  // provider's own target, so only a project that names one says so.
+  { key: 'remoteId', default: null, label: 'remoteId' },
   { key: 'systemPath', default: null, label: 'systemPath' },
 ];
 

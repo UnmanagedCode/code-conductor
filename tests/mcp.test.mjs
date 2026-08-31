@@ -181,6 +181,7 @@ test('tools/list returns the full expected tool catalog', async () => {
     'reject_plan', 'rename_workspace', 'renew_session', 'respawn_instance',
     'send_prompt', 'set_mode',
     'set_project_workspace',
+    'set_project_remote',
     'set_idle_timeout',
     'spawn_instance', 'sync_worktree',
   ].sort();

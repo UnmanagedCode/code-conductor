@@ -23,6 +23,17 @@ import type { System } from './systems/system.ts';
 
 const WORKTREE_META_FILENAME = 'worktree.json';
 
+// THE TARGET IS DELIBERATELY ABSENT. A worktree re-derives its (system,
+// remoteId, path) from its parent project on every operation, and storing a
+// second copy would be a second thing that can go stale — plus a migration for
+// every existing `worktree.json` and a mismatch policy no caller exercises.
+//
+// What makes re-derivation safe is that the parent's target CANNOT MOVE while a
+// worktree registration exists: `writeProjectRecord` is module-private and
+// reachable from exactly three exported functions, two of which require the
+// name to be free, and the third (setProjectRemote) refuses on
+// registeredWorktreeNames. A hand-edited `project.json` bypasses this, which is
+// the same trust model the `system` field already has.
 export interface WorktreeMeta {
   parentProject: string;
   parentPath: string;
@@ -592,18 +603,28 @@ export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]
   }
 
   const out: WorktreeMeta[] = [];
-  let names: string[];
-  try {
-    names = (await fs.readdir(worktreesStoreRoot(projectName), { withFileTypes: true }))
-      .filter(e => e.isDirectory()).map(e => e.name);
-  } catch { return out; }
-  for (const dirName of names) {
+  for (const dirName of await registeredWorktreeNames(projectName)) {
     if (live && !live.has(dirName)) continue;
     const meta = await readMeta(projectName, dirName).catch(() => null);
     if (meta && meta.parentProject === projectName) out.push(meta);
   }
   out.sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''));
   return out;
+}
+
+// The worktree names REGISTERED under this project, read from cc's own store
+// and nothing else.
+//
+// Different from listWorktrees in the way that matters to a GUARD: it neither
+// reaches the system nor filters by what git currently reports, so no caller,
+// and no system being down, can change its answer. A registration is what makes
+// a worktree re-derive its target from the parent project — so a registration
+// is what has to be gone before that target may move (setProjectRemote).
+export async function registeredWorktreeNames(projectName: string): Promise<string[]> {
+  try {
+    return (await fs.readdir(worktreesStoreRoot(projectName), { withFileTypes: true }))
+      .filter(e => e.isDirectory()).map(e => e.name).sort();
+  } catch { return []; }
 }
 
 export async function getWorktree(projectName: string, worktreeName: string): Promise<WorktreeMeta | null> {

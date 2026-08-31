@@ -25,10 +25,11 @@ interface ContributingEntry {
   id: string;
   project: string;
   dir: string;
-  // The System the plugin's checkout lives on. Fragment bodies are read through
-  // it — they are files in a project tree — while claudePluginDirs refuses a
-  // non-local one outright (see there).
+  // The System the plugin's checkout lives on, and which TARGET of it. Fragment
+  // bodies are read through the pair — they are files in a project tree — while
+  // claudePluginDirs refuses a non-local one outright (see there).
   system: string;
+  remoteId: string | null;
   manifest: PluginManifest;
 }
 
@@ -48,15 +49,16 @@ export function createContributions({ ensureInit, contributingEntries, resolveCw
   // Bodies are resolved from the active checkout; a fragment path that vanished
   // after load is skipped with a warning (manifest load already rejects missing
   // files).
-  // Keyed by (system, abs path): a path is only a file together with the
-  // machine it is on, and two systems hosting a project at the same path would
-  // otherwise share one cached body.
+  // Keyed by (system, remoteId, abs path): a path is only a file together with
+  // the machine it is on, and one registered system can BE many machines — two
+  // targets hosting a project at the same path would otherwise share one cached
+  // body. NUL-separated because a remote id may contain `:`.
   const fragmentBodyCache = new Map<string, string>();
-  async function readFragment(systemId: string, abs: string): Promise<string> {
-    const key = `${systemId}:${abs}`;
+  async function readFragment(systemId: string, remoteId: string | null, abs: string): Promise<string> {
+    const key = `${systemId}\0${remoteId ?? ''}\0${abs}`;
     const cached = fragmentBodyCache.get(key);
     if (cached !== undefined) return cached;
-    const system = await systemById(systemId, `plugin fragment '${abs}'`);
+    const system = await systemById(systemId, remoteId, `plugin fragment '${abs}'`);
     const body = (await system.readFile(abs)).replace(/\s+$/, '');
     fragmentBodyCache.set(key, body);
     return body;
@@ -170,14 +172,14 @@ export function createContributions({ ensureInit, contributingEntries, resolveCw
       for (const g of list) {
         let body = '';
         if (g.file) {
-          try { body = await readFragment(entry.system, path.join(cwd, g.file)); }
+          try { body = await readFragment(entry.system, entry.remoteId, path.join(cwd, g.file)); }
           catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${errMsg(e)}`); continue; }
         }
         let scaffold: string | undefined;
         if (g.scaffold) {
           if ('text' in g.scaffold) scaffold = g.scaffold.text;
           else {
-            try { scaffold = await readFragment(entry.system, path.join(cwd, g.scaffold.file)); }
+            try { scaffold = await readFragment(entry.system, entry.remoteId, path.join(cwd, g.scaffold.file)); }
             catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${errMsg(e)}`); continue; }
           }
         }

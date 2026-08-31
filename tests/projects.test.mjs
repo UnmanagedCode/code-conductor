@@ -510,7 +510,7 @@ test('readProjectMeta returns {workspace:null} when the dotfile is absent', asyn
   const meta = await readProjectMeta('fresh');
   // Every field null, and — the part that matters — creating a project writes
   // no record at all. Absence of `system` IS local; nothing stamps it.
-  assert.deepEqual(meta, { workspace: null, system: null, systemPath: null });
+  assert.deepEqual(meta, { workspace: null, system: null, remoteId: null, systemPath: null });
 });
 
 test('writeProjectMeta({workspace}) round-trips through listProjects/GET /api/projects', async () => {
@@ -536,7 +536,7 @@ test('writeProjectMeta({workspace:null}) clears the field and removes the now-em
   await writeProjectMeta('clearme', { workspace: null });
   await assert.rejects(fs.stat(file), { code: 'ENOENT' });
   const meta = await readProjectMeta('clearme');
-  assert.deepEqual(meta, { workspace: null, system: null, systemPath: null });
+  assert.deepEqual(meta, { workspace: null, system: null, remoteId: null, systemPath: null });
 });
 
 test('writeProjectMeta rejects invalid workspace strings', async () => {

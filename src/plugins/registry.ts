@@ -75,11 +75,14 @@ interface PluginEntry {
   id: string | null;
   project: string;
   dir: string;
-  // The System the plugin's project lives on. A plugin is discovered wherever
-  // its project is, but two of its capabilities are LOCAL-ONLY (a backend is a
-  // process cc talks to on a local port; a `--plugin-dir` root must be an
-  // absolute local directory), so every consumer needs to know.
+  // The System the plugin's project lives on, and which TARGET of it. A plugin
+  // is discovered wherever its project is, but two of its capabilities are
+  // LOCAL-ONLY (a backend is a process cc talks to on a local port; a
+  // `--plugin-dir` root must be an absolute local directory), so every consumer
+  // needs to know. The target comes with it because a fragment body is only a
+  // file together with the machine it is on.
   system: string;
+  remoteId: string | null;
   manifest: PluginManifest | null;
   manifestSource?: ManifestSource;
   discoveryState: 'ok' | 'invalid' | 'incompatible' | 'conflict';
@@ -169,7 +172,7 @@ export function createPluginHost(opts: {
   async function rescanInternal(): Promise<void> {
     contributions.invalidate();
     const projects = await listProjects();
-    const found: Array<{ project: string; dir: string; system: string; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
+    const found: Array<{ project: string; dir: string; system: string; remoteId: string | null; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
     for (const p of projects) {
       // Through the project's System. A project whose system cannot be reached
       // contributes no plugin — and, critically, does NOT fall back to reading
@@ -191,7 +194,7 @@ export function createPluginHost(opts: {
         if (fallback) ({ result, manifestSource } = fallback);
       }
       if (result === null) continue;
-      found.push({ project: p.name, dir: p.path, system: system.id, result, manifestSource });
+      found.push({ project: p.name, dir: p.path, system: system.id, remoteId: system.remoteId, result, manifestSource });
     }
     // Every discovered plugin project (valid, invalid, or conflicting
     // manifest — being discovered at all is what matters here) joins
@@ -208,7 +211,7 @@ export function createPluginHost(opts: {
       const { result, manifestSource } = f;
       if ('errors' in result) {
         next.push({
-          id: result.id ?? null, project: f.project, dir: f.dir, system: f.system,
+          id: result.id ?? null, project: f.project, dir: f.dir, system: f.system, remoteId: f.remoteId,
           manifest: null, manifestSource,
           discoveryState: result.incompatible ? 'incompatible' : 'invalid',
           errors: result.errors,
@@ -218,10 +221,10 @@ export function createPluginHost(opts: {
       const m = result.manifest;
       const existing = nextById.get(m.id);
       if (existing) {
-        next.push({ id: m.id, project: f.project, dir: f.dir, system: f.system, manifest: m, manifestSource, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${existing.project}'`] });
+        next.push({ id: m.id, project: f.project, dir: f.dir, system: f.system, remoteId: f.remoteId, manifest: m, manifestSource, discoveryState: 'conflict', errors: [`duplicate id '${m.id}' — already provided by project '${existing.project}'`] });
         continue;
       }
-      const entry: PluginEntry = { id: m.id, project: f.project, dir: f.dir, system: f.system, manifest: m, manifestSource, discoveryState: 'ok', errors: [] };
+      const entry: PluginEntry = { id: m.id, project: f.project, dir: f.dir, system: f.system, remoteId: f.remoteId, manifest: m, manifestSource, discoveryState: 'ok', errors: [] };
       next.push(entry);
       nextById.set(m.id, entry);
     }
@@ -520,7 +523,7 @@ export function createPluginHost(opts: {
     if (entry) return describeRow(entry);
     const reg = store.get(id);
     if (!reg) return null;
-    return describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
+    return describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, remoteId: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
   }
 
   // Gathers the five owners the projection reads (discovery entry, persisted
@@ -551,7 +554,7 @@ export function createPluginHost(opts: {
     // (they hold state the user may want to disable).
     for (const [id, reg] of store.entries()) {
       if (!entries.some(e => e.id === id)) {
-        rowPromises.push(describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
+        rowPromises.push(describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, remoteId: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
       }
     }
     return Promise.all(rowPromises);

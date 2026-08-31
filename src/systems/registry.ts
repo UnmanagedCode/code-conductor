@@ -12,6 +12,7 @@
 
 import { readProjectMeta } from '../projects.ts';
 import { httpError } from '../httpError.ts';
+import { SystemError } from './protocol.ts';
 import { LocalSystem, LOCAL_SYSTEM_ID } from './localSystem.ts';
 import { ProviderSystem } from './providerSystem.ts';
 import type { Handshake } from './providerConnection.ts';
@@ -97,11 +98,18 @@ export function localSystem(): System {
   return LOCAL;
 }
 
-// Where a project's tree lives: the System, and — only for a non-local one —
-// the path on it. A local project's path comes from the projects root or its
-// `.external/<name>` symlink instead, so `systemPath` stays null for it.
+// Where a project's tree lives: the System, WHICH TARGET of it, and — only for
+// a non-local one — the path on it. A local project's path comes from the
+// projects root or its `.external/<name>` symlink instead, so `systemPath`
+// stays null for it.
+//
+// One registered system can serve many targets (ten containers behind one
+// docker provider), so a path identifies a tree only together with BOTH: the
+// tuple is (system, remoteId, path).
 export interface ProjectPlacement {
   system: string;
+  // Which target of that system, or null for the provider's own default.
+  remoteId: string | null;
   systemPath: string | null;
 }
 
@@ -117,7 +125,7 @@ export interface ProjectPlacement {
 // reads it for `workspace`) does not read it twice.
 export function placementOf(
   projectName: string,
-  meta: { system?: string | null; systemPath?: string | null },
+  meta: { system?: string | null; remoteId?: string | null; systemPath?: string | null },
 ): ProjectPlacement {
   // `.conduct` IS the orchestrator, and cc runs it on its own host: its dir is
   // cc-owned under projectsRoot(), its sessions drive every other project over
@@ -126,11 +134,17 @@ export function placementOf(
   // record naming a system for it is IGNORED rather than honoured. Every reader
   // of a project's system comes through here, so the pin holds for all of them:
   // resolution, the listing, and the registry's still-referenced check.
-  if (projectName === CONDUCT_PROJECT_NAME) return { system: LOCAL_SYSTEM_ID, systemPath: null };
+  if (projectName === CONDUCT_PROJECT_NAME) {
+    return { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null };
+  }
   const id = typeof meta.system === 'string' ? meta.system.trim() : '';
-  if (!id || id === LOCAL_SYSTEM_ID) return { system: LOCAL_SYSTEM_ID, systemPath: null };
+  // A local system forces `remoteId` null for the same reason it forces
+  // `systemPath` null: cc's own machine is one machine, and a record naming a
+  // target on it names nothing.
+  if (!id || id === LOCAL_SYSTEM_ID) return { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null };
   const p = typeof meta.systemPath === 'string' ? meta.systemPath.trim() : '';
-  return { system: id, systemPath: p || null };
+  const r = typeof meta.remoteId === 'string' ? meta.remoteId.trim() : '';
+  return { system: id, remoteId: r || null, systemPath: p || null };
 }
 
 export async function projectPlacement(projectName: string): Promise<ProjectPlacement> {
@@ -139,9 +153,9 @@ export async function projectPlacement(projectName: string): Promise<ProjectPlac
 
 // The System a project's tree, git repo and shell commands live on.
 export async function resolveSystem(projectName: string): Promise<System> {
-  const { system } = await projectPlacement(projectName);
+  const { system, remoteId } = await projectPlacement(projectName);
   if (system === LOCAL_SYSTEM_ID) return LOCAL;
-  return systemById(system, `project '${projectName}'`);
+  return systemById(system, remoteId, `project '${projectName}'`);
 }
 
 // One live handle per registered system, keyed by id. A System handle is a
@@ -152,16 +166,33 @@ export async function resolveSystem(projectName: string): Promise<System> {
 // Keyed on the launch argv as well, so editing a row's provider command
 // replaces the handle instead of leaving the old process serving the new
 // configuration.
-const HANDLES = new Map<string, { key: string; sys: ProviderSystem }>();
+//
+// ONE OWNER PER ID, PLUS A BOUND VIEW PER REMOTE. The views SHARE the owner's
+// connection: many targets behind one endpoint is the whole point, and
+// multiplexing already carries it, so ten containers on one docker provider are
+// one process rather than ten.
+const HANDLES = new Map<string, { key: string; sys: ProviderSystem; views: Map<string, ProviderSystem> }>();
 
-function handleFor(row: SystemRecord, argv: string[]): ProviderSystem {
+function handleFor(row: SystemRecord, argv: string[], remoteId: string | null): ProviderSystem {
   const key = JSON.stringify(argv);
-  const cur = HANDLES.get(row.id);
-  if (cur && cur.key === key) return cur.sys;
-  cur?.sys.dispose();
-  const sys = new ProviderSystem({ id: row.id, launch: { argv } });
-  HANDLES.set(row.id, { key, sys });
-  return sys;
+  let cur = HANDLES.get(row.id);
+  if (cur && cur.key !== key) {
+    // The whole entry goes, views included: a view left behind would keep
+    // serving over a connection that is about to be killed.
+    disposeSystemHandle(row.id);
+    cur = undefined;
+  }
+  if (!cur) {
+    cur = { key, sys: new ProviderSystem({ id: row.id, launch: { argv } }), views: new Map() };
+    HANDLES.set(row.id, cur);
+  }
+  if (remoteId === null) return cur.sys;
+  let view = cur.views.get(remoteId);
+  if (!view) {
+    view = cur.sys.bindRemote(remoteId);
+    cur.views.set(remoteId, view);
+  }
+  return view;
 }
 
 // Drop a system's live handle, shutting its provider process down. Called when
@@ -170,6 +201,9 @@ function handleFor(row: SystemRecord, argv: string[]): ProviderSystem {
 export function disposeSystemHandle(id: string): void {
   const cur = HANDLES.get(id);
   if (!cur) return;
+  // Views first, so each forgets its own shell before the process they all
+  // share goes away. Only the OWNER's dispose kills it.
+  for (const view of cur.views.values()) view.dispose();
   cur.sys.dispose();
   HANDLES.delete(id);
 }
@@ -187,7 +221,7 @@ export function disposeSystemHandles(): void {
 // the system that is down. Falling back to `local` for any of them would run
 // the caller's operation against a path on the wrong machine and report
 // success — the worst failure this design has.
-export async function systemById(id: string, subject: string): Promise<System> {
+export async function systemById(id: string, remoteId: string | null, subject: string): Promise<System> {
   if (id === LOCAL_SYSTEM_ID) return LOCAL;
   // Dynamic: src/appSettings.ts imports this module for MANAGED_SYSTEMS, and a
   // static import back would close the cycle at module-evaluation time. Same
@@ -204,7 +238,7 @@ export async function systemById(id: string, subject: string): Promise<System> {
       `${subject} is registered on system '${id}', which has no provider command — `
       + `give it one in Settings → Systems`);
   }
-  const sys = handleFor(row, argv);
+  const sys = handleFor(row, argv, remoteId);
   // Connecting HERE, not at first use, is what keeps the degraded listing
   // honest: tryResolveProject (src/projects.ts) turns this refusal into the
   // row's `systemUnreachable` reason, whereas a handle that connects lazily
@@ -214,6 +248,27 @@ export async function systemById(id: string, subject: string): Promise<System> {
   catch (e) {
     throw systemRefusal(502, 'SYSTEM_UNREACHABLE',
       `${subject} is on system '${id}', which cannot be reached: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  // And asking about the REMOTE here, for the same reason: a refusal at
+  // resolution is what the degraded listing renders. It runs once per
+  // connection generation, so this is not a round trip per resolution.
+  if (remoteId !== null) {
+    try { await sys.assertRemoteKnown(); }
+    catch (e) {
+      if (e instanceof SystemError && e.code === 'EUNSUPPORTED') {
+        // A CONFIG error, like the two above: the provider cannot do this at
+        // all, and the repair is to drop the remote or upgrade the provider.
+        throw systemRefusal(501, 'SYSTEM_NO_REMOTES',
+          `${subject} names remote '${remoteId}' on system '${id}', but ${e.message} — `
+          + `clear the remote, or give the system a provider that serves named targets`);
+      }
+      if (e instanceof SystemError && e.code === 'ENOREMOTE') {
+        // 502 for the same reason SYSTEM_UNREACHABLE is: the far side ANSWERED.
+        throw systemRefusal(502, 'REMOTE_NOT_FOUND',
+          `${subject} is on remote '${remoteId}' of system '${id}', which does not serve it: ${e.message}`);
+      }
+      throw e;
+    }
   }
   return sys;
 }

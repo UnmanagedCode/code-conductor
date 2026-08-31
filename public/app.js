@@ -25,6 +25,7 @@ import { installCommits } from './commits.js';
 import { installCosts } from './costs.js';
 import { installRestart } from './restartFlow.js';
 import { installNewProjectDialog } from './newProjectDialog.js';
+import { installProjectRemoteDialog } from './projectRemoteDialog.js';
 import { installWorkspaceDialog } from './workspaceDialog.js';
 import { installSpawnDialog } from './spawnDialog.js';
 import { installSessionActions } from './sessionActions.js';
@@ -81,6 +82,15 @@ const dom = {
   npSystem: document.getElementById('np-system'),
   npSystemPath: document.getElementById('np-system-path'),
   npSystemPathRow: document.getElementById('np-system-path-row'),
+  npRemote: document.getElementById('np-remote'),
+  npRemoteRow: document.getElementById('np-remote-row'),
+  projectRemoteDialog: document.getElementById('project-remote-dialog'),
+  prProject: document.getElementById('pr-project'),
+  prSystem: document.getElementById('pr-system'),
+  prPath: document.getElementById('pr-path'),
+  prRemote: document.getElementById('pr-remote'),
+  prError: document.getElementById('pr-error'),
+  prBlockers: document.getElementById('pr-blockers'),
   npForm: document.getElementById('np-form'),
   npConfirm: document.getElementById('np-confirm'),
   npScaffoldText: document.getElementById('np-scaffold-text'),
@@ -597,6 +607,8 @@ installNewProjectDialog({
     npSystem: dom.npSystem,
     npSystemPath: dom.npSystemPath,
     npSystemPathRow: dom.npSystemPathRow,
+    npRemote: dom.npRemote,
+    npRemoteRow: dom.npRemoteRow,
     npForm: dom.npForm,
     npConfirm: dom.npConfirm,
     npScaffoldText: dom.npScaffoldText,
@@ -604,6 +616,23 @@ installNewProjectDialog({
   refreshProjects,
   closeSidebarOverflow,
 });
+
+// Change-target dialog: see public/projectRemoteDialog.js. Opened from the
+// sidebar's system pill, which is the one place on the page that already says
+// which target a project is on.
+const projectRemoteHandles = installProjectRemoteDialog({
+  dom: {
+    projectRemoteDialog: dom.projectRemoteDialog,
+    prProject: dom.prProject,
+    prSystem: dom.prSystem,
+    prPath: dom.prPath,
+    prRemote: dom.prRemote,
+    prError: dom.prError,
+    prBlockers: dom.prBlockers,
+  },
+  refreshProjects,
+});
+sidebar.onEditProjectRemote = (project) => projectRemoteHandles.open(project);
 
 // Workspace dialog (new + edit): see public/workspaceDialog.js. We own the
 // newWorkspaceBtn click (close the sidebar overflow, then openNew) and forward

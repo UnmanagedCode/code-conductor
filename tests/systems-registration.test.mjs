@@ -92,7 +92,7 @@ describe('a registry row that can reach its system', () => {
     await addSystem({ id: 'namedonly', label: 'Named only' });
     assert.equal('launch' in getSystem('namedonly'), false);
     await assert.rejects(
-      () => systemById('namedonly', `project 'p'`),
+      () => systemById('namedonly', null, `project 'p'`),
       (e) => e.statusCode === 501 && /no provider command/.test(e.message),
     );
   });
@@ -101,7 +101,7 @@ describe('a registry row that can reach its system', () => {
   // command — the two need different repairs.
   test('an unregistered id refuses distinctly from a command-less row', async () => {
     await assert.rejects(
-      () => systemById('ghost', `project 'p'`),
+      () => systemById('ghost', null, `project 'p'`),
       (e) => e.statusCode === 501 && /not in the system registry/.test(e.message),
     );
   });
@@ -109,7 +109,7 @@ describe('a registry row that can reach its system', () => {
   // PINS: resolution hands back a live handle that really speaks the protocol.
   test('a reachable row resolves to a working System handle', async () => {
     await addSystem({ id: 'refbox', label: 'Reference', launch: referenceLaunch() });
-    const sys = await systemById('refbox', `project 'p'`);
+    const sys = await systemById('refbox', null, `project 'p'`);
     assert.equal(sys.id, 'refbox');
     const r = await sys.exec({ argv: ['printf', 'hello'] }, { cwd: home });
     assert.equal(r.code, 0);
@@ -120,8 +120,8 @@ describe('a registry row that can reach its system', () => {
   // a second provider process claiming to be the same machine.
   test('two resolutions of one id share one handle', async () => {
     await addSystem({ id: 'refbox', label: 'Reference', launch: referenceLaunch() });
-    const a = await systemById('refbox', 'x');
-    const b = await systemById('refbox', 'y');
+    const a = await systemById('refbox', null, 'x');
+    const b = await systemById('refbox', null, 'y');
     assert.equal(a, b);
   });
 
@@ -129,7 +129,7 @@ describe('a registry row that can reach its system', () => {
   // so the old process cannot keep serving the new configuration.
   test('editing the launch re-verifies it and replaces the live handle', async () => {
     await addSystem({ id: 'refbox', label: 'Reference', launch: referenceLaunch() });
-    const before = await systemById('refbox', 'x');
+    const before = await systemById('refbox', null, 'x');
     await assert.rejects(
       () => updateSystem('refbox', { launch: ['node', '-e', 'process.exit(4)'] }),
       (e) => e.statusCode === 502,
@@ -137,7 +137,7 @@ describe('a registry row that can reach its system', () => {
     assert.deepEqual(getSystem('refbox').launch, referenceLaunch(), 'a refused edit changes nothing');
 
     await updateSystem('refbox', { launch: referenceLaunch('--name', 'renamed') });
-    const after = await systemById('refbox', 'x');
+    const after = await systemById('refbox', null, 'x');
     assert.notEqual(after, before, 'the handle built from the old command is gone');
     assert.equal((await after.exec({ argv: ['printf', 'ok'] }, { cwd: home })).stdout, 'ok');
   });
@@ -182,12 +182,12 @@ describe('a registry row that can reach its system', () => {
   // id must not be answered by a process belonging to a row that is gone.
   test('removing a row drops its handle', async () => {
     await addSystem({ id: 'refbox', label: 'Reference', launch: referenceLaunch() });
-    const before = await systemById('refbox', 'x');
+    const before = await systemById('refbox', null, 'x');
     await removeSystem('refbox');
     assert.equal(getSystems().some(s => s.id === 'refbox'), false);
-    await assert.rejects(() => systemById('refbox', 'x'), (e) => e.statusCode === 501);
+    await assert.rejects(() => systemById('refbox', null, 'x'), (e) => e.statusCode === 501);
     await addSystem({ id: 'refbox', label: 'Again', launch: referenceLaunch() });
-    assert.notEqual(await systemById('refbox', 'x'), before);
+    assert.notEqual(await systemById('refbox', null, 'x'), before);
   });
 });
 

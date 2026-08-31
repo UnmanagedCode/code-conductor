@@ -89,6 +89,13 @@ function manifestPath(systemId: string, project: string, worktree?: string | nul
   return `${sessionRootPath(systemId, project, worktree)}.manifest.json`;
 }
 
+// Remove a session root and its manifest. One owner for the pair, so a caller
+// cannot take the root and leave the bookkeeping that describes it.
+export async function removeSessionRoot(systemId: string, project: string, worktree: string | null): Promise<void> {
+  await fs.rm(sessionRootPath(systemId, project, worktree), { recursive: true, force: true });
+  await fs.rm(manifestPath(systemId, project, worktree), { force: true });
+}
+
 // ── THE PREFIX RULE ──────────────────────────────────────────────────
 //
 // A path maps to the system ONLY when it lies under the session root. Stated
@@ -172,6 +179,17 @@ export interface ComposedSessionRoot {
 
 interface ManifestEntry { size: number; mtimeMs: number }
 
+// What was last pulled, and — load-bearing — WHICH TARGET it was pulled from.
+//
+// The path template keys on the project name, which is globally unique, so one
+// system serving many targets introduces no collision and the template does not
+// change. What it does introduce is a need for INVALIDATION, because a change of
+// target is SILENT otherwise: the root still holds CLAUDE.md, CONVENTIONS.md and
+// the sparse content cache pulled from the OLD machine, the worker reads and
+// edits those, and the write-back pushes the result to the NEW one — clobbering
+// it with another machine's bytes while both sides stay internally consistent.
+interface Manifest { remoteId: string | null; entries: Map<string, ManifestEntry> }
+
 // Compose (or refresh) the session root for one worker session.
 //
 // Runs at spawn AND resume, before launch(). A worker that writes a new skill
@@ -182,6 +200,24 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
 }): Promise<ComposedSessionRoot> {
   requireAbsolute('composeSessionRoot', 'systemPath', systemPath);
   const rootRaw = sessionRootPath(systemId, project, worktree);
+
+  // THE TARGET CHECK, and it runs before the root exists rather than after,
+  // because its answer may be "there should not be one".
+  //
+  // Read off the HANDLE, not from a parameter: the handle is already bound to
+  // the project's target, so a second copy of that fact could only ever
+  // disagree with it. Both sides normalise to null so a manifest written before
+  // this field existed matches an unbound handle rather than costing every
+  // existing root a pointless wipe.
+  //
+  // A mismatch removes the WHOLE root and re-pulls from scratch. Diffing
+  // against a manifest that describes a different machine is precisely how the
+  // old target's bytes end up under the new target's paths.
+  const prior = await readManifest(systemId, project, worktree);
+  const manifest = prior.remoteId === (system.remoteId ?? null)
+    ? prior
+    : await resetRoot(systemId, project, worktree);
+
   await fs.mkdir(rootRaw, { recursive: true });
   // The CLI encodes its transcript directory from getcwd(), which is always the
   // realpath. A store reached through a symlink would otherwise give cc and the
@@ -189,7 +225,6 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   // resolveProjectDir realpaths an external project).
   const root = await fs.realpath(rootRaw);
 
-  const manifest = await readManifest(systemId, project, worktree);
   const listing = await listAllowed(system, systemPath);
 
   const next = new Map<string, ManifestEntry>();
@@ -209,7 +244,7 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
     total += entry.size;
     next.set(entry.rel, { size: entry.size, mtimeMs: entry.mtimeMs });
     const local = path.join(root, entry.rel);
-    const prev = manifest.get(entry.rel);
+    const prev = manifest.entries.get(entry.rel);
     // readFile only for CHANGED entries — the manifest is what turns a resume
     // into one `find` for an unchanged config surface. An entry whose local
     // copy has gone (a wiped store) is always re-pulled.
@@ -222,7 +257,7 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   // An entry that has gone from the system must go from the root too. A stale
   // local copy is a boundary leak: Read would answer from a file the system,
   // and therefore Bash, says is not there.
-  for (const rel of manifest.keys()) {
+  for (const rel of manifest.entries.keys()) {
     if (next.has(rel)) continue;
     await fs.rm(path.join(root, rel), { force: true });
   }
@@ -233,8 +268,15 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   // file from a session composer would be a write nobody asked for.
   await ensureLocalImport(path.join(root, 'CLAUDE.md'), next.has('CLAUDE.md'));
 
-  await writeManifest(systemId, project, worktree, next);
+  await writeManifest(systemId, project, worktree, system.remoteId ?? null, next);
   return { root, pulled, skipped };
+}
+
+// The root was pulled from a different target: remove it and its manifest, and
+// hand back an empty one so everything below re-pulls.
+async function resetRoot(systemId: string, project: string, worktree: string | null): Promise<Manifest> {
+  await removeSessionRoot(systemId, project, worktree);
+  return { remoteId: null, entries: new Map() };
 }
 
 interface Listed { rel: string; abs: string; size: number; mtimeMs: number }
@@ -322,18 +364,29 @@ async function exists(p: string): Promise<boolean> {
   try { await fs.stat(p); return true; } catch { return false; }
 }
 
-async function readManifest(systemId: string, project: string, worktree: string | null): Promise<Map<string, ManifestEntry>> {
+async function readManifest(systemId: string, project: string, worktree: string | null): Promise<Manifest> {
+  const empty: Manifest = { remoteId: null, entries: new Map() };
   try {
     const raw: unknown = JSON.parse(await fs.readFile(manifestPath(systemId, project, worktree), 'utf8'));
-    if (!raw || typeof raw !== 'object') return new Map();
-    return new Map(Object.entries(raw as Record<string, ManifestEntry>));
+    if (!raw || typeof raw !== 'object') return empty;
+    const rec = raw as { remoteId?: unknown; entries?: unknown };
+    const entries = (typeof rec.entries === 'object' && rec.entries !== null)
+      ? new Map(Object.entries(rec.entries as Record<string, ManifestEntry>))
+      : new Map<string, ManifestEntry>();
+    return { remoteId: typeof rec.remoteId === 'string' && rec.remoteId ? rec.remoteId : null, entries };
   } catch {
     // A missing or corrupt manifest costs a full re-pull, never a failed spawn:
     // it is a cache of what cc last wrote, not a record anything depends on.
-    return new Map();
+    return empty;
   }
 }
 
-async function writeManifest(systemId: string, project: string, worktree: string | null, entries: Map<string, ManifestEntry>): Promise<void> {
-  await fs.writeFile(manifestPath(systemId, project, worktree), JSON.stringify(Object.fromEntries(entries)));
+async function writeManifest(
+  systemId: string, project: string, worktree: string | null,
+  remoteId: string | null, entries: Map<string, ManifestEntry>,
+): Promise<void> {
+  await fs.writeFile(
+    manifestPath(systemId, project, worktree),
+    JSON.stringify({ ...(remoteId === null ? {} : { remoteId }), entries: Object.fromEntries(entries) }),
+  );
 }

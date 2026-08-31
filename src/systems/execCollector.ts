@@ -10,6 +10,7 @@
 // bug fixed in one of them.
 
 import { StringDecoder } from 'node:string_decoder';
+import type { SystemErrorCode } from './protocol.ts';
 import type { ExecOptions, ExecResult, ExecStream } from './system.ts';
 
 export type StreamName = ExecStream;
@@ -90,8 +91,8 @@ export class ExecOutputCollector {
   // it without either clobbering real output.
   result(
     code: number,
-    { timedOut, spawnError, transportFailure, durationMs, descendantsMaySurvive }: {
-      timedOut: boolean; spawnError?: string; transportFailure?: true;
+    { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive }: {
+      timedOut: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode; transportFailure?: true;
       durationMs: number; descendantsMaySurvive?: boolean;
     },
   ): ExecResult {
@@ -118,6 +119,7 @@ export class ExecOutputCollector {
       timedOut, truncated,
       durationMs,
       spawnError: spawnError ?? null,
+      ...(spawnErrorCode ? { spawnErrorCode } : {}),
       ...(transportFailure ? { transportFailure: true as const } : {}),
       ...(descendantsMaySurvive ? { descendantsMaySurvive: true as const } : {}),
       ...(this.#overflowed ? { outputOverflowed: true as const } : {}),

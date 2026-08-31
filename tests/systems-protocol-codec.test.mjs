@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FS_ERROR_CODES, MAX_LINE_BYTES, NdjsonDecoder, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION,
+  FS_ERROR_CODES, MAX_LINE_BYTES, NO_CAPABILITIES, NdjsonDecoder, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION,
   SystemError, classifySpawnError, classifyStderr, decodeFrame, encodeFrame, execFailure,
   isBase64, isSystemErrorCode, readCapabilities,
 } from '../src/systems/protocol.ts';
@@ -181,10 +181,12 @@ test('an unmatched failure carries its exit code and its RAW stderr, verbatim', 
 });
 
 test('capability negotiation: a missing key is false, an unknown key is ignored', () => {
-  assert.deepEqual(readCapabilities(undefined), { persistentShell: false, processGroupSignal: false });
+  assert.deepEqual(readCapabilities(undefined), NO_CAPABILITIES);
   assert.deepEqual(readCapabilities({ persistentShell: true, somethingFuture: true }),
-    { persistentShell: true, processGroupSignal: false });
-  assert.deepEqual(readCapabilities({ persistentShell: 'yes' }), { persistentShell: false, processGroupSignal: false },
+    { ...NO_CAPABILITIES, persistentShell: true });
+  assert.deepEqual(readCapabilities({ remotes: true }), { ...NO_CAPABILITIES, remotes: true },
+    'a system that serves many targets says so, and says nothing else');
+  assert.deepEqual(readCapabilities({ persistentShell: 'yes' }), NO_CAPABILITIES,
     'only a literal true enables a capability');
 });
 

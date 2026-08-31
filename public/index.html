@@ -236,8 +236,10 @@
               can't be edited or removed. A row's <strong>provider command</strong> is what cc runs
               to reach the system, speaking its stdio protocol; saving one connects to it first, and
               a system that doesn't answer is refused rather than saved. A row with no command is a
-              name only — projects on it can't be reached. A system a project still names can't be
-              removed until that project moves.
+              name only — projects on it can't be reached. One system may serve many named
+              <strong>targets</strong> — one provider reaching a whole docker daemon, say — and which
+              one a project is on is chosen per project, so a row lists each project it holds with
+              its target. A system a project still names can't be removed until that project moves.
             </p>
             <div id="sy-status" class="st-status" aria-live="polite">Loading…</div>
             <ul id="sy-list" class="sy-list"></ul>
@@ -519,12 +521,32 @@
     </main>
   </div>
 
+  <dialog id="project-remote-dialog">
+    <form method="dialog" id="pr-form">
+      <h3>Change target</h3>
+      <p class="hint">
+        One system can serve many named targets. This moves <code id="pr-project"></code> to a
+        different one — it does not move the project to another system or another path.
+      </p>
+      <label>System <input id="pr-system" readonly /></label>
+      <label>Path on that system <input id="pr-path" readonly /></label>
+      <label>Remote <input id="pr-remote" placeholder="container / host / VM id — blank for the system's default" /></label>
+      <p class="error" id="pr-error"></p>
+      <ul id="pr-blockers" class="pr-blockers" hidden></ul>
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button id="pr-save" value="save">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="new-project-dialog">
     <form method="dialog" id="np-form">
       <h3>New project</h3>
       <label>Name <input id="np-name" pattern="[a-zA-Z0-9._-]+" required autofocus /></label>
       <label>System <select id="np-system"></select></label>
       <label id="np-system-path-row" hidden>Path on that system <input id="np-system-path" placeholder="/srv/myproject" /></label>
+      <label id="np-remote-row" hidden>Remote <input id="np-remote" placeholder="container / host / VM id — blank for the system's default" /></label>
       <p class="hint">Creates <code id="np-preview">~/project/&lt;name&gt;</code></p>
       <div id="np-contributions"></div>
       <p class="error" id="np-error"></p>

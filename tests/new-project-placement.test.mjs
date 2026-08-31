@@ -59,6 +59,7 @@ async function setup({ systems = SYSTEMS, createResponse } = {}) {
         <input id="np-name" />
         <select id="np-system"></select>
         <label id="np-system-path-row"><input id="np-system-path" /></label>
+        <label id="np-remote-row"><input id="np-remote" /></label>
         <code id="np-preview"></code>
         <div id="np-contributions"></div>
         <p id="np-error"></p>
@@ -86,6 +87,8 @@ async function setup({ systems = SYSTEMS, createResponse } = {}) {
       npSystem: document.getElementById('np-system'),
       npSystemPath: document.getElementById('np-system-path'),
       npSystemPathRow: document.getElementById('np-system-path-row'),
+      npRemote: document.getElementById('np-remote'),
+      npRemoteRow: document.getElementById('np-remote-row'),
     },
     refreshProjects: async () => {},
     closeSidebarOverflow: () => {},
@@ -147,6 +150,49 @@ test('a remote create posts system + systemPath', async () => {
   $('np-system').dispatchEvent(new window.Event('change'));
   await tick();
   $('np-system-path').value = ' /srv/demo ';
+  await submit();
+  assert.deepEqual(posts.at(-1), { name: 'demo', system: 'prod-box', systemPath: '/srv/demo' });
+});
+
+// PINS: the target is chosen where the project is created, appears with the
+// path (a target is only meaningful on a system), and travels as the field the
+// route reads. Always offered for a non-local system: cc cannot know whether a
+// provider serves named targets without connecting, and the server's named
+// refusal at create time is what answers that.
+test('choosing a system reveals the remote field, and it reaches the POST', async () => {
+  const { window, open, submit, posts, tick } = await setup();
+  await open();
+  assert.equal($('np-remote-row').hidden, true, 'a local project has no target to name');
+
+  $('np-name').value = 'demo';
+  $('np-system').value = 'prod-box';
+  $('np-system').dispatchEvent(new window.Event('change'));
+  await tick();
+  assert.equal($('np-remote-row').hidden, false);
+
+  $('np-system-path').value = '/srv/demo';
+  $('np-remote').value = ' ctr_7.a ';
+  $('np-remote').dispatchEvent(new window.Event('input'));
+  // The preview names the target too — a preview that showed only the system
+  // would promise the wrong machine on a system serving many.
+  assert.match($('np-preview').textContent, /ctr_7\.a/);
+
+  await submit();
+  assert.deepEqual(posts.at(-1),
+    { name: 'demo', system: 'prod-box', systemPath: '/srv/demo', remoteId: 'ctr_7.a' });
+});
+
+// PINS: absence stays absence. An empty field is the provider's OWN default
+// target, and posting `remoteId: ""` would record a target named nothing.
+test('a remote create with no target posts no remoteId', async () => {
+  const { window, open, submit, posts, tick } = await setup();
+  await open();
+  $('np-name').value = 'demo';
+  $('np-system').value = 'prod-box';
+  $('np-system').dispatchEvent(new window.Event('change'));
+  await tick();
+  $('np-system-path').value = '/srv/demo';
+  $('np-remote').value = '   ';
   await submit();
   assert.deepEqual(posts.at(-1), { name: 'demo', system: 'prod-box', systemPath: '/srv/demo' });
 });

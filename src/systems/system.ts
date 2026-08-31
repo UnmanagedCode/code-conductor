@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { SystemErrorCode } from './protocol.ts';
 
 // The System interface — the seam every PROJECT-SCOPED operation goes through.
 //
@@ -131,6 +132,17 @@ export interface ExecResult {
   // LocalSystem never sets it, because a local spawn error is always about the
   // command.
   transportFailure?: true;
+  // The far side's OWN code for a `spawnError` it answered about, when it sent
+  // one. Set only from an id-addressed `error` frame — the far side saying "I
+  // could not start that" — and therefore never together with
+  // `transportFailure`, which is the case where nobody answered at all.
+  //
+  // It exists because the message is prose and the code is not: a provider that
+  // refuses a command for a reason with no errno in its text (an unknown remote,
+  // say) would otherwise have that reason re-derived from the wording, or lost.
+  // A reader that has this prefers it; classifySpawnError stays the fallback for
+  // a provider that sent no usable code.
+  spawnErrorCode?: SystemErrorCode;
   // Set only when cc (or the far side, on a timeout) terminated the command on
   // a system whose provider does NOT advertise `processGroupSignal`: the direct
   // child was signalled and its grandchildren may still be running — the
@@ -187,6 +199,15 @@ export interface System {
   // Stable id, unique across registered systems. The built-in in-process
   // system is `local`.
   readonly id: string;
+
+  // WHICH TARGET of that system this handle is bound to, or null for the
+  // provider's own default (and always null for `local`).
+  //
+  // It lives on the HANDLE rather than being threaded through every call
+  // because the target is a property of the project, not of the operation:
+  // ~40 call sites already take a System and none of them should have to learn
+  // that one endpoint can serve many machines. A handle knows where it points.
+  readonly remoteId: string | null;
 
   // ── The three MUST primitives ──────────────────────────────────────
   exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult>;

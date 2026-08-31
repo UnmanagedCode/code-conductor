@@ -723,6 +723,37 @@ export function buildTools(): Tool[] {
       annotations: { idempotentHint: true },
     },
     {
+      name: 'set_project_remote',
+      description:
+        'Change WHICH TARGET of its system a project is on, or clear it back to the provider\'s own '
+        + 'default with remoteId:null (or ""). One registered system can serve many targets (ten '
+        + 'containers behind one docker provider), and the target is chosen per project. '
+        + 'REFUSES 409 PROJECT_PLACEMENT_IN_USE while the project has live sessions or registered '
+        + 'worktrees, naming both in the message — kill the sessions and delete the worktrees first; '
+        + 'nothing is discarded for you. Also refuses SYSTEM_NO_REMOTES (the system\'s provider does '
+        + 'not serve named targets) and REMOTE_NOT_FOUND (it does, but not this one), both BEFORE '
+        + 'anything is written. Refuses a project on `local`, which is one machine. '
+        + 'A permitted change discards the project\'s local session root, so the next spawn re-pulls '
+        + 'its config surface from the new target.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string' },
+          remoteId: {
+            type: ['string', 'null'],
+            description: 'The target on the project\'s system, or null/empty-string to fall back to the provider\'s default target.',
+          },
+        },
+        // REQUIRED, so OMITTING it is a validation failure rather than a silent
+        // clear. Clearing is an explicit act — this tool's description says so —
+        // and `{project}` with no target named is the shape a caller reaches by
+        // accident. An explicit null (or "") still clears.
+        required: ['project', 'remoteId'],
+      },
+      handler: h.setProjectRemote,
+      annotations: { idempotentHint: true },
+    },
+    {
       name: 'create_project',
       description:
         'Create a new empty project under ~/project/<name>, or at `systemPath` on a registered `system`. '
@@ -745,6 +776,7 @@ export function buildTools(): Tool[] {
             description: 'Slugs of project conventions to attach — call list_project_conventions to discover available slugs. Each appends its CLAUDE.md fragment (if any) and, when hasScaffold:true, contributes to the returned `scaffold` directive.',
           },
           system: { type: 'string', description: 'Create the project on this registered system instead of under the projects root. Requires systemPath.' },
+          remoteId: { type: 'string', description: 'Which TARGET of `system` to place it on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`. Refused SYSTEM_NO_REMOTES if the provider does not serve named targets, REMOTE_NOT_FOUND if it does not serve this one.' },
           systemPath: { type: 'string', description: 'Absolute path on `system` to create the project at. Required with `system`, refused without it.' },
         },
         required: ['name'],
@@ -765,7 +797,9 @@ export function buildTools(): Tool[] {
         "target's working tree as changes to commit. " +
         'Refusals are returned as {ok:false, code, reason} — INVALID_NAME, INVALID_TARGET_PATH, ' +
         'TARGET_NOT_FOUND, TARGET_NOT_A_DIRECTORY, TARGET_ALREADY_MANAGED, TARGET_NOT_A_REPO, ' +
-        'SYSTEM_UNREACHABLE, PROJECT_EXISTS — not errors. ' +
+        'SYSTEM_UNREACHABLE, INVALID_REMOTE_ID, PROJECT_EXISTS — not errors. ' +
+        'A path identifies a tree only together with its (system, remoteId), so the same path on two ' +
+        'targets of one system is two adoptable trees. ' +
         'Deleting an adopted project only unregisters it; the repo itself is never touched.',
       inputSchema: {
         type: 'object',
@@ -773,6 +807,7 @@ export function buildTools(): Tool[] {
           name: { type: 'string', pattern: '^[a-zA-Z0-9._-]+$', description: 'Project name cc will know the repo by. Must match ^[a-zA-Z0-9._-]+$ and must not start with ".".' },
           path: { type: 'string', description: 'Absolute path to the existing git repository root to adopt — on `system` when one is given, else on cc\'s own machine.' },
           system: { type: 'string', description: 'Adopt a repo living on this registered system. The path is then validated there, and cc records the placement instead of a symlink.' },
+          remoteId: { type: 'string', description: 'Which TARGET of `system` the repo is on, when that system serves more than one. Omit for the provider\'s own default target. Requires `system`.' },
         },
         required: ['name', 'path'],
       },

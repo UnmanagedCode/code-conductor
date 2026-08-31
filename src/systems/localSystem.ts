@@ -61,6 +61,9 @@ export async function writeFileAtomic(filePath: string, data: string, mode?: num
 
 export class LocalSystem implements System {
   readonly id = LOCAL_SYSTEM_ID;
+  // cc's own machine is one machine. There is no second target to name, so the
+  // pin is here rather than in every reader.
+  readonly remoteId = null;
 
   // `async` on these three so a guard violation REJECTS rather than throwing
   // synchronously: ProviderSystem's are async, and the two implementations of

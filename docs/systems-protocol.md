@@ -49,8 +49,10 @@ Provider MUSTs:
 The target is a **competent POSIX environment with GNU coreutils**: `stat`,
 `find` with `-printf`, `mkdir`, `rm`, `unlink`, `realpath`, `chmod`, `base64`,
 `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
-provider contract from fifteen operations to three — everything else is derived
-by cc over `exec` (§6).
+provider contract to **three** operations: everything else on cc's own `System`
+interface (`src/systems/system.ts` — the members beyond `exec`, `readFile` and
+`readFileBytes`/`writeFile`) is DERIVED by cc over `exec`, listed in §7. The
+interface owns that count; nothing here restates it.
 
 **Non-POSIX targets, and non-GNU coreutils, are out of scope.** cc ships no BSD
 dialect: an untested second code path is worse than a refusal.
@@ -75,7 +77,7 @@ The provider answers exactly once:
 
 ```json
 {"type":"hello","protocol":1,"provider":"docker-exec/0.1.0",
- "capabilities":{"persistentShell":true,"processGroupSignal":true},
+ "capabilities":{"persistentShell":true,"processGroupSignal":true,"remotes":true},
  "system":{"os":"linux","pathSep":"/","shell":"/bin/bash","home":"/root"}}
 ```
 
@@ -92,6 +94,11 @@ The provider answers exactly once:
   passwd`, `$SHELL`, or a hardcoded `/bin/sh`) rather than omit the field.
 - The other `system` fields (`os`, `pathSep`, `home`) are advisory: cc reports
   them and defaults them when absent.
+- **The `system` descriptor describes the provider's DEFAULT target.** A
+  provider that advertises `remotes` still sends exactly one, and cc opens every
+  redirected shell with that one `system.shell` — so on a multi-target provider
+  every target gets the same shell. Per-remote descriptors are out of scope; a
+  provider whose targets need different shells has no way to say so yet.
 - Unknown *frame types* are likewise ignored by both ends. Unknown capability
   keys and unknown frame types are the extension point: **the contract can grow
   without a version bump.**
@@ -107,9 +114,10 @@ a user-visible difference, **and a test that runs the fallback**.
 | `exec`, `readFile`, `writeFile` | **1 — MUST** | Registration fails; there is no cc without them | — | — |
 | **`persistentShell`** | **2 — OPTIONAL** | cc runs every redirected shell command as a **one-shot `exec`** of the same framing, passing `cwd` explicitly and reading `$PWD` back from the sentinel to carry into the next call | **cwd persists; exports, shell functions and background jobs do not** — which matches the local CLI, whose `Bash` also carries only cwd. Three further differences the mode really does have, stated rather than glossed: **(1)** each command gets a fresh login shell, so profile-file output would land in the command's output — the framing's opening sentinel (§5) is what stops it, and it is load-bearing here in a way it is not for a persistent shell; **(2)** a cwd deleted since the last command fails the NEXT command with `ENOENT` rather than running it somewhere, where a persistent shell would keep running in the deleted directory; **(3)** the command is carried by the `exec` frame's `shell` form, so what it needs of the far side is that form's login shell, not the `system.shell` a persistent session is opened with | `tests/systems-shell-framing.test.mjs`, every case, in both modes |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
+| **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the entire existing suite under `npm run gate:systems` |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
-| `rename`, `symlink` | **not capabilities** | — | `mv` / `ln -s` over `exec`; **cc-side helpers, not provider surface** | Covered by §6 |
+| `rename`, `symlink` | **not in the protocol** | — | cc issues neither: nothing on the `System` interface renames or symlinks on a system, so a provider is never asked to | — |
 
 ## 3. Frames
 
@@ -127,15 +135,21 @@ anything — but it is lying in its own logs.
 | Frame | Fields | Meaning |
 |---|---|---|
 | `hello` | `protocol`, `client` | Opens the connection |
-| `exec` | `id`, `cwd`, **`argv`** *or* **`shell`**, `env?`, `timeoutMs?`, `killGraceMs?`, `stdin?` | Run a command |
+| `exec` | `id`, `cwd`, **`argv`** *or* **`shell`**, `remoteId?`, `env?`, `timeoutMs?`, `killGraceMs?`, `stdin?` | Run a command |
 | `stdin` | `id`, `dataB64` | Write to a running command's stdin. **Requires `persistentShell`** |
 | `stdinClose` | `id` | EOF its stdin. **Requires `persistentShell`** |
 | `signal` | `id`, `signal`, `processGroup` | Signal a running command. **`signal` is a POSIX signal NAME in `SIG*` form** (`"SIGTERM"`, `"SIGKILL"`) — never a bare name and never a number |
 | `close` | `id` | Abandon the operation |
-| `readFile` | `id`, `path`, `offset?`, `length?` | Read |
-| `writeFile` | `id`, `path`, `mode?`, `atomic?`, `exclusive?` | Open a write; `data`… then `end` follow |
+| `readFile` | `id`, `path`, `remoteId?`, `offset?`, `length?` | Read |
+| `writeFile` | `id`, `path`, `remoteId?`, `mode?`, `atomic?`, `exclusive?` | Open a write; `data`… then `end` follow |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a `writeFile` payload |
 | `end` | `id` | End of a `writeFile` payload |
+
+**`remoteId` is carried by those three REQUEST frames and by nothing else.**
+It names which of the provider's targets the operation is for, and it is sent
+only to a provider that advertises `remotes` — see §4 for why every follow-on
+frame omits it, and the `remotes` row in §2 for why an optimistically-sent field
+would be unsafe.
 
 ### provider → cc
 
@@ -159,6 +173,13 @@ command.
 
 Ids are generated by cc, are never reused, and are opaque to the provider.
 
+**AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME.** The `remoteId` on the
+opening `exec` / `readFile` / `writeFile` is the operation's target for every
+frame that follows it — `stdin`, `stdinClose`, `signal`, `close`, `data`, `end`
+carry no `remoteId` and a provider must not look for one on them. A provider
+that re-derived the target per frame would have to answer "which target" for a
+frame that never names one.
+
 - A frame for an id cc has already closed is **dropped**, not an error: cc's
   `close` and the provider's last frames cross on the wire by design.
 - A **second terminal frame** for a settled id is likewise dropped; the first
@@ -167,7 +188,7 @@ Ids are generated by cc, are never reused, and are opaque to the provider.
 ## 5. `exec` — the lifecycle
 
 ```
-cc  →  {"type":"exec","id":"e7","cwd":"/app","argv":["git","status"]}
+cc  →  {"type":"exec","id":"e7","remoteId":"ctr-a","cwd":"/app","argv":["git","status"]}
    ←  {"type":"stdout","id":"e7","seq":0,"dataB64":"…"}
    ←  {"type":"stderr","id":"e7","seq":1,"dataB64":"…"}
    ←  {"type":"exit","id":"e7","code":0,"signal":null,"timedOut":false}
@@ -277,7 +298,7 @@ user command.
 ## 6. `readFile` and `writeFile`
 
 ```
-cc  →  {"type":"readFile","id":"r3","path":"/app/README.md","length":4096}
+cc  →  {"type":"readFile","id":"r3","remoteId":"ctr-a","path":"/app/README.md","length":4096}
    ←  {"type":"readFileResult","id":"r3","size":18211,"mode":33188,"isBinary":false}
    ←  {"type":"data","id":"r3","seq":0,"dataB64":"…"}
    ←  {"type":"end","id":"r3"}
@@ -294,7 +315,7 @@ cc  →  {"type":"readFile","id":"r3","path":"/app/README.md","length":4096}
 - A requested extent above `MAX_FILE_BYTES` is `EFBIG`.
 
 ```
-cc  →  {"type":"writeFile","id":"w4","path":"/app/x","atomic":true}
+cc  →  {"type":"writeFile","id":"w4","remoteId":"ctr-a","path":"/app/x","atomic":true}
 cc  →  {"type":"data","id":"w4","seq":0,"dataB64":"…"}
 cc  →  {"type":"end","id":"w4"}
    ←  {"type":"writeFileResult","id":"w4","ok":true}
@@ -328,12 +349,38 @@ asked to run, and so the POSIX assumption is concrete.
 | `removeTree` | `rm -rf -- <path>` |
 | `unlink` | `unlink -- <path>` — one directory entry, never followed, never recursed |
 | `chmod` | `chmod <octal> -- <path>` |
-| `rename` / `symlink` | `mv -- <a> <b>` / `ln -s -- <target> <link>` |
+
+That is the whole list — it is what `System`'s derived members compile to, and a
+provider's `exec` is asked to run nothing else on cc's behalf.
 
 Derived commands carry **no `env` frame field**: they are cc's own plumbing, so
 they inherit the far side's environment (its PATH, its toolchain) and get
 `LC_ALL=C` from `env(1)` so the `strerror()` text stays untranslated for §8's
 classifier.
+
+### Every derivation is sent with `cwd: "/"`, and a provider MUST accept it
+
+**`cwd` on a derived command is a PLACEHOLDER, not a location.** Each command
+above carries its real target as an absolute path in `argv`; the far side's
+notion of "here" is not cc's, so there is no meaningful directory for cc to
+name. It sends `/` — chosen precisely because cc has no expectation about it.
+
+**A provider MUST NOT refuse `cwd: "/"`**, and in particular must not fence it
+against a remote's root. That matters most for exactly the provider §11
+describes: a `docker exec -w <cwd>` mapping that scoped `<cwd>` to a container's
+project root would refuse **every** derived operation — `stat`, `readDir`,
+`realpath`, `mkdir`, `removeTree`, `unlink`, `chmod`, all of them — while `exec`
+and the two file primitives kept working, which reads as cc being broken rather
+than as a fence doing its job. Fencing it also buys nothing: a provider cannot
+fence `argv`, and `argv` is where the real path is.
+
+**What routes a derivation instead is `remoteId`,** which every one of these
+frames carries like any other `exec` (§3). That is the compensating guarantee,
+and it is asserted on the wire rather than inferred from an operation
+succeeding: see `tests/systems-remote-id.test.mjs` → "every derived operation
+carries its binding on the wire". A provider that wants to scope a remote should
+scope `readFile`/`writeFile` `path` and a **non-placeholder** `exec` `cwd`; cc's
+own reference provider does exactly that.
 
 Costs cc accepts for the shrink, stated rather than hidden:
 
@@ -365,6 +412,7 @@ shell.
 | `EBUSY` | The wait for a serialised shell exceeded its bound. |
 | `ESHELLGONE` | The long-lived shell died, or a command destroyed the framing so no sentinel can arrive. |
 | `EFBIG` | A read or write above `MAX_FILE_BYTES`. |
+| `ENOREMOTE` | The request named a `remoteId` this provider does not serve — or named none, on a provider that advertises `remotes` and therefore has no default. cc converts it to `REMOTE_NOT_FOUND` (502) at the registry. **It MUST be id-addressed** — see §9. |
 
 ### What a provider puts in an `error` frame
 
@@ -377,6 +425,7 @@ provider's choice — it follows from what failed:
 | `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
 | an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
 | a `stdin` / `stdinClose` frame it did not advertise `persistentShell` for | `EUNSUPPORTED` |
+| a request naming a `remoteId` it does not serve, or naming none while it advertises `remotes` | `ENOREMOTE`, **id-addressed** |
 | a frame it could not read at all | `EPROTO`, **id-less** — that is a connection-level failure |
 | a filesystem failure it has no code for | `EUNKNOWN`, with `exitCode`/`stderr` filled in |
 
@@ -416,6 +465,7 @@ as "no such file" turns one fixable fault into a fleet of misses.
 | Repeated failures | Exponential backoff, 100 ms doubling to a 5 s ceiling. **Inside the window an operation is refused, not queued** — a caller told "unreachable" now beats one held open across a restart storm. |
 | A malformed frame | The connection is torn down and restarted like a death. |
 | An id-less `error` frame | Connection-level: everything in flight fails with that code. |
+| **One dead remote is not a dead connection** | On a provider serving many targets, one connection carries every target's work. So a refusal ABOUT a target — `ENOREMOTE`, or any FS code from an operation on it — **MUST be id-addressed**. A provider that answered a bad `remoteId` id-lessly would tear the connection down and fail every OTHER target's in-flight operation with it. Pinned by `tests/systems-protocol-conformance.test.mjs` → "ENOREMOTE is id-addressed". |
 
 ## 10. Verifying a provider
 
@@ -452,17 +502,21 @@ provider.
 ## 11. A `docker exec` provider, as a sanity check
 
 Docker is the exemplar the contract is checked against, never implemented or
-special-cased here.
+special-cased here. **It is also the motivating case for `remotes`:** the
+container id IS the `remoteId`, and one provider talks to the daemon on behalf
+of every container — so ten containers are one registry row and one process, not
+ten of each.
 
 | Protocol | Docker |
 |---|---|
-| `exec` | `docker exec -w <cwd> -e … <ctr> sh -c …` |
+| `exec` | `docker exec -w <cwd> -e … <ctr> sh -c …`, where `<ctr>` is the frame's `remoteId` |
+| `remotes` | `true` — the daemon serves every container it knows. An unknown `<ctr>` is `ENOREMOTE`, id-addressed |
 | the long-lived shell | one `docker exec -i <ctr> $SHELL -l` |
 | `signal`, `processGroup:true` | `docker exec … kill -- -<pgid>` → `processGroupSignal: true` |
-| `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode` |
+| `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
 
-Three primitives and two capabilities; a `docker exec` provider satisfies all of
-them. **Three things it is not thin about**, worth knowing before starting one:
+Three primitives and three capabilities; a `docker exec` provider satisfies all
+of them. **Three things it is not thin about**, worth knowing before starting one:
 
 1. **Reaping.** MUST 3 does not come free: `docker exec` children live in the
    container and are not reparented to the provider, so stdin-EOF ends the

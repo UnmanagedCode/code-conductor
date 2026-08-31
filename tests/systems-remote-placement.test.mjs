@@ -241,7 +241,7 @@ describe('remote project placement', () => {
     try { result = await deleteProject('app'); }
     finally { Object.assign(proto, orig); }
 
-    assert.deepEqual(result, { name: 'app', path: tree, system: remote.id });
+    assert.deepEqual(result, { name: 'app', path: tree, system: remote.id, remoteId: null });
     assert.deepEqual(removals, [], `no removal was issued on the system: ${removals.join('; ')}`);
     assertTreeUnchanged(assert, before, await snapshotTree(tree), 'the remote tree is byte-identical');
 

@@ -26,13 +26,14 @@ export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', '
 // `updateSystem(id, { launch: flakyLaunch({...}) })`, which disposes the live
 // handle, so the next operation gets the flaky process rather than a handle
 // spawned before the test configured anything.
-export function flakyLaunch({ budget, dieOn, dieStderr, errorFrame, flags = [] } = {}) {
+export function flakyLaunch({ budget, dieOn, dieStderr, errorFrame, errorCode, flags = [] } = {}) {
   return [
     'node', FLAKY_PROVIDER,
     ...(budget === undefined ? [] : ['--budget', String(budget)]),
     ...(dieOn === undefined ? [] : ['--die-on', dieOn]),
     ...(dieStderr === undefined ? [] : ['--die-stderr', dieStderr]),
     ...(errorFrame === undefined ? [] : ['--error-frame', errorFrame]),
+    ...(errorCode === undefined ? [] : ['--error-code', errorCode]),
     ...flags,
   ];
 }
@@ -41,12 +42,14 @@ export function referenceLaunch(...flags) {
   return ['node', REFERENCE_PROVIDER, ...flags];
 }
 
-export const REMOTE_ID = 'refbox';
+// The registered SYSTEM's id, which is not a remote's: one system serves many
+// remotes, and the two are different keys.
+export const SYSTEM_ID = 'refbox';
 
 // Register the reference provider as a non-local system and return a temp
 // directory on it to place trees under. `flags` reach the provider, so a test
 // can run the same fixture with a capability turned off.
-export async function bindRemoteSystem({ id = REMOTE_ID, flags = [] } = {}) {
+export async function bindRemoteSystem({ id = SYSTEM_ID, flags = [] } = {}) {
   const rec = await addSystem({ id, label: 'Reference box', launch: referenceLaunch(...flags) });
   const root = await fs.realpath(await mkdtemp('cc-remote-'));
   return { id: rec.id, root };

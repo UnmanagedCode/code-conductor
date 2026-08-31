@@ -21,10 +21,18 @@
 // enforces (a system needs a path; the path is absolute) are checked here too,
 // where the user is still looking at the field.
 //
+// One system can serve many named TARGETS, so a non-local system also offers a
+// `remoteId`. It is offered UNCONDITIONALLY there rather than gated on the
+// provider's `remotes` capability: cc cannot know that without connecting, and
+// the server's named refusal at create time (SYSTEM_NO_REMOTES /
+// REMOTE_NOT_FOUND, raised before anything is written) is what answers it. Blank
+// means the provider's own default target, so the field is omitted rather than
+// sent empty.
+//
 // Injected interface:
 //   - dom: { newProjectBtn, newProjectDialog, npName, npError, npPreview,
 //            npContributions, npForm, npConfirm, npScaffoldText,
-//            npSystem, npSystemPath, npSystemPathRow } els.
+//            npSystem, npSystemPath, npSystemPathRow, npRemote, npRemoteRow } els.
 //   - refreshProjects():      reloads the sidebar project list after a create.
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu.
 
@@ -111,15 +119,22 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     return v && v !== 'local' ? v : null;
   };
 
+  // Blank IS an answer — the provider's own default target — so it reads as
+  // null rather than as an empty target name.
+  const chosenRemote = () => (dom.npRemote?.value ?? '').trim() || null;
+
   // What the dialog says it is about to create — kept in step with both inputs,
   // because a preview that lags the placement is a promise about the wrong
   // machine.
   function updatePreview() {
     const name = dom.npName.value || '<name>';
     const system = chosenSystem();
-    dom.npPreview.textContent = system
-      ? `${dom.npSystemPath?.value || '<path>'} on system '${system}'`
-      : `~/project/${name}`;
+    if (!system) { dom.npPreview.textContent = `~/project/${name}`; return; }
+    const remote = chosenRemote();
+    // Same vocabulary the server uses in its own refusals ("remote 'r' of system
+    // 's'"), so the preview and the error that may follow it name one thing.
+    const where = remote ? `remote '${remote}' of system '${system}'` : `system '${system}'`;
+    dom.npPreview.textContent = `${dom.npSystemPath?.value || '<path>'} on ${where}`;
   }
 
   async function buildSystems() {
@@ -143,8 +158,12 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     syncSystemPathRow();
   }
 
+  // Both extra fields belong to the same choice: a path and a target are only
+  // meaningful once the project is on a system.
   function syncSystemPathRow() {
-    if (dom.npSystemPathRow) dom.npSystemPathRow.hidden = !chosenSystem();
+    const on = !!chosenSystem();
+    if (dom.npSystemPathRow) dom.npSystemPathRow.hidden = !on;
+    if (dom.npRemoteRow) dom.npRemoteRow.hidden = !on;
     updatePreview();
   }
 
@@ -153,6 +172,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     dom.npName.value = '';
     dom.npError.textContent = '';
     if (dom.npSystemPath) dom.npSystemPath.value = '';
+    if (dom.npRemote) dom.npRemote.value = '';
     showForm();
     await buildSystems();
     await buildContributions();
@@ -161,6 +181,7 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
   dom.npName.addEventListener('input', updatePreview);
   dom.npSystem?.addEventListener('change', syncSystemPathRow);
   dom.npSystemPath?.addEventListener('input', updatePreview);
+  dom.npRemote?.addEventListener('input', updatePreview);
   dom.newProjectDialog.addEventListener('close', async () => {
     if (dom.newProjectDialog.returnValue !== 'create') return; // cancel / confirmation Done
     const name = dom.npName.value.trim();
@@ -183,7 +204,12 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     try {
       const body = { name };
       if (conventions.length) body.conventions = conventions;
-      if (system) { body.system = system; body.systemPath = systemPath; }
+      if (system) {
+        body.system = system;
+        body.systemPath = systemPath;
+        const remote = chosenRemote();
+        if (remote) body.remoteId = remote;
+      }
       const created = await apiFetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       await refreshProjects();
       // A returned scaffold directive is shown read-only so it isn't lost.

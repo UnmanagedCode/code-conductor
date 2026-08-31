@@ -54,25 +54,40 @@ async function renderIndex() {
 
 const displayOf = (window, el) => window.getComputedStyle(el).display;
 
-test('the New Project dialog\'s "Path on that system" row is laid out per its hidden attribute', async () => {
-  const { window, document } = await renderIndex();
-  const row = document.getElementById('np-system-path-row');
-  assert.ok(row, 'index.html must still carry #np-system-path-row');
-  assert.equal(row.hasAttribute('hidden'), true, 'it ships hidden — a local project has no path to choose');
+// Elements index.html ships `hidden` that ALSO carry an author `display`, and
+// that some flow has to reveal. Both halves matter: the paired `[hidden]` reset
+// must exist, and it must be scoped to `[hidden]` rather than blanketing the
+// element out of existence for the flow that shows it.
+//
+// AN ELEMENT WITH NO AUTHOR `display` DOES NOT BELONG HERE. happy-dom ships no
+// UA stylesheet, so `display` for such an element is its tag default and never
+// `none` — the first assertion below would fail against perfectly correct
+// markup, and passing it would prove nothing anyway. Those are covered by the
+// sweep at the bottom, which asks the only question that is answerable here:
+// does any author `display` match them at all?
+const REVEALED_BY_A_FLOW = [
+  ['np-system-path-row', 'choosing a remote system must reveal the path field'],
+  ['np-remote-row', 'choosing a remote system must reveal the target field'],
+];
 
-  assert.equal(
-    displayOf(window, row), 'none',
-    'the row must not render while hidden; `dialog label { display: block }` outranks the UA [hidden] rule',
-  );
+for (const [id, why] of REVEALED_BY_A_FLOW) {
+  test(`#${id} is laid out per its hidden attribute, both ways`, async () => {
+    const { window, document } = await renderIndex();
+    const row = document.getElementById(id);
+    assert.ok(row, `index.html must still carry #${id}`);
+    assert.equal(row.hasAttribute('hidden'), true, 'it ships hidden');
 
-  // The other direction: the reset must be scoped to [hidden], not blanket the
-  // row out of existence for the remote case the dialog exists to offer.
-  row.hidden = false;
-  assert.notEqual(
-    displayOf(window, row), 'none',
-    'choosing a remote system must reveal the row',
-  );
-});
+    assert.equal(
+      displayOf(window, row), 'none',
+      'it must not render while hidden; an author `display` outranks the UA [hidden] rule',
+    );
+
+    // The other direction: a reset must be scoped to [hidden], not blanket the
+    // element out of existence for the flow that exists to show it.
+    row.hidden = false;
+    assert.notEqual(displayOf(window, row), 'none', why);
+  });
+}
 
 // Elements that must lay out while carrying `hidden`. An entry belongs here only
 // with a reason — the point of the sweep is that nothing opts out of `hidden`
@@ -121,6 +136,22 @@ test('nothing in index.html lays out while carrying the hidden attribute', async
   const { selectors, hidden, offenders } = sweep(window, document);
   assert.ok(selectors.length > 0, 'sanity: styles.css declares display somewhere');
   assert.ok(hidden.length > 0, 'sanity: index.html ships elements with a hidden attribute');
+  // COLLECTION, checked by name. `length > 0` says the collector works at all;
+  // it does not say a given element is IN scope, and an element the sweep never
+  // saw is indistinguishable from one it cleared. These two rely on the UA rule
+  // alone (no author `display` matches them, which is the point), so nothing
+  // else in this file would notice them dropping out of the query.
+  //
+  // DELIBERATELY NOT ALL ~57. A `querySelectorAll('[hidden]')` that returned
+  // some elements and not others is a happy-dom defect, and pinning it
+  // element-by-element buys brittleness rather than coverage: the list would
+  // have to be edited by every future markup change and would still only restate
+  // the query. The MATCHER — the half a break can shape around — is controlled
+  // per selector shape below instead.
+  const sweptIds = new Set(hidden.map(el => el.id));
+  for (const id of ['pr-blockers', 'composer-attachments']) {
+    assert.ok(sweptIds.has(id), `#${id} must be within the sweep's reach`);
+  }
 
   assert.deepEqual(
     offenders, [],
@@ -129,23 +160,44 @@ test('nothing in index.html lays out while carrying the hidden attribute', async
     + `or name it in RENDERS_WHILE_HIDDEN with a reason:\n  ${offenders.join('\n  ')}`,
   );
 
-  // POSITIVE CONTROL. An empty offender list is the passing answer, so this
-  // assertion is worthless unless a real collision would have shown up in it —
-  // and the two sanity checks above only pin that the collector and the document
-  // are non-empty. Break the MATCHER while collection stays healthy (a happy-dom
-  // upgrade changing `matches` semantics, or a selector form that makes the
-  // `catch` above swallow every attempt) and the sweep goes quietly blind.
-  //
-  // So: introduce a collision in the in-memory sheet and demand the same
-  // pipeline reports it. `dialog .hint` is chosen because #gd-empty-hint is
-  // reachable ONLY by descendant match — no id or class selector would find it —
-  // so nothing but real selector matching can produce this hit.
-  style.textContent += '\ndialog .hint { display: block; }';
-  const control = sweep(window, document);
-  assert.ok(
-    control.offenders.some(o => o.includes('#gd-empty-hint')),
-    'positive control failed: a deliberate `dialog .hint { display: block }` collision against '
-    + '<p class="hint" id="gd-empty-hint" hidden> went unreported, so the sweep above cannot be '
-    + `trusted to report a real one. Selector matching is broken, not the sheet.\n  saw: ${JSON.stringify(control.offenders)}`,
-  );
 });
+
+// POSITIVE CONTROLS. An empty offender list is the PASSING answer above, so that
+// assertion is worthless unless a real collision would have shown up in it — and
+// its sanity checks only pin that the collector and the document are non-empty.
+// Break the MATCHER while collection stays healthy (a happy-dom upgrade changing
+// `matches` semantics, or a selector form that makes the sweep's `catch` swallow
+// every attempt) and it goes quietly blind.
+//
+// So: inject a collision into the in-memory sheet and demand the SAME pipeline
+// reports it. One control per SELECTOR SHAPE the sweep relies on, because a
+// break can be shaped to spare one shape and not another — a matcher that only
+// handled `.hint` would leave a single descendant-and-class control green while
+// every id- and attribute-selector collision in styles.css sailed past.
+//
+// Each runs against its own fresh render, so exactly one injected selector is in
+// play and nothing else can produce the hit. #gd-empty-hint is the target
+// throughout: it carries `hidden`, has no author `display` of its own, and is
+// reachable by all three shapes.
+const MATCHER_CONTROLS = [
+  ['a descendant + class selector', 'dialog .hint { display: block; }'],
+  ['an id selector', '#gd-empty-hint { display: block; }'],
+  ['an attribute selector', '[id="gd-empty-hint"] { display: block; }'],
+];
+
+for (const [shape, css] of MATCHER_CONTROLS) {
+  test(`the sweep reports a collision declared through ${shape}`, async () => {
+    const { window, document, style } = await renderIndex();
+    assert.deepEqual(sweep(window, document).offenders, [],
+      'the control must start from a clean sweep, or it proves nothing');
+
+    style.textContent += `\n${css}`;
+    const control = sweep(window, document);
+    assert.ok(
+      control.offenders.some(o => o.includes('#gd-empty-hint')),
+      `positive control failed: a deliberate \`${css.trim()}\` collision against `
+      + '<p class="hint" id="gd-empty-hint" hidden> went unreported, so the sweep cannot be trusted '
+      + `to report a real one of this shape. Selector matching is broken, not the sheet.\n  saw: ${JSON.stringify(control.offenders)}`,
+    );
+  });
+}

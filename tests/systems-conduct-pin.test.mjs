@@ -44,23 +44,25 @@ async function writeRecord(name, record) {
   await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify(record, null, 2) + '\n');
 }
 
-const REMOTE = { workspace: 'CTF', system: 'prod-box', systemPath: '/app' };
+const REMOTE = { workspace: 'CTF', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' };
 
 test('a record claiming .conduct is on another system is IGNORED by the pin', async () => {
   await writeRecord(CONDUCT_PROJECT_NAME, REMOTE);
   // The record really is on disk and really does say prod-box — otherwise the
   // assertions below would pass against nothing.
   assert.deepEqual(await readProjectMeta(CONDUCT_PROJECT_NAME),
-    { workspace: 'CTF', system: 'prod-box', systemPath: '/app' });
+    { workspace: 'CTF', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
 
+  // Every placement field is pinned, the target included: a record naming both
+  // a system and a target on it is ignored whole, not narrowed.
   assert.deepEqual(await projectPlacement(CONDUCT_PROJECT_NAME),
-    { system: LOCAL_SYSTEM_ID, systemPath: null });
+    { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null });
   // Without the pin this THROWS (501: no transport to prod-box).
   assert.equal((await resolveSystem(CONDUCT_PROJECT_NAME)).id, LOCAL_SYSTEM_ID);
   // The pin is name-based, not record-based: an empty record proves nothing, so
   // the contradicting one above is the whole test. Any other project with the
   // same record is NOT pinned — that asymmetry is what the pin means.
-  assert.deepEqual(placementOf('other', REMOTE), { system: 'prod-box', systemPath: '/app' });
+  assert.deepEqual(placementOf('other', REMOTE), { system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
 });
 
 test('ensureConductProject still bootstraps LOCALLY against a contradicting record', async () => {
@@ -84,7 +86,7 @@ test('the still-referenced scan never counts .conduct onto a system', async () =
   // Both records say prod-box. Only the one that is not pinned is a reference —
   // so a `prod-box` row is deletable once `shipping` moves, and `.conduct` can
   // never make a system undeletable.
-  assert.deepEqual(await projectsBySystem(), { 'prod-box': ['shipping'] });
+  assert.deepEqual(await projectsBySystem(), { 'prod-box': [{ name: 'shipping', remoteId: 'ctr-7' }] });
 });
 
 test("cc's own store stays local for a project that IS on another system", async () => {
@@ -95,7 +97,7 @@ test("cc's own store stays local for a project that IS on another system", async
   // Its tree is unreachable, but its RECORD is cc's own bookkeeping and is read
   // from the local store like any other.
   assert.deepEqual(await readProjectMeta('shipping'),
-    { workspace: 'CTF', system: 'prod-box', systemPath: '/app' });
+    { workspace: 'CTF', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
   await assert.rejects(() => resolveSystem('shipping'), /prod-box/);
 });
 
@@ -114,7 +116,7 @@ test('an unrelated write PRESERVES the record\'s system fields', async () => {
   await writeRecord(CONDUCT_PROJECT_NAME, REMOTE);
   await writeProjectMeta(CONDUCT_PROJECT_NAME, { workspace: 'Other' });
   assert.deepEqual(await readProjectMeta(CONDUCT_PROJECT_NAME),
-    { workspace: 'Other', system: 'prod-box', systemPath: '/app' });
+    { workspace: 'Other', system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
   // Still not a reference: the pin outranks the record it just preserved.
   assert.deepEqual(await projectsBySystem(), {});
 });
@@ -123,9 +125,9 @@ test('a project on another system is listed with it, and refuses to resolve', as
   await createProject('shipping');
   await writeRecord('shipping', REMOTE);
   const shipping = (await listProjects()).find(p => p.name === 'shipping');
-  assert.deepEqual({ system: shipping.system, systemPath: shipping.systemPath },
-    { system: 'prod-box', systemPath: '/app' });
-  assert.deepEqual(await projectsBySystem(), { 'prod-box': ['shipping'] });
+  assert.deepEqual({ system: shipping.system, remoteId: shipping.remoteId, systemPath: shipping.systemPath },
+    { system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
+  assert.deepEqual(await projectsBySystem(), { 'prod-box': [{ name: 'shipping', remoteId: 'ctr-7' }] });
   // No transport yet, so the ONE thing that must not happen is resolving local
   // and operating on `<projectsRoot>/shipping` as if it were the tree.
   await assert.rejects(() => resolveSystem('shipping'), (e) => {
@@ -139,8 +141,8 @@ test('a local project gets NO project.json as a side effect of reading its syste
   await createProject('plain');
   const listed = await listProjects();
   const plain = listed.find(p => p.name === 'plain');
-  assert.deepEqual({ system: plain.system, systemPath: plain.systemPath },
-    { system: LOCAL_SYSTEM_ID, systemPath: null });
+  assert.deepEqual({ system: plain.system, remoteId: plain.remoteId, systemPath: plain.systemPath },
+    { system: LOCAL_SYSTEM_ID, remoteId: null, systemPath: null });
   assert.equal((await resolveSystem('plain')).id, LOCAL_SYSTEM_ID);
   // Absence of the field IS the local answer — nothing stamped it.
   await assert.rejects(
