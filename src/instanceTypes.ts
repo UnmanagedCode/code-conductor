@@ -19,6 +19,7 @@ import type { UiEvent } from './parser.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import type { PlaybookEnforcement } from './playbooks.ts';
+import type { SessionRedirect } from './systems/toolRedirect.ts';
 import type { Response } from 'express';
 
 export interface InstanceSummary {
@@ -212,6 +213,10 @@ export interface InstanceLike {
   pruneSession(input?: { cutTurnIndex?: unknown; keepLatestTurns?: unknown; pruneThinking?: unknown; inputMode?: unknown }): Promise<Record<string, unknown>>;
   enableDebug(): { ok: boolean; alreadyOn?: boolean; debugDir?: string | null; reason?: string };
   handleHookCallback(envelope: unknown, res: Response): void;
+  // This session's redirection to a remote system, or null for a project on
+  // cc's own machine. Read by the bash-forward route, which is the server side
+  // of a redirected Bash.
+  _redirect: SessionRedirect | null;
   emit(event: 'status', summary: InstanceSummary): void;
   on(event: 'status', cb: (s: InstanceSummary) => void): void;
   off(event: 'status', cb: (s: InstanceSummary) => void): void;

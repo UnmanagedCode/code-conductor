@@ -30,6 +30,7 @@ import { adoptProject, projectsRoot, projectStoreDir } from '../src/projects.ts'
 import { createWorktree, mergeWorktreeIntoParent } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 
 let nextRpcId = 1;
 async function callTool(baseUrl, name, args) {
@@ -70,28 +71,47 @@ describe('a remote project refuses what it cannot do, by name', () => {
 
   // ── Failure state: at session start ──────────────────────────────────
 
-  // PINS: spawning a worker on a remote project is refused with a NAMED code
-  // and no instance is created. Worker sessions on a system are the next phase;
-  // starting one here would run the CLI against a path that is not on this
-  // machine, and the CLI would silently create it.
-  test('spawning a worker on a remote project refuses, and creates no instance', async () => {
+  // PINS: a worker on a remote project runs in a cc-owned SESSION ROOT under
+  // the store, never in the project's own directory — that path is on another
+  // machine, and the CLI would silently create it here and work in it.
+  test('spawning a worker on a remote project runs it in a local session root', async () => {
     await adoptRemote();
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app' });
-    assert.equal(r.status, 501, JSON.stringify(r.body));
-    assert.match(r.body.error, /WORKER_SESSIONS_LOCAL_ONLY/);
-    assert.match(r.body.error, new RegExp(remote.id));
-    assert.equal(instances.list().length, 0, 'nothing was spawned');
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = instances.get(r.body.id);
+    assert.equal(inst.cwd, sessionRootPath(remote.id, 'app', null));
+    assert.notEqual(inst.cwd, path.join(remote.root, 'app'), 'not the tree on the system');
     assert.equal(await exists(path.join(projectsRoot(), 'app')), false,
-      'and no local directory was conjured for it');
+      'and no local directory was conjured under the projects root');
   });
 
-  // PINS: the same refusal on the MCP surface a conductor drives.
-  test('spawn_instance refuses a remote project too', async () => {
+  // PINS: the same on the MCP surface a conductor drives, and that the session
+  // really is redirected — an instance with no redirect would answer every file
+  // tool from cc's own disk.
+  test('spawn_instance runs a remote project redirected', async () => {
     await adoptRemote();
     const r = await callTool(baseUrl, 'spawn_instance', { project: 'app' });
-    assert.equal(r.isError, true, JSON.stringify(r));
-    assert.match(r.content[0].text, /WORKER_SESSIONS_LOCAL_ONLY/);
-    assert.equal(instances.list().length, 0);
+    assert.notEqual(r.isError, true, JSON.stringify(r));
+    const inst = [...instances.byId.values()][0];
+    assert.ok(inst._redirect, 'the session carries a redirection policy');
+    assert.equal(inst._redirect.map.systemPath, path.join(remote.root, 'app'));
+  });
+
+  // PINS: a `Bash(...)` permission rule the redirected forwarder would silently
+  // void REFUSES the spawn, naming the rule and its file. Measured against the
+  // real CLI: such a rule IS enforced under bypassPermissions, and rules match
+  // the post-hook input — so after the rewrite it would apply to nothing.
+  test('a Bash pattern rule the redirection would void refuses the spawn', async () => {
+    const tree = await adoptRemote();
+    await fs.mkdir(path.join(tree, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { deny: ['Bash(rm:*)'] } }));
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app' });
+    assert.equal(r.status, 501, JSON.stringify(r.body));
+    assert.match(r.body.error, /BASH_RULES_NOT_ENFORCEABLE/);
+    assert.match(r.body.error, /Bash\(rm:\*\)/);
+    assert.equal(instances.list().length, 0, 'nothing was spawned');
   });
 
   // PINS: a LOCAL project is unaffected by the guard — the refusal is about the

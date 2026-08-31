@@ -744,7 +744,7 @@ export function buildTools(): Tool[] {
             items: { type: 'string' },
             description: 'Slugs of project conventions to attach — call list_project_conventions to discover available slugs. Each appends its CLAUDE.md fragment (if any) and, when hasScaffold:true, contributes to the returned `scaffold` directive.',
           },
-          system: { type: 'string', description: 'Create the project on this registered system instead of under the projects root. Requires systemPath. No worker session can be spawned on a non-local system yet.' },
+          system: { type: 'string', description: 'Create the project on this registered system instead of under the projects root. Requires systemPath.' },
           systemPath: { type: 'string', description: 'Absolute path on `system` to create the project at. Required with `system`, refused without it.' },
         },
         required: ['name'],

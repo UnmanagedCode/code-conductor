@@ -1,6 +1,5 @@
-// Where a non-local system's local session roots will live, and the one
-// property of that location cc has to be sure of before it promises a system
-// can host sessions at all.
+// The local session root: where it lives, what lands in one, and the prefix
+// rule that says which paths belong to the system.
 //
 // A session root is cc-owned and LOCAL — the Claude CLI always runs on this
 // machine, so a project on another system still needs a local directory to be
@@ -8,16 +7,18 @@
 // is what stops two systems that each host a project at `/app` from colliding
 // on one local directory.
 //
-// WHAT LANDS IN ONE is not this module's business and is deliberately not built
-// yet: nothing spawns a worker on a non-local system, so a composer here would
-// have no caller. What IS needed now is the placement check, because
-// registration is the only moment the user can act on a store that cannot host
-// session roots.
+// IT IS NOT A MIRROR OF THE TREE. It holds exactly the config surface the CLI
+// reads implicitly — CLAUDE.md, CONVENTIONS.md, the repo-tracked `.claude/`
+// allow-list — because those reads fire no hook and so cannot be redirected.
+// Everything else a worker touches arrives through a hooked tool, one file at a
+// time. The pull is ONE WAY, system → local, at spawn and resume.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from '../projects.ts';
 import { httpError } from '../httpError.ts';
+import { CONVENTIONS_IMPORT_LINE } from '../conventionsImport.ts';
+import { requireAbsolute, type System } from './system.ts';
 
 // `<store>/systems/<systemId>/sessions/` — the parent of every session root for
 // one system. Exported so the assertion below and its test name one path rather
@@ -30,11 +31,17 @@ export function sessionRootsDir(systemId: string): string {
 //
 // The CLI probes for a containing repo at startup by walking UP from its cwd. A
 // session root inside one would make every session on this system report cc's
-// own store's repo as the project's — git state from the wrong tree, with no
-// env lever to turn the probe off. Placing session roots under the store is
-// what normally makes this true; asserting it is what makes a store that was
-// checked into a repo a REFUSAL at registration instead of a wrong answer at
-// every later spawn.
+// own store's repo as the project's — git state from the wrong tree.
+//
+// NO LONGER THE ONLY DEFENCE, and deliberately kept. src/settings.ts injects
+// `includeGitInstructions: false` for every redirected session, which is
+// per-session and needs no property of the store's placement to hold; this check
+// refuses at REGISTRATION only, so a store moved under a repository afterwards
+// would slip past it. Two levers exist for the probe (the settings key and
+// CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS — see src/settings.ts for why the key is
+// the one cc uses), so this check has stopped being load-bearing. It stays
+// because a store inside a repo is worth refusing on its own account: it is
+// where the transcripts, the session roots and every sidecar live.
 //
 // A decoy `.git` in the session root is deliberately NOT the fix: it would stop
 // the walk by making the CLI believe the session root is itself a repo.
@@ -63,4 +70,270 @@ export async function assertSessionRootsPlaceable(systemId: string): Promise<voi
     if (parent === dir) return; // reached the filesystem root
     dir = parent;
   }
+}
+
+// ── Where one session's root is ──────────────────────────────────────
+
+// `--` separates the project from its worktree. Both charsets are
+// `[a-zA-Z0-9._-]` (validateName / worktree names), so the separator cannot
+// occur inside either half and the key is unambiguous.
+export function sessionRootPath(systemId: string, project: string, worktree?: string | null): string {
+  const key = worktree ? `${project}--${worktree}` : project;
+  return path.join(sessionRootsDir(systemId), key);
+}
+
+// The manifest of what was last pulled, kept BESIDE the root rather than inside
+// it: the root is the CLI's cwd and the worker can see everything in it, so
+// cc's own bookkeeping does not belong there.
+function manifestPath(systemId: string, project: string, worktree?: string | null): string {
+  return `${sessionRootPath(systemId, project, worktree)}.manifest.json`;
+}
+
+// ── THE PREFIX RULE ──────────────────────────────────────────────────
+//
+// A path maps to the system ONLY when it lies under the session root. Stated
+// once, here, because getting it wrong in either direction is silent: mapping
+// too much sends a read of an attachment (which lives under the store) or of
+// `~/.claude/**` to the wrong machine, and mapping too little leaves a tool
+// answering from a local path the system knows nothing about — the boundary
+// leak that costs a worker its trust in its own tool results.
+//
+// Containment is decided with path.relative, never a string prefix: a prefix
+// test claims a merely prefix-SHARING sibling (`<root>-backup`) is inside.
+export class SessionPathMap {
+  readonly root: string;
+  readonly systemPath: string;
+
+  constructor(root: string, systemPath: string) {
+    this.root = root;
+    this.systemPath = systemPath;
+  }
+
+  // The system path a local one names, or null when the local path is not the
+  // system's business.
+  toSystem(localAbs: string): string | null {
+    const rel = within(localAbs, this.root);
+    return rel === null ? null : (rel === '' ? this.systemPath : path.posix.join(this.systemPath, toPosix(rel)));
+  }
+
+  // The local path a system one names, or null when it lies outside the
+  // project's tree. Used for the output annotation, never to open a file.
+  toLocal(systemAbs: string): string | null {
+    const rel = withinPosix(systemAbs, this.systemPath);
+    return rel === null ? null : (rel === '' ? this.root : path.join(this.root, rel));
+  }
+}
+
+// '' when equal, the relative path when inside, null when outside.
+function within(inner: string, outer: string): string | null {
+  const rel = path.relative(outer, inner);
+  if (rel === '') return '';
+  if (path.isAbsolute(rel) || rel === '..' || rel.startsWith(`..${path.sep}`)) return null;
+  return rel;
+}
+
+// The same test in the SYSTEM's path space. cc's own separator is not
+// necessarily the system's, and A4 fixes the system's at `/`.
+function withinPosix(inner: string, outer: string): string | null {
+  const rel = path.posix.relative(outer, inner);
+  if (rel === '') return '';
+  if (path.posix.isAbsolute(rel) || rel === '..' || rel.startsWith('../')) return null;
+  return rel;
+}
+
+function toPosix(rel: string): string {
+  return path.sep === '/' ? rel : rel.split(path.sep).join('/');
+}
+
+// ── §3.2 / §3.4: the allow-list, and what it costs ───────────────────
+
+// A FIXED allow-list, not a whole-directory copy. Each entry is a config
+// surface the CLI reads implicitly — no hook fires for it (M7), so it cannot be
+// redirected and must be present locally or it is simply absent from the
+// session. Anything NOT here reaches the worker through a hooked tool instead.
+const ALLOW_FILES = ['CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json'];
+const ALLOW_DIRS = ['.claude/skills', '.claude/commands', '.claude/agents'];
+
+// Caps, per §3.4's "warns loudly and skips rather than failing the spawn". A
+// repo that committed something enormous under `.claude/skills` must not be a
+// project cc cannot open a session on.
+export const SESSION_ROOT_FILE_CAP_BYTES = 256 * 1024;
+export const SESSION_ROOT_TOTAL_CAP_BYTES = 4 * 1024 * 1024;
+
+export interface SessionRootSkip { path: string; reason: string }
+
+export interface ComposedSessionRoot {
+  // Realpath-clean and stable: S14 keys the CLI's transcript directory off
+  // getcwd(), so cc must hand it the same string the CLI will read back.
+  root: string;
+  pulled: string[];
+  skipped: SessionRootSkip[];
+}
+
+interface ManifestEntry { size: number; mtimeMs: number }
+
+// Compose (or refresh) the session root for one worker session.
+//
+// Runs at spawn AND resume, before launch(). A worker that writes a new skill
+// mid-session lands it on the system and sees it at the NEXT spawn — the same
+// as locally, where the CLI reads its config once at startup.
+export async function composeSessionRoot({ system, systemId, systemPath, project, worktree = null }: {
+  system: System; systemId: string; systemPath: string; project: string; worktree?: string | null;
+}): Promise<ComposedSessionRoot> {
+  requireAbsolute('composeSessionRoot', 'systemPath', systemPath);
+  const rootRaw = sessionRootPath(systemId, project, worktree);
+  await fs.mkdir(rootRaw, { recursive: true });
+  // The CLI encodes its transcript directory from getcwd(), which is always the
+  // realpath. A store reached through a symlink would otherwise give cc and the
+  // CLI two spellings of one session directory (S14, and the same reason
+  // resolveProjectDir realpaths an external project).
+  const root = await fs.realpath(rootRaw);
+
+  const manifest = await readManifest(systemId, project, worktree);
+  const listing = await listAllowed(system, systemPath);
+
+  const next = new Map<string, ManifestEntry>();
+  const skipped: SessionRootSkip[] = [];
+  const pulled: string[] = [];
+  let total = 0;
+
+  for (const entry of listing) {
+    if (entry.size > SESSION_ROOT_FILE_CAP_BYTES) {
+      skipped.push({ path: entry.rel, reason: `${entry.size} bytes is over the ${SESSION_ROOT_FILE_CAP_BYTES}-byte per-file cap` });
+      continue;
+    }
+    if (total + entry.size > SESSION_ROOT_TOTAL_CAP_BYTES) {
+      skipped.push({ path: entry.rel, reason: `the ${SESSION_ROOT_TOTAL_CAP_BYTES}-byte session-root cap was already reached` });
+      continue;
+    }
+    total += entry.size;
+    next.set(entry.rel, { size: entry.size, mtimeMs: entry.mtimeMs });
+    const local = path.join(root, entry.rel);
+    const prev = manifest.get(entry.rel);
+    // readFile only for CHANGED entries — the manifest is what turns a resume
+    // into one `find` for an unchanged config surface. An entry whose local
+    // copy has gone (a wiped store) is always re-pulled.
+    if (prev && prev.size === entry.size && prev.mtimeMs === entry.mtimeMs && await exists(local)) continue;
+    await fs.mkdir(path.dirname(local), { recursive: true });
+    await fs.writeFile(local, await system.readFile(entry.abs));
+    pulled.push(entry.rel);
+  }
+
+  // An entry that has gone from the system must go from the root too. A stale
+  // local copy is a boundary leak: Read would answer from a file the system,
+  // and therefore Bash, says is not there.
+  for (const rel of manifest.keys()) {
+    if (next.has(rel)) continue;
+    await fs.rm(path.join(root, rel), { force: true });
+  }
+
+  // The CLI's own CLAUDE.md discovery is the only channel CONVENTIONS.md has,
+  // and the system's copy is not required to have arranged the import. Applied
+  // to the LOCAL copy only — the pull is one way, and rewriting the system's
+  // file from a session composer would be a write nobody asked for.
+  await ensureLocalImport(path.join(root, 'CLAUDE.md'), next.has('CLAUDE.md'));
+
+  await writeManifest(systemId, project, worktree, next);
+  return { root, pulled, skipped };
+}
+
+interface Listed { rel: string; abs: string; size: number; mtimeMs: number }
+
+// ONE batched `exec` for the whole allow-list — a `find` over the four fixed
+// files and three fixed directories, plus a second pass for the `@`-imports the
+// first pass's CLAUDE.md names. Two round trips at spawn, not one per entry.
+async function listAllowed(system: System, systemPath: string): Promise<Listed[]> {
+  const targets = [...ALLOW_FILES, ...ALLOW_DIRS].map(rel => path.posix.join(systemPath, rel));
+  const first = await findManifest(system, systemPath, targets);
+  const claude = first.find(e => e.rel === 'CLAUDE.md');
+  if (!claude) return first;
+  const imports = parseImports(await system.readFile(claude.abs), systemPath);
+  if (imports.length === 0) return first;
+  const have = new Set(first.map(e => e.rel));
+  const extra = (await findManifest(system, systemPath, imports)).filter(e => !have.has(e.rel));
+  return [...first, ...extra];
+}
+
+async function findManifest(system: System, systemPath: string, targets: string[]): Promise<Listed[]> {
+  if (targets.length === 0) return [];
+  // NUL-terminated records, so a filename containing a newline is unambiguous
+  // rather than a malformed line cc has to decide what to do with. `find` exits
+  // non-zero for each absent target and still reports the ones that exist, so
+  // the exit code is not the answer here — the records are.
+  const r = await system.exec(
+    { argv: ['find', ...targets, '-type', 'f', '-printf', '%s\\t%T@\\t%p\\0'] },
+    { cwd: systemPath, stdin: 'ignore' },
+  );
+  if (r.spawnError) {
+    throw httpError(502, `composing the session root: could not list the config surface on the system: ${r.spawnError}`);
+  }
+  const out: Listed[] = [];
+  for (const rec of r.stdout.split('\0')) {
+    if (rec === '') continue;
+    const m = /^(\d+)\t(\d+(?:\.\d+)?)\t([\s\S]+)$/.exec(rec);
+    if (!m) throw httpError(502, `composing the session root: unparseable find record ${JSON.stringify(rec)}`);
+    const abs = m[3];
+    const rel = withinPosix(abs, systemPath);
+    // A `find` that walked out of the tree (a symlinked allow-list dir) is not
+    // this project's config surface — dropped rather than written to a local
+    // path composed from `..`.
+    if (rel === null || rel === '') continue;
+    out.push({ rel, abs, size: Number(m[1]), mtimeMs: Math.round(Number(m[2]) * 1000) });
+  }
+  return out;
+}
+
+// ONE LEVEL of `@`-import, per §3.5. A chain deeper than that is an accepted
+// limitation: pulling transitively means walking the system once per level at
+// every spawn, for a shape almost no project uses.
+//
+// Absolute and escaping targets are dropped — an import is a path in the
+// project's own tree, and one that is not cannot be placed under the root.
+function parseImports(claudeMd: string, systemPath: string): string[] {
+  const out: string[] = [];
+  for (const line of claudeMd.split('\n')) {
+    const m = /^\s*@(\S+)\s*$/.exec(line);
+    if (!m) continue;
+    const spec = m[1];
+    if (spec.startsWith('/') || spec.startsWith('~')) continue;
+    const abs = path.posix.normalize(path.posix.join(systemPath, spec));
+    if (withinPosix(abs, systemPath) === null) continue;
+    out.push(abs);
+  }
+  return out;
+}
+
+// The session root's CLAUDE.md must carry the `@CONVENTIONS.md` import: a
+// CONVENTIONS.md nothing imports delivers nothing. Same three branches as
+// ensureConventionsImport — absent → create, present without → PREPEND keeping
+// every byte, present with → no write — detected line-level so prose naming the
+// file does not read as an import.
+async function ensureLocalImport(target: string, pulled: boolean): Promise<void> {
+  if (!pulled) {
+    await fs.writeFile(target, `${CONVENTIONS_IMPORT_LINE}\n`);
+    return;
+  }
+  const existing = await fs.readFile(target, 'utf8');
+  if (existing.split('\n').some(line => line.trim() === CONVENTIONS_IMPORT_LINE)) return;
+  await fs.writeFile(target, `${CONVENTIONS_IMPORT_LINE}\n${existing}`);
+}
+
+async function exists(p: string): Promise<boolean> {
+  try { await fs.stat(p); return true; } catch { return false; }
+}
+
+async function readManifest(systemId: string, project: string, worktree: string | null): Promise<Map<string, ManifestEntry>> {
+  try {
+    const raw: unknown = JSON.parse(await fs.readFile(manifestPath(systemId, project, worktree), 'utf8'));
+    if (!raw || typeof raw !== 'object') return new Map();
+    return new Map(Object.entries(raw as Record<string, ManifestEntry>));
+  } catch {
+    // A missing or corrupt manifest costs a full re-pull, never a failed spawn:
+    // it is a cache of what cc last wrote, not a record anything depends on.
+    return new Map();
+  }
+}
+
+async function writeManifest(systemId: string, project: string, worktree: string | null, entries: Map<string, ManifestEntry>): Promise<void> {
+  await fs.writeFile(manifestPath(systemId, project, worktree), JSON.stringify(Object.fromEntries(entries)));
 }

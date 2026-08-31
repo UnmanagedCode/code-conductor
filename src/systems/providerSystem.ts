@@ -125,9 +125,23 @@ export class ProviderSystem implements System, ShellHost {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
+        opts.signal?.removeEventListener('abort', onAbort);
         this.#conn.close(id);
         resolve(collector.result(code, { ...extra, durationMs: Date.now() - started }));
       };
+
+      // Cancellation: `close` is the provider's instruction to kill the command
+      // hard (docs/systems-protocol.md), which is the same lever the abandon
+      // timer below pulls. The result still resolves — `exec` never rejects —
+      // and the caller decides what an aborted command means.
+      const onAbort = () => {
+        this.#conn.send({ type: 'close', id });
+        finish(130, { timedOut: false, descendantsMaySurvive: !hs.capabilities.processGroupSignal });
+      };
+      if (opts.signal) {
+        if (opts.signal.aborted) queueMicrotask(onAbort);
+        else opts.signal.addEventListener('abort', onAbort, { once: true });
+      }
 
       // ARMED UNCONDITIONALLY. When the caller named a deadline the provider
       // owns it and this is only slack; when the caller named none, this is the
@@ -191,6 +205,7 @@ export class ProviderSystem implements System, ShellHost {
     }
     await this.#request<void>('w', (id) => ({
       type: 'writeFile', id, path: filePath,
+      ...(opts.mode === undefined ? {} : { mode: opts.mode & 0o7777 }),
       ...(opts.atomic ? { atomic: true } : {}),
       ...(opts.exclusive ? { exclusive: true } : {}),
     }), (id, f, resolve) => {
@@ -210,9 +225,17 @@ export class ProviderSystem implements System, ShellHost {
   async #read(filePath: string, range: { length?: number }): Promise<{ data: Buffer; stat: { size: number; mode: number; isBinary: boolean } }> {
     const chunks: Buffer[] = [];
     let meta: { size: number; mode: number; isBinary: boolean } | null = null;
+    // THE FENCE ON WHAT CC KEEPS, which is a different question from the length
+    // cc ASKS for. `length` is validated up front, but the accumulation below
+    // happens in cc's own heap and a provider is not trusted to honour a bound
+    // it was merely told — nor can it, for a file that grew since the stat. A
+    // caller's own cap (the file bridge's 1 MB, say) protects the WORKER; this
+    // protects the orchestrator, and every other session on it.
+    const fence = Math.min(range.length ?? MAX_FILE_BYTES, MAX_FILE_BYTES);
+    let kept = 0;
     const data = await this.#request<Buffer>('r', (id) => ({
       type: 'readFile', id, path: filePath, ...(range.length === undefined ? {} : { length: range.length }),
-    }), (_id, f, resolve) => {
+    }), (id, f, resolve, fail) => {
       if (f.type === 'readFileResult') {
         meta = {
           size: typeof f.size === 'number' ? f.size : 0,
@@ -220,7 +243,17 @@ export class ProviderSystem implements System, ShellHost {
           isBinary: f.isBinary === true,
         };
       } else if (f.type === 'data') {
-        chunks.push(decodeData(f));
+        const chunk = decodeData(f);
+        kept += chunk.length;
+        if (kept > fence) {
+          // `close` tells the provider to stop; the refusal is what the caller
+          // sees, because a clipped read reported as success is the failure this
+          // whole taxonomy exists to avoid.
+          this.#conn.send({ type: 'close', id });
+          fail(new SystemError('EFBIG', `readFile '${filePath}': the provider sent more than ${fence} bytes`));
+          return;
+        }
+        chunks.push(chunk);
       } else if (f.type === 'end') {
         resolve(Buffer.concat(chunks));
       }
@@ -234,7 +267,11 @@ export class ProviderSystem implements System, ShellHost {
   async #request<T>(
     prefix: string,
     open: (id: string) => ClientFrame,
-    onFrame: (id: string, f: AnyFrame, resolve: (v: T) => void) => void,
+    // `fail` is for an operation that must refuse on a frame the provider was
+    // entitled to send — a payload past the consumer's own fence — as opposed to
+    // an `error` frame, which #request answers itself. Both go through the same
+    // `done()`, so the id is closed exactly once either way.
+    onFrame: (id: string, f: AnyFrame, resolve: (v: T) => void, fail: (e: Error) => void) => void,
     afterOpen?: (id: string) => void,
   ): Promise<T> {
     await this.#conn.ensureUp();
@@ -267,7 +304,7 @@ export class ProviderSystem implements System, ShellHost {
             )));
             return;
           }
-          onFrame(id, f, (v) => done(() => resolve(v)));
+          onFrame(id, f, (v) => done(() => resolve(v)), (e) => done(() => reject(e)));
         },
         down: (err) => done(() => reject(err)),
       });
@@ -429,7 +466,7 @@ export class ProviderSystem implements System, ShellHost {
 
   // The long-lived shell that carries `Bash` continuity for this system. One
   // per system handle; opened lazily on the first command.
-  shell(opts: { cwd: string; env?: NodeJS.ProcessEnv } & Partial<{ commandTimeoutMs: number; busyWaitMs: number }>): ProviderShell {
+  shell(opts: { cwd: string; env?: NodeJS.ProcessEnv } & Partial<{ commandTimeoutMs: number; maxOutputBytes: number }>): ProviderShell {
     if (!this.#shell) this.#shell = new ProviderShell(this, opts);
     return this.#shell;
   }

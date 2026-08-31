@@ -41,7 +41,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
-import { composeProjectConventionsDoc } from '../projectClaudeMd.ts';
+import { composeProjectConventionsDoc, placementDisclosure } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
@@ -1861,7 +1861,9 @@ export async function setProjectWorkspace({ project, workspace }: { project: str
 export async function createProject({ name, conventions = [], system, systemPath }: {
   name: string; conventions?: string[]; system?: string; systemPath?: string;
 }) {
-  const conventionsDoc = await composeProjectConventionsDoc(conventions);
+  const conventionsDoc = await composeProjectConventionsDoc(conventions, {
+    system: placementDisclosure(system, systemPath),
+  });
   const scaffold = await composeProjectScaffold(name, conventions);
   const created = await fsCreateProject(name, { conventionsDoc, system, systemPath });
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST

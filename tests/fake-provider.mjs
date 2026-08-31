@@ -23,6 +23,10 @@
 //   bad-shell     says hello with an empty system.shell
 //   bad-b64       says hello, then answers an exec with a CORRUPTED payload
 //   no-datab64    says hello, then answers with a payload frame that has none
+//   flood-read    says hello, then answers a readFile with FAR more data than
+//                 was asked for and never an `end` — the shape that makes cc's
+//                 own accumulation, not the far side, the thing that runs out
+//                 of memory
 
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
@@ -108,6 +112,21 @@ function handle(f) {
     return;
   }
   if (f.type === 'readFile') {
+    if (mode === 'flood-read') {
+      // A megabyte at a time, forever, whatever `length` said. A provider is
+      // not trusted to honour it — and a file can also grow between the stat
+      // and the read — so the CONSUMER has to bound what it keeps.
+      send({ type: 'readFileResult', id: f.id, size: 8, mode: 0o100644, isBinary: false });
+      const mb = Buffer.alloc(1024 * 1024, 0x78).toString('base64');
+      let seq = 0;
+      const pump = () => {
+        if (process.stdout.destroyed) return;
+        for (let i = 0; i < 8; i++) send({ type: 'data', id: f.id, seq: seq++, dataB64: mb });
+        setTimeout(pump, 5);
+      };
+      pump();
+      return;
+    }
     const data = Buffer.from(`fake launch ${launch}`);
     send({ type: 'readFileResult', id: f.id, size: data.length, mode: 0o100644, isBinary: false });
     send({ type: 'data', id: f.id, seq: 0, dataB64: data.toString('base64') });

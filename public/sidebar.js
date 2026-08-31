@@ -738,7 +738,7 @@ export class Sidebar {
       systemPill.title = unreachable
         ? unreachable
         : `this project's tree, git repo and commands live on system '${p.system}' at ${p.systemPath}`
-          + ` — cc runs worker sessions only on its own machine`;
+          + ` — a worker session runs the claude CLI here and redirects its shell and file tools there`;
       systemPill.classList.toggle('system-pill-unreachable', !!unreachable);
       if (!systemPill.isConnected) {
         (noCommits.isConnected ? noCommits : pill.isConnected ? pill : nameSpan).after(systemPill);
@@ -746,13 +746,14 @@ export class Sidebar {
     } else if (systemPill.isConnected) {
       systemPill.remove();
     }
-    // A worker session runs on cc's own machine, in the project's directory —
-    // which for a remote project is not here, and for an unreachable one cannot
-    // even be read. Delete deliberately stays on both: unregistering is what a
-    // user can still do, and it never touches the tree.
+    // A worker session on a REMOTE project is real: the CLI runs here, in a
+    // cc-owned session root, and its shell and file tools reach the system. On
+    // an UNREACHABLE one it cannot start at all, so the button stays hidden
+    // rather than offered and then failing. Delete stays on both: unregistering
+    // is what a user can still do, and it never touches the tree.
     const addBtn = row._addBtn;
     if (addBtn) {
-      const showAdd = !remote && !unreachable;
+      const showAdd = !unreachable;
       if (showAdd && !addBtn.isConnected) row.querySelector('.delete-project').before(addBtn);
       else if (!showAdd && addBtn.isConnected) addBtn.remove();
     }

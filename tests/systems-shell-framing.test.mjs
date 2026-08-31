@@ -19,10 +19,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { ProviderShell } from '../src/systems/providerShell.ts';
 import {
-  beginFor, frameCommand, newNonce, parseFramedStderr, parseFramedStdout, sentinelFor,
+  FramedStreamFilter, beginFor, frameCommand, newNonce,
+  parseFramedStderr, parseFramedStdout, sentinelFor,
 } from '../src/systems/shellFraming.ts';
 import { makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
+import { waitFor } from './helpers.mjs';
 
 // The opening sentinel exactly as the framed script emits it — INCLUDING the
 // injected leading newline, without which the marker glues itself to whatever
@@ -47,6 +49,161 @@ async function withShell(flags, fn, shellOpts = {}) {
     await rmrf(dir);
   }
 }
+
+// PINS: closing a shell while a command is in flight FAILS that command. A
+// close that lands mid-command — an interrupt, an idle sweep — must not drop
+// the in-flight request, or its caller awaits a promise nothing will settle and
+// the session wedges with no error anywhere.
+test('closing a shell mid-command fails the command instead of dropping it', async () => {
+  await withShell([], async (shell) => {
+    const running = shell.run('sleep 30');
+    // Let the command reach the shell before the close, so the pending request
+    // really is in flight rather than not yet written.
+    await new Promise(r => setTimeout(r, 50));
+    await shell.close();
+    await assert.rejects(running, (e) => {
+      assert.equal(e.code, 'ESHELLGONE');
+      return true;
+    });
+  });
+});
+
+// ── Streaming the same frame, without leaking it ─────────────────────
+//
+// A redirected Bash must show its output as it arrives, which means forwarding
+// bytes BEFORE the frame boundary has been seen. FramedStreamFilter is the one
+// piece that makes that safe, and the only property that matters is that it
+// agrees with the parser exactly: whatever it emits, concatenated, must be the
+// same string the parser would have produced from the whole stream at the end.
+//
+// The framing itself is UNCHANGED. Everything below is derived from rules the
+// parser already has — nothing before the opening sentinel is the command's,
+// the closing sentinel must start a line, first match wins, and cc's injected
+// newline is stripped — so the streaming path cannot drift from the buffered
+// one without one of these failing.
+
+// Every way a stream can be cut into chunks, for a handful of representative
+// splits: one byte at a time (the worst case for a partial sentinel), and every
+// single cut point.
+function* splittings(text) {
+  yield [...text];                                  // byte by byte
+  for (let i = 0; i <= text.length; i++) yield [text.slice(0, i), text.slice(i)];
+}
+
+function drain(filter, chunks) {
+  return chunks.map(c => filter.push(c)).join('');
+}
+
+// The bytes a real shell would produce for one framed command: a login banner
+// the command never wrote, the command's own output, then the frame.
+function stdoutStream(nonce, { banner = '', body = '', code = 0, cwd = '/app' } = {}) {
+  return `${banner}\n${beginFor(nonce)}\n${body}`
+    + `\n${sentinelFor(nonce)} ${code} ${Buffer.from(cwd).toString('base64')}\n`;
+}
+
+function stderrStream(nonce, { banner = '', body = '' } = {}) {
+  return `${banner}\n${beginFor(nonce)}\n${body}\n${sentinelFor(nonce)}\n`;
+}
+
+const BODIES = [
+  '',                                   // a command that printed nothing
+  'one line\n',                         // the ordinary case: a trailing newline
+  'no trailing newline',                // and the case cc's injected \n exists for
+  'a\nb\nc\n',
+  'blank line follows\n\n',
+  // A command that ECHOES the sentinel — the measured desync. Mid-line and at a
+  // line start with a non-matching tail: both are OUTPUT, not a boundary.
+  'echoing MARKER mid-line\nMARKER not-a-frame\ndone\n',
+  // A line that starts like the sentinel but is a different marker.
+  'MARKER_EXTRA 0 x\n',
+];
+
+// PINS THE WHOLE CONTRACT: for every body and every way of cutting the stream,
+// what the filter emits equals what the parser extracts. One property, and it
+// is the only thing the streaming path has to get right.
+test('the stream filter emits exactly what the parser would extract, under every split', () => {
+  const nonce = newNonce();
+  const marker = sentinelFor(nonce);
+  for (const raw of BODIES) {
+    const body = raw.replaceAll('MARKER', marker);
+    for (const banner of ['', 'nvm banner\n', 'unterminated banner']) {
+      const text = stdoutStream(nonce, { banner, body });
+      const expected = parseFramedStdout(text, nonce).text;
+      for (const chunks of splittings(text)) {
+        assert.equal(drain(new FramedStreamFilter(nonce, 'out'), chunks), expected,
+          `stdout body=${JSON.stringify(body)} banner=${JSON.stringify(banner)}`);
+      }
+      const errText = stderrStream(nonce, { banner, body });
+      const errExpected = parseFramedStderr(errText, nonce).text;
+      for (const chunks of splittings(errText)) {
+        assert.equal(drain(new FramedStreamFilter(nonce, 'err'), chunks), errExpected,
+          `stderr body=${JSON.stringify(body)}`);
+      }
+    }
+  }
+});
+
+// PINS: no fragment of a sentinel, or of the opening marker, ever reaches the
+// worker — not even split across two chunks, which is the whole hazard
+// streaming introduces. The login banner never reaches it either.
+test('no part of the framing, and nothing before it, is ever emitted', () => {
+  const nonce = newNonce();
+  const text = stdoutStream(nonce, { banner: 'PROFILE BANNER\n', body: 'real output\n' });
+  for (const chunks of splittings(text)) {
+    const filter = new FramedStreamFilter(nonce, 'out');
+    for (const c of chunks) {
+      const emitted = filter.push(c);
+      assert.ok(!emitted.includes('__CC_'), `leaked framing: ${JSON.stringify(emitted)}`);
+      assert.ok(!emitted.includes('PROFILE'), `leaked the shell banner: ${JSON.stringify(emitted)}`);
+    }
+  }
+});
+
+// PINS: output really does come out EARLY. The property test above would be
+// satisfied by a filter that emitted everything at the end, which is exactly
+// the behaviour being replaced.
+test('the filter emits a complete line before the frame closes', () => {
+  const nonce = newNonce();
+  const filter = new FramedStreamFilter(nonce, 'out');
+  assert.equal(filter.push(`\n${beginFor(nonce)}\n`), '');
+  assert.equal(filter.push('part1\n'), 'part1', 'the line is out; only cc\'s possible injected newline is held');
+  assert.equal(filter.push('part2\n'), '\npart2');
+  assert.equal(filter.push(`\n${sentinelFor(nonce)} 0 ${Buffer.from('/app').toString('base64')}\n`), '\n');
+});
+
+// PINS: when the frame NEVER closes — the command took the shell with it — what
+// the command did print is still released, and still without any fragment of
+// the framing. Held-back bytes are held pending a sentinel; once no sentinel can
+// arrive, they are the command's own output and belong to the worker.
+test('flushing an unclosed frame releases the output but never a partial sentinel', () => {
+  const nonce = newNonce();
+  const s = sentinelFor(nonce);
+
+  const clean = new FramedStreamFilter(nonce, 'out');
+  assert.equal(clean.push(`\n${beginFor(nonce)}\nO\nO2\n`), 'O\nO2');
+  assert.equal(clean.flush(), '\n', 'the newline held pending a sentinel that never came');
+
+  // The shell died PART WAY THROUGH writing the sentinel. Those bytes are
+  // framing, not output, and must not be released by the flush.
+  const cut = new FramedStreamFilter(nonce, 'out');
+  cut.push(`\n${beginFor(nonce)}\nmine\n\n${s.slice(0, 12)}`);
+  assert.ok(!cut.flush().includes('__CC_'), 'no fragment of the sentinel escapes');
+
+  // And a flush is terminal, like the boundary.
+  assert.equal(clean.flush(), '');
+  assert.equal(clean.push('later'), '');
+});
+
+// PINS: once the frame has closed the filter goes quiet. A forgery's trailing
+// output belongs to nobody, and letting it through would attribute it to the
+// NEXT command — the desync the parser's first-match-wins rule exists to
+// confine to one command.
+test('the filter stops at the boundary and emits nothing after it', () => {
+  const nonce = newNonce();
+  const filter = new FramedStreamFilter(nonce, 'out');
+  filter.push(stdoutStream(nonce, { body: 'mine\n' }));
+  assert.equal(filter.push('output belonging to nobody\n'), '');
+});
 
 // ── The parser, on its own ───────────────────────────────────────────
 
@@ -118,6 +275,84 @@ test('the nonce is fresh per command, and the script keeps cd and export in the 
 // ── End to end, in both capability modes ─────────────────────────────
 
 for (const mode of MODES) {
+  // PINS: output reaches the caller BEFORE the command finishes, and what it
+  // received is byte-identical to the buffered result. Asserted by ORDER, not
+  // by wall clock — the first chunk must have arrived while `run()` was still
+  // pending — so it is deterministic and cannot flake on a slow machine.
+  //
+  // Run in BOTH capability modes deliberately: a redirected Bash streams
+  // whether or not the system carries a persistent shell, so the fallback is
+  // not a version of the feature with the streaming quietly missing.
+  test(`[${mode.name}] a command's output streams as it arrives, and matches the buffered result`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const seen = [];
+      let settled = false;
+      const run = sh.run(
+        'printf "part1\\n"; printf "e1\\n" >&2; sleep 0.4; printf "part2\\n"; printf "e2\\n" >&2',
+        {
+          onOut: (t) => seen.push({ which: 'out', t, settled }),
+          onErr: (t) => seen.push({ which: 'err', t, settled }),
+        },
+      );
+      const r = await run;
+      settled = true;
+
+      const early = seen.filter(c => !c.settled);
+      assert.ok(early.length > 0, 'something arrived while the command was still running');
+      assert.match(early.map(c => c.t).join(''), /part1/, 'and it was the FIRST half, not the last');
+
+      const streamed = (which) => seen.filter(c => c.which === which).map(c => c.t).join('');
+      assert.equal(streamed('out'), r.stdout, 'the streamed stdout is byte-identical to the buffered one');
+      assert.equal(streamed('err'), r.stderr, 'and so is stderr');
+      assert.equal(r.stdout, 'part1\npart2\n');
+      assert.equal(r.stderr, 'e1\ne2\n');
+    });
+  });
+
+  // PINS: the two streams stay SEPARATE. Merging them would make a caller that
+  // reads stderr for a diagnostic read the command's stdout instead — and the
+  // buffered path has always kept them apart for free.
+  test(`[${mode.name}] streamed stdout and stderr are never mixed`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const out = [];
+      const err = [];
+      await sh.run('printf "O\\n"; printf "E\\n" >&2; printf "O2\\n"',
+        { onOut: (t) => out.push(t), onErr: (t) => err.push(t) });
+      assert.equal(out.join(''), 'O\nO2\n');
+      assert.equal(err.join(''), 'E\n');
+    });
+  });
+
+  // PINS: nothing a streaming caller receives contains the framing or the login
+  // shell's own banner — the property the filter exists for, asserted here
+  // against a REAL shell rather than a synthesised stream.
+  test(`[${mode.name}] a real shell's framing and banner never reach a streaming caller`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const chunks = [];
+      const push = (t) => chunks.push(t);
+      await sh.run('echo real-output', { onOut: push, onErr: push });
+      for (const c of chunks) assert.ok(!c.includes('__CC_'), `leaked framing: ${JSON.stringify(c)}`);
+      assert.equal(chunks.join(''), 'real-output\n');
+    });
+  });
+
+  // PINS: a command that takes the shell with it still delivers what it printed
+  // BEFORE it died. The buffered result cannot carry that output — there is no
+  // frame to parse it out of — so the streamed path is the only way the worker
+  // ever sees it, and dropping it would make the failure look emptier than it
+  // was.
+  test(`[${mode.name}] a command that kills the shell still streams what it printed`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const out = [];
+      await assert.rejects(
+        sh.run('printf "printed-before-dying\\n"; exit 3', { onOut: (t) => out.push(t) }),
+        (e) => { assert.equal(e.code, 'ESHELLGONE'); return true; },
+      );
+      assert.equal(out.join(''), 'printed-before-dying\n');
+      for (const c of out) assert.ok(!c.includes('__CC_'), 'and no framing came with it');
+    });
+  });
+
   test(`[${mode.name}] cd persists across commands, read back from the shell`, async () => {
     await withShell(mode.flags, async (sh, cwd) => {
       assert.equal(sh.persistent, mode.persistent, 'the mode under test is the one negotiated');
@@ -235,15 +470,167 @@ for (const mode of MODES) {
     });
   });
 
-  test(`[${mode.name}] cc serialises per shell, and a wait past its bound is EBUSY`, async () => {
+  // PINS: cc serialises per shell, and the wait a queued call is willing to
+  // spend is ITS OWN timeout — a call that would only run for 30ms gives up
+  // waiting after 30ms, with EBUSY.
+  test(`[${mode.name}] cc serialises per shell, and a wait past the call's own timeout is EBUSY`, async () => {
     await withShell(mode.flags, async (sh) => {
       const slow = sh.run('sleep 0.5; echo slow');
-      await assert.rejects(() => sh.run('echo fast'), (e) => {
+      await assert.rejects(() => sh.run('echo fast', { timeoutMs: 30 }), (e) => {
         assert.equal(e.code, 'EBUSY', `got ${e.code}: ${e.message}`);
         return true;
       });
       assert.equal((await slow).stdout, 'slow\n', 'the command that held the shell still completes');
-    }, { busyWaitMs: 30 });
+    });
+  });
+
+  // PINS B3: a command that produces more output than the fence allows is
+  // KILLED and reported as a failure. Without a fence cc accumulates every byte
+  // the command produces in its own heap, so one runaway command on one session
+  // takes the orchestrator — and every other session on it — down with it. A
+  // reported failure is the whole point: a truncated success would be read as
+  // the command's real output.
+  test(`[${mode.name}] a command past the output fence is killed and reported, not accumulated`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const streamed = [];
+      await assert.rejects(
+        () => sh.run('head -c 200000 /dev/zero | base64', { onOut: (t) => streamed.push(t) }),
+        (e) => {
+          assert.equal(e.code, 'EFBIG', `got ${e.code}: ${e.message}`);
+          assert.match(e.message, /8192/, 'the failure names the limit it hit');
+          return true;
+        },
+      );
+      // Bounded, not merely "less than everything": nothing past the fence is
+      // streamed either, so a live consumer cannot see output cc did not keep.
+      assert.ok(streamed.join('').length <= 8192 * 2,
+        `streamed ${streamed.join('').length} bytes past an 8192-byte fence`);
+      // And the shell recovers.
+      assert.equal((await sh.run('echo alive')).stdout, 'alive\n');
+    }, { maxOutputBytes: 8192 });
+  });
+
+  // PINS C4: the fence counts BYTES in both modes. The persistent path counted
+  // UTF-16 units, so multibyte output rode up to ~2-4x past the limit the fence
+  // exists to hold — while the fallback counted bytes, making the two modes
+  // disagree about the one number that keeps cc's heap bounded.
+  test(`[${mode.name}] the fence counts bytes, not characters`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const streamed = [];
+      // 3 bytes per character in UTF-8, one UTF-16 unit each: a
+      // character-counting fence admits three times the bytes it promises.
+      await assert.rejects(
+        () => sh.run('for i in $(seq 1 4000); do printf "\u4e2d\u6587\u5b57"; done', { onOut: (t) => streamed.push(t) }),
+        (e) => { assert.equal(e.code, 'EFBIG', `got ${e.code}: ${e.message}`); return true; },
+      );
+      assert.ok(Buffer.byteLength(streamed.join(''), 'utf8') <= 8192 * 2,
+        `streamed ${Buffer.byteLength(streamed.join(''), 'utf8')} bytes past an 8192-BYTE fence`);
+    }, { maxOutputBytes: 8192 });
+  });
+
+  // PINS: the fence does not clip an ordinary command. A fence that fired early
+  // would turn every normal result into a failure.
+  test(`[${mode.name}] output below the fence is untouched`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const r = await sh.run('head -c 4000 /dev/zero | tr "\\0" "x"');
+      assert.equal(r.stdout.length, 4000);
+      assert.equal(r.code, 0);
+    }, { maxOutputBytes: 8192 });
+  });
+
+  // ── Cancellation ───────────────────────────────────────────────────
+
+  // PINS: cancelling a QUEUED call cancels that call and NOTHING ELSE. The
+  // in-flight command finishes normally, and — the part that matters — the
+  // cancelled command never runs, so its effects never land on the system. An
+  // interrupt whose command executes anyway defeats the point of interrupting.
+  test(`[${mode.name}] cancelling a queued command runs neither it nor over the one in flight`, async () => {
+    await withShell(mode.flags, async (sh, cwd) => {
+      const witness = path.join(cwd, 'QUEUED_RAN');
+      const inFlight = sh.run('sleep 0.4; echo survivor');
+      const ac = new AbortController();
+      const queued = sh.run(`touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+      // Abort while it is still waiting for its turn.
+      ac.abort();
+
+      await assert.rejects(() => queued, (e) => {
+        assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+        return true;
+      });
+      const r = await inFlight;
+      assert.equal(r.stdout, 'survivor\n', 'the unrelated in-flight command was untouched');
+      assert.equal(r.code, 0);
+      await assert.rejects(fs.stat(witness), 'the cancelled command never ran');
+    });
+  });
+
+  // PINS: cancelling the IN-FLIGHT call stops the command itself — including in
+  // the fallback mode, where there is no live stream to close and cc has to
+  // reach the far side through `exec`'s own cancellation. Asserted by the
+  // command's own witness file, written after a delay: a command still running
+  // when the assertion is made will have written it.
+  test(`[${mode.name}] cancelling the in-flight command actually stops it`, async () => {
+    await withShell(mode.flags, async (sh, cwd) => {
+      const witness = path.join(cwd, 'STILL_RUNNING');
+      const ac = new AbortController();
+      const running = sh.run(`sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+      // Let it start, then interrupt it well before its own sleep elapses.
+      await new Promise(r => setTimeout(r, 120));
+      ac.abort();
+      await assert.rejects(() => running, (e) => {
+        assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+        return true;
+      });
+      // Past when the command would have written it, had it survived.
+      await new Promise(r => setTimeout(r, 500));
+      await assert.rejects(fs.stat(witness), 'the interrupted command is not still running on the system');
+    });
+  });
+
+  // PINS: a signal that is already aborted never starts the command at all.
+  test(`[${mode.name}] a pre-aborted signal never reaches the system`, async () => {
+    await withShell(mode.flags, async (sh, cwd) => {
+      const witness = path.join(cwd, 'PRE_ABORTED');
+      await assert.rejects(
+        () => sh.run(`touch ${JSON.stringify(witness)}`, { signal: AbortSignal.abort() }),
+        (e) => { assert.equal(e.code, 'ECANCELLED'); return true; },
+      );
+      await assert.rejects(fs.stat(witness));
+    });
+  });
+
+  // PINS S2: the queue wait is the CALL'S OWN timeout, not a fixed bound. A
+  // long command must not make a queued call that was willing to wait for it
+  // fail with "the shell is busy" while everything is healthy.
+  test(`[${mode.name}] a queued call waits as long as its own timeout allows`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const slow = sh.run('sleep 0.4; echo first');
+      // Past the 30ms default bound, inside its own 10s one.
+      const queued = await sh.run('echo second', { timeoutMs: 10_000 });
+      assert.equal(queued.stdout, 'second\n', 'it waited for its turn instead of failing EBUSY');
+      assert.equal((await slow).stdout, 'first\n');
+    });
+  });
+
+  // PINS S1: the reset reason is delivered to the command that RUNS on the new
+  // shell, not to whichever call happened to be constructed next. R5's rule is
+  // that a reconnected shell SAYS it lost state — a notice attached to the
+  // wrong command means the command that actually ran on the fresh shell said
+  // nothing.
+  test(`[${mode.name}] the reset reason goes to the next command to acquire the shell`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      assert.equal(sh.takeResetReason(), null, 'a healthy shell has nothing to report');
+      await assert.rejects(() => sh.run('exit 3'));
+
+      const seen = [];
+      await sh.run('echo after', { onStart: () => seen.push(sh.takeResetReason()) });
+      assert.equal(seen.length, 1);
+      assert.match(seen[0] ?? '', /shell|exit/i, 'the command that ran on the fresh shell was told why');
+      // And exactly once: the next command has nothing to report.
+      const again = [];
+      await sh.run('echo later', { onStart: () => again.push(sh.takeResetReason()) });
+      assert.deepEqual(again, [null]);
+    });
   });
 }
 
@@ -322,6 +709,166 @@ function fakeHost({ banner = '', bannerErr = '', respond }) {
   };
   return { host, state };
 }
+
+// PINS C2: an abort that lands while the shell is being OPENED still cancels
+// the command. `run()` checks the signal before acquiring and again after, then
+// awaits `#ensureStream()` — and the kill listener only arms inside `#exchange`,
+// after that await. An abort in that gap was seen by neither, and the listener
+// then armed `{once:true}` on an already-fired signal, so the command was
+// written to the shell and could NEVER be stopped: a second abort could not save
+// it. The window opens on every FIRST command and on every reopen after a
+// wedge, deadline, idle sweep, abort or output-fence reset.
+//
+// Driven through a fake host whose openStream is deliberately slow, because the
+// window is an I/O race that cannot be hit over HTTP on demand.
+test('an abort while the shell is opening cancels the command, and it never reaches the shell', async () => {
+  let releaseOpen;
+  const opening = new Promise((r) => { releaseOpen = r; });
+  const { host, state } = fakeHost({ respond: () => ({ stdout: 'ran' }) });
+  const inner = host.openStream.bind(host);
+  host.openStream = async (spec, opts, handlers) => {
+    // Hand control back to the test with the open still in flight, which is
+    // exactly where the gap is.
+    const stream = await inner(spec, opts, handlers);
+    await opening;
+    return stream;
+  };
+
+  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 2000 });
+  const ac = new AbortController();
+  const started = [];
+  const call = sh.run('touch WITNESS', { signal: ac.signal, onStart: () => started.push(1) });
+  // The call is past both checks and inside the open: onStart has fired.
+  await waitFor(() => started.length === 1, { timeout: 2000 });
+  ac.abort();
+  releaseOpen();
+
+  await assert.rejects(() => call, (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.deepEqual(state.commands, [], 'the cancelled command was never written to the shell');
+
+  // And the shell is still usable afterwards — the gap check must not wedge it.
+  const after = await sh.run('echo alive');
+  assert.equal(after.stdout, 'ran');
+  assert.equal(state.commands.length, 1, 'exactly one command reached the shell');
+});
+
+// ── The four abort windows, one test each ────────────────────────────
+//
+// run()'s cancellation is FOUR guards over four DIFFERENT windows, not four
+// copies of one check. Removing the cluster is caught, but each guard has to be
+// independently killable or the next refactor drops three of them silently —
+// and window 4 below is exactly where a real defect lived (a cancelled command
+// reached the shell and became permanently un-cancellable, because
+// `{once:true}` on an already-fired signal never fires).
+//
+// Windows 1 and 2 are pinned by WHEN the call settles rather than by its code,
+// because the later guards produce the same ECANCELLED eventually. The
+// difference is that they produce it only after the IN-FLIGHT command finishes:
+// a caller that has gone away must not sit in the queue behind a ten-minute
+// build. So each asserts the cancelled call settled while the in-flight one was
+// still running.
+
+// A shell whose first command hangs until the test releases it, so there is a
+// real in-flight command to queue behind.
+function heldShell() {
+  const { host, state } = fakeHost({
+    // The held command is answered by NOTHING, so it stays in flight until the
+    // test ends it. `close()` is what ends it — waiting out a deadline instead
+    // would put seconds of dead wall clock in the suite for no extra coverage.
+    respond: (command) => (command.includes('HOLD') ? { silent: true } : { stdout: 'ran' }),
+  });
+  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 5000 });
+  // Settled-ness is OBSERVED, not timed: `inFlightDone` flips only when the held
+  // command actually finishes, so the ordering assertions below cannot pass on a
+  // slow machine for the wrong reason.
+  let inFlightDone = false;
+  const inFlight = sh.run('HOLD').catch(() => {}).finally(() => { inFlightDone = true; });
+  return { sh, state, inFlight, release: () => sh.close(), get inFlightDone() { return inFlightDone; } };
+}
+
+// WINDOW 1 — the signal was already aborted before run() was called.
+//
+// Without the entry check the call enqueues instead, and `addEventListener` on
+// an ALREADY-ABORTED signal never fires (the abort event has been dispatched),
+// so nothing rejects it until it is handed the turn.
+test('an already-aborted call never takes a place in the queue', async () => {
+  const h = heldShell();
+  await waitFor(() => h.state.commands.length === 1, { timeout: 2000 });
+
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(() => h.sh.run('touch W1', { signal: ac.signal }), (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.equal(h.inFlightDone, false, 'it settled while the in-flight command was still running');
+  assert.deepEqual(h.state.commands, ['HOLD'], 'and never reached the shell');
+  h.release();
+  await h.inFlight;
+});
+
+// WINDOW 2 — the abort lands DURING the queue wait.
+//
+// Without the waiter's own abort listener the call stays queued and is only
+// rejected once it is handed the turn, which is after the in-flight command
+// finishes — so a gone caller holds a queue slot behind a long build.
+test('an abort during the queue wait rejects that call without waiting for the shell', async () => {
+  const h = heldShell();
+  await waitFor(() => h.state.commands.length === 1, { timeout: 2000 });
+
+  const ac = new AbortController();
+  const queued = h.sh.run('touch W2', { signal: ac.signal });
+  // Queued, not running: #acquire pushes the waiter synchronously on invocation.
+  ac.abort();
+
+  await assert.rejects(() => queued, (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.equal(h.inFlightDone, false, 'it settled while the in-flight command was still running');
+  assert.deepEqual(h.state.commands, ['HOLD'], 'and never reached the shell');
+
+  // And the queue is intact: releasing the in-flight command still serves the
+  // next caller, so a cancelled waiter did not consume a turn on its way out.
+  h.release();
+  await h.inFlight;
+  assert.equal((await h.sh.run('echo next')).stdout, 'ran');
+});
+
+// WINDOW 3 — the abort lands after the waiter is handed the turn (its listener
+// already detached by #releaseTurn) and before the command is written.
+//
+// That window is a MICROTASK GAP: #releaseTurn resolves the waiter and the
+// continuation runs on the next tick, and no external caller can schedule code
+// between them. So it is driven with an AbortSignal DOUBLE that flips between
+// the two reads — standing in for the gap rather than pretending to reproduce
+// it. Nothing else here is faked: it is the real run() reading a real sequence
+// of answers.
+test('a signal that turns aborted after acquisition still stops the command', async () => {
+  const { host, state } = fakeHost({ respond: () => ({ stdout: 'ran' }) });
+  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 2000 });
+
+  let reads = 0;
+  const flipping = {
+    // Read 1 is run()'s entry check, read 2 the post-acquisition re-check. The
+    // shell is idle, so #acquire resolves without touching the signal at all.
+    get aborted() { reads += 1; return reads > 1; },
+    addEventListener() {}, removeEventListener() {},
+  };
+
+  await assert.rejects(() => sh.run('touch W3', { signal: flipping }), (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.deepEqual(state.commands, [], 'the command was never written to the shell');
+  // Exactly two reads before the command would have been written. If a future
+  // change adds or removes one, this fails LOUDLY rather than silently reading
+  // a different guard than the one under test.
+  assert.equal(reads, 2, 'the entry check and the post-acquisition re-check, and nothing else');
+});
 
 test('a banner with NO trailing newline still frames — on both streams', async () => {
   // The opening sentinel has to START a line just as the closing ones do. A

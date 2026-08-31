@@ -442,6 +442,7 @@ test('every code in the taxonomy is produced by a real failure somewhere in this
     ETIMEDOUT: 'tests/systems-provider-supervision.test.mjs + tests/systems-shell-framing.test.mjs',
     EBUSY: 'tests/systems-shell-framing.test.mjs',
     ESHELLGONE: 'tests/systems-shell-framing.test.mjs',
+    ECANCELLED: 'tests/systems-shell-framing.test.mjs + tests/systems-tool-redirect.test.mjs',
     // The one code no test can provoke without filling a disk; its classifier
     // row is asserted in tests/systems-protocol-codec.test.mjs.
     ENOSPC: 'tests/systems-protocol-codec.test.mjs (classifier only)',

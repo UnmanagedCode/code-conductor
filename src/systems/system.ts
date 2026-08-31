@@ -49,6 +49,9 @@ export function requireAbsolute(op: string, what: string, p: string): void {
 // it may contain pipes, `&&`, or rely on shell PATH).
 export type ExecSpec = { argv: string[] } | { shell: string };
 
+// Which of a command's two output streams a chunk came from.
+export type ExecStream = 'out' | 'err';
+
 export interface ExecOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -68,7 +71,25 @@ export interface ExecOptions {
   // which is worse than a reported failure. runGit is the caller
   // (src/worktrees.ts); omitting it means unbounded retention in this process.
   maxBufferBytes?: number;
-  onChunk?: (text: string) => void;
+  // Called with each decoded chunk AS IT ARRIVES, and with the stream it came
+  // from — the streaming hook every caller that shows live output uses. It
+  // fires AFTER the caps above have had their say, so a consumer sees exactly
+  // what is retained: nothing past `headCapBytes`, and nothing past the
+  // `maxBufferBytes` fence.
+  //
+  // `which` exists because a caller that must keep the two streams apart — the
+  // redirected Bash forwards each to the worker's own stdout/stderr — cannot
+  // recover the split from an interleaved callback. Every other caller ignores
+  // the second argument.
+  onChunk?: (text: string, which: ExecStream) => void;
+  // Cancel the command. Aborting KILLS it on the far side — the in-process
+  // runner signals the process group, the wire one sends `close`, which is the
+  // provider's instruction to kill it hard — rather than merely abandoning the
+  // promise. Without that, a caller who has gone away leaves a command running
+  // on someone else's machine until its own deadline, with nobody to read the
+  // result. The result still resolves (exec never rejects), so the caller
+  // decides what an aborted command MEANS by re-checking `signal.aborted`.
+  signal?: AbortSignal;
   killGraceMs?: number;
   // 'ignore' hands the command a closed stdin, so an interactive command sees
   // EOF instead of hanging until the timeout. Load-bearing for project_bash and
@@ -117,6 +138,11 @@ export interface ExecResult {
   // the normal answer, including for every local command, because the local
   // runner always leads its own process group.
   descendantsMaySurvive?: true;
+  // The `maxBufferBytes` fence fired: the command was killed for producing too
+  // much output. A FLAG rather than something a caller sniffs out of `stderr`,
+  // because the redirected shell has to turn it into its own named failure and
+  // classifying it by message text is how that drifts.
+  outputOverflowed?: true;
 }
 
 export type SystemEntryKind = 'file' | 'dir' | 'symlink' | 'other';
@@ -142,7 +168,16 @@ export interface SystemDirent {
 export interface WriteFileOptions {
   // Write to a temp file and rename over the target, so a reader never sees a
   // torn write. Mirrors writeFileAtomic (src/projects.ts).
+  //
+  // It is also the SYMLINK-SAFE write: a rename replaces the link itself, where
+  // a plain write follows it to whatever it points at. The write-back path
+  // (src/systems/fileBridge.ts) depends on that.
   atomic?: boolean;
+  // POSIX permission bits for the written file, as fs.Stats.mode reports them
+  // (the file-type bits are ignored). Set it to KEEP a mode: an atomic write
+  // ends in a rename, so without this an edited script comes back 0644 and
+  // silently stops being executable.
+  mode?: number;
   // Fail with EEXIST rather than overwriting. The caller catching EEXIST is the
   // point — it is how "create if absent" stays safe against a concurrent writer.
   exclusive?: boolean;
