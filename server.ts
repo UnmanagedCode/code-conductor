@@ -6,7 +6,7 @@ import { WebSocketServer } from 'ws';
 import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { buildRoutes } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
-import { InstanceManager } from './src/instances.ts';
+import { InstanceManager, sweepSessionTmpDirs } from './src/instances.ts';
 import { attachWsHub } from './src/wsHub.ts';
 import { initCostTracking } from './src/costTracking.ts';
 import { projectsRoot, orchStoreRoot, ensureSelfProjectWorkspace } from './src/projects.ts';
@@ -166,6 +166,12 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // is written by scheduleRestart in src/restart.ts.
   try { sweepPendingTempCleanup({ log: console }); }
   catch (e) { console.warn('temp-cleanup sweep failed:', e); }
+  // Reclaim session-tmp directories a previous process left behind. They hold
+  // redirected sessions' backgrounded-command output, and a KILLED orchestrator
+  // runs none of the teardown paths that normally reap them. No session is live
+  // yet, so every entry is dead by construction.
+  try { await sweepSessionTmpDirs([]); }
+  catch (e) { console.warn('session-tmp sweep failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at

@@ -112,10 +112,16 @@ export interface SessionRedirectOptions {
   systemPath: string;
   sessionRoot: string;
   forwarderUrl: string;
-  // Absolute LOCAL prefixes that are legitimately not the system's business:
-  // the store (attachments, debug captures), `~/.claude` (plans, user config),
-  // the transcript root, cc-managed plugin roots. A file tool aimed outside
-  // both these and the session root is refused.
+  // Absolute LOCAL prefixes that are legitimately not the system's business. A
+  // file tool aimed outside both these and the session root is refused.
+  //
+  // EACH ONE IS A SPECIFIC DIRECTORY, and the caller owes that. This list is a
+  // read AND write grant on the orchestrator's own filesystem, so a broad entry
+  // is a broad grant: `orchStoreRoot()` was one, and it handed a worker cc's
+  // whole store — app settings, the convention store, every other project's
+  // metadata, every session sidecar, and other sessions' task output. The
+  // caller's own comment (src/instances.ts, attachRedirect) names what each
+  // entry is for; this module only tests containment.
   localRoots: string[];
   emit: (ev: unknown) => void;
   idleTtlMs?: number;

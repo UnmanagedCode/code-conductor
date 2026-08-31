@@ -19,7 +19,9 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
-import { adoptProject } from '../src/projects.ts';
+import { adoptProject, orchStoreRoot } from '../src/projects.ts';
+import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
+import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
@@ -199,6 +201,113 @@ describe('a worker session on a remote system', () => {
     assert.ok((await fs.stat(tmpRoot)).isDirectory());
     await api(baseUrl, 'DELETE', `/api/instances/${instId}`);
     await assert.rejects(fs.stat(tmpRoot), 'the session-tmp directory is gone');
+  });
+
+  // PINS C1: the file-tool grant is the SPECIFIC paths a session needs, not the
+  // whole cc store. With the store root granted, a worker on a remote project
+  // could read AND write `settings.json`, `conventions/*.json`, every other
+  // project's `project.json` and pulled session roots, every session sidecar
+  // store, `shell-env` bundles, plugin manifests — a reviewer proved the write
+  // half by overwriting cc's real convention store.
+  //
+  // Each path below is one a reviewer enumerated live. Asserted through the real
+  // hook endpoint, and for the WRITE direction too: a deny on Read that let
+  // Write through would be the worse half.
+  test('a worker cannot reach cc own store outside its own two grants', async () => {
+    const store = orchStoreRoot();
+    const forbidden = {
+      'app settings': path.join(store, 'settings.json'),
+      'the convention store': path.join(store, 'conventions', 'workspace.json'),
+      'another project metadata': path.join(store, 'projects', 'other', 'project.json'),
+      'a session sidecar store': path.join(store, 'session-titles.json'),
+      'a shell-env bundle': path.join(store, 'shell-env', 'bundle.json'),
+      'another system pulled session root': path.join(store, 'systems', 'other', 'sessions', 'x', 'CLAUDE.md'),
+    };
+    for (const [what, file] of Object.entries(forbidden)) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, '{"real":"content"}');
+      for (const tool of ['Read', 'Write', 'Edit']) {
+        const d = await hook({ tool_name: tool, tool_input: { file_path: file } });
+        assert.equal(d.body.hookSpecificOutput.permissionDecision, 'deny',
+          `${tool} of ${what} (${file}) must be refused`);
+      }
+      // And nothing touched it.
+      assert.equal(await fs.readFile(file, 'utf8'), '{"real":"content"}');
+    }
+  });
+
+  // PINS C1's other half: another session's task output is refused. The comment
+  // at the tmp-root pin claims "one session must not be able to read another's
+  // task output" — measured, a probe read one and was ALLOWED, with a UUID the
+  // orchestrator hands workers via list_sessions as the only separator.
+  test('a worker cannot read another session task output', async () => {
+    const mine = instances.get(instId)._spawnEnv.CLAUDE_CODE_TMPDIR;
+    const theirs = path.join(orchStoreRoot(), 'session-tmp', 'some-other-instance-id');
+    await fs.mkdir(path.join(theirs, 'tasks'), { recursive: true });
+    const file = path.join(theirs, 'tasks', 'abc.output');
+    await fs.writeFile(file, 'another session output\n');
+
+    const d = await hook({ tool_name: 'Read', tool_input: { file_path: file } });
+    assert.equal(d.body.hookSpecificOutput.permissionDecision, 'deny');
+    // Its OWN is still reachable — the grant is per session, not per feature.
+    const ownFile = path.join(mine, 'tasks', 'own.output');
+    await fs.mkdir(path.dirname(ownFile), { recursive: true });
+    await fs.writeFile(ownFile, 'mine\n');
+    const ok = await hook({ tool_name: 'Read', tool_input: { file_path: ownFile } });
+    assert.equal(ok.body.hookSpecificOutput.permissionDecision, 'allow',
+      ok.body.hookSpecificOutput.permissionDecisionReason);
+  });
+
+  // PINS C1's kept grant: the OWNING project's attachments dir stays allowed.
+  // An attachment is a local file the user handed this session, referenced by
+  // absolute path in the prompt (S24) — refusing it would break attachments on
+  // every remote project.
+  test('the owning project attachments dir stays readable, another project does not', async () => {
+    const mine = path.join(attachmentsDir('app', null), 'shot.png');
+    await fs.mkdir(path.dirname(mine), { recursive: true });
+    await fs.writeFile(mine, 'png bytes');
+    const ok = await hook({ tool_name: 'Read', tool_input: { file_path: mine } });
+    assert.equal(ok.body.hookSpecificOutput.permissionDecision, 'allow',
+      ok.body.hookSpecificOutput.permissionDecisionReason);
+
+    const other = path.join(attachmentsDir('someone-else', null), 'shot.png');
+    await fs.mkdir(path.dirname(other), { recursive: true });
+    await fs.writeFile(other, 'png bytes');
+    const no = await hook({ tool_name: 'Read', tool_input: { file_path: other } });
+    assert.equal(no.body.hookSpecificOutput.permissionDecision, 'deny');
+  });
+
+  // PINS C3: the tmp root is reclaimed on the paths that ACTUALLY happen, not
+  // only on an explicit DELETE. `remove()` had it; a graceful cc shutdown, a
+  // project's sessions being removed, a crashed instance and a killed server all
+  // left the directory behind, with no boot sweep — and it holds command output,
+  // so it accumulated real data while the doc claimed "removed with the session".
+  test('a graceful shutdown reclaims every session tmp root', async () => {
+    const tmpRoot = instances.get(instId)._spawnEnv.CLAUDE_CODE_TMPDIR;
+    assert.ok((await fs.stat(tmpRoot)).isDirectory());
+    await ctx.instances.shutdown();
+    await assert.rejects(fs.stat(tmpRoot), 'shutdown reclaimed it');
+  });
+
+  test('removing a project sessions reclaims their tmp roots', async () => {
+    const tmpRoot = instances.get(instId)._spawnEnv.CLAUDE_CODE_TMPDIR;
+    assert.ok((await fs.stat(tmpRoot)).isDirectory());
+    assert.equal(await instances.removeAllForProject('app'), 1);
+    await assert.rejects(fs.stat(tmpRoot), 'removeAllForProject reclaimed it');
+  });
+
+  // PINS: the boot sweep is what covers a KILLED server, where no teardown path
+  // ran at all. An instance id is a fresh uuid per process, so a directory left
+  // under session-tmp can never belong to a live session after a restart.
+  test('the boot sweep reclaims tmp roots no live session owns', async () => {
+    const mine = instances.get(instId)._spawnEnv.CLAUDE_CODE_TMPDIR;
+    const orphan = sessionTmpDir('a-dead-instance-from-a-killed-server');
+    await fs.mkdir(path.join(orphan, 'tasks'), { recursive: true });
+    await fs.writeFile(path.join(orphan, 'tasks', 'x.output'), 'stale output\n');
+
+    await sweepSessionTmpDirs([...instances.byId.keys()]);
+    await assert.rejects(fs.stat(orphan), 'the orphan is gone');
+    assert.ok((await fs.stat(mine)).isDirectory(), 'and a LIVE session keeps its own');
   });
 
   // PINS: a LOCAL session's tmp root is not touched. The override exists for the

@@ -6,11 +6,42 @@ import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
 import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot } from './projects.ts';
+
+// Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
+// three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
+// and it is one of the two store paths a worker's file tools may reach — a
+// second spelling would silently grant or refuse the wrong directory.
+export function sessionTmpDir(instanceId: string): string {
+  return path.join(orchStoreRoot(), 'session-tmp', instanceId);
+}
+
+// Reclaim every session-tmp directory no live session owns.
+//
+// THE TEARDOWN PATHS ARE NOT ENOUGH ON THEIR OWN. remove(), removeAllForProject()
+// and shutdown() each reclaim what they tear down, but a KILLED orchestrator runs
+// none of them and the directories hold command output — so without a boot sweep
+// they accumulate real data for the life of the install. An instance id is a
+// fresh uuid per process, so anything under session-tmp that no live session
+// claims is by construction dead.
+//
+// Best-effort: a directory cc cannot remove must never stop a boot.
+export async function sweepSessionTmpDirs(liveIds: Iterable<string>): Promise<void> {
+  const keep = new Set(liveIds);
+  const root = path.join(orchStoreRoot(), 'session-tmp');
+  let entries: string[];
+  try { entries = await fsp.readdir(root); }
+  catch { return; } // never created on an install with no remote projects
+  for (const name of entries) {
+    if (keep.has(name)) continue;
+    try { await fsp.rm(path.join(root, name), { recursive: true, force: true }); }
+    catch (e) { console.warn(`instances: could not reclaim ${path.join(root, name)}: ${(e as Error).message}`); }
+  }
+}
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
   trackLineageWrite,
 } from './sessionLineage.ts';
-import { createWorktree, getWorktree, debugBaseDir } from './worktrees.ts';
+import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
@@ -1915,10 +1946,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     // would make the task file a MAPPED path, and the pull would stat it on the
     // system, find it absent, and delete the worker's own output.
     //
-    // Per session, and 0700: the CLI validates the override's ownership and
-    // mode, and one session must not be able to read another's task output.
+    // Per session, and 0700. The CLI validates the override's ownership and
+    // mode; the PER-SESSION half is enforced by the redirect's own path policy,
+    // which grants this session `sessionTmpDir(this.id)` and nothing else under
+    // `session-tmp` — so another session's task output is refused rather than
+    // merely hidden behind a uuid the orchestrator hands workers anyway.
     if (this._redirect) {
-      const tmpRoot = path.join(orchStoreRoot(), 'session-tmp', this.id);
+      const tmpRoot = sessionTmpDir(this.id);
       // Sync, because spawn() is: the same reason the debug-capture directory
       // beside it uses mkdirSync. chmod separately, because `mode` on mkdir is
       // masked by the process umask and the CLI checks the mode it finds.
@@ -4449,12 +4483,32 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         sessionRoot: inst.cwd,
         forwarderUrl: this.bashForwardUrl(id) ?? '',
         // The LOCAL paths a file tool may legitimately name on a remote
-        // project: the store (attachments, debug captures), the CLI's own home
-        // (plans, user settings), the transcript root, and cc-managed plugin
-        // roots. Anything else outside the session root is refused, because a
+        // project. Anything else outside the session root is refused, because a
         // file written there lands on the orchestrator's machine where no
         // command on the system can ever see it.
-        localRoots: [orchStoreRoot(), path.join(os.homedir(), '.claude'), claudeProjectsRoot(), ...claudePluginDirs],
+        //
+        // SPECIFIC PATHS, NEVER THE STORE ROOT. Granting `orchStoreRoot()`
+        // granted a worker read AND write over cc's entire store: `settings.json`,
+        // `conventions/*.json`, every other project's `project.json` and pulled
+        // session roots, every session sidecar, `shell-env` bundles, plugin
+        // manifests, and other sessions' task output. Each entry below is one a
+        // session needs BY NAME:
+        //   * this project's (or worktree's) attachments dir — a local file the
+        //     user handed this session, referenced by absolute path in the prompt
+        //     (S24). Scoped to the owner, so one project's attachments are not
+        //     another's.
+        //   * this session's own tmp root — where its backgrounded commands'
+        //     task output lands (see spawn()). Per instance id, which is what
+        //     makes the guarantee stated there true rather than asserted.
+        //   * the CLI's own home (plans, user settings) and the transcript root.
+        //   * cc-managed Claude Code plugin roots (S22).
+        localRoots: [
+          attachmentsDir(project, worktreeMeta?.worktreeName ?? null),
+          sessionTmpDir(id),
+          path.join(os.homedir(), '.claude'),
+          claudeProjectsRoot(),
+          ...claudePluginDirs,
+        ],
         emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
       }), redirectPlacement);
     }
@@ -5058,7 +5112,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // directory per redirected session, never reclaimed, is a leak that grows
     // for the life of the install.
     if (inst._redirect) {
-      rmSync(path.join(orchStoreRoot(), 'session-tmp', inst.id), { recursive: true, force: true });
+      rmSync(sessionTmpDir(inst.id), { recursive: true, force: true });
     }
     this.byId.delete(id);
     this._cancelAutoResume(id);
@@ -5076,6 +5130,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     await Promise.all(victims.map(async (i) => {
       try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
       try { await i._redirect?.close(); } catch { /* ignore */ }
+      // Same reason as remove(): the directory holds this session's command
+      // output and nothing else will reap it.
+      if (i._redirect) rmSync(sessionTmpDir(i.id), { recursive: true, force: true });
       this.byId.delete(i.id);
       this._cancelAutoResume(i.id);
       this._purgeIdleFor(i.id);
@@ -5094,6 +5151,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Every session's shell on a remote system, for the same reason remove()
     // does it: the process is on another machine and nothing else will reap it.
     await Promise.all(all.map(i => i._redirect?.close().catch(() => {})));
+    // And every session-tmp directory. An instance id is never reused across
+    // processes, so nothing here can be wanted after this returns; a KILLED
+    // orchestrator skips this entirely, which is what the boot sweep covers.
+    for (const i of all) {
+      if (i._redirect) rmSync(sessionTmpDir(i.id), { recursive: true, force: true });
+    }
   }
 
   // Snapshot of live temp sessions keyed by what's needed to find their

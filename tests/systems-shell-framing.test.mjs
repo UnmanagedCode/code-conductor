@@ -24,6 +24,7 @@ import {
 } from '../src/systems/shellFraming.ts';
 import { makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
+import { waitFor } from './helpers.mjs';
 
 // The opening sentinel exactly as the framed script emits it — INCLUDING the
 // injected leading newline, without which the marker glues itself to whatever
@@ -690,6 +691,51 @@ function fakeHost({ banner = '', bannerErr = '', respond }) {
   };
   return { host, state };
 }
+
+// PINS C2: an abort that lands while the shell is being OPENED still cancels
+// the command. `run()` checks the signal before acquiring and again after, then
+// awaits `#ensureStream()` — and the kill listener only arms inside `#exchange`,
+// after that await. An abort in that gap was seen by neither, and the listener
+// then armed `{once:true}` on an already-fired signal, so the command was
+// written to the shell and could NEVER be stopped: a second abort could not save
+// it. The window opens on every FIRST command and on every reopen after a
+// wedge, deadline, idle sweep, abort or output-fence reset.
+//
+// Driven through a fake host whose openStream is deliberately slow, because the
+// window is an I/O race that cannot be hit over HTTP on demand.
+test('an abort while the shell is opening cancels the command, and it never reaches the shell', async () => {
+  let releaseOpen;
+  const opening = new Promise((r) => { releaseOpen = r; });
+  const { host, state } = fakeHost({ respond: () => ({ stdout: 'ran' }) });
+  const inner = host.openStream.bind(host);
+  host.openStream = async (spec, opts, handlers) => {
+    // Hand control back to the test with the open still in flight, which is
+    // exactly where the gap is.
+    const stream = await inner(spec, opts, handlers);
+    await opening;
+    return stream;
+  };
+
+  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 2000 });
+  const ac = new AbortController();
+  const started = [];
+  const call = sh.run('touch WITNESS', { signal: ac.signal, onStart: () => started.push(1) });
+  // The call is past both checks and inside the open: onStart has fired.
+  await waitFor(() => started.length === 1, { timeout: 2000 });
+  ac.abort();
+  releaseOpen();
+
+  await assert.rejects(() => call, (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.deepEqual(state.commands, [], 'the cancelled command was never written to the shell');
+
+  // And the shell is still usable afterwards — the gap check must not wedge it.
+  const after = await sh.run('echo alive');
+  assert.equal(after.stdout, 'ran');
+  assert.equal(state.commands.length, 1, 'exactly one command reached the shell');
+});
 
 test('a banner with NO trailing newline still frames — on both streams', async () => {
   // The opening sentinel has to START a line just as the closing ones do. A

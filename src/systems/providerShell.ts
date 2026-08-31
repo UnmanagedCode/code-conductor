@@ -224,7 +224,6 @@ export class ProviderShell {
     // handed the turn can no longer be cancelled out from under itself — the
     // post-acquisition re-check in run() is what cancels it from here on.
     next.drop();
-    this.#waiters.unshift();
     next.resolve();
   }
 
@@ -255,6 +254,20 @@ export class ProviderShell {
     const onAbort = () => this.#tearDown('the command was interrupted by its caller', cancelled());
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
+      // THE LAST CHECK, and the one that closes the gap the two in run() cannot.
+      // run() checks before acquiring and again after, then awaits
+      // #ensureStream() — opening a shell is I/O, and it happens on every first
+      // command and on every reopen after a wedge, deadline, idle sweep, abort or
+      // output-fence reset. An abort landing in that await was seen by neither
+      // check, and `{once:true}` on an already-fired signal never fires either —
+      // so the cancelled command was written to the shell and became permanently
+      // un-cancellable, its effects landing on the system.
+      //
+      // Here it is airtight: the listener above is already armed, and everything
+      // between this line and the write below is synchronous, so an abort either
+      // fired before this check (caught here) or after the write (caught by the
+      // listener). There is no third case.
+      if (signal?.aborted) throw cancelled();
       const settled = new Promise<ShellResult>((resolve, reject) => {
         pending.resolve = resolve;
         pending.reject = reject;
@@ -350,6 +363,11 @@ export class ProviderShell {
     // output quietly missing, and it cannot filter differently from the path it
     // falls back from.
     const filters = { out: new FramedStreamFilter(nonce, 'out'), err: new FramedStreamFilter(nonce, 'err') };
+    // The same last check as the persistent path's, for the same reason: nothing
+    // cancelled is handed to the far side. There is no `#ensureStream` await
+    // here, so the window is narrower — but stating it once per mode is what
+    // keeps the two from diverging on the property that matters.
+    if (signal?.aborted) throw cancelled();
     const r = await this.#host.execOneShot(
       { shell: frameCommand(nonce, command) },
       {
