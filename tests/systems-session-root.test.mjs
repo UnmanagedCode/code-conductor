@@ -18,6 +18,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import {
   SESSION_ROOT_FILE_CAP_BYTES,
@@ -187,4 +188,95 @@ test('the prefix rule maps only what lies under the session root', async () => {
 // one against wherever cc happens to be running.
 test('composing refuses a relative systemPath', async () => {
   await assert.rejects(() => compose({ systemPath: 'relative/app' }), /absolute/);
+});
+
+// ── The target the root was pulled FROM ──────────────────────────────
+//
+// The path template does not change when one system serves many targets: it
+// keys on the project name, which is globally unique, so there is no collision
+// to fix. What there IS to fix is INVALIDATION — a root pulled from one target
+// and then re-used for another is silent, and it is the worst shape available.
+// The worker reads `CLAUDE.md`, `CONVENTIONS.md` and the sparse content cache
+// from the OLD target, edits them, and the write-back pushes the result to the
+// NEW one, clobbering it with bytes from a different machine. Both sides stay
+// internally consistent and the model has no way to see it.
+
+// Two targets over one sandbox, so the SAME tree is reachable from both: the
+// question here is whether the root is invalidated on a target change, and a
+// tree only one of them could read would answer that by accident.
+async function twoTargets() {
+  const sandbox = await fs.realpath(await mkdtemp('cc-sr-'));
+  const rec = await bindRemoteSystem({
+    id: 'boxes', flags: ['--remote', `a=${sandbox}`, '--remote', `b=${sandbox}`],
+  });
+  await seedTree(sandbox);
+  return { sandbox, id: rec.id };
+}
+
+const composeOn = async (id, remoteId, systemPath) => composeSessionRoot({
+  system: await systemById(id, remoteId, 'test'),
+  systemId: id,
+  systemPath,
+  project: 'app',
+  worktree: null,
+});
+
+const manifestOf = async (id) => JSON.parse(
+  await fs.readFile(`${sessionRootPath(id, 'app', null)}.manifest.json`, 'utf8'),
+);
+
+// PINS: the manifest records WHICH TARGET the root was pulled from.
+test('the session-root manifest records the target it was pulled from', async () => {
+  const { sandbox, id } = await twoTargets();
+  await composeOn(id, 'a', sandbox);
+  assert.equal((await manifestOf(id)).remoteId, 'a');
+});
+
+// PINS: re-composing against the SAME target keeps the root — including the
+// sparse content cache a hooked Read populated, which is the whole reason the
+// root is worth keeping.
+test('re-composing on the same target keeps the root and its cached content', async () => {
+  const { sandbox, id } = await twoTargets();
+  const { root } = await composeOn(id, 'a', sandbox);
+  const cached = path.join(root, 'src/index.js');
+  await fs.mkdir(path.dirname(cached), { recursive: true });
+  await fs.writeFile(cached, 'cached from a\n');
+
+  await composeOn(id, 'a', sandbox);
+  assert.equal(await fs.readFile(cached, 'utf8'), 'cached from a\n');
+});
+
+// PINS: re-composing against a DIFFERENT target removes the whole root and
+// re-pulls. Diffing against a manifest that describes another machine is what
+// leaves the old target's bytes under the new target's paths.
+test('re-composing on a different target wipes the root and re-pulls', async () => {
+  const { sandbox, id } = await twoTargets();
+  const { root } = await composeOn(id, 'a', sandbox);
+  const cached = path.join(root, 'src/index.js');
+  await fs.mkdir(path.dirname(cached), { recursive: true });
+  await fs.writeFile(cached, 'cached from a\n');
+
+  await composeOn(id, 'b', sandbox);
+  await assert.rejects(fs.readFile(cached), "the old target's cached content is gone");
+  assert.equal((await manifestOf(id)).remoteId, 'b');
+  // And the config surface really was pulled again, not merely left behind.
+  assert.equal(await fs.readFile(path.join(root, 'CONVENTIONS.md'), 'utf8'), '<!-- cc:conventions -->\nrules\n');
+});
+
+// PINS: a manifest written before the field existed, against a handle bound to
+// no target, is a MATCH — both normalise to null. Reading absence as a mismatch
+// would wipe and re-pull every existing session root once.
+test('a manifest with no remoteId matches an unbound handle', async () => {
+  await seedTree(remote.root);
+  const { root } = await compose();
+  const cached = path.join(root, 'src/index.js');
+  await fs.mkdir(path.dirname(cached), { recursive: true });
+  await fs.writeFile(cached, 'still here\n');
+  // Exactly the shape a pre-remoteId manifest has.
+  const mf = `${sessionRootPath(remote.id, 'app', null)}.manifest.json`;
+  const { entries } = JSON.parse(await fs.readFile(mf, 'utf8'));
+  await fs.writeFile(mf, JSON.stringify({ entries }));
+
+  await compose();
+  assert.equal(await fs.readFile(cached, 'utf8'), 'still here\n');
 });

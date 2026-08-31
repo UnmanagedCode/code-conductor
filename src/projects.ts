@@ -943,6 +943,73 @@ function describePlacement(p: { system: string; remoteId: string | null }): stri
   return p.remoteId === null ? `system '${p.system}'` : `remote '${p.remoteId}' of system '${p.system}'`;
 }
 
+// CHANGING WHICH TARGET A PROJECT IS ON — the one mutation path for `remoteId`,
+// so every surface inherits the same guard rather than each route carrying its
+// own copy.
+//
+// `liveInstanceIds` is REQUIRED and has no default. src/instances.ts imports
+// this module, so the reverse import would close a cycle and the manager cannot
+// be reached from here; a required, non-defaultable getter is what raises the
+// bar over a plain array, since a caller has to consciously supply a source
+// rather than pass `[]`. BE HONEST ABOUT WHAT THAT IS: a caller that supplies
+// `() => []` still defeats it, so the instance half is a CALLER CONTRACT. The
+// worktree half below is an INVARIANT — read inside this function, unreachable
+// by any caller — and it is the half the "a worktree only ever re-derives to
+// the target it was created against" property rests on (see WorktreeMeta).
+//
+// The refusal NAMES what must be cleared rather than clearing it: nothing the
+// user did not ask about is discarded. Same contract as removeSystem's 409.
+export async function setProjectRemote(
+  name: string,
+  remoteId: unknown,
+  { liveInstanceIds }: { liveInstanceIds: () => string[] },
+): Promise<{ name: string; system: string; remoteId: string | null; systemPath: string | null }> {
+  validateName(name);
+  const placement = await projectPlacement(name);
+  if (placement.system === LOCAL_SYSTEM_ID) {
+    throw httpError(400, `project '${name}' is on cc's own machine, which is one machine — it has no named targets. `
+      + `Register it on a system to give it one.`);
+  }
+  const next = validateRemoteId(remoteId);
+
+  // Dynamic, as elsewhere in this module: worktrees.ts statically imports it.
+  const { registeredWorktreeNames } = await import('./worktrees.ts');
+  const worktrees = await registeredWorktreeNames(name);
+  const instances = liveInstanceIds();
+  if (worktrees.length > 0 || instances.length > 0) {
+    const parts = [
+      instances.length > 0 ? `${instances.length} live session(s): ${instances.join(', ')}` : null,
+      worktrees.length > 0 ? `${worktrees.length} registered worktree(s): ${worktrees.join(', ')}` : null,
+    ].filter(Boolean);
+    throw httpError(
+      409,
+      `project '${name}' cannot change target while it has ${parts.join(' and ')}. `
+      + `A live session's shell and session root are coherent only against the target they were opened on, `
+      + `and a worktree re-derives its target from this project. Clear them first.`,
+      { code: 'PROJECT_PLACEMENT_IN_USE', systemRefusal: true, instances, worktrees },
+    );
+  }
+
+  // VERIFY BEFORE PERSIST, the same shape addSystem has: a target the provider
+  // does not serve refuses here, with nothing written.
+  await systemById(placement.system, next, `project '${name}'`);
+
+  // The session root was pulled from the OLD target. Removing it here is what
+  // stops the next spawn reading that target's CLAUDE.md, CONVENTIONS.md and
+  // cached content and pushing edits of them to the new one. composeSessionRoot
+  // re-checks the manifest anyway — belt and braces for a root left behind by a
+  // crash mid-change, or written before the field existed.
+  const { removeSessionRoot } = await import('./systems/sessionRoot.ts');
+  await removeSessionRoot(placement.system, name, null);
+  for (const wt of worktrees) await removeSessionRoot(placement.system, name, wt);
+
+  await writeProjectRecord(name, { remoteId: next });
+  // The cached git facts were measured on the target the project just left.
+  const { invalidate } = await import('./projectsCache.ts');
+  invalidate(name);
+  return { name, system: placement.system, remoteId: next, systemPath: placement.systemPath };
+}
+
 // Delete the entire project directory + the project's central-store
 // entry. Caller is responsible for first killing any running instances
 // and removing worktree registrations (the cascade is orchestrated in
