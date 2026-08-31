@@ -75,6 +75,9 @@ afterEach(async () => {
 // session's MAIN agent — the CLI omits `agent_id` on its payload.
 const run = (agentId, command, opts = {}) => redirect.runForwarded(command, { agentId, ...opts });
 const onSystem = (rel) => path.join(remote.root, rel);
+// Signal 0: delivery is the liveness test, and it needs no permission to send —
+// the reference provider's shells are children of a process cc spawned.
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 // PINS: a distinct agent id means a distinct shell PROCESS on the system, and
 // the same id reuses the one it already has. `echo $$` is the far side's own
@@ -277,31 +280,95 @@ test("no agent's shell is exempt from the idle sweep", async () => {
   assert.match(sub.notice ?? '', /restarted/, 'and so is the subagent');
 });
 
-// PINS: the subagent shell count is capped, the entry evicted is the
-// least-recently-used one, and the MAIN agent is neither counted nor evictable.
-// Asserting WHICH entry went is what distinguishes eviction from arbitrary
-// dropping.
+// PINS THAT THE IDLE TIMERS ARE ARMED PER ENTRY: one agent's SUSTAINED activity
+// does not hold another agent's shell open past its TTL. The test above cannot
+// see this — both agents go idle together there, so any sweep that eventually
+// reaches both passes it — and a timer re-armed for every entry on every
+// command's completion means an active main agent keeps every subagent's
+// `$SHELL -l` alive on the far side for as long as the session lasts, which is
+// exactly the leak the cap exists to bound.
 //
-// NOT CLAIMING: the production cap value (a test override), nor that eviction
-// preserves anything — an evicted agent that returns gets a fresh shell and no
-// reset notice, deliberately.
-test('the subagent shell count is capped and the LRU idle one is evicted', async () => {
+// The sweep assertion is INDEPENDENT of the busy shell's timing: `a1` must be
+// swept while main is still working, and main's loop runs to a wall-clock horizon
+// five times the TTL so the guard cannot pass by main having finished early.
+//
+// NOT CLAIMING: how many commands main got through, nor any ordering between the
+// two agents' timers — only that `a1`'s fired while main was still busy.
+test("one agent's activity does not hold another agent's shell open", async () => {
+  await rebuild({ idleTtlMs: 300 });
+  await run('a1', 'true');
+  assert.equal(redirect.shellOpenFor('a1'), true, "the subagent's shell is live and now idle");
+
+  let issued = 0;
+  let mainFinished = false;
+  const horizon = Date.now() + 1500;
+  const busy = (async () => {
+    while (Date.now() < horizon) { await run(null, 'true'); issued += 1; }
+    mainFinished = true;
+  })();
+
+  await waitFor(() => redirect.shellOpenFor('a1') === false, { timeout: 4000 });
+  assert.equal(mainFinished, false,
+    `a1 was swept while the main agent was still issuing commands (${issued} so far)`);
+  assert.ok(issued > 1, 'and main really was working, not blocked');
+
+  await busy;
+});
+
+// PINS: past the cap the victim is the LEAST-RECENTLY-USED subagent entry, and
+// the MAIN agent is neither counted nor evictable.
+//
+// A REUSE IS INTERLEAVED (`a1, a2, a1`) so that recency and insertion order
+// DISAGREE before the cap bites. Without it, evicting the first-inserted entry
+// and evicting the least-recently-used one pick the same victim, and a test
+// asserting "which entry went" passes under both — while the real failure D-C
+// exists to prevent is precisely evicting the shell an agent is actively coming
+// back to.
+//
+// NOT CLAIMING: the production cap value (a test override), nor what an evicted
+// agent finds when it returns (the test below), nor anything about a busy entry
+// (the test after that).
+test('the evicted subagent shell is the least-recently-used one, never the main agent', async () => {
   await rebuild({ maxAgentShells: 2 });
   await run(null, 'true');
   await run('a1', 'true');
   await run('a2', 'true');
+  await run('a1', 'true');
+  // Recency is now a2 < a1, while insertion order is a1 before a2.
   await run('a3', 'true');
 
-  assert.equal(redirect.shellOpenFor('a1'), false, 'the least-recently-used subagent shell went');
-  assert.equal(redirect.shellOpenFor('a2'), true, 'and a more recent one stayed');
+  assert.equal(redirect.shellOpenFor('a2'), false, 'the least-recently-used subagent shell went');
+  assert.equal(redirect.shellOpenFor('a1'), true, 'and the one most recently used stayed, despite being the oldest');
   assert.equal(redirect.shellOpenFor('a3'), true);
   assert.equal(redirect.shellOpen, true, 'the main agent is neither counted nor evicted');
   assert.equal(redirect.liveShellCount, 3, 'main plus the two subagents the cap allows');
+});
 
-  // An evicted agent that comes back still works — on a fresh shell.
-  const back = await run('a1', 'echo alive');
+// PINS THAT AN EVICTION DROPS ITS ENTRY, observed through the one thing a worker
+// can see: the returning agent is told NOTHING. Closing the shell while keeping
+// the entry would leave that entry holding the close's own reset reason, so the
+// agent's next command would be told "the shell was restarted … exported
+// variables … are gone" about state it never had — an R5-class false statement —
+// and the entry map would grow one per distinct agent id for the life of the
+// session, the unbounded growth the cap exists to prevent.
+//
+// The RETURNING AGENT IS THE EVICTED ONE (`a2`), which is what makes the silence
+// meaningful; asserting it of an agent that was never evicted is vacuous.
+//
+// NOT CLAIMING: that any state survived eviction — none does, deliberately — nor
+// that the map's size is read anywhere; the notice is the observable.
+test('an evicted agent comes back to a fresh shell and is told nothing', async () => {
+  await rebuild({ maxAgentShells: 2 });
+  await run('a1', 'true');
+  await run('a2', 'true');
+  await run('a1', 'true');
+  await run('a3', 'true');
+  assert.equal(redirect.shellOpenFor('a2'), false, 'a2 was the evicted one');
+
+  const back = await run('a2', 'echo alive');
   assert.equal(back.code, 0, back.stderr);
   assert.equal(back.stdout.trim(), 'alive');
+  assert.equal(back.notice, null, 'and it is told about no reset — nothing it had was lost');
 });
 
 // PINS: an in-flight subagent shell is never the eviction victim, and a new
@@ -372,17 +439,32 @@ test('[persistentShell:false] the fallback isolates agents too', async () => {
     "and the main agent's cwd carried, as it does locally");
 });
 
-// PINS: session teardown reaps every agent's shell, not just the main agent's.
+// PINS: session teardown reaps every agent's shell PROCESS, not just the main
+// agent's.
+//
+// THE OBSERVABLE IS THE FAR-SIDE PID, not cc's own bookkeeping. `close()` clears
+// the entry map before awaiting the shells, so `liveShellCount` and `shellOpen`
+// both answer from the cleared map and would read 0/false even if no shell were
+// ever closed — every agent's `$SHELL -l` and its `exec` stream would leak until
+// the system disconnected, on the path instance exit and kill both call. Each
+// shell's own `$$` is the only witness that can tell teardown from forgetting.
 //
 // NOT CLAIMING: anything about the idle TTL or the cap, which close entries for
-// their own reasons.
-test('close() closes every agent shell', async () => {
-  await run(null, 'true');
-  await run('a1', 'true');
-  await run('a2', 'true');
+// their own reasons; nor any ordering between the three closes.
+test('close() closes every agent shell process on the system', async () => {
+  const pids = [];
+  for (const agent of [null, 'a1', 'a2']) {
+    const pid = Number((await run(agent, 'echo $$')).stdout.trim());
+    assert.ok(Number.isInteger(pid) && pid > 0, `agent ${agent} reported a pid`);
+    assert.equal(alive(pid), true, `agent ${agent}'s shell is running before teardown`);
+    pids.push(pid);
+  }
+  assert.equal(new Set(pids).size, 3, 'three distinct shell processes');
   assert.equal(redirect.liveShellCount, 3);
 
   await redirect.close();
-  assert.equal(redirect.liveShellCount, 0);
-  assert.equal(redirect.shellOpen, false);
+  // waitFor, not an immediate assert: the far side's exit is a signal delivery,
+  // and pinning it to cc's await ordering would be testing the clock.
+  await waitFor(() => pids.every(pid => !alive(pid)), { timeout: 4000 });
+  assert.equal(redirect.liveShellCount, 0, 'and cc no longer holds any entry');
 });
