@@ -21,7 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { rmrf } from './rmrf.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from '../src/systems/bashRules.ts';
+import { bashRuleSources, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from '../src/systems/bashRules.ts';
 
 let dir;
 beforeEach(async () => { dir = await mkdtemp('cc-bashrules-'); });
@@ -77,11 +77,23 @@ test('absent and unparseable settings files are skipped', async () => {
 // PINS: the user-level file is one of the sources. A global rule is exactly the
 // one most likely to exist and least likely to be noticed going quiet.
 test('the user settings path is included in the default source list', async () => {
-  const { bashRuleSources } = await import('../src/systems/bashRules.ts');
   const sources = bashRuleSources('/session/root');
   assert.ok(sources.includes(path.join(os.homedir(), '.claude', 'settings.json')));
   assert.ok(sources.includes(path.join('/session/root', '.claude', 'settings.json')));
   assert.ok(sources.includes(path.join('/session/root', '.claude', 'settings.local.json')));
+});
+
+// PINS T1: the MANAGED-POLICY file is one of the sources. It is the CLI's most
+// authoritative settings layer and the one that fails worst — a `Bash(touch:*)`
+// deny there is enforced today and goes silently dead under redirection — and no
+// test can write `/etc`, so the shape of the source list is the only place it
+// can be held. Dropping it from `bashRuleSources` left the whole suite green.
+test('the managed-policy file is one of the sources both scans read', () => {
+  const sources = bashRuleSources('/session/root');
+  assert.ok(sources.includes('/etc/claude-code/managed-settings.json'),
+    `the managed-policy layer is scanned (got ${JSON.stringify(sources)})`);
+  // Last, matching the CLI's own precedence order — it is the layer that wins.
+  assert.equal(sources.at(-1), '/etc/claude-code/managed-settings.json');
 });
 
 // ── B4: the one key that turns the whole redirect off ────────────────

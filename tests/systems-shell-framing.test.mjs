@@ -755,6 +755,121 @@ test('an abort while the shell is opening cancels the command, and it never reac
   assert.equal(state.commands.length, 1, 'exactly one command reached the shell');
 });
 
+// ── The four abort windows, one test each ────────────────────────────
+//
+// run()'s cancellation is FOUR guards over four DIFFERENT windows, not four
+// copies of one check. Removing the cluster is caught, but each guard has to be
+// independently killable or the next refactor drops three of them silently —
+// and window 4 below is exactly where a real defect lived (a cancelled command
+// reached the shell and became permanently un-cancellable, because
+// `{once:true}` on an already-fired signal never fires).
+//
+// Windows 1 and 2 are pinned by WHEN the call settles rather than by its code,
+// because the later guards produce the same ECANCELLED eventually. The
+// difference is that they produce it only after the IN-FLIGHT command finishes:
+// a caller that has gone away must not sit in the queue behind a ten-minute
+// build. So each asserts the cancelled call settled while the in-flight one was
+// still running.
+
+// A shell whose first command hangs until the test releases it, so there is a
+// real in-flight command to queue behind.
+function heldShell() {
+  const { host, state } = fakeHost({
+    // The held command is answered by NOTHING, so it stays in flight until the
+    // test ends it. `close()` is what ends it — waiting out a deadline instead
+    // would put seconds of dead wall clock in the suite for no extra coverage.
+    respond: (command) => (command.includes('HOLD') ? { silent: true } : { stdout: 'ran' }),
+  });
+  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 5000 });
+  // Settled-ness is OBSERVED, not timed: `inFlightDone` flips only when the held
+  // command actually finishes, so the ordering assertions below cannot pass on a
+  // slow machine for the wrong reason.
+  let inFlightDone = false;
+  const inFlight = sh.run('HOLD').catch(() => {}).finally(() => { inFlightDone = true; });
+  return { sh, state, inFlight, release: () => sh.close(), get inFlightDone() { return inFlightDone; } };
+}
+
+// WINDOW 1 — the signal was already aborted before run() was called.
+//
+// Without the entry check the call enqueues instead, and `addEventListener` on
+// an ALREADY-ABORTED signal never fires (the abort event has been dispatched),
+// so nothing rejects it until it is handed the turn.
+test('an already-aborted call never takes a place in the queue', async () => {
+  const h = heldShell();
+  await waitFor(() => h.state.commands.length === 1, { timeout: 2000 });
+
+  const ac = new AbortController();
+  ac.abort();
+  await assert.rejects(() => h.sh.run('touch W1', { signal: ac.signal }), (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.equal(h.inFlightDone, false, 'it settled while the in-flight command was still running');
+  assert.deepEqual(h.state.commands, ['HOLD'], 'and never reached the shell');
+  h.release();
+  await h.inFlight;
+});
+
+// WINDOW 2 — the abort lands DURING the queue wait.
+//
+// Without the waiter's own abort listener the call stays queued and is only
+// rejected once it is handed the turn, which is after the in-flight command
+// finishes — so a gone caller holds a queue slot behind a long build.
+test('an abort during the queue wait rejects that call without waiting for the shell', async () => {
+  const h = heldShell();
+  await waitFor(() => h.state.commands.length === 1, { timeout: 2000 });
+
+  const ac = new AbortController();
+  const queued = h.sh.run('touch W2', { signal: ac.signal });
+  // Queued, not running: #acquire pushes the waiter synchronously on invocation.
+  ac.abort();
+
+  await assert.rejects(() => queued, (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.equal(h.inFlightDone, false, 'it settled while the in-flight command was still running');
+  assert.deepEqual(h.state.commands, ['HOLD'], 'and never reached the shell');
+
+  // And the queue is intact: releasing the in-flight command still serves the
+  // next caller, so a cancelled waiter did not consume a turn on its way out.
+  h.release();
+  await h.inFlight;
+  assert.equal((await h.sh.run('echo next')).stdout, 'ran');
+});
+
+// WINDOW 3 — the abort lands after the waiter is handed the turn (its listener
+// already detached by #releaseTurn) and before the command is written.
+//
+// That window is a MICROTASK GAP: #releaseTurn resolves the waiter and the
+// continuation runs on the next tick, and no external caller can schedule code
+// between them. So it is driven with an AbortSignal DOUBLE that flips between
+// the two reads — standing in for the gap rather than pretending to reproduce
+// it. Nothing else here is faked: it is the real run() reading a real sequence
+// of answers.
+test('a signal that turns aborted after acquisition still stops the command', async () => {
+  const { host, state } = fakeHost({ respond: () => ({ stdout: 'ran' }) });
+  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 2000 });
+
+  let reads = 0;
+  const flipping = {
+    // Read 1 is run()'s entry check, read 2 the post-acquisition re-check. The
+    // shell is idle, so #acquire resolves without touching the signal at all.
+    get aborted() { reads += 1; return reads > 1; },
+    addEventListener() {}, removeEventListener() {},
+  };
+
+  await assert.rejects(() => sh.run('touch W3', { signal: flipping }), (e) => {
+    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
+    return true;
+  });
+  assert.deepEqual(state.commands, [], 'the command was never written to the shell');
+  // Exactly two reads before the command would have been written. If a future
+  // change adds or removes one, this fails LOUDLY rather than silently reading
+  // a different guard than the one under test.
+  assert.equal(reads, 2, 'the entry check and the post-acquisition re-check, and nothing else');
+});
+
 test('a banner with NO trailing newline still frames — on both streams', async () => {
   // The opening sentinel has to START a line just as the closing ones do. A
   // profile that writes an unterminated banner ('printf MOTD') otherwise glues

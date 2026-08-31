@@ -135,6 +135,34 @@ describe('a worker session on a remote system', () => {
     assert.equal(instances.list().length, before);
   });
 
+  // PINS T3: WHICH refusal wins when a settings file trips both scans. The
+  // hooks check runs first deliberately — `disableAllHooks` is the bigger
+  // failure, because it silently runs the worker's own commands on the
+  // orchestrator while `Bash(...)` rules merely stop discriminating — and with
+  // only one of the two set in a fixture, either ordering refuses identically,
+  // so nothing held the choice.
+  test('a file that trips both scans refuses with the hooks code, not the rules one', async () => {
+    await fs.mkdir(path.join(tree, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.claude', 'settings.json'),
+      JSON.stringify({ disableAllHooks: true, permissions: { deny: ['Bash(rm:*)'] } }));
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 501, JSON.stringify(r.body));
+    const why = JSON.stringify(r.body);
+    assert.match(why, /REDIRECT_HOOKS_DISABLED/);
+    assert.ok(!why.includes('BASH_RULES_NOT_ENFORCEABLE'), `the bigger failure is the one reported: ${why}`);
+  });
+
+  // PINS: the Bash-rule refusal is still reached when hooks are NOT disabled —
+  // so the ordering above is a priority, not the rules scan being dead.
+  test('a Bash rule alone still refuses with the rules code', async () => {
+    await fs.mkdir(path.join(tree, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(tree, '.claude', 'settings.json'),
+      JSON.stringify({ permissions: { deny: ['Bash(rm:*)'] } }));
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 501, JSON.stringify(r.body));
+    assert.match(JSON.stringify(r.body), /BASH_RULES_NOT_ENFORCEABLE/);
+  });
+
   // PINS: the refusal is about the setting, not about remote projects. Hooks
   // that are ON must not block anything.
   test('settings that leave hooks on spawn normally', async () => {

@@ -213,6 +213,56 @@ test('interrupting the in-flight command stops it on the system', async () => {
   await assert.rejects(fs.stat(witness), 'the interrupted command is not still running');
 });
 
+// PINS T5 — THE ACTUAL REAL-WORLD SHAPE, not just the guards. A long build is
+// in flight on a LIVE, streaming shell; a second call is queued behind it; that
+// second call's caller is interrupted.
+//
+// The neighbouring cancellation tests abort synchronously right after invoking,
+// so they always race the shell OPEN and exercise the pre-open window. This one
+// waits for the in-flight command's first bytes to arrive before queuing behind
+// it, which is the only way the queued call is cancelled against a shell that is
+// genuinely mid-command.
+//
+// Every claim is witnessed on the SYSTEM's filesystem, which is the only witness
+// that can tell "was not run" from "was run and its result discarded".
+test('interrupting a queued call leaves a live in-flight command untouched', async () => {
+  const seen = [];
+  const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
+
+  const streamed = [];
+  const inFlight = redirect.runForwarded(
+    "printf 'A1\n'; sleep 1; printf 'A2\n'; touch A_DONE",
+    { sink: { ...sink, out: (t) => streamed.push(t) } },
+  );
+  // LIVE, not merely started: the first bytes have crossed to cc, so the shell
+  // is past its open and mid-command.
+  await waitFor(() => streamed.join('').includes('A1'), { timeout: 5000 });
+
+  const ac = new AbortController();
+  const queued = redirect.runForwarded('touch B_WITNESS', { signal: ac.signal, sink });
+  ac.abort();
+
+  const b = await queued;
+  assert.equal(b.code, 1, 'the cancelled call reports a failure');
+  assert.match(b.stderr, /interrupt|cancel/i, b.stderr);
+
+  const a = await inFlight;
+  assert.equal(a.code, 0, `the unrelated in-flight command completed normally: ${a.stderr}`);
+  assert.equal(a.stdout, 'A1\nA2\n', 'with ALL of its output, not a truncated prefix');
+
+  // The system's own account: A ran to completion, B never ran at all.
+  assert.ok(await fs.stat(onSystem('A_DONE')).catch(() => null), 'A finished on the system');
+  await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B never ran on the system');
+
+  // And no shell was reset, so nothing has a reset to report — a spurious notice
+  // would tell a worker it lost state it still has.
+  assert.equal(a.notice, null);
+  assert.equal(b.notice, null);
+  assert.deepEqual(seen.filter(([k]) => k === 'notice'), []);
+  const after = await bash('echo "[$CC_PROBE_UNSET]"');
+  assert.equal(after.notice, null, 'and the next command is not told about a reset either');
+});
+
 // PINS B2 IN THE FALLBACK MODE, at the redirect layer. R5's abort was
 // implemented only as a shell close, and in `persistentShell:false` there is no
 // live stream and no retained exec id — so the close reached nothing and the
@@ -402,6 +452,41 @@ test('a relative path is never pushed back', async () => {
   await fs.writeFile(path.join(root, 'rel.txt'), 'local only\n');
   assert.equal(await post('Edit', { file_path: 'rel.txt' }, {}), null);
   await assert.rejects(fs.stat(onSystem('rel.txt')), 'nothing was written to the system');
+});
+
+// PINS T2: the push half's ABSOLUTE check, against its own window rather than
+// against a containment test that happens to fire first.
+//
+// The case above is stopped one guard later: `toSystem` resolves a relative path
+// against the test process's cwd, which lies outside the session root, so
+// containment answers null for a reason that has nothing to do with the guard.
+// The two halves can genuinely disagree — a cwd INSIDE the session root gives a
+// relative path a real system mapping — and that is the shape a push must still
+// refuse, because PreToolUse refused the same path and so never pulled it.
+//
+// Driven by making the session root the process's OWN cwd, which is the only way
+// to reach the disagreement without a global chdir. `package.json` is read, never
+// written: with the guard gone it is the repo's file that would land on the
+// system, which is exactly the harm.
+test('a relative path that DOES map into the session root is still not pushed', async () => {
+  const here = new SessionRedirect({
+    system: await systemById(remote.id, 'test'),
+    systemId: remote.id,
+    systemPath: remote.root,
+    sessionRoot: process.cwd(),
+    forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
+    localRoots: [],
+    emit: () => {},
+  });
+  try {
+    // The premise: relative here really does map onto the system.
+    assert.ok(here.map.toSystem(path.resolve('package.json')) !== null,
+      'the fixture reaches the disagreement — an absolute spelling of this path maps');
+
+    assert.equal(await here.postToolUse('Write', { file_path: 'package.json' }, {}), null,
+      'a relative path is refused by the push half itself');
+    await assert.rejects(fs.stat(onSystem('package.json')), 'the repo file never reached the system');
+  } finally { await here.close(); }
 });
 
 // PINS: R2's annotation is TARGETED — it fires only when the output actually
