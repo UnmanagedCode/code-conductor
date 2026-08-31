@@ -13,14 +13,19 @@
 // per-shell env marker, a filesystem rendezvous — never "it ran" or "it exited
 // zero".
 //
-// STANDING WARMING RULE. Under a login shell the FIRST framed command's `export`
-// is silently swallowed (a `cd` in the same position is not, and every export
-// after the first persists). That is a pre-existing defect of the redirected
-// shell, unrelated to per-agent keying and not fixed here — but a test that sets
-// an export as an agent's first command would then assert an empty value for the
-// wrong reason and pass whether or not agents have their own shells. So every
-// test below that measures export persistence runs one command on that agent's
-// shell first, and says so.
+// STANDING WARMING RULE. Every test below that measures export persistence runs
+// one command on that agent's shell FIRST, and says so. The negative half of
+// such a test — "the other agent does not see this marker" — is satisfiable two
+// ways: by the isolation it is testing, or by an export that never took effect
+// at all, in which case the test passes whether or not agents have their own
+// shells. A login shell swallowing the FIRST framed command's `export` (with a
+// `cd` in the same position surviving, and every later export persisting) has
+// been reported on another host. IT DOES NOT REPRODUCE HERE — measured through
+// this same path, an `export` as the very first framed command on a fresh
+// `zsh -l` persisted — so the warm-up is not working around a defect on this
+// box; it costs one command and makes the empty half unambiguous on any box.
+// Either way it is a property of the login shell, not of per-agent keying, and
+// nothing here fixes it.
 
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -70,7 +75,6 @@ afterEach(async () => {
 // session's MAIN agent — the CLI omits `agent_id` on its payload.
 const run = (agentId, command, opts = {}) => redirect.runForwarded(command, { agentId, ...opts });
 const onSystem = (rel) => path.join(remote.root, rel);
-const notices = (bag) => ({ notice: (t) => bag.push(t), out: () => {}, err: () => {} });
 
 // PINS: a distinct agent id means a distinct shell PROCESS on the system, and
 // the same id reuses the one it already has. `echo $$` is the far side's own
@@ -121,9 +125,9 @@ test("a subagent's cd does not move the main agent's shell", async () => {
 // that collapses both agents onto one shell fails the "not the other's" half; a
 // mutant that loses the export entirely fails the "its own" half.
 //
-// Both shells are warmed first, per the standing rule at the top of this file:
-// the first framed command's export is swallowed by the login shell, so without
-// the warm-up both markers would read empty and this would pass either way.
+// Both shells are warmed first, per the standing rule at the top of this file —
+// it is what makes the empty half of `[m][]` mean isolation rather than an export
+// that never took effect.
 //
 // NOT CLAIMING: anything about the `persistentShell:false` fallback, where
 // exports persist for nobody, so there is nothing to keep apart.
