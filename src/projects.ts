@@ -274,11 +274,13 @@ export interface ProjectInfo {
   // Adopted from outside the projects root — its record is a `.external/<name>`
   // symlink and its `path` is the target's REALPATH (see resolveProjectDir).
   external: boolean;
-  // The System the tree lives on, and — only when that is not `local` — the
-  // path on it. Both come from placementOf(), so absence of the record field
-  // reads as `local` and the `.conduct` pin holds here too. Plain strings, not
-  // the System HANDLE: both REST and MCP spread this into a response body.
+  // The System the tree lives on, WHICH TARGET of it, and — only when that is
+  // not `local` — the path on it. All three come from placementOf(), so absence
+  // of the record field reads as `local` and the `.conduct` pin holds here too.
+  // Plain strings, not the System HANDLE: both REST and MCP spread this into a
+  // response body.
   system: string;
+  remoteId: string | null;
   systemPath: string | null;
 }
 
@@ -330,7 +332,7 @@ export async function resolveProjectDir(name: string): Promise<ResolvedProjectDi
     return {
       path: placement.systemPath,
       external: false,
-      system: await systemById(placement.system, `project '${name}'`),
+      system: await systemById(placement.system, placement.remoteId, `project '${name}'`),
     };
   }
   const system = localSystem();
@@ -581,16 +583,18 @@ export function validateWorkspace(workspace: unknown): string | null {
   return trimmed;
 }
 
-// The project record. `system`/`systemPath` are read RAW here — placementOf()
-// (src/systems/registry.ts) is what turns them into a placement, so the pin and
-// the absence-means-local rule live in one place rather than in every reader.
+// The project record. `system`/`remoteId`/`systemPath` are read RAW here —
+// placementOf() (src/systems/registry.ts) is what turns them into a placement,
+// so the pin and the absence-means-local rule live in one place rather than in
+// every reader.
 export interface ProjectMeta {
   workspace: string | null;
   system: string | null;
+  remoteId: string | null;
   systemPath: string | null;
 }
 
-const EMPTY_META: ProjectMeta = { workspace: null, system: null, systemPath: null };
+const EMPTY_META: ProjectMeta = { workspace: null, system: null, remoteId: null, systemPath: null };
 
 // Read the project's optional metadata file from the central store.
 // Missing file or malformed JSON → every field null. The store dir may
@@ -607,9 +611,12 @@ export async function readProjectMeta(name: string): Promise<ProjectMeta> {
     const raw = await fs.readFile(file, 'utf8');
     const obj: unknown = JSON.parse(raw);
     if (typeof obj !== 'object' || obj === null) return { ...EMPTY_META };
-    const rec = obj as { workspace?: unknown; system?: unknown; systemPath?: unknown };
+    const rec = obj as { workspace?: unknown; system?: unknown; remoteId?: unknown; systemPath?: unknown };
     const str = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
-    return { workspace: str(rec.workspace), system: str(rec.system), systemPath: str(rec.systemPath) };
+    return {
+      workspace: str(rec.workspace), system: str(rec.system),
+      remoteId: str(rec.remoteId), systemPath: str(rec.systemPath),
+    };
   } catch (e) {
     if (errCode(e) === 'ENOENT') return { ...EMPTY_META };
     // Malformed JSON or unreadable — degrade to unassigned rather than
@@ -649,7 +656,7 @@ export async function writeProjectMeta(
 // "don't write a record for a project that isn't there" guard.
 async function writeProjectRecord(
   name: string,
-  patch: { workspace?: string | null; system?: string | null; systemPath?: string | null },
+  patch: { workspace?: string | null; system?: string | null; remoteId?: string | null; systemPath?: string | null },
 ): Promise<Record<string, string | null>> {
   const dir = projectStoreDir(name);
   const file = path.join(dir, 'project.json');
@@ -797,7 +804,7 @@ export async function renameWorkspace(oldName: string, newName: string): Promise
 
 export async function createProject(
   name: string,
-  { conventionsDoc = null, system: systemId = null, systemPath = null }: {
+  { conventionsDoc = null, system: systemId = null, remoteId = null, systemPath = null }: {
     conventionsDoc?: string | null;
     // The system to place the project on, and the path on it. Both or neither:
     // a system with no path is not a placement, and a path with no system is a
@@ -805,17 +812,20 @@ export async function createProject(
     // which is what every existing caller does. Typed `unknown` because they
     // arrive from a request body; validatePlacementInput is what narrows them.
     system?: unknown;
+    // WHICH TARGET of that system, when it serves more than one. Optional even
+    // with a system: absence means the provider's own default target.
+    remoteId?: unknown;
     systemPath?: unknown;
   } = {},
-): Promise<{ name: string; path: string; system: string }> {
+): Promise<{ name: string; path: string; system: string; remoteId: string | null }> {
   validateName(name);
-  const placement = validatePlacementInput(systemId, systemPath);
+  const placement = validatePlacementInput(systemId, remoteId, systemPath);
   // THE THIRD BRANCH. On a non-local system the mkdir, `git init` and the seed
   // files below all happen ON THE SYSTEM at the caller's path, rather than under
   // the local projects root — and the record, not a directory here, is what
   // registers the project.
   const system = placement
-    ? await systemById(placement.system, `project '${name}'`)
+    ? await systemById(placement.system, placement.remoteId, `project '${name}'`)
     : localSystem();
   const full = placement ? placement.systemPath : path.join(projectsRoot(), name);
   // resolveProjectDir, not the mkdir alone: an ADOPTED project holds the name
@@ -830,7 +840,7 @@ export async function createProject(
   } catch (e) {
     if (errCode(e) === 'EEXIST') {
       throw httpError(409, placement
-        ? `'${full}' already exists on system '${placement.system}'`
+        ? `'${full}' already exists on ${describePlacement(placement)}`
         : `project '${name}' already exists`);
     }
     // A failure caused by a REMOTE machine has to name that machine. A raw
@@ -840,7 +850,7 @@ export async function createProject(
     // system 's'"; this is the same sentence for the create path. A LOCAL create
     // is left alone: there is no other machine to name.
     if (placement) {
-      throw httpError(502, `could not create '${full}' on system '${placement.system}': ${errMsg(e)}`);
+      throw httpError(502, `could not create '${full}' on ${describePlacement(placement)}: ${errMsg(e)}`);
     }
     throw e;
   }
@@ -848,7 +858,9 @@ export async function createProject(
   // the path was not already someone else's tree, and a record written ahead of
   // it would adopt whatever was there on a refusal.
   if (placement) {
-    await writeProjectRecord(name, { system: placement.system, systemPath: placement.systemPath });
+    await writeProjectRecord(name, {
+      system: placement.system, remoteId: placement.remoteId, systemPath: placement.systemPath,
+    });
   }
   // Every project is a git repo from birth — worktrees, diffs and commits are
   // the whole workflow. The mkdir above proves the dir is brand new, so there
@@ -877,28 +889,58 @@ export async function createProject(
   if (conventionsDoc != null) {
     await system.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
   }
-  return { name, path: full, system: system.id };
+  return { name, path: full, system: system.id, remoteId: system.remoteId };
 }
 
-// The (system, systemPath) pair a creation path was given, or null for a local
-// project. Shared by createProject and adoptProject so the two cannot drift on
-// what a placement means.
+// The (system, remoteId, systemPath) triple a creation path was given, or null
+// for a local project. Shared by createProject and adoptProject so the two
+// cannot drift on what a placement means.
 //
 // The path is required to be ABSOLUTE because a relative one would be resolved
 // against whatever working directory the provider process happens to have —
 // which is not a property of the system, and not one the caller can see.
 function validatePlacementInput(
-  systemId: unknown, systemPath: unknown,
-): { system: string; systemPath: string } | null {
+  systemId: unknown, remoteId: unknown, systemPath: unknown,
+): { system: string; remoteId: string | null; systemPath: string } | null {
   const id = typeof systemId === 'string' ? systemId.trim() : '';
   const p = typeof systemPath === 'string' ? systemPath.trim() : '';
+  const remote = validateRemoteId(remoteId);
   if (!id || id === LOCAL_SYSTEM_ID) {
     if (p) throw httpError(400, `systemPath '${p}' was given without a system — a path with no system is a path on cc's own machine, which is what omitting both already means`);
+    if (remote) throw httpError(400, `remoteId '${remote}' was given without a system — cc's own machine is one machine, so it has no named targets`);
     return null;
   }
   if (!p) throw httpError(400, `system '${id}' was named without a systemPath — cc has no default location on another machine`);
   if (!path.isAbsolute(p)) throw httpError(400, `systemPath must be absolute (got '${p}')`);
-  return { system: id, systemPath: p };
+  return { system: id, remoteId: remote, systemPath: p };
+}
+
+// The most a caller may name a target with. DELIBERATELY NOT `isSlug`: a remote
+// id is a container name, a hostname or a VM id, and those legitimately carry
+// `_` and `.`. What is refused is what cannot survive being a wire field or
+// cannot be told apart from a mistake — nothing, whitespace, a control
+// character, or a length no real identifier has.
+export const REMOTE_ID_MAX = 128;
+
+export function validateRemoteId(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'string') throw httpError(400, 'remoteId must be a string or null');
+  const t = v.trim();
+  if (t === '') return null;
+  if (t.length > REMOTE_ID_MAX) {
+    throw httpError(400, `remoteId is ${t.length} characters, above the ${REMOTE_ID_MAX}-character limit`);
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\u0000-\u001f\u007f]/.test(t)) {
+    throw httpError(400, `invalid remoteId ${JSON.stringify(v)} — whitespace and control characters are not allowed`);
+  }
+  return t;
+}
+
+// "system 's'", or "remote 'r' of system 's'" — one spelling of the placement
+// in a message, so a refusal about a multi-target system says WHICH target.
+function describePlacement(p: { system: string; remoteId: string | null }): string {
+  return p.remoteId === null ? `system '${p.system}'` : `remote '${p.remoteId}' of system '${p.system}'`;
 }
 
 // Delete the entire project directory + the project's central-store
@@ -922,18 +964,18 @@ function validatePlacementInput(
 // and resolving a local project never consults a remote system.
 export async function getProjectForDelete(
   name: string,
-): Promise<{ name: string; system: string; external: boolean }> {
+): Promise<{ name: string; system: string; remoteId: string | null; external: boolean }> {
   validateName(name);
   const placement = await projectPlacement(name);
   if (placement.system !== LOCAL_SYSTEM_ID) {
-    return { name, system: placement.system, external: false };
+    return { name, system: placement.system, remoteId: placement.remoteId, external: false };
   }
   const resolved = await resolveProjectDir(name);
   if (!resolved) throw httpError(404, `project '${name}' not found`);
-  return { name, system: LOCAL_SYSTEM_ID, external: resolved.external };
+  return { name, system: LOCAL_SYSTEM_ID, remoteId: null, external: resolved.external };
 }
 
-export async function deleteProject(name: string): Promise<{ name: string; path: string; system: string }> {
+export async function deleteProject(name: string): Promise<{ name: string; path: string; system: string; remoteId: string | null }> {
   validateName(name);
   // D11 — THE THIRD BRANCH: DELETING A REMOTE PROJECT UNREGISTERS IT AND
   // NOTHING ELSE. The remote tree is the user's own checkout on their own
@@ -952,7 +994,7 @@ export async function deleteProject(name: string): Promise<{ name: string; path:
     // A record with no systemPath is not a placement and has no tree to name;
     // unregistering it is the repair, so this path must not refuse it.
     await removeProjectStoreDir(name);
-    return { name, path: placement.systemPath ?? '', system: placement.system };
+    return { name, path: placement.systemPath ?? '', system: placement.system, remoteId: placement.remoteId };
   }
   const resolved = await resolveProjectDir(name);
   // A name that resolves to nothing has no tree: the `removeTree` below is a
@@ -982,7 +1024,7 @@ export async function deleteProject(name: string): Promise<{ name: string; path:
     }
   }
   await removeProjectStoreDir(name);
-  return { name, path: resolved?.path ?? path.join(projectsRoot(), name), system: LOCAL_SYSTEM_ID };
+  return { name, path: resolved?.path ?? path.join(projectsRoot(), name), system: LOCAL_SYSTEM_ID, remoteId: null };
 }
 
 // The central-store entry holds attachments, debug captures and worktree
@@ -1032,7 +1074,7 @@ export type AdoptResult =
   // `external` is the LOCAL out-of-root placement (a `.external/<name>` symlink);
   // a remote adopt is `external: false` with `system` naming the machine. The two
   // are different placements that happen to share every validation step.
-  | { ok: true; name: string; path: string; external: boolean; system: string }
+  | { ok: true; name: string; path: string; external: boolean; system: string; remoteId: string | null }
   | { ok: false; code: string; reason: string };
 
 // Adopt a repo that already exists OUTSIDE the projects root as the project
@@ -1055,7 +1097,7 @@ function unreachableDuring(systemId: string, what: string, e: unknown): AdoptRes
 export async function adoptProject(
   name: unknown,
   target: unknown,
-  { system: systemId = null }: { system?: unknown } = {},
+  { system: systemId = null, remoteId = null }: { system?: unknown; remoteId?: unknown } = {},
 ): Promise<AdoptResult> {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     return { ok: false, code: 'INVALID_NAME', reason: 'project name must match ^[a-zA-Z0-9._-]+$.' };
@@ -1082,12 +1124,21 @@ export async function adoptProject(
   // `target` is already known to be a non-empty absolute path here, so the
   // placement is decided by the system alone.
   const namedSystem = typeof systemId === 'string' ? systemId.trim() : '';
+  let namedRemote: string | null;
+  try { namedRemote = validateRemoteId(remoteId); }
+  catch (e) { return { ok: false, code: 'INVALID_REMOTE_ID', reason: errMsg(e) }; }
+  if (namedRemote && (!namedSystem || namedSystem === LOCAL_SYSTEM_ID)) {
+    return {
+      ok: false, code: 'INVALID_REMOTE_ID',
+      reason: `remoteId '${namedRemote}' was given without a system — cc's own machine is one machine, so it has no named targets.`,
+    };
+  }
   const placement = (!namedSystem || namedSystem === LOCAL_SYSTEM_ID)
     ? null
-    : { system: namedSystem, systemPath: target };
+    : { system: namedSystem, remoteId: namedRemote, systemPath: target };
   let system: System;
   if (placement) {
-    try { system = await systemById(placement.system, `project '${name}'`); }
+    try { system = await systemById(placement.system, placement.remoteId, `project '${name}'`); }
     catch (e) { return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: errMsg(e) }; }
   } else {
     system = localSystem();
@@ -1139,15 +1190,16 @@ export async function adoptProject(
       return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' contains the projects root '${rootReal}' — adopting it would put every managed project inside one project.` };
     }
   }
-  // A path identifies a tree only together with the machine it is on: two
-  // systems each hosting `/app` are two different trees, so the duplicate test
-  // compares (system, path) and not a path alone.
+  // A path identifies a tree only together with the machine it is on — and one
+  // registered system can BE many machines, so the machine is (system,
+  // remoteId). Two targets each hosting `/app` are two different trees, so the
+  // duplicate test compares the whole triple and not a path alone.
   for (const p of await listProjects()) {
     const same = placement
-      ? p.system === placement.system && p.path === real
+      ? p.system === placement.system && p.remoteId === placement.remoteId && p.path === real
       : p.external && p.path === real;
     if (same) {
-      return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is already adopted as project '${p.name}'${placement ? ` on system '${placement.system}'` : ''}.` };
+      return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is already adopted as project '${p.name}'${placement ? ` on ${describePlacement(placement)}` : ''}.` };
     }
   }
 
@@ -1174,9 +1226,11 @@ export async function adoptProject(
     // The RECORD is the registration for a remote project — there is no local
     // artefact to write, and `.external` is not one: a symlink under cc's
     // projects root cannot point at another machine.
-    await writeProjectRecord(name, { system: placement.system, systemPath: real });
+    await writeProjectRecord(name, {
+      system: placement.system, remoteId: placement.remoteId, systemPath: real,
+    });
     await deliverAdoptedConventions(name, real);
-    return { ok: true, name, path: real, external: false, system: placement.system };
+    return { ok: true, name, path: real, external: false, system: placement.system, remoteId: placement.remoteId };
   }
 
   await fs.mkdir(externalDir(), { recursive: true });
@@ -1195,7 +1249,7 @@ export async function adoptProject(
   }
 
   await deliverAdoptedConventions(name, real);
-  return { ok: true, name, path: real, external: true, system: LOCAL_SYSTEM_ID };
+  return { ok: true, name, path: real, external: true, system: LOCAL_SYSTEM_ID, remoteId: null };
 }
 
 // Deliver the conventions into the adopted repo NOW — symmetric with

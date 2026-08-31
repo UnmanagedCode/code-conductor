@@ -29,7 +29,7 @@ beforeEach(async () => {
   root = path.join(home, 'session-root');
   await fs.mkdir(root, { recursive: true });
   map = new SessionPathMap(root, remote.root);
-  bridge = new FileBridge(await systemById(remote.id, 'test'), map);
+  bridge = new FileBridge(await systemById(remote.id, null, 'test'), map);
 });
 afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
 

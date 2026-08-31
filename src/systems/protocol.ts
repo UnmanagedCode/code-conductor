@@ -45,6 +45,7 @@ export const PROTOCOL_ERROR_CODES = [
   'ESHELLGONE',    // the long-lived shell died or never framed the command
   'EFBIG',         // a file above MAX_FILE_BYTES, or output above a caller's fence
   'ECANCELLED',    // the caller went away: an interrupt, or a tool timeout
+  'ENOREMOTE',     // the named remote is not one this provider serves
 ] as const;
 
 export const FS_ERROR_CODES = [
@@ -132,8 +133,10 @@ export function classifySpawnError(message: string): FsErrorCode {
 
 // ── Capabilities ─────────────────────────────────────────────────────
 //
-// EXACTLY TWO, both optional, both with a fallback cc implements and a test
-// that runs it. A missing key is `false`; an unknown key is ignored.
+// Every one of them optional, and every one carrying a fallback cc implements
+// plus a test that runs it. A missing key is `false`; an unknown key is
+// ignored, which is the extension point that lets this list grow without a
+// protocol bump.
 export interface Capabilities {
   // exec supports a long-lived child whose stdin cc keeps writing into
   // (`stdin`/`stdinClose` frames). Absent → the redirected shell degrades to
@@ -143,15 +146,28 @@ export interface Capabilities {
   // GROUP. Absent → the direct child only, and any result cc terminated carries
   // `descendantsMaySurvive`.
   processGroupSignal: boolean;
+  // This endpoint serves MANY named targets, selected per request by `remoteId`.
+  // Absent → it serves exactly one, and a project naming a remote on it is
+  // refused SYSTEM_NO_REMOTES with the field never sent.
+  //
+  // A CAPABILITY RATHER THAN AN OPTIMISTICALLY-SENT FIELD, and this is the one
+  // place the difference is safety-critical: unknown keys are ignored by
+  // contract, so a provider that predates this would take a `remoteId` and
+  // answer from its own default target — a misroute reported as success, which
+  // is the worst failure available here.
+  remotes: boolean;
 }
 
-export const NO_CAPABILITIES: Capabilities = { persistentShell: false, processGroupSignal: false };
+export const NO_CAPABILITIES: Capabilities = {
+  persistentShell: false, processGroupSignal: false, remotes: false,
+};
 
 export function readCapabilities(v: unknown): Capabilities {
   const o = (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>;
   return {
     persistentShell: o.persistentShell === true,
     processGroupSignal: o.processGroupSignal === true,
+    remotes: o.remotes === true,
   };
 }
 
@@ -178,9 +194,17 @@ export interface HelloProviderFrame {
   system: { shell: string } & Partial<SystemDescriptor>;
 }
 
+// ── The three REQUEST frames, and the one field they share ───────────
+//
+// `remoteId` names which of the provider's targets the operation is for. It is
+// carried by the three REQUESTS only: every follow-on frame (`stdin`,
+// `stdinClose`, `signal`, `close`, `data`, `end`) is addressed by `id`, and AN
+// ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. Sent only to a provider
+// that advertises `remotes`.
 export interface ExecFrame {
   type: 'exec';
   id: string;
+  remoteId?: string;
   cwd: string;
   argv?: string[];
   shell?: string;
@@ -193,9 +217,11 @@ export interface StdinFrame { type: 'stdin'; id: string; dataB64: string }
 export interface StdinCloseFrame { type: 'stdinClose'; id: string }
 export interface SignalFrame { type: 'signal'; id: string; signal: string; processGroup: boolean }
 export interface CloseFrame { type: 'close'; id: string }
-export interface ReadFileFrame { type: 'readFile'; id: string; path: string; offset?: number; length?: number }
+export interface ReadFileFrame {
+  type: 'readFile'; id: string; remoteId?: string; path: string; offset?: number; length?: number;
+}
 export interface WriteFileFrame {
-  type: 'writeFile'; id: string; path: string;
+  type: 'writeFile'; id: string; remoteId?: string; path: string;
   mode?: number; atomic?: boolean; exclusive?: boolean;
 }
 

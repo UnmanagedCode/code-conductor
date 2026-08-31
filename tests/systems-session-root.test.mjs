@@ -57,7 +57,7 @@ async function seedTree(root) {
 
 async function compose({ worktree = null, systemPath } = {}) {
   return composeSessionRoot({
-    system: await systemById(remote.id, 'test'),
+    system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: systemPath ?? remote.root,
     project: 'app',

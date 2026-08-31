@@ -88,7 +88,7 @@ describe('a system that dies mid-operation', () => {
   // the live handle's own prototype (tests/systemHandle.mjs) so it holds in
   // whichever System implementation the run is using.
   async function withFailingStatus(at, body) {
-    const sys = await systemById(remote.id, 'test');
+    const sys = await systemById(remote.id, null, 'test');
     const proto = liveSystemProto(sys);
     const orig = proto.exec;
     proto.exec = async function (spec, opts) {
@@ -106,7 +106,7 @@ describe('a system that dies mid-operation', () => {
 
   // `git log` in `at` answers non-zero on an otherwise-live system.
   async function withFailingLog(at, body) {
-    const sys = await systemById(remote.id, 'test');
+    const sys = await systemById(remote.id, null, 'test');
     const proto = liveSystemProto(sys);
     const orig = proto.exec;
     proto.exec = async function (spec, opts) {
@@ -126,7 +126,7 @@ describe('a system that dies mid-operation', () => {
   // is the committed half's three-dot range) in `at` answers non-zero, on a
   // system that is otherwise alive.
   async function withFailingDiff(at, body) {
-    const sys = await systemById(remote.id, 'test');
+    const sys = await systemById(remote.id, null, 'test');
     const proto = liveSystemProto(sys);
     const orig = proto.exec;
     proto.exec = async function (spec, opts) {
@@ -264,7 +264,7 @@ describe('a system that dies mid-operation', () => {
   // This is the half of the discriminator that must NOT change.
   test('a command that could not start on a live system is still a git answer', async () => {
     const gone = path.join(remote.root, 'never-existed');
-    const r = await runGit(await systemById(remote.id, 'test'), gone, ['status', '--porcelain']);
+    const r = await runGit(await systemById(remote.id, null, 'test'), gone, ['status', '--porcelain']);
     assert.equal(r.code, 1, 'a live system answering "I could not start that" is not a refusal');
     assert.match(r.stderr, /ENOENT/);
   });
@@ -600,13 +600,13 @@ describe('a system that dies mid-operation', () => {
   // when its stderr says ENOENT.
   test("the shell's start path splits transport from a real ENOENT", async () => {
     await goFlaky({ flags: ['--no-persistent-shell'] });
-    const live = await systemById(remote.id, 'test');
+    const live = await systemById(remote.id, null, 'test');
     const gone = live.shell({ cwd: path.join(remote.root, 'never-existed') });
     await assert.rejects(() => gone.run('pwd'), (e) => e.code === 'ENOENT',
       'a cwd that is really absent is a real FS answer');
 
     await goFlaky({ budget: 0, dieStderr: POISON, flags: ['--no-persistent-shell'] });
-    const dead = await systemById(remote.id, 'test');
+    const dead = await systemById(remote.id, null, 'test');
     await assert.rejects(
       () => dead.shell({ cwd: remote.root }).run('pwd'),
       (e) => e.code === 'ETRANSPORT',
@@ -652,7 +652,7 @@ describe('a system that dies mid-operation', () => {
   // the catch returned `false` — a git fact invented for a project cc could no
   // longer measure, on a row carrying no explanation for it.
   test('a death between the row\'s two git probes still explains the row', async () => {
-    const sys = await systemById(remote.id, 'test');
+    const sys = await systemById(remote.id, null, 'test');
     const proto = liveSystemProto(sys);
     const orig = proto.exec;
     let seenRepoProbe = false;

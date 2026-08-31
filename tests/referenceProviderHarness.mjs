@@ -56,21 +56,25 @@ export const IS_REFERENCE_PROVIDER = !process.env[PROVIDER_ARGV_ENV]?.trim();
 //
 // The three configurations of the acceptance gate. `caps` is what the handshake
 // must report, so a test can assert the negotiation rather than trust the flag.
+// None of them passes `--remote`, so all three report `remotes:false` — the
+// gate varies the LOCAL system's capabilities and `local` never carries a
+// remote. tests/systems-remote-id.test.mjs registers its own multi-target
+// system, which works under every configuration here.
 export const CAPABILITY_CONFIGS = [
   {
     name: 'all capabilities',
     flags: [],
-    caps: { persistentShell: true, processGroupSignal: true },
+    caps: { persistentShell: true, processGroupSignal: true, remotes: false },
   },
   {
     name: 'persistentShell:false',
     flags: ['--no-persistent-shell'],
-    caps: { persistentShell: false, processGroupSignal: true },
+    caps: { persistentShell: false, processGroupSignal: true, remotes: false },
   },
   {
     name: 'processGroupSignal:false',
     flags: ['--no-process-group-signal'],
-    caps: { persistentShell: true, processGroupSignal: false },
+    caps: { persistentShell: true, processGroupSignal: false, remotes: false },
   },
 ];
 

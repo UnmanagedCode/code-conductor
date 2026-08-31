@@ -34,7 +34,7 @@ async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs, maxOutputBy
   await fs.writeFile(path.join(remote.root, 'ONLY-ON-SYSTEM.txt'), 'system side\n');
   events = [];
   redirect = new SessionRedirect({
-    system: await systemById(remote.id, 'test'),
+    system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: remote.root,
     sessionRoot: root,
@@ -470,7 +470,7 @@ test('a relative path is never pushed back', async () => {
 // system, which is exactly the harm.
 test('a relative path that DOES map into the session root is still not pushed', async () => {
   const here = new SessionRedirect({
-    system: await systemById(remote.id, 'test'),
+    system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: remote.root,
     sessionRoot: process.cwd(),

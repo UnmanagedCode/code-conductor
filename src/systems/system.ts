@@ -200,6 +200,15 @@ export interface System {
   // system is `local`.
   readonly id: string;
 
+  // WHICH TARGET of that system this handle is bound to, or null for the
+  // provider's own default (and always null for `local`).
+  //
+  // It lives on the HANDLE rather than being threaded through every call
+  // because the target is a property of the project, not of the operation:
+  // ~40 call sites already take a System and none of them should have to learn
+  // that one endpoint can serve many machines. A handle knows where it points.
+  readonly remoteId: string | null;
+
   // ── The three MUST primitives ──────────────────────────────────────
   exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult>;
   // Whole-file UTF-8 read.

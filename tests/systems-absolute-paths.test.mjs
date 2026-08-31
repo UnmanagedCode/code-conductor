@@ -152,7 +152,7 @@ guardSuite('ProviderSystem', async () => {
     id: 'refbox', label: 'Reference',
     launch: (await import('./remoteSystem.mjs')).referenceLaunch(),
   });
-  return systemById('refbox', 'test');
+  return systemById('refbox', null, 'test');
 });
 
 // The PERSISTENT SHELL is a second entry into an `exec` frame, and it carried
@@ -171,7 +171,7 @@ describe('the persistent shell carries its cwd through the same guard', () => {
       id: 'refbox', label: 'Reference',
       launch: (await import('./remoteSystem.mjs')).referenceLaunch(),
     });
-    sys = await systemById('refbox', 'test');
+    sys = await systemById('refbox', null, 'test');
   });
   afterEach(async () => { process.chdir(prevCwd); disposeSystemHandles(); await rmrf(home); });
 

@@ -13,7 +13,15 @@
 //
 //   node src/systems/referenceProvider.ts [--no-persistent-shell]
 //                                         [--no-process-group-signal]
+//                                         [--remote <id>=<absolute root>]…
 //                                         [--name <label>]
+//
+// `--remote` turns one process into an endpoint serving MANY named targets —
+// the docker-daemon shape, emulated. Given at least one, the provider
+// advertises `remotes`, requires every request to name a known target, and
+// scopes each target to its own root. The root scoping is what makes a
+// wrong-target bug impossible to mistake for success on a machine where every
+// target is in fact the same filesystem.
 //
 // Speaks NDJSON on stdin/stdout and EXITS WHEN STDIN CLOSES, which is how a
 // provider is reaped when cc goes away.
@@ -30,18 +38,38 @@ import { FS_ERROR_CODES } from './protocol.ts';
 
 const KILL_GRACE_MS = 100;
 
+// The frames that OPEN an operation, and therefore the only ones that name a
+// remote. Everything else inherits the binding through its `id`.
+const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile']);
+
 interface Options {
   persistentShell: boolean;
   processGroupSignal: boolean;
+  // remote id → the absolute root that target is scoped to. EMPTY means this
+  // provider serves exactly one target, does not advertise `remotes`, and
+  // behaves byte-identically to one that never heard of them.
+  remotes: Map<string, string>;
   name: string;
 }
 
 export function parseProviderArgs(argv: string[]): Options {
-  const o: Options = { persistentShell: true, processGroupSignal: true, name: 'reference-local' };
+  const o: Options = {
+    persistentShell: true, processGroupSignal: true, remotes: new Map(), name: 'reference-local',
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--no-persistent-shell') o.persistentShell = false;
     else if (a === '--no-process-group-signal') o.processGroupSignal = false;
+    else if (a === '--remote') {
+      const spec = argv[++i] ?? '';
+      const eq = spec.indexOf('=');
+      const id = eq === -1 ? '' : spec.slice(0, eq);
+      const root = eq === -1 ? '' : spec.slice(eq + 1);
+      if (!id || !path.isAbsolute(root)) {
+        throw new Error(`--remote wants <id>=<absolute root>, got ${JSON.stringify(spec)}`);
+      }
+      o.remotes.set(id, path.resolve(root));
+    }
     else if (a === '--name') o.name = argv[++i] ?? o.name;
     else throw new Error(`unknown provider option: ${a}`);
   }
@@ -105,6 +133,7 @@ export class ReferenceProvider {
         capabilities: {
           persistentShell: this.#opts.persistentShell,
           processGroupSignal: this.#opts.processGroupSignal,
+          remotes: this.#opts.remotes.size > 0,
         },
         system: {
           os: process.platform,
@@ -114,6 +143,24 @@ export class ReferenceProvider {
         },
       });
       return;
+    }
+    // THE ROUTING GATE, and it is on the three REQUESTS only: every follow-on
+    // frame is addressed by an `id` that is already bound to a remote, so
+    // re-checking one would ask a question the id has already answered.
+    //
+    // An absent remoteId is refused exactly as an unknown one is. A provider
+    // that serves many targets has no default, and answering from one would be
+    // a misroute reported as success — the failure this gate exists for. The
+    // refusal is ID-ADDRESSED: an id-less error frame is connection-level and
+    // would fail every OTHER target's in-flight work too.
+    if (this.#opts.remotes.size > 0 && REQUEST_FRAMES.has(f.type)) {
+      const named = typeof f.remoteId === 'string' ? f.remoteId : null;
+      if (named === null || !this.#opts.remotes.has(named)) {
+        this.#fail(String(f.id), 'ENOREMOTE', named === null
+          ? `this provider serves named remotes (${[...this.#opts.remotes.keys()].join(', ')}) and the request named none`
+          : `no such remote '${named}' — this provider serves ${[...this.#opts.remotes.keys()].join(', ')}`);
+        return;
+      }
     }
     switch (f.type) {
       case 'exec': return this.#exec(f);
@@ -140,11 +187,18 @@ export class ReferenceProvider {
       ? ['bash', ['-lc', f.shell]]
       : [String((f.argv as string[])?.[0]), ((f.argv as string[]) ?? []).slice(1)];
     const stdinMode = f.stdin === 'ignore' ? 'ignore' as const : 'pipe' as const;
+    // POSITIVE ROUTING EVIDENCE. On a machine where every target is the same
+    // filesystem, "the command worked" is what a MISROUTE also looks like, so
+    // the child is told which remote it is on and a test can assert on that
+    // rather than on success.
+    const baseEnv = (f.env as NodeJS.ProcessEnv | undefined) ?? process.env;
+    const remoteId = typeof f.remoteId === 'string' ? f.remoteId : null;
+    const env = remoteId === null ? baseEnv : { ...baseEnv, CC_REMOTE: remoteId };
     let child: ChildProcess;
     try {
       child = spawn(cmd, args, {
         cwd,
-        env: (f.env as NodeJS.ProcessEnv | undefined) ?? process.env,
+        env,
         // detached makes the child its own process-GROUP leader, which is the
         // whole of the `processGroupSignal` capability: without it one kill
         // cannot reach a grandchild.

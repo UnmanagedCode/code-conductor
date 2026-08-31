@@ -422,6 +422,119 @@ test('a provider refuses a corrupted write payload — it never lands a partial 
   }
 });
 
+// ── remotes: one endpoint, many targets ──────────────────────────────
+//
+// Outside the per-configuration loop: `remotes` is orthogonal to the other two
+// capabilities, and these launch their own provider with `--remote` flags.
+
+// A provider serving `a` and `b`, each scoped to its own root.
+async function withRemotes(fn) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-remotes-'));
+  const root = await fs.realpath(dir);
+  const rootA = path.join(root, 'a');
+  const rootB = path.join(root, 'b');
+  await fs.mkdir(rootA);
+  await fs.mkdir(rootB);
+  const sys = makeProviderSystem(['--remote', `a=${rootA}`, '--remote', `b=${rootB}`]);
+  try {
+    await sys.connect();
+    return await fn(sys, { rootA, rootB });
+  } finally {
+    sys.dispose();
+    await rmrf(dir);
+  }
+}
+
+test('a bound handle names its remote on exec, readFile and writeFile', async () => {
+  await withRemotes(async (sys, { rootA }) => {
+    assert.equal(sys.handshake.capabilities.remotes, true, 'a provider serving targets says so');
+    const a = sys.bindRemote('a');
+    const f = path.join(rootA, 'note.txt');
+    await a.writeFile(f, 'hello');
+    assert.equal(await a.readFile(f), 'hello');
+    // Positive routing evidence: only the far side knows which target ran this.
+    const r = await a.exec({ shell: 'echo "$CC_REMOTE"' }, { cwd: rootA });
+    assert.equal(r.stdout.trim(), 'a');
+  });
+});
+
+test('an id is bound to one remote for its whole lifetime — follow-on frames carry none', async () => {
+  await withRemotes(async (sys, { rootA }) => {
+    if (!sys.handshake.capabilities.persistentShell) return; // stdin frames need the capability
+    const a = sys.bindRemote('a');
+    let echoed;
+    const heard = new Promise((resolve) => { echoed = resolve; });
+    const stream = await a.openStream({ argv: ['cat'] }, { cwd: rootA }, {
+      onStdout: (b) => echoed(b.toString('utf8')),
+      onStderr: () => {},
+      onExit: () => echoed(''),
+      onDown: () => echoed(''),
+    });
+    stream.retain();
+    try {
+      // The stdin frame names NO remote. The `id` is the whole address.
+      stream.write('routed\n');
+      assert.equal(await heard, 'routed\n',
+        'a stdin frame with no remoteId reached the child the exec id named');
+    } finally {
+      stream.close();
+      stream.release();
+    }
+  });
+});
+
+test('ENOREMOTE is id-addressed: one dead remote is not a dead connection', async () => {
+  await withRemotes(async (sys, { rootA }) => {
+    const a = sys.bindRemote('a');
+    const ghost = sys.bindRemote('nope');
+    // A real command on a real remote, in flight across the refusal.
+    const inFlight = a.exec({ shell: 'sleep 0.4; echo survived' }, { cwd: rootA });
+    await assert.rejects(
+      () => ghost.readFile(path.join(rootA, 'anything')),
+      (e) => expectCode(e, 'ENOREMOTE', 'a request naming a remote the provider does not serve'),
+    );
+    const r = await inFlight;
+    assert.equal(r.stdout.trim(), 'survived',
+      'the OTHER target\'s work was untouched — an id-less error would have killed it');
+    // And the channel is still usable afterwards.
+    assert.equal((await a.exec({ argv: ['printf', 'ok'] }, { cwd: rootA })).stdout, 'ok');
+  });
+});
+
+test('a request that names NO remote is refused, never answered from a default', async () => {
+  await withRemotes(async (sys, { rootA }) => {
+    // `sys` itself is unbound. A provider serving many targets has no default,
+    // and answering from one would be a misroute reported as success.
+    const r = await sys.exec({ argv: ['true'] }, { cwd: rootA });
+    assert.equal(r.spawnErrorCode, 'ENOREMOTE');
+    assert.equal(r.transportFailure, undefined, 'the far side answered — this is not a dead channel');
+  });
+});
+
+test('a provider that does not advertise remotes is never handed a remoteId', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-noremotes-'));
+  const root = await fs.realpath(dir);
+  const sys = makeProviderSystem([]);
+  try {
+    await sys.connect();
+    assert.equal(sys.handshake.capabilities.remotes, false);
+    const bound = sys.bindRemote('a');
+    // cc refuses on its own side rather than sending a field the far side would
+    // IGNORE — an ignored remoteId is an operation on the wrong target reported
+    // as success.
+    const r = await bound.exec({ argv: ['true'] }, { cwd: root });
+    assert.equal(r.spawnErrorCode, 'EUNSUPPORTED');
+    await assert.rejects(() => bound.readFile(path.join(root, 'x')),
+      (e) => expectCode(e, 'EUNSUPPORTED', 'a bound read against a provider with no remotes'));
+    await assert.rejects(() => bound.writeFile(path.join(root, 'x'), 'no'),
+      (e) => expectCode(e, 'EUNSUPPORTED', 'a bound write against a provider with no remotes'));
+    assert.equal(await sys.stat(path.join(root, 'x')), null, 'and nothing was written');
+  } finally {
+    sys.dispose();
+    await rmrf(dir);
+  }
+});
+
 test('parseFindLines refuses a malformed entry rather than skipping it', () => {
   assert.deepEqual(parseFindLines('f\ta\nd\tb\n', '/d'), [
     { name: 'a', kind: 'file' }, { name: 'b', kind: 'dir' },

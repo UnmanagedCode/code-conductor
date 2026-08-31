@@ -18,7 +18,7 @@
 
 import path from 'node:path';
 import {
-  CHUNK_BYTES, MAX_FILE_BYTES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
+  CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
   type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
@@ -52,20 +52,61 @@ const DEFAULT_OP_TIMEOUT_MS = 10 * 60_000;
 
 export interface ProviderSystemOptions extends ConnectionOptions {
   id: string;
+  // The target this handle is bound to. Omit for the provider's own default.
+  remoteId?: string | null;
   // Ceiling for an operation the caller did not bound. Tests shrink it.
   defaultOpTimeoutMs?: number;
 }
 
+// What a BOUND VIEW is built from: the OWNER's live connection rather than a
+// launch spec. Not exported — `bindRemote` is the only way to make one, because
+// a second handle that shared a connection without being marked as a view would
+// kill the provider out from under every other target on `dispose()`.
+interface ViewOptions {
+  id: string;
+  remoteId: string;
+  defaultOpTimeoutMs: number;
+  conn: ProviderConnection;
+}
+
 export class ProviderSystem implements System, ShellHost {
   readonly id: string;
+  readonly remoteId: string | null;
   readonly #conn: ProviderConnection;
   readonly #defaultOpTimeoutMs: number;
+  // Whether this handle OWNS the connection. False for a bound view, which
+  // shares the owner's — one endpoint, many targets, one process.
+  readonly #owns: boolean;
   #shell: ProviderShell | null = null;
+  // The handshake this view's remote was last confirmed against. Object
+  // identity is the connection GENERATION: ProviderConnection replaces it on
+  // every successful re-handshake, so a provider restart re-probes and nothing
+  // else does.
+  #probedAgainst: Handshake | null = null;
 
-  constructor({ id, defaultOpTimeoutMs, ...connOpts }: ProviderSystemOptions) {
-    this.id = id;
+  constructor(opts: ProviderSystemOptions | ViewOptions) {
+    this.id = opts.id;
+    this.remoteId = opts.remoteId ?? null;
+    if ('conn' in opts) {
+      this.#owns = false;
+      this.#conn = opts.conn;
+      this.#defaultOpTimeoutMs = opts.defaultOpTimeoutMs;
+      return;
+    }
+    const { id: _id, remoteId: _remoteId, defaultOpTimeoutMs, ...connOpts } = opts;
+    this.#owns = true;
     this.#defaultOpTimeoutMs = defaultOpTimeoutMs ?? DEFAULT_OP_TIMEOUT_MS;
     this.#conn = new ProviderConnection(connOpts);
+  }
+
+  // A handle onto ANOTHER target of the same endpoint, sharing this one's
+  // connection. Multiplexing already carries it: every operation is addressed
+  // by a per-connection id, and the remote is a property of the OPERATION, not
+  // of the channel — so many targets need one process, not one each.
+  bindRemote(remoteId: string): ProviderSystem {
+    return new ProviderSystem({
+      id: this.id, remoteId, defaultOpTimeoutMs: this.#defaultOpTimeoutMs, conn: this.#conn,
+    });
   }
 
   // The negotiated contract. Null until the first operation connects.
@@ -76,7 +117,37 @@ export class ProviderSystem implements System, ShellHost {
   dispose(): void {
     this.#shell?.forget();
     this.#shell = null;
-    this.#conn.dispose();
+    // A VIEW DOES NOT OWN THE CONNECTION: disposing one forgets its own shell
+    // and leaves the process serving every other target on it. Only the owner's
+    // dispose kills the provider.
+    if (this.#owns) this.#conn.dispose();
+  }
+
+  // Ask the provider ONE question — do you serve this remote? — and accept only
+  // one answer as no.
+  //
+  // ENOREMOTE is the sole failure. EACCES, ENOENT, a non-zero exit and a
+  // timeout are all PASSES, because each of them is the provider answering
+  // ABOUT that remote, which is itself proof it serves it. That is what lets
+  // the probe be a fixed `true` at `/`: cc has no generic notion of a remote's
+  // root — that is emulation detail, not protocol — so there is no path every
+  // provider would accept, and `/` is chosen precisely because cc has no
+  // expectation about it.
+  async assertRemoteKnown(): Promise<void> {
+    if (this.remoteId === null) return;
+    const hs = await this.#conn.ensureUp();
+    if (!hs.capabilities.remotes) {
+      throw new SystemError(
+        'EUNSUPPORTED',
+        `system '${this.id}' is served by ${hs.provider}, which does not support named remotes`,
+      );
+    }
+    if (this.#probedAgainst === hs) return;
+    const r = await this.#exec({ argv: ['true'] }, { cwd: '/', stdin: 'ignore' }, null);
+    if (r.spawnErrorCode === 'ENOREMOTE') {
+      throw new SystemError('ENOREMOTE', `system '${this.id}' does not serve remote '${this.remoteId}': ${r.spawnError}`);
+    }
+    this.#probedAgainst = hs;
   }
 
   // ── exec: the primitive ────────────────────────────────────────────
@@ -107,6 +178,19 @@ export class ProviderSystem implements System, ShellHost {
       // dying stderr and may name any errno at all.
       return new ExecOutputCollector({}, () => {}).result(1, {
         timedOut: false, spawnError: msg, transportFailure: true, durationMs: Date.now() - started,
+      });
+    }
+    // THE WIRE-LEVEL BACKSTOP for row 3 of the capability matrix. The named
+    // HTTP refusal is raised at resolution (src/systems/registry.ts) and is
+    // what a user sees; this is what guarantees the FIELD NEVER GOES OUT even
+    // if a handle is bound some other way. Reported as a command that never
+    // started rather than thrown, because `exec` never rejects.
+    if (this.remoteId !== null && !hs.capabilities.remotes) {
+      return new ExecOutputCollector({}, () => {}).result(1, {
+        timedOut: false,
+        spawnError: `system '${this.id}' is served by ${hs.provider}, which does not support named remotes`,
+        spawnErrorCode: 'EUNSUPPORTED',
+        durationMs: Date.now() - started,
       });
     }
     const id = this.#conn.nextId('e');
@@ -181,7 +265,7 @@ export class ProviderSystem implements System, ShellHost {
         // side answering about the command, which keeps FS classification.
         down: (err) => finish(1, { timedOut: false, spawnError: err.message, transportFailure: true }),
       });
-      this.#conn.send(execFrame(id, spec, opts, env));
+      this.#conn.send(execFrame(id, this.remoteId, spec, opts, env));
     });
   }
 
@@ -211,7 +295,7 @@ export class ProviderSystem implements System, ShellHost {
       throw new SystemError('EFBIG', `writeFile '${filePath}': ${buf.length} bytes exceeds the ${MAX_FILE_BYTES}-byte protocol cap`);
     }
     await this.#request<void>('w', (id) => ({
-      type: 'writeFile', id, path: filePath,
+      type: 'writeFile', id, ...this.#binding(), path: filePath,
       ...(opts.mode === undefined ? {} : { mode: opts.mode & 0o7777 }),
       ...(opts.atomic ? { atomic: true } : {}),
       ...(opts.exclusive ? { exclusive: true } : {}),
@@ -241,7 +325,7 @@ export class ProviderSystem implements System, ShellHost {
     const fence = Math.min(range.length ?? MAX_FILE_BYTES, MAX_FILE_BYTES);
     let kept = 0;
     const data = await this.#request<Buffer>('r', (id) => ({
-      type: 'readFile', id, path: filePath, ...(range.length === undefined ? {} : { length: range.length }),
+      type: 'readFile', id, ...this.#binding(), path: filePath, ...(range.length === undefined ? {} : { length: range.length }),
     }), (id, f, resolve, fail) => {
       if (f.type === 'readFileResult') {
         meta = {
@@ -281,7 +365,14 @@ export class ProviderSystem implements System, ShellHost {
     onFrame: (id: string, f: AnyFrame, resolve: (v: T) => void, fail: (e: Error) => void) => void,
     afterOpen?: (id: string) => void,
   ): Promise<T> {
-    await this.#conn.ensureUp();
+    const hs = await this.#conn.ensureUp();
+    // The backstop again — see #exec. These two DO reject, so here it throws.
+    if (this.remoteId !== null && !hs.capabilities.remotes) {
+      throw new SystemError(
+        'EUNSUPPORTED',
+        `system '${this.id}' is served by ${hs.provider}, which does not support named remotes`,
+      );
+    }
     const id = this.#conn.nextId(prefix);
     return new Promise<T>((resolve, reject) => {
       let settled = false;
@@ -437,10 +528,18 @@ export class ProviderSystem implements System, ShellHost {
     await this.#deriveOk(`chmod '${p}'`, ['chmod', octal, '--', p]);
   }
 
+  // The `remoteId` field for a request frame, or nothing when this handle is
+  // bound to the provider's default target. Spread rather than set so an
+  // unbound handle's frames stay byte-identical to what cc sent before remotes
+  // existed.
+  #binding(): { remoteId?: string } {
+    return this.remoteId === null ? {} : { remoteId: this.remoteId };
+  }
+
   // ── ShellHost: what ProviderShell needs and nothing more ───────────
 
   get capabilities(): Capabilities {
-    return this.#conn.handshake?.capabilities ?? { persistentShell: false, processGroupSignal: false };
+    return this.#conn.handshake?.capabilities ?? NO_CAPABILITIES;
   }
 
   get descriptor(): SystemDescriptor | null { return this.#conn.handshake?.system ?? null; }
@@ -456,6 +555,12 @@ export class ProviderSystem implements System, ShellHost {
     if (!hs.capabilities.persistentShell) {
       throw new SystemError('EUNSUPPORTED', `system '${this.id}' does not support a persistent shell`);
     }
+    if (this.remoteId !== null && !hs.capabilities.remotes) {
+      throw new SystemError(
+        'EUNSUPPORTED',
+        `system '${this.id}' is served by ${hs.provider}, which does not support named remotes`,
+      );
+    }
     const id = this.#conn.nextId('s');
     // keepAlive:false — the shell is idle between commands and must never hold
     // the event loop open on its own; ProviderShell retains around each command.
@@ -470,7 +575,7 @@ export class ProviderSystem implements System, ShellHost {
       },
       down: (err) => handlers.onDown(err),
     }, { keepAlive: false });
-    this.#conn.send(execFrame(id, spec, opts, opts.env ?? process.env));
+    this.#conn.send(execFrame(id, this.remoteId, spec, opts, opts.env ?? process.env));
     return {
       write: (text) => this.#conn.send({ type: 'stdin', id, dataB64: Buffer.from(text, 'utf8').toString('base64') }),
       close: () => { this.#conn.send({ type: 'close', id }); this.#conn.close(id, { keepAlive: false }); },
@@ -487,9 +592,11 @@ export class ProviderSystem implements System, ShellHost {
   }
 }
 
-function execFrame(id: string, spec: ExecSpec, opts: ExecOptions, env: NodeJS.ProcessEnv | null): ClientFrame {
+function execFrame(
+  id: string, remoteId: string | null, spec: ExecSpec, opts: ExecOptions, env: NodeJS.ProcessEnv | null,
+): ClientFrame {
   return {
-    type: 'exec', id, cwd: opts.cwd,
+    type: 'exec', id, ...(remoteId === null ? {} : { remoteId }), cwd: opts.cwd,
     ...('shell' in spec ? { shell: spec.shell } : { argv: spec.argv }),
     ...(env ? { env: stringEnv(env) } : {}),
     ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
