@@ -183,7 +183,10 @@ describe('systems settings routes', () => {
     await createProject('shipping');
     await writeRecord('shipping', { system: 'prod-box', systemPath: '/app' });
     const r = await api(baseUrl, 'GET', '/api/settings/systems');
-    assert.deepEqual(r.body.systems.find(s => s.id === 'prod-box').projects, ['shipping']);
+    // Each referent names its TARGET as well: on a system serving many, the
+    // project name alone does not say which one holds the row open.
+    assert.deepEqual(r.body.systems.find(s => s.id === 'prod-box').projects,
+      [{ name: 'shipping', remoteId: null }]);
     // `local` never accumulates referents: a local project carries no field.
     assert.deepEqual(r.body.systems.find(s => s.id === LOCAL_SYSTEM_ID).projects, []);
   });

@@ -86,7 +86,7 @@ test('the still-referenced scan never counts .conduct onto a system', async () =
   // Both records say prod-box. Only the one that is not pinned is a reference —
   // so a `prod-box` row is deletable once `shipping` moves, and `.conduct` can
   // never make a system undeletable.
-  assert.deepEqual(await projectsBySystem(), { 'prod-box': ['shipping'] });
+  assert.deepEqual(await projectsBySystem(), { 'prod-box': [{ name: 'shipping', remoteId: 'ctr-7' }] });
 });
 
 test("cc's own store stays local for a project that IS on another system", async () => {
@@ -127,7 +127,7 @@ test('a project on another system is listed with it, and refuses to resolve', as
   const shipping = (await listProjects()).find(p => p.name === 'shipping');
   assert.deepEqual({ system: shipping.system, remoteId: shipping.remoteId, systemPath: shipping.systemPath },
     { system: 'prod-box', remoteId: 'ctr-7', systemPath: '/app' });
-  assert.deepEqual(await projectsBySystem(), { 'prod-box': ['shipping'] });
+  assert.deepEqual(await projectsBySystem(), { 'prod-box': [{ name: 'shipping', remoteId: 'ctr-7' }] });
   // No transport yet, so the ONE thing that must not happen is resolving local
   // and operating on `<projectsRoot>/shipping` as if it were the tree.
   await assert.rejects(() => resolveSystem('shipping'), (e) => {

@@ -12,6 +12,7 @@ import {
   summarizeSessions,
   createProject as fsCreateProject,
   adoptProject as fsAdoptProject,
+  setProjectRemote as fsSetProjectRemote,
   getProject,
   findSessionLocation,
   findOrphanedTranscript,
@@ -1856,25 +1857,44 @@ export async function setProjectWorkspace({ project, workspace }: { project: str
   return { project, workspace: meta.workspace ?? null };
 }
 
+// Change which TARGET of its system a project is on, or clear it back to the
+// provider's own default with remoteId:null (or "").
+//
+// The twin of the REST PUT, calling the same setProjectRemote — which is where
+// the guard lives, so neither surface can be built without it. `instances` is
+// the manager this module already holds for kill_instance/spawn_instance, and
+// supplying it is this caller's half of that guard's contract.
+export async function setProjectRemote(
+  { project, remoteId }: { project: string; remoteId?: string | null },
+  { instances }: McpCtx,
+) {
+  if (typeof project !== 'string' || !project) throw new Error('project required');
+  return fsSetProjectRemote(
+    project,
+    remoteId === '' || remoteId === undefined ? null : remoteId,
+    { liveInstanceIds: () => (instances ? instances.sessionIdsForProject(project) : []) },
+  );
+}
+
 // ---------- create / introspect ----------
 
-export async function createProject({ name, conventions = [], system, systemPath }: {
-  name: string; conventions?: string[]; system?: string; systemPath?: string;
+export async function createProject({ name, conventions = [], system, remoteId, systemPath }: {
+  name: string; conventions?: string[]; system?: string; remoteId?: string; systemPath?: string;
 }) {
   const conventionsDoc = await composeProjectConventionsDoc(conventions, {
     system: placementDisclosure(system, systemPath),
   });
   const scaffold = await composeProjectScaffold(name, conventions);
-  const created = await fsCreateProject(name, { conventionsDoc, system, systemPath });
+  const created = await fsCreateProject(name, { conventionsDoc, system, remoteId, systemPath });
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
 }
 
-export async function adoptProject({ name, path: targetPath, system }: {
-  name: string; path: string; system?: string;
+export async function adoptProject({ name, path: targetPath, system, remoteId }: {
+  name: string; path: string; system?: string; remoteId?: string;
 }) {
-  return fsAdoptProject(name, targetPath, { system });
+  return fsAdoptProject(name, targetPath, { system, remoteId });
 }
 
 export async function listProjectConventions() {

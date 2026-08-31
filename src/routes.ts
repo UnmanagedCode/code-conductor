@@ -8,7 +8,7 @@ import {
   listProjects, createProject, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
-  findSessionLocation, writeProjectMeta, projectsBySystem,
+  findSessionLocation, writeProjectMeta, projectsBySystem, setProjectRemote,
   addWorkspace, removeWorkspace, renameWorkspace,
   summarizeWorkspaces, validateName,
 } from './projects.ts';
@@ -479,7 +479,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   r.post('/projects', async (req, res, next) => {
     try {
       const body = jsonBody(req);
-      const { name, conventions, system, systemPath } = body;
+      const { name, conventions, system, remoteId, systemPath } = body;
       // Validate the regex first so callers that hit BOTH conditions
       // (e.g. "../escape" — starts with "." AND contains "/") get the
       // canonical "invalid project name" error rather than the dot-prefix
@@ -504,7 +504,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         system: placementDisclosure(system, systemPath),
       });
       const scaffold = await composeProjectScaffold(validName, slugs);
-      const created = await createProject(validName, { conventionsDoc, system, systemPath });
+      const created = await createProject(validName, { conventionsDoc, system, remoteId, systemPath });
       // Scaffold directive is returned (not persisted) — the caller folds it
       // into the first worker brief. See conventions/conductor/core.md.
       res.status(201).json({ ...created, ...(scaffold ? { scaffold } : {}) });
@@ -519,8 +519,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // broadcastProjects(), matching POST /projects.
   r.post('/projects/external', async (req, res, next) => {
     try {
-      const { name, path: targetPath, system } = jsonBody(req);
-      const result = await adoptProject(name, targetPath, { system });
+      const { name, path: targetPath, system, remoteId } = jsonBody(req);
+      const result = await adoptProject(name, targetPath, { system, remoteId });
       res.status(result.ok ? 201 : 200).json(result);
     } catch (e) { next(e); }
   });
@@ -577,7 +577,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // and `path` name what was left behind and where.
       res.json({
         ok: true, project: proj.name, killedInstances: killed,
-        system: deleted.system, path: deleted.path,
+        system: deleted.system, remoteId: deleted.remoteId, path: deleted.path,
         unregisteredOnly: proj.external || deleted.system !== LOCAL_SYSTEM_ID,
       });
     } catch (e) { next(e); }
@@ -608,6 +608,41 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       broadcastProjects();
       res.json({ ok: true, name: req.params.name, workspace: meta.workspace ?? null });
     } catch (e) { next(e); }
+  });
+
+  // Change which TARGET of its system a project is on. Body: {remoteId:
+  // string|null}; null (or "") clears it back to the provider's own default.
+  //
+  // Modelled on PUT /projects/:name/workspace, and like it the work is in
+  // src/projects.ts rather than here — setProjectRemote owns the guard, so the
+  // MCP twin (set_project_remote) inherits it rather than reimplementing it.
+  // `liveInstanceIds` comes from the injected manager: this route is one of the
+  // two callers that owe that contract.
+  r.put('/projects/:name/remote', async (req, res, next) => {
+    try {
+      const raw = jsonBody(req).remoteId;
+      const result = await setProjectRemote(
+        req.params.name,
+        raw === '' || raw === undefined ? null : raw,
+        { liveInstanceIds: () => (instances ? instances.sessionIdsForProject(req.params.name) : []) },
+      );
+      invalidate(req.params.name);
+      broadcastProjects();
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      // The 409 is RENDERED HERE rather than handed to the shared error
+      // handler, which sends `{error}` alone: the whole value of this refusal is
+      // the list of sessions and worktrees to clear, and a message the client
+      // has to parse back into a list is not that list.
+      const err = e as { statusCode?: number; code?: string; instances?: unknown; worktrees?: unknown };
+      if (err?.code === 'PROJECT_PLACEMENT_IN_USE') {
+        return res.status(409).json({
+          error: errMessage(e), code: err.code,
+          instances: err.instances, worktrees: err.worktrees,
+        });
+      }
+      next(e);
+    }
   });
 
   // ── Workspace registry endpoints ────────────────────────────────────

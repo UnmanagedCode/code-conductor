@@ -629,9 +629,12 @@ export async function removeSystem(id: string): Promise<boolean> {
   }
   const refs = (await projectsBySystem())[id] ?? [];
   if (refs.length) {
+    // Each referent is named WITH its target: on a system serving many, the
+    // project name alone does not say which one to go and look at.
+    const named = refs.map(r => (r.remoteId ? `${r.name} (${r.remoteId})` : r.name));
     throw httpError(
       409,
-      `system '${id}' is still named by ${refs.length} project${refs.length === 1 ? '' : 's'} (${refs.join(', ')}) — move or remove ${refs.length === 1 ? 'it' : 'them'} first`,
+      `system '${id}' is still named by ${refs.length} project${refs.length === 1 ? '' : 's'} (${named.join(', ')}) — move or remove ${refs.length === 1 ? 'it' : 'them'} first`,
     );
   }
   disposeSystemHandle(id);

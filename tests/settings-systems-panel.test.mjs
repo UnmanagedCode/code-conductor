@@ -26,8 +26,11 @@ import { Window } from 'happy-dom';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const LOCAL = { id: 'local', label: 'This machine', managed: true, projects: [] };
+// One system, two targets — which is the shape the panel has to make legible:
+// `shipping` alone would not say which container holds the row open.
 const PROD = {
-  id: 'prod-box', label: 'Prod box', managed: false, projects: ['shipping'],
+  id: 'prod-box', label: 'Prod box', managed: false,
+  projects: [{ name: 'shipping', remoteId: 'ctr-7' }, { name: 'billing', remoteId: null }],
   launch: ['ssh', 'prod', 'cc-provider'],
 };
 
@@ -140,7 +143,10 @@ test('renders one card per row; the built-in row is read-only and non-removable'
   assertNull(prod.querySelector('.sy-managed-badge'), 'a user row carries no built-in badge');
   assert.deepEqual([...prod.querySelectorAll('.sy-row-actions button')].map(b => b.textContent), ['Edit', 'Remove']);
   // What holds the row, shown before the refusal can be hit.
-  assert.equal(prod.querySelector('.sy-row-projects').textContent, 'projects: shipping');
+  // Each referent names its target; one with no target reads as its bare name,
+  // which is what absence of a target means.
+  assert.equal(prod.querySelector('.sy-row-projects').textContent,
+    'projects: shipping (ctr-7), billing');
 
   assert.match(window.document.getElementById('sy-status').textContent, /2 systems — 1 built in/);
 });

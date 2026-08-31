@@ -634,11 +634,17 @@ export function installSettings({
 
       // What still holds the row. Shown up front so the 409 is a surprise to
       // nobody; absent for `local`, whose projects name no system at all.
+      //
+      // Each is named WITH its target when it has one: a system can serve many,
+      // and a bare project name would not say which to go and look at. A
+      // project with no target uses the provider's own, and reads as its name.
       const projects = Array.isArray(sys.projects) ? sys.projects : [];
       if (projects.length) {
         const p = document.createElement('div');
         p.className = 'sy-row-projects';
-        p.textContent = `projects: ${projects.join(', ')}`;
+        p.textContent = `projects: ${projects.map(
+          x => (x && x.remoteId ? `${x.name} (${x.remoteId})` : (x && x.name) || String(x)),
+        ).join(', ')}`;
         li.appendChild(p);
       }
 

@@ -629,10 +629,14 @@ export async function readProjectMeta(name: string): Promise<ProjectMeta> {
 
 // Which projects name a NON-LOCAL system, grouped by system id — the
 // still-referenced check behind Settings → Systems' delete refusal.
-export async function projectsBySystem(): Promise<Record<string, string[]>> {
-  const out: Record<string, string[]> = {};
-  for (const [name, { system }] of await remotePlacements()) {
-    (out[system] ??= []).push(name);
+//
+// Each entry carries its TARGET as well as its name: one system can serve ten
+// containers, and "shipping" alone does not tell the reader which of them holds
+// the row open.
+export async function projectsBySystem(): Promise<Record<string, Array<{ name: string; remoteId: string | null }>>> {
+  const out: Record<string, Array<{ name: string; remoteId: string | null }>> = {};
+  for (const [name, { system, remoteId }] of await remotePlacements()) {
+    (out[system] ??= []).push({ name, remoteId });
   }
   return out;
 }
