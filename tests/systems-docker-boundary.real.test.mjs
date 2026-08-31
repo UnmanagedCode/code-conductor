@@ -307,3 +307,142 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.match(next.stderr, /was restarted/);
   });
 });
+
+// ── A MIRROR WIDER THAN THE PROJECT, across the real boundary ────────
+//
+// THE ONE MEASUREMENT SAME-MACHINE FIXTURES CANNOT MAKE. Every other mirror
+// test reaches the reference provider on cc's own filesystem, where a wide
+// mirror makes the local/remote path overlap TOTAL rather than incidental: with
+// `mirrorRoot: '/'`, a bridge that read cc's own `/etc/...` instead of the far
+// side's would find a plausible file every single time and go green.
+//
+// So the container's `/etc/os-release` is given a SENTINEL at fixture time and
+// the assertion is on that sentinel — not on the host's and container's copies
+// merely differing, which a host running the same base image would satisfy for
+// entirely the wrong reason.
+
+const WIDE_CTR = `${CTR}-wide`;
+// Unique per run, so a stale copy on the host from an earlier run cannot make
+// this pass.
+const SENTINEL = `CC_MIRROR_SENTINEL_${process.pid}_${Date.now()}`;
+
+describe('a worker whose session mirrors the whole container filesystem', { skip: !ENABLED }, () => {
+  let ctx, baseUrl, instances, home, instId, root, cwd;
+
+  const inWide = async (sh) => (await docker('exec', WIDE_CTR, 'sh', '-lc', sh)).stdout;
+
+  before(async () => {
+    await docker('rm', '-f', WIDE_CTR).catch(() => {});
+    await docker('run', '-d', '--init', '--name', WIDE_CTR, IMAGE, 'tail', '-f', '/dev/null');
+    // `git` only — the adopt's repo-root check needs it; nothing here watches
+    // processes from inside.
+    await docker('exec', WIDE_CTR, 'sh', '-lc',
+      'apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null');
+    await docker('exec', WIDE_CTR, 'mkdir', '-p', '/opt/cc', '/app');
+    for (const f of PROVIDER_FILES) {
+      await docker('cp', path.join(REPO, 'src', 'systems', f), `${WIDE_CTR}:/opt/cc/${f}`);
+    }
+    await inWide('cd /app && git init -q && git config user.email t@e && git config user.name T'
+      + ' && printf "system-side\\n" > ONLY-ON-SYSTEM.txt && git add -A && git commit -q -m initial');
+    // THE SENTINEL, written into a file that exists on BOTH machines and is the
+    // classic "same on any two Linux boxes" file. Appended rather than replaced,
+    // so the file stays a real /etc/os-release.
+    await inWide(`printf '${SENTINEL}=1\\n' >> /etc/os-release`);
+
+    ctx = await bootServer();
+    ({ baseUrl, instances } = ctx);
+    ({ home } = await freshProjectsRoot());
+    await addSystem({
+      id: 'widebox', label: 'container, whole filesystem mirrored',
+      launch: [...DOCKER, 'exec', '-i', WIDE_CTR, 'node', '/opt/cc/referenceProvider.ts', '--mirror', '/'],
+    });
+    assert.equal((await adoptProject('wide', '/app', { system: 'widebox' })).ok, true);
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'wide', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    instId = r.body.id;
+    root = sessionRootPath('widebox', 'wide', null);
+    cwd = path.join(root, 'app');
+    await waitFor(() => instances.get(instId).status === 'idle');
+  });
+
+  after(async () => {
+    if (ctx) await ctx.instances.shutdown();
+    disposeSystemHandles();
+    if (home) await rmrf(home);
+    if (ctx) await ctx.close();
+    await docker('rm', '-f', WIDE_CTR).catch(() => {});
+  });
+
+  const hook = (body) => api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
+    session_id: 's', hook_event_name: 'PreToolUse', tool_use_id: `tu${Math.random()}`, ...body,
+  });
+
+  // PINS THE PREMISE. The sentinel must exist inside the container and NOT on
+  // cc's own machine, or every assertion below is satisfied by the wrong file.
+  test('the sentinel discriminates the two machines', async () => {
+    assert.match(await inWide('cat /etc/os-release'), new RegExp(SENTINEL));
+    const hostOsRelease = await fs.readFile('/etc/os-release', 'utf8').catch(() => '');
+    assert.ok(!hostOsRelease.includes(SENTINEL), 'cc\'s own /etc/os-release must not carry it');
+  });
+
+  // PINS: the CLI's cwd is the PROJECT's place inside the image, and the image
+  // root is a directory above it — the geometry a wide mirror produces.
+  //
+  // NOT CLAIMING: that the directories above the cwd hold anything. They are
+  // cc-created and empty until the bridge pulls into them.
+  test('the session root is the image of / and the CLI works one level in', async () => {
+    assert.equal(instances.get(instId).cwd, cwd);
+    assert.notEqual(cwd, root);
+    assert.ok((await fs.stat(cwd)).isDirectory());
+    // The project's config surface landed at the cwd, not at the image root.
+    assert.ok(await fs.readFile(path.join(cwd, 'CONVENTIONS.md'), 'utf8'));
+    await assert.rejects(fs.readFile(path.join(root, 'CONVENTIONS.md')));
+    // And the image is still cc's, invisible from inside the container.
+    assert.match(await inWide(`ls ${root} 2>&1 || true`), /No such file/);
+  });
+
+  // PINS §9, AND IT IS THE ONLY POSITIVE PROOF IN THE FEATURE that a wide
+  // mirror maps to the FAR SIDE: a Read of a path that exists on both machines
+  // returns the container's bytes, identified by a sentinel cc's own copy
+  // cannot have.
+  //
+  // NOT CLAIMING: anything about paths the container does not have. Absence is a
+  // value, and the bridge deletes the local copy for one.
+  test('a Read outside the project returns the CONTAINER\'s file, by sentinel', async () => {
+    const local = path.join(root, 'etc', 'os-release');
+    const d = await hook({ tool_name: 'Read', tool_input: { file_path: local } });
+    assert.notEqual(d.body.hookSpecificOutput?.permissionDecision, 'deny', JSON.stringify(d.body));
+    const pulled = await fs.readFile(local, 'utf8');
+    assert.ok(pulled.includes(SENTINEL),
+      `the pulled file is not the container's:\n${pulled}`);
+  });
+
+  // PINS the other direction across the same boundary: an edit to an
+  // out-of-project file is pushed INTO the container, witnessed by the
+  // container itself rather than by cc's report of it.
+  test('an Edit outside the project lands inside the container', async () => {
+    const local = path.join(root, 'etc', 'cc-wide-probe.conf');
+    await hook({ tool_name: 'Read', tool_input: { file_path: local } });
+    await hook({ tool_name: 'Write', tool_input: { file_path: local, content: 'x' } });
+    await fs.writeFile(local, `written-through-the-mirror ${SENTINEL}\n`);
+    const post = await api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
+      hook_event_name: 'PostToolUse', tool_use_id: 'tpw', tool_name: 'Write',
+      tool_input: { file_path: local }, tool_response: {},
+    });
+    assert.match(post.body.hookSpecificOutput.additionalContext, /\/etc\/cc-wide-probe\.conf/);
+    assert.equal(await inWide('cat /etc/cc-wide-probe.conf'),
+      `written-through-the-mirror ${SENTINEL}\n`);
+    // And it exists only there.
+    await assert.rejects(fs.stat('/etc/cc-wide-probe.conf'), 'cc\'s own /etc was never touched');
+  });
+
+  // PINS: widening the mirror does NOT move the shell. Bash still opens at the
+  // project root inside the container, not at `/`.
+  test('Bash still runs at the project root, not at the mirror root', async () => {
+    const r = await hook({ tool_name: 'Bash', tool_input: { command: 'pwd && cat ONLY-ON-SYSTEM.txt' } });
+    const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, cwd);
+    assert.equal(ran.code, 0, ran.stderr);
+    assert.equal(ran.stdout, '/app\nsystem-side\n');
+  });
+});

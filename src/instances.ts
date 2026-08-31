@@ -66,7 +66,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
-import { composeSessionRoot } from './systems/sessionRoot.ts';
+import { composeSessionRoot, type ComposedSessionRoot } from './systems/sessionRoot.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
@@ -1648,9 +1648,24 @@ export class Instance extends EventEmitter implements InstanceLike {
     const placement = this._redirectPlacement;
     if (!placement) return;
     try {
-      const { skipped } = await composeSessionRoot(placement);
+      const { cwd, skipped, notes } = await composeSessionRoot(placement);
       for (const s of skipped) {
         this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: session root skipped ${s.path} — ${s.reason}` } });
+      }
+      for (const note of notes) {
+        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${note}` } });
+      }
+      // THE GEOMETRY MOVED UNDER A LIVE SESSION. `this.cwd` and the redirect's
+      // path map were both fixed at create, so a provider that changed its
+      // mirror advertisement between spawn and relaunch has just had the root
+      // re-pulled somewhere this session will not look. Loud, because the
+      // alternative is a worker whose CLAUDE.md silently vanished.
+      if (cwd !== this.cwd) {
+        this._emitUi({ kind: 'system', subtype: 'stderr', data: {
+          line: `systems: '${placement.systemId}' now mirrors this project at ${cwd}, but this session `
+            + `is running in ${this.cwd} — its config surface is stale. Respawn the session to pick up `
+            + `the new layout.`,
+        } });
       }
     } catch (e) {
       this._emitUi({ kind: 'system', subtype: 'stderr', data: {
@@ -4306,6 +4321,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // holding only the config surface the CLI reads implicitly. `systemCwd`
     // keeps the other half — the tree the shell and the file bridge address.
     let redirectPlacement: RedirectPlacement | null = null;
+    let composedMirror: ComposedSessionRoot | null = null;
     if (remote) {
       const systemCwd = cwd;
       redirectPlacement = {
@@ -4324,7 +4340,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // is the only one that covers a relaunch (rewind, respawn, resume after a
       // restart) which never comes back through here. The second pass is a
       // manifest hit — one `find`, no transfers.
-      cwd = (await composeSessionRoot(redirectPlacement)).root;
+      // `.cwd`, NOT `.root`: the CLI works in the project's place inside the
+      // image, which is the image root itself unless the provider advertises a
+      // mirror wider than the project.
+      composedMirror = await composeSessionRoot(redirectPlacement);
+      cwd = composedMirror.cwd;
       const sources = bashRuleSources(cwd);
       // FIRST, because it is the bigger failure: `disableAllHooks` turns the
       // entire redirect off, and a session that ran with it would execute the
@@ -4477,11 +4497,21 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Attached BEFORE launch(): spawn() reads it to widen the injected hook
     // surface, and the hook broker reads it on every tool call.
     if (redirectPlacement) {
+      // Set in the same block as the placement, twenty lines up. A hard throw
+      // rather than a cast: a redirect attached without the composed geometry
+      // would map every path against the wrong root, which is the silent
+      // wrong-machine failure this whole module exists to prevent.
+      if (composedMirror === null) throw new Error('cc: a remote placement reached attachRedirect with no composed session root');
+      const composed: ComposedSessionRoot = composedMirror;
       inst.attachRedirect(new SessionRedirect({
         system: redirectPlacement.system,
         systemId: redirectPlacement.systemId,
         systemPath: redirectPlacement.systemPath,
-        sessionRoot: inst.cwd,
+        // The IMAGE root, which is what the prefix rule is anchored on;
+        // `inst.cwd` is the project's directory inside it and the redirect
+        // derives that itself from the offset.
+        sessionRoot: composed.root,
+        mirror: composed.mirror,
         forwarderUrl: this.bashForwardUrl(id) ?? '',
         // The LOCAL paths a file tool may legitimately name on a remote
         // project. Anything else outside the session root is refused, because a

@@ -22,6 +22,7 @@ import {
   type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
+import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } from './mirror.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
 import { ProviderShell, type ShellHost, type ShellStream, type ShellStreamHandlers } from './providerShell.ts';
 import { requireAbsolute } from './system.ts';
@@ -83,6 +84,11 @@ export class ProviderSystem implements System, ShellHost {
   // every successful re-handshake, so a provider restart re-probes and nothing
   // else does.
   #probedAgainst: Handshake | null = null;
+  // The same generation key for the mirror advertisement, kept separate from
+  // #probedAgainst because the two probes are independent and either may run
+  // without the other.
+  #mirrorAgainst: Handshake | null = null;
+  #mirror: MirrorAdvertisement | null = null;
 
   constructor(opts: ProviderSystemOptions | ViewOptions) {
     this.id = opts.id;
@@ -148,6 +154,47 @@ export class ProviderSystem implements System, ShellHost {
       throw new SystemError('ENOREMOTE', `system '${this.id}' does not serve remote '${this.remoteId}': ${r.spawnError}`);
     }
     this.#probedAgainst = hs;
+  }
+
+  // ── The mirror advertisement ───────────────────────────────────────
+
+  // What this target says about how much of its filesystem cc mirrors.
+  //
+  // MEMOISED ON THE HANDSHAKE OBJECT — the same mechanism assertRemoteKnown
+  // uses, and for the same reason: object identity IS the connection
+  // generation, so this costs one round trip per connection and re-asks after a
+  // provider restart, when the answer really can have changed.
+  //
+  // DELIBERATELY NOT FOLDED INTO assertRemoteKnown, whose ENOREMOTE means the
+  // same thing. Both memoise on the same key, so the cost is two round trips
+  // per connection generation rather than per operation, and the two probes
+  // have different absent-behaviours: one refuses, this one shrugs.
+  async mirror(): Promise<MirrorAdvertisement> {
+    const hs = await this.#conn.ensureUp();
+    // THE GATE. A provider that never heard of this frame gets `false` from
+    // readCapabilities and is never sent one — byte-identical wire traffic to
+    // before the frame existed.
+    if (!hs.capabilities.remoteDescriptors) return NO_ADVERTISEMENT;
+    if (this.#mirrorAgainst === hs && this.#mirror !== null) return this.#mirror;
+    let raw: { mirrorRoot?: unknown; exclude?: unknown };
+    try {
+      raw = await this.#request<{ mirrorRoot?: unknown; exclude?: unknown }>('m', (id) => ({
+        type: 'describeRemote', id, ...this.#binding(),
+      }), (id, f, resolve) => {
+        if (f.type === 'remoteDescriptor') resolve({ mirrorRoot: f.mirrorRoot, exclude: f.exclude });
+      });
+    } catch (e) {
+      // BELT AND BRACES: a provider that advertises the capability and then
+      // refuses the frame is a provider that advertises nothing, not a failed
+      // spawn. Any other failure — a dead transport, an unknown remote — is the
+      // caller's to see.
+      if (e instanceof SystemError && e.code === 'EUNSUPPORTED') return NO_ADVERTISEMENT;
+      throw e;
+    }
+    const advertisement = validateAdvertisement(this.id, raw);
+    this.#mirrorAgainst = hs;
+    this.#mirror = advertisement;
+    return advertisement;
   }
 
   // ── exec: the primitive ────────────────────────────────────────────

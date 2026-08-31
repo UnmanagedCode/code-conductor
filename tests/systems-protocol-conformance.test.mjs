@@ -544,6 +544,80 @@ test('parseFindLines refuses a malformed entry rather than skipping it', () => {
   assert.throws(() => parseFindLines('f\tone\nstray line\n', '/d'), (e) => e.code === 'EUNKNOWN');
 });
 
+// ── describeRemote: the mirror advertisement (§2.1) ──────────────────
+//
+// Outside the per-configuration loop: none of the three configurations passes a
+// mirror flag, and the frame's behaviour does not depend on the other two
+// capabilities.
+
+// PINS: the frame round-trips, and both halves of the advertisement survive it.
+//
+// NOT CLAIMING: that every provider implements it. It is a bucket-2 capability
+// and its absent-behaviour is the row below.
+test('describeRemote round-trips the mirror root and the exclude list', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-mirror-conf-'));
+  const root = await fs.realpath(dir);
+  const sys = makeProviderSystem(['--mirror', root, '--exclude', '/proc', '--exclude', '/dev']);
+  try {
+    const hs = await sys.connect();
+    assert.equal(hs.capabilities.remoteDescriptors, true);
+    assert.deepEqual(await sys.mirror(), { mirrorRoot: root, exclude: ['/proc', '/dev'] });
+  } finally { sys.dispose(); await rmrf(dir); }
+});
+
+// PINS THE ABSENT-BEHAVIOUR of the capability: a provider that does not
+// advertise `remoteDescriptors` is never sent the frame and answers nothing.
+//
+// NOT CLAIMING: the wire-level absence — that is measured with the recording
+// provider in tests/systems-mirror-fallback.test.mjs. This is the cc-side
+// contract the rest of the code reads.
+test('a provider without the capability advertises no mirror', async () => {
+  const sys = makeProviderSystem([]);
+  try {
+    assert.equal((await sys.connect()).capabilities.remoteDescriptors, false);
+    assert.deepEqual(await sys.mirror(), { mirrorRoot: null, exclude: [] });
+  } finally { sys.dispose(); }
+});
+
+// PINS: an unknown remote's describeRemote is answered ENOREMOTE and
+// ID-ADDRESSED — one dead target must not tear down the connection every other
+// target's work is on (§9).
+//
+// NOT CLAIMING: that a second remote's operation is in flight at that instant;
+// tests/systems-mirror-advertisement.test.mjs asserts the surviving connection.
+test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-mirror-conf-'));
+  const root = await fs.realpath(dir);
+  const sys = makeProviderSystem(['--remote', `a=${root}`, '--mirror', `a=${root}`]);
+  try {
+    await sys.connect();
+    await assert.rejects(() => sys.bindRemote('ghost').mirror(),
+      (e) => expectCode(e, 'ENOREMOTE', 'describeRemote for an unknown remote'));
+    // The connection is still serving the target that does exist.
+    assert.deepEqual(await sys.bindRemote('a').mirror(), { mirrorRoot: root, exclude: [] });
+  } finally { sys.dispose(); await rmrf(dir); }
+});
+
+// PINS THE EXTENSION POINT a later card will rely on: a `remoteDescriptor`
+// carrying a field cc does not know about is accepted and the field ignored.
+// Pinned so a future reader cannot "tighten" it away — a provider→cc field is
+// inert on arrival, which is what makes growing this frame safe without a
+// version bump.
+//
+// NOT CLAIMING: that any particular field name is reserved. The fixture uses a
+// neutral one.
+test('an unrecognised field on a remoteDescriptor is ignored, not an error', async () => {
+  const fixture = path.join(
+    path.dirname(new URL(import.meta.url).pathname), 'fixtures', 'extraFieldMirrorProvider.mjs');
+  const sys = new (await import('../src/systems/providerSystem.ts')).ProviderSystem({
+    id: 'extra', launch: { argv: ['node', fixture] },
+  });
+  try {
+    assert.equal((await sys.connect()).capabilities.remoteDescriptors, true);
+    assert.deepEqual(await sys.mirror(), { mirrorRoot: '/srv', exclude: ['/srv/tmp'] });
+  } finally { sys.dispose(); }
+});
+
 test('a write above the protocol cap is refused before a byte reaches the wire', async () => {
   // Outside the per-configuration loop: this allocates the cap, and the refusal
   // is cc-side, identical whatever the provider advertises.

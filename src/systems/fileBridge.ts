@@ -111,12 +111,16 @@ export class FileBridge {
   }
 
   #require(localPath: string, op: string): string {
-    const remote = this.#map.toSystem(localPath);
-    if (remote === null) {
-      // cc's own bug, never a worker's: the layer above decides what is mapped,
-      // and reaching here means it let through a path with no counterpart.
+    const v = this.#map.classify(localPath);
+    // BOTH are cc's own bug, never a worker's: the layer above decides what is
+    // mapped and refuses everything else by name, so reaching here means it let
+    // through a path with no counterpart or one the provider said not to carry.
+    if (v.kind === 'outside') {
       throw new Error(`fileBridge.${op}: ${localPath} is outside the session root ${this.#map.root}`);
     }
-    return remote;
+    if (v.kind === 'excluded') {
+      throw new Error(`fileBridge.${op}: ${v.systemPath} is under '${v.excludedBy}', which this system excludes from file mirroring`);
+    }
+    return v.systemPath;
   }
 }

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import type { MirrorAdvertisement } from './mirror.ts';
 import type { SystemErrorCode } from './protocol.ts';
 
 // The System interface — the seam every PROJECT-SCOPED operation goes through.
@@ -235,4 +236,12 @@ export interface System {
   // is the user's own repo: the realpath must never reach removeTree.
   unlink(p: string): Promise<void>;
   chmod(p: string, mode: number): Promise<void>;
+
+  // ── The mirror advertisement ───────────────────────────────────────
+  // How much of THIS TARGET's filesystem cc's session root is the local image
+  // of, and which prefixes cc must not carry (src/systems/mirror.ts,
+  // docs/systems-protocol.md §2.1). `{mirrorRoot: null, exclude: []}` means the
+  // target advertises nothing, which is every provider that predates the frame
+  // and cc's own machine.
+  mirror(): Promise<MirrorAdvertisement>;
 }

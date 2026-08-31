@@ -97,8 +97,10 @@ The provider answers exactly once:
 - **The `system` descriptor describes the provider's DEFAULT target.** A
   provider that advertises `remotes` still sends exactly one, and cc opens every
   redirected shell with that one `system.shell` — so on a multi-target provider
-  every target gets the same shell. Per-remote descriptors are out of scope; a
-  provider whose targets need different shells has no way to say so yet.
+  every target gets the same shell. A provider whose targets need different
+  shells has no way to say so yet. The one per-target fact cc does negotiate is
+  the **mirror advertisement** (§2.1), which rides its own frame precisely
+  because the handshake carries a single descriptor.
 - Unknown *frame types* are likewise ignored by both ends. Unknown capability
   keys and unknown frame types are the extension point: **the contract can grow
   without a version bump.**
@@ -115,9 +117,83 @@ a user-visible difference, **and a test that runs the fallback**.
 | **`persistentShell`** | **2 — OPTIONAL** | cc runs every redirected shell command as a **one-shot `exec`** of the same framing, passing `cwd` explicitly and reading `$PWD` back from the sentinel to carry into the next call | **cwd persists; exports, shell functions and background jobs do not** — which matches the local CLI, whose `Bash` also carries only cwd. Three further differences the mode really does have, stated rather than glossed: **(1)** each command gets a fresh login shell, so profile-file output would land in the command's output — the framing's opening sentinel (§5) is what stops it, and it is load-bearing here in a way it is not for a persistent shell; **(2)** a cwd deleted since the last command fails the NEXT command with `ENOENT` rather than running it somewhere, where a persistent shell would keep running in the deleted directory; **(3)** the command is carried by the `exec` frame's `shell` form, so what it needs of the far side is that form's login shell, not the `system.shell` a persistent session is opened with | `tests/systems-shell-framing.test.mjs`, every case, in both modes |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the entire existing suite under `npm run gate:systems` |
+| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The session root is the local image of the project root exactly as before, `mirrorRoot = systemPath`, `offset = ""`, and no path is excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry, same walk | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, `offset === ''`, `cwd === root`, the exclude list is empty. Plus the `remoteDescriptors:false` row asserted in all three configurations of `tests/systems-protocol-conformance.test.mjs` |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename`, `symlink` | **not in the protocol** | — | cc issues neither: nothing on the `System` interface renames or symlinks on a system, so a provider is never asked to | — |
+
+### 2.1 The mirror advertisement
+
+**How much of a target's filesystem cc's session root is the local image of,**
+and which prefixes cc must not carry across. One request/response pair, gated on
+`remoteDescriptors`, resolved **per target**:
+
+```
+cc  →  {"type":"describeRemote","id":"d1","remoteId":"ctr-a"}
+   ←  {"type":"remoteDescriptor","id":"d1","mirrorRoot":"/","exclude":["/proc","/dev","/sys"]}
+```
+
+- **A frame, not a handshake field**, because the handshake's `system`
+  descriptor is one-per-connection (§2) and a `remotes` provider's targets
+  plausibly differ — `/app` in one container, `/srv/thing` in another.
+- `remoteId` **omitted** asks about the provider's default target, the same
+  convention the other three request frames use. It is the **fourth** request
+  frame carrying `remoteId`, and the only one with no follow-on frames, so §4's
+  id-binding rule has nothing to bind.
+- **Both response fields are optional.** A `remoteDescriptor` with neither is a
+  valid "I advertise nothing" and takes the same path as a provider that never
+  heard of the frame.
+- **Sent once per connection generation.** cc memoises the answer on the
+  handshake, so a provider restart re-asks and nothing else does.
+- Error answers: **`ENOREMOTE`**, id-addressed (§9); **`EUNSUPPORTED`** if a
+  provider answers it despite advertising the capability — cc treats that as "I
+  advertise nothing" rather than failing the session.
+- **An unrecognised field on a `remoteDescriptor` is ignored.** This direction is
+  safe to grow without a version bump in a way the cc → provider direction is
+  not: cc decodes every line into `{type} & Record<string, unknown>` and reads
+  named fields off it, so a field it does not know is inert on arrival. The
+  hazard the `remotes` capability row exists to prevent is the opposite — cc
+  optimistically *sending* a field to a provider that predates it, which
+  silently misroutes.
+
+**What cc will not believe** (`src/systems/mirror.ts`, refusal
+`MIRROR_ADVERTISEMENT_INVALID`, **502** — the far side answered, and answered
+badly; the message quotes the offending value):
+
+| Advertisement | Verdict |
+|---|---|
+| `mirrorRoot` absent or `null` | **Valid** — no advertisement |
+| `mirrorRoot` not a string, empty, or whitespace-only | refused |
+| `mirrorRoot` relative (`"app"`, `"./app"`, `"../x"`) | refused — the same absolute-paths-only rule §1 puts on cc's own callers |
+| `mirrorRoot` not in POSIX normal form (contains `.`, `..`, `//`, or a trailing `/` other than the root itself) | refused — **cc does not normalise on a provider's behalf**, because a normalised-away `..` is how a hostile root would be smuggled past a containment test |
+| `exclude` absent | **Valid** — `[]` |
+| `exclude` not an array; any entry not a string, empty, relative or non-normalised | refused, naming the entry and its index |
+| `exclude.length > MIRROR_EXCLUDE_MAX` (`src/systems/protocol.ts`) | refused |
+
+**What cc refuses about the project** (raised at **spawn**, not at project
+resolution — a bad advertisement breaks worker sessions only; git, status, diff,
+worktrees and every `project_*` tool run at the project path and never consult
+the mirror):
+
+| Condition | Refusal |
+|---|---|
+| the mirror root is not an ancestor of, or equal to, the project path | **`MIRROR_ROOT_EXCLUDES_PROJECT`** (501) |
+| an exclude entry covers or equals the project path | **`MIRROR_EXCLUDE_COVERS_PROJECT`** (501) |
+| an exclude entry lies outside the mirror root | **inert** — reported once on the session's event stream, never a refusal |
+
+Containment throughout is `path.posix.relative`, never a string prefix, so
+`/app-backup` is not inside `/app`. cc **never stats the mirror root**: it is a
+prefix for path arithmetic and is never opened, so a non-directory root fails at
+whatever operation touches it, carrying the far side's own reason.
+
+**What it changes locally.** The session root becomes the image of the mirror
+root and the CLI's cwd moves to the project's place inside it
+(`root + offset`, `offset = ""` when the two are equal). The **allow-list walk
+does not move**: it stays anchored at the project over its fixed targets
+whatever the mirror root is (`src/systems/sessionRoot.ts`). The `exec` frames a
+composition sends are identical for `mirrorRoot: "/"` and
+`mirrorRoot: <project>`, pinned differentially in
+`tests/systems-session-root.test.mjs`.
 
 ## 3. Frames
 
@@ -142,10 +218,11 @@ anything — but it is lying in its own logs.
 | `close` | `id` | Abandon the operation |
 | `readFile` | `id`, `path`, `remoteId?`, `offset?`, `length?` | Read |
 | `writeFile` | `id`, `path`, `remoteId?`, `mode?`, `atomic?`, `exclusive?` | Open a write; `data`… then `end` follow |
+| `describeRemote` | `id`, `remoteId?` | Ask for a target's mirror advertisement (§2.1). **Requires `remoteDescriptors`** |
 | `data` | `id`, `seq`, `dataB64` | One chunk of a `writeFile` payload |
 | `end` | `id` | End of a `writeFile` payload |
 
-**`remoteId` is carried by those three REQUEST frames and by nothing else.**
+**`remoteId` is carried by those four REQUEST frames and by nothing else.**
 It names which of the provider's targets the operation is for, and it is sent
 only to a provider that advertises `remotes` — see §4 for why every follow-on
 frame omits it, and the `remotes` row in §2 for why an optimistically-sent field
@@ -162,6 +239,7 @@ would be unsafe.
 | `data` | `id`, `seq`, `dataB64` | One chunk of a read |
 | `end` | `id` | Terminal for a `readFile` |
 | `writeFileResult` | `id`, `ok:true` | Terminal for a `writeFile` |
+| `remoteDescriptor` | `id`, `mirrorRoot?`, `exclude?` | Terminal for a `describeRemote`; both fields optional (§2.1) |
 | `error` | `id?`, `code`, `message`, `exitCode?`, `stderr?` | Terminal for the id; **id-less means the whole connection failed** |
 
 ## 4. Multiplexing
@@ -175,7 +253,8 @@ Ids are generated by cc, are never reused, and are opaque to the provider.
 
 **AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME.** The `remoteId` on the
 opening `exec` / `readFile` / `writeFile` is the operation's target for every
-frame that follows it — `stdin`, `stdinClose`, `signal`, `close`, `data`, `end`
+frame that follows it (`describeRemote`, the fourth request frame, has no
+follow-on frames — it opens and closes in one exchange) — `stdin`, `stdinClose`, `signal`, `close`, `data`, `end`
 carry no `remoteId` and a provider must not look for one on them. A provider
 that re-derived the target per frame would have to answer "which target" for a
 frame that never names one.
@@ -514,8 +593,9 @@ ten of each.
 | the long-lived shell | one `docker exec -i <ctr> $SHELL -l` |
 | `signal`, `processGroup:true` | `docker exec … kill -- -<pgid>` → `processGroupSignal: true` |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
+| `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
 
-Three primitives and three capabilities; a `docker exec` provider satisfies all
+Three primitives and four capabilities; a `docker exec` provider satisfies all
 of them. **Three things it is not thin about**, worth knowing before starting one:
 
 1. **Reaping.** MUST 3 does not come free: `docker exec` children live in the

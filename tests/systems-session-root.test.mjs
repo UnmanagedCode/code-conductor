@@ -16,9 +16,11 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import {
   SESSION_ROOT_FILE_CAP_BYTES,
@@ -279,4 +281,189 @@ test('a manifest with no remoteId matches an unbound handle', async () => {
 
   await compose();
   assert.equal(await fs.readFile(cached, 'utf8'), 'still here\n');
+});
+
+// ── THE MIRROR the root is the image OF (card 2026-0259) ─────────────
+//
+// After P7 the session root is the local image of the provider's advertised
+// MIRROR ROOT, not of the project tree, and the CLI's cwd moves to the
+// project's place inside it. What must NOT move is the allow-list walk: it
+// stays anchored at the project over its seven fixed targets, because a walk
+// re-anchored at a filesystem root was measured at 46 MB of `find` output and
+// half a gigabyte of orchestrator heap — and pruning the pseudo-filesystems
+// does not rescue it.
+
+const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
+
+async function wire(file) {
+  let raw = '';
+  try { raw = await fs.readFile(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+}
+
+// Every `find` argv cc put on the wire during one composition.
+const findArgvs = async (rec) => (await wire(rec))
+  .filter(f => f.type === 'exec' && Array.isArray(f.argv) && f.argv[0] === 'find')
+  .map(f => f.argv);
+
+// A recording provider under its own system id, with whatever mirror flags.
+async function recordingSystem(id, flags) {
+  const rec = path.join(await mkdtemp('cc-wire-'), `${id}.jsonl`);
+  await addSystem({ id, label: id, launch: ['node', RECORDER, '--record', rec, ...flags] });
+  return { rec, sys: await systemById(id, null, 'test') };
+}
+
+// PINS THE MEASURED DECISION, DIFFERENTIALLY: widening the mirror to `/` does
+// not change the manifest walk by one byte. Both argvs are produced in this
+// same run and compared TO EACH OTHER — D-P7-10 form 1 — so no constant
+// transcribed from the implementation could satisfy it.
+//
+// NOT CLAIMING: that the walk is cheap. The numbers behind the decision are
+// evidence in the design, not an assertion here.
+test('the find argv is identical whether the mirror is the project or the whole filesystem', async () => {
+  await seedTree(remote.root);
+  const narrow = await recordingSystem('narrow', []);
+  const wide = await recordingSystem('wide', ['--mirror', '/']);
+
+  await composeSessionRoot({
+    system: narrow.sys, systemId: 'narrow', systemPath: remote.root, project: 'app',
+  });
+  const wideComposed = await composeSessionRoot({
+    system: wide.sys, systemId: 'wide', systemPath: remote.root, project: 'app',
+  });
+
+  // The two configurations really are different, or the comparison is vacuous.
+  assert.equal(wideComposed.mirror.mirrorRoot, '/');
+  assert.notEqual(wideComposed.cwd, wideComposed.root);
+
+  const a = await findArgvs(narrow.rec);
+  const b = await findArgvs(wide.rec);
+  assert.ok(a.length > 0, 'the narrow composition really walked');
+  assert.deepEqual(b, a, 'the walk is invariant to mirror width');
+});
+
+// PINS: the pulled config surface lands under the CLI's cwd — the project's
+// place inside the image — not at the image root, and the CLAUDE.md that
+// carries the `@CONVENTIONS.md` import is the one at that cwd.
+//
+// NOT CLAIMING: anything about the empty ancestor directories above the cwd.
+// An ancestor CLAUDE.md on the system is deliberately not pulled.
+test('a wider mirror puts the pulled config under the cwd, not the image root', async () => {
+  await seedTree(remote.root);
+  const parent = path.dirname(remote.root);
+  const { sys } = await recordingSystem('wider', ['--mirror', parent]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'wider', systemPath: remote.root, project: 'app',
+  });
+
+  assert.equal(composed.mirror.offset, path.basename(remote.root));
+  assert.equal(composed.cwd, path.join(composed.root, path.basename(remote.root)));
+  assert.equal(await fs.readFile(path.join(composed.cwd, 'CONVENTIONS.md'), 'utf8'),
+    '<!-- cc:conventions -->\nrules\n');
+  assert.match(await fs.readFile(path.join(composed.cwd, 'CLAUDE.md'), 'utf8'), /@CONVENTIONS\.md/);
+  await assert.rejects(fs.readFile(path.join(composed.root, 'CONVENTIONS.md')),
+    'and nothing was written at the image root');
+});
+
+// PINS CRITERION 7's only work: an advertised exclude that lands inside the
+// project's own config surface drops that target from the `find` argv, so it is
+// never enumerated. Same containment predicate as everything else, one line.
+//
+// NOT CLAIMING: that anything is pruned WITHIN a walked directory. The walk has
+// seven fixed targets and no pruning machinery; `/proc` and `/dev` are not
+// among them and cannot become so.
+test('an exclude covering an allow-list target drops it from the walk', async () => {
+  await seedTree(remote.root);
+  const skills = path.join(remote.root, '.claude/skills');
+  const { rec, sys } = await recordingSystem('trimmed', [
+    '--mirror', path.dirname(remote.root), '--exclude', skills,
+  ]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'trimmed', systemPath: remote.root, project: 'app',
+  });
+
+  const [argv] = await findArgvs(rec);
+  assert.ok(argv, 'a walk happened');
+  assert.ok(!argv.includes(skills), `the excluded target is gone from ${JSON.stringify(argv)}`);
+  assert.ok(argv.includes(path.join(remote.root, 'CLAUDE.md')), 'the rest are still there');
+  await assert.rejects(fs.readFile(path.join(composed.cwd, '.claude/skills/deploy/SKILL.md')),
+    'and nothing under it was pulled');
+});
+
+// PINS: the manifest records the MIRROR ROOT beside the target, and a mismatch
+// resets the root for the same reason a target change does — the old layout
+// describes a different address space, so `cwd` sits somewhere else inside it.
+//
+// NOT CLAIMING: that a session already running picks up the new geometry; the
+// instance's cwd is fixed at create.
+test('a mirrorRoot change in the manifest wipes the root; an unchanged one keeps it', async () => {
+  await seedTree(remote.root);
+  const parent = path.dirname(remote.root);
+  await recordingSystem('shift', ['--mirror', parent]);
+
+  const first = await composeSessionRoot({
+    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
+  });
+  const mf = `${sessionRootPath('shift', 'app', null)}.manifest.json`;
+  assert.equal(JSON.parse(await fs.readFile(mf, 'utf8')).mirrorRoot, parent);
+
+  const cached = path.join(first.cwd, 'src/index.js');
+  await fs.mkdir(path.dirname(cached), { recursive: true });
+  await fs.writeFile(cached, 'cached under the old geometry\n');
+
+  // Same advertisement: kept.
+  await composeSessionRoot({
+    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
+  });
+  assert.equal(await fs.readFile(cached, 'utf8'), 'cached under the old geometry\n');
+
+  // A narrower advertisement: the whole root goes.
+  await updateSystem('shift', { launch: ['node', RECORDER, '--record', path.join(await mkdtemp('cc-wire-'), 'b.jsonl')] });
+  const after = await composeSessionRoot({
+    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
+  });
+  await assert.rejects(fs.readFile(cached), 'the old geometry\'s content is gone');
+  assert.equal(after.cwd, after.root);
+  assert.equal(await fs.readFile(path.join(after.root, 'CONVENTIONS.md'), 'utf8'),
+    '<!-- cc:conventions -->\nrules\n');
+});
+
+// PINS: a manifest written before `mirrorRoot` existed, against a placement
+// that advertises nothing, is a MATCH — not a wipe. Reading absence as a
+// mismatch would cost every existing session root one pointless full re-pull.
+//
+// NOT CLAIMING: anything about a legacy manifest against an ADVERTISED mirror;
+// that is a genuine mismatch and wipes, which the test above covers.
+test('a manifest with no mirrorRoot matches an unadvertised placement', async () => {
+  await seedTree(remote.root);
+  const { root } = await compose();
+  const cached = path.join(root, 'src/index.js');
+  await fs.mkdir(path.dirname(cached), { recursive: true });
+  await fs.writeFile(cached, 'still here\n');
+  const mf = `${sessionRootPath(remote.id, 'app', null)}.manifest.json`;
+  const { entries } = JSON.parse(await fs.readFile(mf, 'utf8'));
+  await fs.writeFile(mf, JSON.stringify({ entries }));
+
+  await compose();
+  assert.equal(await fs.readFile(cached, 'utf8'), 'still here\n');
+});
+
+// PINS: an advertisement cc cannot use refuses the COMPOSITION by name, at
+// spawn — not the project's resolution. Nothing else about the project is
+// touched, because git, status, diff and every project_* tool run at the
+// project path and never consult the mirror.
+//
+// NOT CLAIMING: which HTTP status a route surfaces, or that the project listing
+// stays green — tests/systems-listing-degrade.test.mjs owns the listing.
+test('a mirror root that does not contain the project refuses the composition', async () => {
+  await seedTree(remote.root);
+  const elsewhere = await fs.realpath(await mkdtemp('cc-elsewhere-'));
+  await recordingSystem('wrongroot', ['--mirror', elsewhere]);
+  await assert.rejects(
+    async () => composeSessionRoot({
+      system: await systemById('wrongroot', null, 'test'),
+      systemId: 'wrongroot', systemPath: remote.root, project: 'app',
+    }),
+    (e) => e.code === 'MIRROR_ROOT_EXCLUDES_PROJECT' && e.statusCode === 501,
+  );
 });

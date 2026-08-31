@@ -94,7 +94,7 @@ describe('a remote project refuses what it cannot do, by name', () => {
     assert.notEqual(r.isError, true, JSON.stringify(r));
     const inst = [...instances.byId.values()][0];
     assert.ok(inst._redirect, 'the session carries a redirection policy');
-    assert.equal(inst._redirect.map.systemPath, path.join(remote.root, 'app'));
+    assert.equal(inst._redirect.systemPath, path.join(remote.root, 'app'));
   });
 
   // PINS: a `Bash(...)` permission rule the redirected forwarder would silently

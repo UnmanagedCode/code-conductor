@@ -24,6 +24,14 @@ export const MAX_FILE_BYTES = 32 * 1024 * 1024;
 // Bytes sniffed for a NUL to answer `isBinary`.
 export const BINARY_SNIFF_BYTES = 8 * 1024;
 
+// The most `exclude` entries cc will accept in one mirror advertisement
+// (docs/systems-protocol.md §2.1). A FENCE WITH HEADROOM, not a performance
+// budget: containment is one `path.posix.relative` per entry per file op,
+// measured at 0.34 microseconds, so even a full list is ~22 microseconds
+// against a cross-machine round trip. Spec-fixed so a provider knows the bound
+// rather than discovering it as a refusal.
+export const MIRROR_EXCLUDE_MAX = 64;
+
 // A single NDJSON line longer than this is EPROTO. It is a framing fence, not a
 // payload budget: MAX_FILE_BYTES caps content, and one chunk frame is
 // CHUNK_BYTES * 4/3 plus a small envelope, so this leaves an order of magnitude
@@ -163,10 +171,19 @@ export interface Capabilities {
   // answer from its own default target — a misroute reported as success, which
   // is the worst failure available here.
   remotes: boolean;
+  // The provider answers `describeRemote` with the MIRROR ADVERTISEMENT for a
+  // target — how much of its filesystem cc's session root is the local image
+  // of, and which prefixes cc must not carry (§2.1). Absent → cc never sends
+  // the frame, the session root is the project root's image exactly as before,
+  // and no path is excluded.
+  //
+  // On the handshake rather than in it because the descriptor there describes
+  // ONE target and a `remotes` provider has many, whose layouts differ.
+  remoteDescriptors: boolean;
 }
 
 export const NO_CAPABILITIES: Capabilities = {
-  persistentShell: false, processGroupSignal: false, remotes: false,
+  persistentShell: false, processGroupSignal: false, remotes: false, remoteDescriptors: false,
 };
 
 export function readCapabilities(v: unknown): Capabilities {
@@ -175,6 +192,7 @@ export function readCapabilities(v: unknown): Capabilities {
     persistentShell: o.persistentShell === true,
     processGroupSignal: o.processGroupSignal === true,
     remotes: o.remotes === true,
+    remoteDescriptors: o.remoteDescriptors === true,
   };
 }
 
@@ -201,13 +219,15 @@ export interface HelloProviderFrame {
   system: { shell: string } & Partial<SystemDescriptor>;
 }
 
-// ── The three REQUEST frames, and the one field they share ───────────
+// ── The four REQUEST frames, and the one field they share ────────────
 //
 // `remoteId` names which of the provider's targets the operation is for. It is
-// carried by the three REQUESTS only: every follow-on frame (`stdin`,
+// carried by the four REQUESTS only (`exec`, `readFile`, `writeFile`,
+// `describeRemote`): every follow-on frame (`stdin`,
 // `stdinClose`, `signal`, `close`, `data`, `end`) is addressed by `id`, and AN
-// ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. Sent only to a provider
-// that advertises `remotes`.
+// ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
+// a provider that advertises `remotes`; `describeRemote` — the fourth — is
+// itself sent only to one that advertises `remoteDescriptors`.
 export interface ExecFrame {
   type: 'exec';
   id: string;
@@ -232,6 +252,16 @@ export interface WriteFileFrame {
   mode?: number; atomic?: boolean; exclusive?: boolean;
 }
 
+// The FOURTH request frame carrying `remoteId`, and the only one with no
+// follow-on frames: it opens and closes in one exchange, so §4's
+// an-id-is-bound-to-one-remote rule has nothing to bind.
+export interface DescribeRemoteFrame { type: 'describeRemote'; id: string; remoteId?: string }
+// Both fields OPTIONAL. A descriptor with neither is a valid "I advertise
+// nothing" and takes the same path as a provider that never heard of the frame.
+export interface RemoteDescriptorFrame {
+  type: 'remoteDescriptor'; id: string; mirrorRoot?: string | null; exclude?: string[];
+}
+
 export interface StreamFrame { type: 'stdout' | 'stderr'; id: string; seq: number; dataB64: string }
 export interface ExitFrame {
   type: 'exit'; id: string; code: number; signal: string | null; timedOut: boolean;
@@ -254,11 +284,12 @@ export interface ErrorFrame {
 
 export type ClientFrame =
   | HelloClientFrame | ExecFrame | StdinFrame | StdinCloseFrame | SignalFrame | CloseFrame
-  | ReadFileFrame | WriteFileFrame | DataFrame | EndFrame;
+  | ReadFileFrame | WriteFileFrame | DescribeRemoteFrame | DataFrame | EndFrame;
 
 export type ProviderFrame =
   | HelloProviderFrame | StreamFrame | ExitFrame
-  | ReadFileResultFrame | WriteFileResultFrame | DataFrame | EndFrame | ErrorFrame;
+  | ReadFileResultFrame | WriteFileResultFrame | RemoteDescriptorFrame
+  | DataFrame | EndFrame | ErrorFrame;
 
 // Any decoded line. Both ends decode into this and narrow on `type`; a frame
 // whose `type` neither end knows is still a valid frame and is IGNORED, which
