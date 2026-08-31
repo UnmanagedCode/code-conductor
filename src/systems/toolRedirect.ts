@@ -254,7 +254,7 @@ export class SessionRedirect {
     if (!command) return { decision: 'allow' };
     // The tool's own timeout becomes the shell's deadline. Without it a worker
     // that asked for ten minutes would have its shell RESET at cc's default
-    // two, losing the session's cwd and exports for a command that was still
+    // two, losing that agent's cwd and exports for a command that was still
     // healthy.
     const timeout = Number(toolInput.timeout);
     const argv = [
