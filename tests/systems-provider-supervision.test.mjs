@@ -311,9 +311,9 @@ test('dispose() reaps an exec that is still in flight', async () => {
 // instrument. A single grace can only pin "somewhere between a bit and a lot":
 // with the deadline hardwired to its 2000ms default and the injected value
 // ignored, a lone `>= 200ms` assertion still passes at 2081ms. No single
-// constant can sit inside both [200,750] and [950,1500], so the pair pins that
-// the grace cc waits IS the grace the caller injected, rather than merely that
-// some wait happened.
+// hardwired constant can sit inside both [200,750] and [950,1500], so the pair
+// excludes every FIXED deadline — which one bound cannot — rather than merely
+// showing that some wait happened. That, exactly, is what it establishes.
 //
 // The windows come from the failure they have to catch, the way the 2000ms
 // default itself was chosen. FLOOR = grace-50ms: the timer cannot fire early,
@@ -328,13 +328,19 @@ const REAP_GRACES = [
 
 // PINS: BOTH branches of the reap — a provider in breach of the EOF-exit MUST is
 // still terminated, AND the graceful attempt genuinely happens rather than being
-// decorative, on THE DEADLINE IT WAS GIVEN. The floor makes the two branches
-// distinguishable (without it an unconditional SIGKILL passes); the disjoint
-// pair makes the injected grace load-bearing (without it a hardwired one does).
+// decorative. The floor makes the two branches distinguishable (without it an
+// unconditional SIGKILL passes); the disjoint pair makes the deadline DEPEND on
+// the injected value, by ruling out every hardwired constant (without it one
+// passes).
 // NOT CLAIMING: that a deaf provider's children are reaped. They cannot be —
 // that is precisely the loss the EOF-exit MUST exists to prevent. Nor that the
 // DEFAULT grace is any particular length: these are injected values, and the
-// default is a judgement call, not an invariant.
+// default is a judgement call, not an invariant. Nor that cc waits EXACTLY the
+// grace it was given: the windows carry deliberate load tolerance, so a
+// transform of the injected value that lands inside both is not excluded —
+// `max(grace, 500ms)` is the measured example. Tightening them to catch it
+// would collide with the ~130ms loaded overhead above, trading a contrived
+// transform for a real flake, and the option has no caller but this test.
 test('a provider that ignores stdin EOF is still SIGKILLed, on the grace it was given', async () => {
   for (const { graceMs, floorMs, ceilingMs } of REAP_GRACES) {
     await tmp(async (dir) => {
