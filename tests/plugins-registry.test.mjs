@@ -568,20 +568,29 @@ test('stopAll() still stops an already-recorded backend even when init fails', a
   }
 });
 
-// The one manifest shape whose cwd resolution can genuinely fail: an
-// activeVersion of type 'worktree' routes resolveCwd() through
-// getWorktree()->listWorktrees()->getProject(entry.project) — a REAL I/O
-// path, unlike 'main' (which is just entry.dir, no I/O, and so can never
-// throw). Deleting the plugin's MAIN checkout after the worktree version is
-// already active — without triggering a fresh rescan in between, so the
-// entry's discoveryState stays the stale 'ok' from before the deletion —
-// makes that getProject() call throw a real, deterministic 404.
+// Deleting the plugin's MAIN checkout after a worktree version is already
+// active — without a fresh rescan in between, so the entry's discoveryState
+// stays the stale 'ok' from before the deletion — makes placement resolution
+// throw a real, deterministic error.
+//
+// TWO ROUTES REACH THAT THROW, and this fixture now takes the first:
+//   1. resolvePlacement's resolveProjectDir(project) returns null (the in-root
+//      dir is gone), and cc STILL HOLDS STORE STATE for the project — the
+//      worktree metadata fabricateWorktree wrote — so the disappearance is
+//      ambiguous (deleted, or an unmounted volume) and degrades rather than
+//      reading as unregistered. That is the discriminator card 2026-0263
+//      installed; tests/plugins-placement-live.test.mjs pins both sides of it.
+//   2. The project resolves but its worktree metadata does not, so
+//      reconcileActiveVersion -> getWorktree throws. Still reachable, which is
+//      why the guarantee below is preserved by a SUPERSET of routes rather
+//      than a substitute.
+// The test asserts the OUTCOME, not the route, so it holds either way.
 const CWD_FAIL_MANIFEST = {
   id: 'cwdfail', name: 'CwdFail', version: '1.0.0', pluginApi: 1,
   conventions: [{ slug: 'vis', name: 'Vis', description: 'x', file: 'conventions/sample.md', scope: 'project' }],
 };
 
-test('conventions(): a resolveCwd failure degrades every scope array, all the way through to a project regeneration outcome', async () => {
+test('conventions(): a placement-resolution failure degrades every scope array, all the way through to a project regeneration outcome', async () => {
   const env = await makePluginRoot();
   try {
     await env.addPluginProject('aplug', { manifest: CWD_FAIL_MANIFEST });
@@ -604,12 +613,12 @@ test('conventions(): a resolveCwd failure degrades every scope array, all the wa
     // Remove the MAIN checkout only (the worktree at a sibling path survives).
     // No rescan happens between here and the conventions() call below, so
     // discovery still reports 'cwdfail' as 'ok' from the earlier call —
-    // resolveCwd() itself is what fails now, live.
+    // placement resolution itself is what fails now, live.
     await fs.rm(path.join(env.root, 'aplug'), { recursive: true, force: true });
 
     const degraded = await host.conventions();
-    assert.equal(degraded.project.some(e => e.slug === 'cwdfail/vis'), false, 'the entry drops out when its cwd cannot be resolved');
-    assert.equal(degraded.project.degraded, true, 'a resolveCwd failure flags the scope array degraded');
+    assert.equal(degraded.project.some(e => e.slug === 'cwdfail/vis'), false, 'the entry drops out when its placement cannot be resolved');
+    assert.equal(degraded.project.degraded, true, 'a placement-resolution failure flags the scope array degraded');
     assert.equal(degraded.conductor.degraded, true, 'every scope array is flagged, including ones with no contributions from this plugin');
 
     const res = await ensureProjectConventionsMd('referencer');
@@ -875,7 +884,7 @@ test('conventions() invalidation matrix: every registry mutation and every fragm
     await host.enable('cacheplug');
     assert.deepEqual(await slugs(), ['cacheplug/vis'], 'enable()');
 
-    // THE critical case: invalidateFragmentBodies deliberately does NOT run on
+    // THE critical case: contributions.invalidate() deliberately does NOT run on
     // disable (a disabled plugin's bodies can stay cached), so this is caught
     // only by the bump inside saveRegistry(). A cache hooked to the four
     // fragment-cache sites alone keeps serving a disabled plugin's conventions.

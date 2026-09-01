@@ -195,12 +195,25 @@ function handleFor(row: SystemRecord, argv: string[], remoteId: string | null): 
   return view;
 }
 
+// Bumped every time a live handle is actually dropped — i.e. every time the
+// MACHINE behind a registered id may now be a different machine, because its
+// provider command changed or its row was removed. Read by the plugin catalog
+// (src/plugins/contributions.ts), whose fragment bodies are keyed by
+// (system, target, path): across an argv swap that key is byte-identical while
+// the bytes behind it are not, so nothing else can invalidate it.
+let handleGeneration = 0;
+
+export function systemHandleGeneration(): number {
+  return handleGeneration;
+}
+
 // Drop a system's live handle, shutting its provider process down. Called when
 // a row is removed or its provider command changes, and by tests between
 // fixtures.
 export function disposeSystemHandle(id: string): void {
   const cur = HANDLES.get(id);
   if (!cur) return;
+  handleGeneration++;
   // Views first, so each forgets its own shell before the process they all
   // share goes away. Only the OWNER's dispose kills it.
   for (const view of cur.views.values()) view.dispose();

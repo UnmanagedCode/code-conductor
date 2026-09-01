@@ -363,6 +363,40 @@ export async function resolveProjectDir(name: string): Promise<ResolvedProjectDi
   return { path: real, external: true, system };
 }
 
+// THE CHEAP LOCAL PREFIX OF resolveProjectDir, and a CACHE KEY rather than an
+// answer: a string that changes whenever a project's placement changes.
+//
+// For a non-local placement that is the record's whole tuple; for a local one it
+// is WHICH LOCAL ARTEFACT registers the project — the in-root directory, the
+// `.external/<name>` link (by realpath, so a re-adopt elsewhere moves the
+// token), or neither. Every mutation that moves a project changes it: a target
+// change rewrites the tuple, and all three `deleteProject` branches take the
+// artefact away (the remote branch by clearing the record, which makes the
+// placement read local-and-gone).
+//
+// IT NEVER REACHES A SYSTEM, and never throws. Its caller is the plugin
+// catalog's per-compose freshness check (src/plugins/contributions.ts), so a
+// version that resolved the system would throw on every compose while a box was
+// down and flip that catalog permanently degraded. Being lossy is safe here and
+// nowhere else: a wrong token only costs a recomputation, and the recomputation
+// is what runs the real, refusing resolution above.
+export async function placementToken(name: string): Promise<string> {
+  const p = await projectPlacement(name);
+  if (p.system !== LOCAL_SYSTEM_ID) return `${p.system}\0${p.remoteId ?? ''}\0${p.systemPath ?? ''}`;
+  return `${LOCAL_SYSTEM_ID}\0\0${await localArtefact(name)}`;
+}
+
+async function localArtefact(name: string): Promise<string> {
+  try {
+    const inRoot = await localSystem().stat(path.join(projectsRoot(), name));
+    if (inRoot?.kind === 'dir') return 'root';
+    return `ext:${await fs.realpath(externalLinkPath(name))}`;
+  } catch (e) {
+    const code = errCode(e);
+    return code === 'ENOENT' || code === 'ELOOP' ? 'gone' : 'unknown';
+  }
+}
+
 // resolveProjectDir for the LISTINGS, where a refusal is a VALUE rather than a
 // throw — the enrichment half of the promise listProjects already makes for its
 // own enumeration, that one bad entry never takes the page down.
