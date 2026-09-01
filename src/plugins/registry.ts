@@ -1,4 +1,4 @@
-import { existsSync, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
@@ -364,6 +364,29 @@ export function createPluginHost(opts: {
     return versionCwd(activeVersion, worktreeMeta, entry.dir);
   }
 
+  // "Is cc's own bookkeeping for this project gone?" — the middle term of the
+  // classification below, and the one that must never guess. ONLY ENOENT IS
+  // GONE: any other error means cc could not tell, and reading that as gone
+  // would classify a registered project as authoritatively unregistered and
+  // drop its contributions at degraded:false — the one direction this design
+  // must not fail in. (`existsSync` cannot make the distinction at all: it
+  // answers false on every error. Same idiom as localArtefact in
+  // src/projects.ts, so the codebase has one.)
+  async function storeStateGone(dir: string): Promise<boolean> {
+    try { await fs.stat(dir); return false; }
+    catch (e) { return errCode(e) === 'ENOENT'; }
+  }
+
+  // The hoisted guard, and its safe direction is the OPPOSITE one: any failure
+  // to see the store root reads as absent, which sends the classification to the
+  // degrade branch. Deliberate rather than incidental — a root cc cannot see is
+  // cc having lost its own bookkeeping, and answering "then every project is
+  // unregistered" would drop every contribution in the catalog at once.
+  async function storeRootPresent(): Promise<boolean> {
+    try { await fs.stat(orchStoreRoot()); return true; }
+    catch { return false; }
+  }
+
   // WHERE A CONTRIBUTING PLUGIN'S CHECKOUT IS RIGHT NOW — resolved on every
   // read, never captured. A plugin's project can move between two rescans
   // (a target change, a delete, a system re-pointed at another machine) and
@@ -399,7 +422,7 @@ export function createPluginHost(opts: {
       // decoration: without it a vanished store root reads as "every project is
       // unregistered" and silently drops every contribution at once, where with
       // it that lands in the degrade bucket it belongs in.
-      if (!existsSync(projectStoreDir(entry.project)) && existsSync(orchStoreRoot())) {
+      if (await storeStateGone(projectStoreDir(entry.project)) && await storeRootPresent()) {
         return { kind: 'unregistered' };
       }
       throw httpError(404, `project '${entry.project}' does not resolve, but cc still holds store state for it`);

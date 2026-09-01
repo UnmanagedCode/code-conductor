@@ -71,6 +71,20 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // spoke to, which is a stale body served as healthy (card 2026-0263). Taking
   // both from one object makes that unrepresentable.
   const fragmentBodyCache = new Map<string, string>();
+  // The placement fingerprint every body currently in that map was read under,
+  // or null when the map is empty.
+  //
+  // IT IS DELIBERATELY NOT PART OF THE conventions() MEMO, and that is the whole
+  // point of it existing. A degraded compose throws the memo away while leaving
+  // the bodies it had already cached in place, so a drop conditioned on the memo
+  // finds nothing to compare against and skips — exactly in the state where the
+  // bodies are stalest. An argv re-point after such a compose leaves system id,
+  // remoteId and path byte-identical, so the next healthy compose would serve
+  // the OLD machine's body at degraded:false. INVARIANT: a body cached under one
+  // fingerprint is never served under another, whatever happened to the memo in
+  // between (card 2026-0263).
+  let fragmentBodyFp: string | null = null;
+
   async function readFragment(system: System, abs: string): Promise<string> {
     const key = `${system.id}\0${system.remoteId ?? ''}\0${abs}`;
     const cached = fragmentBodyCache.get(key);
@@ -92,7 +106,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // cached conventions() result. This covers rescanInternal (and with it the
   // `byId = nextById` swap and the projectsRoot() swap path), enable, doStart
   // and setActiveVersion.
-  function invalidate(): void { fragmentBodyCache.clear(); registryGeneration++; }
+  function invalidate(): void { fragmentBodyCache.clear(); fragmentBodyFp = null; registryGeneration++; }
 
   // Registry state changed in a way that can alter what conventions() computes,
   // but the fragment BODIES on disk did not: every registry.json write (the
@@ -216,9 +230,13 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     }
     // A placement change can leave the fragment cache KEY identical while the
     // bytes behind it belong to another machine — that is exactly what
-    // re-pointing a system does — so the bodies go with the fingerprint, not
-    // just the memoized result.
-    if (conventionsCache && conventionsCache.fp !== fp) fragmentBodyCache.clear();
+    // re-pointing a system does — so the bodies go with the fingerprint. Compared
+    // against fragmentBodyFp rather than against the memo: the memo is gone after
+    // any degraded compose, and that is precisely when the bodies are stalest.
+    if (fragmentBodyFp !== null && fragmentBodyFp !== fp) fragmentBodyCache.clear();
+    // Set BEFORE the scan, because the scan is what populates the map, and it
+    // populates it under exactly the placements this fp was computed from.
+    fragmentBodyFp = fp;
     const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>
       = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
     // Every checkout dir this scan read, for the liveness re-check above. Both

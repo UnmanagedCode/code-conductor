@@ -29,6 +29,15 @@
 // (`degraded:true`, the never-blanks freeze in ensureProjectConventionsMd
 // holds). T2/T3 and T5 are the two sides of that split; if either collapses
 // into the other the design is wrong.
+//
+// THE CACHE-COHERENCE HALF (T6-T9). Resolving the placement live is not enough
+// on its own: the fragment BODIES are cached under a (system, target, path) key,
+// and two of the triggers above leave that key byte-identical while the machine
+// behind it changes. So the bodies are dropped whenever the placement
+// fingerprint moves, and the fingerprint the cache was populated under is kept
+// in state a degraded compose cannot destroy. T6 is the interleave that proves
+// the second clause; T7-T9 pin the classification's safe directions, which no
+// other test reaches.
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,9 +46,10 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { git } from './remoteSystem.mjs';
+import { waitFor } from './plugin-helpers.mjs';
 import { createPluginHost } from '../src/plugins/registry.ts';
 import {
-  createProject, adoptProject, deleteProject, setProjectRemote, projectStoreDir,
+  createProject, adoptProject, deleteProject, setProjectRemote, projectStoreDir, orchStoreRoot,
 } from '../src/projects.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
@@ -47,6 +57,7 @@ import { setPluginConventionsProvider } from '../src/projectConventions.ts';
 import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
 
 const RECORDER = path.join(import.meta.dirname, 'fixtures', 'recordingProvider.mjs');
+const GATED = path.join(import.meta.dirname, 'fixtures', 'gatedProvider.mjs');
 const FRAGMENT_REL = path.join('conventions', 'sample.md');
 
 function manifest(id, { claudePlugin } = {}) {
@@ -161,7 +172,13 @@ describe('a plugin fragment follows its project, live', () => {
   //
   // NOT CLAIMING: that the registry record is purged (it is not — the row goes
   // `invalid` at the next rescan); that the plugin's tree survives (an in-root
-  // delete removes it; T3 is the branch where it survives).
+  // delete removes it; T3 is the branch where it survives). AND NOT CLAIMING THE
+  // `--plugin-dir` HALF: the claudePluginDirs() assertion below passes on the
+  // pre-fix code too, because an in-root delete takes the tree with it and the
+  // `.claude-plugin/plugin.json` access fails whichever dir the code resolved.
+  // It is kept as intent documentation only. **T3 is where that half is
+  // actually covered** — its branch leaves the tree, and therefore the stale
+  // dir, in place across the delete.
   test('deleting an in-root plugin project stops its contributions, without degrading', async () => {
     const dir = path.join(process.env.PROJECTS_ROOT, 'localplug');
     await fs.mkdir(dir, { recursive: true });
@@ -297,5 +314,207 @@ describe('a plugin fragment follows its project, live', () => {
     assert.equal(res.skipped, 'catalog-degraded');
     assert.deepEqual(res.missing, ['ghost-plug/frag']);
     assert.equal(await fs.readFile(target, 'utf8'), doc, 'never blank a slug a degraded catalog cannot vouch for');
+  });
+
+  // T6 ─────────────────────────────────────────────────────────────────
+  // THE INTERLEAVE. PINS: a fragment body cached under one placement/generation
+  // is never served under another, EVEN IF a degraded compose happened in
+  // between and threw away the memoized result.
+  //
+  // T4 looks like it covers this and does not: its fixture has one plugin and a
+  // clean memo, so the fingerprint-mismatch drop always has a memo to compare
+  // against. A degraded compose is precisely the path that leaves the body cache
+  // POPULATED with no memo left, so a drop conditioned on the memo skips exactly
+  // when it is most needed — and an argv re-point then serves the OLD machine's
+  // body at `degraded:false`, which is this card's own defect back through a
+  // reachable window. Hence the fingerprint the bodies were read under is kept
+  // separately from the memo.
+  //
+  // Two plugins, because the degrader must not be the plugin under test: a
+  // plugin that degrades contributes nothing, and the claim is about one that
+  // contributes a WRONG body while the catalog reads healthy. `disable` is what
+  // retires the degrader, chosen because it is documented as deliberately NOT
+  // dropping fragment bodies (it only bumps the generation), so it removes the
+  // degrade without doing the clearing this test is trying to observe.
+  //
+  // NOT CLAIMING: that a degraded compose drops bodies itself (it does not, and
+  // need not — it leaves them for a fingerprint that still matches); that the
+  // memo survives a degrade (it deliberately does not — that is T8's subject).
+  test('a body cached before a degraded compose is not served after a system re-point', async () => {
+    const rootC = await fs.realpath(await mkdtemp('cc-remote-c-'));
+    const rootD = await fs.realpath(await mkdtemp('cc-remote-d-'));
+    const recordC = path.join(home, 'wire-c.jsonl');
+    const recordD = path.join(home, 'wire-d.jsonl');
+    const sys = await addSystem({
+      id: 'swapbox', label: 'Swap box',
+      launch: ['node', RECORDER, '--record', recordC, '--remote', `m=${rootC}`],
+    });
+    const tree = path.join(rootC, 'sw');
+    await createProject('sw', { system: sys.id, remoteId: 'm', systemPath: tree });
+    await seedPluginTree(tree, 'swap-plug', 'MACHINE-C CONTENT');
+
+    // The degrader: local, in-root, and a DIFFERENT plugin.
+    const ghostDir = path.join(process.env.PROJECTS_ROOT, 'ghostplug');
+    await fs.mkdir(ghostDir, { recursive: true });
+    await seedPluginTree(ghostDir, 'ghost-plug', 'GHOST CONTENT');
+
+    await host.enable('swap-plug');
+    await host.enable('ghost-plug');
+
+    // 1. Healthy compose — this is what puts MACHINE-C CONTENT in the body cache.
+    const healthy = await host.conventions();
+    assert.equal(bodyOf(healthy, 'swap-plug/frag'), 'MACHINE-C CONTENT');
+    assert.equal(isDegraded(healthy), false);
+
+    // 2. A degraded compose from the OTHER plugin. This is the step that nulls
+    //    the memoized result while the body cache keeps MACHINE-C CONTENT.
+    await fs.rm(ghostDir, { recursive: true, force: true });
+    assert.equal(isDegraded(await host.conventions()), true, 'the interleaved compose really did degrade');
+
+    // 3. Retire the degrader without clearing any body: disable bumps the
+    //    generation only.
+    await host.disable('ghost-plug');
+
+    // 4. Re-point the system. Record path, remoteId and system id are all
+    //    unchanged, so the fragment cache KEY is byte-identical — only the
+    //    machine behind it moved.
+    await updateSystem(sys.id, {
+      launch: ['node', RECORDER, '--record', recordD, '--remote', `m=${rootD}`],
+    });
+
+    const after = await host.conventions();
+    assert.equal(isDegraded(after), false,
+      'the degrade is over — this compose is the healthy one whose answer must still be right');
+    assert.notEqual(bodyOf(after, 'swap-plug/frag'), 'MACHINE-C CONTENT',
+      'a body cached before the degrade must not survive the re-point that followed it');
+    assert.ok(!JSON.stringify(after).includes('MACHINE-C CONTENT'), 'in any scope');
+
+    const reads = await fragmentReads(recordD);
+    assert.ok(reads.some(r => r.path === path.join(tree, FRAGMENT_REL) && r.remoteId === 'm'),
+      `the fragment was re-read through the NEW provider process: ${JSON.stringify(reads)}`);
+  });
+
+  // T7 ─────────────────────────────────────────────────────────────────
+  // THE HOISTED GUARD. PINS: when cc's own store ROOT is absent, a project that
+  // does not resolve is AMBIGUOUS, never authoritatively unregistered.
+  //
+  // The unregistered test is "the project does not resolve AND its store dir is
+  // gone". Without the third term, a vanished store root satisfies the second
+  // for EVERY project at once, so every plugin would read as unregistered and
+  // every contribution would be dropped silently at `degraded:false` — a clean,
+  // unflagged, empty catalog that referencing projects would then regenerate
+  // against. The guard puts that catastrophe in the degrade bucket, where the
+  // never-blanks freeze holds instead.
+  //
+  // A guard, not a red-to-green: it pins behaviour the fix already has, which no
+  // other test in the suite reaches.
+  //
+  // NOT CLAIMING: that cc recovers when the store root returns; that any
+  // individual project is or is not registered — with the root gone that
+  // question has no local answer, which is the whole point.
+  test('a vanished store root degrades rather than declaring every plugin unregistered', async () => {
+    const dir = path.join(process.env.PROJECTS_ROOT, 'rootlessplug');
+    await fs.mkdir(dir, { recursive: true });
+    await seedPluginTree(dir, 'rootless-plug', 'ROOTLESS CONTENT');
+
+    await host.enable('rootless-plug');
+    assert.equal(bodyOf(await host.conventions(), 'rootless-plug/frag'), 'ROOTLESS CONTENT');
+
+    // Both halves of the unregistered test now read "gone": no checkout, and no
+    // store dir — because the whole store root went with it.
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(orchStoreRoot(), { recursive: true, force: true });
+
+    const after = await host.conventions();
+    assert.equal(bodyOf(after, 'rootless-plug/frag'), null, 'the entry drops out either way');
+    assert.equal(after.project.degraded, true,
+      'but it must drop out DEGRADED — a missing store root is cc losing its own bookkeeping, not the project being unregistered');
+    assert.equal(after.conductor.degraded, true, 'every scope array is flagged');
+  });
+
+  // T8 ─────────────────────────────────────────────────────────────────
+  // PINS: a degraded catalog is not memoized — it recovers on its own once the
+  // failure ends, with NO registry mutation, NO project-record change and NO
+  // system-handle change to invalidate it.
+  //
+  // That combination is why the fixture needs a gated provider. Every other
+  // route out of a degrade moves the placement fingerprint (a restored checkout
+  // flips its artefact token) or the handle generation (an argv swap disposes the
+  // handle), so a memoized degraded result would be invalidated by the recovery
+  // itself and the rule would look like it held whether it did or not. A box that
+  // is simply down and then up again touches neither.
+  //
+  // NOT CLAIMING: that recovery lands on the immediately-next call —
+  // ProviderConnection opens a backoff window after a failed connect and REFUSES
+  // inside it rather than queueing, so the retry happens on cc's schedule, which
+  // is what `waitFor` here is bounded against. Nor that the body is re-read on
+  // recovery: the placement never changed, so the cached body is the right one.
+  test('a degraded catalog recovers when the system comes back, with nothing else changing', async () => {
+    const root = await fs.realpath(await mkdtemp('cc-remote-gated-'));
+    const gate = path.join(home, 'gate');
+    const sys = await addSystem({
+      id: 'gatedbox', label: 'Gated box',
+      launch: ['node', GATED, '--gate', gate, '--remote', `g=${root}`],
+    });
+    const tree = path.join(root, 'gp');
+    await createProject('gp', { system: sys.id, remoteId: 'g', systemPath: tree });
+    await seedPluginTree(tree, 'gated-plug', 'GATED CONTENT');
+
+    await host.enable('gated-plug');
+    assert.equal(bodyOf(await host.conventions(), 'gated-plug/frag'), 'GATED CONTENT');
+
+    // The box goes down. Nothing about cc's own state changes: the registry row,
+    // the project record and the live handle are all untouched.
+    await fs.writeFile(gate, '');
+    disposeSystemHandles(); // drop the live connection so the next one re-reads the gate
+    const down = await host.conventions();
+    assert.equal(bodyOf(down, 'gated-plug/frag'), null, 'an unreachable system contributes nothing');
+    assert.equal(down.project.degraded, true, 'and says so — this is "I cannot tell", not "it is gone"');
+
+    // The box comes back. No record write, no row edit, no handle disposal.
+    await fs.rm(gate);
+    const recovered = await waitFor(async () => {
+      const g = await host.conventions();
+      return g.project.degraded !== true && bodyOf(g, 'gated-plug/frag') !== null ? g : false;
+    }, { timeout: 8000, interval: 25 });
+    assert.equal(bodyOf(recovered, 'gated-plug/frag'), 'GATED CONTENT',
+      'the catalog is healthy again without any gesture that could have invalidated a memo');
+  });
+
+  // T9 ─────────────────────────────────────────────────────────────────
+  // PINS: the store-dir half of the discriminator treats only ENOENT as "gone".
+  // Any other fs error means cc could not tell, which must degrade — never
+  // classify a registered project as authoritatively unregistered.
+  //
+  // `existsSync` answers false on ANY error, so it cannot make that distinction
+  // at all: an unreadable store dir would read as gone and drop the project's
+  // contributions silently at `degraded:false`. The error is provoked with
+  // ENOTDIR — a FILE where the store's `projects/` directory belongs, so
+  // stat(`<store>/projects/<name>`) fails with something that is not ENOENT —
+  // because that needs no permission games and is identical on any host,
+  // including one running as root.
+  //
+  // NOT CLAIMING: that EACCES specifically is handled (it is the same branch, but
+  // this fixture provokes ENOTDIR); that the store is repaired or the project
+  // recovers.
+  test('an unreadable store dir degrades rather than reading as unregistered', async () => {
+    const dir = path.join(process.env.PROJECTS_ROOT, 'enotdirplug');
+    await fs.mkdir(dir, { recursive: true });
+    await seedPluginTree(dir, 'enotdir-plug', 'ENOTDIR CONTENT');
+
+    await host.enable('enotdir-plug');
+    assert.equal(bodyOf(await host.conventions(), 'enotdir-plug/frag'), 'ENOTDIR CONTENT');
+
+    // The checkout is gone, so classification reaches the store-dir test — and
+    // that test now hits a path whose parent is a file, not a missing entry.
+    await fs.rm(dir, { recursive: true, force: true });
+    const projectsStoreDir = path.dirname(projectStoreDir('enotdirplug'));
+    await fs.rm(projectsStoreDir, { recursive: true, force: true });
+    await fs.writeFile(projectsStoreDir, 'not a directory');
+
+    const after = await host.conventions();
+    assert.equal(bodyOf(after, 'enotdir-plug/frag'), null, 'the entry drops out either way');
+    assert.equal(after.project.degraded, true,
+      'an fs error cc cannot interpret must not read as "this project was unregistered"');
   });
 });
