@@ -37,8 +37,6 @@ async function wire(file) {
   return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
 }
 
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-
 async function settle(pred, ms = 3_000) {
   const until = Date.now() + ms;
   while (Date.now() < until) {
@@ -202,6 +200,10 @@ describe('remoteId: one system, many targets', () => {
   // provider is replaced. Memoised on the handshake object's identity, so a
   // restart re-asks and nothing else does — counted on the wire, because a
   // cc-side counter would be a restatement of the implementation.
+  //
+  // NOT CLAIMING: anything about the pid this test kills. That pid is the
+  // provider BEHIND the recorder, and when it dies is the fixture's business,
+  // not cc's — the claim is about the generation cc observes.
   test('the remote is probed once per connection, and re-probed after a restart', async () => {
     const rec = path.join(home, 'wire.ndjson');
     await addSystem({
@@ -219,8 +221,18 @@ describe('remoteId: one system, many targets', () => {
     assert.equal(await probes(), 1, 'a second resolution over the same connection does not re-ask');
 
     const pid = Number((await sys.exec({ shell: 'echo $PPID' }, { cwd: rootA })).stdout.trim());
+    // The pid above is the REFERENCE PROVIDER, one level BELOW cc's own child:
+    // the recorder wraps it (tests/fixtures/recordingProvider.mjs), so killing
+    // it is the STIMULUS and never the signal. The recorder outlives it by the
+    // event-loop hop its own `exit` handler costs (recordingProvider.mjs:41),
+    // and until cc's child exits the generation is genuinely up — `ensureUp`
+    // hands back the same handshake and the memoised probe correctly does not
+    // re-ask. Waiting on the wrapped pid therefore raced cc's own observation
+    // and lost 1 run in 6 in isolation (card 2026-0270). Wait on the
+    // observation itself.
     process.kill(pid, 'SIGKILL');
-    await settle(() => !alive(pid));
+    assert.equal(await settle(() => sys.handshake === null), true,
+      'cc observed the connection die — the generation really ended');
 
     await systemById('boxes', 'a', 'test');
     assert.equal(await probes(), 2, 'a new connection generation is a new question');
