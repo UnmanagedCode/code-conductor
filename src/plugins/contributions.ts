@@ -50,9 +50,14 @@ export interface ContributionsDeps {
   // surfaces its contributions.
   contributingEntries: () => ContributingEntry[];
   resolvePlacement: (entry: ContributingEntry) => Promise<PluginPlacement>;
+  // The last completed discovery scan could not reach a project an ENABLED
+  // plugin lives in, so the catalog built over it is incomplete. See
+  // discoveryDegraded (src/plugins/registry.ts) for what that read narrows on
+  // and what it deliberately cannot.
+  discoveryDegraded: () => boolean;
 }
 
-export function createContributions({ ensureInit, contributingEntries, resolvePlacement }: ContributionsDeps) {
+export function createContributions({ ensureInit, contributingEntries, resolvePlacement, discoveryDegraded }: ContributionsDeps) {
   // Bumped by every state change that could alter what conventions() computes;
   // see the cache below for what reads it.
   let registryGeneration = 0;
@@ -200,6 +205,41 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // unreachable) and is not treated as degraded — it is skipped with a
   // warning as before, same as it always has been.
   //
+  // THE DISCOVERY-TIME SOURCE IS THE OTHER HALF, AND ITS POLICY IS A
+  // DOCUMENTED SUPERSET OF THIS ONE — not the same policy at a second site
+  // (card 2026-0272). Everything above is about a placement resolved DURING
+  // this compose. A project can also have been dropped by the SCAN that built
+  // the catalog (rescanInternal skips a project it cannot resolve through its
+  // System), and then the entry is not merely unplaceable, it is not in the
+  // catalog at all. `degraded` is seeded from discoveryDegraded() below so that
+  // absence is flagged too, instead of reading as confirmed.
+  //
+  // The two sites agree on REACHABILITY CLASS and on nothing else. That much
+  // is structural rather than measured: the discovery drop fires on any throw
+  // out of resolveProjectDir (tryResolveProject returns system:null only for a
+  // throw), and resolvePlacement lets every such throw propagate to the catch
+  // below — so whatever that throw set is, both sites see the same one.
+  //
+  // Everything past that they cannot agree on. Five filters stand between a
+  // persisted record and a degrade here: `discoveryState === 'ok'`, a string
+  // id, and a non-null manifest (all three in contributingEntries,
+  // registry.ts), a non-empty `conventions` list (the `list.length === 0`
+  // continue below), and store.isEnabled. FOUR of the five are read out of the
+  // manifest — exactly the file the unreachable box withheld — so at scan time
+  // all four are unknowable. Only store.isEnabled is answerable, off cc's own
+  // disk, and the persisted record it reads is `{project, enabled,
+  // activeVersion}` and nothing else, identically for a plugin declaring
+  // conventions and one declaring none. This is not a stale-unsafe term being
+  // refused; there is no such term.
+  //
+  // So the scan-time flag is a strict SUPERSET: an enabled plugin in an
+  // unreachable project degrades the catalog even if, had the box been up, its
+  // manifest would have turned out invalid, incompatible, id-less, or simply
+  // free of any conventions entry — every one of which is skipped here at
+  // degraded:false. That direction is the safe one and is chosen deliberately:
+  // over-flagging costs a freeze, which the next Rescan clears; under-flagging
+  // rewrites a committed CONVENTIONS.md, which is the defect.
+  //
   // An UNREGISTERED project is the third case and NOT degraded: cc's own record
   // and the artefact registering the project are both gone (resolvePlacement in
   // registry.ts owns that test), which is the most authoritative answer in the
@@ -243,13 +283,40 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // state, self-healed by reconcileActiveVersion on the next recomputation, and
   // is covered by (1).
   //
-  // A DEGRADED RESULT IS NOT MEMOIZED. Degraded means "a transient failure
-  // stopped me telling you", and a cached transient needs an unrelated gesture
-  // to clear: a remote system coming back up changes neither the generation nor
-  // the fingerprint, so the catalog would keep declaring itself degraded (and
-  // keep every referencing CONVENTIONS.md frozen) until the next rescan. The
-  // cost of re-scanning while degraded is bounded by the fact that a degraded
-  // catalog is exactly the state in which the fan-out it feeds does not write.
+  // The discovery-sourced degrade adds no fourth part. It is a memo BYPASS, not
+  // an invalidation: it does not mark a memo stale, it declines to serve one
+  // that may be perfectly valid for the scan that produced it. And it is
+  // redundant by construction today, on both of its terms: the unreachable set
+  // only gains entries in rescanInternal, which calls invalidate() first, and a
+  // record only becomes enabled either through the store's single save path
+  // (which calls noteRegistryChange()) or through the boot load, which
+  // ensureInit follows with that same rescanInternal. So no memo written by a
+  // healthy scan can still be live while this reads true. It is kept for the
+  // same reason the second guard at fragmentBodyCache is kept: it makes "a memo
+  // may not be served while the scan that produced it is known to have been
+  // incomplete" structural, rather than an argument spanning two modules.
+  // Redundant, kept — not necessary.
+  //
+  // A COMPOSE-SOURCED DEGRADED RESULT IS NOT MEMOIZED. That degrade means "a
+  // transient failure stopped me telling you", and a cached transient needs an
+  // unrelated gesture to clear: a remote system coming back up changes neither
+  // the generation nor the fingerprint, so the catalog would keep declaring
+  // itself degraded (and keep every referencing CONVENTIONS.md frozen) until
+  // the next rescan.
+  //
+  // The DISCOVERY-sourced one is the other way round: latching until the next
+  // rescan IS the design (the catalog really is missing that project's plugins
+  // until something rebuilds it), and not-memoizing is not what clears it. It
+  // is kept out of the memo by the bypass above, and it clears when
+  // discoveryDegraded() goes false — a clean rescan, or the affected plugin
+  // being disabled.
+  //
+  // The cost of re-scanning while EITHER holds is small and was measured: with
+  // five contributing plugins a memoized conventions() is ~0.48 ms and a full
+  // recompute ~0.99 ms, so a 50-project boot fan-out pays ~25 ms extra while a
+  // degrade stands. For the compose-sourced case it is additionally bounded by
+  // the fact that a degraded catalog is exactly the state in which the fan-out
+  // it feeds does not write.
   //
   // The RETURNED OBJECT IS SHARED BY REFERENCE — callers must treat it as
   // read-only. Both consumers do: fragmentCatalog.ts reads `.degraded` and then
@@ -267,8 +334,12 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     // and that second run finds the self-heal already applied, so it does not
     // bump again. Self-limiting.
     const gen = registryGeneration;
+    // The DISCOVERY-sourced degrade, read once for this call: the scan that
+    // built the catalog could not reach a project an enabled plugin lives in,
+    // so what follows is composed over a catalog known to be incomplete.
+    const scanDegraded = discoveryDegraded();
     const fp = await placementFingerprint();
-    if (conventionsCache && conventionsCache.gen === gen && conventionsCache.fp === fp
+    if (!scanDegraded && conventionsCache && conventionsCache.gen === gen && conventionsCache.fp === fp
         && conventionsCache.dirs.every(d => existsSync(d))) {
       return conventionsCache.value;
     }
@@ -293,7 +364,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
     // worktree-pinned plugin they differ, and losing EITHER changes what a fresh
     // scan would produce (the project dir is what the resolution itself needs).
     const dirs = new Set<string>();
-    let degraded = false;
+    let degraded = scanDegraded;
     for (const entry of contributingEntries()) {
       const list = entry.manifest.conventions ?? [];
       if (list.length === 0) continue;
