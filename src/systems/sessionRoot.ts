@@ -193,8 +193,9 @@ const ALLOW_FILES = ['CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.c
 const ALLOW_DIRS = ['.claude/skills', '.claude/commands', '.claude/agents'];
 
 // Caps, per §3.4's "warns loudly and skips rather than failing the spawn". A
-// repo that committed something enormous under `.claude/skills` must not be a
-// project cc cannot open a session on.
+// repo that committed one enormous FILE under `.claude/skills` must not be a
+// project cc cannot open a session on. An enormous NUMBER of files is the other
+// case and not this one — see the fence below, which refuses.
 export const SESSION_ROOT_FILE_CAP_BYTES = 256 * 1024;
 export const SESSION_ROOT_TOTAL_CAP_BYTES = 4 * 1024 * 1024;
 
@@ -206,8 +207,8 @@ export const SESSION_ROOT_TOTAL_CAP_BYTES = 4 * 1024 * 1024;
 // runGit's does (src/worktrees.ts): findManifest parses the output WHOLE, so a
 // clipped-but-successful parse is read as the config surface itself.
 //
-// Nothing bounded the listing before, and it is materialised three times — the
-// `find` output, the Map, and the manifest's JSON — on every spawn AND every
+// Nothing bounded the listing before, and it is re-materialised at every stage
+// between the `find` output and the manifest's JSON, on every spawn AND every
 // resume. Measured on one `.claude/skills` tree, unfenced: 420,000 entries
 // (33.6 MB of `find` output) took cc to 533 MB RSS and wrote a 35 MB manifest,
 // and 900,000 (72.9 MB) reached 542 MB of V8 heap — more than the 512 MB
@@ -475,14 +476,27 @@ async function findManifest(
   // reach the straddling record first and report cc's own memory fence as the
   // far side sending malformed output.
   if (r.outputOverflowed) {
+    // NAME THE PATHS THIS PASS ACTUALLY WALKED. The allow-list is only one of
+    // the two callers: the `@`-imports pass walks whatever CLAUDE.md names,
+    // including a DIRECTORY, which `find` recurses. A message that blamed
+    // ALLOW_DIRS would send a user to inspect `.claude/skills` for files that
+    // are under `docs/`, and offer advice — take it out of the allow-list —
+    // that is impossible for a path never in it. Truncated because this list is
+    // as long as CLAUDE.md has `@` lines, and an unbounded string inside the
+    // refusal for an unbounded listing would be the same mistake twice.
+    const walked = wanted.map(p => withinPosix(p, systemPath) || p);
+    const named = walked.length > 10
+      ? `${walked.slice(0, 10).join(', ')} and ${walked.length - 10} more`
+      : walked.join(', ');
     throw httpError(
       502,
       `composing the session root: listing the config surface under ${systemPath} on system `
       + `'${system.id}' produced more than ${SESSION_ROOT_LISTING_FENCE_BYTES} bytes of \`find\` output `
       + `and was stopped, so cc cannot tell which entries it did not see and will not compose a `
-      + `session root from a partial listing. Something under ${ALLOW_DIRS.join(', ')} holds an `
-      + `enormous number of files — move it out of the allow-list. The project itself is `
-      + `unaffected: every file in it is still reachable through Bash and the file tools.`,
+      + `session root from a partial listing. This pass walked ${named}, and one of those holds an `
+      + `enormous number of files: move them out from under it, or — if CLAUDE.md named it as an `
+      + `@-import — stop importing it. Bash is unaffected and still reaches every file in the `
+      + `project: it runs on '${system.id}' rather than through the mirrored file tools.`,
     );
   }
   const out: Listed[] = [];

@@ -172,12 +172,19 @@ async function floodSkills(root, targetBytes) {
   return { files, bytes };
 }
 
-// PINS: every `findManifest` exec carries `maxBufferBytes` at 8 MiB, and a real
-// tree whose listing crosses it makes the compose REFUSE with a 502 rather than
-// compose a root from the prefix of a listing.
+// PINS: the `findManifest` exec this fixture reaches — the allow-list targets
+// pass — carries `maxBufferBytes` at 8 MiB, and a real tree whose listing
+// crosses it makes the compose REFUSE with a 502 rather than compose a root
+// from the prefix of a listing.
 //
-// NOT claiming: that the project is too large to work on (the tree's files stay
-// reachable through Bash and the redirected file tools), nor anything about the
+// NOT claiming that the `@`-imports pass is observed here: this fixture throws
+// at the targets pass, so the second pass never runs. What makes the fence
+// universal is structural rather than asserted — ONE exec site serves both
+// passes, so "fenced on one pass but not the other" is not expressible.
+//
+// NOT claiming, either, that the project is too large to work on: Bash still
+// reaches every file in the tree, though the file tools do not (an advertised
+// exclude denies them, src/systems/toolRedirect.ts). Nothing here bears on the
 // two content caps, which keep skipping and naming.
 test('the config-surface listing is FENCED: a tree that outruns it refuses the compose', async () => {
   await seedTree(remote.root);
@@ -204,9 +211,8 @@ test('the config-surface listing is FENCED: a tree that outruns it refuses the c
     });
   } finally { sysProto.exec = origExec; }
 
-  assert.ok(limits.length > 0, 'the walk went through the System');
   assert.deepEqual([...new Set(limits)], [LISTING_FENCE],
-    `every findManifest exec must carry the fence; saw ${JSON.stringify(limits)}`);
+    `every findManifest exec this compose reached must carry the fence; saw ${JSON.stringify(limits)}`);
 });
 
 // PINS: the overflow is READ BEFORE THE RECORDS ARE — an overflowed listing
