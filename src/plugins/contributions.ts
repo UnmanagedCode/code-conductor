@@ -70,27 +70,55 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // from a second source can be a correct key for a machine this read never
   // spoke to, which is a stale body served as healthy (card 2026-0263). Taking
   // both from one object makes that unrepresentable.
-  const fragmentBodyCache = new Map<string, string>();
-  // The placement fingerprint every body currently in that map was read under,
-  // or null when the map is empty.
   //
-  // IT IS DELIBERATELY NOT PART OF THE conventions() MEMO, and that is the whole
-  // point of it existing. A degraded compose throws the memo away while leaving
-  // the bodies it had already cached in place, so a drop conditioned on the memo
-  // finds nothing to compare against and skips — exactly in the state where the
-  // bodies are stalest. An argv re-point after such a compose leaves system id,
-  // remoteId and path byte-identical, so the next healthy compose would serve
-  // the OLD machine's body at degraded:false. INVARIANT: a body cached under one
-  // fingerprint is never served under another, whatever happened to the memo in
-  // between (card 2026-0263).
-  let fragmentBodyFp: string | null = null;
+  // THE INVARIANT, and it is the whole of this cache's correctness:
+  //
+  //   A CACHED BODY IS SERVED ONLY UNDER THE EXACT STATE IT WAS READ UNDER.
+  //
+  // It is enforced by giving every ENTRY its own label rather than by tracking
+  // one label for the map, because a per-map label is a claim made at ONE
+  // INSTANT while a scan reads and inserts over its whole DURATION. Two
+  // interleaves broke exactly that (card 2026-0263, review rounds 1 and 2): a
+  // degraded compose discards the memoized result while leaving the bodies, and
+  // an invalidation landing MID-SCAN voids the running scan's claim after some
+  // of its inserts have already happened. Both ended the same way — a body from
+  // one machine served for another at degraded:false.
+  //
+  // With the label on the entry, neither is expressible. There is exactly ONE
+  // insert site and ONE lookup site (both below), the insert always writes the
+  // label its caller was handed, and the lookup requires an exact match. A scan
+  // whose label is voided while it runs therefore cannot contribute a SERVABLE
+  // entry at all — its inserts are inert, not mislabelled — and that holds
+  // without any assumption about which other gesture fired when.
+  const fragmentBodyCache = new Map<string, { label: string; body: string }>();
 
-  async function readFragment(system: System, abs: string): Promise<string> {
+  // Bumped by invalidate(). The label's two halves answer two different
+  // questions, and neither implies the other:
+  //   * `cacheEpoch` — "the BYTES at this path may have changed" under a
+  //     placement that did not move: a `git pull` into the same checkout, an
+  //     active-version switch, a fragment edited while its plugin sat disabled.
+  //     Nothing about the placement tells you that, which is why invalidate()
+  //     exists at all.
+  //   * the placement fingerprint — "the PATH may name a different tree": the
+  //     project moved, or the machine behind its system id did. No invalidate()
+  //     is called on either (setProjectRemote and updateSystem are outside this
+  //     host entirely), which is why the fingerprint cannot be folded into the
+  //     epoch.
+  let cacheEpoch = 0;
+
+  // The label a scan stamps on everything it inserts, captured ONCE at the top
+  // of that scan so every body it caches is attributed to the state the scan
+  // actually resolved placements under.
+  function cacheLabel(fp: string): string { return `${cacheEpoch}\u0001${fp}`; }
+
+  async function readFragment(system: System, abs: string, label: string): Promise<string> {
     const key = `${system.id}\0${system.remoteId ?? ''}\0${abs}`;
     const cached = fragmentBodyCache.get(key);
-    if (cached !== undefined) return cached;
+    // An entry whose label does not match is not a hit — it is a body read under
+    // state that no longer holds, and re-reading is the only correct answer.
+    if (cached !== undefined && cached.label === label) return cached.body;
     const body = (await system.readFile(abs)).replace(/\s+$/, '');
-    fragmentBodyCache.set(key, body);
+    fragmentBodyCache.set(key, { label, body });
     return body;
   }
 
@@ -106,7 +134,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // cached conventions() result. This covers rescanInternal (and with it the
   // `byId = nextById` swap and the projectsRoot() swap path), enable, doStart
   // and setActiveVersion.
-  function invalidate(): void { fragmentBodyCache.clear(); fragmentBodyFp = null; registryGeneration++; }
+  function invalidate(): void { fragmentBodyCache.clear(); cacheEpoch++; registryGeneration++; }
 
   // Registry state changed in a way that can alter what conventions() computes,
   // but the fragment BODIES on disk did not: every registry.json write (the
@@ -228,15 +256,16 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
         && conventionsCache.dirs.every(d => existsSync(d))) {
       return conventionsCache.value;
     }
-    // A placement change can leave the fragment cache KEY identical while the
-    // bytes behind it belong to another machine — that is exactly what
-    // re-pointing a system does — so the bodies go with the fingerprint. Compared
-    // against fragmentBodyFp rather than against the memo: the memo is gone after
-    // any degraded compose, and that is precisely when the bodies are stalest.
-    if (fragmentBodyFp !== null && fragmentBodyFp !== fp) fragmentBodyCache.clear();
-    // Set BEFORE the scan, because the scan is what populates the map, and it
-    // populates it under exactly the placements this fp was computed from.
-    fragmentBodyFp = fp;
+    // This scan's label, captured before the loop and handed to every read it
+    // makes. Correctness does NOT depend on the sweep below — an entry labelled
+    // for other state can never be returned by readFragment, whether or not it
+    // is still in the map. The sweep is housekeeping: an entry that can never be
+    // served again is only occupying memory, and the map holds a handful of
+    // small .md files.
+    const label = cacheLabel(fp);
+    for (const [k, v] of fragmentBodyCache) {
+      if (v.label !== label) fragmentBodyCache.delete(k);
+    }
     const byScope: Record<string, Array<{ slug: string; name: string; description: string; body: string; scaffold?: string; plugin: string }>>
       = Object.fromEntries(SUPPORTED_CONVENTION_SCOPES.map(s => [s, []]));
     // Every checkout dir this scan read, for the liveness re-check above. Both
@@ -259,14 +288,14 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
       for (const g of list) {
         let body = '';
         if (g.file) {
-          try { body = await readFragment(place.system, path.join(place.cwd, g.file)); }
+          try { body = await readFragment(place.system, path.join(place.cwd, g.file), label); }
           catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' body unreadable: ${errMsg(e)}`); continue; }
         }
         let scaffold: string | undefined;
         if (g.scaffold) {
           if ('text' in g.scaffold) scaffold = g.scaffold.text;
           else {
-            try { scaffold = await readFragment(place.system, path.join(place.cwd, g.scaffold.file)); }
+            try { scaffold = await readFragment(place.system, path.join(place.cwd, g.scaffold.file), label); }
             catch (e) { console.warn(`plugins: convention '${entry.id}/${g.slug}' scaffold unreadable: ${errMsg(e)}`); continue; }
           }
         }

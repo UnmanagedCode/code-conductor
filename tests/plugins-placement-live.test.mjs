@@ -30,14 +30,16 @@
 // holds). T2/T3 and T5 are the two sides of that split; if either collapses
 // into the other the design is wrong.
 //
-// THE CACHE-COHERENCE HALF (T6-T9). Resolving the placement live is not enough
+// THE CACHE-COHERENCE HALF (T6-T10). Resolving the placement live is not enough
 // on its own: the fragment BODIES are cached under a (system, target, path) key,
 // and two of the triggers above leave that key byte-identical while the machine
-// behind it changes. So the bodies are dropped whenever the placement
-// fingerprint moves, and the fingerprint the cache was populated under is kept
-// in state a degraded compose cannot destroy. T6 is the interleave that proves
-// the second clause; T7-T9 pin the classification's safe directions, which no
-// other test reaches.
+// behind it changes. So every cached body carries a LABEL — the state it was
+// actually read under — and only a body whose label matches the current state is
+// served. Two interleaves prove that the label cannot be dodged: T6 puts a
+// degrade between two composes (which discards the memoized result but not the
+// bodies), and T10 puts an invalidation INSIDE a scan (so the scan's own later
+// inserts are made under a claim that no longer holds). T7-T9 pin the
+// classification's safe directions, which no other test reaches.
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,6 +60,7 @@ import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTa
 
 const RECORDER = path.join(import.meta.dirname, 'fixtures', 'recordingProvider.mjs');
 const GATED = path.join(import.meta.dirname, 'fixtures', 'gatedProvider.mjs');
+const SLOW_HELLO = path.join(import.meta.dirname, 'fixtures', 'slowHelloProvider.mjs');
 const FRAGMENT_REL = path.join('conventions', 'sample.md');
 
 function manifest(id, { claudePlugin } = {}) {
@@ -516,5 +519,88 @@ describe('a plugin fragment follows its project, live', () => {
     assert.equal(bodyOf(after, 'enotdir-plug/frag'), null, 'the entry drops out either way');
     assert.equal(after.project.degraded, true,
       'an fs error cc cannot interpret must not read as "this project was unregistered"');
+  });
+
+  // T10 ────────────────────────────────────────────────────────────────
+  // THE MID-SCAN INTERLEAVE. PINS: a body inserted into the fragment cache by a
+  // scan whose cache claim was VOIDED WHILE IT RAN is never served afterwards.
+  //
+  // T6's interleave puts the degrade BETWEEN two composes, so the label is whole
+  // when each scan starts. This one puts an `invalidate()` INSIDE a scan: a scan
+  // reads and inserts over its whole duration, so anything that voids the scan's
+  // claim after it began leaves that scan's own later inserts unaccounted for.
+  // `enable` (and `rescan`, `doStart`, `setActiveVersion`) all invalidate, all
+  // are ordinary HTTP routes, and a compose runs concurrently with them over
+  // real wire I/O — so this window is production-reachable, not an artefact of
+  // the fixture.
+  //
+  // The instrument parks the compose inside `resolvePlacement`'s connect, which
+  // is the only place a compose blocks long enough to be interrupted on purpose.
+  // `enable`'s clear is what makes the post-park read a genuinely fresh one
+  // rather than a cache hit, so the body that reaches the cache is inserted
+  // strictly after the invalidation.
+  //
+  // NOT CLAIMING THE MECHANISM, only the observable contract: it asserts the
+  // stale body is not served, not that this is achieved by refusing the insert
+  // rather than sweeping it afterwards. It also does not claim the interrupted
+  // compose's own RESULT is discarded — the generation snapshot already marks it
+  // stale, which is separate and older — nor that the wasted re-read a mid-scan
+  // invalidation causes is avoided (it is not; correctness first).
+  test('a body inserted by a scan that was invalidated mid-flight is not served afterwards', async () => {
+    const rootC = await fs.realpath(await mkdtemp('cc-remote-park-c-'));
+    const rootD = await fs.realpath(await mkdtemp('cc-remote-park-d-'));
+    const release = path.join(home, 'release');
+    const parked = `${release}.parked`;
+    // Released to begin with, so registration, discovery and the first compose
+    // all run at full speed.
+    await fs.writeFile(release, '');
+
+    const sys = await addSystem({
+      id: 'parkbox', label: 'Park box',
+      launch: ['node', SLOW_HELLO, '--release', release, '--remote', `m=${rootC}`],
+    });
+    const tree = path.join(rootC, 'sw');
+    await createProject('sw', { system: sys.id, remoteId: 'm', systemPath: tree });
+    await seedPluginTree(tree, 'swap-plug', 'MACHINE-C CONTENT');
+
+    // The invalidator: a second, local plugin, enabled LATER. Its project sorts
+    // after 'sw', so it cannot be the entry the scan parks on.
+    const secondDir = path.join(process.env.PROJECTS_ROOT, 'zsecond');
+    await fs.mkdir(secondDir, { recursive: true });
+    await seedPluginTree(secondDir, 'second-plug', 'SECOND CONTENT');
+
+    await host.enable('swap-plug');
+    assert.equal(bodyOf(await host.conventions(), 'swap-plug/frag'), 'MACHINE-C CONTENT');
+
+    // Park the NEXT connect: drop the live connection and shut the gate, so the
+    // compose below blocks in the handshake instead of reusing a live handle.
+    disposeSystemHandles();
+    await fs.rm(release);
+
+    const inflight = host.conventions();
+    await waitFor(() => fs.stat(parked).then(() => true, () => false), { timeout: 8000, interval: 10 });
+
+    // MID-SCAN. enable() invalidates: it clears the fragment bodies and voids
+    // whatever claim the parked scan is holding over them.
+    await host.enable('second-plug');
+
+    // Let the parked scan finish. Its read of the fragment lands strictly after
+    // the invalidation, into a cache that was just emptied.
+    await fs.writeFile(release, '');
+    const resumed = await inflight;
+    assert.equal(bodyOf(resumed, 'swap-plug/frag'), 'MACHINE-C CONTENT',
+      'precondition: the interrupted scan really did read and cache the body after the invalidation');
+
+    // Now move the machine behind the id, leaving system id, remoteId and path
+    // byte-identical — so only a correctly-labelled cache can answer this.
+    await updateSystem(sys.id, {
+      launch: ['node', SLOW_HELLO, '--release', release, '--remote', `m=${rootD}`],
+    });
+
+    const after = await host.conventions();
+    assert.equal(isDegraded(after), false, 'this compose is healthy — its answer must still be right');
+    assert.notEqual(bodyOf(after, 'swap-plug/frag'), 'MACHINE-C CONTENT',
+      'a body cached by a scan that was invalidated mid-flight must not survive a later re-point');
+    assert.ok(!JSON.stringify(after).includes('MACHINE-C CONTENT'), 'in any scope');
   });
 });
