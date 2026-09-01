@@ -14,6 +14,8 @@
 //   node src/systems/referenceProvider.ts [--no-persistent-shell]
 //                                         [--no-process-group-signal]
 //                                         [--remote <id>=<absolute root>]…
+//                                         [--mirror <[id=]absolute root>]…
+//                                         [--exclude <[id=]absolute path>]…
 //                                         [--name <label>]
 //
 // `--remote` turns one process into an endpoint serving MANY named targets —
@@ -23,6 +25,15 @@
 // wrong-target bug impossible to mistake for success on a machine where every
 // target is in fact the same filesystem: a cross-target read is REFUSED rather
 // than answered with plausible bytes.
+//
+// `--mirror` / `--exclude` are the MIRROR ADVERTISEMENT (§2.1), and they are
+// deliberately SEPARATE FLAGS from `--remote`'s root. That root is a FENCE —
+// paths outside it are refused EACCES — while an advertised mirror root is a
+// claim about geometry cc consumes. Keeping them apart is what lets a test
+// advertise a mirror WIDER than the fence and prove cc reads the advertisement
+// rather than the fence. Given neither, `remoteDescriptors` is absent, nothing
+// is injected, and the wire is byte-identical to a provider that never heard of
+// the frame.
 //
 // Speaks NDJSON on stdin/stdout and EXITS WHEN STDIN CLOSES, which is how a
 // provider is reaped when cc goes away.
@@ -41,7 +52,7 @@ const KILL_GRACE_MS = 100;
 
 // The frames that OPEN an operation, and therefore the only ones that name a
 // remote. Everything else inherits the binding through its `id`.
-const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile']);
+const REQUEST_FRAMES = new Set(['exec', 'readFile', 'writeFile', 'describeRemote']);
 
 // THE ONE CWD A REMOTE'S ROOT DOES NOT FENCE, and it is cc's, not this
 // emulation's: every DERIVED operation (`stat`, `realpath`, `mkdir`, `readDir`,
@@ -70,12 +81,30 @@ interface Options {
   // provider serves exactly one target, does not advertise `remotes`, and
   // behaves byte-identically to one that never heard of them.
   remotes: Map<string, string>;
+  // remote id (or '' for the default target) → what that target advertises.
+  mirrors: Map<string, { mirrorRoot: string | null; exclude: string[] }>;
   name: string;
+}
+
+// `<id>=<path>` or a bare `<path>` for the default target. Shared by --mirror
+// and --exclude so the two cannot disagree on the spelling.
+function parseTargeted(flag: string, spec: string): { id: string; value: string } {
+  const eq = spec.indexOf('=');
+  const id = eq === -1 ? '' : spec.slice(0, eq);
+  const value = eq === -1 ? spec : spec.slice(eq + 1);
+  if (!path.isAbsolute(value)) throw new Error(`${flag} wants <[id=]absolute path>, got ${JSON.stringify(spec)}`);
+  return { id, value };
 }
 
 export function parseProviderArgs(argv: string[]): Options {
   const o: Options = {
-    persistentShell: true, processGroupSignal: true, remotes: new Map(), name: 'reference-local',
+    persistentShell: true, processGroupSignal: true, remotes: new Map(), mirrors: new Map(),
+    name: 'reference-local',
+  };
+  const mirrorFor = (id: string): { mirrorRoot: string | null; exclude: string[] } => {
+    let m = o.mirrors.get(id);
+    if (!m) { m = { mirrorRoot: null, exclude: [] }; o.mirrors.set(id, m); }
+    return m;
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -90,6 +119,14 @@ export function parseProviderArgs(argv: string[]): Options {
         throw new Error(`--remote wants <id>=<absolute root>, got ${JSON.stringify(spec)}`);
       }
       o.remotes.set(id, path.resolve(root));
+    }
+    else if (a === '--mirror') {
+      const { id, value } = parseTargeted('--mirror', argv[++i] ?? '');
+      mirrorFor(id).mirrorRoot = value;
+    }
+    else if (a === '--exclude') {
+      const { id, value } = parseTargeted('--exclude', argv[++i] ?? '');
+      mirrorFor(id).exclude.push(value);
     }
     else if (a === '--name') o.name = argv[++i] ?? o.name;
     else throw new Error(`unknown provider option: ${a}`);
@@ -155,6 +192,7 @@ export class ReferenceProvider {
           persistentShell: this.#opts.persistentShell,
           processGroupSignal: this.#opts.processGroupSignal,
           remotes: this.#opts.remotes.size > 0,
+          remoteDescriptors: this.#opts.mirrors.size > 0,
         },
         system: {
           os: process.platform,
@@ -203,6 +241,7 @@ export class ReferenceProvider {
       case 'signal': return this.#signal(f);
       case 'close': return this.#close(f);
       case 'readFile': return void this.#readFile(f);
+      case 'describeRemote': return this.#describeRemote(f);
       case 'writeFile': return this.#writeOpen(f);
       case 'data': return this.#writeData(f);
       case 'end': return void this.#writeEnd(f);
@@ -347,6 +386,22 @@ export class ReferenceProvider {
       this.#terminate({ ...state, closed: false }, 'SIGKILL', true);
     }
     this.#writes.delete(id);
+  }
+
+  // ── describeRemote ─────────────────────────────────────────────────
+
+  // The mirror advertisement for ONE target. A target with nothing configured
+  // answers with an empty descriptor rather than an error: "I advertise
+  // nothing" is a valid answer and is what every other target on a
+  // partly-configured endpoint gives.
+  #describeRemote(f: AnyFrame): void {
+    const key = typeof f.remoteId === 'string' ? f.remoteId : '';
+    const m = this.#opts.mirrors.get(key);
+    this.#write({
+      type: 'remoteDescriptor', id: String(f.id),
+      ...(m?.mirrorRoot ? { mirrorRoot: m.mirrorRoot } : {}),
+      ...(m && m.exclude.length > 0 ? { exclude: m.exclude } : {}),
+    });
   }
 
   // ── readFile ───────────────────────────────────────────────────────

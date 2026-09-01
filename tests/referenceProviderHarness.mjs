@@ -56,25 +56,28 @@ export const IS_REFERENCE_PROVIDER = !process.env[PROVIDER_ARGV_ENV]?.trim();
 //
 // The three configurations of the acceptance gate. `caps` is what the handshake
 // must report, so a test can assert the negotiation rather than trust the flag.
-// None of them passes `--remote`, so all three report `remotes:false` — the
-// gate varies the LOCAL system's capabilities and `local` never carries a
-// remote. tests/systems-remote-id.test.mjs registers its own multi-target
-// system, which works under every configuration here.
+// None of them passes `--remote` or `--mirror`, so all three report
+// `remotes:false` and `remoteDescriptors:false` — the gate varies the LOCAL
+// system's capabilities, and `local` never carries a remote nor advertises a
+// mirror (LocalSystem.mirror() is unconditionally empty). Both of those have
+// their own multi-target/mirror fixtures: tests/systems-remote-id.test.mjs and
+// tests/systems-mirror-advertisement.test.mjs register their own systems, which
+// work under every configuration here.
 export const CAPABILITY_CONFIGS = [
   {
     name: 'all capabilities',
     flags: [],
-    caps: { persistentShell: true, processGroupSignal: true, remotes: false },
+    caps: { persistentShell: true, processGroupSignal: true, remotes: false, remoteDescriptors: false },
   },
   {
     name: 'persistentShell:false',
     flags: ['--no-persistent-shell'],
-    caps: { persistentShell: false, processGroupSignal: true, remotes: false },
+    caps: { persistentShell: false, processGroupSignal: true, remotes: false, remoteDescriptors: false },
   },
   {
     name: 'processGroupSignal:false',
     flags: ['--no-process-group-signal'],
-    caps: { persistentShell: true, processGroupSignal: false, remotes: false },
+    caps: { persistentShell: true, processGroupSignal: false, remotes: false, remoteDescriptors: false },
   },
 ];
 

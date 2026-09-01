@@ -7,6 +7,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { runGroupedCommand } from '../groupedCommand.ts';
+import type { MirrorAdvertisement } from './mirror.ts';
 import { requireAbsolute } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
@@ -149,5 +150,14 @@ export class LocalSystem implements System {
   async chmod(p: string, mode: number): Promise<void> {
     requireAbsolute('chmod', 'path', p);
     await fs.chmod(p, mode);
+  }
+
+  // cc's OWN machine advertises nothing, unconditionally. A session on a local
+  // project is not redirected at all — there is no session root and no map to
+  // widen — so there is nothing here for an advertisement to mean. It is also
+  // what keeps `npm run gate:systems` at three configurations: the gate varies
+  // the local system's capabilities, and this one is not among them.
+  async mirror(): Promise<MirrorAdvertisement> {
+    return { mirrorRoot: null, exclude: [] };
   }
 }

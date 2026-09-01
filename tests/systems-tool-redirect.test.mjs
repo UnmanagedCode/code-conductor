@@ -21,7 +21,13 @@ import os from 'node:os';
 import { freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
+import { fileURLToPath } from 'node:url';
+import { mkdtemp } from './tmpRegistry.mjs';
+import { addSystem } from '../src/appSettings.ts';
+import { noMirror } from '../src/systems/mirror.ts';
 import { SessionRedirect } from '../src/systems/toolRedirect.ts';
+
+const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
 
 let home, remote, redirect, root, events;
 
@@ -38,6 +44,7 @@ async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs, maxOutputBy
     systemId: remote.id,
     systemPath: remote.root,
     sessionRoot: root,
+    mirror: noMirror(remote.root),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
     localRoots: [path.join(home, 'local-ok')],
     emit: (ev) => events.push(ev),
@@ -475,6 +482,7 @@ test('a relative path that DOES map into the session root is still not pushed', 
     systemId: remote.id,
     systemPath: remote.root,
     sessionRoot: process.cwd(),
+    mirror: noMirror(remote.root),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
     localRoots: [],
     emit: () => {},
@@ -613,4 +621,94 @@ test('the rewrite carries the agent id, and carries none for the main agent', as
 test('an agent id with shell metacharacters is quoted, not interpolated', async () => {
   const d = await pre('Bash', { command: 'echo hi' }, "a'; touch /tmp/pwned; '");
   assert.match(d.updatedInput.command, /--agent 'a'\\''; touch \/tmp\/pwned; '\\''/);
+});
+
+// ── A WIDE MIRROR: the two things it would silently break (card 2026-0259) ──
+//
+// Before P7 one field — the map's far end — was three things at once: the
+// mapping anchor, the shell's cwd, and the needle the Bash annotation looks
+// for. Widening it to a mirror root would have repurposed all three. These pin
+// the two that are outright defects.
+
+// A redirect whose mirror is the whole filesystem, with the project still where
+// it was. The provider is recorded so an assertion can be made on the frame cc
+// actually sent rather than on a command appearing to succeed.
+async function wideRedirect() {
+  const rec = path.join(await mkdtemp('cc-wire-'), 'frames.jsonl');
+  await addSystem({ id: 'widebox', label: 'wide', launch: ['node', RECORDER, '--record', rec] });
+  const image = path.join(home, 'wide-image');
+  await fs.mkdir(image, { recursive: true });
+  const wide = new SessionRedirect({
+    system: await systemById('widebox', null, 'test'),
+    systemId: 'widebox',
+    systemPath: remote.root,
+    sessionRoot: image,
+    // `/` is the widest mirror there is, and the one every one of these
+    // assertions is degenerate without.
+    mirror: { mirrorRoot: '/', exclude: [], offset: remote.root.replace(/^\//, '') },
+    forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
+    localRoots: [],
+    emit: () => {},
+  });
+  return { wide, rec, image };
+}
+
+// PINS 8b: the Bash annotation's needle is the PROJECT's path, not the mirror
+// root. Under `mirrorRoot: '/'` the mirror root is a substring of essentially
+// every path any command prints, so a needle taken from the map would attach
+// R2's deliberately targeted note to every single Bash call.
+//
+// NOT CLAIMING: that the annotation's wording is right — the existing test
+// above owns that.
+test('a wide mirror does not turn the targeted Bash annotation into an every-command one', async () => {
+  const { wide } = await wideRedirect();
+  try {
+    // Output full of `/` and naming no project path: silent.
+    assert.equal(await wide.postToolUse('Bash', {}, { stdout: '/usr/bin/env\n/etc/hosts\n', stderr: '' }), null);
+    assert.equal(await wide.postToolUse('Bash', {}, { stdout: '/\n', stderr: '' }), null);
+    // Output naming the project path: exactly one note, naming the project.
+    const note = await wide.postToolUse('Bash', {}, { stdout: `cwd is ${remote.root}\n`, stderr: '' });
+    assert.ok(note && note.includes(remote.root), note);
+    assert.ok(!note.includes('Paths under / in'), 'and it names the project, not the mirror root');
+  } finally { await wide.close(); }
+});
+
+// PINS 8c: a new agent's shell is seeded from the PROJECT root under a wide
+// mirror, not from the mirror root. Asserted on the `exec` frame's `cwd` ON THE
+// WIRE — a direct measurement of the binding, where `pwd` succeeding would only
+// show that some directory existed on a machine where every directory does.
+//
+// NOT CLAIMING: that the shell runs there; the framing suite owns that.
+test('a wide mirror still opens each agent shell at the project root', async () => {
+  const { wide, rec } = await wideRedirect();
+  try {
+    await wide.runForwarded('true', {});
+    await wide.runForwarded('true', { agentId: 'sub-1' });
+    const frames = (await fs.readFile(rec, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const cwds = frames.filter(f => f.type === 'exec').map(f => f.cwd);
+    assert.ok(cwds.length >= 2, `two shells opened: ${JSON.stringify(cwds)}`);
+    for (const cwd of cwds) {
+      assert.equal(cwd, remote.root, 'every shell opened at the project root, never at the mirror root');
+    }
+    assert.ok(!cwds.includes('/'), 'and never at `/`');
+  } finally { await wide.close(); }
+});
+
+// PINS 8d: an `@mention` is resolved against the CLI's OWN cwd — the project's
+// directory inside the image — not against the image root. Under a wide mirror
+// those are different directories, and resolving against the wrong one pulls a
+// file nobody named.
+//
+// NOT CLAIMING: that the CLI expands the mention the same way; that is measured
+// CLI behaviour the hydration exists to serve.
+test('a mention resolves against the CLI cwd, not the image root', async () => {
+  const { wide, image } = await wideRedirect();
+  try {
+    await fs.writeFile(path.join(remote.root, 'NOTES.md'), 'project notes\n');
+    await wide.hydrateMentions('please read @NOTES.md');
+    assert.equal(await fs.readFile(path.join(image, remote.root.replace(/^\//, ''), 'NOTES.md'), 'utf8'),
+      'project notes\n', 'it landed at the project\'s place inside the image');
+    await assert.rejects(fs.readFile(path.join(image, 'NOTES.md')),
+      'and not at the image root, which is a different directory entirely');
+  } finally { await wide.close(); }
 });

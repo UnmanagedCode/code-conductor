@@ -31,6 +31,7 @@
 
 import path from 'node:path';
 import { FileBridge } from './fileBridge.ts';
+import { excludedRefusal, type MirrorScope } from './mirror.ts';
 import { SystemError } from './protocol.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
 import { SessionPathMap } from './sessionRoot.ts';
@@ -79,7 +80,11 @@ export interface ForwardSink {
 
 // The tools whose file_path this module owns. NotebookEdit carries its path
 // under a different key, which is the only reason the map is not a set.
-const FILE_TOOLS: Record<string, string> = {
+//
+// EXPORTED so a test can enumerate it rather than transcribe it: the refusals
+// below have to cover every entry, and a fifth tool added here must fail that
+// test instead of quietly escaping the boundary.
+export const FILE_TOOLS: Record<string, string> = {
   Read: 'file_path', Write: 'file_path', Edit: 'file_path', NotebookEdit: 'notebook_path',
 };
 const READ_ONLY_FILE_TOOLS = new Set(['Read']);
@@ -150,10 +155,24 @@ const FORWARDER = path.join(path.dirname(new URL(import.meta.url).pathname), 'ba
 export interface SessionRedirectOptions {
   system: RedirectableSystem;
   systemId: string;
-  // The project's — or worktree's — root ON the system. The shell's cwd, and
-  // the far end of the prefix rule.
+  // The project's — or worktree's — root ON the system. The shell's cwd, the
+  // needle the Bash annotation looks for, and the tree the out-of-boundary
+  // refusal names.
+  //
+  // IT IS NOT THE FAR END OF THE PREFIX RULE. That is the mirror root below,
+  // which is the same path only when the provider advertises nothing. The two
+  // were one field until P7, and widening it would silently have re-based every
+  // agent's shell on the mirror root and matched the annotation against
+  // essentially all output.
   systemPath: string;
+  // The LOCAL IMAGE of the mirror root. The CLI's cwd is `sessionRoot +
+  // mirror.offset`, which this derives rather than takes, so the two cannot
+  // disagree.
   sessionRoot: string;
+  // How much of the system this session mirrors, and what it must not carry
+  // (src/systems/mirror.ts). `noMirror(systemPath)` is the no-advertisement
+  // scope and the only spelling of it.
+  mirror: MirrorScope;
   forwarderUrl: string;
   // Absolute LOCAL prefixes that are legitimately not the system's business. A
   // file tool aimed outside both these and the session root is refused.
@@ -176,6 +195,10 @@ export interface SessionRedirectOptions {
 export class SessionRedirect {
   readonly map: SessionPathMap;
   readonly systemId: string;
+  // The PROJECT, on both sides — distinct from the map, which holds the mirror.
+  // Every sentence a worker reads about "this project's tree" names these.
+  readonly systemPath: string;
+  readonly projectRoot: string;
 
   readonly #system: RedirectableSystem;
   readonly #bridge: FileBridge;
@@ -195,8 +218,10 @@ export class SessionRedirect {
   #closed = false;
 
   constructor(opts: SessionRedirectOptions) {
-    this.map = new SessionPathMap(opts.sessionRoot, opts.systemPath);
+    this.map = new SessionPathMap(opts.sessionRoot, opts.mirror.mirrorRoot, opts.mirror.exclude);
     this.systemId = opts.systemId;
+    this.systemPath = opts.systemPath;
+    this.projectRoot = path.join(opts.sessionRoot, opts.mirror.offset);
     this.#system = opts.system;
     this.#bridge = new FileBridge(opts.system, this.map);
     this.#forwarderUrl = opts.forwarderUrl;
@@ -289,13 +314,22 @@ export class SessionRedirect {
         decision: 'deny',
         reason: `cc: ${toolName} needs an absolute path on a project hosted on system `
           + `'${this.systemId}' — ${JSON.stringify(p)} could name a file on either machine. `
-          + `Use a path under ${this.map.root}.`,
+          + `Use a path under ${this.projectRoot}.`,
       };
     }
 
-    if (this.map.toSystem(p) === null) {
+    const verdict = this.map.classify(p);
+    if (verdict.kind === 'outside') {
+      // ORDER IS LOAD-BEARING, and a wide mirror is what makes it so. With
+      // `mirrorRoot: '/'` every absolute path has a local counterpart, so
+      // #outsideReason's translating clause would happily hand an attachment or
+      // a `~/.claude` plan file a system path. #isKnownLocal first is what stops
+      // that, and reordering these two lines is a boundary leak.
       if (this.#isKnownLocal(p)) return { decision: 'allow' };
       return { decision: 'deny', reason: this.#outsideReason(p) };
+    }
+    if (verdict.kind === 'excluded') {
+      return { decision: 'deny', reason: excludedRefusal(verdict.systemPath, this.systemId, verdict.excludedBy) };
     }
 
     const writing = !READ_ONLY_FILE_TOOLS.has(toolName);
@@ -323,11 +357,23 @@ export class SessionRedirect {
     return this.#localRoots.some(root => within(p, root));
   }
 
+  // The base sentence names the PROJECT's tree, which is what a worker
+  // overwhelmingly wants. When the path it was handed does have a local
+  // counterpart — always true under a wide mirror, and true of any in-project
+  // system path even without one — the refusal TRANSLATES rather than merely
+  // declining, which delivers the recovery one tool call earlier.
+  //
+  // Deliberately UNGATED on mirror width (D-P7-9): one wording, always
+  // exercised, beats two of which the load-bearing one is the rare branch.
   #outsideReason(p: string): string {
-    return `'${p}' is not a path this session can use. This project's tree is at `
-      + `${this.map.systemPath} on system '${this.systemId}'; its files are read and edited at their `
-      + `paths under ${this.map.root}. Use Bash for anything else on the system — a file written `
+    const base = `'${p}' is not a path this session can use. This project's tree is at `
+      + `${this.systemPath} on system '${this.systemId}'; its files are read and edited at their `
+      + `paths under ${this.projectRoot}. Use Bash for anything else on the system — a file written `
       + `anywhere else would land on the orchestrator's machine, where no command here can see it.`;
+    const local = this.map.toLocal(p);
+    if (local === null) return base;
+    return `${base} '${p}' is a path on '${this.systemId}': this session reaches that same file at `
+      + `${local} — use that path.`;
   }
 
   // ── PostToolUse ────────────────────────────────────────────────────
@@ -345,7 +391,8 @@ export class SessionRedirect {
     // halves cannot disagree about which paths they handle: `toSystem` would
     // resolve a relative path against the session root and push a file
     // PreToolUse never pulled.
-    if (typeof p !== 'string' || !path.isAbsolute(p) || this.map.toSystem(p) === null) return null;
+    if (typeof p !== 'string' || !path.isAbsolute(p)) return null;
+    if (this.map.classify(p).kind !== 'mapped') return null;
     try {
       await this.#bridge.push(p);
       return `Saved to ${this.map.toSystem(p)} on system '${this.systemId}'.`;
@@ -360,14 +407,17 @@ export class SessionRedirect {
   }
 
   // R2's targeted annotation: attached ONLY when the output actually contains
-  // the system path, which is the moment the two coordinate systems become
-  // visible to the worker and the only moment a note earns its cost.
+  // the PROJECT's path on the system, which is the moment the two coordinate
+  // systems become visible to the worker and the only moment a note earns its
+  // cost. Never the MIRROR root: under `mirrorRoot: '/'` that needle matches
+  // essentially every command's output, and an annotation on every Bash call is
+  // not a targeted one.
   #annotateBash(toolResponse: unknown): string | null {
     const r = toolResponse as { stdout?: unknown; stderr?: unknown } | null;
     const text = `${typeof r?.stdout === 'string' ? r.stdout : ''}${typeof r?.stderr === 'string' ? r.stderr : ''}`;
-    if (!text.includes(this.map.systemPath)) return null;
-    return `Paths under ${this.map.systemPath} in that output are on system '${this.systemId}', where the command ran. `
-      + `The same files are read and edited here under ${this.map.root}.`;
+    if (!text.includes(this.systemPath)) return null;
+    return `Paths under ${this.systemPath} in that output are on system '${this.systemId}', where the command ran. `
+      + `The same files are read and edited here under ${this.projectRoot}.`;
   }
 
   // ── The forwarded command ──────────────────────────────────────────
@@ -464,7 +514,9 @@ export class SessionRedirect {
     if (key !== MAIN_SHELL_KEY) this.#makeRoomForAgentShell();
     const entry: ShellEntry = {
       shell: new ProviderShell(this.#system, {
-        cwd: this.map.systemPath,
+        // THE PROJECT, never the mirror root: a wide mirror must not start every
+        // agent's shell at `/`.
+        cwd: this.systemPath,
         maxOutputBytes: this.#maxOutputBytes,
         ...(this.#shellCommandTimeoutMs === undefined ? {} : { commandTimeoutMs: this.#shellCommandTimeoutMs }),
       }),
@@ -546,8 +598,11 @@ export class SessionRedirect {
   // for the mention is a better answer than a refused turn.
   async hydrateMentions(text: string): Promise<void> {
     for (const spec of parseMentions(text)) {
-      const local = path.resolve(this.map.root, spec);
-      if (this.map.toSystem(local) === null) continue;
+      // Against the CLI's OWN cwd — a mention is written relative to where the
+      // worker is, which is the project's directory inside the image, not the
+      // image root.
+      const local = path.resolve(this.projectRoot, spec);
+      if (this.map.classify(local).kind !== 'mapped') continue;
       try { await this.#bridge.pull(local); } catch { /* the CLI reports the miss */ }
     }
   }

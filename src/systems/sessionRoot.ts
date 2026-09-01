@@ -7,17 +7,36 @@
 // is what stops two systems that each host a project at `/app` from colliding
 // on one local directory.
 //
-// IT IS NOT A MIRROR OF THE TREE. It holds exactly the config surface the CLI
+// IT IS A SPARSE LOCAL IMAGE OF THE MIRRORED ADDRESS SPACE, never a copy of the
+// tree. What is PULLED AHEAD OF TIME is exactly the config surface the CLI
 // reads implicitly — CLAUDE.md, CONVENTIONS.md, the repo-tracked `.claude/`
-// allow-list — because those reads fire no hook and so cannot be redirected.
-// Everything else a worker touches arrives through a hooked tool, one file at a
-// time. The pull is ONE WAY, system → local, at spawn and resume.
+// allow-list — because those reads fire no hook and so cannot be redirected;
+// that pull is ONE WAY, system → local, at spawn and resume. Everything else a
+// worker touches arrives through a hooked tool, one file at a time, and
+// materialises beside it.
+//
+// HOW WIDE THE IMAGE IS is the provider's to say (src/systems/mirror.ts): the
+// root is the local image of the advertised MIRROR ROOT, and the CLI's cwd is
+// the project's place inside it (`root + offset`). A provider that advertises
+// nothing gives `offset === ''`, so cwd IS root and the geometry is exactly
+// what it was before mirrors existed.
+//
+// THE ALLOW-LIST WALK DOES NOT MOVE WITH THE MIRROR. It stays anchored at the
+// PROJECT over its seven fixed targets whatever the mirror root is: re-anchored
+// at `/` the same walk was measured at 529k records, 46 MB of `find` output and
+// 213 MB of orchestrator RSS, rising to 558 MB through the parse and the
+// manifest serialise — and pruning `/proc`, `/dev` and `/sys` still left 37 MB.
+// Widening the MAP is what makes an out-of-project file reachable; widening the
+// WALK buys nothing and costs that.
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { orchStoreRoot } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { CONVENTIONS_IMPORT_LINE } from '../conventionsImport.ts';
+import {
+  isExcluded, resolveMirrorScope, within, withinPosix, type MirrorScope,
+} from './mirror.ts';
 import { requireAbsolute, type System } from './system.ts';
 
 // `<store>/systems/<systemId>/sessions/` — the parent of every session root for
@@ -106,47 +125,59 @@ export async function removeSessionRoot(systemId: string, project: string, workt
 // leak that costs a worker its trust in its own tool results.
 //
 // Containment is decided with path.relative, never a string prefix: a prefix
-// test claims a merely prefix-SHARING sibling (`<root>-backup`) is inside.
+// test claims a merely prefix-SHARING sibling (`<root>-backup`) is inside. The
+// predicates live in src/systems/mirror.ts so ONE of them serves the map, the
+// exclude list and the advertisement's validation.
+//
+// THE FAR END IS THE MIRROR ROOT, NOT THE PROJECT. Those are the same path
+// whenever a provider advertises nothing, which is the common case; when they
+// differ, this one rule still decides the whole boundary, because a second
+// mapping would be a second way to get a silent boundary wrong.
 export class SessionPathMap {
   readonly root: string;
-  readonly systemPath: string;
+  readonly mirrorRoot: string;
+  readonly exclude: readonly string[];
 
-  constructor(root: string, systemPath: string) {
+  constructor(root: string, mirrorRoot: string, exclude: readonly string[] = []) {
     this.root = root;
-    this.systemPath = systemPath;
+    this.mirrorRoot = mirrorRoot;
+    this.exclude = exclude;
   }
 
   // The system path a local one names, or null when the local path is not the
-  // system's business.
+  // system's business. PURE GEOMETRY: an excluded path still has a counterpart,
+  // and `classify` is what decides whether cc will carry it.
   toSystem(localAbs: string): string | null {
     const rel = within(localAbs, this.root);
-    return rel === null ? null : (rel === '' ? this.systemPath : path.posix.join(this.systemPath, toPosix(rel)));
+    return rel === null ? null : (rel === '' ? this.mirrorRoot : path.posix.join(this.mirrorRoot, toPosix(rel)));
   }
 
-  // The local path a system one names, or null when it lies outside the
-  // project's tree. Used for the output annotation, never to open a file.
+  // The local path a system one names, or null when it lies outside the mirror.
+  // Used for the output annotation and — since the mirror can be wider than the
+  // project — to TRANSLATE a system path a worker named into the local
+  // counterpart it can actually use. Never to open a file.
   toLocal(systemAbs: string): string | null {
-    const rel = withinPosix(systemAbs, this.systemPath);
+    const rel = withinPosix(systemAbs, this.mirrorRoot);
     return rel === null ? null : (rel === '' ? this.root : path.join(this.root, rel));
   }
+
+  // THE ONE PREDICATE both halves of the redirect read, so "mapped", "excluded"
+  // and "outside" cannot be decided two different ways.
+  classify(localAbs: string): SessionPathVerdict {
+    const systemPath = this.toSystem(localAbs);
+    if (systemPath === null) return { kind: 'outside' };
+    const excludedBy = isExcluded(systemPath, this.exclude);
+    if (excludedBy !== null) return { kind: 'excluded', systemPath, excludedBy };
+    return { kind: 'mapped', systemPath };
+  }
 }
 
-// '' when equal, the relative path when inside, null when outside.
-function within(inner: string, outer: string): string | null {
-  const rel = path.relative(outer, inner);
-  if (rel === '') return '';
-  if (path.isAbsolute(rel) || rel === '..' || rel.startsWith(`..${path.sep}`)) return null;
-  return rel;
-}
-
-// The same test in the SYSTEM's path space. cc's own separator is not
-// necessarily the system's, and A4 fixes the system's at `/`.
-function withinPosix(inner: string, outer: string): string | null {
-  const rel = path.posix.relative(outer, inner);
-  if (rel === '') return '';
-  if (path.posix.isAbsolute(rel) || rel === '..' || rel.startsWith('../')) return null;
-  return rel;
-}
+export type SessionPathVerdict =
+  | { kind: 'mapped'; systemPath: string }
+  // The path has a counterpart, and the provider says cc must not carry it.
+  // Bash reaches it under no such restriction, which is what the refusal says.
+  | { kind: 'excluded'; systemPath: string; excludedBy: string }
+  | { kind: 'outside' };
 
 function toPosix(rel: string): string {
   return path.sep === '/' ? rel : rel.split(path.sep).join('/');
@@ -170,11 +201,20 @@ export const SESSION_ROOT_TOTAL_CAP_BYTES = 4 * 1024 * 1024;
 export interface SessionRootSkip { path: string; reason: string }
 
 export interface ComposedSessionRoot {
-  // Realpath-clean and stable: S14 keys the CLI's transcript directory off
-  // getcwd(), so cc must hand it the same string the CLI will read back.
+  // The local image of the MIRROR ROOT. Realpath-clean and stable: S14 keys the
+  // CLI's transcript directory off getcwd(), so cc must hand it the same string
+  // the CLI will read back.
   root: string;
+  // The CLI's working directory — the project's place inside the image,
+  // `root + mirror.offset`. Equal to `root` whenever nothing is advertised.
+  cwd: string;
+  mirror: MirrorScope;
   pulled: string[];
   skipped: SessionRootSkip[];
+  // Diagnostics that are not refusals: an advertised exclude outside the mirror
+  // root is sane configuration on a provider serving many shapes, and saying so
+  // once beats refusing a session over it.
+  notes: string[];
 }
 
 interface ManifestEntry { size: number; mtimeMs: number }
@@ -188,7 +228,14 @@ interface ManifestEntry { size: number; mtimeMs: number }
 // the sparse content cache pulled from the OLD machine, the worker reads and
 // edits those, and the write-back pushes the result to the NEW one — clobbering
 // it with another machine's bytes while both sides stay internally consistent.
-interface Manifest { remoteId: string | null; entries: Map<string, ManifestEntry> }
+//
+// The MIRROR ROOT rides beside it for the same reason: a widened or narrowed
+// mirror moves where `cwd` sits inside the root, so a manifest written under
+// one geometry describes a layout that is simply not where the next spawn will
+// look. Both normalise to null so a manifest written before either field
+// existed matches an unbound, unadvertised placement rather than costing every
+// existing root a pointless wipe.
+interface Manifest { remoteId: string | null; mirrorRoot: string | null; entries: Map<string, ManifestEntry> }
 
 // Compose (or refresh) the session root for one worker session.
 //
@@ -200,6 +247,14 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
 }): Promise<ComposedSessionRoot> {
   requireAbsolute('composeSessionRoot', 'systemPath', systemPath);
   const rootRaw = sessionRootPath(systemId, project, worktree);
+
+  // THE MIRROR, resolved before anything is written, because its answer may be
+  // "there should not be a session here at all". One round trip per connection
+  // generation (ProviderSystem memoises it), and none at all for a provider
+  // that does not advertise the capability.
+  const { scope: mirror, inert: notes } = resolveMirrorScope({
+    systemId, project, systemPath, advertisement: await system.mirror(),
+  });
 
   // THE TARGET CHECK, and it runs before the root exists rather than after,
   // because its answer may be "there should not be one".
@@ -214,7 +269,8 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   // against a manifest that describes a different machine is precisely how the
   // old target's bytes end up under the new target's paths.
   const prior = await readManifest(systemId, project, worktree);
-  const manifest = prior.remoteId === (system.remoteId ?? null)
+  const priorMirror = prior.mirrorRoot ?? systemPath;
+  const manifest = prior.remoteId === (system.remoteId ?? null) && priorMirror === mirror.mirrorRoot
     ? prior
     : await resetRoot(systemId, project, worktree);
 
@@ -224,8 +280,12 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   // CLI two spellings of one session directory (S14, and the same reason
   // resolveProjectDir realpaths an external project).
   const root = await fs.realpath(rootRaw);
+  // The project's place INSIDE the image. Identical to `root` whenever the
+  // provider advertises nothing, which is what makes that path unchanged.
+  const cwd = path.join(root, mirror.offset);
+  await fs.mkdir(cwd, { recursive: true });
 
-  const listing = await listAllowed(system, systemPath);
+  const listing = await listAllowed(system, systemPath, mirror);
 
   const next = new Map<string, ManifestEntry>();
   const skipped: SessionRootSkip[] = [];
@@ -233,6 +293,19 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   let total = 0;
 
   for (const entry of listing) {
+    // THE LAST GATE BEFORE BYTES LAND ON DISK. Unreachable by construction —
+    // findManifest drops an excluded record — and kept because this loop is
+    // where any enumeration leak, present or future, would become a file the
+    // CLI's unhooked channels can read. A THROW rather than a skip: it can only
+    // mean cc grew a listing source that bypassed the walk, which is a bug in
+    // cc, not a condition a provider can cause.
+    const covered = isExcluded(entry.abs, mirror.exclude);
+    if (covered !== null) {
+      throw new Error(
+        `cc: the session-root pull reached '${entry.abs}', which system '${systemId}' `
+        + `advertises as excluded under '${covered}'`,
+      );
+    }
     if (entry.size > SESSION_ROOT_FILE_CAP_BYTES) {
       skipped.push({ path: entry.rel, reason: `${entry.size} bytes is over the ${SESSION_ROOT_FILE_CAP_BYTES}-byte per-file cap` });
       continue;
@@ -243,7 +316,7 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
     }
     total += entry.size;
     next.set(entry.rel, { size: entry.size, mtimeMs: entry.mtimeMs });
-    const local = path.join(root, entry.rel);
+    const local = path.join(cwd, entry.rel);
     const prev = manifest.entries.get(entry.rel);
     // readFile only for CHANGED entries — the manifest is what turns a resume
     // into one `find` for an unchanged config surface. An entry whose local
@@ -259,24 +332,32 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   // and therefore Bash, says is not there.
   for (const rel of manifest.entries.keys()) {
     if (next.has(rel)) continue;
-    await fs.rm(path.join(root, rel), { force: true });
+    await fs.rm(path.join(cwd, rel), { force: true });
   }
 
   // The CLI's own CLAUDE.md discovery is the only channel CONVENTIONS.md has,
   // and the system's copy is not required to have arranged the import. Applied
   // to the LOCAL copy only — the pull is one way, and rewriting the system's
   // file from a session composer would be a write nobody asked for.
-  await ensureLocalImport(path.join(root, 'CLAUDE.md'), next.has('CLAUDE.md'));
+  await ensureLocalImport(path.join(cwd, 'CLAUDE.md'), next.has('CLAUDE.md'));
 
-  await writeManifest(systemId, project, worktree, system.remoteId ?? null, next);
-  return { root, pulled, skipped };
+  await writeManifest(
+    systemId, project, worktree, system.remoteId ?? null,
+    // OMITTED when the mirror is the project itself, exactly as `remoteId` is
+    // omitted for an unbound handle: absent and "no advertisement" are the same
+    // state, so a root composed against a provider that says nothing keeps a
+    // manifest byte-identical to one written before mirrors existed.
+    mirror.mirrorRoot === systemPath ? null : mirror.mirrorRoot,
+    next,
+  );
+  return { root, cwd, mirror, pulled, skipped, notes };
 }
 
 // The root was pulled from a different target: remove it and its manifest, and
 // hand back an empty one so everything below re-pulls.
 async function resetRoot(systemId: string, project: string, worktree: string | null): Promise<Manifest> {
   await removeSessionRoot(systemId, project, worktree);
-  return { remoteId: null, entries: new Map() };
+  return { remoteId: null, mirrorRoot: null, entries: new Map() };
 }
 
 interface Listed { rel: string; abs: string; size: number; mtimeMs: number }
@@ -284,26 +365,73 @@ interface Listed { rel: string; abs: string; size: number; mtimeMs: number }
 // ONE batched `exec` for the whole allow-list — a `find` over the four fixed
 // files and three fixed directories, plus a second pass for the `@`-imports the
 // first pass's CLAUDE.md names. Two round trips at spawn, not one per entry.
-async function listAllowed(system: System, systemPath: string): Promise<Listed[]> {
+async function listAllowed(system: System, systemPath: string, mirror: MirrorScope): Promise<Listed[]> {
   const targets = [...ALLOW_FILES, ...ALLOW_DIRS].map(rel => path.posix.join(systemPath, rel));
-  const first = await findManifest(system, systemPath, targets);
+  const first = await findManifest(system, systemPath, targets, mirror.exclude);
   const claude = first.find(e => e.rel === 'CLAUDE.md');
   if (!claude) return first;
   const imports = parseImports(await system.readFile(claude.abs), systemPath);
   if (imports.length === 0) return first;
   const have = new Set(first.map(e => e.rel));
-  const extra = (await findManifest(system, systemPath, imports)).filter(e => !have.has(e.rel));
+  // THE SECOND PASS IS BOUND BY THE SAME LIST. An import names an arbitrary
+  // path in the project, so it is exactly the case a target-shaped filter
+  // misses; passing `exclude` here rather than pre-filtering keeps ONE gate.
+  const extra = (await findManifest(system, systemPath, imports, mirror.exclude))
+    .filter(e => !have.has(e.rel));
   return [...first, ...extra];
 }
 
-async function findManifest(system: System, systemPath: string, targets: string[]): Promise<Listed[]> {
-  if (targets.length === 0) return [];
+// `-path` matches with fnmatch, so a path containing a glob metacharacter would
+// otherwise be a PATTERN rather than the literal cc means. Backslash escapes it
+// (fnmatch without FNM_NOESCAPE, which is what find uses).
+function globLiteral(p: string): string {
+  return p.replace(/[\\*?[\]]/g, m => `\\${m}`);
+}
+
+// CRITERION 7, at both granularities and with a backstop behind them.
+//
+// THE TARGET FILTER IS NOT ENOUGH, and that was measured rather than reasoned:
+// an exclude covering something DEEPER than one of the seven targets leaves the
+// target in the argv, so `find` enumerates the excluded file anyway. Three
+// gates, narrowest first:
+//
+//   1. a target the exclude covers is never sent;
+//   2. an exclude that could intersect the walk is a `-prune` operand, so the
+//      far side never descends into it — enumeration leaks names, sizes and
+//      mtimes into the manifest even when the bytes are withheld;
+//   3. every RECORD is checked on arrival, because (2) is the far side's
+//      behaviour and cc's answer must be correct whatever `find` did.
+//
+// Gate 3 is the one that closes the class: it is the single point every listing
+// flows through, so a future caller cannot reintroduce the leak by finding a
+// fourth way to name a path. Against a real `find` it is INVISIBLE — prune
+// already stopped the record, so nothing arrives for it to drop — which is why
+// its own behaviour is exercised against a far side that ignores the operands
+// (`--ignore-prune` in tests/fixtures/mirrorFixtureProvider.mjs) rather than
+// left to be inferred from the outer two holding.
+async function findManifest(
+  system: System, systemPath: string, targets: string[], exclude: readonly string[],
+): Promise<Listed[]> {
+  const wanted = targets.filter(abs => isExcluded(abs, exclude) === null);
+  if (wanted.length === 0) return [];
+  // Only the entries that could match something under the walk. An exclude
+  // outside the project cannot, so the argv stays bounded by the tree rather
+  // than by the advertisement's length — and with none in scope the argv is
+  // byte-identical to what it was before excludes existed.
+  const prunable = exclude.filter(e => withinPosix(e, systemPath) !== null);
+  const prune = prunable.length === 0 ? [] : [
+    '(',
+    ...prunable.flatMap((e, i) => [
+      ...(i === 0 ? [] : ['-o']), '-path', globLiteral(e), '-o', '-path', `${globLiteral(e)}/*`,
+    ]),
+    ')', '-prune', '-o',
+  ];
   // NUL-terminated records, so a filename containing a newline is unambiguous
   // rather than a malformed line cc has to decide what to do with. `find` exits
   // non-zero for each absent target and still reports the ones that exist, so
   // the exit code is not the answer here — the records are.
   const r = await system.exec(
-    { argv: ['find', ...targets, '-type', 'f', '-printf', '%s\\t%T@\\t%p\\0'] },
+    { argv: ['find', ...wanted, ...prune, '-type', 'f', '-printf', '%s\\t%T@\\t%p\\0'] },
     { cwd: systemPath, stdin: 'ignore' },
   );
   if (r.spawnError) {
@@ -320,6 +448,10 @@ async function findManifest(system: System, systemPath: string, targets: string[
     // this project's config surface — dropped rather than written to a local
     // path composed from `..`.
     if (rel === null || rel === '') continue;
+    // GATE 3. A provider whose `find` ignored `-prune`, or reached the record by
+    // some route cc did not anticipate, still cannot get an excluded path into
+    // the listing — and therefore into the manifest or onto disk.
+    if (isExcluded(abs, exclude) !== null) continue;
     out.push({ rel, abs, size: Number(m[1]), mtimeMs: Math.round(Number(m[2]) * 1000) });
   }
   return out;
@@ -365,15 +497,19 @@ async function exists(p: string): Promise<boolean> {
 }
 
 async function readManifest(systemId: string, project: string, worktree: string | null): Promise<Manifest> {
-  const empty: Manifest = { remoteId: null, entries: new Map() };
+  const empty: Manifest = { remoteId: null, mirrorRoot: null, entries: new Map() };
   try {
     const raw: unknown = JSON.parse(await fs.readFile(manifestPath(systemId, project, worktree), 'utf8'));
     if (!raw || typeof raw !== 'object') return empty;
-    const rec = raw as { remoteId?: unknown; entries?: unknown };
+    const rec = raw as { remoteId?: unknown; mirrorRoot?: unknown; entries?: unknown };
     const entries = (typeof rec.entries === 'object' && rec.entries !== null)
       ? new Map(Object.entries(rec.entries as Record<string, ManifestEntry>))
       : new Map<string, ManifestEntry>();
-    return { remoteId: typeof rec.remoteId === 'string' && rec.remoteId ? rec.remoteId : null, entries };
+    return {
+      remoteId: typeof rec.remoteId === 'string' && rec.remoteId ? rec.remoteId : null,
+      mirrorRoot: typeof rec.mirrorRoot === 'string' && rec.mirrorRoot ? rec.mirrorRoot : null,
+      entries,
+    };
   } catch {
     // A missing or corrupt manifest costs a full re-pull, never a failed spawn:
     // it is a cache of what cc last wrote, not a record anything depends on.
@@ -383,10 +519,14 @@ async function readManifest(systemId: string, project: string, worktree: string 
 
 async function writeManifest(
   systemId: string, project: string, worktree: string | null,
-  remoteId: string | null, entries: Map<string, ManifestEntry>,
+  remoteId: string | null, mirrorRoot: string | null, entries: Map<string, ManifestEntry>,
 ): Promise<void> {
   await fs.writeFile(
     manifestPath(systemId, project, worktree),
-    JSON.stringify({ ...(remoteId === null ? {} : { remoteId }), entries: Object.fromEntries(entries) }),
+    JSON.stringify({
+      ...(remoteId === null ? {} : { remoteId }),
+      ...(mirrorRoot === null ? {} : { mirrorRoot }),
+      entries: Object.fromEntries(entries),
+    }),
   );
 }

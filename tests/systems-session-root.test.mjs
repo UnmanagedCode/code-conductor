@@ -2,10 +2,10 @@
 // the boundary.
 //
 // A session root is the Claude CLI's cwd for a worker on a remote project. It
-// is NOT a mirror of the tree — it holds exactly the config surface the CLI
-// reads implicitly and can never be hooked (§3.2's allow-list), pulled one way
-// from the system. Everything else the worker touches arrives through a hooked
-// tool.
+// is NOT a copy of the tree — what is pulled ahead of time is exactly the
+// config surface the CLI reads implicitly and can never be hooked (§3.2's
+// allow-list), one way from the system; everything else the worker touches
+// arrives through a hooked tool and materialises in the root.
 //
 // The fixture keeps the two sides distinguishable: the system's tree carries
 // ONLY-ON-SYSTEM.txt, so a composer that accidentally read cc's own disk would
@@ -16,9 +16,11 @@ import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import {
   SESSION_ROOT_FILE_CAP_BYTES,
@@ -279,4 +281,398 @@ test('a manifest with no remoteId matches an unbound handle', async () => {
 
   await compose();
   assert.equal(await fs.readFile(cached, 'utf8'), 'still here\n');
+});
+
+// ── THE MIRROR the root is the image OF (card 2026-0259) ─────────────
+//
+// After P7 the session root is the local image of the provider's advertised
+// MIRROR ROOT, not of the project tree, and the CLI's cwd moves to the
+// project's place inside it. What must NOT move is the allow-list walk: it
+// stays anchored at the project over its seven fixed targets, because a walk
+// re-anchored at a filesystem root was measured at 46 MB of `find` output and
+// half a gigabyte of orchestrator heap — and pruning the pseudo-filesystems
+// does not rescue it.
+
+const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
+
+async function wire(file) {
+  let raw = '';
+  try { raw = await fs.readFile(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+}
+
+// Every `find` argv cc put on the wire during one composition.
+const findArgvs = async (rec) => (await wire(rec))
+  .filter(f => f.type === 'exec' && Array.isArray(f.argv) && f.argv[0] === 'find')
+  .map(f => f.argv);
+
+// A recording provider under its own system id, with whatever mirror flags.
+async function recordingSystem(id, flags) {
+  const rec = path.join(await mkdtemp('cc-wire-'), `${id}.jsonl`);
+  await addSystem({ id, label: id, launch: ['node', RECORDER, '--record', rec, ...flags] });
+  return { rec, sys: await systemById(id, null, 'test') };
+}
+
+// PINS THE MEASURED DECISION, DIFFERENTIALLY: widening the mirror to `/` does
+// not change the manifest walk by one byte. Both argvs are produced in this
+// same run and compared TO EACH OTHER — D-P7-10 form 1 — so no constant
+// transcribed from the implementation could satisfy it.
+//
+// NOT CLAIMING: that the walk is cheap. The numbers behind the decision are
+// evidence in the design, not an assertion here.
+test('the find argv is identical whether the mirror is the project or the whole filesystem', async () => {
+  await seedTree(remote.root);
+  const narrow = await recordingSystem('narrow', []);
+  const wide = await recordingSystem('wide', ['--mirror', '/']);
+
+  await composeSessionRoot({
+    system: narrow.sys, systemId: 'narrow', systemPath: remote.root, project: 'app',
+  });
+  const wideComposed = await composeSessionRoot({
+    system: wide.sys, systemId: 'wide', systemPath: remote.root, project: 'app',
+  });
+
+  // The two configurations really are different, or the comparison is vacuous.
+  assert.equal(wideComposed.mirror.mirrorRoot, '/');
+  assert.notEqual(wideComposed.cwd, wideComposed.root);
+
+  const a = await findArgvs(narrow.rec);
+  const b = await findArgvs(wide.rec);
+  assert.ok(a.length > 0, 'the narrow composition really walked');
+  assert.deepEqual(b, a, 'the walk is invariant to mirror width');
+});
+
+// PINS: the pulled config surface lands under the CLI's cwd — the project's
+// place inside the image — not at the image root, and the CLAUDE.md that
+// carries the `@CONVENTIONS.md` import is the one at that cwd.
+//
+// NOT CLAIMING: anything about the empty ancestor directories above the cwd.
+// An ancestor CLAUDE.md on the system is deliberately not pulled.
+test('a wider mirror puts the pulled config under the cwd, not the image root', async () => {
+  await seedTree(remote.root);
+  const parent = path.dirname(remote.root);
+  const { sys } = await recordingSystem('wider', ['--mirror', parent]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'wider', systemPath: remote.root, project: 'app',
+  });
+
+  assert.equal(composed.mirror.offset, path.basename(remote.root));
+  assert.equal(composed.cwd, path.join(composed.root, path.basename(remote.root)));
+  assert.equal(await fs.readFile(path.join(composed.cwd, 'CONVENTIONS.md'), 'utf8'),
+    '<!-- cc:conventions -->\nrules\n');
+  assert.match(await fs.readFile(path.join(composed.cwd, 'CLAUDE.md'), 'utf8'), /@CONVENTIONS\.md/);
+  await assert.rejects(fs.readFile(path.join(composed.root, 'CONVENTIONS.md')),
+    'and nothing was written at the image root');
+});
+
+// The paths `find` was pointed AT — the operands before the expression starts.
+// Separated from the prune operands, which name the same kind of thing in a
+// different role.
+const findTargets = (argv) => {
+  const end = argv.findIndex(a => a === '(' || a === '-type');
+  return argv.slice(1, end === -1 ? argv.length : end);
+};
+
+// PINS CRITERION 7 at target granularity: an advertised exclude covering one of
+// the seven walked targets drops it from what `find` is pointed at, and nothing
+// under it is pulled.
+//
+// PINS, rather than disclaims, the within-a-walked-directory case: it is
+// covered by its own test above ('an exclude beneath a walked target is neither
+// enumerated nor pulled'), which this one is the coarse-grained half of.
+//
+// NOT CLAIMING: that the walk's targets are ever anything but the seven fixed
+// allow-list entries. They are built from ALLOW_FILES/ALLOW_DIRS relative to
+// the project, so `/proc` and `/dev` cannot become targets by widening a mirror
+// root however wide it goes — asserted differentially two tests up.
+test('an exclude covering an allow-list target drops it from the walk', async () => {
+  await seedTree(remote.root);
+  const skills = path.join(remote.root, '.claude/skills');
+  const { rec, sys } = await recordingSystem('trimmed', [
+    '--mirror', path.dirname(remote.root), '--exclude', skills,
+  ]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'trimmed', systemPath: remote.root, project: 'app',
+  });
+
+  const [argv] = await findArgvs(rec);
+  assert.ok(argv, 'a walk happened');
+  const targets = findTargets(argv);
+  assert.ok(!targets.includes(skills), `the excluded target is gone from ${JSON.stringify(targets)}`);
+  assert.ok(targets.includes(path.join(remote.root, 'CLAUDE.md')), 'the rest are still there');
+  await assert.rejects(fs.readFile(path.join(composed.cwd, '.claude/skills/deploy/SKILL.md')),
+    'and nothing under it was pulled');
+});
+
+// PINS: the manifest records the MIRROR ROOT beside the target, and a mismatch
+// resets the root for the same reason a target change does — the old layout
+// describes a different address space, so `cwd` sits somewhere else inside it.
+//
+// NOT CLAIMING: that a session already running picks up the new geometry; the
+// instance's cwd is fixed at create.
+test('a mirrorRoot change in the manifest wipes the root; an unchanged one keeps it', async () => {
+  await seedTree(remote.root);
+  const parent = path.dirname(remote.root);
+  await recordingSystem('shift', ['--mirror', parent]);
+
+  const first = await composeSessionRoot({
+    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
+  });
+  const mf = `${sessionRootPath('shift', 'app', null)}.manifest.json`;
+  assert.equal(JSON.parse(await fs.readFile(mf, 'utf8')).mirrorRoot, parent);
+
+  const cached = path.join(first.cwd, 'src/index.js');
+  await fs.mkdir(path.dirname(cached), { recursive: true });
+  await fs.writeFile(cached, 'cached under the old geometry\n');
+
+  // Same advertisement: kept.
+  await composeSessionRoot({
+    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
+  });
+  assert.equal(await fs.readFile(cached, 'utf8'), 'cached under the old geometry\n');
+
+  // A narrower advertisement: the whole root goes.
+  await updateSystem('shift', { launch: ['node', RECORDER, '--record', path.join(await mkdtemp('cc-wire-'), 'b.jsonl')] });
+  const after = await composeSessionRoot({
+    system: await systemById('shift', null, 'test'), systemId: 'shift', systemPath: remote.root, project: 'app',
+  });
+  await assert.rejects(fs.readFile(cached), 'the old geometry\'s content is gone');
+  assert.equal(after.cwd, after.root);
+  assert.equal(await fs.readFile(path.join(after.root, 'CONVENTIONS.md'), 'utf8'),
+    '<!-- cc:conventions -->\nrules\n');
+});
+
+// PINS: a manifest written before `mirrorRoot` existed, against a placement
+// that advertises nothing, is a MATCH — not a wipe. Reading absence as a
+// mismatch would cost every existing session root one pointless full re-pull.
+//
+// NOT CLAIMING: anything about a legacy manifest against an ADVERTISED mirror;
+// that is a genuine mismatch and wipes, which the test above covers.
+test('a manifest with no mirrorRoot matches an unadvertised placement', async () => {
+  await seedTree(remote.root);
+  const { root } = await compose();
+  const cached = path.join(root, 'src/index.js');
+  await fs.mkdir(path.dirname(cached), { recursive: true });
+  await fs.writeFile(cached, 'still here\n');
+  const mf = `${sessionRootPath(remote.id, 'app', null)}.manifest.json`;
+  const { entries } = JSON.parse(await fs.readFile(mf, 'utf8'));
+  await fs.writeFile(mf, JSON.stringify({ entries }));
+
+  await compose();
+  assert.equal(await fs.readFile(cached, 'utf8'), 'still here\n');
+});
+
+// PINS: an advertisement cc cannot use refuses the COMPOSITION by name, at
+// spawn — not the project's resolution. Nothing else about the project is
+// touched, because git, status, diff and every project_* tool run at the
+// project path and never consult the mirror.
+//
+// NOT CLAIMING: which HTTP status a route surfaces, or that the project listing
+// stays green — tests/systems-listing-degrade.test.mjs owns the listing.
+test('a mirror root that does not contain the project refuses the composition', async () => {
+  await seedTree(remote.root);
+  const elsewhere = await fs.realpath(await mkdtemp('cc-elsewhere-'));
+  await recordingSystem('wrongroot', ['--mirror', elsewhere]);
+  await assert.rejects(
+    async () => composeSessionRoot({
+      system: await systemById('wrongroot', null, 'test'),
+      systemId: 'wrongroot', systemPath: remote.root, project: 'app',
+    }),
+    (e) => e.code === 'MIRROR_ROOT_EXCLUDES_PROJECT' && e.statusCode === 501,
+  );
+});
+
+// ── THE EXCLUDE BYPASS CLASS (card 2026-0259, review round 1) ────────
+//
+// Filtering the walk's TARGETS is not filtering the walk. Two ways past it were
+// measured on a live provider, and they are the same defect at two granularities:
+// an exclude that names something the seven fixed targets do not name is not a
+// target, so it never met the target filter, and the pull loop that turns a
+// record into bytes on disk had no gate of its own.
+//
+// Both halves are asserted for each: NOT ENUMERATED (absent from the manifest,
+// which is the enumeration record and is written to disk beside the root) and
+// NOT ON DISK. A fix that gated only the pull would still fail the first.
+
+const readManifestJson = async (systemId, project) =>
+  JSON.parse(await fs.readFile(`${sessionRootPath(systemId, project, null)}.manifest.json`, 'utf8'));
+
+// PINS INSTANCE 2: an exclude covering a subpath BENEATH one of the seven
+// walked targets withholds that subpath — it is absent from the manifest and
+// absent from disk — while its siblings under the same target are still pulled.
+// The excluded target's parent stays in the walk, so this cannot be satisfied
+// by dropping the target.
+//
+// NOT CLAIMING: that the far side's `find` process physically declined to
+// stat the file. The prune operands are asserted structurally below; what is
+// measured here is that nothing about the excluded path survives into cc.
+test('an exclude beneath a walked target is neither enumerated nor pulled', async () => {
+  await seedTree(remote.root);
+  const secret = path.join(remote.root, '.claude/skills/secret');
+  await fs.mkdir(secret, { recursive: true });
+  await fs.writeFile(path.join(secret, 'sk.md'), 'SECRET-SKILL-BYTES');
+
+  const { sys } = await recordingSystem('deep', [
+    '--mirror', path.dirname(remote.root), '--exclude', secret,
+  ]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'deep', systemPath: remote.root, project: 'app',
+  });
+
+  const entries = Object.keys((await readManifestJson('deep', 'app')).entries);
+  assert.ok(entries.includes('.claude/skills/deploy/SKILL.md'),
+    `the sibling under the same walked target is still pulled: ${JSON.stringify(entries)}`);
+  assert.ok(!entries.includes('.claude/skills/secret/sk.md'),
+    `the excluded subpath was ENUMERATED into the manifest: ${JSON.stringify(entries)}`);
+  await assert.rejects(fs.readFile(path.join(composed.cwd, '.claude/skills/secret/sk.md')),
+    'and its bytes are not on disk');
+});
+
+// PINS INSTANCE 1: the second `find` pass, over the `@`-imports named by the
+// pulled CLAUDE.md, is bound by the same exclude list as the first — an
+// imported file under an exclude is neither enumerated nor pulled, while an
+// imported file that is not excluded still is.
+//
+// NOT CLAIMING: anything about how imports are PARSED; the unexcluded import
+// arriving is what shows the pass ran at all.
+test('an exclude covering an @-imported file binds the second walk too', async () => {
+  await seedTree(remote.root);
+  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(remote.root, 'docs/shared.md'), 'SECRET-IMPORT-BYTES');
+  await fs.writeFile(path.join(remote.root, 'docs/open.md'), 'PUBLIC-IMPORT-BYTES');
+  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'),
+    '@CONVENTIONS.md\n@docs/shared.md\n@docs/open.md\n');
+
+  const { sys } = await recordingSystem('imports', [
+    '--mirror', path.dirname(remote.root), '--exclude', path.join(remote.root, 'docs/shared.md'),
+  ]);
+  const composed = await composeSessionRoot({
+    system: sys, systemId: 'imports', systemPath: remote.root, project: 'app',
+  });
+
+  const entries = Object.keys((await readManifestJson('imports', 'app')).entries);
+  assert.ok(entries.includes('docs/open.md'),
+    `the unexcluded import still arrives, so the second pass ran: ${JSON.stringify(entries)}`);
+  assert.ok(!entries.includes('docs/shared.md'),
+    `the excluded import was ENUMERATED into the manifest: ${JSON.stringify(entries)}`);
+  await assert.rejects(fs.readFile(path.join(composed.cwd, 'docs/shared.md')),
+    'and its bytes are not on disk');
+});
+
+// PINS: an exclude that could match something under a walked target is carried
+// into the `find` itself as a prune operand, so the far side never descends
+// into it — enumeration leaks names, sizes and mtimes even when the bytes are
+// withheld. Both spellings are present: the entry itself and everything under
+// it. Excludes that cannot intersect the project are NOT sent, so the argv
+// stays bounded by the tree rather than by the advertisement's length.
+//
+// NOT CLAIMING: that `find` honours the operands — that is the far side's
+// behaviour, and the per-record gate behind it is what makes cc's answer
+// correct either way. The two tests above measure the outcome.
+test('an exclude inside the project is pruned at the find; one outside it is not sent', async () => {
+  await seedTree(remote.root);
+  const secret = path.join(remote.root, '.claude/skills/secret');
+  const { rec, sys } = await recordingSystem('pruned', [
+    '--mirror', '/', '--exclude', secret, '--exclude', '/proc',
+  ]);
+  await composeSessionRoot({
+    system: sys, systemId: 'pruned', systemPath: remote.root, project: 'app',
+  });
+
+  const [argv] = await findArgvs(rec);
+  assert.ok(argv.includes('-prune'), `no prune in ${JSON.stringify(argv)}`);
+  // The prune operands, read out of the expression rather than off the whole
+  // argv — the excluded path also appears as a dropped TARGET in other shapes.
+  const pruned = argv.slice(argv.indexOf('('), argv.indexOf('-prune'));
+  assert.ok(pruned.includes(secret), `the entry itself is a prune operand: ${JSON.stringify(pruned)}`);
+  assert.ok(pruned.includes(`${secret}/*`), 'and so is everything under it');
+  assert.ok(!argv.includes('/proc') && !argv.includes('/proc/*'),
+    `an exclude that cannot intersect the project is not sent: ${JSON.stringify(argv)}`);
+  assert.ok(argv.includes(path.join(remote.root, '.claude/skills')),
+    'the parent target stays in the walk, so this is not the target filter');
+});
+
+// ── GATE 3 ON ITS OWN: a far side that does not honour `-prune` ──────
+//
+// The three gates in findManifest are narrowest-first, and against a real
+// `find` the outer two do all the visible work: prune stops the record on the
+// far side, so the per-record gate never sees one and dropping it changes
+// nothing observable. That makes the backstop's own behaviour untested — and it
+// is the gate that closes the class, because it is the one point every listing
+// flows through.
+//
+// The only way to exercise it is a far side that ignores the operands cc sent,
+// which is exactly the case it was written for. `--ignore-prune` strips the
+// clause out of the argv before running it.
+const MIRROR_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'mirrorFixtureProvider.mjs');
+
+// PINS: when the far side enumerates an excluded path anyway, cc drops the
+// record — it reaches neither the manifest nor the disk — and it is proven that
+// the record REALLY ARRIVED, by decoding the `find` output cc received off the
+// wire. Without that last part the test would pass just as well against a far
+// side that quietly honoured prune after all.
+//
+// NOT CLAIMING: that any real `find` behaves this way, or that prune is
+// unnecessary. Prune is what keeps names, sizes and mtimes off the wire in the
+// first place; this pins what cc does when it did not work.
+test('a find that ignores -prune still cannot get an excluded path into the root', async () => {
+  await seedTree(remote.root);
+  const w = async (rel, body) => {
+    await fs.mkdir(path.dirname(path.join(remote.root, rel)), { recursive: true });
+    await fs.writeFile(path.join(remote.root, rel), body);
+  };
+  await w('.claude/skills/secret/sk.md', 'SECRET-SKILL-BYTES');
+  await w('.claude/skills/public/ok.md', 'PUBLIC-SKILL-BYTES');
+
+  const excluded = path.posix.join(remote.root, '.claude', 'skills', 'secret');
+  const frames = path.join(await mkdtemp('cc-noprune-'), 'frames.jsonl');
+  await addSystem({
+    id: 'noprune',
+    label: 'noprune',
+    launch: ['node', MIRROR_FIXTURE, '--advertise-mirror', remote.root,
+      '--advertise-exclude', excluded, '--ignore-prune', '--frame-log', frames],
+  });
+  const { root } = await composeSessionRoot({
+    system: await systemById('noprune', null, 'test'),
+    systemId: 'noprune',
+    systemPath: remote.root,
+    project: 'p',
+    worktree: null,
+  });
+
+  // THE RECORD REALLY ARRIVED. The walk's output comes back as `stdout` frames,
+  // which the fixture logs after every mutation it makes — so this is the find
+  // output cc RECEIVED, not what the fixture intended to send.
+  const logged = (await fs.readFile(frames, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const findOutput = Buffer.concat(
+    logged.filter(f => f.type === 'stdout' && typeof f.dataB64 === 'string')
+      .map(f => Buffer.from(f.dataB64, 'base64')),
+  ).toString('utf8');
+  assert.ok(findOutput.includes('.claude/skills/secret/sk.md'),
+    'the far side enumerated the excluded path — otherwise this test proves nothing');
+  assert.ok(findOutput.includes('.claude/skills/public/ok.md'),
+    'and the walk ran normally alongside it');
+
+  // AND CC DROPPED IT. Both halves: never enumerated into cc's own record of
+  // the root, and never written.
+  const manifest = JSON.parse(await fs.readFile(`${root}.manifest.json`, 'utf8'));
+  assert.equal(manifest.entries['.claude/skills/secret/sk.md'], undefined,
+    'the excluded record is absent from the manifest');
+  assert.ok(manifest.entries['.claude/skills/public/ok.md'], 'its unexcluded sibling is present');
+  await assert.rejects(fs.readFile(path.join(root, '.claude/skills/secret/sk.md')),
+    'and no bytes reached the session root');
+  assert.equal(
+    await fs.readFile(path.join(root, '.claude/skills/public/ok.md'), 'utf8'),
+    'PUBLIC-SKILL-BYTES',
+  );
+  // Sharper than "not on disk": the bytes were never even FETCHED. Every
+  // readFile payload that crossed back carries the sibling and none the secret,
+  // so the drop happened before the pull rather than after it.
+  const fetched = Buffer.concat(
+    logged.filter(f => f.type === 'data' && typeof f.dataB64 === 'string')
+      .map(f => Buffer.from(f.dataB64, 'base64')),
+  ).toString('utf8');
+  assert.ok(fetched.includes('PUBLIC-SKILL-BYTES'), 'the sibling was fetched');
+  assert.ok(!fetched.includes('SECRET-SKILL-BYTES'), 'the excluded file was never fetched');
 });
