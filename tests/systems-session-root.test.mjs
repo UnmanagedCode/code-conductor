@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
+import { liveSystemProto } from './systemHandle.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
@@ -139,6 +140,110 @@ test('an entry over the per-file cap is skipped and named, and the spawn still c
   // The rest of the allow-list still landed.
   assert.equal(await fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md'), 'utf8'), 'deploy skill');
   await assert.rejects(fs.readFile(path.join(root, '.claude/skills/deploy/BIG.md')));
+});
+
+// ── The LISTING fence, which is not one of the caps above ────────────
+//
+// The two caps bound PULLED CONTENT and skip a NAMED entry. The fence bounds
+// the `find` output the walk is read out of, and past it the compose REFUSES —
+// a listing cut at an arbitrary byte cannot say which entries it did not see.
+
+// The fence written out rather than imported: a test that reads the number out
+// of the module under test asserts only that it equals itself.
+const LISTING_FENCE = 8 * 1024 * 1024;
+
+// A tree whose LISTING outruns `targetBytes`, sized by record bytes rather than
+// by file count — `%s\t%T@\t%p\0` is 25 bytes plus the path (`%T@` is 21
+// characters, `%s` is 1 for an empty file), so long paths bust the fence in
+// ~14,600 files instead of ~96,000. Two 180-character directory components plus
+// a 180-character name keep the longest path inside macOS's PATH_MAX of 1024
+// and every component inside NAME_MAX of 255.
+async function floodSkills(root, targetBytes) {
+  const dir = path.join(root, '.claude/skills', 'a'.repeat(180), 'a'.repeat(180));
+  await fs.mkdir(dir, { recursive: true });
+  let bytes = 0;
+  let files = 0;
+  while (bytes < targetBytes * 1.05) {
+    const abs = path.join(dir, 'b'.repeat(172) + String(files).padStart(8, '0'));
+    await fs.writeFile(abs, '');
+    bytes += 25 + Buffer.byteLength(abs);
+    files += 1;
+  }
+  return { files, bytes };
+}
+
+// PINS: the `findManifest` exec this fixture reaches — the allow-list targets
+// pass — carries `maxBufferBytes` at 8 MiB, and a real tree whose listing
+// crosses it makes the compose REFUSE with a 502 rather than compose a root
+// from the prefix of a listing.
+//
+// NOT claiming that the `@`-imports pass is observed here: this fixture throws
+// at the targets pass, so the second pass never runs. What makes the fence
+// universal is structural rather than asserted — ONE exec site serves both
+// passes, so "fenced on one pass but not the other" is not expressible.
+//
+// NOT claiming, either, that the project is too large to work on: Bash still
+// reaches every file in the tree, though the file tools do not (an advertised
+// exclude denies them, src/systems/toolRedirect.ts). Nothing here bears on the
+// two content caps, which keep skipping and naming.
+test('the config-surface listing is FENCED: a tree that outruns it refuses the compose', async () => {
+  await seedTree(remote.root);
+  await floodSkills(remote.root, LISTING_FENCE);
+
+  // The LIVE handle's prototype (tests/systemHandle.mjs): under the provider
+  // configuration the seam in use is ProviderSystem, and a spy on the wrong
+  // class would report zero calls. This arm OBSERVES only — the exec passes
+  // through unchanged, so what fires is the production constant.
+  const sysProto = liveSystemProto(await systemById(remote.id, null, 'test'));
+  const origExec = sysProto.exec;
+  const limits = [];
+  try {
+    sysProto.exec = function (spec, opts) {
+      if (spec.argv?.[0] === 'find') limits.push(opts.maxBufferBytes);
+      return origExec.call(this, spec, opts);
+    };
+    await assert.rejects(() => compose(), (e) => {
+      assert.equal(e.statusCode, 502);
+      assert.match(e.message, /will not compose a session root from a partial listing/);
+      assert.ok(e.message.includes(String(LISTING_FENCE)),
+        `the refusal must name the fence; got: ${e.message}`);
+      return true;
+    });
+  } finally { sysProto.exec = origExec; }
+
+  assert.deepEqual([...new Set(limits)], [LISTING_FENCE],
+    `every findManifest exec this compose reached must carry the fence; saw ${JSON.stringify(limits)}`);
+});
+
+// PINS: the overflow is READ BEFORE THE RECORDS ARE — an overflowed listing
+// refuses as an overflow, never as the far side having sent a malformed record.
+//
+// NOT claiming: anything about the fence's VALUE (the ceiling is shrunk at the
+// seam here, exactly as tests/worktrees.test.mjs shrinks runGit's), nor that the
+// straddling record is always unparseable — at 8 MiB it usually parses, which is
+// the whole reason the check cannot live after the loop.
+test('an overflowed listing refuses as an overflow, not as a malformed record', async () => {
+  await seedTree(remote.root);
+
+  // 12 bytes is deterministic, not lucky: with all seven targets present `find`
+  // writes nothing to stderr, and the collector's byte count is shared across
+  // both streams, so the retained 12 bytes are the head of the first stdout
+  // record. `%T@` is 21 characters, so 12 bytes cannot reach that record's
+  // second tab and its tail can never parse.
+  const sysProto = liveSystemProto(await systemById(remote.id, null, 'test'));
+  const origExec = sysProto.exec;
+  try {
+    sysProto.exec = function (spec, opts) {
+      return origExec.call(this, spec, spec.argv?.[0] === 'find' ? { ...opts, maxBufferBytes: 12 } : opts);
+    };
+    await assert.rejects(() => compose(), (e) => {
+      assert.equal(e.statusCode, 502);
+      assert.ok(!/unparseable find record/.test(e.message),
+        `cc's own fence must not be reported as the far side's malformed output; got: ${e.message}`);
+      assert.match(e.message, /will not compose a session root from a partial listing/);
+      return true;
+    });
+  } finally { sysProto.exec = origExec; }
 });
 
 // PINS: an entry deleted on the system disappears from the root on the next
