@@ -134,6 +134,12 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // cached conventions() result. This covers rescanInternal (and with it the
   // `byId = nextById` swap and the projectsRoot() swap path), enable, doStart
   // and setActiveVersion.
+  //
+  // And bumps the cache EPOCH, which is what makes the drop safe against a
+  // compose that is running right now: clearing the map alone would be undone by
+  // an in-flight scan repopulating it, and those late inserts carry the epoch
+  // their scan started with, so they can never be served afterwards. That is why
+  // this is three statements and not two.
   function invalidate(): void { fragmentBodyCache.clear(); cacheEpoch++; registryGeneration++; }
 
   // Registry state changed in a way that can alter what conventions() computes,
