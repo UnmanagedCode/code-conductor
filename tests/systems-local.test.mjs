@@ -267,9 +267,12 @@ test('exec never rejects, even when spawn throws synchronously', async () => {
 // A child process per case is required, not a nicety: the handle is a
 // module-level singleton built at import time, so one process can only ever
 // answer for one environment. And each case builds its env by DELETING both
-// variables rather than by not setting them — under the gate's folded first
-// configuration the ambient env carries both, and an inherited value would make
-// case 1 pass for the wrong reason.
+// variables rather than by not setting them, because this file RUNS inside the
+// gate's folded first configuration, whose ambient env carries both: an
+// inherited provider would give case 1 a ProviderSystem and an inherited remote
+// id would bind case 3, so without the deletes two cases would go RED under the
+// very configuration that motivates the seam. The deletes buy a test that is
+// independent of its own environment, not one that hides a false pass.
 const LOCAL_SYSTEM_PROBE = fileURLToPath(new URL('./fixtures/localSystemProbe.mjs', import.meta.url));
 
 function probeLocalSystem(vars) {

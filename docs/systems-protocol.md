@@ -583,8 +583,8 @@ provider.
 
 **If your provider serves NAMED targets, it needs `CC_LOCAL_SYSTEM_REMOTE_ID`
 too.** It names which target the stand-in `local` handle is bound to; without it
-every frame is unnamed and a provider advertising `remotes` refuses all of them
-`ENOREMOTE`. It is inert on its own — with no `CC_LOCAL_SYSTEM_PROVIDER` set, cc
+every request frame is unnamed and a provider advertising `remotes` refuses all
+of them `ENOREMOTE`. It is inert on its own — with no `CC_LOCAL_SYSTEM_PROVIDER` set, cc
 stays on its own in-process machine. The gate's first configuration uses exactly
 this pair: `--remote gate=/` on the provider argv and
 `CC_LOCAL_SYSTEM_REMOTE_ID=gate` on cc. The gate's own capability matrix — which

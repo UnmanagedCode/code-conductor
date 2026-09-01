@@ -16,9 +16,9 @@
 //
 // WHICH OF THE FOUR OPTIONAL CAPABILITIES (Capabilities, src/systems/protocol.ts)
 // THE MATRIX MOVES. It TOGGLES two — `persistentShell` and `processGroupSignal`,
-// one row each with the fallback on. It carries `remotes` ON in every row,
-// FOLDED into row 1 rather than given a fourth pass, and it does not exercise
-// `remoteDescriptors` at all.
+// one row each with the fallback on. It carries `remotes` ON IN ROW 1 — folded
+// into an existing pass rather than given a fourth, and cleared on rows 2 and 3
+// — and it does not exercise `remoteDescriptors` at all.
 //
 //   * `remotes` is folded because a fourth pass costs a whole suite and buys the
 //     SAME field on the SAME frames. Measured: row 1 with `--remote` sends the
@@ -47,9 +47,10 @@
 // The fold is self-proving, which is why no test asserts the negotiation:
 // row 1's provider argv and its LOCAL_REMOTE_ENV binding cannot silently drift
 // apart in either direction, and both directions were measured LOUD with the
-// same signature — 1,286 failures against a green 4,059, and ~302s against ~73s.
-// Argv without binding: every unnamed frame is refused ENOREMOTE by the
-// provider's routing gate. Binding without argv: ProviderSystem's wire-level
+// same signature — 1,286 failures against a green 4,062, and ~302s against ~73s.
+// Argv without binding: every unnamed REQUEST frame is refused ENOREMOTE by the
+// provider's routing gate (which is on the requests only — a follow-on frame is
+// addressed by an id already bound to a target). Binding without argv: ProviderSystem's wire-level
 // backstop refuses EUNSUPPORTED before a frame goes out.
 //
 // The `/` root is a VACUOUS scope on purpose — the gate must not depend on where
