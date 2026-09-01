@@ -85,11 +85,20 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // one machine served for another at degraded:false.
   //
   // With the label on the entry, neither is expressible. There is exactly ONE
-  // insert site and ONE lookup site (both below), the insert always writes the
-  // label its caller was handed, and the lookup requires an exact match. A scan
-  // whose label is voided while it runs therefore cannot contribute a SERVABLE
-  // entry at all — its inserts are inert, not mislabelled — and that holds
-  // without any assumption about which other gesture fired when.
+  // insert site and ONE lookup site (both below), and the insert always writes
+  // the label its caller was handed. A scan whose label is voided while it runs
+  // therefore cannot contribute a SERVABLE entry at all — its inserts are inert,
+  // not mislabelled — and that holds without any assumption about which other
+  // gesture fired when.
+  //
+  // TWO GUARDS KEEP A RETIRED ENTRY OUT, AND THE REDUNDANCY IS DELIBERATE: the
+  // lookup refuses an entry whose label does not match, and the start-of-scan
+  // sweep in conventions() deletes it. NEITHER IS "THE" GUARD — mutation proof
+  // measured that removing either one ALONE leaves the whole suite green,
+  // because each is sufficient on its own; what breaks the invariant is removing
+  // BOTH. They are kept together because they cover it from opposite ends (one
+  // refuses to serve, one refuses to retain) for the price of a string compare,
+  // so a future edit that drops one has not silently created a hole.
   const fragmentBodyCache = new Map<string, { label: string; body: string }>();
 
   // Bumped by invalidate(). The label's two halves answer two different
@@ -114,8 +123,9 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   async function readFragment(system: System, abs: string, label: string): Promise<string> {
     const key = `${system.id}\0${system.remoteId ?? ''}\0${abs}`;
     const cached = fragmentBodyCache.get(key);
-    // An entry whose label does not match is not a hit — it is a body read under
-    // state that no longer holds, and re-reading is the only correct answer.
+    // GUARD 1 of the deliberately redundant pair above: an entry whose label
+    // does not match is not a hit — it is a body read under state that no longer
+    // holds, and re-reading is the only correct answer.
     if (cached !== undefined && cached.label === label) return cached.body;
     const body = (await system.readFile(abs)).replace(/\s+$/, '');
     fragmentBodyCache.set(key, { label, body });
@@ -263,11 +273,15 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
       return conventionsCache.value;
     }
     // This scan's label, captured before the loop and handed to every read it
-    // makes. Correctness does NOT depend on the sweep below — an entry labelled
-    // for other state can never be returned by readFragment, whether or not it
-    // is still in the map. The sweep is housekeeping: an entry that can never be
-    // served again is only occupying memory, and the map holds a handful of
-    // small .md files.
+    // makes.
+    //
+    // The sweep below is GUARD 2 of the deliberately redundant pair documented
+    // at fragmentBodyCache: it deletes every entry labelled for state that no
+    // longer holds, which readFragment would also refuse to serve. Do not read
+    // either half as merely decorative — measured, each is sufficient alone and
+    // only removing both reopens the hole — and the sweep additionally reclaims
+    // the memory of entries that can never be served again, over a map holding a
+    // handful of small .md files.
     const label = cacheLabel(fp);
     for (const [k, v] of fragmentBodyCache) {
       if (v.label !== label) fragmentBodyCache.delete(k);

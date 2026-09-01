@@ -35,11 +35,21 @@
 // and two of the triggers above leave that key byte-identical while the machine
 // behind it changes. So every cached body carries a LABEL — the state it was
 // actually read under — and only a body whose label matches the current state is
-// served. Two interleaves prove that the label cannot be dodged: T6 puts a
-// degrade between two composes (which discards the memoized result but not the
-// bodies), and T10 puts an invalidation INSIDE a scan (so the scan's own later
-// inserts are made under a claim that no longer holds). T7-T9 pin the
-// classification's safe directions, which no other test reaches.
+// served. THE LABEL HAS TWO HALVES and they are pinned by different tests,
+// because either one alone can mask the other's absence:
+//
+//   * the PLACEMENT FINGERPRINT half — T1, T3, T4, T6, T10. Two interleaves
+//     prove it cannot be dodged: T6 puts a degrade between two composes (which
+//     discards the memoized result but not the bodies), and T10 puts an
+//     invalidation INSIDE a scan (so the scan's own later inserts are made under
+//     a claim that no longer holds).
+//   * the INVALIDATION EPOCH half — T11, and only T11. It exists for what the
+//     fingerprint cannot see: the bytes at a path changing while the placement
+//     stays put. Every other interleave here follows its invalidation with a
+//     gesture that moves the fingerprint, which would mask a missing epoch, so
+//     T11 holds the fingerprint provably constant throughout.
+//
+// T7-T9 pin the classification's safe directions, which no other test reaches.
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -52,9 +62,10 @@ import { waitFor } from './plugin-helpers.mjs';
 import { createPluginHost } from '../src/plugins/registry.ts';
 import {
   createProject, adoptProject, deleteProject, setProjectRemote, projectStoreDir, orchStoreRoot,
+  placementToken,
 } from '../src/projects.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
-import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { disposeSystemHandles, systemHandleGeneration } from '../src/systems/registry.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
 import { composeProjectConventionsDoc, ensureProjectConventionsMd, conventionsTargetPath } from '../src/projectClaudeMd.ts';
 
@@ -546,6 +557,11 @@ describe('a plugin fragment follows its project, live', () => {
   // compose's own RESULT is discarded — the generation snapshot already marks it
   // stale, which is separate and older — nor that the wasted re-read a mid-scan
   // invalidation causes is avoided (it is not; correctness first).
+  //
+  // AND IT PINS ONLY THE FINGERPRINT HALF OF THE LABEL. Its trigger is an argv
+  // re-point, which bumps the handle generation, so the fingerprint alone
+  // accounts for the drop and a missing invalidation epoch would go unnoticed
+  // here. T11 is the epoch half. Neither test covers both.
   test('a body inserted by a scan that was invalidated mid-flight is not served afterwards', async () => {
     const rootC = await fs.realpath(await mkdtemp('cc-remote-park-c-'));
     const rootD = await fs.realpath(await mkdtemp('cc-remote-park-d-'));
@@ -602,5 +618,106 @@ describe('a plugin fragment follows its project, live', () => {
     assert.notEqual(bodyOf(after, 'swap-plug/frag'), 'MACHINE-C CONTENT',
       'a body cached by a scan that was invalidated mid-flight must not survive a later re-point');
     assert.ok(!JSON.stringify(after).includes('MACHINE-C CONTENT'), 'in any scope');
+  });
+
+  // T11 ────────────────────────────────────────────────────────────────
+  // THE EPOCH HALF OF THE LABEL. PINS: a body read before a mid-flight
+  // `invalidate()` and inserted after it is not servable EVEN THOUGH THE
+  // PLACEMENT FINGERPRINT NEVER MOVES — so the next compose re-reads and serves
+  // the current bytes.
+  //
+  // This is the case the fingerprint cannot see at all. A `git pull` into the
+  // same checkout, an active-version switch, or a fragment edited while its
+  // plugin sat disabled all change the BYTES at a path whose placement is
+  // untouched; `invalidate()` is the only signal that happens, and the epoch is
+  // how it reaches a body that a still-running scan is about to cache.
+  //
+  // THE FINGERPRINT IS HELD CONSTANT ON PURPOSE, and that is the whole design of
+  // this fixture. T10's trigger is an argv re-point, which bumps the handle
+  // generation — so there the fingerprint moves and would mask a missing epoch.
+  // Here the mid-scan gesture is `enable` on the ALREADY-ENABLED plugin under
+  // test: it invalidates, it writes no project record, it disposes no handle, and
+  // it leaves `contributingEntries()` byte-for-byte the same, so every input to
+  // the fingerprint is unchanged from the parked scan's own label to the final
+  // compose. It also does no wire I/O of its own (activeVersion is `main`, and
+  // the row's git probe is gated on a running backend), which is what lets it
+  // land while the provider is parked. It is a real gesture, not a contrivance:
+  // re-Enable is the documented recovery path for a fragment edited underneath a
+  // plugin.
+  //
+  // NOT CLAIMING: the mechanism — it asserts the current bytes are served, not
+  // that an epoch rather than some other signal forced the re-read. Not claiming
+  // the FINGERPRINT half, which is T10's; neither test covers both. Not claiming
+  // that a fragment edit alone (with no invalidating gesture) is picked up — it
+  // deliberately is not, which is why `invalidate()` exists and why the pull /
+  // version-switch / re-enable paths call it. And not claiming anything about the
+  // interrupted compose's own result beyond the precondition asserted inline.
+  test('a body inserted after a mid-flight invalidate is re-read even though the placement never moved', async () => {
+    const root = await fs.realpath(await mkdtemp('cc-remote-epoch-'));
+    const release = path.join(home, 'release');
+    const parked = `${release}.parked`;
+    await fs.writeFile(release, '');
+
+    const sys = await addSystem({
+      id: 'epochbox', label: 'Epoch box',
+      launch: ['node', SLOW_HELLO, '--release', release, '--remote', `e=${root}`],
+    });
+    const tree = path.join(root, 'ep');
+    await createProject('ep', { system: sys.id, remoteId: 'e', systemPath: tree });
+    await seedPluginTree(tree, 'epoch-plug', 'VERSION ONE');
+    const fragment = path.join(tree, FRAGMENT_REL);
+
+    await host.enable('epoch-plug');
+    assert.equal(bodyOf(await host.conventions(), 'epoch-plug/frag'), 'VERSION ONE');
+
+    // Park the next connect. This is the LAST thing that touches the handle
+    // generation — everything after it leaves the fingerprint alone.
+    disposeSystemHandles();
+    await fs.rm(release);
+
+    const inflight = host.conventions();
+    await waitFor(() => fs.stat(parked).then(() => true, () => false), { timeout: 8000, interval: 10 });
+
+    // Every input the placement fingerprint is built from, captured while the
+    // scan is parked — i.e. exactly the values its own label was computed from.
+    // Asserted unchanged at the end, so "the fingerprint did not move" is
+    // MEASURED here rather than asserted in a comment. Without that, this test
+    // could be passing for the fingerprint's reasons and prove nothing about the
+    // epoch.
+    const enabledIds = async () => (await host.list()).filter(r => r.enabled).map(r => r.id).sort();
+    const fpInputs = {
+      handleGeneration: systemHandleGeneration(),
+      token: await placementToken('ep'),
+      contributors: await enabledIds(),
+    };
+
+    // MID-SCAN, and the only gesture in this test: re-enable the plugin that is
+    // already enabled. It invalidates and changes nothing the fingerprint reads.
+    await host.enable('epoch-plug');
+
+    // Let the parked scan finish. It reads the fragment — still VERSION ONE on
+    // disk — and caches it under the label it started with, which the
+    // invalidation above has since retired.
+    await fs.writeFile(release, '');
+    const resumed = await inflight;
+    assert.equal(bodyOf(resumed, 'epoch-plug/frag'), 'VERSION ONE',
+      'precondition: the interrupted scan really did read and cache the pre-edit bytes after the invalidation');
+
+    // The bytes change. No placement moves, no handle is disposed, no record is
+    // written — so the fingerprint is identical to the parked scan's, and only a
+    // retired label can force the re-read below.
+    await fs.writeFile(fragment, 'VERSION TWO');
+
+    assert.deepEqual(
+      { handleGeneration: systemHandleGeneration(), token: await placementToken('ep'), contributors: await enabledIds() },
+      fpInputs,
+      'every input to the placement fingerprint is unchanged since the parked scan computed its label — '
+      + 'so the fingerprint half of the label cannot be what forces the re-read below',
+    );
+
+    const after = await host.conventions();
+    assert.equal(isDegraded(after), false, 'nothing here is a failure — the catalog stays healthy');
+    assert.equal(bodyOf(after, 'epoch-plug/frag'), 'VERSION TWO',
+      'a body cached under a label the invalidation retired must be re-read, not served');
   });
 });
