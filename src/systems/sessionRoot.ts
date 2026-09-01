@@ -493,10 +493,11 @@ async function findManifest(
       `composing the session root: listing the config surface under ${systemPath} on system `
       + `'${system.id}' produced more than ${SESSION_ROOT_LISTING_FENCE_BYTES} bytes of \`find\` output `
       + `and was stopped, so cc cannot tell which entries it did not see and will not compose a `
-      + `session root from a partial listing. This pass walked ${named}, and one of those holds an `
-      + `enormous number of files: move them out from under it, or — if CLAUDE.md named it as an `
-      + `@-import — stop importing it. Bash is unaffected and still reaches every file in the `
-      + `project: it runs on '${system.id}' rather than through the mirrored file tools.`,
+      + `session root from a partial listing. This pass walked ${named}, and the fence counts `
+      + `everything under those together — no single one of them need be the whole cause. Move `
+      + `files out from under them, or — for any that CLAUDE.md names as an @-import — stop `
+      + `importing it. Bash is unaffected and still reaches every file in the project: it runs `
+      + `on '${system.id}' rather than through the mirrored file tools.`,
     );
   }
   const out: Listed[] = [];
