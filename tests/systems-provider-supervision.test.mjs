@@ -307,27 +307,54 @@ test('dispose() reaps an exec that is still in flight', async () => {
   });
 });
 
+// TWO graces, not one, and their windows are DISJOINT — that is the whole
+// instrument. A single grace can only pin "somewhere between a bit and a lot":
+// with the deadline hardwired to its 2000ms default and the injected value
+// ignored, a lone `>= 200ms` assertion still passes at 2081ms. No single
+// constant can sit inside both [200,750] and [950,1500], so the pair pins that
+// the grace cc waits IS the grace the caller injected, rather than merely that
+// some wait happened.
+//
+// The windows come from the failure they have to catch, the way the 2000ms
+// default itself was chosen. FLOOR = grace-50ms: the timer cannot fire early,
+// so this tolerates only clock coarseness. CEILING = grace+500ms: the overhead
+// above the grace measured 8-31ms under 12 CPU spinners, and up to ~130ms in a
+// loaded whole-suite run, so the ceiling is ~4x the worst healthy tail observed
+// and still 581ms clear of the 2081ms a hardwired default produces.
+const REAP_GRACES = [
+  { graceMs: 250, floorMs: 200, ceilingMs: 750 },
+  { graceMs: 1_000, floorMs: 950, ceilingMs: 1_500 },
+];
+
 // PINS: BOTH branches of the reap — a provider in breach of the EOF-exit MUST is
-// still terminated, bounded by the grace, AND the graceful attempt genuinely
-// happens rather than being decorative. The lower bound is what makes the two
-// branches distinguishable: without it an unconditional SIGKILL passes.
+// still terminated, AND the graceful attempt genuinely happens rather than being
+// decorative, on THE DEADLINE IT WAS GIVEN. The floor makes the two branches
+// distinguishable (without it an unconditional SIGKILL passes); the disjoint
+// pair makes the injected grace load-bearing (without it a hardwired one does).
 // NOT CLAIMING: that a deaf provider's children are reaped. They cannot be —
-// that is precisely the loss the EOF-exit MUST exists to prevent.
-test('a provider that ignores stdin EOF is still SIGKILLed, on the named deadline', async () => {
-  await tmp(async (dir) => {
-    const pidFile = path.join(dir, 'provider.pid');
-    const sys = fakeSystem('deaf', { pidFile, shutdownGraceMs: 250 });
-    try {
-      await sys.connect();
-      const pid = await pidFrom(pidFile);
-      const t0 = Date.now();
-      sys.dispose();
-      assert.equal(await settle(() => !alive(pid)), true,
-        'the fallback fired: a deaf provider is still terminated');
-      assert.ok(Date.now() - t0 >= 200,
-        `and it was given its chance to exit first, not SIGKILLed on the spot (${Date.now() - t0}ms)`);
-    } finally { sys.dispose(); }
-  });
+// that is precisely the loss the EOF-exit MUST exists to prevent. Nor that the
+// DEFAULT grace is any particular length: these are injected values, and the
+// default is a judgement call, not an invariant.
+test('a provider that ignores stdin EOF is still SIGKILLed, on the grace it was given', async () => {
+  for (const { graceMs, floorMs, ceilingMs } of REAP_GRACES) {
+    await tmp(async (dir) => {
+      const pidFile = path.join(dir, 'provider.pid');
+      const sys = fakeSystem('deaf', { pidFile, shutdownGraceMs: graceMs });
+      try {
+        await sys.connect();
+        const pid = await pidFrom(pidFile);
+        const t0 = Date.now();
+        sys.dispose();
+        assert.equal(await settle(() => !alive(pid)), true,
+          `grace ${graceMs}ms: the fallback fired — a deaf provider is still terminated`);
+        const elapsed = Date.now() - t0;
+        assert.ok(elapsed >= floorMs,
+          `grace ${graceMs}ms: it was given its chance to exit first, not SIGKILLed on the spot (${elapsed}ms < ${floorMs}ms)`);
+        assert.ok(elapsed <= ceilingMs,
+          `grace ${graceMs}ms: cc waited THE INJECTED grace, not some other one (${elapsed}ms > ${ceilingMs}ms)`);
+      } finally { sys.dispose(); }
+    });
+  }
 });
 
 // ── The handshake MUSTs, enforced rather than assumed ────────────────
