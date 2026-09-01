@@ -36,6 +36,13 @@
 //   --frame-log <path>         append every frame this fixture writes, so a
 //                              test can assert what actually went ON THE WIRE
 //                              rather than trusting the fixture to have sent it
+//   --ignore-prune             strip the `( -path … ) -prune -o` clause out of
+//                              any `exec` argv before running it, emulating a
+//                              far side whose `find` does not honour the
+//                              operands cc sent. The ONLY way to exercise cc's
+//                              per-record gate on its own: against a real
+//                              `find`, prune already stopped the record and the
+//                              gate never sees one
 //
 // Every other flag goes to the real provider unchanged.
 
@@ -69,6 +76,7 @@ const extraField = takeFlag('--extra-field');
 const mirrorFile = takeValue('--mirror-file');
 const pidFile = takeValue('--pid-file');
 const frameLog = takeValue('--frame-log');
+const ignorePrune = takeFlag('--ignore-prune');
 const exclude = takeAll('--advertise-exclude');
 let mirrorRoot = takeValue('--advertise-mirror');
 
@@ -94,6 +102,18 @@ const write = (frame) => {
   process.stdout.write(encodeFrame(frame));
 };
 
+// Remove `( -path A -o -path A/* … ) -prune -o` from a find argv, leaving the
+// targets and the print action. Not "ignore the flag" — a find that lacked
+// -prune would fail the whole command; this is a find that walks everything the
+// targets cover, which is what cc's per-record gate has to survive.
+function withoutPruneClause(argv) {
+  const open = argv.indexOf('(');
+  const prune = argv.indexOf('-prune');
+  if (open === -1 || prune === -1 || prune < open) return argv;
+  const end = argv[prune + 1] === '-o' ? prune + 2 : prune + 1;
+  return [...argv.slice(0, open), ...argv.slice(end)];
+}
+
 const decoder = new NdjsonDecoder();
 let provider;
 const fatal = (msg) => {
@@ -112,6 +132,9 @@ process.stdin.on('data', (chunk) => {
     return;
   }
   for (const f of frames) {
+    if (ignorePrune && f.type === 'exec' && Array.isArray(f.argv)) {
+      f.argv = withoutPruneClause(f.argv);
+    }
     if (f.type === 'describeRemote' && advertises) {
       write(lying
         ? { type: 'error', id: f.id, code: 'EUNSUPPORTED', message: 'this provider does not describe its remotes after all' }

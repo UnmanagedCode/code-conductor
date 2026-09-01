@@ -404,7 +404,11 @@ function globLiteral(p: string): string {
 //
 // Gate 3 is the one that closes the class: it is the single point every listing
 // flows through, so a future caller cannot reintroduce the leak by finding a
-// fourth way to name a path.
+// fourth way to name a path. Against a real `find` it is INVISIBLE — prune
+// already stopped the record, so nothing arrives for it to drop — which is why
+// its own behaviour is exercised against a far side that ignores the operands
+// (`--ignore-prune` in tests/fixtures/mirrorFixtureProvider.mjs) rather than
+// left to be inferred from the outer two holding.
 async function findManifest(
   system: System, systemPath: string, targets: string[], exclude: readonly string[],
 ): Promise<Listed[]> {

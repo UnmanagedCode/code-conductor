@@ -146,3 +146,45 @@ test('the bridge refuses a local path outside the session root', async () => {
   await assert.rejects(() => bridge.pull(path.join(home, 'elsewhere.txt')), /session root/);
   await assert.rejects(() => bridge.push(path.join(home, 'elsewhere.txt')), /session root/);
 });
+
+// ── The exclude list, at the bridge itself (card 2026-0259) ──────────
+//
+// SessionRedirect refuses an excluded path before it ever calls pull or push,
+// and that refusal has its own test (tests/systems-mirror-refusal.test.mjs).
+// Double-guarded is deliberate — but each guard has to be held by something, or
+// removing one is invisible.
+//
+// PINS: the bridge refuses an excluded path ON ITS OWN, in BOTH directions, and
+// says which advertised prefix covered it. cc's own bug rather than a worker's,
+// so it throws rather than returning a refusal the worker could read — the
+// layer above is what turns an excluded path into a sentence for a model.
+//
+// NOT CLAIMING: that anything upstream ever lets one through. It cannot, which
+// is the point: this pins the inner guard so the outer one is not the only
+// thing keeping an excluded path off the wire.
+test('the bridge refuses an excluded path in both directions, naming the prefix', async () => {
+  const excluded = path.posix.join(remote.root, 'vault');
+  const scoped = new SessionPathMap(root, remote.root, [excluded]);
+  const scopedBridge = new FileBridge(await systemById(remote.id, null, 'test'), scoped);
+
+  await seed('vault/secret.txt', 'SYSTEM-SIDE-SECRET\n');
+  const local = inSession('vault/secret.txt');
+
+  for (const [op, run] of [['pull', () => scopedBridge.pull(local)], ['push', () => scopedBridge.push(local)]]) {
+    await assert.rejects(run, (e) => {
+      assert.match(e.message, new RegExp(`fileBridge\\.${op}`), 'names the operation');
+      assert.ok(e.message.includes(path.posix.join(remote.root, 'vault', 'secret.txt')),
+        `names the system path, got ${e.message}`);
+      assert.ok(e.message.includes(excluded), `names the advertised prefix, got ${e.message}`);
+      return true;
+    }, `${op} must refuse an excluded path`);
+  }
+
+  // The refusal is the exclude list's doing, not a broken fixture: the same
+  // bridge carries an unexcluded sibling perfectly well.
+  await seed('open/fine.txt', 'SYSTEM-SIDE-OPEN\n');
+  assert.equal((await scopedBridge.pull(inSession('open/fine.txt'))).kind, 'pulled');
+  assert.equal(await fs.readFile(inSession('open/fine.txt'), 'utf8'), 'SYSTEM-SIDE-OPEN\n');
+  // And no local copy of the excluded file was created on the way to refusing.
+  await assert.rejects(fs.readFile(local), 'nothing was written locally');
+});

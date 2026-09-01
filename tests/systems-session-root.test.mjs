@@ -591,3 +591,88 @@ test('an exclude inside the project is pruned at the find; one outside it is not
   assert.ok(argv.includes(path.join(remote.root, '.claude/skills')),
     'the parent target stays in the walk, so this is not the target filter');
 });
+
+// ── GATE 3 ON ITS OWN: a far side that does not honour `-prune` ──────
+//
+// The three gates in findManifest are narrowest-first, and against a real
+// `find` the outer two do all the visible work: prune stops the record on the
+// far side, so the per-record gate never sees one and dropping it changes
+// nothing observable. That makes the backstop's own behaviour untested — and it
+// is the gate that closes the class, because it is the one point every listing
+// flows through.
+//
+// The only way to exercise it is a far side that ignores the operands cc sent,
+// which is exactly the case it was written for. `--ignore-prune` strips the
+// clause out of the argv before running it.
+const MIRROR_FIXTURE = path.join(
+  path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'mirrorFixtureProvider.mjs');
+
+// PINS: when the far side enumerates an excluded path anyway, cc drops the
+// record — it reaches neither the manifest nor the disk — and it is proven that
+// the record REALLY ARRIVED, by decoding the `find` output cc received off the
+// wire. Without that last part the test would pass just as well against a far
+// side that quietly honoured prune after all.
+//
+// NOT CLAIMING: that any real `find` behaves this way, or that prune is
+// unnecessary. Prune is what keeps names, sizes and mtimes off the wire in the
+// first place; this pins what cc does when it did not work.
+test('a find that ignores -prune still cannot get an excluded path into the root', async () => {
+  await seedTree(remote.root);
+  const w = async (rel, body) => {
+    await fs.mkdir(path.dirname(path.join(remote.root, rel)), { recursive: true });
+    await fs.writeFile(path.join(remote.root, rel), body);
+  };
+  await w('.claude/skills/secret/sk.md', 'SECRET-SKILL-BYTES');
+  await w('.claude/skills/public/ok.md', 'PUBLIC-SKILL-BYTES');
+
+  const excluded = path.posix.join(remote.root, '.claude', 'skills', 'secret');
+  const frames = path.join(await mkdtemp('cc-noprune-'), 'frames.jsonl');
+  await addSystem({
+    id: 'noprune',
+    label: 'noprune',
+    launch: ['node', MIRROR_FIXTURE, '--advertise-mirror', remote.root,
+      '--advertise-exclude', excluded, '--ignore-prune', '--frame-log', frames],
+  });
+  const { root } = await composeSessionRoot({
+    system: await systemById('noprune', null, 'test'),
+    systemId: 'noprune',
+    systemPath: remote.root,
+    project: 'p',
+    worktree: null,
+  });
+
+  // THE RECORD REALLY ARRIVED. The walk's output comes back as `stdout` frames,
+  // which the fixture logs after every mutation it makes — so this is the find
+  // output cc RECEIVED, not what the fixture intended to send.
+  const logged = (await fs.readFile(frames, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const findOutput = Buffer.concat(
+    logged.filter(f => f.type === 'stdout' && typeof f.dataB64 === 'string')
+      .map(f => Buffer.from(f.dataB64, 'base64')),
+  ).toString('utf8');
+  assert.ok(findOutput.includes('.claude/skills/secret/sk.md'),
+    'the far side enumerated the excluded path — otherwise this test proves nothing');
+  assert.ok(findOutput.includes('.claude/skills/public/ok.md'),
+    'and the walk ran normally alongside it');
+
+  // AND CC DROPPED IT. Both halves: never enumerated into cc's own record of
+  // the root, and never written.
+  const manifest = JSON.parse(await fs.readFile(`${root}.manifest.json`, 'utf8'));
+  assert.equal(manifest.entries['.claude/skills/secret/sk.md'], undefined,
+    'the excluded record is absent from the manifest');
+  assert.ok(manifest.entries['.claude/skills/public/ok.md'], 'its unexcluded sibling is present');
+  await assert.rejects(fs.readFile(path.join(root, '.claude/skills/secret/sk.md')),
+    'and no bytes reached the session root');
+  assert.equal(
+    await fs.readFile(path.join(root, '.claude/skills/public/ok.md'), 'utf8'),
+    'PUBLIC-SKILL-BYTES',
+  );
+  // Sharper than "not on disk": the bytes were never even FETCHED. Every
+  // readFile payload that crossed back carries the sibling and none the secret,
+  // so the drop happened before the pull rather than after it.
+  const fetched = Buffer.concat(
+    logged.filter(f => f.type === 'data' && typeof f.dataB64 === 'string')
+      .map(f => Buffer.from(f.dataB64, 'base64')),
+  ).toString('utf8');
+  assert.ok(fetched.includes('PUBLIC-SKILL-BYTES'), 'the sibling was fetched');
+  assert.ok(!fetched.includes('SECRET-SKILL-BYTES'), 'the excluded file was never fetched');
+});
