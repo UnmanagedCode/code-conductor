@@ -545,6 +545,7 @@ as "no such file" turns one fixable fault into a fleet of misses.
 | The next operation after a death | Relaunches and redoes the handshake. Supervision is **restart-on-demand**: nothing reconnects a channel nobody is using. |
 | Repeated failures | Exponential backoff, 100 ms doubling to a 5 s ceiling. **Inside the window an operation is refused, not queued** — a caller told "unreachable" now beats one held open across a restart storm. |
 | A malformed frame | The connection is torn down and restarted like a death. |
+| cc tears the connection down (`dispose`, a protocol violation, a handshake timeout) | cc **closes the provider's stdin** and lets MUST 3 do the work, then **SIGKILLs** it if it has not exited within a bounded grace. A provider that ignores EOF is still terminated — but cc cannot reap what such a provider started, which is what MUST 3 exists to prevent. |
 | An id-less `error` frame | Connection-level: everything in flight fails with that code. |
 | **One dead remote is not a dead connection** | On a provider serving many targets, one connection carries every target's work. So a refusal ABOUT a target — `ENOREMOTE`, or any FS code from an operation on it — **MUST be id-addressed**. A provider that answered a bad `remoteId` id-lessly would tear the connection down and fail every OTHER target's in-flight operation with it. Pinned by `tests/systems-protocol-conformance.test.mjs` → "ENOREMOTE is id-addressed". |
 

@@ -5,6 +5,7 @@
 // the document alone.
 //
 //   node tests/fake-provider.mjs --mode <mode> [--count-file <p>] [--code <CODE>]
+//                                  [--pid-file <p>]
 //
 // Modes:
 //   ok            behaves (used as the "restarted successfully" half)
@@ -23,6 +24,8 @@
 //   bad-shell     says hello with an empty system.shell
 //   bad-b64       says hello, then answers an exec with a CORRUPTED payload
 //   no-datab64    says hello, then answers with a payload frame that has none
+//   deaf          says hello, then IGNORES stdin EOF — a provider in breach of
+//                 the MUST that says a provider exits when its stdin closes
 //   flood-read    says hello, then answers a readFile with FAR more data than
 //                 was asked for and never an `end` — the shape that makes cc's
 //                 own accumulation, not the far side, the thing that runs out
@@ -38,6 +41,9 @@ const opt = (name, dflt) => {
 const mode = opt('--mode', 'ok');
 const countFile = opt('--count-file', null);
 const code = opt('--code', 'EPROTO');
+// How a test learns this process's pid without an exec — `deaf` spawns nothing.
+const pidFile = opt('--pid-file', null);
+if (pidFile) writeFileSync(pidFile, String(process.pid));
 
 // Launch counter: how a test proves cc did (or did not) attempt a restart.
 let launch = 1;
@@ -63,7 +69,10 @@ process.stdin.on('data', (chunk) => {
     if (line) handle(JSON.parse(line));
   }
 });
-process.stdin.on('end', () => process.exit(0));
+// Every other mode honours the EOF-exit MUST; `deaf` breaks it deliberately and
+// holds its event loop open so cc's SIGKILL fallback is the only way it dies.
+if (mode === 'deaf') setInterval(() => {}, 1_000);
+else process.stdin.on('end', () => process.exit(0));
 
 function handle(f) {
   if (f.type === 'hello') {

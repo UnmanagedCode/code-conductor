@@ -56,12 +56,23 @@ export interface ConnectionOptions {
   // so an ETRANSPORT can quote why the provider died instead of just that it
   // did.
   stderrTailBytes?: number;
+  // How long a provider gets to honour the EOF it was just sent before cc
+  // SIGKILLs it. See #reap.
+  shutdownGraceMs?: number;
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 const DEFAULT_RESTART_BASE_MS = 100;
 const DEFAULT_RESTART_MAX_MS = 5_000;
 const DEFAULT_STDERR_TAIL = 4 * 1024;
+// Chosen from the BROKEN case, not the healthy one (card 2026-0268 §B.2). Too
+// short and a healthy-but-stalled provider is killed before it can shut down,
+// and the orphan bug returns silently; too long and a provider already in breach
+// of the protocol delays only its own reaping. The healthy exit measured ~15ms
+// (worst 22ms under load), so this absorbs a two-order-of-magnitude stall, and
+// it stays under DEFAULT_HANDSHAKE_TIMEOUT_MS so a misbehaving provider's whole
+// lifecycle is bounded by limits this file already sets.
+const DEFAULT_SHUTDOWN_GRACE_MS = 2_000;
 
 export class ProviderConnection {
   readonly #launch: ProviderLaunch;
@@ -70,6 +81,7 @@ export class ProviderConnection {
   readonly #restartBaseMs: number;
   readonly #restartMaxMs: number;
   readonly #stderrTailBytes: number;
+  readonly #shutdownGraceMs: number;
 
   #child: ChildProcess | null = null;
   #decoder = new NdjsonDecoder();
@@ -96,6 +108,7 @@ export class ProviderConnection {
     this.#restartBaseMs = opts.restartBaseMs ?? DEFAULT_RESTART_BASE_MS;
     this.#restartMaxMs = opts.restartMaxMs ?? DEFAULT_RESTART_MAX_MS;
     this.#stderrTailBytes = opts.stderrTailBytes ?? DEFAULT_STDERR_TAIL;
+    this.#shutdownGraceMs = opts.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
   }
 
   // Ids are per-connection and monotonic. They are never reused, so a late
@@ -303,8 +316,32 @@ export class ProviderConnection {
     const ops = [...this.#ops.values()];
     this.#ops.clear();
     this.#keepAlive = 0;
-    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    this.#reap(child);
     for (const op of ops) op.down(err);
+  }
+
+  // How a provider is REAPED, and it is the protocol's own answer: stdin EOF,
+  // with SIGKILL only as the fallback for a provider that ignores it.
+  //
+  // SIGKILL alone is not enough and never was (card 2026-0268 §A). A SIGKILLed
+  // provider runs no shutdown code, so a login shell that is BUSY — not reading
+  // its stdin, because a foreground command holds it — never sees the pipe close
+  // and survives with its command. An IDLE shell is reaped either way, which is
+  // why only a live operation at teardown ever leaked.
+  #reap(child: ChildProcess): void {
+    // Nothing to reap: the spawn itself failed (no pid), or the child is the
+    // thing that told us it was gone. Arming a deadline here would hold the
+    // event loop open on the one path where there is no process at all.
+    if (child.pid === undefined) return;
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    // Safe into a corpse: writing to a broken pipe surfaces as an ASYNCHRONOUS
+    // 'error' on the stream, which the stdin handler installed in #connect
+    // absorbs — measured, not assumed.
+    try { child.stdin?.end(); } catch { /* the pipe is already gone */ }
+    const kill = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, this.#shutdownGraceMs);
+    child.once('exit', () => clearTimeout(kill));
   }
 
   // Open a multiplexed operation. `keepAlive:false` is for a LONG-LIVED

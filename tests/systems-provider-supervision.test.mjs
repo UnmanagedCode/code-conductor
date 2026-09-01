@@ -20,16 +20,43 @@ import { rmrf } from './rmrf.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(__dirname, 'fake-provider.mjs');
 
-function fakeSystem(mode, { countFile, code, ...opts } = {}) {
+function fakeSystem(mode, { countFile, code, pidFile, ...opts } = {}) {
   const argv = ['node', FAKE, '--mode', mode];
   if (countFile) argv.push('--count-file', countFile);
   if (code) argv.push('--code', code);
+  if (pidFile) argv.push('--pid-file', pidFile);
   return new ProviderSystem({ id: 'fake', launch: { argv }, ...opts });
 }
 
 async function tmp(fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-supervision-'));
   try { return await fn(dir); } finally { await rmrf(dir); }
+}
+
+// Copied rather than imported from tests/helpers.mjs: that module pulls in
+// server.ts, and this suite deliberately boots nothing.
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+async function settle(pred, ms = 5_000) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (pred()) return true;
+    await new Promise(r => setTimeout(r, 25));
+  }
+  return pred();
+}
+
+// A pid a command wrote for itself, once the write has landed.
+async function pidFrom(file) {
+  const until = Date.now() + 5_000;
+  while (Date.now() < until) {
+    try {
+      const pid = Number((await fs.readFile(file, 'utf8')).trim());
+      if (pid > 0) return pid;
+    } catch { /* not written yet */ }
+    await new Promise(r => setTimeout(r, 10));
+  }
+  throw new Error(`no pid appeared in ${file}`);
 }
 
 test('a provider speaking a protocol version cc does not is REFUSED, naming both versions', async () => {
@@ -216,6 +243,124 @@ test('dispose() takes the provider process down with it', async () => {
     catch { live = false; }
   }
   assert.equal(live, false, 'the provider process is gone');
+});
+
+// A LIVE operation at teardown is what the SIGKILL could not reap (card
+// 2026-0268 §A): an idle login shell dies with its stdin pipe, but a shell
+// running a foreground command is not reading stdin and never sees the close.
+// The three pins below are the two halves of that, plus the fallback for a
+// provider that ignores EOF entirely.
+
+// PINS: after dispose(), neither the provider's login shell nor a command still
+// running inside it survives — cc reaps a BUSY provider, not only an idle one.
+// NOT CLAIMING: anything about a provider that ignores stdin EOF (the deaf-mode
+// test below owns that), and nothing about grandchildren when processGroupSignal
+// is false — that is the advertised descendantsMaySurvive limit.
+test('dispose() reaps a shell that is still running a command', async () => {
+  await tmp(async (dir) => {
+    const sys = new ProviderSystem({ id: 'ref', launch: { argv: providerArgv() } });
+    const cwd = await fs.realpath(dir);
+    const pidFile = path.join(cwd, 'cmd.pid');
+    let running;
+    try {
+      await sys.connect();
+      const sh = sys.shell({ cwd });
+      // Braces, not a subshell: `$$` is the login shell the provider launched.
+      const shellPid = Number((await sh.run('echo $$')).stdout.trim());
+      assert.ok(shellPid > 0, 'the login shell named itself');
+      // Deliberately not awaited — and its rejection is swallowed at creation,
+      // because the dispose below is what fails it (ESHELLGONE, the documented
+      // close-mid-command behaviour) and that is the point of the test.
+      running = sh.run(`sleep 30 & echo $! > ${pidFile}; wait`).catch(() => {});
+      const cmdPid = await pidFrom(pidFile);
+      sys.dispose();
+      assert.equal(await settle(() => !alive(shellPid)), true, 'the login shell was reaped');
+      assert.equal(await settle(() => !alive(cmdPid)), true, 'and so was the command inside it');
+    } finally {
+      sys.dispose();
+      await running?.catch(() => {});
+    }
+  });
+});
+
+// PINS: the reaping covers the plain one-shot `exec` path too, not just the
+// persistent shell — a different cc-side code path, which leaks independently.
+// NOT CLAIMING: anything about how exec's promise settles; it never rejects, by
+// design.
+test('dispose() reaps an exec that is still in flight', async () => {
+  await tmp(async (dir) => {
+    const sys = new ProviderSystem({ id: 'ref', launch: { argv: providerArgv() } });
+    const cwd = await fs.realpath(dir);
+    const pidFile = path.join(cwd, 'cmd.pid');
+    let running;
+    try {
+      await sys.connect();
+      // Deliberately not awaited. exec never rejects, so nothing to swallow.
+      running = sys.exec({ shell: `sleep 30 & echo $! > ${pidFile}; wait` }, { cwd });
+      const cmdPid = await pidFrom(pidFile);
+      sys.dispose();
+      assert.equal(await settle(() => !alive(cmdPid)), true, 'the in-flight command was reaped');
+    } finally {
+      sys.dispose();
+      await running?.catch(() => {});
+    }
+  });
+});
+
+// TWO graces, not one, and their windows are DISJOINT — that is the whole
+// instrument. A single grace can only pin "somewhere between a bit and a lot":
+// with the deadline hardwired to its 2000ms default and the injected value
+// ignored, a lone `>= 200ms` assertion still passes at 2081ms. No single
+// hardwired constant can sit inside both [200,750] and [950,1500], so the pair
+// excludes every FIXED deadline — which one bound cannot — rather than merely
+// showing that some wait happened. That, exactly, is what it establishes.
+//
+// The windows come from the failure they have to catch, the way the 2000ms
+// default itself was chosen. FLOOR = grace-50ms: the timer cannot fire early,
+// so this tolerates only clock coarseness. CEILING = grace+500ms: the overhead
+// above the grace measured 8-31ms under 12 CPU spinners, and up to ~130ms in a
+// loaded whole-suite run, so the ceiling is ~4x the worst healthy tail observed
+// and still 581ms clear of the 2081ms a hardwired default produces.
+const REAP_GRACES = [
+  { graceMs: 250, floorMs: 200, ceilingMs: 750 },
+  { graceMs: 1_000, floorMs: 950, ceilingMs: 1_500 },
+];
+
+// PINS: BOTH branches of the reap — a provider in breach of the EOF-exit MUST is
+// still terminated, AND the graceful attempt genuinely happens rather than being
+// decorative. The floor makes the two branches distinguishable (without it an
+// unconditional SIGKILL passes); the disjoint pair makes the deadline DEPEND on
+// the injected value, by ruling out every hardwired constant (without it one
+// passes).
+// NOT CLAIMING: that a deaf provider's children are reaped. They cannot be —
+// that is precisely the loss the EOF-exit MUST exists to prevent. Nor that the
+// DEFAULT grace is any particular length: these are injected values, and the
+// default is a judgement call, not an invariant. Nor that cc waits EXACTLY the
+// grace it was given: the windows carry deliberate load tolerance, so a
+// transform of the injected value that lands inside both is not excluded —
+// `max(grace, 500ms)` is the measured example. Tightening them to catch it
+// would collide with the ~130ms loaded overhead above, trading a contrived
+// transform for a real flake, and the option has no caller but this test.
+test('a provider that ignores stdin EOF is still SIGKILLed, on the grace it was given', async () => {
+  for (const { graceMs, floorMs, ceilingMs } of REAP_GRACES) {
+    await tmp(async (dir) => {
+      const pidFile = path.join(dir, 'provider.pid');
+      const sys = fakeSystem('deaf', { pidFile, shutdownGraceMs: graceMs });
+      try {
+        await sys.connect();
+        const pid = await pidFrom(pidFile);
+        const t0 = Date.now();
+        sys.dispose();
+        assert.equal(await settle(() => !alive(pid)), true,
+          `grace ${graceMs}ms: the fallback fired — a deaf provider is still terminated`);
+        const elapsed = Date.now() - t0;
+        assert.ok(elapsed >= floorMs,
+          `grace ${graceMs}ms: it was given its chance to exit first, not SIGKILLed on the spot (${elapsed}ms < ${floorMs}ms)`);
+        assert.ok(elapsed <= ceilingMs,
+          `grace ${graceMs}ms: cc waited THE INJECTED grace, not some other one (${elapsed}ms > ${ceilingMs}ms)`);
+      } finally { sys.dispose(); }
+    });
+  }
 });
 
 // ── The handshake MUSTs, enforced rather than assumed ────────────────
