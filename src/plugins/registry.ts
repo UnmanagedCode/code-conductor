@@ -188,9 +188,9 @@ export function createPluginHost(opts: {
     // scan's window, and what it must see there is the PREVIOUS scan's `byId`
     // and the PREVIOUS scan's unreachable set, which are a consistent pair
     // describing one catalog. An in-place map is empty at that moment while
-    // the box is already known-down — the reverse of the guarantee this exists
-    // to add — and a scan that throws part-way would leave a half-built answer
-    // standing instead of the last complete one.
+    // the resolution failure is already known — the reverse of the guarantee
+    // this exists to add — and a scan that throws part-way would leave a
+    // half-built answer standing instead of the last complete one.
     const unreachable = new Map<string, string>();
     for (const p of projects) {
       // Through the project's System. A project whose system cannot be reached
@@ -825,8 +825,10 @@ export function createPluginHost(opts: {
   //
   // AND THE CONVERSE, WHICH IS THE HONEST LIMIT: an enabled record does NOT
   // establish that the plugin would have contributed anything. The manifest is
-  // exactly the file the unreachable box withheld, so this flags a strict
-  // SUPERSET of what the compose path flags — see the policy block above
+  // exactly the file the scan never got to read — the project did not RESOLVE,
+  // which is all cc has established, and which covers a box that is down and a
+  // remote record with no systemPath alike — so this flags a strict SUPERSET
+  // of what the compose path flags — see the policy block above
   // conventions() in contributions.ts (card 2026-0272).
   //
   // Both terms are read live, so neither can go stale into a MISSED degrade.

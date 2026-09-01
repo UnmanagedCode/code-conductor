@@ -225,18 +225,21 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // id, and a non-null manifest (all three in contributingEntries,
   // registry.ts), a non-empty `conventions` list (the `list.length === 0`
   // continue below), and store.isEnabled. FOUR of the five are read out of the
-  // manifest — exactly the file the unreachable box withheld — so at scan time
-  // all four are unknowable. Only store.isEnabled is answerable, off cc's own
-  // disk, and the persisted record it reads is `{project, enabled,
-  // activeVersion}` and nothing else, identically for a plugin declaring
-  // conventions and one declaring none. This is not a stale-unsafe term being
-  // refused; there is no such term.
+  // manifest — exactly the file the scan never got to read, because the
+  // project did not resolve through its System (a box that is down and a
+  // remote record with no systemPath both land here; cc has established that
+  // the resolution failed, not what caused it) — so at scan time all four are
+  // unknowable. Only store.isEnabled is answerable, off cc's own disk, and the
+  // persisted record it reads is `{project, enabled, activeVersion}` and
+  // nothing else, identically for a plugin declaring conventions and one
+  // declaring none. This is not a stale-unsafe term being refused; there is no
+  // such term.
   //
   // So the scan-time flag is a strict SUPERSET: an enabled plugin in an
-  // unreachable project degrades the catalog even if, had the box been up, its
-  // manifest would have turned out invalid, incompatible, id-less, or simply
-  // free of any conventions entry — every one of which is skipped here at
-  // degraded:false. That direction is the safe one and is chosen deliberately:
+  // unresolvable project degrades the catalog even if, had the project
+  // resolved, its manifest would have turned out invalid, incompatible,
+  // id-less, or simply free of any conventions entry — every one of which is
+  // skipped here at degraded:false. That direction is the safe one and is chosen deliberately:
   // over-flagging costs a freeze, which the next Rescan clears; under-flagging
   // rewrites a committed CONVENTIONS.md, which is the defect.
   //
@@ -311,15 +314,17 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // discoveryDegraded() goes false — a clean rescan, or the affected plugin
   // being disabled.
   //
-  // The cost of re-scanning while EITHER holds is small, and small in the same
-  // units as a memo hit rather than negligible: a memo hit is not free (it
-  // still builds the placement fingerprint and stats every cached dir), and
-  // measured over five contributing plugins a bypassed call ran roughly 0.5x
-  // to 2x a hit's cost run to run — tens of milliseconds extra across a
-  // 50-project boot fan-out. Don't take a tighter number from here; it moves
-  // that much between runs on one machine. For the compose-sourced case the
-  // cost is additionally bounded by the fact that a degraded catalog is
-  // exactly the state in which the fan-out it feeds does not write.
+  // The cost of re-scanning while EITHER holds is the same ORDER as a memo
+  // hit, not a different one — a hit is not free either, since it still builds
+  // the placement fingerprint and stats every cached dir. What the bypassed
+  // call adds is placement re-resolution, so it scales with the number of
+  // contributing plugins. NO NUMBER IS QUOTED HERE ON PURPOSE: both the hit
+  // and the bypass move enough run to run that successive benches of this have
+  // produced mutually contradictory ratios, in both directions. Measure it in
+  // your own conditions if you need one, and don't write the answer down here.
+  // For the compose-sourced case the cost is additionally
+  // bounded by the fact that a degraded catalog is exactly the state in which
+  // the fan-out it feeds does not write.
   //
   // The RETURNED OBJECT IS SHARED BY REFERENCE — callers must treat it as
   // read-only. Both consumers do: fragmentCatalog.ts reads `.degraded` and then

@@ -267,16 +267,23 @@ describe('a discovery scan that could not reach a project says so', () => {
   });
 
   // D5 ─────────────────────────────────────────────────────────────────
-  // PINS: recovery is a RESCAN. The flag is latched to the last completed
-  // scan, so a box coming back does not clear it on its own; a rescan does,
-  // and the fragment returns with it.
+  // PINS BOTH HALVES OF THE LATCH, in order. First: the box coming back does
+  // NOT clear the flag on its own — the assertion between boxUp() and the
+  // rescan observes that state directly, which is what rules out re-probing
+  // reachability at read time. Second: a rescan does clear it, and the
+  // fragment returns with it.
+  //
+  // The first assertion is the one that carries the design decision. Without
+  // it a read-time re-probe of the recorded unreachable set would satisfy
+  // every other test in this file.
   //
   // NOT CLAIMING: that the rescan succeeds on the immediately-next call —
   // ProviderConnection opens a backoff window after a failed connect and
-  // refuses inside it, which is what the waitFor here is bounded against. Nor
-  // that the pre-rescan call is the ONLY thing keeping the flag up: with the
-  // box back and the plugin gone from the catalog, a compose could not have
-  // re-read it either.
+  // refuses inside it, which is what the waitFor here is bounded against. And
+  // NOT claiming that the compose loop was in a position to re-probe anything
+  // here: the plugin is out of the catalog by then, so the only thing a
+  // read-time probe could consult is the recorded unreachable set — which is
+  // exactly what this pins is never consulted for liveness.
   test('a rescan after the box comes back clears the degrade and restores the fragment', async () => {
     const tree = await boxProject('gp');
     await seedPluginTree(tree, manifest('gated-plug'), 'GATED CONTENT');
@@ -288,6 +295,9 @@ describe('a discovery scan that could not reach a project says so', () => {
     assert.equal(isDegraded(await host.conventions()), true);
 
     await boxUp();
+    assert.equal(isDegraded(await host.conventions()), true,
+      'the box is back and nothing has rescanned — the flag is latched to the last completed scan, not re-derived from reachability at read time');
+
     const recovered = await waitFor(async () => {
       await host.rescan();
       const g = await host.conventions();
@@ -342,8 +352,9 @@ describe('a discovery scan that could not reach a project says so', () => {
   // user's only cue that Rescan is what clears the freeze.
   //
   // NOT CLAIMING: that the row's `state` changed (it stays `invalid`); that
-  // the string distinguishes an unreachable box from a broken project record
-  // (it deliberately does not — the resolver's own text is what carries that);
+  // the WRAPPER distinguishes an unreachable System from a broken project
+  // record (it deliberately does not — the reason it carries is what does,
+  // which is why the reason is asserted below rather than taken on trust);
   // that a genuinely-gone project's row changed — plugins-registry.test.mjs
   // covers that case and is unedited, which makes it the guard that this
   // string cannot leak into it.
@@ -363,6 +374,15 @@ describe('a discovery scan that could not reach a project says so', () => {
     assert.match(err, /Rescan to retry/);
     assert.ok(!/no longer present/.test(err),
       `the row must not claim the project or manifest is gone: ${err}`);
+
+    // AND THE REASON ITSELF, which is the only thing in the string that tells
+    // an unreachable System apart from a broken project record — the template
+    // clauses above are identical for both. A regression dropping the
+    // interpolation leaves an empty slot and still satisfies them.
+    const reason = err.match(/manifest was not read: (.+)\. Rescan to retry\.$/)?.[1];
+    assert.ok(reason, `the resolver's own reason must be carried, not an empty slot: ${err}`);
+    assert.match(reason, /is on system 'gatedbox', which cannot be reached/,
+      'and carried verbatim: the system id appears nowhere in the wrapper, so its presence is proof the resolver\'s text was passed through');
   });
 
   // D8 ─────────────────────────────────────────────────────────────────

@@ -79,7 +79,8 @@ export interface CatalogEntry {
 // causes: the extraProvider threw outright, a plugin's own cwd resolution
 // failed, or the last discovery scan could not reach the project an enabled
 // plugin lives in (so its manifest was never read and the plugin is not in the
-// catalog at all; that one stands until the next rescan). NOT a vanished
+// catalog at all; that one stands until a rescan rebuilds the catalog, or the
+// plugin it flags on is disabled). NOT a vanished
 // fragment/scaffold file, which is a different, already-accepted case that just
 // contributes nothing — and not because it is genuinely absent/disabled. A
 // caller that treats "not in the catalog" as "safe to drop" (e.g.
