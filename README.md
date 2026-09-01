@@ -123,7 +123,7 @@ CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
   node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 ```
 
-- **`npm run gate:systems`** — the whole suite once per configuration in `CONFIGS` (`tests/systems-gate.mjs`, which owns the list): all capabilities on, then `persistentShell` off, then `processGroupSignal` off. Those two fallbacks are therefore proved to execute rather than merely to exist. The gate does **not** vary `remotes`: its provider argv carries no `--remote`, so that capability is absent in every configuration.
+- **`npm run gate:systems`** — the whole suite once per configuration in `CONFIGS` (`tests/systems-gate.mjs`, which owns the list): `persistentShell`+`processGroupSignal`+`remotes` on, then `persistentShell` off, then `processGroupSignal` off. Those two fallbacks are therefore proved to execute rather than merely to exist. The first configuration also carries `--remote`, so every project-scoped operation in that pass is **target-bound** — folded into it rather than given a fourth pass, since a separate pass costs a whole suite and puts the same field on the same frames. The gate does **not** vary `remoteDescriptors`: `mirror()` is unreachable for the system id `local` whatever backs it, so a `--mirror` configuration receives no `describeRemote` frame at all.
 - **`CC_LOCAL_SYSTEM_PROVIDER='["your-provider"]' npm test`** — swaps the in-process `local` system for a `ProviderSystem` over the named command, so **every project-scoped operation in cc runs over the protocol** and nothing in the suite knows it. This is the seam `gate:systems` drives.
 
 Two Systems suites are opt-in because they need something the repo does not ship:

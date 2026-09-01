@@ -6,6 +6,12 @@
 // That is what makes `npm test` alone prove both fallbacks; the three-way whole-
 // suite gate (`npm run gate:systems`) then proves that the protocol is
 // SUFFICIENT for the rest of the app in each of them.
+//
+// THIS MATRIX AND THE GATE'S ARE TWO MATRICES, NOT ONE, and deliberately differ.
+// This is a UNIT matrix over the two TOGGLED capabilities, so its first entry
+// stays `remotes:false` and the remotes tests launch their own providers. The
+// gate's first row additionally carries `--remote` (card 2026-0266); do not
+// unify the two lists to make them agree.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,9 +29,10 @@ export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', '
 //   CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
 //     node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 //
-// The capability flags below are APPENDED to that argv, so a provider being
-// verified has to accept `--no-persistent-shell` / `--no-process-group-signal`
-// (or map them) to be exercised in all three configurations. Nothing in the
+// The capability flags below are APPENDED to that argv — exactly the two `--no-*`
+// flags and nothing else, so a provider being verified has to accept
+// `--no-persistent-shell` / `--no-process-group-signal` (or map them) to be
+// exercised in all three configurations. Nothing in the
 // suite is otherwise specific to the reference provider — that is what makes
 // "the conformance suite is the definition of a valid provider" true rather
 // than aspirational.
@@ -54,15 +61,19 @@ export const IS_REFERENCE_PROVIDER = !process.env[PROVIDER_ARGV_ENV]?.trim();
 // another machine needs the fixtures built over the protocol too — a bigger
 // change than this harness, and out of scope until a transport exists.
 //
-// The three configurations of the acceptance gate. `caps` is what the handshake
-// must report, so a test can assert the negotiation rather than trust the flag.
+// The three UNIT configurations. `caps` is what the handshake must report, so a
+// test can assert the negotiation rather than trust the flag.
+//
 // None of them passes `--remote` or `--mirror`, so all three report
-// `remotes:false` and `remoteDescriptors:false` — the gate varies the LOCAL
-// system's capabilities, and `local` never carries a remote nor advertises a
-// mirror (LocalSystem.mirror() is unconditionally empty). Both of those have
-// their own multi-target/mirror fixtures: tests/systems-remote-id.test.mjs and
-// tests/systems-mirror-advertisement.test.mjs register their own systems, which
-// work under every configuration here.
+// `remotes:false` and `remoteDescriptors:false`. That is a property of THIS
+// matrix, not of the gate's — see the divergence note at the top of the file.
+// `remotes` and `remoteDescriptors` have their own multi-target/mirror fixtures,
+// which register their own systems and work under every configuration here:
+// tests/systems-remote-id.test.mjs and
+// tests/systems-mirror-advertisement.test.mjs. For `remoteDescriptors` the
+// present-behaviour is unreachable through the LOCAL system whatever backs it —
+// mirror()'s only consumer is composeSessionRoot, and both its call sites sit
+// behind a redirect placement gated on `id !== LOCAL_SYSTEM_ID`.
 export const CAPABILITY_CONFIGS = [
   {
     name: 'all capabilities',

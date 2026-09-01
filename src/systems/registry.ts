@@ -68,6 +68,19 @@ export const MANAGED_SYSTEM_IDS: readonly string[] = MANAGED_SYSTEMS.map(s => s.
 // value that is not a JSON array is taken as a bare executable path.
 export const LOCAL_PROVIDER_ENV = 'CC_LOCAL_SYSTEM_PROVIDER';
 
+// WHICH TARGET of that stand-in provider the `local` handle is bound to, and
+// GATE-ONLY. It exists so the acceptance gate can run the whole application
+// against a provider that serves NAMED targets — a shape `placementOf` will
+// never produce for `local` in production, and therefore a shape no whole-suite
+// pass could otherwise reach (card 2026-0266).
+//
+// A sibling of LOCAL_PROVIDER_ENV above, not a new category: it is inert without
+// it, and can only ever modify the already-test-only stand-in. The guard is
+// STRUCTURAL — buildLocalSystem returns the in-process LocalSystem before it
+// reads this variable, so setting it alone cannot bind cc's own machine. Pinned
+// by tests/systems-local.test.mjs.
+export const LOCAL_REMOTE_ENV = 'CC_LOCAL_SYSTEM_REMOTE_ID';
+
 // `varName` is the setting the value came FROM, so a typo is reported against
 // the variable the reader actually set — the conformance harness parses
 // CC_CONFORMANCE_PROVIDER through here too, and naming the wrong one sends them
@@ -86,8 +99,11 @@ export function parseProviderLaunch(spec: string, varName: string = LOCAL_PROVID
 
 function buildLocalSystem(): System {
   const spec = process.env[LOCAL_PROVIDER_ENV];
+  // THIS RETURN IS THE GUARD, and its position is the whole of it: the real
+  // in-process system leaves before LOCAL_REMOTE_ENV is ever looked at.
   if (!spec?.trim()) return new LocalSystem();
-  return new ProviderSystem({ id: LOCAL_SYSTEM_ID, launch: { argv: parseProviderLaunch(spec) } });
+  const remoteId = process.env[LOCAL_REMOTE_ENV]?.trim() || null;
+  return new ProviderSystem({ id: LOCAL_SYSTEM_ID, remoteId, launch: { argv: parseProviderLaunch(spec) } });
 }
 
 // One instance for the process: a System handle is a connection, not a value,
