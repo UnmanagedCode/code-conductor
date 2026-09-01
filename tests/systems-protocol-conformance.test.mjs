@@ -608,14 +608,29 @@ test('describeRemote for an unknown remote is an id-addressed ENOREMOTE', async 
 // neutral one.
 test('an unrecognised field on a remoteDescriptor is ignored, not an error', async () => {
   const fixture = path.join(
-    path.dirname(new URL(import.meta.url).pathname), 'fixtures', 'extraFieldMirrorProvider.mjs');
+    path.dirname(new URL(import.meta.url).pathname), 'fixtures', 'mirrorFixtureProvider.mjs');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-extrafield-'));
+  const frameLog = path.join(dir, 'frames.jsonl');
   const sys = new (await import('../src/systems/providerSystem.ts')).ProviderSystem({
-    id: 'extra', launch: { argv: ['node', fixture] },
+    id: 'extra',
+    launch: {
+      argv: ['node', fixture, '--advertise-mirror', '/srv', '--advertise-exclude', '/srv/tmp',
+        '--extra-field', '--frame-log', frameLog],
+    },
   });
   try {
     assert.equal((await sys.connect()).capabilities.remoteDescriptors, true);
     assert.deepEqual(await sys.mirror(), { mirrorRoot: '/srv', exclude: ['/srv/tmp'] });
   } finally { sys.dispose(); }
+  // THE FIELD WAS ACTUALLY SENT. Without this the assertion above passes just as
+  // well against a fixture that stopped adding the field, which would leave the
+  // extension point unpinned while looking covered.
+  const sent = (await fs.readFile(frameLog, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const descriptor = sent.find(f => f.type === 'remoteDescriptor');
+  assert.ok(descriptor, 'the fixture answered describeRemote');
+  assert.deepEqual(descriptor.somethingCcHasNeverHeardOf, { nested: [1, 2, 3] },
+    'the unrecognised field really crossed the wire');
+  await rmrf(dir);
 });
 
 test('a write above the protocol cap is refused before a byte reaches the wire', async () => {

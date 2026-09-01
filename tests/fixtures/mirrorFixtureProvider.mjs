@@ -26,10 +26,20 @@
 //                              a restart may change it
 //   --pid-file <path>          this process's pid, so a test can end a
 //                              generation deliberately rather than by waiting
+//   --advertise-mirror <abs>   the advertised mirrorRoot, given directly. The
+//                              same thing --mirror-file names; that one exists
+//                              only for the case where the answer must survive
+//                              a restart and change with it
+//   --advertise-exclude <abs>  an advertised exclude entry (repeatable)
+//   --extra-field              add a field cc has never heard of to the
+//                              `remoteDescriptor` answer
+//   --frame-log <path>         append every frame this fixture writes, so a
+//                              test can assert what actually went ON THE WIRE
+//                              rather than trusting the fixture to have sent it
 //
 // Every other flag goes to the real provider unchanged.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { NdjsonDecoder, SystemError, encodeFrame } from '../../src/systems/protocol.ts';
 import { ReferenceProvider, parseProviderArgs } from '../../src/systems/referenceProvider.ts';
 
@@ -48,12 +58,21 @@ const takeValue = (flag) => {
   return v;
 };
 
+const takeAll = (flag) => {
+  const out = [];
+  for (let v = takeValue(flag); v !== null; v = takeValue(flag)) out.push(v);
+  return out;
+};
+
 const lying = takeFlag('--lie-remote-descriptors');
+const extraField = takeFlag('--extra-field');
 const mirrorFile = takeValue('--mirror-file');
 const pidFile = takeValue('--pid-file');
+const frameLog = takeValue('--frame-log');
+const exclude = takeAll('--advertise-exclude');
+let mirrorRoot = takeValue('--advertise-mirror');
 
-let mirrorRoot = null;
-if (mirrorFile !== null) {
+if (mirrorRoot === null && mirrorFile !== null) {
   try { mirrorRoot = readFileSync(mirrorFile, 'utf8').trim() || null; } catch { /* advertise nothing */ }
 }
 if (pidFile) writeFileSync(pidFile, String(process.pid));
@@ -61,7 +80,7 @@ if (pidFile) writeFileSync(pidFile, String(process.pid));
 // Advertise the capability only when there is something to say (or a lie to
 // tell), so an empty mirror file is byte-identical to a provider that never
 // heard of the frame.
-const advertises = lying || mirrorRoot !== null;
+const advertises = lying || extraField || mirrorRoot !== null;
 
 process.stdout.on('error', () => process.exit(0));
 
@@ -69,6 +88,9 @@ const write = (frame) => {
   if (frame.type === 'hello' && advertises) {
     frame = { ...frame, capabilities: { ...(frame.capabilities ?? {}), remoteDescriptors: true } };
   }
+  // Logged BEFORE the write and after every mutation this fixture makes, so the
+  // log is what cc received rather than what the fixture was asked to send.
+  if (frameLog) appendFileSync(frameLog, `${JSON.stringify(frame)}\n`);
   process.stdout.write(encodeFrame(frame));
 };
 
@@ -93,7 +115,12 @@ process.stdin.on('data', (chunk) => {
     if (f.type === 'describeRemote' && advertises) {
       write(lying
         ? { type: 'error', id: f.id, code: 'EUNSUPPORTED', message: 'this provider does not describe its remotes after all' }
-        : { type: 'remoteDescriptor', id: f.id, mirrorRoot });
+        : {
+          type: 'remoteDescriptor', id: f.id, mirrorRoot, exclude,
+          // Neutral, deliberately: this pins that ANY unknown field is inert,
+          // not that some particular name is reserved.
+          ...(extraField ? { somethingCcHasNeverHeardOf: { nested: [1, 2, 3] } } : {}),
+        });
       continue;
     }
     provider.handle(f);

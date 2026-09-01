@@ -47,9 +47,10 @@ Provider MUSTs:
 ### The POSIX assumption
 
 The target is a **competent POSIX environment with GNU coreutils**: `stat`,
-`find` with `-printf` (and POSIX `-path`/`-prune`, which the session-root walk
-uses to skip an advertised exclude), `mkdir`, `rm`, `unlink`, `realpath`, `chmod`, `base64`,
-`tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
+`find` with `-printf` (plus POSIX `-path`/`-prune`, which the session-root walk
+uses to skip an advertised exclude — not a new bar: `-printf` is the stricter
+requirement, and a target that has it has these), `mkdir`, `rm`, `unlink`,
+`realpath`, `chmod`, `base64`, `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
 provider contract to **three** operations: everything else on cc's own `System`
 interface (`src/systems/system.ts` — the members beyond `exec`, `readFile` and
 `readFileBytes`/`writeFile`) is DERIVED by cc over `exec`, listed in §7. The
