@@ -15,7 +15,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { rmrf } from './rmrf.mjs';
-import { localSystem, resolveSystem, CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID } from '../src/systems/registry.ts';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  localSystem, resolveSystem, CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID,
+  LOCAL_PROVIDER_ENV, LOCAL_REMOTE_ENV,
+} from '../src/systems/registry.ts';
+import { REFERENCE_PROVIDER } from './referenceProviderHarness.mjs';
 
 function tmpdir() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'cc-systems-local-'));
@@ -246,4 +252,67 @@ test('exec never rejects, even when spawn throws synchronously', async () => {
     assert.equal(r.timedOut, false);
     assert.equal(r.output, r.spawnError, 'the diagnostic reaches an output-reading caller');
   } finally { await rmrf(dir); }
+});
+
+
+// THE GATE SEAM AND ITS GUARD (card 2026-0266).
+//
+// `CC_LOCAL_SYSTEM_REMOTE_ID` binds the stand-in provider to a named target, so
+// `gate:systems` can run the whole application over a provider that serves
+// named remotes — a shape `placementOf` will never produce for `local` in
+// production. What keeps it harmless is STRUCTURAL rather than asserted:
+// `buildLocalSystem` returns the in-process LocalSystem BEFORE it reads this
+// variable, so the variable alone can never bind cc's own machine.
+//
+// A child process per case is required, not a nicety: the handle is a
+// module-level singleton built at import time, so one process can only ever
+// answer for one environment. And each case builds its env by DELETING both
+// variables rather than by not setting them, because this file RUNS inside the
+// gate's folded first configuration, whose ambient env carries both: an
+// inherited provider would give case 1 a ProviderSystem and an inherited remote
+// id would bind case 3, so without the deletes two cases would go RED under the
+// very configuration that motivates the seam. The deletes buy a test that is
+// independent of its own environment, not one that hides a false pass.
+const LOCAL_SYSTEM_PROBE = fileURLToPath(new URL('./fixtures/localSystemProbe.mjs', import.meta.url));
+
+function probeLocalSystem(vars) {
+  const env = { ...process.env };
+  delete env[LOCAL_PROVIDER_ENV];
+  delete env[LOCAL_REMOTE_ENV];
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [LOCAL_SYSTEM_PROBE], {
+      env: { ...env, ...vars },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '', err = '';
+    child.stdout.on('data', d => { out += d; });
+    child.stderr.on('data', d => { err += d; });
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code !== 0) return reject(new Error(`probe exited ${code}: ${err}`));
+      try { resolve(JSON.parse(out)); } catch (e) { reject(new Error(`${e.message} — stdout was ${JSON.stringify(out)}`)); }
+    });
+  });
+}
+
+const PROVIDER_SPEC = JSON.stringify(['node', REFERENCE_PROVIDER]);
+
+test('the remote-id seam is inert without a provider — it can never bind the real local system', async () => {
+  const r = await probeLocalSystem({ [LOCAL_REMOTE_ENV]: 'gate' });
+  assert.equal(r.ctor, 'LocalSystem',
+    'setting only the remote id must leave cc on its own in-process machine');
+  assert.equal(r.remoteId, null, 'and the in-process system carries no target');
+});
+
+test('provider plus remote id binds the stand-in handle to that target', async () => {
+  const r = await probeLocalSystem({ [LOCAL_PROVIDER_ENV]: PROVIDER_SPEC, [LOCAL_REMOTE_ENV]: 'gate' });
+  assert.equal(r.ctor, 'ProviderSystem');
+  assert.equal(r.remoteId, 'gate',
+    'the binding must reach buildLocalSystem, or every frame the gate emits is unnamed');
+});
+
+test('a provider without a remote id stays unbound, so the seam is opt-in', async () => {
+  const r = await probeLocalSystem({ [LOCAL_PROVIDER_ENV]: PROVIDER_SPEC });
+  assert.equal(r.ctor, 'ProviderSystem');
+  assert.equal(r.remoteId, null);
 });

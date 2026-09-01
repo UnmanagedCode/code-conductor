@@ -118,8 +118,8 @@ a user-visible difference, **and a test that runs the fallback**.
 | `exec`, `readFile`, `writeFile` | **1 — MUST** | Registration fails; there is no cc without them | — | — |
 | **`persistentShell`** | **2 — OPTIONAL** | cc runs every redirected shell command as a **one-shot `exec`** of the same framing, passing `cwd` explicitly and reading `$PWD` back from the sentinel to carry into the next call | **cwd persists; exports, shell functions and background jobs do not** — which matches the local CLI, whose `Bash` also carries only cwd. Three further differences the mode really does have, stated rather than glossed: **(1)** each command gets a fresh login shell, so profile-file output would land in the command's output — the framing's opening sentinel (§5) is what stops it, and it is load-bearing here in a way it is not for a persistent shell; **(2)** a cwd deleted since the last command fails the NEXT command with `ENOENT` rather than running it somewhere, where a persistent shell would keep running in the deleted directory; **(3)** the command is carried by the `exec` frame's `shell` form, so what it needs of the far side is that form's login shell, not the `system.shell` a persistent session is opened with | `tests/systems-shell-framing.test.mjs`, every case, in both modes |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
-| **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the entire existing suite under `npm run gate:systems` |
-| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The session root is the local image of the project root exactly as before, `mirrorRoot = systemPath`, `offset = ""`, and no path is excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry, same walk | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, `offset === ''`, `cwd === root`, the exclude list is empty. Plus the `remoteDescriptors:false` row asserted in all three configurations of `tests/systems-protocol-conformance.test.mjs` |
+| **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
+| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The session root is the local image of the project root exactly as before, `mirrorRoot = systemPath`, `offset = ""`, and no path is excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry, same walk | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, `offset === ''`, `cwd === root`, the exclude list is empty. Plus the `remoteDescriptors:false` row asserted in all three configurations of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename`, `symlink` | **not in the protocol** | — | cc issues neither: nothing on the `System` interface renames or symlinks on a system, so a provider is never asked to | — |
@@ -572,7 +572,7 @@ Then run the whole application over it:
 
 ```
 CC_LOCAL_SYSTEM_PROVIDER='["your-provider","--flags"]' npm test
-npm run gate:systems     # the reference provider, in all three capability configurations
+npm run gate:systems     # the reference provider, in all three of the gate's capability configurations
 ```
 
 `CC_LOCAL_SYSTEM_PROVIDER` replaces the in-process `local` system with a
@@ -580,6 +580,17 @@ ProviderSystem over the named command, so **every project-scoped operation in cc
 runs over the protocol**. That is the strongest available statement that the
 three primitives are sufficient — nothing in the suite knows it is talking to a
 provider.
+
+**If your provider serves NAMED targets, it needs `CC_LOCAL_SYSTEM_REMOTE_ID`
+too.** It names which target the stand-in `local` handle is bound to; without it
+every request frame is unnamed and a provider advertising `remotes` refuses all
+of them `ENOREMOTE`. It is inert on its own — with no `CC_LOCAL_SYSTEM_PROVIDER` set, cc
+stays on its own in-process machine. The gate's first configuration uses exactly
+this pair: `--remote gate=/` on the provider argv and
+`CC_LOCAL_SYSTEM_REMOTE_ID=gate` on cc. The gate's own capability matrix — which
+two capabilities it toggles, why `remotes` is folded into an existing
+configuration and why `remoteDescriptors` is absent — is documented at the top of
+`tests/systems-gate.mjs`, which owns it.
 
 ## 11. A `docker exec` provider, as a sanity check
 

@@ -124,14 +124,16 @@ describe('a provider that advertises no mirror', () => {
     assert.equal(await fs.readFile(path.join(composed.root, 'CONVENTIONS.md'), 'utf8'), 'rules\n');
   });
 
-  // PINS: cc's own machine advertises nothing, unconditionally — which is what
-  // keeps `npm run gate:systems` at three capability configurations rather than
-  // four. The gate varies the LOCAL system's provider; if that provider could
-  // advertise a mirror, the fallback would need its own run.
+  // PINS: cc's own machine advertises nothing, unconditionally — the
+  // in-process implementation, and only it.
   //
   // NOT CLAIMING: anything about what a provider standing in for `local` under
-  // CC_LOCAL_SYSTEM_PROVIDER advertises — this asserts the in-process
-  // implementation, which is what the gate's fourth configuration would test.
+  // CC_LOCAL_SYSTEM_PROVIDER advertises, which is why the guard below is here.
+  // Nor is this what keeps `npm run gate:systems` off a `--mirror`
+  // configuration: that reason is an id-level one and lives in the gate's own
+  // header — mirror() is unreachable for the id `local` whatever class backs it,
+  // and a `--mirror` gate row was measured to receive ZERO `describeRemote`
+  // frames across the whole suite (card 2026-0266).
   test('the local system advertises no mirror', async () => {
     const { LocalSystem } = await import('../src/systems/localSystem.ts');
     assert.deepEqual(await new LocalSystem().mirror(), { mirrorRoot: null, exclude: [] });
