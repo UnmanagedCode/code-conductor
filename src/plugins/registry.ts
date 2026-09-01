@@ -1,8 +1,8 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
   projectsRoot, selfProjectDir, orchStoreRoot, writeFileAtomic, listProjects, projectStoreDir,
-  tryResolveProject,
+  tryResolveProject, resolveProjectDir,
   readProjectMeta, writeProjectMeta, addWorkspace,
 } from '../projects.ts';
 import {
@@ -12,7 +12,7 @@ import {
 import { httpError } from '../httpError.ts';
 import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
-import { createContributions } from './contributions.ts';
+import { createContributions, type PluginPlacement } from './contributions.ts';
 import { createPluginStore } from './store.ts';
 import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
@@ -92,7 +92,11 @@ interface PluginEntry {
 // The slice of a PluginEntry that active-version resolution reads. Named
 // separately so the accessors injected into collaborators (which declare their
 // own narrow entry shapes) stay assignable without importing PluginEntry.
-type VersionedEntry = { id: string | null; project: string; dir: string; system: string };
+//
+// It carries NEITHER `dir` NOR `system`: both are stamped once per rescan, and a
+// placement read from that copy is the defect card 2026-0263 fixed. Where a
+// checkout actually is comes from resolvePlacement below.
+type VersionedEntry = { id: string | null; project: string };
 
 type PluginRuntimeStatus = 'stopped' | 'starting' | 'ready' | 'crashed' | 'failed';
 
@@ -137,7 +141,7 @@ export function createPluginHost(opts: {
   // and keeps no cache of its own. Declared before its first use — the injected
   // accessors are hoisted `function` declarations, and nothing runs during
   // construction.
-  const contributions = createContributions({ ensureInit, contributingEntries, resolveCwd });
+  const contributions = createContributions({ ensureInit, contributingEntries, resolvePlacement });
   // Persisted state, loaded by init(). Every registry.json write signals the
   // contributions cache from the store's single save path.
   const store = createPluginStore({ onRegistryChange: () => contributions.noteRegistryChange() });
@@ -348,11 +352,65 @@ export function createPluginHost(opts: {
     return { activeVersion: { type: 'main' }, worktreeMeta: null };
   }
 
-  async function resolveCwd(entry: VersionedEntry): Promise<string> {
+  // The active version's cwd, given the checkout it is relative to. Pure, no
+  // I/O — one copy, because resolveCwd, describeRow and resolvePlacement all
+  // need it and three copies is three chances to disagree.
+  function versionCwd(activeVersion: ManifestSource, worktreeMeta: WorktreeMeta | null, base: string): string {
+    return activeVersion.type === 'worktree' && worktreeMeta ? worktreeMeta.worktreePath : base;
+  }
+
+  async function resolveCwd(entry: VersionedEntry & { dir: string }): Promise<string> {
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
-    return activeVersion.type === 'worktree' && worktreeMeta
-      ? worktreeMeta.worktreePath
-      : entry.dir;
+    return versionCwd(activeVersion, worktreeMeta, entry.dir);
+  }
+
+  // WHERE A CONTRIBUTING PLUGIN'S CHECKOUT IS RIGHT NOW — resolved on every
+  // read, never captured. A plugin's project can move between two rescans
+  // (a target change, a delete, a system re-pointed at another machine) and
+  // NOTHING tells this host about it, so a placement stamped at the last rescan
+  // serves one tree's bytes as another's and reports the catalog healthy
+  // (card 2026-0263).
+  //
+  // THREE ANSWERS, and the difference between the last two is the whole card:
+  //
+  //   'ok'           — resolved: the System to read through, the project dir,
+  //                    and the active version's cwd.
+  //   'unregistered' — cc's own store state for the project AND the artefact
+  //                    that registers it are both gone. That is authoritative
+  //                    and entirely LOCAL, so the plugin simply contributes
+  //                    nothing and the catalog stays healthy — a referencing
+  //                    project regenerates without the slug instead of freezing
+  //                    until someone presses Rescan.
+  //   a THROW        — cannot tell. An unreachable system, unreadable worktree
+  //                    metadata, or a checkout that vanished while cc still
+  //                    holds store state for the project (deleted, or an
+  //                    unmounted volume — for an in-root project the DIRECTORY
+  //                    IS the registration, so resolvability alone cannot say
+  //                    which). The caller degrades the catalog, which is what
+  //                    freezes writes rather than blanking them.
+  async function resolvePlacement(entry: VersionedEntry): Promise<PluginPlacement> {
+    const resolved = await resolveProjectDir(entry.project);
+    if (!resolved) {
+      // THE ORDER IS FIXED: resolveProjectDir said no, then cc's own
+      // bookkeeping for the project is gone too, then the store ROOT itself is
+      // still there. deleteProject removes projectStoreDir(name) on all three
+      // of its branches and an `rm -rf` of a checkout does not, which is what
+      // makes the middle term the discriminator. The last term is a guard, not
+      // decoration: without it a vanished store root reads as "every project is
+      // unregistered" and silently drops every contribution at once, where with
+      // it that lands in the degrade bucket it belongs in.
+      if (!existsSync(projectStoreDir(entry.project)) && existsSync(orchStoreRoot())) {
+        return { kind: 'unregistered' };
+      }
+      throw httpError(404, `project '${entry.project}' does not resolve, but cc still holds store state for it`);
+    }
+    const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
+    return {
+      kind: 'ok',
+      system: resolved.system,
+      dir: resolved.path,
+      cwd: versionCwd(activeVersion, worktreeMeta, resolved.path),
+    };
   }
 
   // ── lifecycle ───────────────────────────────────────────────────────
@@ -534,9 +592,7 @@ export function createPluginHost(opts: {
     const { activeVersion, worktreeMeta } = await reconcileActiveVersion(entry);
     // Pure, no I/O — hoisting it out of the staleness branch it used to sit in
     // costs nothing; the git spawn itself stays behind that branch, in row.ts.
-    const cwd = activeVersion.type === 'worktree' && worktreeMeta
-      ? worktreeMeta.worktreePath
-      : entry.dir;
+    const cwd = versionCwd(activeVersion, worktreeMeta, entry.dir);
     return buildPluginRow({
       entry,
       reg: id ? store.get(id) ?? null : null,
