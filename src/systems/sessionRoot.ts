@@ -198,6 +198,32 @@ const ALLOW_DIRS = ['.claude/skills', '.claude/commands', '.claude/agents'];
 export const SESSION_ROOT_FILE_CAP_BYTES = 256 * 1024;
 export const SESSION_ROOT_TOTAL_CAP_BYTES = 4 * 1024 * 1024;
 
+// A FENCE, not a third cap — the distinction is in the name because it is the
+// whole difference in behaviour. The two caps above bound PULLED CONTENT: they
+// are consulted per entry, after every record has been materialised, and each
+// one they refuse is skipped and NAMED. This one bounds the LISTING those
+// records are read out of, and past it the compose FAILS, for the reason
+// runGit's does (src/worktrees.ts): findManifest parses the output WHOLE, so a
+// clipped-but-successful parse is read as the config surface itself.
+//
+// Nothing bounded the listing before, and it is materialised three times — the
+// `find` output, the Map, and the manifest's JSON — on every spawn AND every
+// resume. Measured on one `.claude/skills` tree, unfenced: 420,000 entries
+// (33.6 MB of `find` output) took cc to 533 MB RSS and wrote a 35 MB manifest,
+// and 900,000 (72.9 MB) reached 542 MB of V8 heap — more than the 512 MB
+// `--max-old-space-size` `npm test` runs under (package.json) — 843 MB RSS,
+// and 3.0 s in JSON.stringify alone.
+//
+// 8 MiB is the same number chosen the same way as the redirected shell's output
+// fence (DEFAULT_MAX_OUTPUT_BYTES, src/systems/toolRedirect.ts): far above any
+// real config surface — roughly 96,000 allow-list files — and far below what
+// threatens a process that hosts every session. Measured AT the fence, the
+// largest listing it admits costs 112 MB of heap and 242 MB RSS record-dense
+// (157,327 records) and 105 MB / 217 MB at ordinary path lengths. 16 MiB was
+// rejected: it doubles that in a process where two spawns can compose at once
+// (card 2026-0267).
+const SESSION_ROOT_LISTING_FENCE_BYTES = 8 * 1024 * 1024;
+
 export interface SessionRootSkip { path: string; reason: string }
 
 export interface ComposedSessionRoot {
@@ -432,10 +458,32 @@ async function findManifest(
   // the exit code is not the answer here — the records are.
   const r = await system.exec(
     { argv: ['find', ...wanted, ...prune, '-type', 'f', '-printf', '%s\\t%T@\\t%p\\0'] },
-    { cwd: systemPath, stdin: 'ignore' },
+    { cwd: systemPath, stdin: 'ignore', maxBufferBytes: SESSION_ROOT_LISTING_FENCE_BYTES },
   );
   if (r.spawnError) {
     throw httpError(502, `composing the session root: could not list the config surface on the system: ${r.spawnError}`);
+  }
+  // THE FENCE FIRED, and this is why it cannot be §3.4's skip-with-warning. A
+  // skip NAMES what it dropped. A truncated listing cannot: it is cut at an
+  // arbitrary byte, and the record straddling the cut PARSES as a real one 70%
+  // of the time (measured over 2,000 cut points in a real listing), so a
+  // "partial success" hands the pull a path that does not exist and writes a
+  // manifest missing an unknown set of entries — which the delete pass in
+  // composeSessionRoot then makes the local root agree with.
+  //
+  // READ BEFORE THE RECORDS ARE, deliberately: the loop below would otherwise
+  // reach the straddling record first and report cc's own memory fence as the
+  // far side sending malformed output.
+  if (r.outputOverflowed) {
+    throw httpError(
+      502,
+      `composing the session root: listing the config surface under ${systemPath} on system `
+      + `'${system.id}' produced more than ${SESSION_ROOT_LISTING_FENCE_BYTES} bytes of \`find\` output `
+      + `and was stopped, so cc cannot tell which entries it did not see and will not compose a `
+      + `session root from a partial listing. Something under ${ALLOW_DIRS.join(', ')} holds an `
+      + `enormous number of files — move it out of the allow-list. The project itself is `
+      + `unaffected: every file in it is still reachable through Bash and the file tools.`,
+    );
   }
   const out: Listed[] = [];
   for (const rec of r.stdout.split('\0')) {

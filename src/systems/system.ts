@@ -70,8 +70,11 @@ export interface ExecOptions {
   // truncation: past it the command is killed and the result is `{code: 1}`
   // carrying whatever output arrived first. It exists for callers that parse
   // output WHOLE — a clipped-but-successful parse would be read as the truth,
-  // which is worse than a reported failure. runGit is the caller
-  // (src/worktrees.ts); omitting it means unbounded retention in this process.
+  // which is worse than a reported failure. It rides on `runGit`
+  // (src/worktrees.ts), on the session-root config-surface walk
+  // (src/systems/sessionRoot.ts) and on `ProviderShell`'s
+  // non-persistent-shell fallback (src/systems/providerShell.ts); omitting it
+  // means unbounded retention in this process.
   maxBufferBytes?: number;
   // Called with each decoded chunk AS IT ARRIVES, and with the stream it came
   // from — the streaming hook every caller that shows live output uses. It
