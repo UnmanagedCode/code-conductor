@@ -101,6 +101,26 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // and doStart's manifest reassignment.
   function noteRegistryChange(): void { registryGeneration++; }
 
+  // WHICH MACHINES THE CACHED SCAN WAS ABOUT, as one string. Two terms:
+  //
+  //   * each contributing plugin's placement, via placementToken — the cheap
+  //     LOCAL prefix of resolveProjectDir (src/projects.ts). It reaches no
+  //     system on purpose: this runs on every compose, and a check that resolved
+  //     a system would throw while a box was down and flip the catalog
+  //     permanently degraded instead of merely re-checking.
+  //   * systemHandleGeneration() — the one term the per-plugin tokens cannot
+  //     carry. Re-pointing a system's provider command leaves the project
+  //     record, the fragment path and the fragment cache key byte-identical
+  //     while the machine behind them changes, so the ONLY signal is that the
+  //     live handle was dropped (src/systems/registry.ts).
+  async function placementFingerprint(): Promise<string> {
+    const parts = [String(systemHandleGeneration())];
+    for (const entry of contributingEntries()) {
+      parts.push(`${entry.id}\0${await placementToken(entry.project)}`);
+    }
+    return parts.join('\u0001');
+  }
+
   // Convention entries contributed by enabled plugins, GROUPED BY SCOPE so
   // each scope routes to its own catalog. `project` and `conductor` are both
   // wired today (server.ts routes each into its own catalog); `workspace` is
@@ -113,8 +133,7 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // worktree checkout not yet mounted, or a system that is down) rather than
   // "this plugin genuinely contributes nothing here" — the entry is silently
   // absent from every scope's list unless a reader checks `.degraded` on the
-  // returned array
-  // (see fragmentCatalog.ts's CatalogList). EVERY scope array is flagged,
+  // returned array (see fragmentCatalog.ts's CatalogList). EVERY scope array is flagged,
   // including ones left empty: the failure isn't attributable to a single
   // scope, and an empty-and-unflagged array is exactly what "no plugin
   // contributes to this scope" looks like — the failed plugin may have been
@@ -180,26 +199,6 @@ export function createContributions({ ensureInit, contributingEntries, resolvePl
   // server.ts's two providers only index `.project` / `.conductor`. A defensive
   // shallow copy is deliberately NOT made: the entry objects would still be
   // shared, so it would buy the appearance of safety rather than safety.
-  // WHICH MACHINES THE CACHED SCAN WAS ABOUT, as one string. Two terms:
-  //
-  //   * each contributing plugin's placement, via placementToken — the cheap
-  //     LOCAL prefix of resolveProjectDir (src/projects.ts). It reaches no
-  //     system on purpose: this runs on every compose, and a check that resolved
-  //     a system would throw while a box was down and flip the catalog
-  //     permanently degraded instead of merely re-checking.
-  //   * systemHandleGeneration() — the one term the per-plugin tokens cannot
-  //     carry. Re-pointing a system's provider command leaves the project
-  //     record, the fragment path and the fragment cache key byte-identical
-  //     while the machine behind them changes, so the ONLY signal is that the
-  //     live handle was dropped (src/systems/registry.ts).
-  async function placementFingerprint(): Promise<string> {
-    const parts = [String(systemHandleGeneration())];
-    for (const entry of contributingEntries()) {
-      parts.push(`${entry.id}\0${await placementToken(entry.project)}`);
-    }
-    return parts.join('\u0001');
-  }
-
   let conventionsCache: { gen: number; fp: string; dirs: string[]; value: ConventionGroups } | null = null;
   async function conventions(): Promise<ConventionGroups> {
     await ensureInit();

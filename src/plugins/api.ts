@@ -123,8 +123,10 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   // restart/version/install/update can all change which project conventions
   // the catalog offers (a plugin contributes conventions via
   // setPluginConventionsProvider) or which fragment bodies are cached
-  // (rescan/restart/version also drop the registry's fragment-body cache —
-  // see invalidateFragmentBodies in registry.ts). A disable makes the plugin's
+  // (rescan/restart/version also drop the host's fragment-body cache — see
+  // invalidate() in plugins/contributions.ts, which the registry calls as
+  // contributions.invalidate(); it is not on the host's public surface).
+  // A disable makes the plugin's
   // slugs unresolvable: referencing projects still refresh their other,
   // resolvable conventions, with the plugin's slugs named in a note (never
   // blanked); an enable re-resolves them ⇒ full refresh.
