@@ -378,6 +378,100 @@ describe('a mirror advertisement that moves under a live session', () => {
     assert.match(line, /whatever history it had is replayed/, line);
   });
 
+  // PINS THE COMPOSITION SEAM the unit tests leave open: that `_followGeometry`
+  // actually CALLS `SessionRedirect.retarget`, with the OLD map as `prev`, and
+  // that the bridge classifies under the new geometry afterwards. Each of those
+  // three is proven at its own unit seam and at no joint — measured: deleting
+  // the `retarget` call outright leaves every other arm in this file green,
+  // because nothing else here looks at a file tool after the move.
+  //
+  // Three observations, and the ORDER is load-bearing. The Write comes first
+  // because a successful Read pulls, and a pull resyncs the local copy and
+  // clears the very divergence the first assertion is about.
+  //   1. a Write at the NEW local path is still REFUSED — the marker was
+  //      re-keyed through the system path, so it guards the file it always
+  //      guarded. Un-retargeted, or retargeted with `next` passed as `prev`,
+  //      this path is clean and the Write is allowed.
+  //   2. a Read at the NEW local path materialises the SYSTEM's bytes — the
+  //      bridge's own map moved too. With only the redirect's map swapped, the
+  //      pull resolves to a path that does not exist, reports absence, and
+  //      leaves nothing on disk.
+  //   3. the OLD local path is NOT dirty — markers moved rather than being
+  //      copied, so nothing is left guarding a path the worker may legitimately
+  //      use again under the new, wider geometry.
+  //
+  // HOSTED HERE, in the real-subprocess file, deliberately: invariant 1 is about
+  // the PRODUCTION relaunch, and only this file drives respawn → launch() →
+  // _refreshSessionRoot → _followGeometry. The card 2026-0286 hazard that makes
+  // this file a bad host for a mutant which UNFOLLOWS the geometry (it spawns
+  // into a deleted cwd and wedges kill()) does not reach the mutants this arm
+  // targets — every one of them leaves the cwd move intact and spawns normally.
+  // A prover authoring a cwd-side mutant should still repoint it at the
+  // in-process tests/systems-mirror-geometry-move.test.mjs.
+  //
+  // NOT CLAIMING that the refusal's TEXT was rewritten for the new geometry. It
+  // is not: the reason string is built when the push fails and the re-key carries
+  // it verbatim, so it still names the pre-move local path. The system path it
+  // also names is correct and unchanged, and that is what this arm asserts on.
+  //
+  // NOT CLAIMING anything about the recorded file MODE: every hooked op pulls
+  // first and a pull re-records it, so that half of the carry is unobservable
+  // from here and is pinned as a contract in tests/systems-file-bridge.test.mjs.
+  // NOT CLAIMING that the far-side shell followed anything — it runs at the
+  // project path, which did not move.
+  test('a moved session addresses the project through the new geometry, and its refusals move with it', async () => {
+    const f = await fixture({ sub: 'proj', mirror: '' });
+    const oldCwd = f.inst.cwd;
+    const backingId = f.inst.backingSessionId;
+    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
+    const redirect = f.inst._redirect;
+    const onSystem = path.join(f.projPath, 'sub', 'data.txt');
+
+    // A bridged file NESTED one level down, so its push can be broken the
+    // established way — by turning its parent into a file on the system.
+    await fs.mkdir(path.dirname(onSystem), { recursive: true });
+    await fs.writeFile(onSystem, `${SENTINEL}\n`);
+
+    const oldLocal = path.join(oldCwd, 'sub', 'data.txt');
+    assert.equal((await redirect.preToolUse('Read', { file_path: oldLocal })).decision, 'allow');
+    await fs.writeFile(oldLocal, 'local edit\n');
+    await fs.rm(path.dirname(onSystem), { recursive: true });
+    await fs.writeFile(path.dirname(onSystem), 'not a directory\n');
+    assert.match(await redirect.postToolUse('Edit', { file_path: oldLocal }, {}), /WRITE-BACK FAILED/);
+    assert.equal((await redirect.preToolUse('Write', { file_path: oldLocal, content: 'x' })).decision, 'deny',
+      'the divergence marker never took, so the move has nothing to carry');
+
+    // Repair the system side, so the new geometry has a real file to address.
+    await fs.rm(path.dirname(onSystem));
+    await fs.mkdir(path.dirname(onSystem), { recursive: true });
+    await fs.writeFile(onSystem, `${SENTINEL}\n`);
+
+    await readvertise(f, '.');
+    const r = await relaunch(f.inst);
+    const newCwd = path.join(f.imageRoot, 'proj');
+    await assertMoved({ inst: f.inst, r, oldCwd, newCwd, backingId });
+
+    const newLocal = path.join(newCwd, 'sub', 'data.txt');
+    // (1) + the arg order: the refusal guards the file under its new local name.
+    const denied = await redirect.preToolUse('Write', { file_path: newLocal, content: 'x' });
+    assert.equal(denied.decision, 'deny', 'the refusal did not follow the path it guards');
+    // On the SYSTEM path, which is the half that did not move and the half the
+    // worker can still act on. NOT the local path: the reason STRING is composed
+    // at push time and carried verbatim by the re-key, so it still names the
+    // pre-move local path. Observed here, not asserted as desirable.
+    assert.ok(denied.reason.includes(onSystem), denied.reason);
+    // (3) and it is not still guarding the old one.
+    assert.equal((await redirect.preToolUse('Write', { file_path: oldLocal, content: 'x' })).decision, 'allow',
+      'a marker was left behind under a stale local key');
+    // (2) the bridge's own map moved: a Read at the new path fetches the
+    // system's bytes rather than reporting the file absent.
+    assert.equal((await redirect.preToolUse('Read', { file_path: newLocal })).decision, 'allow');
+    assert.equal(await fs.readFile(newLocal, 'utf8'), `${SENTINEL}\n`,
+      'the pull did not resolve the new local path to the system file');
+    // And that resync clears the divergence, at the new key.
+    assert.equal((await redirect.preToolUse('Write', { file_path: newLocal, content: 'x' })).decision, 'allow');
+  });
+
   // CONTROL. PINS that the fix does not fire on every relaunch: with no provider
   // restart the compose returns the same cwd, nothing is relocated, no line is
   // emitted, and the worker comes back where it was.
