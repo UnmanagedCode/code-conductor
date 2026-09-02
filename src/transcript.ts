@@ -530,3 +530,90 @@ function errCode(e: unknown): string | undefined {
   const code = (e as { code?: unknown }).code;
   return typeof code === 'string' ? code : undefined;
 }
+
+// ── Relocating a session's transcripts to a new cwd (card 2026-0279) ──
+
+// A relocation that could not complete. `stranded` is what the ROLLBACK could
+// not put back — empty in every case measured, and non-empty only if a rename
+// back to a path cc had just vacated also failed. The caller composes its
+// refusal from this rather than asserting a state it did not verify.
+export class TranscriptRelocationError extends Error {
+  readonly stranded: readonly string[];
+  constructor(message: string, stranded: readonly string[]) {
+    super(message);
+    this.stranded = stranded;
+  }
+}
+
+// MOVE one session's transcripts to a new cwd. The CLI keys its transcript
+// directory off getcwd(), so a session whose cwd moves finds nothing unless its
+// files move with it (measured: the identical resume is 404 before the move and
+// 201 after).
+//
+// PER SESSION ID, never the whole encoded directory: that directory is shared by
+// every session at that cwd, and moving a peer's transcript would strand the
+// peer to un-strand this one.
+//
+// EVERY SEGMENT, not just the current backing id: a renewed or pruned session's
+// history is spread across its lineage (a real renew takes `_segments` to two,
+// and an older segment can be the only surviving file, which is why
+// findSessionLocation walks them), and there are TWO paths per id, so a failure
+// after a success is reachable with one segment as well as with several.
+//
+// ALL OR NOTHING, BY ROLLBACK. A partial move leaves a session's history split
+// across two directories, and the realistic blocker — a target already occupied
+// by a directory — fails identically on every retry (EISDIR / ENOTEMPTY,
+// measured), so there is nothing to converge to. Rolling back returns the
+// session to a state cc can describe truthfully and the operator can retry.
+//
+// A SOURCE THAT IS NOT THERE IS NOT A FAILURE: it is a fresh spawn (no
+// transcript yet), a session with no subagents, or the already-moved half of a
+// retry. With nothing to move this writes NOTHING — in particular it does not
+// create the destination directory, which would leave an empty encoded dir
+// behind for every session that never had a transcript.
+//
+// NO SAME-DESTINATION GUARD, deliberately. `encodeCwd` is length-preserving and
+// the two cwds are `root + offset` for two DIFFERENT offsets of one systemPath,
+// so they differ in length and cannot collide here; and `rename(x, x)` is a
+// no-op success anyway. A guard would be unreachable code that reads as though
+// the collision were live.
+//
+// Every path is built by sessionFilePath/subAgentDirPath, which is what
+// tests/session-lineage-chokepoint.test.mjs requires of any new transcript site.
+export async function relocateSessionTranscripts(
+  { from, to, sessionIds }: { from: string; to: string; sessionIds: readonly string[] },
+): Promise<void> {
+  const pairs: Array<[string, string]> = [];
+  for (const id of sessionIds) {
+    const candidates: Array<[string, string]> = [
+      [sessionFilePath(from, id), sessionFilePath(to, id)],
+      [subAgentDirPath(from, id), subAgentDirPath(to, id)],
+    ];
+    for (const pair of candidates) {
+      if (await pathExists(pair[0])) pairs.push(pair);
+    }
+  }
+  if (pairs.length === 0) return;
+  const done: Array<[string, string]> = [];
+  try {
+    // ONE mkdir: sessionFilePath and subAgentDirPath both land directly in
+    // `<claudeProjectsRoot>/<encodeCwd(cwd)>/`, so every destination shares one
+    // parent. INSIDE the try, because a mkdir that fails must refuse with
+    // nothing moved rather than throw past the rollback.
+    await fs.mkdir(path.dirname(pairs[0][1]), { recursive: true });
+    for (const [src, dst] of pairs) {
+      await fs.rename(src, dst);
+      done.push([src, dst]);
+    }
+  } catch (e) {
+    const stranded: string[] = [];
+    for (const [src, dst] of done.reverse()) {
+      try { await fs.rename(dst, src); } catch { stranded.push(dst); }
+    }
+    throw new TranscriptRelocationError((e as Error).message, stranded);
+  }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try { await fs.stat(p); return true; } catch { return false; }
+}

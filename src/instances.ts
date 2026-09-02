@@ -68,7 +68,8 @@ import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { composeSessionRoot, composedRootWasDiscarded, type ComposedSessionRoot } from './systems/sessionRoot.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
-import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
+import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation,
+  relocateSessionTranscripts, TranscriptRelocationError } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
 import { canonicalizeModel, familyOf, CLAUDE_BACKEND_ID } from './modelVersions.ts';
 import { truncateSessionAtUserMessage } from './sessionEdit.ts';
@@ -1656,40 +1657,14 @@ export class Instance extends EventEmitter implements InstanceLike {
   async _refreshSessionRoot(): Promise<void> {
     const placement = this._redirectPlacement;
     if (!placement) return;
+    let composed: ComposedSessionRoot;
     try {
-      const { cwd, skipped, notes } = await composeSessionRoot(placement);
-      for (const s of skipped) {
+      composed = await composeSessionRoot(placement);
+      for (const s of composed.skipped) {
         this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: session root skipped ${s.path} — ${s.reason}` } });
       }
-      for (const note of notes) {
+      for (const note of composed.notes) {
         this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${note}` } });
-      }
-      // THE GEOMETRY MOVED UNDER A LIVE SESSION. `this.cwd` and the redirect's
-      // path map were both fixed at create, so a provider that changed its
-      // mirror advertisement between spawn and relaunch has just had the root
-      // re-pulled somewhere this session will not look. Loud, because the
-      // alternative is a worker whose CLAUDE.md silently vanished.
-      //
-      // WHAT THIS LINE DELIBERATELY DOES NOT CLAIM: that cc did anything about
-      // the situation (it says the opposite); that the session is broken or must
-      // be killed — it describes the LOCATION, never the session's health, and
-      // the two mirror directions differ there (widening leaves this cwd present
-      // and config-less, narrowing leaves it not existing at all); that the
-      // session's tools still work; or that the advertisement is wrong, which it
-      // may well not be.
-      //
-      // AND IT NAMES NO FILE. The allow-list is what a config surface CAN hold,
-      // not what this project has: enumerating it here would assert the
-      // existence of files nobody looked for, and a project with no skills,
-      // commands or agents has no `.claude/` tree to have moved.
-      if (cwd !== this.cwd) {
-        this._emitUi({ kind: 'system', subtype: 'stderr', data: {
-          line: `systems: '${placement.systemId}' now mirrors this project at ${cwd}, but this session `
-            + `is running in ${this.cwd}, which no longer holds its config surface — that was pulled to `
-            + `the new location instead. cc has not moved this session and cannot: a NEW session on this `
-            + `project starts at the new location with its config surface, and this conversation cannot `
-            + `be carried there.`,
-        } });
       }
     } catch (e) {
       this._emitUi({ kind: 'system', subtype: 'stderr', data: {
@@ -1716,7 +1691,115 @@ export class Instance extends EventEmitter implements InstanceLike {
           { code: 'SESSION_ROOT_DISCARDED' },
         );
       }
+      return;
     }
+    // THE GEOMETRY MOVED UNDER A LIVE SESSION, and cc FOLLOWS IT. `this.cwd`
+    // and the redirect's path map were both fixed at create, so a provider that
+    // changed its mirror advertisement between spawn and relaunch has just had
+    // the config surface re-pulled somewhere this session would not look.
+    // Measured, that leaves two states and NEITHER is survivable: with the prior
+    // offset empty, this cwd still exists and holds no config surface; with it
+    // non-empty — WIDENING OR NARROWING ALIKE, the direction is not the
+    // discriminator — this cwd does not exist at all, and the relaunch reaches
+    // spawn with a deleted cwd and fails ENOENT against the CLI BINARY's own
+    // path.
+    //
+    // OUTSIDE the try above, and that is load-bearing: that catch exists to make
+    // a compose failure a warning rather than a dead session, and a refusal to
+    // move must not be swallowed by it.
+    //
+    // Moving is possible HERE and nowhere else: this runs inside launch() before
+    // spawn(), so there is no CLI to rebuild a redirect underneath — which is
+    // what card 2026-0259 read as impossible. Its warn-don't-refuse is
+    // SUPERSEDED BY A THIRD ANSWER, not overturned into a refusal
+    // (card 2026-0279).
+    if (composed.cwd !== this.cwd) await this._followGeometry(placement.systemId, composed);
+  }
+
+  // Follow a mirror advertisement that moved: relocate this session's
+  // transcripts, move its cwd, and retarget its path map — IN THAT ORDER, so a
+  // relocation that cannot complete leaves the instance untouched and the
+  // relaunch refused rather than a worker started at either location.
+  //
+  // ONE REFUSAL, and it is not the compose's: card 2026-0273's
+  // SESSION_ROOT_DISCARDED fires when the compose FAILED past the target check.
+  // This fires when the compose SUCCEEDED and cc cannot carry the session to
+  // what it produced.
+  //
+  // `this.cwd`'s SECOND assignment site — the constructor is the first, and
+  // there are no others. Every reader of it is a live read at call time
+  // (summary, the transcript helpers, spawn's cwd, liveBackingIdsForCwd,
+  // tempSessionIdsForCwd, tempCleanupSnapshot), so none is desynchronised by
+  // this write: nothing in cc keys a structure on a cwd captured at insert time.
+  // The one transient is the await below — for the length of the rename, the
+  // transcript is at the new cwd while `this.cwd` still names the old one, so a
+  // concurrent session listing at the NEW cwd can show this session's row
+  // un-excluded. Milliseconds, and a duplicate row rather than a wrong one; the
+  // ordering that opens it is what makes the refusal's "nothing was moved" true.
+  private async _followGeometry(systemId: string, composed: ComposedSessionRoot): Promise<void> {
+    const from = this.cwd;
+    // The redirect and the placement are attached together (see attachRedirect's
+    // caller), so a placement without one is a cc bug, not a state to tolerate.
+    const redirect = this._redirect;
+    if (!redirect) throw new Error('cc: a remote placement reached _followGeometry with no redirect');
+    const ids = [...new Set([...this._segments, this.backingSessionId].filter((x): x is string => !!x))];
+    try {
+      await relocateSessionTranscripts({ from, to: composed.cwd, sessionIds: ids });
+    } catch (e) {
+      // THE CLAIM IS DERIVED, never asserted: `stranded` is what the rollback
+      // could not undo, so the two sentences below describe the state cc
+      // actually verified rather than the state it hoped for.
+      //
+      // NO REMEDY CLAUSE, for the reason SESSION_ROOT_DISCARDED records below:
+      // the code cannot classify why a rename failed, and per-cause wording
+      // would put the classification back. What it does state is the verified
+      // post-refusal state, which is a fact rather than a remedy.
+      const stranded = e instanceof TranscriptRelocationError ? e.stranded : [];
+      throw httpError(
+        502,
+        `cannot relaunch this session: '${systemId}' now mirrors this project at ${composed.cwd}, so cc `
+        + `must move this session there, and relocating its transcript out of ${from} failed. `
+        + (stranded.length === 0
+          ? `Nothing was moved: this session's history is still complete at ${from} and its working `
+            + `directory is unchanged.`
+          : `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
+            + `${from} and ${composed.cwd}, and its working directory is unchanged at ${from}.`)
+        + ` Cause: ${(e as Error).message}`,
+        { code: 'SESSION_MOVE_FAILED' },
+      );
+    }
+    this.cwd = composed.cwd;
+    redirect.retarget(composed.root, composed.mirror);
+    // WHAT THIS LINE DELIBERATELY DOES NOT CLAIM.
+    //  * Not that any OTHER session moved. The image root is shared per
+    //    (system, project, worktree), so a peer live session keeps its old
+    //    working directory — and this card's original defect — until its OWN
+    //    next relaunch. Convergence is per-relaunch, not instant, and the last
+    //    clause says so rather than leaving it to be inferred.
+    //  * Not that the far-side shell moved or was reset. It runs at the project
+    //    path, which did not move.
+    //  * Not that files the worker had pulled on demand survived: resetRoot
+    //    deleted the image root, and the bridge pulls before every op.
+    //  * Not that the advertisement is right. A session that follows a wrong
+    //    advertisement follows it CONSISTENTLY, so a path the far side no longer
+    //    serves fails there, with its reason.
+    //  * Not anything about paths OUTSIDE the project: the new geometry may
+    //    widen or narrow the addressable space, and a path reachable before may
+    //    now be refused.
+    //  * Not a claim about the real `claude` binary — what is pinned is where
+    //    every input it reads now is.
+    //
+    // AND IT NAMES NO FILE. The allow-list is what a config surface CAN hold,
+    // not what this project has: enumerating it here would assert the existence
+    // of files nobody looked for.
+    this._emitUi({ kind: 'system', subtype: 'stderr', data: {
+      line: `systems: '${systemId}' now mirrors this project at ${composed.cwd}, so cc has MOVED this `
+        + `session there from ${from}: its config surface was re-pulled to the new location, its `
+        + `transcript moved with it, and its file tools now address the project through the new `
+        + `geometry. The conversation is unchanged — the worker restarts in the new directory and its `
+        + `history is replayed. Any OTHER session still running on this project keeps its old working `
+        + `directory until its own next relaunch.`,
+    } });
   }
 
   async launch({ resume }: { resume?: string } = {}): Promise<void> {

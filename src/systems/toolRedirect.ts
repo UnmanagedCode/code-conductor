@@ -193,12 +193,12 @@ export interface SessionRedirectOptions {
 }
 
 export class SessionRedirect {
-  readonly map: SessionPathMap;
+  map: SessionPathMap;
   readonly systemId: string;
   // The PROJECT, on both sides — distinct from the map, which holds the mirror.
   // Every sentence a worker reads about "this project's tree" names these.
   readonly systemPath: string;
-  readonly projectRoot: string;
+  projectRoot: string;
 
   readonly #system: RedirectableSystem;
   readonly #bridge: FileBridge;
@@ -231,6 +231,27 @@ export class SessionRedirect {
     this.#shellCommandTimeoutMs = opts.shellCommandTimeoutMs;
     this.#maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.#maxAgentShells = opts.maxAgentShells ?? DEFAULT_MAX_AGENT_SHELLS;
+  }
+
+  // THE ONE WAY a live session's geometry changes. Called by
+  // Instance._refreshSessionRoot when the composed cwd has moved, and only
+  // there — between launch()'s compose and spawn(), so no CLI is running and
+  // there is nothing to rebuild underneath. That is why 2026-0259's "rebuilding
+  // a redirect under a running CLI is not possible" is true and does not apply:
+  // its warn-don't-refuse is superseded by a third answer, not overturned into a
+  // refusal (card 2026-0279).
+  //
+  // The image ROOT does not move (sessionRootPath keys on project/worktree
+  // only); what moves is the mirror root the prefix rule maps against and the
+  // offset the project sits at inside the image. `exclude` comes from the same
+  // advertisement as the root, because two sources for one scope is how a
+  // boundary gets decided two different ways. The far-side shells are NOT
+  // touched: they run at `systemPath`, which did not move.
+  retarget(root: string, mirror: MirrorScope): void {
+    const next = new SessionPathMap(root, mirror.mirrorRoot, mirror.exclude);
+    this.#bridge.retarget(next, this.map);
+    this.map = next;
+    this.projectRoot = path.join(root, mirror.offset);
   }
 
   // Diagnostics and tests only — nothing in the policy branches on any of these.
