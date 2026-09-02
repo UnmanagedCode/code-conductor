@@ -1893,10 +1893,11 @@ export async function createProject({ name, conventions = [], system, remoteId, 
   const created = await fsCreateProject(name, { conventionsDoc, system, remoteId, systemPath });
   // ONE line per creation, outside every loop, on the single flag — a per-entry
   // line would be N lines per event, which is the class card 2026-0281 landed.
-  // AFTER the create succeeds, because every clause is a possessive claim about
-  // artifacts only a successful create produces: a refused one (409 duplicate,
-  // an unreachable placement) writes no marker, so a line naming "its marker"
-  // would send an operator looking for a file that does not exist.
+  // AFTER the create succeeds, because the marker clause names an artifact only
+  // a successful create produces: a refusal from `fsCreateProject` (409
+  // duplicate, 502 unreachable placement) writes no `CONVENTIONS.md` at all, so
+  // a line naming "its CONVENTIONS.md marker" would send an operator looking for
+  // a file that does not exist.
   // It names the PROJECT because that is the only identifier available: the
   // flag carries no cause, and the lost plugin slug is unreachable from here
   // (the catalog's extraProvider is opaque and never reports what failed).
@@ -1909,7 +1910,7 @@ export async function createProject({ name, conventions = [], system, remoteId, 
   // reaches the same composition once per project and would emit a line for
   // every project a degrade cannot possibly have touched.
   if (degraded) {
-    console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker, which no later regeneration adds back, and a one-time scaffold directive may not have been emitted at all, which nothing reissues`);
+    console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker, and no later regeneration adds them back; a one-time scaffold directive may not have been emitted at all, and nothing reissues one`);
   }
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).

@@ -339,19 +339,24 @@ describe('the conventions listings and the project created from them, over a deg
   });
 
   // T4b ────────────────────────────────────────────────────────────────
-  // PINS: the warn is about a project that EXISTS. Every clause in it is a
-  // possessive claim about artifacts a create produces — "ITS CONVENTIONS.md
-  // marker", "ITS scaffold directive" — so a create that fails after the
-  // composition must emit nothing, or the operator is sent looking for a marker
-  // that was never written. Both refusal shapes reachable during a degrade are
-  // checked: the 409 duplicate, which fails at `fsCreateProject` AFTER the
-  // document is composed, and the unknown-slug 400, which throws inside the
-  // composition upstream of any warn.
+  // PINS: the warn is about a project that EXISTS — a create refused during a
+  // degrade emits ZERO `createProject:` lines, whatever refuses it. The warn's
+  // marker clause names an artifact only a successful create produces ("its
+  // CONVENTIONS.md marker"), so a line on a refused create sends the operator
+  // looking for a file that was never written.
   //
-  // NOT CLAIMING: that these are the only ways a create can fail (a system
-  // outage on a remote placement is another, and it fails at the same step as
-  // the 409); that a failed create should log something else instead; that the
-  // successful arm's count is re-pinned here — T4 owns that.
+  // ALL THREE refusal shapes reachable during a degrade are exercised: the
+  // unknown-slug 400, which throws inside the block composition upstream of
+  // any warn; and the 409 duplicate and the 502 unreachable placement, which
+  // both throw from `fsCreateProject` — the step the warn now sits below. Any
+  // further refusal `fsCreateProject` grows is covered by SHARING that throw
+  // site rather than by an arm here.
+  //
+  // NOT CLAIMING: that a failed create should log something else instead; that
+  // the successful arm's count is re-pinned here — T4 owns that; that the
+  // refusal MESSAGES are contracts, only that each arm refuses for the reason
+  // its pattern names, so a rejection for some unrelated cause cannot pass as
+  // this arm's proof.
   test('a create that FAILS during the degrade emits no createProject line at all', async () => {
     const tree = await boxProject('gp');
     await seedPluginTree(tree, bothScopes('gated-plug'));
@@ -379,6 +384,22 @@ describe('the conventions listings and the project created from them, over a deg
     });
     assert.equal(census(unknown.lines).createProject, undefined,
       'and neither does one refused before the composition finishes');
+
+    // The third shape, on the SAME box the degrade came from: `latch()` left it
+    // down, so resolving the placement refuses 502 SYSTEM_UNREACHABLE from
+    // inside `fsCreateProject`, exactly where the 409 does.
+    const unreachable = await withWarns(async () => {
+      await assert.rejects(
+        () => mcpCreateProject({
+          name: 'onadeadbox', conventions: ['design-guidelines'],
+          system: boxSys.id, remoteId: 'g', systemPath: path.join(boxRoot, 'onadeadbox'),
+        }),
+        /cannot be reached/,
+        'a create onto the unreachable box is refused',
+      );
+    });
+    assert.equal(census(unreachable.lines).createProject, undefined,
+      'nor does a placement that could not be resolved');
   });
 
   // T5 ─────────────────────────────────────────────────────────────────

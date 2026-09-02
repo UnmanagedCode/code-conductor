@@ -505,8 +505,8 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // the placement disclosure when the project is being created ON a system,
       // so its first worker's prompt carries it without waiting for a
       // regeneration sweep — composes the scaffold directive, creates the
-      // project, and warns the operator once when the convention catalog was
-      // degraded. The two name refusals above stay HERE and stay FIRST: they
+      // project, and then, ON SUCCESS ONLY, warns the operator once when the
+      // convention catalog was degraded. The two name refusals above stay HERE and stay FIRST: they
       // are the web surface's own contract, and `validateName` returns its
       // argument unchanged so `validName === name`. The 201 body is the
       // handler's return verbatim, as it was before the delegation.
