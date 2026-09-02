@@ -118,6 +118,7 @@ export interface FragmentCatalog {
   updateCustom(slug: string, patch: { name?: unknown; description?: unknown; body?: unknown }): Promise<CatalogEntry>;
   deleteCustom(slug: string): Promise<{ slug: string }>;
   compose(slugs: string[]): Promise<string>;
+  composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean }>;
   readState(): Promise<Record<string, unknown>>;
   patchState(patch: Record<string, unknown>): Promise<void>;
   validateSlug(slug: string): string;
@@ -268,9 +269,27 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
   // Entries without a fragment body (e.g. a plugin convention that carries only
   // a scaffold facet) contribute nothing. Returns '\n' + bodies.join('\n\n') +
   // '\n' (empty string when no slugs or no surviving bodies).
-  async function compose(slugs: string[]): Promise<string> {
-    if (!Array.isArray(slugs) || slugs.length === 0) return '';
+  //
+  // Returned WITH the catalog's `degraded` flag, off the same getCatalog() call
+  // this already makes, because degradedness is a property OF THIS TEXT: a
+  // degrade only ever OMITS catalog entries, so a caller holding the text needs
+  // the flag to know whether an absence in it was established or merely
+  // unvouchable (card 2026-0277 — the conductor role doc consulted nothing and
+  // rendered the two identically). A separate accessor would invite reading one
+  // without the other, which is that same defect one layer down.
+  //
+  // The catalog is read BEFORE the empty-list guard, so an empty list reports
+  // the real flag instead of a hardcoded false. An empty list is itself
+  // something a degrade CAUSES: with every seed convention off, the only
+  // enabled slugs can all be contributed by one plugin, and an outage on that
+  // plugin's project collapses the list to nothing — the arm that loses 100% of
+  // the enabled bodies, and so the last one that can afford to be blind. Cost,
+  // counted: every non-empty call (which is every conductor launch) still makes
+  // exactly one getCatalog(); only the empty-list path gains one.
+  async function composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean }> {
     const catalog = await getCatalog();
+    const degraded = catalog.degraded === true;
+    if (!Array.isArray(slugs) || slugs.length === 0) return { text: '', degraded };
     const bodies: string[] = [];
     for (const slug of slugs) {
       const entry = catalog.find(r => r.slug === slug);
@@ -279,12 +298,14 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
       }
       if (entry.body) bodies.push(entry.body);
     }
-    if (bodies.length === 0) return '';
-    return '\n' + bodies.join('\n\n') + '\n';
+    if (bodies.length === 0) return { text: '', degraded };
+    return { text: '\n' + bodies.join('\n\n') + '\n', degraded };
   }
 
+  const compose = async (slugs: string[]): Promise<string> => (await composeWithMeta(slugs)).text;
+
   return {
-    getCatalog, addCustom, updateCustom, deleteCustom, compose,
+    getCatalog, addCustom, updateCustom, deleteCustom, compose, composeWithMeta,
     readState, patchState, validateSlug,
   };
 }

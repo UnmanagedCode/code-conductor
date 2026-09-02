@@ -306,10 +306,54 @@ export async function defaultPlaybookConvention(): Promise<string> {
 }
 
 // core + enabled convention bodies (catalog order) + footer.
+//
+// A DEGRADED CATALOG COMPOSES ANYWAY, AND SAYS SO IN THE SERVER LOG — card
+// 2026-0277. A plugin's conductor conventions are derived live from the
+// catalog, so while that plugin's project is unreachable its slug is absent
+// from the selection as well as from the catalog: compose() is never handed a
+// slug it cannot resolve, its unknown-slug 400 never fires, and the section is
+// silently gone. Measured, the resulting document is BYTE-IDENTICAL to the one
+// composed after the plugin is deliberately DISABLED — an unvouchable absence
+// rendered exactly as a confirmed one — and in the latched scan-sourced arm not
+// one line in the tree said so. Hence the read below, and the warn.
+//
+// THE DOCUMENT ITSELF IS NEVER MARKED. Three heavier shapes were weighed and
+// rejected, each on a measurement rather than on taste:
+//   • FREEZE (the ensureProjectConventionsMd policy — decline to write, leaving
+//     what is on disk). Mechanically it transfers: `.conduct/CONVENTIONS.md`
+//     persists between spawns, and the freeze never depended on the file being
+//     committed. What is missing is a `missing` ANALOGUE. That freeze is keyed
+//     on a project's line-1 `<!-- cc:conventions … -->` marker — a persisted
+//     record of the INTENDED selection that survives the outage — and the
+//     conductor scope has none: <store>/conventions/conductor.json holds no
+//     plugin slug even after an explicit Save (`enabled` is seed/custom only,
+//     `pluginOff` records off-switches only). So a freeze here could only key on
+//     `degraded` alone, which flags outages that cost this document nothing, and
+//     would silently make a live settings Save ineffective mid-outage.
+//   • BANNER injected into the doc. The flag names no slug and no cause, and
+//     the conductor's toolbelt carries no rescan/plugin tool, so it would name a
+//     condition its reader can neither identify nor remediate — for the cost of
+//     moving the system prompt.
+//   • REFUSE the spawn. The scan-sourced degrade persists until the next
+//     completed scan (it is recomputed per call, but from a scan result that the
+//     end of the outage does not update), so a refusal outlives the outage —
+//     box reachable again, no rescan ⇒ still degraded — and locks out the
+//     surface that would fix it.
+// So: compose, write, and hand the operator one line. The warn is a `may`
+// because the flag cannot see whether the conductor scope had anything to lose,
+// and carries no remedy because the two degrade sources clear differently (a
+// compose-sourced one clears itself; a scan-sourced one needs Rescan or
+// disabling the plugin — docs/plugins.md), and the flag carries no cause.
 export async function composeConduct(enabledSlugs: string[]): Promise<string> {
   const core = await getCore();
   const footer = await getFooter();
-  let mods = (await catalog.compose(enabledSlugs)).trim();
+  // Above the generated-sections branch on purpose: inside it, the signal would
+  // vanish for every selection with the playbooks convention off.
+  const { text, degraded } = await catalog.composeWithMeta(enabledSlugs);
+  if (degraded) {
+    console.warn("conductorConventions: role doc composed over a DEGRADED convention catalog — a plugin's conductor conventions may be missing from this document");
+  }
+  let mods = text.trim();
   // Both generated sections ride the playbooks convention, so a session with
   // that convention off pays nothing for them.
   //
