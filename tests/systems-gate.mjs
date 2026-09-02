@@ -60,7 +60,7 @@
 // WHEN A ROW REDS, THE CLOSING BLOCK CARRIES THE DIAGNOSIS — the failing test
 // names and the hang-guard verdict, not just PASS/FAIL. This gate is normally
 // read through a `tail` of a captured log, and the first red it ever produced
-// lost its failing test name to exactly that (card 2026-0290). The block is
+// lost its failing test name to exactly that (card 2026-0290 §5c). The block is
 // rendered by tests/gateSummary.mjs and tested by tests/systems-gate-summary.test.mjs.
 //
 // It is a separate command rather than part of `npm test` because it IS

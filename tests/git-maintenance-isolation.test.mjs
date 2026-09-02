@@ -1,20 +1,12 @@
-// The run must not leave a DETACHED git process running behind its own back.
+// The regression test for `pinGitConfig` (tests/safeStoreRoot.mjs) — the run's
+// git isolation. WHAT it disables, WHY that key and not the GIT_CONFIG_* env
+// form, and the measurements behind both live in that function's comment and are
+// deliberately not restated here (card 2026-0290 §3); the short version is that
+// git's automatic repack is DETACHED, so it lands inside tree-snapshot windows
+// and reds a row with no defect in the diff under test.
 //
-// card 2026-0290 §3: git spawns `git maintenance run --auto --quiet --detach`
-// after ordinary write commands. It is detached, so it outlives the command that
-// spawned it and repacks whenever it lands — including inside a window in which
-// a test has already taken a "before" tree snapshot and is about to take the
-// "after" one. `assertTreeUnchanged`/`snapshotTree` guard several assertion sites
-// across the systems suites; a repack lands there as a spurious diff (`.git/info/refs`,
-// `objects/info/packs`, `multi-pack-index`, `pack-*.{idx,pack,rev}` appear, every
-// loose object disappears) and reds the gate with no defect in the diff under test.
-//
-// Measured on this host at fe610017: 765 such spawns per `npm test`.
-//
-// tests/run.mjs pins the whole run to a run-scoped gitconfig that disables it.
-// This file is the regression test for that pin: it fails the moment the export
-// is dropped, instead of the pin's absence being discovered by a gate reddening
-// once every few runs.
+// This file exists so that dropping the pin fails immediately and by name,
+// instead of surfacing as a gate reddening once every few runs.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,11 +29,15 @@ function gitTraced(cwd, traceDir, args) {
     .join('\n');
 }
 
-// Pins: the run exports GIT_CONFIG_GLOBAL, and it resolves inside this run's own
-// throwaway root. NOT claiming anything about the file's contents — the
-// behavioural test below is what pins the effect, so this cannot pass by
+// Pins: GIT_CONFIG_GLOBAL is in effect and resolves inside this run's own
+// throwaway root — WHICHEVER path established it. Two do: tests/run.mjs before
+// any file forks, and ensureSafeStoreEnv() for a file run standalone. Dropping
+// either one alone leaves this green (measured), because either alone still
+// covers this process; that redundancy is deliberate, so the name says "is in
+// effect", not "run.mjs set it". NOT claiming anything about the file's contents
+// — the behavioural test below is what pins the effect, so this cannot pass by
 // pointing at an empty file somewhere safe.
-test('the run pins GIT_CONFIG_GLOBAL inside its own safe root', () => {
+test('GIT_CONFIG_GLOBAL is in effect and inside this run\'s safe root', () => {
   const configured = process.env.GIT_CONFIG_GLOBAL;
   assert.ok(configured, 'GIT_CONFIG_GLOBAL is not exported — the run inherits the developer\'s global gitconfig');
   const runRoot = path.dirname(process.env.PROJECTS_ROOT);
@@ -74,6 +70,6 @@ test('an ordinary commit spawns no detached git maintenance child', async (t) =>
   const spawns = traced.split('\n').filter(
     (l) => l.includes('"event":"child_start"') && l.includes('"maintenance","run","--auto"'));
   assert.equal(spawns.length, 0,
-    `git spawned ${spawns.length} detached maintenance child(ren) — the run-scoped ` +
-    'gitconfig from tests/run.mjs is not in effect');
+    `git spawned ${spawns.length} detached maintenance child(ren) — pinGitConfig's ` +
+    'run-scoped gitconfig is not in effect for this process');
 });

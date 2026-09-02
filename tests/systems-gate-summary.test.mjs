@@ -123,7 +123,7 @@ test('a green gate renders one PASS line per row and nothing else', () => {
 });
 
 test('a FAIL row carries its verdict and its failing test names into the block', () => {
-  // Pins the whole point of card 2026-0290: the diagnosis survives a `tail`.
+  // Pins the whole point of card 2026-0290 §5c: the diagnosis survives a `tail`.
   // Both the verdict and every name are in the closing block, not upstream in
   // the row's own output.
   const out = render([

@@ -135,32 +135,44 @@ async function squat() {
 // the port the supervisor's child had never bound.
 //
 // The invariant that closes it: the kernel only ever auto-assigns from
-// `ip_local_port_range`. Measured here, 3000 `allocatePort()` samples, 0 outside
-// the range — and the pair of tests at the bottom of this file keeps both halves
-// of that honest. A port strictly BELOW the low bound can therefore only be
-// taken by something that names it explicitly, and nothing in this repo binds a
-// fixed port (verified: the only fixed port literals in `tests/` are 45101-45105
-// / 45111 / 45222, which reach `_spawn: fakeSpawn` children that never bind and
-// are never probed — holding all seven with a live listener leaves this file
-// 19/19 green).
+// `ip_local_port_range`. Measured here, 60000 `allocatePort()` samples, 0
+// outside the range — and the pair of tests at the bottom of this file keeps
+// both halves of that honest. A port strictly BELOW the low bound can therefore
+// only be taken by something that names it explicitly, and nothing in this repo
+// does: the only fixed-port LITERALS in `tests/` are `45100` (the base of
+// `45100 + calls`), `45111` and `45222`, and every value they produce is handed
+// to a `_spawn: fakeSpawn` child that never binds and is never probed. Verified
+// rather than reasoned: with live listeners on 45100-45105, 45111 and 45222,
+// every test in this file still passes.
 //
 // It still BINDS to verify the port is free: a busy sub-ephemeral port would
 // make the oracle lie in the other direction. The bind-then-close window is not
 // the TOCTOU of `allocatePort()`, because nothing automatic can be handed this
 // number after the close.
 const EPHEMERAL_LO_FALLBACK = 32768;
+const PORT_RANGE_FILE = '/proc/sys/net/ipv4/ip_local_port_range';
 
-// The low bound of the kernel's auto-assignment range. Exported shape is Linux's
-// `/proc`; the fallback is only reached where that file is unreadable, and it is
-// the value this host reports (32768) — the ports we pick are strictly BELOW it
-// either way, so the fallback cannot land inside the range it exists to escape.
-function ephemeralLow() {
+// The kernel's auto-assignment range, or null where /proc does not expose it.
+// ONE read path, so the helper below and the two tests that check its output
+// degrade together — a host where they disagree is a host where the fix holds
+// and the tests that prove it do not.
+function ephemeralRange() {
   try {
-    const lo = Number(readFileSync('/proc/sys/net/ipv4/ip_local_port_range', 'utf8').trim().split(/\s+/)[0]);
-    return Number.isInteger(lo) && lo > 1024 ? lo : EPHEMERAL_LO_FALLBACK;
+    const [lo, hi] = readFileSync(PORT_RANGE_FILE, 'utf8').trim().split(/\s+/).map(Number);
+    return Number.isInteger(lo) && Number.isInteger(hi) ? { lo, hi } : null;
   } catch {
-    return EPHEMERAL_LO_FALLBACK;
+    return null;
   }
+}
+
+// The low bound actually in force, whatever it is. The fallback is reached ONLY
+// when the range is unreadable or unparseable — never to override a value the
+// host reported. A host tuned down to `lo = 1024` is the case that makes this
+// load-bearing: substituting 32768 there would draw ports from INSIDE the real
+// range and silently reinstate the defect this helper exists to remove. Where no
+// band exists below the reported bound, reservedPort() refuses instead.
+function ephemeralLow() {
+  return ephemeralRange()?.lo ?? EPHEMERAL_LO_FALLBACK;
 }
 
 function bindsFree(port) {
@@ -648,31 +660,45 @@ test('stopAndWait refuses to signal anything that is not provably this run\'s', 
 // where `allocatePort()` draws from. Split so a change to either side is named
 // by the assertion it breaks.
 
+// A host with no `/proc/sys/net/ipv4/ip_local_port_range` is one where these two
+// checks cannot run at all — `reservedPort()` still degrades to its fallback
+// bound there, but nothing can confirm it. Say so out loud rather than pass
+// vacuously: this is the shape tests/run.mjs uses for an absent /proc
+// ('guardrail: /proc unavailable — peak subprocess sampling skipped'), not a
+// silent skip.
+function announceNoRange(what) {
+  console.warn(`plugins-supervisor: ${PORT_RANGE_FILE} unavailable — ${what} went UNCHECKED on this host.`);
+}
+
 test('reservedPort() yields a free port strictly below the ephemeral range', async () => {
   // Pins: the helper's port is (a) below `ip_local_port_range`'s low bound, so
   // no `listen(0)` anywhere on the host can be handed it, and (b) actually free,
   // so it really does refuse connects. NOT claiming it stays free against a
   // process that binds that exact number deliberately — nothing here does.
-  const lo = Number(readFileSync('/proc/sys/net/ipv4/ip_local_port_range', 'utf8').trim().split(/\s+/)[0]);
+  const range = ephemeralRange();
+  if (!range) return announceNoRange("reservedPort()'s bound");
   for (let i = 0; i < 10; i++) {
     const port = await reservedPort();
-    assert.ok(port < lo, `reservedPort gave ${port}, inside the ephemeral range (${lo}+)`);
+    assert.ok(port < range.lo, `reservedPort gave ${port}, inside the ephemeral range (${range.lo}+)`);
     assert.ok(port >= 1024, `reservedPort gave ${port}, a privileged port`);
     assert.equal(await tcpOpen(port), false, `reservedPort gave ${port}, which something is listening on`);
   }
 });
 
-test('allocatePort() only ever draws from inside the ephemeral range', async () => {
+test('a sample of allocatePort() results all land inside the ephemeral range', async () => {
   // Pins the kernel invariant the test above depends on: `listen(0)` assigns
   // from `ip_local_port_range` and nowhere else, so "below lo" is genuinely out
-  // of reach of every automatic allocator on the box. NOT a rate claim about how
-  // often a port gets stolen — that is what the provenance change removes the
-  // need to measure.
-  const [lo, hi] = readFileSync('/proc/sys/net/ipv4/ip_local_port_range', 'utf8').trim().split(/\s+/).map(Number);
+  // of reach of every automatic allocator on the box. A SAMPLE — 200 draws here,
+  // 60000 when the provenance was chosen — so this is evidence for that
+  // invariant, not a proof of it, and it is deliberately NOT a rate claim about
+  // how often a port gets stolen: the provenance change removes the need to
+  // measure that at all.
+  const range = ephemeralRange();
+  if (!range) return announceNoRange("allocatePort()'s draw band");
   const outside = [];
   for (let i = 0; i < 200; i++) {
     const port = await allocatePort();
-    if (port < lo || port > hi) outside.push(port);
+    if (port < range.lo || port > range.hi) outside.push(port);
   }
-  assert.deepEqual(outside, [], `allocatePort() escaped ${lo}..${hi}`);
+  assert.deepEqual(outside, [], `allocatePort() escaped ${range.lo}..${range.hi}`);
 });

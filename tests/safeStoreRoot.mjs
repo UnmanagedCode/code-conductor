@@ -126,8 +126,9 @@ export function assertVerified() {
 //
 // GIT_CONFIG_GLOBAL, not GIT_CONFIG_COUNT/KEY/VALUE: git CLEARS the GIT_CONFIG_*
 // family for commands run against another repository (`local_repo_env`), so the
-// env form leaks on the local transport. Measured over a full run: the env form
-// took 765 spawns to 40, all of them `git-receive-pack`; this form takes it to 0.
+// env form leaks on git's local transport. Measured on one local push, three
+// arms: no config at all -> 1 spawn, the GIT_CONFIG_* env form -> 1 spawn (it
+// does NOT bite), this form -> 0.
 //
 // `gc.auto` is a SECOND key for the same outcome, not a refinement of the first.
 // Measured on git 2.55 here, interleaved with no-change controls (3/3 controls
@@ -138,6 +139,11 @@ export function assertVerified() {
 //
 // Consequence for future tests: a test needing a global git setting must add it
 // HERE. Nothing in the run reads the developer's global config any more.
+//
+// The spawn counts above are a MEASUREMENT AT A COMMIT (fe610017, git 2.55), not
+// an invariant — re-take rather than trust them:
+//   GIT_TRACE2_EVENT=/tmp/t.jsonl npm test
+//   grep -c '"event":"child_start".*"maintenance","run","--auto"' /tmp/t.jsonl
 const GIT_CONFIG_BODY = '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n';
 
 // Idempotent: under run.mjs every child inherits an already-correct value and

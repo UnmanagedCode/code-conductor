@@ -1,6 +1,6 @@
 // What a red `gate:systems` row says about itself, in the block a `tail` keeps.
 //
-// card 2026-0290: the first observed red of this gate lost its failing test name
+// card 2026-0290 §5c: the first observed red of this gate lost its failing test name
 // outright — the operator had piped the run through `tail -25`, which kept only
 // the last row's summary, and the run was not re-capturable. The card exists
 // because of that loss. Fixing the operator does not scale; fixing the artefact
