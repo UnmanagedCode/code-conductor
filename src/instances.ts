@@ -66,7 +66,7 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
-import { composeSessionRoot, type ComposedSessionRoot } from './systems/sessionRoot.ts';
+import { composeSessionRoot, composedRootWasDiscarded, type ComposedSessionRoot } from './systems/sessionRoot.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation } from './transcript.ts';
 import { PlanFileTracker } from './planFile.ts';
@@ -1644,6 +1644,14 @@ export class Instance extends EventEmitter implements InstanceLike {
   // A failure is SURFACED, not fatal: the config surface is not the session, and
   // a system that is briefly unreachable should cost a warning rather than a
   // worker that cannot start. Every tool call still refuses honestly.
+  //
+  // ONE EXCEPTION, and it is the case where there is nothing left to be honest
+  // WITH: when the compose failed after the target check discarded the prior
+  // root, the last-good root a warning would fall back on no longer exists, and
+  // the worker would start with none of its project's implicit config surface.
+  // That REFUSES. Measured: with the check HOLDING, the prior root and its
+  // manifest survive every way the walk and the pull can fail, which is why this
+  // is keyed on the check and not on the failure (card 2026-0273).
   async _refreshSessionRoot(): Promise<void> {
     const placement = this._redirectPlacement;
     if (!placement) return;
@@ -1660,17 +1668,41 @@ export class Instance extends EventEmitter implements InstanceLike {
       // mirror advertisement between spawn and relaunch has just had the root
       // re-pulled somewhere this session will not look. Loud, because the
       // alternative is a worker whose CLAUDE.md silently vanished.
+      //
+      // WHAT THIS LINE DELIBERATELY DOES NOT CLAIM, because none of it was
+      // measured: that cc did anything about the situation (it says the
+      // opposite); that the session is broken or must be killed — it describes
+      // the LOCATION, never the session's health, and the two mirror directions
+      // differ there (widening leaves this cwd present and config-less,
+      // narrowing leaves it not existing at all); or that the session's tools
+      // still work. The advertisement itself may be entirely correct.
       if (cwd !== this.cwd) {
         this._emitUi({ kind: 'system', subtype: 'stderr', data: {
           line: `systems: '${placement.systemId}' now mirrors this project at ${cwd}, but this session `
-            + `is running in ${this.cwd} — its config surface is stale. Respawn the session to pick up `
-            + `the new layout.`,
+            + `is running in ${this.cwd}, which no longer holds its config surface — CLAUDE.md, `
+            + `CONVENTIONS.md and the .claude/ tree were pulled to the new location instead. cc has not `
+            + `moved this session and cannot: a NEW session on this project starts at the new location `
+            + `with its config surface, and this conversation cannot be carried there.`,
         } });
       }
     } catch (e) {
       this._emitUi({ kind: 'system', subtype: 'stderr', data: {
         line: `systems: could not refresh the session root from '${placement.systemId}': ${(e as Error).message}`,
       } });
+      // THE ONE REFRESH FAILURE THAT IS FATAL — and the line above still runs
+      // for it: the event stream is where an operator watching this session is
+      // looking, and the throw only reaches whoever called the relaunch.
+      if (composedRootWasDiscarded(e)) {
+        throw httpError(
+          502,
+          `cannot relaunch this session: composing its session root from '${placement.systemId}' failed `
+          + `after the target check had already discarded whatever earlier compose was there, so cc has no `
+          + `complete config surface for this project at ${this.cwd} and will not start a worker on a `
+          + `partial one. Relaunch once the system answers again — the surface is re-pulled from scratch. `
+          + `Cause: ${(e as Error).message}`,
+          { code: 'SESSION_ROOT_DISCARDED' },
+        );
+      }
     }
   }
 
