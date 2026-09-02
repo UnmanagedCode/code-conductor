@@ -18,7 +18,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
-import { bindRemoteSystem } from './remoteSystem.mjs';
+import {
+  assertTreeUnchanged, bindRemoteSystem, flakyLaunch, snapshotTree,
+} from './remoteSystem.mjs';
 import { liveSystemProto } from './systemHandle.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
@@ -27,6 +29,7 @@ import {
   SESSION_ROOT_FILE_CAP_BYTES,
   SessionPathMap,
   composeSessionRoot,
+  composedRootWasDiscarded,
   sessionRootPath,
   sessionRootsDir,
 } from '../src/systems/sessionRoot.ts';
@@ -158,16 +161,24 @@ const LISTING_FENCE = 8 * 1024 * 1024;
 // ~14,600 files instead of ~96,000. Two 180-character directory components plus
 // a 180-character name keep the longest path inside macOS's PATH_MAX of 1024
 // and every component inside NAME_MAX of 255.
+// The writes go out in batches rather than one at a time. The NAMES are a pure
+// function of the running count, so the file set and the listing it produces are
+// what the sequential form produced — only the wall clock moves, which matters
+// because more than one test now stands this fixture up.
 async function floodSkills(root, targetBytes) {
   const dir = path.join(root, '.claude/skills', 'a'.repeat(180), 'a'.repeat(180));
   await fs.mkdir(dir, { recursive: true });
   let bytes = 0;
   let files = 0;
   while (bytes < targetBytes * 1.05) {
-    const abs = path.join(dir, 'b'.repeat(172) + String(files).padStart(8, '0'));
-    await fs.writeFile(abs, '');
-    bytes += 25 + Buffer.byteLength(abs);
-    files += 1;
+    const batch = [];
+    while (batch.length < 64 && bytes < targetBytes * 1.05) {
+      const abs = path.join(dir, 'b'.repeat(172) + String(files).padStart(8, '0'));
+      batch.push(abs);
+      bytes += 25 + Buffer.byteLength(abs);
+      files += 1;
+    }
+    await Promise.all(batch.map(abs => fs.writeFile(abs, '')));
   }
   return { files, bytes };
 }
@@ -780,4 +791,157 @@ test('a find that ignores -prune still cannot get an excluded path into the root
   ).toString('utf8');
   assert.ok(fetched.includes('PUBLIC-SKILL-BYTES'), 'the sibling was fetched');
   assert.ok(!fetched.includes('SECRET-SKILL-BYTES'), 'the excluded file was never fetched');
+});
+
+// ── A COMPOSE THAT FAILS AFTER THE TARGET CHECK DISCARDED THE ROOT ───
+//
+// The target check runs BEFORE the root exists, and a mismatch removes the root
+// AND its manifest before the walk runs. So a failure past that point is not
+// just "the compose refused": there is no last-good root behind it, which is
+// the fact a caller that would otherwise warn and carry on has to know.
+// `composedRootWasDiscarded` is how it is told.
+//
+// KEYED ON THE CHECK, NOT ON THE FAILURE. The three arms below are three
+// different ways the walk can fail, and the control test pairs each with the
+// same failure behind a check that HELD. What differs across that pair is the
+// check alone, which is why the mark can be set where it is.
+//
+// THE MISMATCH ROUTE is a handle bound to remote `a` against a root whose
+// manifest has been removed — `readManifest` documents the manifest as a cache
+// whose loss costs a re-pull and nothing else, so its absence is a supported
+// state rather than a broken fixture. It keeps every arm on ONE target, so the
+// marked case and its control differ in nothing but the check.
+
+// A system serving target `a` over its own seeded sandbox, composed once so the
+// root and the manifest naming `a` — the last-good pair each arm starts from —
+// really exist.
+async function lastGoodRootOnA(id) {
+  const sandbox = await fs.realpath(await mkdtemp('cc-sr-discard-'));
+  await seedTree(sandbox);
+  const flags = ['--remote', `a=${sandbox}`];
+  await bindRemoteSystem({ id, flags });
+  await composeOn(id, 'a', sandbox);
+  return { sandbox, flags };
+}
+
+// What makes the NEXT compose's target check not hold: an absent manifest reads
+// as `remoteId: null`, which no longer agrees with a handle bound to `a`.
+const dropManifest = (id) => fs.rm(`${sessionRootPath(id, 'app', null)}.manifest.json`, { force: true });
+
+// PINS: a walk that fails after the target check did not hold marks the error,
+// and what it leaves behind is a root with no config surface in it and no
+// manifest beside it. The failure is the REAL production fence firing on a real
+// flooded tree, not an injected one.
+//
+// NOT CLAIMING anything about the fence's value or its message: it asserts on
+// neither the number nor the text, which card 2026-0267 owns. It is NOT
+// independent of that value either — the flood is sized to cross the fence as it
+// stands, so raising the fence stops this fixture failing and the flood has to
+// be resized with it.
+test('a walk that fails after the target check did not hold marks the error and leaves no manifest', async () => {
+  const id = 'discarded-fence';
+  const { sandbox } = await lastGoodRootOnA(id);
+  await floodSkills(sandbox, LISTING_FENCE);
+  await dropManifest(id);
+
+  await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
+    assert.equal(composedRootWasDiscarded(e), true, `the failure was not marked: ${e.message}`);
+    return true;
+  });
+
+  // Derived from the store path, not from anything the compose handed back:
+  // the compose threw, so it handed back nothing to read a path out of.
+  const root = sessionRootPath(id, 'app', null);
+  assert.deepEqual(await listTree(root), [], 'no config surface is left at the root');
+  await assert.rejects(fs.readFile(`${root}.manifest.json`), 'and no manifest beside it');
+});
+
+// PINS: the mark is set by the target check, so it does not depend on HOW the
+// walk failed — a command the far side refuses to start and a transport that
+// dies after really forwarding it are both marked.
+//
+// NOT CLAIMING that these are the only ways to fail. A `readFile` failure
+// during the pull, after the reset, reaches the same state and throws a raw
+// `Error` with no `statusCode`; it is not pinned here precisely because the
+// mark cannot tell these apart.
+test('the mark does not depend on how the walk failed', async () => {
+  for (const [id, cfg] of [
+    ['discarded-refused', { errorFrame: 'find' }],
+    ['discarded-death', { dieOn: 'find' }],
+  ]) {
+    const { sandbox, flags } = await lastGoodRootOnA(id);
+    // updateSystem disposes the live handle, so the system really was up for
+    // the compose above and really is failing from here on.
+    await updateSystem(id, { launch: flakyLaunch({ ...cfg, flags }) });
+    await dropManifest(id);
+
+    await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
+      assert.equal(composedRootWasDiscarded(e), true,
+        `${JSON.stringify(cfg)} left the failure unmarked: ${e.message}`);
+      return true;
+    });
+  }
+});
+
+// PINS: the REMOVAL the target check performs is inside the marked region — a
+// reset that itself fails is marked like any other failure past the check, and
+// so refuses rather than warning. Without it the compose escapes unmarked and
+// the relaunch carries on over the rejected target's own bytes.
+//
+// Reached with a DIRECTORY where the manifest FILE belongs, so the unlink that
+// removes the manifest fails: deterministic, and independent of the uid the
+// suite runs as, which a chmod-based fault is not.
+//
+// NOT CLAIMING the other half of a failed reset — a fault on the session root's
+// own removal, which would throw before anything was deleted. This fixture
+// cannot reach it, and it is not pinned here.
+test('a reset that itself fails is marked too', async () => {
+  const id = 'discarded-reset';
+  const { sandbox } = await lastGoodRootOnA(id);
+  const mf = `${sessionRootPath(id, 'app', null)}.manifest.json`;
+  await fs.rm(mf, { force: true });
+  // readManifest reads this as an absent manifest, so the check does not hold
+  // and the reset runs; the reset's unlink then refuses it.
+  await fs.mkdir(mf);
+
+  await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
+    assert.equal(composedRootWasDiscarded(e), true,
+      `the reset's own failure was not marked: ${e.message}`);
+    return true;
+  });
+});
+
+// CONTROL. PINS: the same three failures behind a target check that HELD are
+// NOT marked, and the prior root and its manifest survive each of them
+// byte-identical. This is what stops the fix becoming "refuse on every compose
+// failure" — a system that is briefly unreachable must keep resuming on its
+// last good root, which is card 2026-0267's deliberate warn-and-continue.
+//
+// NOT CLAIMING that the compose succeeds: all three still throw. The claim is
+// about what is left behind and how it is marked, not about whether it refused.
+test('the same failures with the target check HOLDING are not marked, and the prior root survives', async () => {
+  for (const [id, cfg] of [
+    ['held-fence', null],
+    ['held-refused', { errorFrame: 'find' }],
+    ['held-death', { dieOn: 'find' }],
+  ]) {
+    const { sandbox, flags } = await lastGoodRootOnA(id);
+    if (cfg) await updateSystem(id, { launch: flakyLaunch({ ...cfg, flags }) });
+    else await floodSkills(sandbox, LISTING_FENCE);
+
+    const root = sessionRootPath(id, 'app', null);
+    const before = await snapshotTree(root);
+    assert.ok(before.has('CLAUDE.md'), `${id}: there is a last-good root to survive`);
+
+    // No dropManifest: the manifest the compose above wrote still names `a`.
+    await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
+      assert.equal(composedRootWasDiscarded(e), false,
+        `${id}: a failure behind a holding check was marked: ${e.message}`);
+      return true;
+    });
+
+    assertTreeUnchanged(assert, before, await snapshotTree(root), `${id}: the prior root`);
+    assert.equal(JSON.parse(await fs.readFile(`${root}.manifest.json`, 'utf8')).remoteId, 'a',
+      `${id}: and its manifest still names the target it was pulled from`);
+  }
 });

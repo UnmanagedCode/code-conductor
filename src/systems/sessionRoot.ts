@@ -273,7 +273,6 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   system: System; systemId: string; systemPath: string; project: string; worktree?: string | null;
 }): Promise<ComposedSessionRoot> {
   requireAbsolute('composeSessionRoot', 'systemPath', systemPath);
-  const rootRaw = sessionRootPath(systemId, project, worktree);
 
   // THE MIRROR, resolved before anything is written, because its answer may be
   // "there should not be a session here at all". One round trip per connection
@@ -295,11 +294,45 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
   // A mismatch removes the WHOLE root and re-pulls from scratch. Diffing
   // against a manifest that describes a different machine is precisely how the
   // old target's bytes end up under the new target's paths.
+  const placement = { system, systemId, systemPath, project, worktree };
   const prior = await readManifest(systemId, project, worktree);
   const priorMirror = prior.mirrorRoot ?? systemPath;
-  const manifest = prior.remoteId === (system.remoteId ?? null) && priorMirror === mirror.mirrorRoot
-    ? prior
-    : await resetRoot(systemId, project, worktree);
+  if (prior.remoteId === (system.remoteId ?? null) && priorMirror === mirror.mirrorRoot) {
+    return pullSessionRoot(placement, mirror, notes, prior);
+  }
+
+  // THE ROOT IS REJECTED FROM HERE ON, and nothing below may be read as a
+  // fallback: it was pulled from a different target, and diffing against a
+  // manifest that describes another machine is precisely how the old target's
+  // bytes end up under the new target's paths.
+  //
+  // THE REMOVAL IS INSIDE THE TRY, not before it. Both halves of a failed reset
+  // are states cc must not launch on and neither is distinguishable from the
+  // other by the time the error arrives: a removal that threw before deleting
+  // leaves the REJECTED target's whole surface sitting there looking like a
+  // last-good root, and one that threw after leaves a partial pull. So every
+  // throw from here on is marked, and Instance._refreshSessionRoot refuses the
+  // relaunch for it.
+  try {
+    const fresh = await resetRoot(systemId, project, worktree);
+    return await pullSessionRoot(placement, mirror, notes, fresh);
+  } catch (e) {
+    throw markDiscarded(e);
+  }
+}
+
+// The whole of the composition BELOW the target check, taking the manifest that
+// check decided on: the prior one when it held, an empty one when the root was
+// discarded and everything must be re-pulled.
+async function pullSessionRoot(
+  { system, systemId, systemPath, project, worktree }: {
+    system: System; systemId: string; systemPath: string; project: string; worktree: string | null;
+  },
+  mirror: MirrorScope,
+  notes: string[],
+  manifest: Manifest,
+): Promise<ComposedSessionRoot> {
+  const rootRaw = sessionRootPath(systemId, project, worktree);
 
   await fs.mkdir(rootRaw, { recursive: true });
   // The CLI encodes its transcript directory from getcwd(), which is always the
@@ -378,6 +411,48 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
     next,
   );
   return { root, cwd, mirror, pulled, skipped, notes };
+}
+
+// A compose that FAILED after the target check had already discarded whatever
+// earlier compose was at the root. There is no last-good root behind such a
+// failure, so a caller that would otherwise warn and carry on has nothing to
+// carry on with — see Instance._refreshSessionRoot.
+//
+// A SYMBOL rather than an `httpError` field: this rides on errors that reach
+// REST and MCP bodies, and a merged string field would become part of them. And
+// a MARK on the original error rather than a wrapper, so the refusal the create
+// path already raises keeps its exact message and its exact status.
+//
+// Measured over four ways the walk and the pull can fail — the listing fence, a
+// `spawnError`, a transport death mid-walk, and a readFile failure mid-pull —
+// the target check is the whole discriminator. With it NOT holding, every one
+// of them leaves the root without a config surface. With it HOLDING, none of
+// them touches the MANIFEST — `writeManifest` is the last statement of the pull
+// — so the next compose converges from it; the three that fail during the WALK
+// leave the prior root byte-identical, and one that fails during the PULL
+// leaves it partly re-pulled, from the SAME target, which is what makes warn-
+// and-carry-on right there. So this marks the CHECK, not the failure (card
+// 2026-0273) — and it cannot key on `statusCode`, which the mid-pull failure
+// does not carry.
+const DISCARDED = Symbol.for('cc.sessionRoot.discarded');
+
+// The OBJECT branch is every case that occurs today: every throw site reachable
+// from the pull raises an Error, and the original is rethrown untouched but for
+// the symbol.
+//
+// A NON-OBJECT throw cannot carry a property, so it is wrapped and the wrapper
+// is marked. NOT a claim that anything throws one — nothing here does, and this
+// branch is unreachable today. It exists so the refusal is a property of THIS
+// function rather than of its callers' throw shapes: an unmarked failure warns
+// and carries on, which is exactly the silent relaunch this closes.
+function markDiscarded(e: unknown): unknown {
+  const err: object = (typeof e === 'object' && e !== null) ? e : new Error(String(e));
+  (err as Record<symbol, unknown>)[DISCARDED] = true;
+  return err;
+}
+
+export function composedRootWasDiscarded(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as Record<symbol, unknown>)[DISCARDED] === true;
 }
 
 // The root was pulled from a different target: remove it and its manifest, and
