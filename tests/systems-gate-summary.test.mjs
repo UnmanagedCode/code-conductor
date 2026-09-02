@@ -13,7 +13,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanRowOutput, createRowScanner, renderGateSummary, NAMED_FAILURE_LIMIT } from './gateSummary.mjs';
+import { scanRowOutput, createRowScanner, renderGateSummary } from './gateSummary.mjs';
 
 const CLEAN_ROW = [
   '✔ readiness via healthPath; child gets $PORT and reaches ready (562.832080ms)',
@@ -53,6 +53,15 @@ const WEDGED_ROW = [
   'hang-guard: 344/346 files reported, 1 killed, 3 leaked process(es) swept, STREAM STALLED, run cap not reached',
 ].join('\n');
 
+// Two lines that BOTH match the verdict pattern. The wedged row above does not
+// exercise this: its `NO REPORT` line carries no `N/N files reported`, so only
+// one line there is ever a candidate.
+const TWO_VERDICT_ROW = [
+  'hang-guard: 12/348 files reported, 0 killed, 0 leaked process(es) swept, stream ended cleanly, run cap not reached',
+  'ℹ fail 0',
+  'hang-guard: 348/348 files reported, 0 killed, 0 leaked process(es) swept, stream ended cleanly, run cap not reached',
+].join('\n');
+
 // ── scanRowOutput ──────────────────────────────────────────────────────────
 
 test('scanRowOutput names every failing test once, nested and trailer alike', () => {
@@ -85,9 +94,60 @@ test('scanRowOutput reports nothing failing for a clean row', () => {
 });
 
 test('scanRowOutput finds no test names in a wedged row', () => {
-  // Pins card 2026-0268's shape at the scan level: red with zero `✖` lines is a
-  // real, distinguishable state, not a scanner miss.
+  // A STRUCTURAL NEGATIVE CONTROL — and it has NO POSSIBLE KILLER, which is not
+  // the same as being vacuous. Do not delete it as dead weight: mutation showed
+  // the scanner runs to completion over this fixture (so the assertion is
+  // reached and meaningful) and that the test reds under crash-class mutations.
+  // What it guards against is a future scanner that MANUFACTURES names out of a
+  // row where nothing failed — which would turn card 2026-0268's shape back into
+  // something indistinguishable from a test failure, the exact confusion the
+  // summary exists to end. Nothing in today's code can produce that, so nothing
+  // can kill it today.
   assert.deepEqual(scanRowOutput(WEDGED_ROW).failingTests, []);
+});
+
+test('the last matching verdict line wins', () => {
+  // Pins the tiebreak the scanner states but no other fixture reaches: with two
+  // lines both matching the verdict pattern, the LATER one is the settled
+  // verdict. Only one is printed per run today, so this pins the rule ahead of a
+  // runner that prints a provisional line and then a final one — where taking
+  // the first would report a partial run as the outcome. NOT claiming today's
+  // runner emits two.
+  assert.match(scanRowOutput(TWO_VERDICT_ROW).hangGuard, /^hang-guard: 348\/348 files reported/);
+});
+
+test('a ✖ that is not at the start of a line is not a failing test', () => {
+  // Pins the `^` anchor. Test output and diagnostics quote things; a line that
+  // MENTIONS a failure line must not be harvested as one, or a green row grows
+  // failures out of its own prose and the summary starts lying in the direction
+  // that costs most — naming tests that did not fail.
+  const quoted = [
+    'console.log said: ✖ something (7ms) happened',
+    'expected output to contain "✖ ghost test (1.0ms)"',
+    '# note: ✖ not-a-test (2ms)',
+  ].join('\n');
+  assert.deepEqual(scanRowOutput(quoted).failingTests, []);
+});
+
+test('a failure line with trailing text is salvaged, not dropped', () => {
+  // Pins the deliberate choice between two ways to be wrong (card 2026-0290 §5c).
+  // The exact pattern's `$` anchor is what keeps a name like `slow hook (200ms)
+  // does not interfere: …` whole — a lazy match without it stops at the first
+  // duration and reports `slow hook`. But an anchor DROPS what it rejects, and a
+  // dropped diagnosis is this card's own failure mode, so a line that opens like
+  // a failure and carries a duration is taken verbatim instead.
+  //
+  // DEFENSIVE AND SYNTHETIC: the node:test spec reporter is NOT known to emit a
+  // line of this shape, and this fixture is not evidence that it does. It pins
+  // what happens if anything ever does.
+  const { failingTests } = scanRowOutput([
+    '✖ slow hook (200ms) does not interfere: subprocess spawns after hook completes (1.234ms)',
+    '✖ mangled by something downstream (0.5ms) ← trailing junk',
+  ].join('\n'));
+  assert.deepEqual(failingTests, [
+    'slow hook (200ms) does not interfere: subprocess spawns after hook completes',
+    'mangled by something downstream (0.5ms) ← trailing junk',
+  ]);
 });
 
 test('the scanner is chunk-boundary independent', () => {
@@ -153,14 +213,21 @@ test('a FAIL row that never printed a verdict says so rather than printing nothi
   assert.match(out, /NO VERDICT LINE/);
 });
 
-test('a mass failure is capped by name and completed by count', () => {
+test('a mass failure is capped at ten names and completed by count', () => {
   // Pins: a row where hundreds of tests red still yields a readable block, and
   // the true total is stated rather than silently truncated.
-  const failingTests = Array.from({ length: NAMED_FAILURE_LIMIT + 7 }, (_, i) => `case ${i}`);
+  //
+  // EVERY NUMBER BELOW IS A LITERAL, DELIBERATELY. Deriving them from
+  // NAMED_FAILURE_LIMIT — which an earlier version did — moves both sides of
+  // each assertion together when the constant changes, so the cap's VALUE
+  // becomes unkillable and the test degrades into restating its own subject.
+  // The constant stays where it belongs, in the renderer; this test is the
+  // independent expectation. Change the cap and you change these lines too.
+  const failingTests = Array.from({ length: 17 }, (_, i) => `case ${i}`);
   const out = render([{ name: 'row', code: 1, failingTests, hangGuard: 'hang-guard: 346/346 files reported, 0 killed' }]);
-  assert.match(out, new RegExp(`failing tests \\(${failingTests.length}\\):`));
-  assert.ok(out.includes(`✖ case ${NAMED_FAILURE_LIMIT - 1}`));
-  assert.ok(!out.includes(`✖ case ${NAMED_FAILURE_LIMIT}`), 'printed past the cap');
+  assert.match(out, /failing tests \(17\):/);
+  assert.ok(out.includes('✖ case 9'), 'the tenth name was not printed');
+  assert.ok(!out.includes('✖ case 10'), 'printed an eleventh name, past the cap of ten');
   assert.match(out, /and 7 more/);
 });
 

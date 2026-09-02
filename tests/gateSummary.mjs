@@ -19,7 +19,24 @@
 // nesting depth, and repeated verbatim in its trailing `✖ failing tests:`
 // section. The duration suffix is what distinguishes a real failure line from
 // that section's own `✖ failing tests:` header, which carries none.
+//
+// TWO patterns, because neither single one is right (card 2026-0290 §5c):
+//
+//   * The `$` end-anchor is what makes the NAME correct. `.+?` is lazy, so
+//     without an anchor it stops at the FIRST duration-shaped substring — and a
+//     real test in this suite is called `slow hook (200ms) does not interfere:
+//     subprocess spawns after hook completes`, which a loose pattern would
+//     report as `slow hook`. Anchored, backtracking finds the LAST one and the
+//     name comes through whole.
+//   * But an anchor DROPS anything it rejects, and a dropped diagnosis is this
+//     card's own failure mode. So a line that opens like a failure and carries a
+//     duration somewhere is never discarded: the loose pattern takes it verbatim,
+//     trailing text and all. A garbled name in the summary beats a name that is
+//     not there.
+//
+// The duration requirement is what keeps `✖ failing tests:` out of BOTH.
 const FAIL_LINE = /^\s*✖ (.+?) \(\d[\d.]*ms\)$/;
+const FAIL_LINE_LOOSE = /^\s*✖ (.+ \(\d[\d.]*ms\).*?)\s*$/;
 
 // The gate's live output is a TTY often enough to matter, and the spec reporter
 // COLOURIZES when it is: a failure line arrives as
@@ -47,7 +64,9 @@ export function createRowScanner() {
 
   const line = (raw) => {
     const text = plain(raw);
-    const fail = FAIL_LINE.exec(text);
+    // Exact first, salvage second — never the other way round, or the salvage
+    // pattern would truncate every name the exact one gets right.
+    const fail = FAIL_LINE.exec(text) ?? FAIL_LINE_LOOSE.exec(text);
     if (fail) {
       // The same name arrives up to twice (inline, then in the trailer); the
       // set is what makes the printed count a count of TESTS, not of lines.

@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createSupervisor } from '../src/plugins/supervisor.ts';
@@ -156,9 +158,14 @@ const PORT_RANGE_FILE = '/proc/sys/net/ipv4/ip_local_port_range';
 // ONE read path, so the helper below and the two tests that check its output
 // degrade together — a host where they disagree is a host where the fix holds
 // and the tests that prove it do not.
-function ephemeralRange() {
+//
+// `file` is a seam, and it exists for one reason: every branch below this line
+// is UNREACHABLE on a host with a well-formed /proc, so without it the guard
+// that decides what happens on every OTHER host is pinned by nothing that ever
+// runs. The tests at the foot of this file drive it with fixture ranges.
+function ephemeralRange(file = PORT_RANGE_FILE) {
   try {
-    const [lo, hi] = readFileSync(PORT_RANGE_FILE, 'utf8').trim().split(/\s+/).map(Number);
+    const [lo, hi] = readFileSync(file, 'utf8').trim().split(/\s+/).map(Number);
     return Number.isInteger(lo) && Number.isInteger(hi) ? { lo, hi } : null;
   } catch {
     return null;
@@ -171,8 +178,8 @@ function ephemeralRange() {
 // load-bearing: substituting 32768 there would draw ports from INSIDE the real
 // range and silently reinstate the defect this helper exists to remove. Where no
 // band exists below the reported bound, reservedPort() refuses instead.
-function ephemeralLow() {
-  return ephemeralRange()?.lo ?? EPHEMERAL_LO_FALLBACK;
+function ephemeralLow(file) {
+  return ephemeralRange(file)?.lo ?? EPHEMERAL_LO_FALLBACK;
 }
 
 function bindsFree(port) {
@@ -183,8 +190,8 @@ function bindsFree(port) {
   });
 }
 
-async function reservedPort() {
-  const lo = ephemeralLow();
+async function reservedPort(file) {
+  const lo = ephemeralLow(file);
   const min = Math.min(10000, lo - 1);
   if (min < 1024) throw new Error(`reservedPort: no usable range below ${lo}`);
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -701,4 +708,57 @@ test('a sample of allocatePort() results all land inside the ephemeral range', a
     if (port < range.lo || port > range.hi) outside.push(port);
   }
   assert.deepEqual(outside, [], `allocatePort() escaped ${range.lo}..${range.hi}`);
+});
+
+// ── the host-dependent branches of the range reader (card 2026-0290 §5a) ─────
+// Everything below `ephemeralRange`'s try/catch is unreachable on a host with a
+// well-formed /proc, so these drive it through its `file` seam with fixture
+// ranges. Without them the guard that decides what happens on every OTHER host
+// is pinned by nothing that runs — and it is the guard a review had to fix.
+
+async function rangeFile(content) {
+  const dir = await mkdtemp('cc-portrange-');
+  const file = path.join(dir, 'ip_local_port_range');
+  if (content !== null) writeFileSync(file, content);
+  return file; // content === null => the file is absent, i.e. the unreadable path
+}
+
+test('a malformed or absent range reads as no range at all, never half of one', async () => {
+  // Pins: the reader is all-or-nothing. A partially-parseable line must not
+  // yield a range with a NaN in it — `lo` alone looks usable and would silently
+  // become the bound everything else is measured against. NOT claiming the
+  // fallback value is right for any particular host; only that a bad read
+  // reaches it instead of being trusted.
+  for (const content of ['32768\tnonsense\n', 'garbage\n', '\n', '', null]) {
+    const file = await rangeFile(content);
+    assert.equal(ephemeralRange(file), null, `parsed ${JSON.stringify(content)} as a range`);
+    assert.equal(ephemeralLow(file), EPHEMERAL_LO_FALLBACK);
+  }
+});
+
+test('a well-formed range is used as reported, never overridden by the fallback', async () => {
+  // Pins the defect a review caught: the guard used to discard any `lo` at or
+  // below 1024 and substitute 32768, which on a host tuned to `1024 60999` drew
+  // ports from INSIDE the real range — reinstating the steal this helper exists
+  // to remove. Every reported bound is now honoured, including the ones that
+  // leave no room.
+  for (const [lo, hi] of [[32768, 60999], [2000, 60999], [1024, 65535], [1025, 65535]]) {
+    const file = await rangeFile(`${lo}\t${hi}\n`);
+    assert.deepEqual(ephemeralRange(file), { lo, hi });
+    assert.equal(ephemeralLow(file), lo, `substituted a bound for the reported ${lo}`);
+  }
+});
+
+test('reservedPort() draws below the reported bound, and refuses when there is no band', async () => {
+  // Pins the consequence of the above at the only place it matters. A host with
+  // room gets a port under ITS bound, not under 32768; a host with none gets a
+  // named refusal rather than a port from inside the range. NOT claiming the
+  // drawn port stays free — see the note on the /proc-backed test above.
+  const roomy = await rangeFile('2000\t60999\n');
+  for (let i = 0; i < 5; i++) {
+    const port = await reservedPort(roomy);
+    assert.ok(port < 2000 && port >= 1024, `drew ${port}, not below the reported bound 2000`);
+  }
+  const airless = await rangeFile('1024\t65535\n');
+  await assert.rejects(() => reservedPort(airless), /no usable range below 1024/);
 });
