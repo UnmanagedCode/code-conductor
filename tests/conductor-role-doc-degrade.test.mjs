@@ -90,10 +90,11 @@ async function seedPluginTree(dir, m) {
   return dir;
 }
 
-// console.warn lines emitted while `fn` runs, censused by the prefix before the
-// first ':' — the shape the plan's measurement used, and the shape that lets an
-// assertion say "exactly one line from conductorConventions and nothing else"
-// without pinning any wording beyond the two tokens T2 names.
+// console.warn lines emitted while `fn` runs, plus a census of them keyed by the
+// prefix before the first ':' (every warn in this path is prefixed with its
+// module). Counting by prefix is what lets an assertion say "exactly one line
+// from conductorConventions and nothing else" without pinning any wording
+// beyond the two tokens T2 names.
 async function withWarns(fn) {
   const lines = [];
   const orig = console.warn;
@@ -211,8 +212,9 @@ describe('the conductor role doc composed over a degraded convention catalog', (
   //
   // NOT CLAIMING: that a conductor SESSION behaves differently for lacking the
   // text (untestable, and the reason the fix adds nothing to the document);
-  // that the latched scan-sourced source recovers the same way (it does not —
-  // it needs a Rescan, which is T2's arm); that 201 means the composed doc is
+  // that the scan-sourced degrade recovers the same way (it does not — it needs
+  // a Rescan, and NO test in this file pins that recovery: T2 creates that
+  // degrade and never lifts it); that 201 means the composed doc is
   // CORRECT, only that the spawn is not refused; that the plugin's project is
   // reachable during the disabled arm's compose (it is — the arm exists to
   // produce a confirmed absence, not another unvouchable one).
@@ -325,8 +327,10 @@ describe('the conductor role doc composed over a degraded convention catalog', (
   // NOT CLAIMING: that 2 is a contract for all time — it is the count as
   // measured on this branch, pinned so a stray extra read (e.g. reaching for a
   // second getCatalog() to fetch the flag) cannot land unnoticed; that no
-  // OTHER subsystem may log during a launch (only these two seams' prefixes are
-  // censused); that the scan is cheap.
+  // OTHER subsystem may log during a launch — the census is filtered to the
+  // three prefixes that can speak on this path, `conductorConventions:`,
+  // `plugins:` and `fragmentCatalog:`, and every one of them is reachable here;
+  // that the scan is cheap.
   test('a healthy conductor launch: section present, zero warn lines, exactly 2 placement scans', async () => {
     const tree = await boxProject('gp');
     await seedPluginTree(tree, bothScopes('gated-plug'));
@@ -367,6 +371,82 @@ describe('the conductor role doc composed over a degraded convention catalog', (
     assert.equal(doc, healthyDoc, 'the role doc is byte-identical to the healthy one — nothing was lost');
     assert.equal(census(lines).conductorConventions, 1,
       'and the warn fires anyway, so its wording must stay a `may`');
+  });
+
+  // T8 ─────────────────────────────────────────────────────────────────
+  // PINS: the EMPTY-SELECTION arm, which was the only fully silent one. With
+  // every seed convention turned off, an enabled plugin's conductor convention
+  // can be the WHOLE selection — and when its project goes unreachable the
+  // selection collapses to `[]`, which used to short-circuit the compose before
+  // the catalog was ever read. So the arm that loses 100% of the enabled
+  // conventions was the one arm that reported `degraded: false`. A real spawn
+  // during that outage now logs exactly ONE `conductorConventions` line.
+  //
+  // Asserted through a real spawn rather than a bare compose because the claim
+  // documented in docs/plugins.md is per conductor SPAWN/RESUME, and this is the
+  // arm where that claim was false.
+  //
+  // NOT CLAIMING: that an all-seeds-off selection is a common configuration —
+  // only that it is legal (setSelection's guard rejects non-arrays, not empty
+  // ones) and reachable; that the line names the lost slug (it cannot); that the
+  // `plugins:` placement lines this compose-sourced arm also emits are pinned in
+  // number (they are not — only the conductorConventions count is).
+  test('an outage that collapses the whole selection to [] still warns — the arm that was silent', async () => {
+    const tree = await boxProject('gp');
+    await seedPluginTree(tree, bothScopes('gated-plug'));
+    await host.enable('gated-plug');
+
+    // Every seed off; the plugin's conductor convention is the entire selection.
+    await setSelection(['gated-plug/cfrag']);
+    const store = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'conventions', 'conductor.json'), 'utf8'));
+    assert.deepEqual([store.enabled, store.pluginOff], [[], []], 'all-seeds-off is a legal, persisted selection');
+    assert.deepEqual(await getSelection(), ['gated-plug/cfrag'], 'and the plugin convention is the whole of it');
+
+    const healthy = await spawnConductor();
+    assert.ok(healthy.doc.includes(MARK), 'the healthy doc carries the only enabled convention');
+
+    await boxDown();
+    assert.deepEqual(await getSelection(), [], 'the outage collapses the selection to nothing');
+
+    const { value: degraded, lines } = await withWarns(() => spawnConductor());
+    assert.ok(!degraded.doc.includes(MARK), 'the doc lost every convention the user had enabled');
+    assert.equal(census(lines).conductorConventions, 1,
+      'exactly one line per spawn — an empty slug list no longer hides the flag');
+  });
+
+  // T9 ─────────────────────────────────────────────────────────────────
+  // PINS: the control on T8 — EMPTINESS alone never warns, only degradedness
+  // does. Two vouched-absence arms, both with `getSelection() === []`: the
+  // convention explicitly switched off by the user (`pluginOff`) over a healthy
+  // catalog, and the plugin DISABLED while the box is still down, which clears
+  // the degrade because a disabled plugin's conventions are already gone by
+  // design. Both stay silent.
+  //
+  // NOT CLAIMING: that a `pluginOff` convention stays silent DURING an outage —
+  // it does not, and deliberately: the flag carries no cause, so that arm
+  // over-warns exactly as T5's no-loss arm does, which is what the wording's
+  // `may` is for.
+  test('an empty selection alone never warns: the off-switch and the disabled plugin stay silent', async () => {
+    const tree = await boxProject('gp');
+    await seedPluginTree(tree, bothScopes('gated-plug'));
+    await host.enable('gated-plug');
+
+    // Arm A — the user's own off-switch, catalog healthy.
+    await setSelection([]);
+    assert.deepEqual(await getSelection(), [], 'seeds off and the plugin convention explicitly off');
+    assert.notEqual((await host.conventions()).conductor.degraded, true, 'the catalog is healthy');
+    const offSwitch = await withWarns(() => composeCurrentConduct());
+    assert.deepEqual(census(offSwitch.lines), {}, 'a vouched empty selection costs no line');
+
+    // Arm B — the plugin disabled while the box stays down: the absence is
+    // vouched, so the degrade clears with no rescan and silence is correct.
+    await boxDown();
+    await host.disable('gated-plug');
+    assert.notEqual((await host.conventions()).conductor.degraded, true,
+      'disabling the plugin clears the degrade even with the box still down');
+    const disabled = await withWarns(() => composeCurrentConduct());
+    assert.deepEqual(census(disabled.lines), {}, 'and the outage costs no line once nothing is at stake');
+    assert.equal(disabled.value, offSwitch.value, 'both compose the same doc — core + footer, no mods');
   });
 
   // T6 ─────────────────────────────────────────────────────────────────

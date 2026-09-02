@@ -334,9 +334,11 @@ export async function defaultPlaybookConvention(): Promise<string> {
 //     the conductor's toolbelt carries no rescan/plugin tool, so it would name a
 //     condition its reader can neither identify nor remediate — for the cost of
 //     moving the system prompt.
-//   • REFUSE the spawn. The scan-sourced degrade LATCHES to the last completed
-//     scan, so a refusal outlives the outage (box reachable again, no rescan ⇒
-//     still degraded) and locks out the surface that would fix it.
+//   • REFUSE the spawn. The scan-sourced degrade persists until the next
+//     completed scan (it is recomputed per call, but from a scan result that the
+//     end of the outage does not update), so a refusal outlives the outage —
+//     box reachable again, no rescan ⇒ still degraded — and locks out the
+//     surface that would fix it.
 // So: compose, write, and hand the operator one line. The warn is a `may`
 // because the flag cannot see whether the conductor scope had anything to lose,
 // and carries no remedy because the two degrade sources clear differently (a

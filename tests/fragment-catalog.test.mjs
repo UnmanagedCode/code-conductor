@@ -146,7 +146,12 @@ test('a malformed rule in the store JSON is coerced, not concatenated into markd
 //
 // PINS: text equality with compose() for the same slugs (so nothing about the
 // composed bytes moved), and `.degraded` equal to getCatalog().degraded across
-// all three provider shapes — healthy, throwing, absent.
+// all three provider shapes — healthy, throwing, absent — INCLUDING for an
+// empty slug list, which reports the catalog's real flag rather than a
+// hardcoded false. That last one is the point: an empty list is itself
+// something a degrade can CAUSE (every seed off, the only remaining slugs
+// contributed by a plugin whose project just went unreachable), so a flag that
+// short-circuits with the list is blind in exactly the arm that loses the most.
 //
 // NOT CLAIMING: that compose() is IMPLEMENTED BY delegation — a duplicated but
 // correct body is indistinguishable from here, and single-implementation is a
@@ -173,8 +178,11 @@ test('composeWithMeta returns compose()\'s exact text plus the catalog\'s degrad
       assert.equal(meta.text, '\n## Foo\n- foo body\n', `${label}: and it is the same byte shape as ever`);
       assert.equal(meta.degraded, (await catalog.getCatalog()).degraded,
         `${label}: degraded mirrors the catalog's own flag`);
-      // Both early returns carry the shape, and the 400 still fires from here.
-      assert.deepEqual(await catalog.composeWithMeta([]), { text: '', degraded: false }, `${label}: empty slugs`);
+      // Both early returns carry the shape AND the flag, and the 400 still
+      // fires from here.
+      assert.deepEqual(await catalog.composeWithMeta([]),
+        { text: '', degraded: (await catalog.getCatalog()).degraded },
+        `${label}: an empty slug list reports the catalog's own flag, not a hardcoded false`);
       await expectStatus(() => catalog.composeWithMeta(['nope']), 400);
     }
   } finally { await fs.rm(dir, { recursive: true, force: true }); }

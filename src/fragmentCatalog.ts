@@ -278,14 +278,18 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
   // rendered the two identically). A separate accessor would invite reading one
   // without the other, which is that same defect one layer down.
   //
-  // An empty slug list still short-circuits before the catalog read, so it
-  // reports `degraded: false` without consulting: a bounded under-report, and
-  // the one case the flag misses — a degrade that dropped the ONLY enabled slugs
-  // (every seed off plus an unreachable plugin's conventions) arrives here as an
-  // empty list and goes unflagged.
+  // The catalog is read BEFORE the empty-list guard, so an empty list reports
+  // the real flag instead of a hardcoded false. An empty list is itself
+  // something a degrade CAUSES: with every seed convention off, the only
+  // enabled slugs can all be contributed by one plugin, and an outage on that
+  // plugin's project collapses the list to nothing — the arm that loses 100% of
+  // the enabled bodies, and so the last one that can afford to be blind. Cost,
+  // counted: every non-empty call (which is every conductor launch) still makes
+  // exactly one getCatalog(); only the empty-list path gains one.
   async function composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean }> {
-    if (!Array.isArray(slugs) || slugs.length === 0) return { text: '', degraded: false };
     const catalog = await getCatalog();
+    const degraded = catalog.degraded === true;
+    if (!Array.isArray(slugs) || slugs.length === 0) return { text: '', degraded };
     const bodies: string[] = [];
     for (const slug of slugs) {
       const entry = catalog.find(r => r.slug === slug);
@@ -294,7 +298,6 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
       }
       if (entry.body) bodies.push(entry.body);
     }
-    const degraded = catalog.degraded === true;
     if (bodies.length === 0) return { text: '', degraded };
     return { text: '\n' + bodies.join('\n\n') + '\n', degraded };
   }
