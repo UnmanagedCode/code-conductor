@@ -3853,10 +3853,15 @@ export class Instance extends EventEmitter implements InstanceLike {
 // (tests/systems-mirror-geometry-cold-resume.test.mjs). It is also why nothing
 // here reads the manifest at all, so deleting it changes no outcome.
 //
-// THE CANDIDATE SET IS COMPLETE, and the loop below may stop at its first
-// hit whatever order the candidates come in — because every candidate the
-// probe answers YES for resolves to the ONE directory holding this id's
-// transcript. Both facts, and their limits, are on `mirrorOffsets`.
+// THE CANDIDATE SET IS COMPLETE, and the loop below may stop at its first hit
+// whatever order the candidates come in — because at most one candidate answers
+// the probe for one id. That is a CONDITIONAL state invariant, not a property of
+// the set: it rests on cc relocating a whole lineage out of a single source, and
+// on the 404 gate this whole function sits behind keeping the scan out of the
+// one violating state that would cost a live transcript. Both facts, both
+// halves and their limits are on `mirrorOffsets`; the gate arm in
+// tests/systems-mirror-geometry-cold-resume.test.mjs is what catches a widening
+// of the gate.
 //
 // THE GEOMETRY CLASS IS NOT A DISCRIMINATOR HERE, unlike on 0279's path: the
 // transcripts live under `claudeProjectsRoot()`, which `resetRoot` never
@@ -4629,7 +4634,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
 
     // Resume pre-flight: refuse a resume id that has no resumable conversation
-    // at the resolved cwd BEFORE constructing an Instance or spawning. The
+    // at the resolved cwd — unless the recovery inside finds this session at
+    // another geometry — BEFORE constructing an Instance or spawning. The
     // earlier findSessionLocation net (above) only runs when the caller left
     // worktree undefined; a caller that pins project+worktree (e.g. an MCP
     // conductor retrying a mistyped sessionId) skips it, and would otherwise

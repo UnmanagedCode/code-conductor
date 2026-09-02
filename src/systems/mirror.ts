@@ -217,15 +217,31 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
 // produce is one no session can have run in, so it cannot answer.
 //
 // ORDER IS ARBITRARY — '' comes out FIRST, since `i === segs.length` slices the
-// empty suffix — AND CALLERS MAY NOT DEPEND ON EITHER FACT. What licenses a
+// empty suffix — AND CALLERS MAY NOT DEPEND ON EITHER FACT. But what licenses a
 // scan over these to STOP AT ITS FIRST HIT (the create path's does) is not the
-// order and not the candidates being distinct: it is that one session ran at
-// one cwd and its transcript is in one encoded directory, so EVERY candidate a
-// `hasResumableConversation` probe for that id answers YES for resolves to that
-// same directory — whichever the scan stops at, `sessionFilePath(candidate,
-// id)` is the same file. Add a candidate that could name a DIFFERENT directory
-// answering to one id and that `break` becomes order-dependent, and nothing
-// else in this file would say so (card 2026-0287).
+// candidates being distinct either — `encodeCwd` maps `_` and `/` alike to `-`,
+// so distinct paths do not imply distinct transcript directories. It is a STATE
+// INVARIANT, and it is CONDITIONAL: at most one candidate answers a
+// `hasResumableConversation` probe for one id, so whichever the scan stops at,
+// `sessionFilePath(candidate, id)` is the same file.
+//
+// TWO THINGS HOLD THAT INVARIANT UP, and an editor needs both.
+//  1. cc relocates a whole LINEAGE OUT OF A SINGLE SOURCE cwd — both movers
+//     (`Instance._followGeometry` and the create path's recovery), so nothing cc
+//     does leaves one id answering at two candidates. This is the load-bearing
+//     half: given it, the licence holds outright.
+//  2. THE PRE-FLIGHT GATE, which is defence in depth rather than the
+//     complementary half: the create path's scan runs only where `cwd` itself
+//     does NOT answer. That does not exclude every two-candidate state, but it
+//     does exclude the one that costs a live transcript — a stale copy at a
+//     shallower candidate while `cwd` holds the live one, where stopping at the
+//     first hit renames the stale copy over it. Measured, with the gate removed.
+//
+// So: add a candidate that could name a DIFFERENT directory answering to one
+// id, or move a scan out of that gate, and the `break` becomes order-dependent.
+// The gate arm in tests/systems-mirror-geometry-cold-resume.test.mjs plants the
+// violating state and is what catches the second of those; nothing else in this
+// file would say so (card 2026-0287).
 export function mirrorOffsets(systemPath: string): string[] {
   const segs = systemPath.split(path.posix.sep).filter(Boolean);
   const out: string[] = [];
