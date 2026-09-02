@@ -13,7 +13,7 @@ import { httpError } from '../httpError.ts';
 import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { createContributions, type PluginPlacement } from './contributions.ts';
-import { createPluginStore } from './store.ts';
+import { createPluginStore, type PersistedPluginRecord } from './store.ts';
 import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
@@ -126,6 +126,11 @@ export function createPluginHost(opts: {
   // indexes only usable ids (states ok/conflict).
   let entries: PluginEntry[] = [];
   let byId = new Map<string, PluginEntry>();
+  // The third piece of that same catalog: projects the LAST COMPLETED scan
+  // could not resolve through their System, keyed by project name, valued with
+  // the resolver's own reason. Read by discoveryDegraded() and by the
+  // store-only row; swapped in with `entries`/`byId`.
+  let unreachableAtScan = new Map<string, string>();
 
   // In-memory runtime per id: status stopped|starting|ready|crashed|failed,
   // crash bookkeeping for backoff, the in-flight start dedupe promise, and
@@ -141,7 +146,7 @@ export function createPluginHost(opts: {
   // and keeps no cache of its own. Declared before its first use — the injected
   // accessors are hoisted `function` declarations, and nothing runs during
   // construction.
-  const contributions = createContributions({ ensureInit, contributingEntries, resolvePlacement });
+  const contributions = createContributions({ ensureInit, contributingEntries, resolvePlacement, discoveryDegraded });
   // Persisted state, loaded by init(). Every registry.json write signals the
   // contributions cache from the store's single save path.
   const store = createPluginStore({ onRegistryChange: () => contributions.noteRegistryChange() });
@@ -177,14 +182,28 @@ export function createPluginHost(opts: {
     contributions.invalidate();
     const projects = await listProjects();
     const found: Array<{ project: string; dir: string; system: string; remoteId: string | null; result: Exclude<ReadManifestResult, null>; manifestSource: ManifestSource }> = [];
+    // Built locally and swapped in below, like `next`/`nextById` — never
+    // filled in place. The two halves of the discovery state must flip
+    // together: invalidate() above lets a conventions() call land inside this
+    // scan's window, and what it must see there is the PREVIOUS scan's `byId`
+    // and the PREVIOUS scan's unreachable set, which are a consistent pair
+    // describing one catalog. An in-place map is empty at that moment while
+    // the resolution failure is already known — the reverse of the guarantee
+    // this exists to add — and a scan that throws part-way would leave a
+    // half-built answer standing instead of the last complete one.
+    const unreachable = new Map<string, string>();
     for (const p of projects) {
       // Through the project's System. A project whose system cannot be reached
       // contributes no plugin — and, critically, does NOT fall back to reading
       // cc's own disk at the same path, which would register whatever happens
       // to sit there as this project's plugin.
-      const { system, unreachable } = await tryResolveProject(p.name);
+      const { system, unreachable: reason } = await tryResolveProject(p.name);
       if (!system) {
-        console.warn(`plugins: skipped '${p.name}' — ${unreachable}`);
+        console.warn(`plugins: skipped '${p.name}' — ${reason}`);
+        // `reason` is `string | null` and the pair tryResolveProject returns is
+        // not a discriminated union, so TS does not narrow it here — the
+        // fallback is required, not defensive.
+        unreachable.set(p.name, reason ?? 'unknown error');
         continue;
       }
       let result = await readManifest(system, p.path);
@@ -234,6 +253,7 @@ export function createPluginHost(opts: {
     }
     entries = next;
     byId = nextById;
+    unreachableAtScan = unreachable;
   }
 
   // First VALID manifest among the project's worktrees, in sorted-name order.
@@ -604,7 +624,30 @@ export function createPluginHost(opts: {
     if (entry) return describeRow(entry);
     const reg = store.get(id);
     if (!reg) return null;
-    return describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, remoteId: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] });
+    return storeOnlyRow(id, reg);
+  }
+
+  // The row for a registry record with no discovery entry behind it — its
+  // project/manifest vanished, OR its project simply did not resolve at the
+  // last scan, which used to be reported as the former. ONE STRING covers both
+  // resolution failures the scan can see (an unreachable System, and a remote
+  // record with no systemPath): the resolver's own message is carried verbatim
+  // and already distinguishes them in its text, and a wrapper naming a cause
+  // would assert one cc has not established. Clause by clause it says only
+  // what the `!system` branch knows — the project did not RESOLVE, so its
+  // manifest was not read, and Rescan is the retry. It does not say the project
+  // is present, does not say a box is down, and promises no transience.
+  // `discoveryState` stays 'invalid': what the row's state should be is a
+  // separate question.
+  function storeOnlyRow(id: string, reg: PersistedPluginRecord): Promise<PluginRow> {
+    const reason = unreachableAtScan.get(reg.project);
+    return describeRow({
+      id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, remoteId: null,
+      manifest: null, discoveryState: 'invalid',
+      errors: [reason
+        ? `project '${reg.project}' did not resolve at the last discovery scan, so its manifest was not read: ${reason}. Rescan to retry.`
+        : 'project or manifest no longer present'],
+    });
   }
 
   // Gathers the five owners the projection reads (discovery entry, persisted
@@ -633,7 +676,7 @@ export function createPluginHost(opts: {
     // (they hold state the user may want to disable).
     for (const [id, reg] of store.entries()) {
       if (!entries.some(e => e.id === id)) {
-        rowPromises.push(describeRow({ id, project: reg.project, dir: '', system: LOCAL_SYSTEM_ID, remoteId: null, manifest: null, discoveryState: 'invalid', errors: ['project or manifest no longer present'] }));
+        rowPromises.push(storeOnlyRow(id, reg));
       }
     }
     return Promise.all(rowPromises);
@@ -758,6 +801,43 @@ export function createPluginHost(opts: {
   function contributingEntries(): Array<PluginEntry & { id: string; manifest: PluginManifest }> {
     return [...byId.values()].filter((e): e is PluginEntry & { id: string; manifest: PluginManifest } =>
       e.discoveryState === 'ok' && typeof e.id === 'string' && e.manifest !== null && store.isEnabled(e.id));
+  }
+
+  // The registry's other half of that collaborator: did the LAST COMPLETED
+  // scan fail to reach a project an ENABLED plugin lives in? A skipped project
+  // contributes nothing for the whole life of that catalog, so a catalog built
+  // over one is INCOMPLETE and must not be read as "that slug is confirmed
+  // absent" (contributions.ts's conventions() seeds `degraded` with this).
+  //
+  // COMPUTED ON EVERY CALL, NEVER LATCHED INTO A BOOLEAN. The scan records only
+  // which projects it could not reach; whether that still matters is a question
+  // about the store, asked fresh each time. A stored flag would outlive the
+  // reason for it — the same defect wearing the other hat.
+  //
+  // THE NARROWING IS SOUND, NOT MERELY QUIET. A project the store holds no
+  // ENABLED record for contributes nothing to conventions() at all
+  // (contributingEntries below filters on the same store.isEnabled), so its
+  // absence from a scan cannot drop a line from any committed CONVENTIONS.md —
+  // and flagging on it would freeze every referencing project over a project
+  // that contributes nothing. Deliberately store.isEnabled(id) rather than
+  // reg.enabled: identical data today, and calling the predicate the compose
+  // path calls is what stops the two diverging later.
+  //
+  // AND THE CONVERSE, WHICH IS THE HONEST LIMIT: an enabled record does NOT
+  // establish that the plugin would have contributed anything. The manifest is
+  // exactly the file the scan never got to read — the project did not RESOLVE,
+  // which is all cc has established, and which covers a box that is down and a
+  // remote record with no systemPath alike — so this flags a strict SUPERSET
+  // of what the compose path flags — see the policy block above
+  // conventions() in contributions.ts (card 2026-0272).
+  //
+  // Both terms are read live, so neither can go stale into a MISSED degrade.
+  // The one stale direction that exists — a deleted project's name reused by an
+  // unrelated new one — over-flags, costing a freeze the next Rescan clears
+  // rather than a rewrite.
+  function discoveryDegraded(): boolean {
+    if (unreachableAtScan.size === 0) return false;
+    return store.entries().some(([id, reg]) => store.isEnabled(id) && unreachableAtScan.has(reg.project));
   }
 
   function setServerPort(p: number | null): void { serverPort = p; }
