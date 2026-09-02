@@ -57,6 +57,12 @@
 // the host puts scratch trees. The root fence is proved by
 // tests/systems-remote-id.test.mjs, not here.
 //
+// WHEN A ROW REDS, THE CLOSING BLOCK CARRIES THE DIAGNOSIS — the failing test
+// names and the hang-guard verdict, not just PASS/FAIL. This gate is normally
+// read through a `tail` of a captured log, and the first red it ever produced
+// lost its failing test name to exactly that (card 2026-0290). The block is
+// rendered by tests/gateSummary.mjs and tested by tests/systems-gate-summary.test.mjs.
+//
 // It is a separate command rather than part of `npm test` because it IS
 // `npm test`, three times over. The per-configuration protocol suites
 // (tests/systems-*.test.mjs) run inside the ordinary suite and cover the same
@@ -67,6 +73,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LOCAL_PROVIDER_ENV, LOCAL_REMOTE_ENV } from '../src/systems/registry.ts';
+import { createRowScanner, renderGateSummary } from './gateSummary.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(__dirname, '..');
@@ -91,44 +98,85 @@ const CONFIGS = [
   { name: 'processGroupSignal:false', flags: ['--no-process-group-signal'] },
 ];
 
+// A row's output is TEED, not swallowed: every chunk goes straight to this
+// process's own stdout/stderr, and the same chunk is scanned for the two things
+// the closing block needs (tests/gateSummary.mjs).
+//
+// BACKPRESSURE IS THE WHOLE RISK HERE — card 2026-0290 §5c. `inherit` handed the
+// child our fd and the kernel did the rest; a pipe puts this process in the path,
+// and `process.stdout.write` is ASYNCHRONOUS (and returns false when the buffer
+// fills) whenever stdout is a pipe. A fire-and-forget `write()` per chunk would
+// drop output under load — reintroducing "the diagnosis was lost", which is the
+// failure this file exists to end. So the tee is `.pipe()`, which pauses the
+// source on a false write and resumes on `drain`; there is no bare write() here.
+//
+// `setEncoding('utf8')` for the same reason in miniature: `✖` is three bytes, and
+// a chunk boundary through the middle of it would corrupt both the tee and the
+// scan. The decoder holds the partial sequence back instead.
+//
+// Completeness is waited for explicitly: exit alone does not mean the pipes have
+// been drained, so this resolves only once BOTH streams have ended AND the child
+// has exited. `process.exit()` is not used anywhere below for the same reason —
+// it would discard whatever is still buffered in our own stdout, summary included.
 function run(argv, env) {
+  const scanner = createRowScanner();
   return new Promise((resolve) => {
     const child = spawn(argv[0], argv.slice(1), {
       cwd: repoRoot,
-      env: { ...process.env, ...env },
-      stdio: ['ignore', 'inherit', 'inherit'],
+      env: {
+        ...process.env,
+        // Restore what the pipe takes away: the child's stdout is no longer this
+        // process's terminal, so the reporter would drop colour on an interactive
+        // run. Only set when we ARE a terminal, so a redirected gate stays plain.
+        ...(process.stdout.isTTY ? { FORCE_COLOR: '1' } : {}),
+        ...env,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.on('exit', (code, signal) => resolve(signal ? 1 : code ?? 1));
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.pipe(process.stdout, { end: false });
+    child.stderr.pipe(process.stderr, { end: false });
+    child.stdout.on('data', (chunk) => scanner.push(chunk));
+    let code = null;
+    let open = 2;
+    const settle = () => {
+      if (open === 0 && code !== null) resolve({ code, ...scanner.result() });
+    };
+    child.stdout.on('end', () => { open--; settle(); });
+    child.stderr.on('end', () => { open--; settle(); });
+    child.on('exit', (c, signal) => { code = signal ? 1 : c ?? 1; settle(); });
   });
 }
 
 // The gated typecheck `npm test` runs via `pretest`, done once rather than per
 // configuration: it does not depend on which provider the suite talks to.
 console.log('\n=== typecheck ===');
-if (await run(['npm', 'run', 'typecheck'], {}) !== 0) {
+const typecheck = await run(['npm', 'run', 'typecheck'], {});
+if (typecheck.code !== 0) {
   console.error('\ngate:systems FAILED — typecheck');
-  process.exit(1);
-}
+  process.exitCode = 1;
+} else {
+  const results = [];
+  for (const config of CONFIGS) {
+    const argv = JSON.stringify(['node', provider, ...config.flags]);
+    console.log(`\n=== suite over the reference provider: ${config.name} ===`);
+    console.log(`    ${LOCAL_PROVIDER_ENV}=${argv}`);
+    if (config.remoteId) console.log(`    ${LOCAL_REMOTE_ENV}=${config.remoteId}`);
+    const row = await run(['node', 'tests/run.mjs'], {
+      [LOCAL_PROVIDER_ENV]: argv,
+      [LOCAL_REMOTE_ENV]: config.remoteId ?? undefined,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=512`.trim(),
+    });
+    results.push({ ...config, ...row });
+  }
 
-const results = [];
-for (const config of CONFIGS) {
-  const argv = JSON.stringify(['node', provider, ...config.flags]);
-  console.log(`\n=== suite over the reference provider: ${config.name} ===`);
-  console.log(`    ${LOCAL_PROVIDER_ENV}=${argv}`);
-  if (config.remoteId) console.log(`    ${LOCAL_REMOTE_ENV}=${config.remoteId}`);
-  const code = await run(['node', 'tests/run.mjs'], {
-    [LOCAL_PROVIDER_ENV]: argv,
-    [LOCAL_REMOTE_ENV]: config.remoteId ?? undefined,
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=512`.trim(),
-  });
-  results.push({ ...config, code });
+  console.log(`\n${renderGateSummary(results).join('\n')}`);
+  const failed = results.filter(r => r.code !== 0);
+  if (failed.length > 0) {
+    console.error(`\ngate:systems FAILED in ${failed.length} of ${results.length} configuration(s)`);
+    process.exitCode = 1;
+  } else {
+    console.log(`\ngate:systems PASSED in all ${results.length} configurations`);
+  }
 }
-
-console.log('\n=== gate:systems ===');
-for (const r of results) console.log(`  ${r.code === 0 ? 'PASS' : 'FAIL'}  ${r.name}`);
-const failed = results.filter(r => r.code !== 0);
-if (failed.length > 0) {
-  console.error(`\ngate:systems FAILED in ${failed.length} of ${results.length} configuration(s)`);
-  process.exit(1);
-}
-console.log(`\ngate:systems PASSED in all ${results.length} configurations`);
