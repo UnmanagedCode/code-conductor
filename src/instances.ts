@@ -1697,12 +1697,13 @@ export class Instance extends EventEmitter implements InstanceLike {
     // and the redirect's path map were both fixed at create, so a provider that
     // changed its mirror advertisement between spawn and relaunch has just had
     // the config surface re-pulled somewhere this session would not look.
-    // Measured, that leaves two states and NEITHER is survivable: with the prior
-    // offset empty, this cwd still exists and holds no config surface; with it
-    // non-empty — WIDENING OR NARROWING ALIKE, the direction is not the
-    // discriminator — this cwd does not exist at all, and the relaunch reaches
-    // spawn with a deleted cwd and fails ENOENT against the CLI BINARY's own
-    // path.
+    // Measured, that leaves two states, and UNFOLLOWED neither is survivable:
+    // with the prior offset empty, this cwd still exists and holds no config
+    // surface; with it non-empty — WIDENING OR NARROWING ALIKE, the direction is
+    // not the discriminator — this cwd does not exist at all, and a relaunch
+    // that ignored the move would reach spawn with a deleted cwd and fail ENOENT
+    // against the CLI BINARY's own path. The line below is what stops both; the
+    // cwd states are still what the compose produces, the dead relaunch is not.
     //
     // OUTSIDE the try above, and that is load-bearing: that catch exists to make
     // a compose failure a warning rather than a dead session, and a refusal to
@@ -1731,11 +1732,12 @@ export class Instance extends EventEmitter implements InstanceLike {
   // (summary, the transcript helpers, spawn's cwd, liveBackingIdsForCwd,
   // tempSessionIdsForCwd, tempCleanupSnapshot), so none is desynchronised by
   // this write: nothing in cc keys a structure on a cwd captured at insert time.
-  // The one transient is the await below — for the length of the rename, the
-  // transcript is at the new cwd while `this.cwd` still names the old one, so a
-  // concurrent session listing at the NEW cwd can show this session's row
-  // un-excluded. Milliseconds, and a duplicate row rather than a wrong one; the
-  // ordering that opens it is what makes the refusal's "nothing was moved" true.
+  // The one transient is the await below: for the length of the rename the
+  // transcript is already at the new cwd while `this.cwd` still names the old
+  // one, so the two disagree for that window. The ordering is deliberate —
+  // relocating FIRST is what makes the refusal's "nothing was moved" true — and
+  // it is recorded here rather than argued away, so whoever adds a reader that
+  // can observe both at once knows the window is there to reason about.
   private async _followGeometry(systemId: string, composed: ComposedSessionRoot): Promise<void> {
     const from = this.cwd;
     // The redirect and the placement are attached together (see attachRedirect's
@@ -1754,16 +1756,35 @@ export class Instance extends EventEmitter implements InstanceLike {
       // the code cannot classify why a rename failed, and per-cause wording
       // would put the classification back. What it does state is the verified
       // post-refusal state, which is a fact rather than a remedy.
-      const stranded = e instanceof TranscriptRelocationError ? e.stranded : [];
+      const failure = e instanceof TranscriptRelocationError ? e : null;
+      const stranded = failure?.stranded ?? [];
+      // THREE STATES, and the completeness claim is the only one that varies —
+      // no worker was started, `this.cwd` is untouched and the instance is still
+      // respawnable in all three, because the assignment below never ran.
+      //
+      // The ENOENT branch is REASONED, NOT MEASURED: a source deleted between
+      // the existence scan and its own rename throws without ever entering the
+      // rollback's `done` list, so `stranded` stays empty while a file really
+      // has gone. `_archiveTempSession`'s fire-and-forget subagent-dir `rm` and
+      // rewind's session-file `rm` are the reachable deleters. The scan-to-
+      // rename gap is microseconds and cannot be widened without perturbing the
+      // primitive, so this branch is unkillable by construction — the same class
+      // as the non-empty-`stranded` branch beside it, and it exists for the same
+      // reason: so the refusal cannot claim a completeness it did not verify.
+      const detail = stranded.length > 0
+        ? `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
+          + `${from} and ${composed.cwd}, and its working directory is unchanged at ${from}.`
+        : failure?.code === 'ENOENT'
+          ? `A source file disappeared while cc was moving it, so this session's history may no longer be `
+            + `complete at ${from}. Everything cc did move was put back, and its working directory is `
+            + `unchanged.`
+          : `Nothing was moved: this session's history is still complete at ${from} and its working `
+            + `directory is unchanged.`;
       throw httpError(
         502,
         `cannot relaunch this session: '${systemId}' now mirrors this project at ${composed.cwd}, so cc `
         + `must move this session there, and relocating its transcript out of ${from} failed. `
-        + (stranded.length === 0
-          ? `Nothing was moved: this session's history is still complete at ${from} and its working `
-            + `directory is unchanged.`
-          : `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
-            + `${from} and ${composed.cwd}, and its working directory is unchanged at ${from}.`)
+        + detail
         + ` Cause: ${(e as Error).message}`,
         { code: 'SESSION_MOVE_FAILED' },
       );
@@ -1788,16 +1809,22 @@ export class Instance extends EventEmitter implements InstanceLike {
     //    now be refused.
     //  * Not a claim about the real `claude` binary — what is pinned is where
     //    every input it reads now is.
+    //  * Not that this session HAD a transcript. Both transcript clauses are
+    //    hedged ("any transcript it had", "whatever history it had") because a
+    //    worker killed before its first turn has none at either cwd, the
+    //    relocation is then a no-op, and `history_replayed` is never emitted —
+    //    measured. Asserting a transcript here would break the same rule the
+    //    paragraph below states about files.
     //
     // AND IT NAMES NO FILE. The allow-list is what a config surface CAN hold,
     // not what this project has: enumerating it here would assert the existence
     // of files nobody looked for.
     this._emitUi({ kind: 'system', subtype: 'stderr', data: {
       line: `systems: '${systemId}' now mirrors this project at ${composed.cwd}, so cc has MOVED this `
-        + `session there from ${from}: its config surface was re-pulled to the new location, its `
-        + `transcript moved with it, and its file tools now address the project through the new `
-        + `geometry. The conversation is unchanged — the worker restarts in the new directory and its `
-        + `history is replayed. Any OTHER session still running on this project keeps its old working `
+        + `session there from ${from}: its config surface was re-pulled to the new location, any `
+        + `transcript it had moved with it, and its file tools now address the project through the `
+        + `new geometry. The worker restarts in the new directory and whatever history it had is `
+        + `replayed there. Any OTHER session still running on this project keeps its old working `
         + `directory until its own next relaunch.`,
     } });
   }

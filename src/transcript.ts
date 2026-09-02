@@ -535,13 +535,20 @@ function errCode(e: unknown): string | undefined {
 
 // A relocation that could not complete. `stranded` is what the ROLLBACK could
 // not put back — empty in every case measured, and non-empty only if a rename
-// back to a path cc had just vacated also failed. The caller composes its
-// refusal from this rather than asserting a state it did not verify.
+// back to a path cc had just vacated also failed. `code` is the underlying
+// errno, and the caller needs it for exactly one distinction it cannot draw from
+// `stranded`: an ENOENT means a source vanished between the existence scan and
+// its own rename, which leaves `stranded` empty while a file really has gone —
+// so "nothing was moved" would be false. Both fields exist so the caller can
+// compose a refusal from what happened rather than asserting a state it did not
+// verify; the function itself still returns `void`.
 export class TranscriptRelocationError extends Error {
   readonly stranded: readonly string[];
-  constructor(message: string, stranded: readonly string[]) {
+  readonly code: string | undefined;
+  constructor(message: string, stranded: readonly string[], code: string | undefined) {
     super(message);
     this.stranded = stranded;
+    this.code = code;
   }
 }
 
@@ -610,7 +617,7 @@ export async function relocateSessionTranscripts(
     for (const [src, dst] of done.reverse()) {
       try { await fs.rename(dst, src); } catch { stranded.push(dst); }
     }
-    throw new TranscriptRelocationError((e as Error).message, stranded);
+    throw new TranscriptRelocationError((e as Error).message, stranded, errCode(e));
   }
 }
 
