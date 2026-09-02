@@ -2080,6 +2080,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // which the same page's Preferred-playbook picker consumes: the selected
   // playbook is rendered into the conductor's prompt as a generated convention
   // (src/playbookConvention.ts).
+  //
+  // Like its project-scope twin above, this route deliberately does NOT carry
+  // the catalog's `degraded` flag — the MCP `list_conductor_conventions` tool
+  // does (card 2026-0282). `res.json` is a `JSON.stringify`, which drops a
+  // CatalogList's own `degraded` property, so the Settings panel renders a
+  // catalog missing an unreachable plugin's conventions exactly like a complete
+  // one. Deferred by decision and carded separately: this is a read-only view
+  // and nothing is committed from it.
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
       const [conventions, enabled, catalog, defaultPlaybook, defaultPlaybookEnforcement] = await Promise.all([

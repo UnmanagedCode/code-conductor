@@ -1889,8 +1889,14 @@ export async function createProject({ name, conventions = [], system, remoteId, 
   const { text: conventionsDoc, degraded } = await composeProjectConventionsDocWithMeta(conventions, {
     system: placementDisclosure(system, systemPath),
   });
+  const scaffold = await composeProjectScaffold(name, conventions);
+  const created = await fsCreateProject(name, { conventionsDoc, system, remoteId, systemPath });
   // ONE line per creation, outside every loop, on the single flag — a per-entry
   // line would be N lines per event, which is the class card 2026-0281 landed.
+  // AFTER the create succeeds, because every clause is a possessive claim about
+  // artifacts only a successful create produces: a refused one (409 duplicate,
+  // an unreachable placement) writes no marker, so a line naming "its marker"
+  // would send an operator looking for a file that does not exist.
   // It names the PROJECT because that is the only identifier available: the
   // flag carries no cause, and the lost plugin slug is unreachable from here
   // (the catalog's extraProvider is opaque and never reports what failed).
@@ -1903,10 +1909,8 @@ export async function createProject({ name, conventions = [], system, remoteId, 
   // reaches the same composition once per project and would emit a line for
   // every project a degrade cannot possibly have touched.
   if (degraded) {
-    console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker and from its scaffold directive, and no later regeneration adds them`);
+    console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker, which no later regeneration adds back, and a one-time scaffold directive may not have been emitted at all, which nothing reissues`);
   }
-  const scaffold = await composeProjectScaffold(name, conventions);
-  const created = await fsCreateProject(name, { conventionsDoc, system, remoteId, systemPath });
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
@@ -1934,13 +1938,20 @@ export async function adoptProject({ name, path: targetPath, system, remoteId }:
 // independent messages, each read alone, and only one of them is about
 // something committed. `degraded === true` rather than a truthiness test
 // because getCatalog() always sets the property (src/fragmentCatalog.ts).
+//
+// Neither sentence may assert that anything IS missing: the flag fans out to
+// every convention scope and carries no cause, so it fires on this surface for
+// an outage that cost this surface nothing. A leading "may" is not enough — it
+// governs only the clause it opens — so the consequence clause is phrased
+// CONDITIONALLY on the loss ("whatever is missing here…"), which is vacuous in
+// the no-loss arm instead of false in it.
 export async function listProjectConventions() {
   const catalog = await getProjectConventionsCatalog();
   const conventions = catalog.map(({ slug, name, description, builtin, scaffold }) => ({ slug, name, description, builtin, hasScaffold: !!scaffold }));
   return catalog.degraded === true
     ? {
       conventions,
-      incomplete: "May be incomplete — cc could not read a plugin's conventions and cannot tell those apart from conventions that are absent; a project created from this list records a line-1 CONVENTIONS.md marker omitting them, and no later regeneration adds them back.",
+      incomplete: "May be incomplete — cc could not read a plugin's conventions and cannot tell those apart from conventions that are absent; whatever is missing here cannot appear in the line-1 CONVENTIONS.md marker of a project created from this list either, and no later regeneration adds it back.",
     }
     : { conventions };
 }

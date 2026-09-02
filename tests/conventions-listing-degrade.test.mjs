@@ -338,6 +338,49 @@ describe('the conventions listings and the project created from them, over a deg
     assert.ok(lines[0].includes("'warned'"), 'and names the project — the only identifier available here');
   });
 
+  // T4b ────────────────────────────────────────────────────────────────
+  // PINS: the warn is about a project that EXISTS. Every clause in it is a
+  // possessive claim about artifacts a create produces — "ITS CONVENTIONS.md
+  // marker", "ITS scaffold directive" — so a create that fails after the
+  // composition must emit nothing, or the operator is sent looking for a marker
+  // that was never written. Both refusal shapes reachable during a degrade are
+  // checked: the 409 duplicate, which fails at `fsCreateProject` AFTER the
+  // document is composed, and the unknown-slug 400, which throws inside the
+  // composition upstream of any warn.
+  //
+  // NOT CLAIMING: that these are the only ways a create can fail (a system
+  // outage on a remote placement is another, and it fails at the same step as
+  // the 409); that a failed create should log something else instead; that the
+  // successful arm's count is re-pinned here — T4 owns that.
+  test('a create that FAILS during the degrade emits no createProject line at all', async () => {
+    const tree = await boxProject('gp');
+    await seedPluginTree(tree, bothScopes('gated-plug'));
+    await host.enable('gated-plug');
+    await latch();
+
+    await mcpCreateProject({ name: 'taken', conventions: ['design-guidelines'] });
+
+    const dup = await withWarns(async () => {
+      await assert.rejects(
+        () => mcpCreateProject({ name: 'taken', conventions: ['design-guidelines'] }),
+        /already exists/,
+        'the second create is refused',
+      );
+    });
+    assert.equal(census(dup.lines).createProject, undefined,
+      'a refused create writes no marker, so it must claim nothing about one');
+
+    const unknown = await withWarns(async () => {
+      await assert.rejects(
+        () => mcpCreateProject({ name: 'never', conventions: ['no-such-slug'] }),
+        /unknown convention slug/,
+        'an unknown slug is refused',
+      );
+    });
+    assert.equal(census(unknown.lines).createProject, undefined,
+      'and neither does one refused before the composition finishes');
+  });
+
   // T5 ─────────────────────────────────────────────────────────────────
   // PINS: the NO-LOSS arm, which is why every sentence stays a `may`. An
   // unreachable plugin declaring ONLY conductor-scope conventions still flags

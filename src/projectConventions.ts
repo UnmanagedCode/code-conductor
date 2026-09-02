@@ -61,9 +61,11 @@ export const composeProjectConventionsBlock = catalog.compose;
 // The same composition, returning the catalog's `degraded` flag alongside the
 // text off the SAME read (card 2026-0277's `composeWithMeta`). The create path
 // takes this one because degradedness is a property of the document it is about
-// to commit: a degrade only ever OMITS entries, so the line-1 marker of a
-// project created over one records fewer slugs than the user asked for and no
-// later regeneration adds them back (card 2026-0282).
+// to commit. `buildMarker` records EXACTLY the slugs it was passed — the defect
+// is upstream of the marker, not in it: a degrade omits catalog entries, so the
+// listing never offers the slug, and `create_project` refuses one outside the
+// catalog (400), so the marker can never come to name it. No later
+// regeneration adds it back (card 2026-0282).
 export const composeProjectConventionsBlockWithMeta = catalog.composeWithMeta;
 
 // Resolves selected slugs against the catalog and composes the one-time setup
