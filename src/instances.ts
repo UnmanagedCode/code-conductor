@@ -3853,7 +3853,10 @@ export class Instance extends EventEmitter implements InstanceLike {
 // (tests/systems-mirror-geometry-cold-resume.test.mjs). It is also why nothing
 // here reads the manifest at all, so deleting it changes no outcome.
 //
-// THE CANDIDATE SET IS COMPLETE AND COLLISION-FREE — see `mirrorOffsets`.
+// THE CANDIDATE SET IS COMPLETE, and the loop below may stop at its first
+// hit whatever order the candidates come in — because every candidate the
+// probe answers YES for resolves to the ONE directory holding this id's
+// transcript. Both facts, and their limits, are on `mirrorOffsets`.
 //
 // THE GEOMETRY CLASS IS NOT A DISCRIMINATOR HERE, unlike on 0279's path: the
 // transcripts live under `claudeProjectsRoot()`, which `resetRoot` never
@@ -3869,8 +3872,9 @@ async function followGeometryOnResume({ systemId, systemPath, root, cwd, backing
     // NO same-destination guard, and it is unreachable rather than omitted: the
     // caller reached here BECAUSE `cwd` holds no resumable conversation for this
     // id, and `cwd` is itself one of these candidates — so the hit can never be
-    // `cwd` and `from === to` cannot arise. (`relocateSessionTranscripts` drops
-    // the equivalent guard for the same class of reason.)
+    // `cwd` and `from === to` cannot arise. (`relocateSessionTranscripts` omits
+    // the equivalent guard as unreachable too, but by ITS own argument about two
+    // composed cwds — not by this one, which is the gate.)
     if (await hasResumableConversation({ cwd: candidate, sessionId: backingId })) { from = candidate; break; }
   }
   if (from === null) return false;
@@ -3907,7 +3911,27 @@ async function followGeometryOnResume({ systemId, systemPath, root, cwd, backing
       { code: 'SESSION_MOVE_FAILED' },
     );
   }
-  return true;
+  // WHAT THE `true` MEANS: this session is resumable at `cwd` — VERIFIED, not
+  // inferred from having called the relocation. `relocateSessionTranscripts`
+  // treats a source that is not there as success and writes nothing, so a
+  // transcript deleted between the probe above and its own existence re-check
+  // would otherwise have this claim a move it did not make, and the caller
+  // launch a worker with no conversation instead of refusing. Re-asking the
+  // caller's own question is what turns that into the caller's own 404, and it
+  // closes a CLASS rather than one race: any reason the relocation silently
+  // moves nothing now degrades honestly.
+  //
+  // UNKILLABLE BY CONSTRUCTION from outside this function — the same class as
+  // `_followGeometry`'s ENOENT wording branch, and for the same reason:
+  // reaching it needs a source deleted inside the microseconds between the
+  // probe hit and the rename's own scan, and that gap cannot be widened without
+  // perturbing the primitive.
+  //
+  // AND IT DOES NOT CLAIM THAT NOTHING MOVED. An older segment still present at
+  // `from` can have been relocated before the current one was found missing, so
+  // a `false` from here says only what the call tests: whether `cwd` now
+  // answers to this id.
+  return await hasResumableConversation({ cwd, sessionId: backingId });
 }
 
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
@@ -4613,14 +4637,17 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // crash, repeatably. Bailing here means no phantom crashed Instance is
     // registered, so a follow-up respawn_instance also soft-refuses cleanly.
     if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
-      // BEFORE REFUSING, and on a remote project only: the provider may have
-      // moved its mirror advertisement while this session was not running, in
-      // which case `cwd` above is a geometry this session's transcript has
-      // never been at. Following it here is what makes a cold resume — after an
-      // orchestrator restart, or of a session that is simply no longer running
-      // — survive a move the live relaunch path already survives
-      // (card 2026-0279 → card 2026-0287). Finding nothing leaves this refusal,
-      // and its message, exactly as they were.
+      // BEFORE REFUSING, and on a remote project only. The gate above tested
+      // exactly one thing — that `cwd` holds no resumable conversation for this
+      // id — and a mirror advertisement that MOVED while this session was not
+      // running is one reason for that answer, alongside a bogus id and a
+      // session that has no conversation yet. So look for this session at the
+      // other cwds its geometry could have produced before refusing: that is
+      // what makes a cold resume — after an orchestrator restart, or of a
+      // session that is simply no longer running — survive a move the live
+      // relaunch path already survives (card 2026-0279 → card 2026-0287).
+      // Finding nothing leaves this refusal, and its message, exactly as they
+      // were.
       const placement = redirectPlacement;
       const composed = composedMirror;
       const followed = placement !== null && composed !== null

@@ -303,10 +303,16 @@ describe('a cold resume after a mirror advertisement moved', () => {
     assert.equal(await exists(oldCwd), false, 'the old cwd really was deleted by the compose');
   });
 
-  // CONTROL, and the arm that stops the recovery firing on every resume. Two
-  // states in which a cold resume must move NOTHING: an advertisement that did
-  // not change at all, and a `remoteId`-only change — which invalidates the
-  // root and forces a full re-pull at the SAME geometry.
+  // CONTROL. Two composes that do NOT move the geometry, and a cold resume
+  // across either must move nothing: an advertisement that did not change at
+  // all, and a `remoteId`-only change — which invalidates the root and forces a
+  // full re-pull at the SAME geometry.
+  //
+  // NOT THE ARM THAT PINS THE GATE. Neither of these can observe whether the
+  // recovery ran, because the session's transcript IS at the composed cwd — so
+  // a scan would hit `cwd` itself and a same-path relocation writes nothing.
+  // The arm below ('the recovery runs only where the pre-flight already
+  // refuses') is what discriminates.
   //
   // NOT CLAIMING that the re-pull is byte-identical, only that the session
   // comes back at its own cwd with its transcript untouched there.
@@ -341,11 +347,21 @@ describe('a cold resume after a mirror advertisement moved', () => {
     }
   });
 
-  // CONTROL. PINS the two ways the scan must find nothing: a session already at
-  // the composed cwd is not moved and no other candidate is touched; and a
-  // session with no transcript anywhere still refuses, with the 404's message
-  // byte-for-byte what it was — the recovery degrades to exactly today's
-  // behaviour rather than replacing it.
+  // CONTROL, and two END STATES rather than two paths — the distinction matters
+  // for what this can and cannot pin.
+  //
+  // (a) PINS the end state of the HEALTHY path: a resume whose conversation is
+  // already at the composed cwd succeeds, its transcript is still there
+  // afterwards, and an unrelated session's transcript at another candidate is
+  // still at that candidate. It does NOT pin that the scan was skipped — the
+  // pre-flight passes, so nothing below it runs and this arm cannot observe the
+  // difference; the gate arm below is what can. Nor does its decoy discriminate
+  // a WRONG scan: for that, see 'the scan matches THIS session' below.
+  //
+  // (b) PINS that the refusal survives intact when no candidate holds the
+  // session at all: `restored === 0`, and the 404's message byte-for-byte what
+  // it was — the recovery degrades to exactly today's behaviour rather than
+  // replacing it.
   //
   // NOT CLAIMING that a session with no transcript is unusual: every session is
   // in that state until its first turn persists one.
@@ -357,8 +373,9 @@ describe('a cold resume after a mirror advertisement moved', () => {
       const newCwd = path.join(f.imageRoot, 'proj');
       const sessionId = f.inst.sessionId, backingId = f.inst.backingSessionId;
       await seedSessionJsonl(claudeProjectsRoot, newCwd, backingId);
-      // A DECOY at the other candidate, under a different session id: if the
-      // scan fires here it has no business touching anything at all.
+      // An unrelated session's transcript at the other candidate. This arm
+      // only pins that it is still there afterwards — it cannot fail under a
+      // scan that probes the wrong id, since the scan never runs here.
       const decoy = '9746ee72-0000-4000-8000-00000000dddd';
       await seedSessionJsonl(claudeProjectsRoot, oldCwd, decoy);
 
@@ -390,6 +407,112 @@ describe('a cold resume after a mirror advertisement moved', () => {
       assert.match(r.warns[0], new RegExp(`no resumable conversation for session ${backingId} in ${newCwd}`),
         `the 404's message changed: ${r.warns[0]}`);
     }
+  });
+
+  // PINS THAT THE SCAN MATCHES **THIS SESSION**, not merely any resumable
+  // conversation at a candidate — the discriminating arm the two controls above
+  // cannot be. Three candidates, and the one holding this session is NOT the
+  // first probed: a peer's transcript sits at the `''` candidate (which the
+  // enumeration emits first), this session's sits two levels deeper, and the
+  // composed cwd is neither.
+  //
+  // The state is reachable, not contrived: a peer that spawned while the
+  // advertisement was `''` and was never relaunched keeps its transcript at the
+  // image root, and this session then spawned under a wider advertisement. Only
+  // the peer's jsonl is synthesized here — the fake engine writes none for
+  // either session, so both had to be seeded whatever produced them.
+  //
+  // A probe that matched by cwd alone would take the peer's candidate as this
+  // session's prior geometry, move nothing (this session has no files there),
+  // and hand back a session with no conversation.
+  //
+  // GREEN ON ARRIVAL BY CONSTRUCTION: the shipped code already probes per id.
+  // This arm exists so that a mutation can be seen, not because the behaviour
+  // was ever wrong.
+  //
+  // NOT CLAIMING anything about the peer beyond its transcript staying put: it
+  // is not a live session here, and nothing resumes it.
+  test('the scan matches THIS session, not any conversation at a candidate', async () => {
+    const f = await fixture({ sub: path.join('x', 'proj'), mirror: '.' });
+    const oldCwd = f.inst.cwd;
+    assert.equal(oldCwd, path.join(f.imageRoot, 'x', 'proj'),
+      'the first compose should put the project two levels in');
+    const sessionId = f.inst.sessionId, backingId = f.inst.backingSessionId;
+    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
+    // THE PEER, at the candidate the enumeration probes FIRST.
+    const peer = '9746ee72-0000-4000-8000-00000000aaaa';
+    await seedSessionJsonl(claudeProjectsRoot, f.imageRoot, peer);
+
+    await drain({ expect: 1 });
+    await readvertise(f, 'x');
+    const r = await restore();
+
+    const newCwd = path.join(f.imageRoot, 'proj');
+    assert.equal(r.restored, 1, JSON.stringify(r.warns));
+    await assertFollowed(r, { sessionId, backingId, oldCwd, newCwd });
+    // The peer's transcript was neither taken as this session's source nor
+    // dragged to the new geometry.
+    assert.equal(await exists(sessionFilePath(f.imageRoot, peer)), true,
+      'the peer’s transcript left the candidate it was at');
+    assert.equal(await exists(sessionFilePath(newCwd, peer)), false,
+      'the peer’s transcript was dragged to the new geometry');
+  });
+
+  // PINS THE GATE: the recovery runs ONLY where the pre-flight already refuses,
+  // which is the arm every other test in this file is blind to. Where the
+  // transcript IS at the composed cwd, an ungated scan would hit `cwd` itself
+  // and a same-path relocation writes nothing — so the difference is
+  // unobservable unless some OTHER candidate also answers to the id. This arm
+  // makes one: a healthy resume with its live conversation at the composed cwd,
+  // and a stale jsonl under the SAME id at the `''` candidate, which the
+  // enumeration probes first.
+  //
+  // Gated, the scan never runs and the live transcript is untouched. Ungated,
+  // the stale copy is renamed OVER it and the session comes back on the wrong
+  // history — which is the failure mode the gate exists to exclude.
+  //
+  // THIS ARM ASSERTS NOTHING ABOUT THAT STALE STATE OCCURRING, and it is not
+  // evidence of a defect. Neither the card's measurement pass nor this round's
+  // review could construct it through any production path: both movers
+  // relocate every segment out of a SINGLE source cwd, so nothing cc does
+  // leaves one id answering at two candidates. It is planted here because a
+  // second answering candidate is the only way to make the gate OBSERVABLE.
+  //
+  // GREEN ON ARRIVAL BY CONSTRUCTION: the shipped recovery is already inside
+  // the refusal branch.
+  //
+  // NOT CLAIMING which of the two files the CLI would prefer if both were at
+  // one cwd — they never are; what is pinned is which one is at `cwd` after the
+  // resume.
+  test('the recovery runs only where the pre-flight already refuses', async () => {
+    const f = await fixture({ sub: 'proj', mirror: '.' });
+    const cwd = f.inst.cwd;
+    assert.equal(cwd, path.join(f.imageRoot, 'proj'));
+    const sessionId = f.inst.sessionId, backingId = f.inst.backingSessionId;
+    // The LIVE conversation, at the composed cwd — so the pre-flight passes.
+    await seedSessionJsonl(claudeProjectsRoot, cwd, backingId, [
+      { type: 'user', message: { role: 'user', content: 'LIVE-0287' } },
+      { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8' } },
+    ]);
+    // A STALE copy under the SAME id at the candidate probed first.
+    await seedSessionJsonl(claudeProjectsRoot, f.imageRoot, backingId, [
+      { type: 'user', message: { role: 'user', content: 'STALE-0287' } },
+      { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8' } },
+    ]);
+
+    await drain({ expect: 1 });
+    const r = await restore();
+
+    assert.equal(r.restored, 1, JSON.stringify(r.warns));
+    assert.deepEqual(r.warns, [], JSON.stringify(r.warns));
+    assert.equal(forSession(r, sessionId).cwd, cwd, 'the session moved at an unchanged geometry');
+    // The live conversation is still the one at `cwd`.
+    const live = await fs.readFile(sessionFilePath(cwd, backingId), 'utf8');
+    assert.match(live, /LIVE-0287/, 'the live transcript at the composed cwd was replaced');
+    assert.doesNotMatch(live, /STALE-0287/, 'the stale copy was renamed over the live transcript');
+    // …and the stale copy was not moved either.
+    const stale = await fs.readFile(sessionFilePath(f.imageRoot, backingId), 'utf8');
+    assert.match(stale, /STALE-0287/, 'the stale copy at another candidate was relocated');
   });
 
   // PINS: a relocation that cannot complete refuses 502 `SESSION_MOVE_FAILED`

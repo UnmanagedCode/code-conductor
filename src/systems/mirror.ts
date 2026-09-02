@@ -200,21 +200,32 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
 // CHAIN, because `resolveMirrorScope` above refuses 501
 // MIRROR_ROOT_EXCLUDES_PROJECT for any root that does not contain the project,
 // and a provider that advertises nothing gets `noMirror(systemPath)` — offset
-// ''. So the offsets are exactly the suffixes of `systemPath`, '' included, and
-// no advertisement can put a session at a cwd outside
-// `<image root> + <one of these>` (round-tripped against `resolveMirrorScope`
-// in tests/systems-mirror-advertisement.test.mjs).
+// ''. So no advertisement can put a session at a cwd outside
+// `path.join(<image root>, <one of these>)` — measured, including for the
+// non-normal `systemPath`s below (round-tripped against `resolveMirrorScope` in
+// tests/systems-mirror-advertisement.test.mjs).
+//
+// COMPLETE, NOT EXACT, and only the first is a contract. These are the raw
+// segment-suffixes of `systemPath` AS GIVEN, while `resolveMirrorScope` returns
+// `path.posix.relative`'s NORMALISED answer — and a `systemPath` is not
+// required to be in normal form (`validatePlacementInput`, src/projects.ts,
+// checks only that it is absolute). So for `/a/./b/proj` this yields both
+// `b/proj` and `./b/proj`, which `path.join` collapses onto ONE directory, and
+// for `/a/../b/proj` it yields `../b/proj`, which joins to a directory OUTSIDE
+// the image root. Neither is a defect for a caller that only PROBES: a
+// duplicate is one place looked at twice, and a cwd no advertisement can
+// produce is one no session can have run in, so it cannot answer.
 //
 // ORDER IS ARBITRARY — '' comes out FIRST, since `i === segs.length` slices the
-// empty suffix — AND CALLERS MAY NOT DEPEND ON EITHER FACT. What licenses that
-// is not the order but a property: at most ONE of these candidates can hold a
-// given session's transcript, because `encodeCwd` is length-preserving
-// (src/projects.ts) and `path.join(root, offset)` has a distinct length for
-// every offset here, so two candidates can never name one transcript directory.
-// That is why the create path's scan may STOP at its first hit. Adding a
-// candidate that could collide with another would make that `break`
-// order-dependent, and nothing else in this file would say so
-// (card 2026-0287).
+// empty suffix — AND CALLERS MAY NOT DEPEND ON EITHER FACT. What licenses a
+// scan over these to STOP AT ITS FIRST HIT (the create path's does) is not the
+// order and not the candidates being distinct: it is that one session ran at
+// one cwd and its transcript is in one encoded directory, so EVERY candidate a
+// `hasResumableConversation` probe for that id answers YES for resolves to that
+// same directory — whichever the scan stops at, `sessionFilePath(candidate,
+// id)` is the same file. Add a candidate that could name a DIFFERENT directory
+// answering to one id and that `break` becomes order-dependent, and nothing
+// else in this file would say so (card 2026-0287).
 export function mirrorOffsets(systemPath: string): string[] {
   const segs = systemPath.split(path.posix.sep).filter(Boolean);
   const out: string[] = [];
