@@ -483,4 +483,94 @@ describe('a discovery scan that could not reach a project says so', () => {
     assert.equal(isDegraded(await host.conventions()), true,
       'SCAN side: the manifest was never read, so the flag is raised on the enabled record alone');
   });
+
+  // D9 ─────────────────────────────────────────────────────────────────
+  // PINS WHAT D5 STRUCTURALLY CANNOT: the latch holds across recovery even
+  // when NOTHING OBSERVED IT DURING THE OUTAGE. Between the failed rescan and
+  // the box becoming verifiably reachable there is no `conventions()` call at
+  // all, so the FIRST read of the flag in this scan's state is taken after
+  // recovery — and it must still be degraded.
+  //
+  // D5 cannot reach this. Its during-outage read is load-bearing for what D5
+  // pins (that the flag survives the transition), but it also means D5's first
+  // read in this set-state happens while the box is down. Any implementation
+  // that re-probes ONCE and remembers the answer therefore agrees with the
+  // latch in D5 forever, and in D4, and everywhere else in this file — every
+  // other case reads the flag during the outage and seeds that answer. This
+  // case withholds the observation, which is the only way to tell a latch from
+  // a remembered probe.
+  //
+  // It is the shape D-P0272-1(b) bans by name — "probe on the first compose
+  // after a degrade" — and its failure mode is this card's original defect
+  // rather than a milder one: a referencing project whose first read lands
+  // after the box is back would get a healthy catalog and have its committed
+  // CONVENTIONS.md rewritten. That outcome is asserted here, not just the flag.
+  //
+  // NOT CLAIMING: that no re-probing shape survives this file. A probe keyed on
+  // wall-clock time, or throttled to every Nth call, or deriving reachability
+  // from something other than resolving the project, is not addressed by this
+  // test or by D5. Nor does this pin behaviour when one recorded project
+  // recovers while another stays down — the flag is per-catalog and no case
+  // here splits it. And no red preceded it: like D5's moved assertion it pins
+  // behaviour the fix already has, so there was nothing to watch fail.
+  test('the latch holds across recovery when nothing read the flag during the outage', async () => {
+    const tree = await boxProject('gp');
+    await seedPluginTree(tree, manifest('gated-plug'), 'GATED CONTENT');
+    await host.enable('gated-plug');
+    const { doc, target } = await referencer('referencer', ['gated-plug/frag', 'design-guidelines']);
+
+    await boxDown();
+
+    // ── THE WINDOW OPENS HERE, AND IS COUNTED RATHER THAN ASSUMED ──
+    // This test's entire value rests on the ABSENCE of a `conventions()` call
+    // from the moment the scan records 'gp' until the box is back. That is
+    // invisible in the source below and would be silently undone by a future
+    // edit slipping a read in — the same green-for-the-wrong-reason hazard D5
+    // already paid for. It starts before the rescan because rescanInternal
+    // swaps the recorded set in at its END: a read taken by the rescan itself
+    // would land in the new state, during the outage, and seed exactly the
+    // answer this test withholds. The counter goes through the host object, so
+    // a read taken via the conventions provider (how ensureProjectConventionsMd
+    // reaches it) counts too.
+    const realConventions = host.conventions;
+    let readsInWindow = 0;
+    host.conventions = (...a) => { readsInWindow++; return realConventions.apply(host, a); };
+
+    await host.rescan();
+
+    // THE PRECONDITION, TAKEN WITHOUT READING THE FLAG. Something must confirm
+    // the scan really did drop 'gp', or this test could pass vacuously against
+    // a box that never went down. The store-only row reads the recorded
+    // unreachable set directly and never reaches discoveryDegraded() (row.ts
+    // builds its fields from the manifest), so it answers that question
+    // without spending the one observation this test exists to withhold.
+    const row = (await host.list()).find(r => r.id === 'gated-plug');
+    assert.match(row?.errors[0] ?? '', /did not resolve at the last discovery scan/,
+      'the scan recorded the project as unresolved — established off the row, not off the flag');
+
+    await boxUp();
+    await boxVerifiablyReachable('gp', path.join(tree, 'conductor.plugin.json'));
+
+    // ── THE WINDOW CLOSES HERE ── and the count is the proof that the rescan,
+    // the row read and the reachability probe above all left the flag
+    // unobserved, rather than that being taken on trust from reading their
+    // implementations.
+    assert.equal(readsInWindow, 0,
+      'nothing may observe the flag between the scan recording the project and the box coming back — that withheld observation IS the test');
+    host.conventions = realConventions;
+
+    // The first read of the flag in this scan's state, and it lands after
+    // recovery. A probe taken now would succeed; the answer must not come from
+    // one.
+    const first = await host.conventions();
+    assert.equal(first.project.degraded, true,
+      'the first read of the flag happens after recovery and is still degraded — the catalog is missing this project\'s plugins until a scan rebuilds it, whatever the box is doing now');
+    assert.equal(bodyOf(first, 'gated-plug/frag'), null,
+      'and the fragment really is absent — the catalog was not quietly repaired either');
+
+    const res = await ensureProjectConventionsMd('referencer');
+    assert.equal(res.skipped, 'catalog-degraded');
+    assert.equal(await fs.readFile(target, 'utf8'), doc,
+      'so the committed file survives an outage nobody looked at, which is the defect this card exists to stop');
+  });
 });
