@@ -236,3 +236,36 @@ test('retarget carries a divergence marker to its new local path, and drops one 
   assert.equal(bridge.isDirty(inSession('etc/config.toml')), false,
     'a marker the new geometry can never reach again was kept');
 });
+
+// PINS the OTHER half of `retarget`'s carry: the recorded file mode reaches the
+// new local key too, so a push at the new path still restores the executable bit
+// the system had. `#modes` and `#diverged` are keyed the same way and moved by
+// the same loop, and the test above proves only the `#diverged` half
+// (card 2026-0279).
+//
+// NOT CLAIMING THAT PRODUCTION DEPENDS ON THIS TODAY, and that is worth saying
+// plainly rather than leaving to be inferred. Every hooked file op pulls before
+// it runs and a successful pull re-records the mode under the path it pulled, so
+// a push through `SessionRedirect` always reads a mode set moments earlier — the
+// carried one is overwritten before it is read. What this pins is `retarget`'s
+// CONTRACT (keys carried old local → system → new local), which is what a future
+// caller that pushes without pulling would rest on, and the `clear()` inside the
+// same loop is what stops the old keys accumulating for the life of the session.
+test('retarget carries a recorded file mode to the new local path', async () => {
+  await seed('app/run.sh', '#!/bin/sh\necho system\n', 0o755);
+  // The pull is what records the mode — under the OLD local key.
+  assert.equal((await bridge.pull(inSession('app/run.sh'))).kind, 'pulled');
+
+  bridge.retarget(new SessionPathMap(root, onSystem('app')), map);
+
+  // Straight to the push, with NO pull in between: a pull would re-record the
+  // mode and the carried one would never be read.
+  const newLocal = inSession('run.sh');
+  await fs.writeFile(newLocal, '#!/bin/sh\necho local\n');
+  await bridge.push(newLocal);
+
+  assert.equal(await fs.readFile(onSystem('app/run.sh'), 'utf8'), '#!/bin/sh\necho local\n',
+    'the push did not land at the path the new geometry names');
+  assert.equal((await fs.stat(onSystem('app/run.sh'))).mode & 0o777, 0o755,
+    'the recorded mode did not travel: the push wrote the provider default');
+});

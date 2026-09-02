@@ -135,7 +135,10 @@ describe('a mirror advertisement that moves under a live session', () => {
   // Kill the worker, then relaunch it through the production respawn path. Every
   // spawn_error the relaunch emits is captured, because that — not `status` — is
   // what says whether a child started.
-  async function relaunch(inst) {
+  // `awaitReplay:false` for the arm that has NO transcript: `loadHistory` returns
+  // silently on ENOENT and `history_replayed` is inside a `replayedCount > 0`
+  // guard, so there is nothing to wait for and waiting would just time out.
+  async function relaunch(inst, { awaitReplay = true } = {}) {
     await inst.kill({ graceMs: 200 });
     const out = { spawnErrors: [], lines: [], replayed: false };
     const real = inst._emitUi.bind(inst);
@@ -150,7 +153,13 @@ describe('a mirror advertisement that moves under a live session', () => {
       // `loadHistory` runs in spawn()'s own async tail, so the replay can land
       // AFTER the response — waiting for it here keeps the patch installed long
       // enough to see it rather than racing it.
-      if (out.res.status === 200) await waitFor(() => out.replayed);
+      // Each wait is gated on the response too: a REFUSED relaunch leaves both
+      // `replayed` false and `pid` null forever, so an ungated wait would spin
+      // its full timeout and throw instead of handing the caller back the 502 it
+      // asked about.
+      if (out.res.status !== 200) { /* a refusal has nothing to wait for */ }
+      else if (awaitReplay) await waitFor(() => out.replayed);
+      else await waitFor(() => inst.pid !== null);
     } finally { inst._emitUi = real; }
     return out;
   }
@@ -327,6 +336,140 @@ describe('a mirror advertisement that moves under a live session', () => {
     const res = await api(baseUrl, 'POST', `/api/instances/${f.inst.id}/respawn`);
     assert.equal(res.status, 502, JSON.stringify(res.body));
     assert.match(res.body.error, /now mirrors this project at/);
+  });
+
+  // PINS THAT THE LINE IS TRUE FOR A SESSION THAT HAS NO TRANSCRIPT. A worker
+  // killed before its first turn — and every fresh spawn until one lands — has
+  // nothing at either cwd, `loadHistory` returns silently on ENOENT, and
+  // `history_replayed` is never emitted. The move still happens and is still
+  // announced, so the announcement must not assert a transcript nobody looked
+  // for: that is the same rule as the line's "AND IT NAMES NO FILE", one clause
+  // over.
+  //
+  // NOT CLAIMING that a transcript-less move is different in any other respect —
+  // it is the same code path, and the relocation is simply a no-op. NOT CLAIMING
+  // that the destination encoded directory stays absent here; the primitive test
+  // owns that.
+  test('a move announces truthfully for a session that has no transcript at all', async () => {
+    const f = await fixture({ sub: 'proj', mirror: '' });
+    const oldCwd = f.inst.cwd;
+    const backingId = f.inst.backingSessionId;
+    // Deliberately NO seedSessionJsonl: the fake engine writes no transcript, so
+    // this is the state a session is in until its first turn persists one.
+
+    await readvertise(f, '.');
+    const r = await relaunch(f.inst, { awaitReplay: false });
+    const newCwd = path.join(f.imageRoot, 'proj');
+
+    // The move happened, and there was genuinely nothing to carry.
+    assert.equal(r.res.status, 200, JSON.stringify(r.res.body));
+    assert.equal(f.inst.cwd, newCwd, 'the session did not move');
+    assert.equal(await exists(sessionFilePath(oldCwd, backingId)), false);
+    assert.equal(await exists(sessionFilePath(newCwd, backingId)), false);
+    assert.equal(r.replayed, false, 'there was no history, so none can have been replayed');
+    assert.notEqual(f.inst.pid, null, 'no worker was started');
+    assert.deepEqual(r.spawnErrors, [], `a child failed to spawn: ${r.spawnErrors.join(', ')}`);
+
+    // And the line says so — it hedges the transcript and the replay rather than
+    // asserting both unconditionally.
+    const [line] = geometryLines(r.lines);
+    assert.ok(line, 'the move was not announced');
+    assert.match(line, /any transcript it had moved with it/, line);
+    assert.match(line, /whatever history it had is replayed/, line);
+  });
+
+  // PINS THE COMPOSITION SEAM the unit tests leave open: that `_followGeometry`
+  // actually CALLS `SessionRedirect.retarget`, with the OLD map as `prev`, and
+  // that the bridge classifies under the new geometry afterwards. Each of those
+  // three is proven at its own unit seam and at no joint — measured: deleting
+  // the `retarget` call outright leaves every other arm in this file green,
+  // because nothing else here looks at a file tool after the move.
+  //
+  // Three observations, and the ORDER is load-bearing. The Write comes first
+  // because a successful Read pulls, and a pull resyncs the local copy and
+  // clears the very divergence the first assertion is about.
+  //   1. a Write at the NEW local path is still REFUSED — the marker was
+  //      re-keyed through the system path, so it guards the file it always
+  //      guarded. Un-retargeted, or retargeted with `next` passed as `prev`,
+  //      this path is clean and the Write is allowed.
+  //   2. a Read at the NEW local path materialises the SYSTEM's bytes — the
+  //      bridge's own map moved too. With only the redirect's map swapped, the
+  //      pull resolves to a path that does not exist, reports absence, and
+  //      leaves nothing on disk.
+  //   3. the OLD local path is NOT dirty — markers moved rather than being
+  //      copied, so nothing is left guarding a path the worker may legitimately
+  //      use again under the new, wider geometry.
+  //
+  // HOSTED HERE, in the real-subprocess file, deliberately: invariant 1 is about
+  // the PRODUCTION relaunch, and only this file drives respawn → launch() →
+  // _refreshSessionRoot → _followGeometry. The card 2026-0286 hazard that makes
+  // this file a bad host for a mutant which UNFOLLOWS the geometry (it spawns
+  // into a deleted cwd and wedges kill()) does not reach the mutants this arm
+  // targets — every one of them leaves the cwd move intact and spawns normally.
+  // A prover authoring a cwd-side mutant should still repoint it at the
+  // in-process tests/systems-mirror-geometry-move.test.mjs.
+  //
+  // NOT CLAIMING that the refusal's TEXT was rewritten for the new geometry. It
+  // is not: the reason string is built when the push fails and the re-key carries
+  // it verbatim, so it still names the pre-move local path. The system path it
+  // also names is correct and unchanged, and that is what this arm asserts on.
+  //
+  // NOT CLAIMING anything about the recorded file MODE: every hooked op pulls
+  // first and a pull re-records it, so that half of the carry is unobservable
+  // from here and is pinned as a contract in tests/systems-file-bridge.test.mjs.
+  // NOT CLAIMING that the far-side shell followed anything — it runs at the
+  // project path, which did not move.
+  test('a moved session addresses the project through the new geometry, and its refusals move with it', async () => {
+    const f = await fixture({ sub: 'proj', mirror: '' });
+    const oldCwd = f.inst.cwd;
+    const backingId = f.inst.backingSessionId;
+    await seedSessionJsonl(claudeProjectsRoot, oldCwd, backingId);
+    const redirect = f.inst._redirect;
+    const onSystem = path.join(f.projPath, 'sub', 'data.txt');
+
+    // A bridged file NESTED one level down, so its push can be broken the
+    // established way — by turning its parent into a file on the system.
+    await fs.mkdir(path.dirname(onSystem), { recursive: true });
+    await fs.writeFile(onSystem, `${SENTINEL}\n`);
+
+    const oldLocal = path.join(oldCwd, 'sub', 'data.txt');
+    assert.equal((await redirect.preToolUse('Read', { file_path: oldLocal })).decision, 'allow');
+    await fs.writeFile(oldLocal, 'local edit\n');
+    await fs.rm(path.dirname(onSystem), { recursive: true });
+    await fs.writeFile(path.dirname(onSystem), 'not a directory\n');
+    assert.match(await redirect.postToolUse('Edit', { file_path: oldLocal }, {}), /WRITE-BACK FAILED/);
+    assert.equal((await redirect.preToolUse('Write', { file_path: oldLocal, content: 'x' })).decision, 'deny',
+      'the divergence marker never took, so the move has nothing to carry');
+
+    // Repair the system side, so the new geometry has a real file to address.
+    await fs.rm(path.dirname(onSystem));
+    await fs.mkdir(path.dirname(onSystem), { recursive: true });
+    await fs.writeFile(onSystem, `${SENTINEL}\n`);
+
+    await readvertise(f, '.');
+    const r = await relaunch(f.inst);
+    const newCwd = path.join(f.imageRoot, 'proj');
+    await assertMoved({ inst: f.inst, r, oldCwd, newCwd, backingId });
+
+    const newLocal = path.join(newCwd, 'sub', 'data.txt');
+    // (1) + the arg order: the refusal guards the file under its new local name.
+    const denied = await redirect.preToolUse('Write', { file_path: newLocal, content: 'x' });
+    assert.equal(denied.decision, 'deny', 'the refusal did not follow the path it guards');
+    // On the SYSTEM path, which is the half that did not move and the half the
+    // worker can still act on. NOT the local path: the reason STRING is composed
+    // at push time and carried verbatim by the re-key, so it still names the
+    // pre-move local path. Observed here, not asserted as desirable.
+    assert.ok(denied.reason.includes(onSystem), denied.reason);
+    // (3) and it is not still guarding the old one.
+    assert.equal((await redirect.preToolUse('Write', { file_path: oldLocal, content: 'x' })).decision, 'allow',
+      'a marker was left behind under a stale local key');
+    // (2) the bridge's own map moved: a Read at the new path fetches the
+    // system's bytes rather than reporting the file absent.
+    assert.equal((await redirect.preToolUse('Read', { file_path: newLocal })).decision, 'allow');
+    assert.equal(await fs.readFile(newLocal, 'utf8'), `${SENTINEL}\n`,
+      'the pull did not resolve the new local path to the system file');
+    // And that resync clears the divergence, at the new key.
+    assert.equal((await redirect.preToolUse('Write', { file_path: newLocal, content: 'x' })).decision, 'allow');
   });
 
   // CONTROL. PINS that the fix does not fire on every relaunch: with no provider
