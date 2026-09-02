@@ -281,8 +281,14 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
   if (hit) {
     const backingSessionId = await resolveToBackingId(sessionId);
     if (backingSessionId) {
-      const { cwd } = await resolveProjectCwd(hit.project, hit.worktreeName);
-      return { disk: { sessionId, backingSessionId, cwd } };
+      // The probe's OWN cwd, not a re-resolve of the project: for a project on
+      // a system, resolveProjectCwd answers with the tree path on that machine
+      // — a directory the CLI never had as a cwd, where this read would serve a
+      // successfully EMPTY page. It also cannot refuse for an unreachable
+      // system, which is right: a transcript read needs only local bytes under
+      // claudeProjectsRoot(), so the box's reachability is irrelevant to it
+      // (card 2026-0292).
+      return { disk: { sessionId, backingSessionId, cwd: hit.cwd } };
     }
   }
 

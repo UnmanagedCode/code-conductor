@@ -1566,14 +1566,60 @@ async function loadWorktreesFor(projectName: string): Promise<WorktreeMeta[]> {
   return listWorktrees(projectName);
 }
 
+// ONE PLACE a session could have run: a project or one of its worktrees, with
+// every cwd that place admits. `primary` and `fallback` are the two PASSES of
+// findSessionLocation's probe, not two guesses at one path — see the precedence
+// rule on it.
+interface SessionPlace {
+  project: string;
+  worktreeName: string | null;
+  primary: string[];
+  fallback: string[];
+}
+
 // Look up which project (and optionally which worktree) owns a given
-// sessionId by probing the conventional `~/.claude/projects/<encoded-cwd>/
-// <sid>.jsonl` path against every known project + worktree. Returns
-// { project, worktreeName: string|null } on hit, null when nothing matches.
+// sessionId, and the cwd its transcript was actually found at, by probing the
+// conventional `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` path against
+// every cwd every known project + worktree admits. Returns
+// { project, worktreeName: string|null, cwd } on hit, null when nothing matches.
 // `encodeCwd` is one-way (lossy: '_' and '/' both collapse to '-'), so
 // we can't reverse-map a directory name back to a project — enumerating
 // known paths and probing is the only correct approach.
-export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null } | null> {
+//
+// `cwd` IS THE ANSWER, not a convenience: a caller that re-derives it from the
+// project's tree path lands on the OTHER MACHINE for a project on a system, and
+// then reads an empty transcript. It is REQUIRED for that reason — an optional
+// field invites `hit.cwd ?? proj.path`, which is precisely the bug this fixes
+// (card 2026-0292). It is NOT a public field: `GET /sessions/:id/locate`
+// projects the body explicitly so it stays in-process.
+//
+// WHICH CWDS A PLACE ADMITS depends on where its tree is. A LOCAL place admits
+// exactly its tree path — the CLI ran there. A place on a SYSTEM admits its
+// local SESSION ROOTS (`sessionRootCwds`): the CLI is always local, so a session
+// on another machine's tree still ran in a cc-owned directory here, and the
+// tree path names a directory on a host cc never had a cwd in.
+//
+// TWO PASSES, WITH GLOBAL PRECEDENCE. Pass 1 sweeps every place's `primary`
+// (local tree paths, remote session roots). Pass 2 sweeps only the remote
+// places' `fallback` — the raw path on the system, which is exactly the probe
+// this function ran before session roots existed.
+//   - Pass 2 is KEPT because the state it serves is REACHABLE: adopt a project
+//     locally at P, accrue sessions in that tree, unregister it, re-adopt it on
+//     a system whose path is also P. Those older transcripts are genuinely that
+//     project's and nothing else finds them.
+//   - It is STRICTLY LAST, globally rather than per-project, because a remote
+//     place's tree path can collide (via encodeCwd, or by naming the same
+//     string) with a LOCAL project's real cwd — and there the raw answer is
+//     wrong while a session-root answer elsewhere is right. Demoting it below
+//     every primary everywhere cures that by precedence, deleting nothing.
+// A session-root answer must therefore never lose to a raw remote-tree-path
+// answer, for any id, under any project ordering. Local places contribute
+// nothing to pass 2, so a local project's set and order are what they were.
+//
+// The place list is built ONCE here and reused by every probe below: pass 2
+// must not re-walk the worktree store, and the read-tolerance loop must not
+// re-walk it per segment either.
+export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> {
   // Permissive validation: sessionIds are UUIDs in practice but we accept
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
@@ -1603,25 +1649,54 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     }
   } catch { /* .conduct doesn't exist yet — skip */ }
 
-  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null } | null> => {
-    for (const proj of projects) {
-      const file = sessionFilePath(proj.path, id);
+  // Lazy import for the same projects.ts ↔ systems/sessionRoot.ts circular edge
+  // the two worktrees imports sit on — sessionRoot.ts imports orchStoreRoot from
+  // this module.
+  const { sessionRootCwds } = await import('./systems/sessionRoot.ts');
+
+  const places: SessionPlace[] = [];
+  for (const proj of projects) {
+    // A remote row's `path` IS its `systemPath` (listProjects), but `systemPath`
+    // is the field that NAMES the meaning, and it is null for a listed row with
+    // no placement — which contributes no primary, only its fallback.
+    const rows: Array<{ worktreeName: string | null; treePath: string; sysPath: string | null }> =
+      [{ worktreeName: null, treePath: proj.path, sysPath: proj.systemPath }];
+    let wts: WorktreeMeta[] = [];
+    try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
+    // A worktree's offsets come from the WORKTREE's own path on the system, not
+    // its project's: the two differ under a mirror root wider than the project.
+    for (const wt of wts) rows.push({ worktreeName: wt.worktreeName, treePath: wt.worktreePath, sysPath: wt.worktreePath });
+    for (const row of rows) {
+      if (proj.system === LOCAL_SYSTEM_ID) {
+        places.push({ project: proj.name, worktreeName: row.worktreeName, primary: [row.treePath], fallback: [] });
+        continue;
+      }
+      places.push({
+        project: proj.name,
+        worktreeName: row.worktreeName,
+        primary: row.sysPath ? await sessionRootCwds(proj.system, proj.name, row.worktreeName, row.sysPath) : [],
+        fallback: [row.treePath],
+      });
+    }
+  }
+
+  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> => {
+    const holds = async (cwd: string): Promise<boolean> => {
       try {
-        const stat = await fs.stat(file);
-        if (stat.isFile()) return { project: proj.name, worktreeName: null };
+        return (await fs.stat(sessionFilePath(cwd, id))).isFile();
       } catch (e) {
         if (errCode(e) !== 'ENOENT') throw e;
+        return false;
       }
-      let wts: WorktreeMeta[] = [];
-      try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
-      for (const wt of wts) {
-        const wtFile = sessionFilePath(wt.worktreePath, id);
-        try {
-          const stat = await fs.stat(wtFile);
-          if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
-        } catch (e) {
-          if (errCode(e) !== 'ENOENT') throw e;
-        }
+    };
+    for (const pl of places) {
+      for (const cwd of pl.primary) {
+        if (await holds(cwd)) return { project: pl.project, worktreeName: pl.worktreeName, cwd };
+      }
+    }
+    for (const pl of places) {
+      for (const cwd of pl.fallback) {
+        if (await holds(cwd)) return { project: pl.project, worktreeName: pl.worktreeName, cwd };
       }
     }
     return null;
