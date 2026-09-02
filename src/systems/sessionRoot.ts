@@ -209,14 +209,17 @@ export const SESSION_ROOT_TOTAL_CAP_BYTES = 4 * 1024 * 1024;
 // 8.6 s, a 969 KB manifest, `skipped` empty — for ~14 KB of content, on every
 // spawn AND every resume. The fence below bounds that only indirectly, at
 // ~92,000 entries at ordinary path lengths, and it refuses rather than
-// degrading, so a project just under it is merely slow and one just over it
-// cannot open a session at all.
+// degrading — so before this cap existed, a project just under the fence was
+// merely slow and one just over it could not open a session at all. Only the
+// second half still holds, and it is the LIMIT of what this cap buys: it
+// degrades everything below the fence's ceiling and nothing above it.
 //
 // 2,000 is far above any real config surface — the largest `.claude/skills`
 // tree measured on this host is 53 files, and the entire official plugin
 // marketplace is 446 across skills, commands and agents — and it holds that
-// same 14,589-file tree to 2,005 round trips, ~1.6 s and a 133 KB manifest,
-// with a resume falling from 823 ms to ~190 ms (1 round trip).
+// same 14,589-file tree to 2 `exec` + 2,005 `readFile` round trips, ~1.6 s and
+// a 133 KB manifest, with a resume falling from 823 ms to ~200 ms — 2 `exec` +
+// 1 `readFile` — CLAUDE.md, for the imports pass — and not one entry re-pulled.
 //
 // IT COUNTS LISTING POSITIONS, NOT SUCCESSFUL PULLS, which is what makes one
 // number bound the round trips, the manifest, the skip list and the stderr
@@ -234,8 +237,9 @@ const SESSION_ROOT_ENTRY_CAP = 2000;
 // A FENCE, not another cap — the distinction is in the name because it is the
 // whole difference in behaviour. The caps above bound WHAT IS PULLED — the
 // bytes of one entry, the bytes of the whole surface, and how much of the
-// listing is considered at all — and each entry they refuse is skipped and
-// NAMED. This one bounds the BYTES OF `find` OUTPUT those records are parsed
+// listing is considered at all — and every one of them SAYS what it refused:
+// the byte caps name each entry they drop, the entry cap names the first and
+// counts the rest. This one bounds the BYTES OF `find` OUTPUT those records are parsed
 // out of — a different quantity from the entry cap's count of positions WITHIN
 // a parsed listing — and past it the compose FAILS, for the reason
 // runGit's does (src/worktrees.ts): findManifest parses the output WHOLE, so a
@@ -440,8 +444,9 @@ async function pullSessionRoot(
   // entry it dropped — that is exactly what separates it from the fence, which
   // cannot — but naming 12,592 of them puts 12,592 `system`/`stderr` lines on
   // the session at every launch, which is a second way to make a large config
-  // surface expensive: measured, the same shape reaches 10,494 lines and 1.24 MB
-  // through the byte cap today. The first entry not pulled, the total, and a
+  // surface expensive: measured, the same shape reached 10,494 lines and 1.24 MB
+  // through the byte cap with nothing bounding the listing positions, which the
+  // cap above now holds to ~2,005. The first entry not pulled, the total, and a
   // per-target rollup are what a user acts on.
   if (dropped.length > 0) {
     skipped.push({
@@ -590,8 +595,27 @@ async function listAllowed(system: System, systemPath: string, mirror: MirrorSco
   // THE SECOND PASS IS BOUND BY THE SAME LIST. An import names an arbitrary
   // path in the project, so it is exactly the case a target-shaped filter
   // misses; passing `exclude` here rather than pre-filtering keeps ONE gate.
-  const extra = (await findManifest(system, systemPath, imports, mirror.exclude))
-    .filter(e => !have.has(e.rel));
+  //
+  // DEDUPED BY REL AGAINST ITSELF, not only against the targets pass. `imports`
+  // is one entry per `@` line, so a CLAUDE.md naming the same file twice sends
+  // `find` the same path twice and gets the record back twice — as does an
+  // import naming a DIRECTORY that another import sits under. The double pull
+  // that produced is older than the entry cap: it cost a second `readFile` on
+  // every COLD pull (a resume's manifest check short-circuits both copies) and a
+  // second charge against the byte budget on every compose, since `total` is
+  // charged above that check. What the cap turned it into is a FALSE CLAIM,
+  // because 2,001 copies of one import fill the cap and the summary skip then
+  // names a file that is on disk. Fixed by construction here rather
+  // than reworded downstream, so the cap bounds 2,000 DISTINCT entries.
+  //
+  // Scoped to this pass because it is the only one whose targets a project
+  // controls: the seven allow-list targets are disjoint by construction.
+  const extra: Listed[] = [];
+  for (const e of await findManifest(system, systemPath, imports, mirror.exclude)) {
+    if (have.has(e.rel)) continue;
+    have.add(e.rel);
+    extra.push(e);
+  }
   return rankConfigSurface(first, extra);
 }
 

@@ -150,16 +150,23 @@ test('an entry over the per-file cap is skipped and named, and the spawn still c
 //
 // The two caps above sum BYTES, so neither ever fires for a tree of many tiny
 // files. This one bounds HOW MANY entries are considered at all, and — like
-// them and unlike the fence below — it skips and NAMES.
+// them and unlike the fence below — it SAYS what it dropped: not one name per
+// entry as they do, but the first entry, the total and a per-target rollup.
 
 // The entry cap written out rather than imported: a test that reads the number
 // out of the module under test asserts only that it equals itself.
 //
-// THE FIXTURES BELOW ARE SIZED TO CROSS IT, so they are COUPLED to its value:
-// raising the cap turns them RED, and that is intended rather than a defect — a
-// threshold test is a claim about WHERE the threshold is. What they do not do is
-// take the number FROM the code, which is a different property and the only one
-// claimed here.
+// COUPLING, STATED WHERE IT EXISTS rather than across the whole section. The
+// BOUNDARY test and the FLOOD test are sized to CROSS the cap, so they are
+// coupled to its value: raise it and they turn RED, which is intended rather
+// than a defect — a threshold test is a claim about WHERE the threshold is.
+// The rest are not coupled and must not be read as though they were: the
+// ranking test has no fixture at all, the byte-budget test is sized against the
+// 4 MiB TOTAL cap rather than this one, and the duplicate-import test's
+// repetitions collapse to a single entry at any value of it.
+//
+// What NONE of them does is take the number FROM the code — a different
+// property from surviving a change to it, and the only one claimed for all.
 const ENTRY_CAP = 2000;
 
 // `n` tiny files under `rel`, zero-padded so lexicographic order is numeric
@@ -288,6 +295,75 @@ test('a flood that fills the cap still leaves the four allow-list files and the 
     skipped[0].reason,
     /so 14 further entries were not pulled \(\.claude\/agents 12, \.claude\/commands 1, \.claude\/skills 1\)/,
   );
+});
+
+// PINS: a duplicated `@`-import is ONE entry, not one listing position per
+// line — so the cap counts distinct entries and the summary skip cannot name a
+// file that is sitting on disk. Pre-fix, `findManifest` walked the same absolute
+// path once per `@` line and `extra` deduped only against the TARGETS pass, so
+// 2,001 copies of one import filled the cap and the skip reported
+// `docs/STYLE.md` as not pulled while it was on disk and in `pulled[]` — the red
+// this test was written against named exactly that file.
+//
+// NOT CLAIMING that the targets pass can produce a duplicate — its seven targets
+// are disjoint by construction, so the dedupe is scoped to the imports pass,
+// which is the only one whose targets a project controls.
+//
+// NOT CLAIMING anything about a duplicate that is not a duplicate REL: two
+// different files are two entries however alike their contents.
+test('a duplicated @-import is one entry, not one listing position per line', async () => {
+  await seedTree(remote.root);
+  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(remote.root, 'docs/STYLE.md'), 'two spaces\n');
+  // One line MORE than the cap admits, every one naming the same file: enough
+  // listing positions to overrun the cap, one distinct entry behind them.
+  await fs.writeFile(
+    path.join(remote.root, 'CLAUDE.md'),
+    `@CONVENTIONS.md\n${'@docs/STYLE.md\n'.repeat(ENTRY_CAP + 1)}`,
+  );
+
+  const { root, pulled, skipped } = await compose();
+
+  assert.deepEqual(skipped, [], 'one distinct import cannot overrun a 2000-entry cap');
+  assert.equal(await fs.readFile(path.join(root, 'docs/STYLE.md'), 'utf8'), 'two spaces\n');
+  assert.deepEqual(
+    pulled.filter(r => r === 'docs/STYLE.md'), ['docs/STYLE.md'],
+    'pulled once, not once per @ line — the duplicate cost a round trip and byte budget too',
+  );
+  // And the entries the duplicates would have starved are all still admitted.
+  for (const rel of [
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]) {
+    assert.ok(
+      await fs.readFile(path.join(root, rel)).then(() => true, () => false),
+      `${rel} was not starved by the duplicates`,
+    );
+  }
+});
+
+// THE CONTROL for the test above: a tree with no duplicate import composes
+// exactly as it did before the dedupe existed — every entry present, each pulled
+// exactly once, nothing skipped. The dedupe collapses REPEATS of one rel and
+// nothing else.
+//
+// NOT CLAIMING byte-identity by re-running the old code, which would mean
+// reverting source; the claim is the shape — `pulled` is the nine allow-list and
+// import entries, once each, in the ranked order.
+test('two distinct @-imports are still two entries, each pulled once', async () => {
+  await seedTree(remote.root);
+  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(remote.root, 'docs/A.md'), 'a\n');
+  await fs.writeFile(path.join(remote.root, 'docs/B.md'), 'b\n');
+  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), '@CONVENTIONS.md\n@docs/B.md\n@docs/A.md\n');
+
+  const { pulled, skipped } = await compose();
+
+  assert.deepEqual(skipped, []);
+  assert.deepEqual(pulled, [
+    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
+    'docs/A.md', 'docs/B.md',
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]);
 });
 
 // PINS: the pinned files LEAD the listing, so they meet the total-bytes cap
