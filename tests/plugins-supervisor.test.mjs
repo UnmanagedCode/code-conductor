@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { mkdtemp } from './tmpRegistry.mjs';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createSupervisor } from '../src/plugins/supervisor.ts';
-import { allocatePort, pidAlive, waitForPort } from '../src/plugins/ports.ts';
+import { allocatePort, pidAlive, tcpOpen, waitForPort } from '../src/plugins/ports.ts';
 import { FAKE_PLUGIN_DIR, waitFor } from './plugin-helpers.mjs';
 import { hasMarker } from './procTree.mjs';
 
@@ -121,6 +124,83 @@ async function squat() {
   };
 }
 
+// A port NO AUTOMATIC ALLOCATOR ON THIS HOST CAN HAND OUT — the provenance the
+// "refuses connects" oracles below rest on.
+//
+// card 2026-0290 §2: three tests here allocate a port, release it, and then
+// assert that connects to it stay REFUSED. `allocatePort()` gets its port from
+// `listen(0)`, i.e. from the kernel's ephemeral range, and hands it straight
+// back on close — so any other `listen(0)` anywhere on the box can be given the
+// same number, at which point the connect succeeds and the oracle reports the
+// opposite of the truth. Caught in the wild: `bare-TCP readiness does not fire
+// before the port is actually bound` red in a gate row, with a live listener on
+// the port the supervisor's child had never bound.
+//
+// The invariant that closes it: the kernel only ever auto-assigns from
+// `ip_local_port_range`. Measured here, 60000 `allocatePort()` samples, 0
+// outside the range — and the pair of tests at the bottom of this file keeps
+// both halves of that honest. A port strictly BELOW the low bound can therefore
+// only be taken by something that names it explicitly, and nothing in this repo
+// does: the only fixed-port LITERALS in `tests/` are `45100` (the base of
+// `45100 + calls`), `45111` and `45222`, and every value they produce is handed
+// to a `_spawn: fakeSpawn` child that never binds and is never probed. Verified
+// rather than reasoned: with live listeners on 45100-45105, 45111 and 45222,
+// every test in this file still passes.
+//
+// It still BINDS to verify the port is free: a busy sub-ephemeral port would
+// make the oracle lie in the other direction. The bind-then-close window is not
+// the TOCTOU of `allocatePort()`, because nothing automatic can be handed this
+// number after the close.
+const EPHEMERAL_LO_FALLBACK = 32768;
+const PORT_RANGE_FILE = '/proc/sys/net/ipv4/ip_local_port_range';
+
+// The kernel's auto-assignment range, or null where /proc does not expose it.
+// ONE read path, so the helper below and the two tests that check its output
+// degrade together — a host where they disagree is a host where the fix holds
+// and the tests that prove it do not.
+//
+// `file` is a seam, and it exists for one reason: every branch below this line
+// is UNREACHABLE on a host with a well-formed /proc, so without it the guard
+// that decides what happens on every OTHER host is pinned by nothing that ever
+// runs. The tests at the foot of this file drive it with fixture ranges.
+function ephemeralRange(file = PORT_RANGE_FILE) {
+  try {
+    const [lo, hi] = readFileSync(file, 'utf8').trim().split(/\s+/).map(Number);
+    return Number.isInteger(lo) && Number.isInteger(hi) ? { lo, hi } : null;
+  } catch {
+    return null;
+  }
+}
+
+// The low bound actually in force, whatever it is. The fallback is reached ONLY
+// when the range is unreadable or unparseable — never to override a value the
+// host reported. A host tuned down to `lo = 1024` is the case that makes this
+// load-bearing: substituting 32768 there would draw ports from INSIDE the real
+// range and silently reinstate the defect this helper exists to remove. Where no
+// band exists below the reported bound, reservedPort() refuses instead.
+function ephemeralLow(file) {
+  return ephemeralRange(file)?.lo ?? EPHEMERAL_LO_FALLBACK;
+}
+
+function bindsFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once('error', () => resolve(false));
+    srv.listen(port, '127.0.0.1', () => srv.close(() => resolve(true)));
+  });
+}
+
+async function reservedPort(file) {
+  const lo = ephemeralLow(file);
+  const min = Math.min(10000, lo - 1);
+  if (min < 1024) throw new Error(`reservedPort: no usable range below ${lo}`);
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const port = min + Math.floor(Math.random() * (lo - min)); // [min, lo-1]
+    if (await bindsFree(port)) return port;
+  }
+  throw new Error(`reservedPort: no free port below ${lo} after 20 attempts`);
+}
+
 // A plain listener on a CHOSEN port that accepts and holds. Unlike squat() it
 // does not destroy on accept, because its callers need `tcpOpen` to observe a
 // clean successful connect; the socket set is the fail-path release valve.
@@ -220,7 +300,7 @@ test('bare-TCP readiness does not fire before the port is actually bound', async
   // alive without ever binding. The registry persists that `ready`, the proxy
   // routes to a dead port, and the UI shows it healthy. "Reaches ready
   // eventually" (the slow-binding test below) cannot see any of that.
-  const port = await allocatePort(); // allocated, then released: refuses connects
+  const port = await reservedPort(); // below the ephemeral range: refuses connects, and stays refused
   const sup = createSupervisor({ _settleMs: 0, _allocatePort: () => Promise.resolve(port) });
   const rec = await sup.start({
     id: 'fake-plugin',
@@ -426,7 +506,7 @@ test('readiness probing continues while the child is still alive', async () => {
 // live here rather than in a new file: this is where the coverage was lost.
 
 test('waitForPort keeps probing until its deadline before rejecting', async () => {
-  const port = await allocatePort(); // refuses connects
+  const port = await reservedPort(); // refuses connects, and stays refused
   const t0 = Date.now();
   await assert.rejects(
     () => waitForPort(port, { timeoutMs: 300, intervalMs: 20 }),
@@ -438,7 +518,7 @@ test('waitForPort keeps probing until its deadline before rejecting', async () =
 });
 
 test('waitForPort resolves on a port bound after earlier probes were refused', async () => {
-  const port = await allocatePort();
+  const port = await reservedPort();
   const settled = waitForPort(port, { timeoutMs: 5000, intervalMs: 20 })
     .then(() => 'resolved', (e) => `rejected: ${e.message}`);
   // Barrier: still unsettled after a window in which ~15 connects were refused,
@@ -579,4 +659,106 @@ test('stopAndWait refuses to signal anything that is not provably this run\'s', 
     real.kill('SIGKILL'); // idempotent; covers the fail paths above
     await waitFor(() => !pidAlive(real.pid));
   }
+});
+
+// ── the port provenance the "refuses connects" oracles rest on (card 2026-0290 §2) ──
+// Two halves of one invariant, each useless alone: the oracles' port must be
+// outside the band the kernel auto-assigns from, and that band must really be
+// where `allocatePort()` draws from. Split so a change to either side is named
+// by the assertion it breaks.
+
+// A host with no `/proc/sys/net/ipv4/ip_local_port_range` is one where these two
+// checks cannot run at all — `reservedPort()` still degrades to its fallback
+// bound there, but nothing can confirm it. Say so out loud rather than pass
+// vacuously: this is the shape tests/run.mjs uses for an absent /proc
+// ('guardrail: /proc unavailable — peak subprocess sampling skipped'), not a
+// silent skip.
+function announceNoRange(what) {
+  console.warn(`plugins-supervisor: ${PORT_RANGE_FILE} unavailable — ${what} went UNCHECKED on this host.`);
+}
+
+test('reservedPort() yields a free port strictly below the ephemeral range', async () => {
+  // Pins: the helper's port is (a) below `ip_local_port_range`'s low bound, so
+  // no `listen(0)` anywhere on the host can be handed it, and (b) actually free,
+  // so it really does refuse connects. NOT claiming it stays free against a
+  // process that binds that exact number deliberately — nothing here does.
+  const range = ephemeralRange();
+  if (!range) return announceNoRange("reservedPort()'s bound");
+  for (let i = 0; i < 10; i++) {
+    const port = await reservedPort();
+    assert.ok(port < range.lo, `reservedPort gave ${port}, inside the ephemeral range (${range.lo}+)`);
+    assert.ok(port >= 1024, `reservedPort gave ${port}, a privileged port`);
+    assert.equal(await tcpOpen(port), false, `reservedPort gave ${port}, which something is listening on`);
+  }
+});
+
+test('a sample of allocatePort() results all land inside the ephemeral range', async () => {
+  // Pins the kernel invariant the test above depends on: `listen(0)` assigns
+  // from `ip_local_port_range` and nowhere else, so "below lo" is genuinely out
+  // of reach of every automatic allocator on the box. A SAMPLE — 200 draws here,
+  // 60000 when the provenance was chosen — so this is evidence for that
+  // invariant, not a proof of it, and it is deliberately NOT a rate claim about
+  // how often a port gets stolen: the provenance change removes the need to
+  // measure that at all.
+  const range = ephemeralRange();
+  if (!range) return announceNoRange("allocatePort()'s draw band");
+  const outside = [];
+  for (let i = 0; i < 200; i++) {
+    const port = await allocatePort();
+    if (port < range.lo || port > range.hi) outside.push(port);
+  }
+  assert.deepEqual(outside, [], `allocatePort() escaped ${range.lo}..${range.hi}`);
+});
+
+// ── the host-dependent branches of the range reader (card 2026-0290 §5a) ─────
+// Everything below `ephemeralRange`'s try/catch is unreachable on a host with a
+// well-formed /proc, so these drive it through its `file` seam with fixture
+// ranges. Without them the guard that decides what happens on every OTHER host
+// is pinned by nothing that runs — and it is the guard a review had to fix.
+
+async function rangeFile(content) {
+  const dir = await mkdtemp('cc-portrange-');
+  const file = path.join(dir, 'ip_local_port_range');
+  if (content !== null) writeFileSync(file, content);
+  return file; // content === null => the file is absent, i.e. the unreadable path
+}
+
+test('a malformed or absent range reads as no range at all, never half of one', async () => {
+  // Pins: the reader is all-or-nothing. A partially-parseable line must not
+  // yield a range with a NaN in it — `lo` alone looks usable and would silently
+  // become the bound everything else is measured against. NOT claiming the
+  // fallback value is right for any particular host; only that a bad read
+  // reaches it instead of being trusted.
+  for (const content of ['32768\tnonsense\n', 'garbage\n', '\n', '', null]) {
+    const file = await rangeFile(content);
+    assert.equal(ephemeralRange(file), null, `parsed ${JSON.stringify(content)} as a range`);
+    assert.equal(ephemeralLow(file), EPHEMERAL_LO_FALLBACK);
+  }
+});
+
+test('a well-formed range is used as reported, never overridden by the fallback', async () => {
+  // Pins the defect a review caught: the guard used to discard any `lo` at or
+  // below 1024 and substitute 32768, which on a host tuned to `1024 60999` drew
+  // ports from INSIDE the real range — reinstating the steal this helper exists
+  // to remove. Every reported bound is now honoured, including the ones that
+  // leave no room.
+  for (const [lo, hi] of [[32768, 60999], [2000, 60999], [1024, 65535], [1025, 65535]]) {
+    const file = await rangeFile(`${lo}\t${hi}\n`);
+    assert.deepEqual(ephemeralRange(file), { lo, hi });
+    assert.equal(ephemeralLow(file), lo, `substituted a bound for the reported ${lo}`);
+  }
+});
+
+test('reservedPort() draws below the reported bound, and refuses when there is no band', async () => {
+  // Pins the consequence of the above at the only place it matters. A host with
+  // room gets a port under ITS bound, not under 32768; a host with none gets a
+  // named refusal rather than a port from inside the range. NOT claiming the
+  // drawn port stays free — see the note on the /proc-backed test above.
+  const roomy = await rangeFile('2000\t60999\n');
+  for (let i = 0; i < 5; i++) {
+    const port = await reservedPort(roomy);
+    assert.ok(port < 2000 && port >= 1024, `drew ${port}, not below the reported bound 2000`);
+  }
+  const airless = await rangeFile('1024\t65535\n');
+  await assert.rejects(() => reservedPort(airless), /no usable range below 1024/);
 });

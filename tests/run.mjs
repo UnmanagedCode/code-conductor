@@ -7,7 +7,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createSafeRoot, assertStoreIsolated, removeSafeRoot } from './safeStoreRoot.mjs';
+import { createSafeRoot, assertStoreIsolated, removeSafeRoot, pinGitConfig } from './safeStoreRoot.mjs';
 import { snapshot, countMatching, liveChildren, descendants, killTree, killDescendants, killPids,
          processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
@@ -34,6 +34,14 @@ process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
 // the one exported here, so a value seen by a child is always its own run's.
 const RUN_MARKER = path.basename(safeRoot.root); // mkdtemp'd, so unique per run
 process.env.CC_TEST_RUN_ID = RUN_MARKER;
+
+// Pin git's global config at a run-scoped file, HERE — before any test file
+// forks — so no repo the run creates inherits the developer's ~/.gitconfig or
+// git's automatic detached repack. See pinGitConfig in tests/safeStoreRoot.mjs
+// for what it disables and why the GIT_CONFIG_* env form does not close it
+// (card 2026-0290 §3); tests/git-maintenance-isolation.test.mjs is its
+// regression test.
+pinGitConfig(safeRoot.root);
 
 // Backstop: abort loudly if the resolved store still points into the real
 // workspace (env forced above, so this validates the default and catches a
