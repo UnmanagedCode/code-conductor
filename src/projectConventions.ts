@@ -58,6 +58,14 @@ export const deleteCustomConvention = catalog.deleteCustom;
 // facet (no fragment body) contribute nothing. Empty array → '' (no block).
 export const composeProjectConventionsBlock = catalog.compose;
 
+// The same composition, returning the catalog's `degraded` flag alongside the
+// text off the SAME read (card 2026-0277's `composeWithMeta`). The create path
+// takes this one because degradedness is a property of the document it is about
+// to commit: a degrade only ever OMITS entries, so the line-1 marker of a
+// project created over one records fewer slugs than the user asked for and no
+// later regeneration adds them back (card 2026-0282).
+export const composeProjectConventionsBlockWithMeta = catalog.composeWithMeta;
+
 // Resolves selected slugs against the catalog and composes the one-time setup
 // directives of those that carry a scaffold facet into a single orchestrator-
 // guidance block that `create_project` RETURNS (never persisted), for the
