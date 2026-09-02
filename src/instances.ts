@@ -1649,9 +1649,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // WITH: when the compose failed after the target check discarded the prior
   // root, the last-good root a warning would fall back on no longer exists, and
   // the worker would start with none of its project's implicit config surface.
-  // That REFUSES. Measured: with the check HOLDING, the prior root and its
-  // manifest survive every way the walk and the pull can fail, which is why this
-  // is keyed on the check and not on the failure (card 2026-0273).
+  // That REFUSES. Keyed on the CHECK and never on the failure: with the check
+  // HOLDING, no failure reaches the manifest (the pull writes it last), so the
+  // root that survives is still this project's own target's and warning is the
+  // right answer there (card 2026-0273).
   async _refreshSessionRoot(): Promise<void> {
     const placement = this._redirectPlacement;
     if (!placement) return;
@@ -1669,20 +1670,25 @@ export class Instance extends EventEmitter implements InstanceLike {
       // re-pulled somewhere this session will not look. Loud, because the
       // alternative is a worker whose CLAUDE.md silently vanished.
       //
-      // WHAT THIS LINE DELIBERATELY DOES NOT CLAIM, because none of it was
-      // measured: that cc did anything about the situation (it says the
-      // opposite); that the session is broken or must be killed — it describes
-      // the LOCATION, never the session's health, and the two mirror directions
-      // differ there (widening leaves this cwd present and config-less,
-      // narrowing leaves it not existing at all); or that the session's tools
-      // still work. The advertisement itself may be entirely correct.
+      // WHAT THIS LINE DELIBERATELY DOES NOT CLAIM: that cc did anything about
+      // the situation (it says the opposite); that the session is broken or must
+      // be killed — it describes the LOCATION, never the session's health, and
+      // the two mirror directions differ there (widening leaves this cwd present
+      // and config-less, narrowing leaves it not existing at all); that the
+      // session's tools still work; or that the advertisement is wrong, which it
+      // may well not be.
+      //
+      // AND IT NAMES NO FILE. The allow-list is what a config surface CAN hold,
+      // not what this project has: enumerating it here would assert the
+      // existence of files nobody looked for, and a project with no skills,
+      // commands or agents has no `.claude/` tree to have moved.
       if (cwd !== this.cwd) {
         this._emitUi({ kind: 'system', subtype: 'stderr', data: {
           line: `systems: '${placement.systemId}' now mirrors this project at ${cwd}, but this session `
-            + `is running in ${this.cwd}, which no longer holds its config surface — CLAUDE.md, `
-            + `CONVENTIONS.md and the .claude/ tree were pulled to the new location instead. cc has not `
-            + `moved this session and cannot: a NEW session on this project starts at the new location `
-            + `with its config surface, and this conversation cannot be carried there.`,
+            + `is running in ${this.cwd}, which no longer holds its config surface — that was pulled to `
+            + `the new location instead. cc has not moved this session and cannot: a NEW session on this `
+            + `project starts at the new location with its config surface, and this conversation cannot `
+            + `be carried there.`,
         } });
       }
     } catch (e) {
@@ -1692,14 +1698,21 @@ export class Instance extends EventEmitter implements InstanceLike {
       // THE ONE REFRESH FAILURE THAT IS FATAL — and the line above still runs
       // for it: the event stream is where an operator watching this session is
       // looking, and the throw only reaches whoever called the relaunch.
+      //
+      // NO REMEDY CLAUSE, deliberately. This fires for failures that clear on
+      // their own (a dropped transport) and for failures that will refuse
+      // identically forever until something moves on the system (a listing past
+      // the fence, a command the far side will not start), and it cannot tell
+      // them apart — that is the whole point of keying on the check. Wording
+      // advice per failure kind would put the classification back. `Cause:`
+      // carries whatever guidance the underlying refusal already wrote.
       if (composedRootWasDiscarded(e)) {
         throw httpError(
           502,
           `cannot relaunch this session: composing its session root from '${placement.systemId}' failed `
           + `after the target check had already discarded whatever earlier compose was there, so cc has no `
           + `complete config surface for this project at ${this.cwd} and will not start a worker on a `
-          + `partial one. Relaunch once the system answers again — the surface is re-pulled from scratch. `
-          + `Cause: ${(e as Error).message}`,
+          + `partial one. Cause: ${(e as Error).message}`,
           { code: 'SESSION_ROOT_DISCARDED' },
         );
       }

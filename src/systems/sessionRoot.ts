@@ -301,14 +301,20 @@ export async function composeSessionRoot({ system, systemId, systemPath, project
     return pullSessionRoot(placement, mirror, notes, prior);
   }
 
-  // THE ROOT IS GONE FROM HERE ON, and nothing below may be read as a fallback:
-  // it was pulled from a different target, and diffing against a manifest that
-  // describes another machine is precisely how the old target's bytes end up
-  // under the new target's paths. Anything that throws past this point therefore
-  // leaves no config surface to launch on — which is what the mark says, and
-  // what Instance._refreshSessionRoot refuses a relaunch for.
-  const fresh = await resetRoot(systemId, project, worktree);
+  // THE ROOT IS REJECTED FROM HERE ON, and nothing below may be read as a
+  // fallback: it was pulled from a different target, and diffing against a
+  // manifest that describes another machine is precisely how the old target's
+  // bytes end up under the new target's paths.
+  //
+  // THE REMOVAL IS INSIDE THE TRY, not before it. Both halves of a failed reset
+  // are states cc must not launch on and neither is distinguishable from the
+  // other by the time the error arrives: a removal that threw before deleting
+  // leaves the REJECTED target's whole surface sitting there looking like a
+  // last-good root, and one that threw after leaves a partial pull. So every
+  // throw from here on is marked, and Instance._refreshSessionRoot refuses the
+  // relaunch for it.
   try {
+    const fresh = await resetRoot(systemId, project, worktree);
     return await pullSessionRoot(placement, mirror, notes, fresh);
   } catch (e) {
     throw markDiscarded(e);
@@ -419,11 +425,15 @@ async function pullSessionRoot(
 //
 // Measured over four ways the walk and the pull can fail — the listing fence, a
 // `spawnError`, a transport death mid-walk, and a readFile failure mid-pull —
-// the target check is the whole discriminator: with it holding, the prior root
-// and its manifest survive every one of them intact; with it not holding, every
-// one of them leaves the root without a config surface. So this marks the
-// CHECK, not the failure (card 2026-0273) — and it cannot key on `statusCode`,
-// which the mid-pull failure does not carry.
+// the target check is the whole discriminator. With it NOT holding, every one
+// of them leaves the root without a config surface. With it HOLDING, none of
+// them touches the MANIFEST — `writeManifest` is the last statement of the pull
+// — so the next compose converges from it; the three that fail during the WALK
+// leave the prior root byte-identical, and one that fails during the PULL
+// leaves it partly re-pulled, from the SAME target, which is what makes warn-
+// and-carry-on right there. So this marks the CHECK, not the failure (card
+// 2026-0273) — and it cannot key on `statusCode`, which the mid-pull failure
+// does not carry.
 const DISCARDED = Symbol.for('cc.sessionRoot.discarded');
 
 // The OBJECT branch is every case that occurs today: every throw site reachable

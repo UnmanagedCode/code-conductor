@@ -177,5 +177,11 @@ describe('a mirror advertisement that changes under a running session', () => {
     // And the line says those two things rather than the two the card falsified.
     assert.ok(!/stale/.test(line), `the surface is absent here, not stale: ${line}`);
     assert.ok(!/Respawn the session/.test(line), `respawn does not move the session: ${line}`);
+    // And it names no allow-list file: the list is what a config surface CAN
+    // hold, and this fixture is one that has no `.claude/` tree at either
+    // location, so enumerating it would assert a file nobody looked for.
+    assert.ok(!/CLAUDE\.md|\.claude\//.test(line), `the line names a file it did not observe: ${line}`);
+    await assert.rejects(fs.readdir(path.join(movedTo, '.claude')),
+      'and this fixture really has no .claude/ tree at the new location');
   });
 });

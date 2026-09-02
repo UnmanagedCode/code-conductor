@@ -11,8 +11,15 @@
 // WHICH ENTRY POINTS THIS IS ABOUT. Everything through `_doCreate` composes
 // before `launch()` is reached and already refuses — a fresh spawn, a cold
 // resume, a resume after restart. What is exposed is a RELAUNCH IN PLACE:
-// respawn, rewind, prune recovery. The contrast is pinned here, in this file,
-// so the refusal below cannot be read as covering create.
+// respawn, rewind, prune recovery. The contrast with create is pinned here, in
+// this file, so the refusal below cannot be read as covering it.
+//
+// RESPAWN AND REWIND ARE BOTH DRIVEN; PRUNE RECOVERY IS A DECLARED GAP. The two
+// arms below reach the refusal through different callers — respawn's wrapper,
+// and rewind's bare `launch({})` — so neither one alone is what makes this pass.
+// Prune reaches the same single call site inside `launch()`, but driving it
+// needs a transcript its turn transform accepts, which the fake engine does not
+// write; it is asserted by nobody here.
 //
 // WHICH failure fires is tests/systems-session-root.test.mjs's business; the
 // mark is set by the target check and cannot tell them apart. This file injects
@@ -31,7 +38,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl, waitFor } from './helpers.mjs';
 import { seedRepo } from './remoteSystem.mjs';
 import { liveSystemProto } from './systemHandle.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -48,9 +55,9 @@ describe('a relaunch whose compose discarded the session root', () => {
   before(async () => { ctx = await bootServer(); ({ baseUrl, instances } = ctx); });
   after(async () => { await ctx.close(); });
 
-  let home, tree, mirrorFile, pidFile, inst;
+  let home, claudeProjectsRoot, tree, mirrorFile, pidFile, inst;
   beforeEach(async () => {
-    ({ home } = await freshProjectsRoot());
+    ({ home, claudeProjectsRoot } = await freshProjectsRoot());
     tree = await fs.realpath(await mkdtemp('cc-discard-tree-'));
     await seedRepo(tree);
 
@@ -151,6 +158,10 @@ describe('a relaunch whose compose discarded the session root', () => {
       (e) => {
         assert.equal(e.statusCode, 502, e.message);
         assert.equal(e.code, 'SESSION_ROOT_DISCARDED', e.message);
+        // The underlying refusal rides along: it is the only per-failure
+        // guidance the message carries, since the refusal itself cannot tell
+        // one failure kind from another and so promises no remedy.
+        assert.match(e.message, /refused: ENOENT/);
         return true;
       },
     )));
@@ -158,6 +169,32 @@ describe('a relaunch whose compose discarded the session root', () => {
     assert.equal(inst.proc, null, 'no worker was started');
     assert.ok(seen.some(l => l.includes('could not refresh the session root')),
       `the cause still reached the session's stream: ${JSON.stringify(seen)}`);
+  });
+
+  // PINS: rewind reaches the same refusal, through a different caller — bare
+  // `launch({})` rather than respawn's wrapper — and leaves no worker running.
+  // Rewinding to the first user message is the branch that relaunches with no
+  // resume target at all.
+  //
+  // NOT CLAIMING anything about the truncated transcript: rewind had already
+  // rewritten it before the relaunch was attempted, and recovering that is not
+  // this card's business. NOT CLAIMING prune recovery, which is the file
+  // header's declared gap.
+  test('rewind refuses the same way, through bare launch()', async () => {
+    // The transcript the CLI would have written, at the cwd this session runs
+    // in — the fake engine writes none, and rewind needs one user prompt.
+    await seedSessionJsonl(claudeProjectsRoot, inst.cwd, inst.backingSessionId);
+    await moveTheMirror();
+
+    await withFailingWalk(() => assert.rejects(
+      () => inst.rewindToUserMessage(0),
+      (e) => {
+        assert.equal(e.statusCode, 502, e.message);
+        assert.equal(e.code, 'SESSION_ROOT_DISCARDED', e.message);
+        return true;
+      },
+    ));
+    assert.equal(inst.proc, null, 'no worker was started');
   });
 
   // CONTRAST, green before and after this card. PINS: the create path refuses

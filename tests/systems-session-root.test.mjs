@@ -833,8 +833,11 @@ const dropManifest = (id) => fs.rm(`${sessionRootPath(id, 'app', null)}.manifest
 // manifest beside it. The failure is the REAL production fence firing on a real
 // flooded tree, not an injected one.
 //
-// NOT CLAIMING anything about the fence's value or its message — card 2026-0267
-// owns those, and this must stay green if that number ever moves.
+// NOT CLAIMING anything about the fence's value or its message: it asserts on
+// neither the number nor the text, which card 2026-0267 owns. It is NOT
+// independent of that value either — the flood is sized to cross the fence as it
+// stands, so raising the fence stops this fixture failing and the flood has to
+// be resized with it.
 test('a walk that fails after the target check did not hold marks the error and leaves no manifest', async () => {
   const id = 'discarded-fence';
   const { sandbox } = await lastGoodRootOnA(id);
@@ -878,6 +881,34 @@ test('the mark does not depend on how the walk failed', async () => {
       return true;
     });
   }
+});
+
+// PINS: the REMOVAL the target check performs is inside the marked region — a
+// reset that itself fails is marked like any other failure past the check, and
+// so refuses rather than warning. Without it the compose escapes unmarked and
+// the relaunch carries on over the rejected target's own bytes.
+//
+// Reached with a DIRECTORY where the manifest FILE belongs, so the unlink that
+// removes the manifest fails: deterministic, and independent of the uid the
+// suite runs as, which a chmod-based fault is not.
+//
+// NOT CLAIMING the other half of a failed reset — a fault on the session root's
+// own removal, which would throw before anything was deleted. This fixture
+// cannot reach it, and it is not pinned here.
+test('a reset that itself fails is marked too', async () => {
+  const id = 'discarded-reset';
+  const { sandbox } = await lastGoodRootOnA(id);
+  const mf = `${sessionRootPath(id, 'app', null)}.manifest.json`;
+  await fs.rm(mf, { force: true });
+  // readManifest reads this as an absent manifest, so the check does not hold
+  // and the reset runs; the reset's unlink then refuses it.
+  await fs.mkdir(mf);
+
+  await assert.rejects(() => composeOn(id, 'a', sandbox), (e) => {
+    assert.equal(composedRootWasDiscarded(e), true,
+      `the reset's own failure was not marked: ${e.message}`);
+    return true;
+  });
 });
 
 // CONTROL. PINS: the same three failures behind a target check that HELD are
