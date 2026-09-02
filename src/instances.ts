@@ -67,6 +67,7 @@ import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, res
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { composeSessionRoot, composedRootWasDiscarded, type ComposedSessionRoot } from './systems/sessionRoot.ts';
+import { mirrorOffsets } from './systems/mirror.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation,
   relocateSessionTranscripts, TranscriptRelocationError } from './transcript.ts';
@@ -3832,6 +3833,112 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 }
 
+// A COLD RESUME FOLLOWING A MIRROR ADVERTISEMENT THAT MOVED WHILE THIS SESSION
+// WAS NOT RUNNING — the create path's half of card 2026-0279.
+//
+// 0279 moves a session at RELAUNCH IN PLACE, where an Instance already exists
+// and its `cwd` is the thing that is wrong (`Instance._followGeometry`). Here
+// there is no instance: `cwd` comes from the compose in the caller and is
+// already right, and what is in the wrong place is the TRANSCRIPT — the CLI
+// keys its transcript directory off `getcwd()`. So this assigns nothing,
+// retargets nothing and rebuilds nothing. It moves files and reports whether it
+// did (card 2026-0287).
+//
+// THE PRIOR CWD IS DERIVED PER SESSION, NEVER FROM THE MANIFEST. The
+// `.manifest.json` sidecar is shared by every session on one
+// `(system, project, worktree)` and the first create after a move rewrites it,
+// so a manifest-derived prior cwd recovers the FIRST session on an image root
+// and leaves every later one permanently un-resumable — measured, two sessions
+// on one root restore 1 of 2 that way and 2 of 2 this way
+// (tests/systems-mirror-geometry-cold-resume.test.mjs). It is also why nothing
+// here reads the manifest at all, so deleting it changes no outcome.
+//
+// THE CANDIDATE SET IS COMPLETE, and the loop below may stop at its first hit
+// whatever order the candidates come in — because at most one candidate answers
+// the probe for one id. That is a CONDITIONAL state invariant, not a property of
+// the set: it rests on cc relocating a whole lineage out of a single source, and
+// on the 404 gate this whole function sits behind keeping the scan out of the
+// one violating state that would cost a live transcript. Both facts, both
+// halves and their limits are on `mirrorOffsets`; the gate arm in
+// tests/systems-mirror-geometry-cold-resume.test.mjs is what catches a widening
+// of the gate.
+//
+// THE GEOMETRY CLASS IS NOT A DISCRIMINATOR HERE, unlike on 0279's path: the
+// transcripts live under `claudeProjectsRoot()`, which `resetRoot` never
+// touches, so whether the prior cwd still exists makes no difference to what
+// this has to find or move.
+async function followGeometryOnResume({ systemId, systemPath, root, cwd, backingId, publicId }: {
+  systemId: string; systemPath: string; root: string; cwd: string;
+  backingId: string; publicId: string | null;
+}): Promise<boolean> {
+  let from: string | null = null;
+  for (const offset of mirrorOffsets(systemPath)) {
+    const candidate = path.join(root, offset);
+    // NO same-destination guard, and it is unreachable rather than omitted: the
+    // caller reached here BECAUSE `cwd` holds no resumable conversation for this
+    // id, and `cwd` is itself one of these candidates — so the hit can never be
+    // `cwd` and `from === to` cannot arise. (`relocateSessionTranscripts` omits
+    // the equivalent guard as unreachable too, but by ITS own argument about two
+    // composed cwds — not by this one, which is the gate.)
+    if (await hasResumableConversation({ cwd: candidate, sessionId: backingId })) { from = candidate; break; }
+  }
+  if (from === null) return false;
+  // THE WHOLE LINEAGE, not just the id the resume resolved to: a renewed
+  // session's history is spread across its segments, and moving only the
+  // current one leaves an older segment at the geometry the session no longer
+  // runs at. Same rule `_followGeometry` applies to `this._segments`.
+  const ids = publicId === null
+    ? [backingId]
+    : [...new Set([...(await segmentsFor(publicId)).map(s => s.id), backingId])];
+  try {
+    await relocateSessionTranscripts({ from, to: cwd, sessionIds: ids });
+  } catch (e) {
+    // THE COMPLETENESS CLAIM IS DERIVED, never asserted — the same three
+    // branches, for the same reason, as `_followGeometry`'s refusal: what cc
+    // says about this session's history comes from what the rollback achieved.
+    // What is UNCONDITIONAL is the other half: this runs before the Instance
+    // constructor, so no worker was started and no session was registered, and
+    // a caller's follow-up sees exactly the state it saw before the call.
+    const failure = e instanceof TranscriptRelocationError ? e : null;
+    const stranded = failure?.stranded ?? [];
+    const detail = stranded.length > 0
+      ? `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
+        + `${from} and ${cwd}.`
+      : failure?.code === 'ENOENT'
+        ? `A source file disappeared while cc was moving it, so this session's history may no longer be `
+          + `complete at ${from}. Everything cc did move was put back.`
+        : `Nothing was moved: this session's history is still complete at ${from}.`;
+    throw httpError(
+      502,
+      `cannot resume this session: '${systemId}' now mirrors this project at ${cwd}, so cc must move `
+      + `this session's transcript there from ${from}, and that failed. ${detail} No worker was started `
+      + `and no session was registered. Cause: ${(e as Error).message}`,
+      { code: 'SESSION_MOVE_FAILED' },
+    );
+  }
+  // WHAT THE `true` MEANS: this session is resumable at `cwd` — VERIFIED, not
+  // inferred from having called the relocation. `relocateSessionTranscripts`
+  // treats a source that is not there as success and writes nothing, so a
+  // transcript deleted between the probe above and its own existence re-check
+  // would otherwise have this claim a move it did not make, and the caller
+  // launch a worker with no conversation instead of refusing. Re-asking the
+  // caller's own question is what turns that into the caller's own 404, and it
+  // closes a CLASS rather than one race: any reason the relocation silently
+  // moves nothing now degrades honestly.
+  //
+  // UNKILLABLE BY CONSTRUCTION from outside this function — the same class as
+  // `_followGeometry`'s ENOENT wording branch, and for the same reason:
+  // reaching it needs a source deleted inside the microseconds between the
+  // probe hit and the rename's own scan, and that gap cannot be widened without
+  // perturbing the primitive.
+  //
+  // AND IT DOES NOT CLAIM THAT NOTHING MOVED. An older segment still present at
+  // `from` can have been relocated before the current one was found missing, so
+  // a `false` from here says only what the call tests: whether `cwd` now
+  // answers to this id.
+  return await hasResumableConversation({ cwd, sessionId: backingId });
+}
+
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
   _claudeLauncher: LauncherLike;
@@ -4527,7 +4634,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
 
     // Resume pre-flight: refuse a resume id that has no resumable conversation
-    // at the resolved cwd BEFORE constructing an Instance or spawning. The
+    // at the resolved cwd — unless the recovery inside finds this session at
+    // another geometry — BEFORE constructing an Instance or spawning. The
     // earlier findSessionLocation net (above) only runs when the caller left
     // worktree undefined; a caller that pins project+worktree (e.g. an MCP
     // conductor retrying a mistyped sessionId) skips it, and would otherwise
@@ -4535,10 +4643,30 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // crash, repeatably. Bailing here means no phantom crashed Instance is
     // registered, so a follow-up respawn_instance also soft-refuses cleanly.
     if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
-      throw Object.assign(
-        new Error(`no resumable conversation for session ${resume} in ${cwd}`),
-        { statusCode: 404, code: 'SESSION_UNKNOWN' },
-      );
+      // BEFORE REFUSING, and on a remote project only. The gate above tested
+      // exactly one thing — that `cwd` holds no resumable conversation for this
+      // id — and a mirror advertisement that MOVED while this session was not
+      // running is one reason for that answer, alongside a bogus id and a
+      // session that has no conversation yet. So look for this session at the
+      // other cwds its geometry could have produced before refusing: that is
+      // what makes a cold resume — after an orchestrator restart, or of a
+      // session that is simply no longer running — survive a move the live
+      // relaunch path already survives (card 2026-0279 → card 2026-0287).
+      // Finding nothing leaves this refusal, and its message, exactly as they
+      // were.
+      const placement = redirectPlacement;
+      const composed = composedMirror;
+      const followed = placement !== null && composed !== null
+        && await followGeometryOnResume({
+          systemId: placement.systemId, systemPath: placement.systemPath,
+          root: composed.root, cwd, backingId: resume, publicId,
+        });
+      if (!followed) {
+        throw Object.assign(
+          new Error(`no resumable conversation for session ${resume} in ${cwd}`),
+          { statusCode: 404, code: 'SESSION_UNKNOWN' },
+        );
+      }
     }
 
     // On resume without an explicit model, recover the model the session
