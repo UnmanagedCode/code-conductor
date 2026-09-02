@@ -175,6 +175,42 @@ describe('a mirror wider than the project', () => {
     assert.ok(seen.size >= 7, 'the fixture really exercised the map');
   });
 
+  // PINS `SessionRedirect.retarget`, the ONE way a live session's geometry
+  // changes (card 2026-0279): the prefix rule moves to the new mirror root and
+  // the project root moves with the new offset, while the IMAGE root — which
+  // `sessionRootPath` keys on project/worktree only — does not move at all. A
+  // system path that was addressable before is still addressable after, at the
+  // local path the new geometry gives it.
+  //
+  // NOT CLAIMING that the local BYTES survived: `resetRoot` deletes the whole
+  // image root before a real retarget runs, and the bridge pulls before every
+  // op. NOT CLAIMING anything about the far-side shells — they run at
+  // `systemPath`, which does not move, and `retarget` does not touch them.
+  test('retarget moves the prefix rule, and a path that was addressable stays addressable', async () => {
+    const wasLocal = inImage('app/main.js');
+    const systemPath = redirect.map.toSystem(wasLocal);
+    assert.equal(systemPath, path.join(project, 'main.js'));
+    assert.equal(redirect.projectRoot, inImage('app'));
+
+    // The narrowing an advertisement that stops mirroring the shared box would
+    // produce: same image root, mirror root now the project itself, offset ''.
+    redirect.retarget(image, { mirrorRoot: project, exclude: [], offset: '' });
+
+    assert.equal(redirect.map.root, image, 'the image root moved');
+    assert.equal(redirect.map.mirrorRoot, project);
+    assert.equal(redirect.projectRoot, image, 'the project is now the image root itself');
+    assert.equal(redirect.map.toLocal(systemPath), inImage('main.js'),
+      'the same system path is not addressable under the new geometry');
+    assert.equal(redirect.map.toSystem(inImage('main.js')), systemPath, 'and the round trip still holds');
+    // The out-of-project sibling is outside the narrowed mirror, so it is no
+    // longer addressable — the new geometry is narrower, and says so.
+    assert.equal(redirect.map.toLocal(path.join(box, 'etc', 'config.toml')), null);
+    // And the exclude list comes from the SAME advertisement as the root: two
+    // sources for one scope is how a boundary gets decided two different ways.
+    redirect.retarget(image, { mirrorRoot: box, exclude: [path.join(box, 'etc')], offset: 'app' });
+    assert.equal(redirect.map.classify(inImage('etc/config.toml')).kind, 'excluded');
+  });
+
   // PINS: the project's OWN files still work exactly as before under a wider
   // mirror — the widening adds reach, it does not move the project.
   //

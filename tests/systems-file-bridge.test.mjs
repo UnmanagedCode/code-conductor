@@ -188,3 +188,51 @@ test('the bridge refuses an excluded path in both directions, naming the prefix'
   // And no local copy of the excluded file was created on the way to refusing.
   await assert.rejects(fs.readFile(local), 'nothing was written locally');
 });
+
+// PINS `FileBridge.retarget` (card 2026-0279): when a mirror advertisement moves
+// under a live session, EVERY key in the bridge's sticky state is a LOCAL path
+// and every local path changes. A retarget that only swapped the map would
+// silently forget a "your write never landed" refusal and let the next Write
+// through, so the keys are carried across through the SYSTEM path — the thing
+// that did not move.
+//
+// And an entry the NEW geometry cannot address is DROPPED rather than kept under
+// a stale key: a marker no `classify` can ever reach again is a leak that grows
+// for the life of the session.
+//
+// NOT CLAIMING that the local bytes survived — `resetRoot` deletes the whole
+// image root before a real retarget runs. What survives is the REFUSAL, which is
+// the part the worker needs. NOT CLAIMING anything about the recorded file modes
+// travelling with it; they are carried by the same loop and are not observable
+// through this surface.
+test('retarget carries a divergence marker to its new local path, and drops one the new geometry cannot address', async () => {
+  await seed('app/main.js', 'SYSTEM-SIDE-APP\n');
+  await seed('etc/config.toml', 'SYSTEM-SIDE-ETC\n');
+  await bridge.pull(inSession('app/main.js'));
+  await bridge.pull(inSession('etc/config.toml'));
+  await fs.writeFile(inSession('app/main.js'), 'local edit\n');
+  await fs.writeFile(inSession('etc/config.toml'), 'local edit\n');
+
+  // Both pushes fail the established way: the parent becomes a FILE on the
+  // system, so creating the temp file under it is ENOTDIR.
+  for (const dir of ['app', 'etc']) {
+    await fs.rm(onSystem(dir), { recursive: true });
+    await fs.writeFile(onSystem(dir), 'not a directory\n');
+  }
+  await assert.rejects(() => bridge.push(inSession('app/main.js')));
+  await assert.rejects(() => bridge.push(inSession('etc/config.toml')));
+  assert.equal(bridge.isDirty(inSession('app/main.js')), true);
+  const reason = bridge.dirtyReason(inSession('etc/config.toml'));
+  assert.ok(reason, 'the out-of-project path diverged too');
+
+  // The narrowing: the mirror root becomes the project, so `app/main.js` keeps a
+  // counterpart one level up and `etc/config.toml` loses one entirely.
+  const next = new SessionPathMap(root, onSystem('app'));
+  bridge.retarget(next, map);
+
+  assert.equal(bridge.isDirty(inSession('main.js')), true, 'the refusal did not follow the path it guards');
+  assert.match(bridge.dirtyReason(inSession('main.js')), /app\/main\.js/, 'and it still names the system file');
+  assert.equal(bridge.isDirty(inSession('app/main.js')), false, 'the marker was left under its stale key');
+  assert.equal(bridge.isDirty(inSession('etc/config.toml')), false,
+    'a marker the new geometry can never reach again was kept');
+});

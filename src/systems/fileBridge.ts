@@ -41,7 +41,7 @@ export type PullOutcome =
 
 export class FileBridge {
   readonly #system: System;
-  readonly #map: SessionPathMap;
+  #map: SessionPathMap;
   // Local path → why it diverged. Set by a failed push, cleared by a pull that
   // resyncs the local copy from the system.
   readonly #diverged = new Map<string, string>();
@@ -57,6 +57,35 @@ export class FileBridge {
 
   isDirty(localPath: string): boolean { return this.#diverged.has(localPath); }
   dirtyReason(localPath: string): string | null { return this.#diverged.get(localPath) ?? null; }
+
+  // THE GEOMETRY MOVED. Every key in the two maps below is a LOCAL path, and a
+  // mirror advertisement that moves changes every one of them — so a retarget
+  // that only swapped the map would silently forget a "your write never landed"
+  // refusal and let the next Write through. Keys are carried across through the
+  // SYSTEM path, which is what did not move: old local → system → new local.
+  //
+  // An entry the new geometry does not address is DROPPED rather than kept under
+  // a stale key: a marker no `classify` can ever reach again is a leak that
+  // grows for the life of the session.
+  //
+  // NOT a claim that the local bytes survived — `resetRoot` deleted the whole
+  // image root before this runs. What survives is the REFUSAL, which is the part
+  // the worker needs (card 2026-0279).
+  retarget(next: SessionPathMap, prev: SessionPathMap): void {
+    const move = <T>(m: Map<string, T>): void => {
+      const out = new Map<string, T>();
+      for (const [local, v] of m) {
+        const sys = prev.toSystem(local);
+        const to = sys === null ? null : next.toLocal(sys);
+        if (to !== null) out.set(to, v);
+      }
+      m.clear();
+      for (const [k, v] of out) m.set(k, v);
+    };
+    move(this.#diverged);
+    move(this.#modes);
+    this.#map = next;
+  }
 
   // Materialise the system's copy at `localPath`. Absence DELETES any local
   // copy: a stale one is the boundary leak that makes Read answer about a file
