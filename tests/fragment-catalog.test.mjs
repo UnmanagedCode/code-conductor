@@ -138,3 +138,44 @@ test('a malformed rule in the store JSON is coerced, not concatenated into markd
     assert.equal(await catalog.compose(['x']), '');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+// composeWithMeta is the ONE implementation: compose() is its `.text`. The
+// degraded half is lifted off the same getCatalog() the compose already makes,
+// so it mirrors the catalog's own flag — the read the conductor role doc needs
+// to tell an established absence from an unvouchable one (card 2026-0277).
+//
+// PINS: text equality with compose() for the same slugs (so nothing about the
+// composed bytes moved), and `.degraded` equal to getCatalog().degraded across
+// all three provider shapes — healthy, throwing, absent.
+//
+// NOT CLAIMING: that compose() is IMPLEMENTED BY delegation — a duplicated but
+// correct body is indistinguishable from here, and single-implementation is a
+// property of the diff, not of the behaviour.
+test('composeWithMeta returns compose()\'s exact text plus the catalog\'s degraded flag', async () => {
+  const { dir } = await mkFixture();
+  const seedDir = path.join(dir, 'seeds');
+  const mk = (extraProvider) => createFragmentCatalog({
+    seeds: [{ slug: 'foo', name: 'Foo', description: 'the foo' }],
+    seedDir,
+    storeFile: () => path.join(dir, `store-${Math.random().toString(36).slice(2)}.json`),
+    noun: 'thing',
+    extraProvider,
+  });
+  try {
+    for (const [label, extraProvider] of [
+      ['no provider at all', null],
+      ['a healthy provider', async () => [{ slug: 'p/x', name: 'X', description: 'd', body: '## X' }]],
+      ['a throwing provider', async () => { throw new Error('boom'); }],
+    ]) {
+      const catalog = mk(extraProvider);
+      const meta = await catalog.composeWithMeta(['foo']);
+      assert.equal(meta.text, await catalog.compose(['foo']), `${label}: text equals compose()`);
+      assert.equal(meta.text, '\n## Foo\n- foo body\n', `${label}: and it is the same byte shape as ever`);
+      assert.equal(meta.degraded, (await catalog.getCatalog()).degraded,
+        `${label}: degraded mirrors the catalog's own flag`);
+      // Both early returns carry the shape, and the 400 still fires from here.
+      assert.deepEqual(await catalog.composeWithMeta([]), { text: '', degraded: false }, `${label}: empty slugs`);
+      await expectStatus(() => catalog.composeWithMeta(['nope']), 400);
+    }
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
