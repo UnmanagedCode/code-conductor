@@ -5,7 +5,7 @@ import type { Server } from 'node:http';
 import { WebSocket } from 'ws';
 import type { WebSocketServer } from 'ws';
 import {
-  listProjects, createProject, adoptProject, listSessions, listSessionsForCwd,
+  listProjects, adoptProject, listSessions, listSessionsForCwd,
   summarizeSessions, deleteProject, deleteSessionForCwd, archiveSessionForCwd,
   listArchivedGroupedByProject, getProject, getProjectForDelete, tryResolveProject,
   findSessionLocation, writeProjectMeta, projectsBySystem, setProjectRemote,
@@ -77,12 +77,11 @@ import { getCostSummary, getSessionStats } from './costTracking.ts';
 import { isArchived, unmarkArchived } from './archivedSessions.ts';
 import {
   getCatalog as getProjectConventionsCatalog,
-  composeProjectScaffold,
   addCustomConvention as addProjectConvention,
   updateCustomConvention as updateProjectConvention,
   deleteCustomConvention as deleteProjectConvention,
 } from './projectConventions.ts';
-import { composeProjectConventionsDoc, placementDisclosure, regenerateAllProjectConventions } from './projectClaudeMd.ts';
+import { regenerateAllProjectConventions } from './projectClaudeMd.ts';
 import {
   CORE_META as CONDUCT_CORE_META,
   getCatalog as getConductorConventionsCatalog,
@@ -97,9 +96,13 @@ import {
   setDefaultPlaybookEnforcement,
   type DefaultPlaybookSelection,
 } from './conductorConventions.ts';
-// The catalog read the Settings picker lists — the same one the MCP tool
-// answers with, imported rather than reimplemented per surface.
-import { listPlaybooks } from './mcp/handlers.ts';
+// Two shared implementations, imported rather than reimplemented per surface:
+// `listPlaybooks` is the catalog read the Settings picker lists, and
+// `createProject` is the whole create sequence `POST /projects` delegates to
+// (compose the document, compose the scaffold, create, warn on a degraded
+// catalog — card 2026-0282). Note `createProject` here is the HANDLER, not
+// `src/projects.ts`'s filesystem-level one it wraps.
+import { listPlaybooks, createProject } from './mcp/handlers.ts';
 import {
   CORE_META as WORKSPACE_CORE_META,
   getCatalog as getWorkspaceConventionsCatalog,
@@ -497,17 +500,23 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         throw httpError(400, 'conventions must be an array of slug strings');
       }
       const slugs = (conventions ?? []) as string[];
-      // Seeded with the placement disclosure when the project is being created
-      // ON a system, so its first worker's prompt carries it without waiting
-      // for a regeneration sweep.
-      const conventionsDoc = await composeProjectConventionsDoc(slugs, {
-        system: placementDisclosure(system, systemPath),
-      });
-      const scaffold = await composeProjectScaffold(validName, slugs);
-      const created = await createProject(validName, { conventionsDoc, system, remoteId, systemPath });
+      // ONE implementation of the create sequence, shared with the MCP tool
+      // (card 2026-0282). It composes the conventions document — seeded with
+      // the placement disclosure when the project is being created ON a system,
+      // so its first worker's prompt carries it without waiting for a
+      // regeneration sweep — composes the scaffold directive, creates the
+      // project, and then, ON SUCCESS ONLY, warns the operator once when the
+      // convention catalog was degraded. The two name refusals above stay HERE and stay FIRST: they
+      // are the web surface's own contract, and `validateName` returns its
+      // argument unchanged so `validName === name`. The 201 body is the
+      // handler's return verbatim, as it was before the delegation.
+      //
       // Scaffold directive is returned (not persisted) — the caller folds it
       // into the first worker brief. See conventions/conductor/core.md.
-      res.status(201).json({ ...created, ...(scaffold ? { scaffold } : {}) });
+      const created = await createProject({
+        name: validName, conventions: slugs, system, remoteId, systemPath,
+      });
+      res.status(201).json(created);
     } catch (e) { next(e); }
   });
 
@@ -2016,6 +2025,15 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // conventions still refresh, and the missing one is named in the file (see
   // `src/projectClaudeMd.ts`); `{ log: console }` also surfaces every declined-
   // write case in the server log (docs/architecture.md).
+  //
+  // This route deliberately does NOT carry the catalog's `degraded` flag — the
+  // MCP `list_project_conventions` / `list_conductor_conventions` tools do
+  // (card 2026-0282). `res.json` is a `JSON.stringify`, which drops a
+  // CatalogList's own `degraded` property just as `.map()` does, so the flag
+  // does not reach the new-project dialog and the dialog therefore renders a
+  // short catalog exactly like a complete one. The fix on this surface is a
+  // dialog affordance for a human picker rather than a bare field, and is
+  // carded separately.
   r.get('/settings/conventions/project', async (req, res, next) => {
     try { res.json({ conventions: await getProjectConventionsCatalog() }); } catch (e) { next(e); }
   });
@@ -2062,6 +2080,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
   // which the same page's Preferred-playbook picker consumes: the selected
   // playbook is rendered into the conductor's prompt as a generated convention
   // (src/playbookConvention.ts).
+  //
+  // Like its project-scope twin above, this route deliberately does NOT carry
+  // the catalog's `degraded` flag — the MCP `list_conductor_conventions` tool
+  // does (card 2026-0282). `res.json` is a `JSON.stringify`, which drops a
+  // CatalogList's own `degraded` property, so the Settings panel renders a
+  // catalog missing an unreachable plugin's conventions exactly like a complete
+  // one. Deferred by decision and carded separately: this is a read-only view
+  // and nothing is committed from it.
   r.get('/settings/conventions/conductor', async (req, res, next) => {
     try {
       const [conventions, enabled, catalog, defaultPlaybook, defaultPlaybookEnforcement] = await Promise.all([

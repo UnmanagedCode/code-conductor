@@ -300,10 +300,14 @@ test('list_project_conventions MCP tool returns seeds (no body field)', async ()
   const tools = buildTools();
   const tool = tools.find(t => t.name === 'list_project_conventions');
   assert.ok(tool, 'list_project_conventions tool registered');
+  // `{conventions}` since card 2026-0282: the result is an object so the
+  // catalog's `degraded` flag can ride along as `incomplete` (which a healthy
+  // catalog omits entirely — see tests/conventions-listing-degrade.test.mjs).
   const result = await tool.handler({}, { instances });
-  assert.ok(Array.isArray(result));
-  assert.equal(result.length, SEED_PROJECT_CONVENTIONS.length);
-  for (const r of result) {
+  assert.deepEqual(Object.keys(result), ['conventions'], 'healthy: conventions only, no incomplete');
+  assert.ok(Array.isArray(result.conventions));
+  assert.equal(result.conventions.length, SEED_PROJECT_CONVENTIONS.length);
+  for (const r of result.conventions) {
     assert.ok(r.slug);
     assert.ok(r.name);
     assert.ok(r.description);
@@ -318,8 +322,8 @@ test('list_project_conventions reflects a newly added custom convention', async 
   const tools = buildTools();
   const tool = tools.find(t => t.name === 'list_project_conventions');
   const result = await tool.handler({}, { instances });
-  assert.ok(Array.isArray(result));
-  const custom = result.find(r => r.slug === 'mcp-custom');
+  assert.ok(Array.isArray(result.conventions));
+  const custom = result.conventions.find(r => r.slug === 'mcp-custom');
   assert.ok(custom);
   assert.equal(custom.builtin, false);
 });
@@ -410,7 +414,7 @@ test('list_project_conventions carries hasScaffold', async () => {
   const { buildTools } = await import('../src/mcp/tools.ts');
   const tool = buildTools().find(t => t.name === 'list_project_conventions');
   const list = await tool.handler({}, { instances });
-  const bySlug = Object.fromEntries(list.map(e => [e.slug, e]));
+  const bySlug = Object.fromEntries(list.conventions.map(e => [e.slug, e]));
   assert.equal(bySlug['playwright-harness/harness-wrapper'].hasScaffold, true);
   assert.equal(bySlug['playwright-harness/seed-config'].hasScaffold, true);
   assert.equal(bySlug['playwright-harness/plain'].hasScaffold, false);

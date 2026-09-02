@@ -42,7 +42,7 @@ import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
-import { composeProjectConventionsDoc, placementDisclosure } from '../projectClaudeMd.ts';
+import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
@@ -1878,14 +1878,40 @@ export async function setProjectRemote(
 
 // ---------- create / introspect ----------
 
+// The placement triple is typed `unknown`, matching `fsCreateProject` and
+// `placementDisclosure`: both surfaces take these straight off a request body
+// (`POST /api/projects` delegates here) and `validatePlacementInput` is what
+// narrows them — a `string | undefined` here would be a claim neither caller
+// can make.
 export async function createProject({ name, conventions = [], system, remoteId, systemPath }: {
-  name: string; conventions?: string[]; system?: string; remoteId?: string; systemPath?: string;
+  name: string; conventions?: string[]; system?: unknown; remoteId?: unknown; systemPath?: unknown;
 }) {
-  const conventionsDoc = await composeProjectConventionsDoc(conventions, {
+  const { text: conventionsDoc, degraded } = await composeProjectConventionsDocWithMeta(conventions, {
     system: placementDisclosure(system, systemPath),
   });
   const scaffold = await composeProjectScaffold(name, conventions);
   const created = await fsCreateProject(name, { conventionsDoc, system, remoteId, systemPath });
+  // ONE line per creation, outside every loop, on the single flag — a per-entry
+  // line would be N lines per event, which is the class card 2026-0281 landed.
+  // AFTER the create succeeds, because the marker clause names an artifact only
+  // a successful create produces: a refusal from `fsCreateProject` (409
+  // duplicate, 502 unreachable placement) writes no `CONVENTIONS.md` at all, so
+  // a line naming "its CONVENTIONS.md marker" would send an operator looking for
+  // a file that does not exist.
+  // It names the PROJECT because that is the only identifier available: the
+  // flag carries no cause, and the lost plugin slug is unreachable from here
+  // (the catalog's extraProvider is opaque and never reports what failed).
+  // A `may`, because the flag fans out to every convention scope and so fires
+  // even when the project scope lost nothing (card 2026-0282 §2, the no-loss
+  // arm). No remedy, because the two degrade sources clear differently — a
+  // compose-sourced one by itself, a scan-sourced one only via Rescan or
+  // disabling the plugin — and the flag cannot tell them apart.
+  // Create-only on purpose: `ensureProjectConventionsMd`'s regeneration sweep
+  // reaches the same composition once per project and would emit a line for
+  // every project a degrade cannot possibly have touched.
+  if (degraded) {
+    console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker, and no later regeneration adds them back; a one-time scaffold directive may not have been emitted at all, and nothing reissues one`);
+  }
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
@@ -1897,17 +1923,52 @@ export async function adoptProject({ name, path: targetPath, system, remoteId }:
   return fsAdoptProject(name, targetPath, { system, remoteId });
 }
 
+// Both listings return an OBJECT, not the bare array, so the catalog's
+// `degraded` flag can ride along: `Array.prototype.map` does not carry an
+// array's own property, and neither does `JSON.stringify` — which is exactly
+// what the tools/call dispatcher applies to a non-text result
+// (src/mcp/server.ts). So the flag was dropped twice over, and a conductor read
+// a short list during an outage as the complete one (card 2026-0282).
+//
+// `incomplete` is PRESENT ONLY WHEN DEGRADED — its presence is the signal, so a
+// healthy result is the array it always was under one new key and the tool
+// descriptions (system-prompt text, paid every session) stay unchanged. The
+// `{conventions, …}` shape follows `list_playbooks`' `{playbooks, errors}`.
+//
+// ONE SENTENCE PER SURFACE, deliberately not a shared constant: the two are
+// independent messages, each read alone, and only one of them is about
+// something committed. `degraded === true` rather than a truthiness test
+// because getCatalog() always sets the property (src/fragmentCatalog.ts).
+//
+// Neither sentence may assert that anything IS missing: the flag fans out to
+// every convention scope and carries no cause, so it fires on this surface for
+// an outage that cost this surface nothing. A leading "may" is not enough — it
+// governs only the clause it opens — so the consequence clause is phrased
+// CONDITIONALLY on the loss ("whatever is missing here…"), which is vacuous in
+// the no-loss arm instead of false in it.
 export async function listProjectConventions() {
   const catalog = await getProjectConventionsCatalog();
-  return catalog.map(({ slug, name, description, builtin, scaffold }) => ({ slug, name, description, builtin, hasScaffold: !!scaffold }));
+  const conventions = catalog.map(({ slug, name, description, builtin, scaffold }) => ({ slug, name, description, builtin, hasScaffold: !!scaffold }));
+  return catalog.degraded === true
+    ? {
+      conventions,
+      incomplete: "May be incomplete — cc could not read a plugin's conventions and cannot tell those apart from conventions that are absent; whatever is missing here cannot appear in the line-1 CONVENTIONS.md marker of a project created from this list either, and no later regeneration adds it back.",
+    }
+    : { conventions };
 }
 
 export async function listConductorConventions() {
   const [catalog, enabled] = await Promise.all([getConductorConventionsCatalog(), getConductorSelection()]);
   const on = new Set(enabled);
-  return catalog.map(({ slug, name, description, builtin }) => ({
+  const conventions = catalog.map(({ slug, name, description, builtin }) => ({
     slug, name, description, builtin, enabled: on.has(slug),
   }));
+  return catalog.degraded === true
+    ? {
+      conventions,
+      incomplete: "May be incomplete — cc could not read a plugin's conventions and cannot tell those apart from conventions that are absent; nothing here is committed, because the conductor role document is recomposed from this catalog on every spawn.",
+    }
+    : { conventions };
 }
 
 // reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /

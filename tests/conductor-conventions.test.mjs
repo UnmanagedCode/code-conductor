@@ -253,10 +253,14 @@ test('list_conductor_conventions MCP tool returns conventions with enabled flag,
   const { buildTools } = await import('../src/mcp/tools.ts');
   const tool = buildTools().find(t => t.name === 'list_conductor_conventions');
   assert.ok(tool, 'list_conductor_conventions tool registered');
+  // `{conventions}` since card 2026-0282 — see the project-scope twin in
+  // tests/project-conventions.test.mjs and the degrade arms in
+  // tests/conventions-listing-degrade.test.mjs.
   const result = await tool.handler({}, { instances });
-  assert.ok(Array.isArray(result));
-  assert.equal(result.length, 9);
-  for (const m of result) {
+  assert.deepEqual(Object.keys(result), ['conventions'], 'healthy: conventions only, no incomplete');
+  assert.ok(Array.isArray(result.conventions));
+  assert.equal(result.conventions.length, 9);
+  for (const m of result.conventions) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.builtin, true);
     assert.equal(m.enabled, true); // default all-on

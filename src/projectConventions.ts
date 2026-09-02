@@ -58,6 +58,16 @@ export const deleteCustomConvention = catalog.deleteCustom;
 // facet (no fragment body) contribute nothing. Empty array → '' (no block).
 export const composeProjectConventionsBlock = catalog.compose;
 
+// The same composition, returning the catalog's `degraded` flag alongside the
+// text off the SAME read (card 2026-0277's `composeWithMeta`). The create path
+// takes this one because degradedness is a property of the document it is about
+// to commit. `buildMarker` records EXACTLY the slugs it was passed — the defect
+// is upstream of the marker, not in it: a degrade omits catalog entries, so the
+// listing never offers the slug, and `create_project` refuses one outside the
+// catalog (400), so the marker can never come to name it. No later
+// regeneration adds it back (card 2026-0282).
+export const composeProjectConventionsBlockWithMeta = catalog.composeWithMeta;
+
 // Resolves selected slugs against the catalog and composes the one-time setup
 // directives of those that carry a scaffold facet into a single orchestrator-
 // guidance block that `create_project` RETURNS (never persisted), for the

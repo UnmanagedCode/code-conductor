@@ -28,7 +28,7 @@
 
 import path from 'node:path';
 import { listProjects, resolveProjectDir } from './projects.ts';
-import { composeProjectConventionsBlock, getCatalog } from './projectConventions.ts';
+import { composeProjectConventionsBlockWithMeta, getCatalog } from './projectConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
@@ -150,17 +150,26 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
 // `missing` (marker slugs that don't resolve here) is kept in the MARKER — so the
 // convention recovers verbatim if it returns — but contributes a visible note
 // instead of a body. Unknown slug outside `missing` → 400 (via
-// composeProjectConventionsBlock); callers at project creation rely on that.
+// composeProjectConventionsBlockWithMeta); callers at project creation rely on that.
 // With no project part at all (zero slugs, or none of them resolving to a body
 // or a note) the heading is omitted too and the document is marker + workspace.
-export async function composeProjectConventionsDoc(
+// Also returns the project catalog's `degraded` flag, off the read the block
+// composition already makes — because degradedness is a property OF THIS
+// DOCUMENT and its consequences differ per caller (card 2026-0282). The create
+// path takes this shape and warns the operator; the regeneration path takes the
+// plain `composeProjectConventionsDoc` below and stays silent, because it
+// reaches this composition once per project per sweep and a project whose
+// marker names no unresolvable slug composes byte-identically to healthy.
+// The WORKSPACE block can never be the degraded one (no extraProvider — see
+// src/workspaceConventions.ts), so the flag comes from the project block alone.
+export async function composeProjectConventionsDocWithMeta(
   slugs: string[],
   { missing = [], system = null }: { missing?: string[]; system?: { id: string; path: string } | null } = {},
-): Promise<string> {
+): Promise<{ text: string; degraded: boolean }> {
   const marker = buildMarker(slugs);
   const workspace = await composeCurrentWorkspace();          // ends with '\n'
   const gone = new Set(missing);
-  const body = await composeProjectConventionsBlock(slugs.filter(s => !gone.has(s)));
+  const { text: body, degraded } = await composeProjectConventionsBlockWithMeta(slugs.filter(s => !gone.has(s)));
   const note = gone.size ? `${unresolvedNote(missing)}\n` : '';
   const project = (note || body)
     ? `\n${PROJECT_HEADING}\n${note ? `\n${note}` : ''}${body}`
@@ -168,7 +177,17 @@ export async function composeProjectConventionsDoc(
   // FIRST, above the conventions: it frames how every instruction below is
   // carried out, and a worker that reads it late has already run a command.
   const placement = system ? `${systemDisclosure(system)}\n` : '';
-  return `${marker}\n\n${placement}${workspace}${project}`;
+  return { text: `${marker}\n\n${placement}${workspace}${project}`, degraded };
+}
+
+// The document alone. Every caller that has no policy for a degraded catalog
+// takes this one, and a caller that does takes the WithMeta form above rather
+// than reading the catalog a second time.
+export async function composeProjectConventionsDoc(
+  slugs: string[],
+  opts: { missing?: string[]; system?: { id: string; path: string } | null } = {},
+): Promise<string> {
+  return (await composeProjectConventionsDocWithMeta(slugs, opts)).text;
 }
 
 // Regenerate one project's CONVENTIONS.md: the workspace block always, plus

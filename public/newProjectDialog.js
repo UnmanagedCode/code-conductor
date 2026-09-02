@@ -79,6 +79,12 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
   async function buildContributions() {
     dom.npContributions.innerHTML = '';
     let conventions = [];
+    // The server does NOT send a degrade flag on this response — only the MCP
+    // `list_project_conventions` tool carries one (card 2026-0282). So a
+    // catalog missing an unreachable plugin's conventions arrives here looking
+    // complete, and the sections below render one heading fewer with nothing
+    // saying so. Anyone adding a banner has to make the route carry the flag
+    // first; it is carded separately.
     try {
       const r = await fetch('/api/settings/conventions/project');
       if (r.ok) conventions = (await r.json()).conventions ?? [];
