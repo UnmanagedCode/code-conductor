@@ -192,6 +192,36 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
   return { scope: { mirrorRoot, exclude: advertisement.exclude, offset }, inert };
 }
 
+// EVERY OFFSET a project at `systemPath` can occupy inside its session-root
+// image — one per mirror root a provider could legally advertise for it.
+//
+// COMPLETE, which is what makes it usable as a SEARCH SPACE rather than a
+// guess: the legal roots for a fixed `systemPath` are exactly its ANCESTOR
+// CHAIN, because `resolveMirrorScope` above refuses 501
+// MIRROR_ROOT_EXCLUDES_PROJECT for any root that does not contain the project,
+// and a provider that advertises nothing gets `noMirror(systemPath)` — offset
+// ''. So the offsets are exactly the suffixes of `systemPath`, '' included, and
+// no advertisement can put a session at a cwd outside
+// `<image root> + <one of these>` (round-tripped against `resolveMirrorScope`
+// in tests/systems-mirror-advertisement.test.mjs).
+//
+// ORDER IS ARBITRARY — '' comes out FIRST, since `i === segs.length` slices the
+// empty suffix — AND CALLERS MAY NOT DEPEND ON EITHER FACT. What licenses that
+// is not the order but a property: at most ONE of these candidates can hold a
+// given session's transcript, because `encodeCwd` is length-preserving
+// (src/projects.ts) and `path.join(root, offset)` has a distinct length for
+// every offset here, so two candidates can never name one transcript directory.
+// That is why the create path's scan may STOP at its first hit. Adding a
+// candidate that could collide with another would make that `break`
+// order-dependent, and nothing else in this file would say so
+// (card 2026-0287).
+export function mirrorOffsets(systemPath: string): string[] {
+  const segs = systemPath.split(path.posix.sep).filter(Boolean);
+  const out: string[] = [];
+  for (let i = segs.length; i >= 0; i--) out.push(segs.slice(i).join(path.posix.sep));
+  return out;
+}
+
 // ── The refusal a worker reads mid-task ──────────────────────────────
 
 // THE HIGHEST-VALUE SENTENCE IN THIS FEATURE, and every clause earns its place

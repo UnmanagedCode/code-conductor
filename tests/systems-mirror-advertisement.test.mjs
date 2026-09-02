@@ -26,8 +26,9 @@ import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import { MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX } from '../src/systems/protocol.ts';
 import {
-  noMirror, resolveMirrorScope, validateAdvertisement, isExcluded, withinPosix,
+  noMirror, resolveMirrorScope, validateAdvertisement, isExcluded, withinPosix, mirrorOffsets,
 } from '../src/systems/mirror.ts';
+import { encodeCwd } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RECORDER = path.join(__dirname, 'fixtures', 'recordingProvider.mjs');
@@ -241,6 +242,78 @@ describe('the mirror advertisement', () => {
     });
     assert.deepEqual(r.scope, noMirror('/srv/thing'));
     assert.deepEqual(r.inert, []);
+  });
+
+  // ── card 2026-0287: the offsets one project can occupy ──────────────
+
+  // Every systemPath the two tests below run over: depth 1, depth 8, one whose
+  // segments carry `_`, `-`, `.` and a space, and the filesystem root.
+  const GEOMETRIES = [
+    '/',
+    '/srv',
+    '/a/b/c/d/e/f/g/proj',
+    '/srv/my_app-v1.2/deep dir/proj',
+  ];
+
+  // Every ancestor of `p`, deepest first — the mirror roots a provider could
+  // legally advertise for a project at `p`.
+  const ancestors = (p) => {
+    const out = [];
+    for (let d = p; ; d = path.posix.dirname(d)) { out.push(d); if (d === '/') break; }
+    return out;
+  };
+
+  // PINS COMPLETENESS, which is the property the create path's candidate scan
+  // rests on: `mirrorOffsets` produces EXACTLY the offsets `resolveMirrorScope`
+  // can produce for that systemPath — the ancestor chain, plus the
+  // no-advertisement case — so no legal advertisement can put a session at a
+  // cwd the scan does not probe, and the scan probes no cwd no advertisement
+  // could reach. Round-tripped through the production resolver rather than
+  // re-derived, so the two cannot agree by sharing a mistake.
+  //
+  // NOT CLAIMING that a provider would advertise any of these roots, nor
+  // anything about a root OUTSIDE the chain: that is refused
+  // MIRROR_ROOT_EXCLUDES_PROJECT by the test above, which is what makes the
+  // chain exhaustive.
+  test('the offsets a project can occupy are exactly the ones resolveMirrorScope can produce', () => {
+    for (const systemPath of GEOMETRIES) {
+      const reachable = new Set(ancestors(systemPath).map(mirrorRoot => resolveMirrorScope({
+        systemId: 'prod-box', project: 'api', systemPath,
+        advertisement: { mirrorRoot, exclude: [] },
+      }).scope.offset));
+      // A provider that advertises nothing: `noMirror`, offset ''.
+      reachable.add(resolveMirrorScope({
+        systemId: 'prod-box', project: 'api', systemPath,
+        advertisement: { mirrorRoot: null, exclude: [] },
+      }).scope.offset);
+
+      assert.deepEqual(
+        [...mirrorOffsets(systemPath)].sort(), [...reachable].sort(),
+        `the candidate set is not the reachable set for ${systemPath}`,
+      );
+    }
+  });
+
+  // PINS THE REASON the scan may stop at its first hit: no two offsets of one
+  // systemPath can name one transcript directory. `encodeCwd` is
+  // length-preserving, and `path.join(root, offset)` has a distinct LENGTH for
+  // every offset — the length is the mechanism, so both are pinned; the
+  // encodings alone would hold vacuously for a set of one.
+  //
+  // NOT CLAIMING that two DIFFERENT image roots cannot collide — that is a
+  // property of `sessionRootPath`'s key, not of this set, and the scan is
+  // confined to one image root.
+  test('two offsets of one systemPath never name one transcript directory', () => {
+    for (const systemPath of GEOMETRIES) {
+      const offs = mirrorOffsets(systemPath);
+      assert.equal(offs.length, systemPath.split('/').filter(Boolean).length + 1,
+        `one offset per ancestor, '' included, for ${systemPath}`);
+      const root = '/store/systems/sys/sessions/api';
+      const dirs = offs.map(off => encodeCwd(path.join(root, off)));
+      assert.equal(new Set(dirs).size, offs.length, `two candidates encode alike for ${systemPath}`);
+      assert.equal(new Set(dirs.map(d => d.length)).size, offs.length,
+        `two candidates have one length for ${systemPath}`);
+    }
   });
 
   // PINS: exclusion is containment, not a string prefix — `/proc` must not
