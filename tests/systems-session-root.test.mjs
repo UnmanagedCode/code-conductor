@@ -108,13 +108,62 @@ test('composing a session root pulls exactly the allow-list', async () => {
 // PINS: the session root's CLAUDE.md carries the @CONVENTIONS.md import even
 // when the system's copy has none — the import is what delivers the conventions
 // into the prompt, and nothing on the system is required to have arranged it.
+//
+// AND PINS, on the same tree, that `listAllowed`'s no-imports early return still
+// RANKS what it hands back — this is the common case, the path nearly every real
+// project takes, and the only one of the three returns that an ordinary fixture
+// reaches. `pulled` follows the composed listing, so the ranked order IS the
+// observable: the four ALLOW_FILES in allow-list order, then the three recursive
+// dirs by path.
+//
+// WHAT GIVES THAT ASSERTION ITS TEETH is measured, not assumed: `find` does not
+// emit those three in path order. On this host (bfs 4.1.1, breadth-first) the
+// same argv yields `.claude/commands`, `.claude/agents`, `.claude/skills`;
+// GNU findutils walks starting points depth-first in argv order and yields
+// `skills, commands, agents`. Both differ from the asserted `agents, commands,
+// skills`, so a return that handed back `find`'s listing unranked fails here.
+//
+// NOT CLAIMING the two consequences of the ranking — that `pinned` is exempt
+// from the entry cap and takes the byte budget first. Those need fixtures that
+// cross a cap and are pinned by the flood and byte-budget tests below, on the
+// import-carrying path. This asserts only that the ORDER is cc's on this path.
+//
+// NOT CLAIMING, either, that this would still discriminate on a `find` that
+// happened to emit records in path order. It would go vacuous there, never red.
 test('a system CLAUDE.md with no import gets one prepended locally, keeping every byte', async () => {
   await seedTree(remote.root);
   await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), 'user content\nmore\n');
-  const { root } = await compose();
+  const { root, pulled } = await compose();
   assert.equal(await fs.readFile(path.join(root, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\nuser content\nmore\n');
   // And the SYSTEM's copy is untouched — the pull is one way.
   assert.equal(await fs.readFile(path.join(remote.root, 'CLAUDE.md'), 'utf8'), 'user content\nmore\n');
+  assert.deepEqual(pulled, [
+    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]);
+});
+
+// PINS: the OTHER early return — a project with no CLAUDE.md at all — ranks what
+// it hands back too. A separate test rather than a second assertion above,
+// because the two returns need different trees and no one fixture reaches both.
+// The bare `@CONVENTIONS.md` stub is the on-path witness: `ensureLocalImport`
+// writes it only when CLAUDE.md was not pulled, so a compose that took any other
+// branch would not produce it.
+//
+// NOT CLAIMING anything the test above does not already claim about the ranking;
+// its discriminating power and its limits are identical, and stated there.
+test('a project with no CLAUDE.md still gets a ranked listing', async () => {
+  await seedTree(remote.root);
+  await fs.rm(path.join(remote.root, 'CLAUDE.md'));
+
+  const { root, pulled, skipped } = await compose();
+
+  assert.deepEqual(skipped, []);
+  assert.equal(await fs.readFile(path.join(root, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\n');
+  assert.deepEqual(pulled, [
+    'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]);
 });
 
 // PINS: one level of `@`-import named in CLAUDE.md is pulled, so a project that
