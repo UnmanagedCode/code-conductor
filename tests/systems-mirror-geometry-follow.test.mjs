@@ -153,7 +153,12 @@ describe('a mirror advertisement that moves under a live session', () => {
       // `loadHistory` runs in spawn()'s own async tail, so the replay can land
       // AFTER the response — waiting for it here keeps the patch installed long
       // enough to see it rather than racing it.
-      if (awaitReplay && out.res.status === 200) await waitFor(() => out.replayed);
+      // Each wait is gated on the response too: a REFUSED relaunch leaves both
+      // `replayed` false and `pid` null forever, so an ungated wait would spin
+      // its full timeout and throw instead of handing the caller back the 502 it
+      // asked about.
+      if (out.res.status !== 200) { /* a refusal has nothing to wait for */ }
+      else if (awaitReplay) await waitFor(() => out.replayed);
       else await waitFor(() => inst.pid !== null);
     } finally { inst._emitUi = real; }
     return out;

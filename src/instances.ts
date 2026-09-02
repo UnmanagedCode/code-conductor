@@ -1748,14 +1748,20 @@ export class Instance extends EventEmitter implements InstanceLike {
     try {
       await relocateSessionTranscripts({ from, to: composed.cwd, sessionIds: ids });
     } catch (e) {
-      // THE CLAIM IS DERIVED, never asserted: `stranded` is what the rollback
-      // could not undo, so the two sentences below describe the state cc
-      // actually verified rather than the state it hoped for.
+      // THE CLAIM IS DERIVED, never asserted: what cc says about this session's
+      // history comes from what the rollback actually achieved, not from what
+      // the move intended.
       //
-      // NO REMEDY CLAUSE, for the reason SESSION_ROOT_DISCARDED records below:
-      // the code cannot classify why a rename failed, and per-cause wording
-      // would put the classification back. What it does state is the verified
-      // post-refusal state, which is a fact rather than a remedy.
+      // ONE CLASSIFICATION, AND IT IS COMPLETENESS — not cause, and not remedy.
+      // `stranded` and the errno together answer exactly one question: is the
+      // history still whole at `from`? That is what the three branches below
+      // vary on. They still say NOTHING about WHY the rename failed or what to
+      // do about it — the code cannot tell a blocker that clears itself from one
+      // that will refuse identically forever, and `Cause:` carries whatever
+      // guidance the underlying error already wrote. SESSION_ROOT_DISCARDED
+      // below writes no remedy either, but for a reason that does NOT transfer:
+      // it keys on the compose check and genuinely cannot classify its failures
+      // at all. The no-remedy rule is shared; the justification is not.
       const failure = e instanceof TranscriptRelocationError ? e : null;
       const stranded = failure?.stranded ?? [];
       // THREE STATES, and the completeness claim is the only one that varies —
