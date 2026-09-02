@@ -539,12 +539,16 @@ export interface Listed { rel: string; abs: string; size: number; mtimeMs: numbe
 // THE RANKING, and it is CC'S rather than `find`'s.
 //
 // A count bound drops whatever the listing order puts past it, so the ORDER is
-// the design. Measured: `find` walks its starting points in argv order, so the
-// four ALLOW_FILES land at listing positions 0-3 in every tree, and the
-// `@`-imports pass — a SECOND `find` whose records are appended after the whole
-// first pass — always lands LAST. Inheriting that would make the guarantee a
-// claim about `find` rather than about cc, and indistinguishable from the
-// accident it is (card 2026-0274).
+// the design. The starting points come back in argv order — which is what puts
+// the four ALLOW_FILES at listing positions 0-3, and the `@`-imports pass, a
+// SECOND `find` whose records are appended after the whole first pass, LAST —
+// but the order PAST them is the `find` IMPLEMENTATION's, and findManifest runs
+// `find` off the REMOTE system's PATH, so it is the target machine's choice and
+// not cc's. Measured over one argv, GNU findutils and bfs descend depth-first
+// and breadth-first respectively and agree with neither each other nor the
+// ranking below (both orders are in tests/systems-session-root.test.mjs), so
+// inheriting that order would make this guarantee a claim about which `find`
+// the far side happens to ship (card 2026-0274).
 //
 // PINNED is the four ALLOW_FILES, and it is exempt from the entry cap because
 // it is PINNED, never because it is short: its size is a property of THIS FILE
