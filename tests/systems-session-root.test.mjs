@@ -30,6 +30,7 @@ import {
   SessionPathMap,
   composeSessionRoot,
   composedRootWasDiscarded,
+  rankConfigSurface,
   sessionRootPath,
   sessionRootsDir,
 } from '../src/systems/sessionRoot.ts';
@@ -107,13 +108,62 @@ test('composing a session root pulls exactly the allow-list', async () => {
 // PINS: the session root's CLAUDE.md carries the @CONVENTIONS.md import even
 // when the system's copy has none — the import is what delivers the conventions
 // into the prompt, and nothing on the system is required to have arranged it.
+//
+// AND PINS, on the same tree, that `listAllowed`'s no-imports early return still
+// RANKS what it hands back — this is the common case, the path nearly every real
+// project takes, and the only one of the three returns that an ordinary fixture
+// reaches. `pulled` follows the composed listing, so the ranked order IS the
+// observable: the four ALLOW_FILES in allow-list order, then the three recursive
+// dirs by path.
+//
+// WHAT GIVES THAT ASSERTION ITS TEETH is measured, not assumed: `find` does not
+// emit those three in path order. On this host (bfs 4.1.1, breadth-first) the
+// same argv yields `.claude/commands`, `.claude/agents`, `.claude/skills`;
+// GNU findutils walks starting points depth-first in argv order and yields
+// `skills, commands, agents`. Both differ from the asserted `agents, commands,
+// skills`, so a return that handed back `find`'s listing unranked fails here.
+//
+// NOT CLAIMING the two consequences of the ranking — that `pinned` is exempt
+// from the entry cap and takes the byte budget first. Those need fixtures that
+// cross a cap and are pinned by the flood and byte-budget tests below, on the
+// import-carrying path. This asserts only that the ORDER is cc's on this path.
+//
+// NOT CLAIMING, either, that this would still discriminate on a `find` that
+// happened to emit records in path order. It would go vacuous there, never red.
 test('a system CLAUDE.md with no import gets one prepended locally, keeping every byte', async () => {
   await seedTree(remote.root);
   await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), 'user content\nmore\n');
-  const { root } = await compose();
+  const { root, pulled } = await compose();
   assert.equal(await fs.readFile(path.join(root, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\nuser content\nmore\n');
   // And the SYSTEM's copy is untouched — the pull is one way.
   assert.equal(await fs.readFile(path.join(remote.root, 'CLAUDE.md'), 'utf8'), 'user content\nmore\n');
+  assert.deepEqual(pulled, [
+    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]);
+});
+
+// PINS: the OTHER early return — a project with no CLAUDE.md at all — ranks what
+// it hands back too. A separate test rather than a second assertion above,
+// because the two returns need different trees and no one fixture reaches both.
+// The bare `@CONVENTIONS.md` stub is the on-path witness: `ensureLocalImport`
+// writes it only when CLAUDE.md was not pulled, so a compose that took any other
+// branch would not produce it.
+//
+// NOT CLAIMING anything the test above does not already claim about the ranking;
+// its discriminating power and its limits are identical, and stated there.
+test('a project with no CLAUDE.md still gets a ranked listing', async () => {
+  await seedTree(remote.root);
+  await fs.rm(path.join(remote.root, 'CLAUDE.md'));
+
+  const { root, pulled, skipped } = await compose();
+
+  assert.deepEqual(skipped, []);
+  assert.equal(await fs.readFile(path.join(root, 'CLAUDE.md'), 'utf8'), '@CONVENTIONS.md\n');
+  assert.deepEqual(pulled, [
+    'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]);
 });
 
 // PINS: one level of `@`-import named in CLAUDE.md is pulled, so a project that
@@ -143,6 +193,269 @@ test('an entry over the per-file cap is skipped and named, and the spawn still c
   // The rest of the allow-list still landed.
   assert.equal(await fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md'), 'utf8'), 'deploy skill');
   await assert.rejects(fs.readFile(path.join(root, '.claude/skills/deploy/BIG.md')));
+});
+
+// ── The ENTRY cap, which bounds the listing POSITIONS the pull considers ──
+//
+// The two caps above sum BYTES, so neither ever fires for a tree of many tiny
+// files. This one bounds HOW MANY entries are considered at all, and — like
+// them and unlike the fence below — it SAYS what it dropped: not one name per
+// entry as they do, but the first entry, the total and a per-target rollup.
+
+// The entry cap written out rather than imported: a test that reads the number
+// out of the module under test asserts only that it equals itself.
+//
+// COUPLING, STATED WHERE IT EXISTS rather than across the whole section. The
+// BOUNDARY test and the FLOOD test are sized to CROSS the cap, so they are
+// coupled to its value: raise it and they turn RED, which is intended rather
+// than a defect — a threshold test is a claim about WHERE the threshold is.
+// The rest are not coupled and must not be read as though they were: the
+// ranking test has no fixture at all, the byte-budget test is sized against the
+// 4 MiB TOTAL cap rather than this one, and the duplicate-import test's
+// repetitions collapse to a single entry at any value of it.
+//
+// What NONE of them does is take the number FROM the code — a different
+// property from surviving a change to it, and the only one claimed for all.
+const ENTRY_CAP = 2000;
+
+// `n` tiny files under `rel`, zero-padded so lexicographic order is numeric
+// order. The ranking sorts by path, so a fixture whose order depended on readdir
+// would make every assertion below a property of the filesystem instead.
+async function bulk(root, rel, n) {
+  const dir = path.join(root, rel);
+  await fs.mkdir(dir, { recursive: true });
+  for (let i = 0; i < n; i += 64) {
+    await Promise.all(Array.from({ length: Math.min(64, n - i) }, (_, k) => (
+      fs.writeFile(path.join(dir, `f${String(i + k).padStart(6, '0')}.md`), 'x')
+    )));
+  }
+}
+
+// PINS: the ranking is CC'S OWN and applies to whatever order the listing
+// arrived in — the four ALLOW_FILES pinned in allow-list order, then the
+// `@`-imports sorted by path, then the three recursive dirs sorted by path.
+// This is the only test that can distinguish that from `find`'s argv order,
+// because cc's own callers can never produce a listing in any other order: the
+// `docs/B.md`-before-`docs/STYLE.md` assertion is what separates a sorted
+// imports half from one left in the order `findManifest` returned.
+//
+// NOT CLAIMING anything about either cap, or about the entry cap — this test
+// never reaches a pull.
+test("the config-surface ranking is cc's, not find's", async () => {
+  const listed = (rel) => ({ rel, abs: `/p/${rel}`, size: 1, mtimeMs: 0 });
+  // Every ALLOW_FILE last and back-to-front, and the two skills the wrong way
+  // round: the order `find` produces, inverted.
+  const reversed = [
+    '.claude/skills/zz.md', '.claude/skills/aa.md', '.claude/commands/m.md', '.claude/agents/q.md',
+    '.claude/settings.local.json', '.claude/settings.json', 'CONVENTIONS.md', 'CLAUDE.md',
+  ].map(listed);
+  // A fixed permutation, so this asserts a property of the ranking rather than
+  // of whatever a random draw happened to produce on one run.
+  const shuffled = [3, 6, 0, 5, 2, 7, 1, 4].map(i => reversed[i]);
+  // Out of path order too, which is the order CLAUDE.md's `@` lines would give.
+  const imports = ['docs/STYLE.md', 'docs/B.md'].map(listed);
+
+  const PINNED = ['CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json'];
+  const CAPPED = [
+    'docs/B.md', 'docs/STYLE.md',
+    '.claude/agents/q.md', '.claude/commands/m.md', '.claude/skills/aa.md', '.claude/skills/zz.md',
+  ];
+  for (const [name, targets] of [['reversed', reversed], ['shuffled', shuffled]]) {
+    const ranked = rankConfigSurface(targets, imports);
+    assert.deepEqual(ranked.pinned.map(e => e.rel), PINNED, `pinned, from a ${name} listing`);
+    assert.deepEqual(ranked.capped.map(e => e.rel), CAPPED, `capped, from a ${name} listing`);
+  }
+  // The caller's array is not reordered under it.
+  assert.deepEqual(imports.map(e => e.rel), ['docs/STYLE.md', 'docs/B.md']);
+});
+
+// PINS: the cap fires at exactly one entry OVER it and not at exactly the cap
+// (differential — the two composes differ by a single file); WHICH entry the
+// ranking leaves last; and that the delete sweep removes the local copy of an
+// entry that has fallen past the cap, so no stale file answers a Read the system
+// says is not there.
+//
+// NOT CLAIMING that the dropped entry is bulk. It is deliberately a real
+// `SKILL.md` — what the ranking's tail actually costs is a legitimate sibling
+// that sorts after a flood in the same directory.
+test("the entry cap's boundary, and the local copy of an entry that falls past it", async () => {
+  await seedTree(remote.root);
+  // seedTree already puts one entry under each of the three recursive dirs, so
+  // this many bulk files leave the capped listing at EXACTLY the cap.
+  await bulk(remote.root, '.claude/skills/bulk', ENTRY_CAP - 3);
+
+  const first = await compose();
+  assert.deepEqual(first.skipped, [], 'at exactly the cap nothing is dropped');
+  assert.equal(
+    await fs.readFile(path.join(first.root, '.claude/skills/deploy/SKILL.md'), 'utf8'), 'deploy skill',
+  );
+
+  // ONE more entry. `bulk/` sorts before `deploy/`, so the entry this pushes off
+  // the end is the SKILL.md that was pulled a moment ago.
+  await fs.writeFile(path.join(remote.root, '.claude/skills/bulk/f999999.md'), 'x');
+
+  const { root, skipped } = await compose();
+  assert.equal(skipped.length, 1, `one summarised skip; got ${JSON.stringify(skipped)}`);
+  assert.equal(skipped[0].path, '.claude/skills/deploy/SKILL.md');
+  assert.equal(
+    skipped[0].reason,
+    'the 2000-entry session-root cap was already reached, so 1 further entry was not pulled '
+    + '(.claude/skills 1)',
+  );
+  await assert.rejects(
+    fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md')),
+    'the local copy of an entry that fell past the cap is swept, not left behind',
+  );
+});
+
+// PINS: the argued outcome of the ranking — the four ALLOW_FILES and every
+// `@`-import survive a flood large enough to cut all three recursive dirs; the
+// overflow is ONE skip however many entries it covers; and the rollup names
+// every target it drew from plus the first entry not pulled.
+//
+// NOT CLAIMING that skills, commands or agents are protected from each other.
+// They are not: `.claude/agents` sorts first, so a flood there starves the other
+// two, and the assertions that `ship.md` and `SKILL.md` are GONE are the point.
+test('a flood that fills the cap still leaves the four allow-list files and the @-imports', async () => {
+  await seedTree(remote.root);
+  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), '@CONVENTIONS.md\n@docs/STYLE.md\n');
+  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(remote.root, 'docs/STYLE.md'), 'two spaces\n');
+  // The worst case for the recursive dirs: `agents` sorts before both others.
+  await bulk(remote.root, '.claude/agents/bulk', ENTRY_CAP + 10);
+
+  const { root, skipped } = await compose();
+
+  for (const rel of [
+    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
+    'docs/STYLE.md',
+  ]) {
+    assert.ok(
+      await fs.readFile(path.join(root, rel)).then(() => true, () => false),
+      `${rel} must survive a flood that fills the cap`,
+    );
+  }
+  await assert.rejects(fs.readFile(path.join(root, '.claude/commands/ship.md')));
+  await assert.rejects(fs.readFile(path.join(root, '.claude/skills/deploy/SKILL.md')));
+
+  assert.equal(skipped.length, 1, `one summarised skip; got ${skipped.length}`);
+  assert.equal(skipped[0].path, '.claude/agents/bulk/f001999.md');
+  assert.match(
+    skipped[0].reason,
+    /so 14 further entries were not pulled \(\.claude\/agents 12, \.claude\/commands 1, \.claude\/skills 1\)/,
+  );
+});
+
+// PINS: a duplicated `@`-import is ONE entry, not one listing position per
+// line — so the cap counts distinct entries and the summary skip cannot name a
+// file that is sitting on disk. Pre-fix, `findManifest` walked the same absolute
+// path once per `@` line and `extra` deduped only against the TARGETS pass, so
+// 2,001 copies of one import filled the cap and the skip reported
+// `docs/STYLE.md` as not pulled while it was on disk and in `pulled[]` — the red
+// this test was written against named exactly that file.
+//
+// NOT CLAIMING that the targets pass can produce a duplicate — its seven targets
+// are disjoint by construction, so the dedupe is scoped to the imports pass,
+// which is the only one whose targets a project controls.
+//
+// NOT CLAIMING anything about a duplicate that is not a duplicate REL: two
+// different files are two entries however alike their contents.
+test('a duplicated @-import is one entry, not one listing position per line', async () => {
+  await seedTree(remote.root);
+  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(remote.root, 'docs/STYLE.md'), 'two spaces\n');
+  // One line MORE than the cap admits, every one naming the same file: enough
+  // listing positions to overrun the cap, one distinct entry behind them.
+  await fs.writeFile(
+    path.join(remote.root, 'CLAUDE.md'),
+    `@CONVENTIONS.md\n${'@docs/STYLE.md\n'.repeat(ENTRY_CAP + 1)}`,
+  );
+
+  const { root, pulled, skipped } = await compose();
+
+  assert.deepEqual(skipped, [], 'one distinct import cannot overrun a 2000-entry cap');
+  assert.equal(await fs.readFile(path.join(root, 'docs/STYLE.md'), 'utf8'), 'two spaces\n');
+  assert.deepEqual(
+    pulled.filter(r => r === 'docs/STYLE.md'), ['docs/STYLE.md'],
+    'pulled once, not once per @ line — the duplicate cost a round trip and byte budget too',
+  );
+  // And the entries the duplicates would have starved are all still admitted.
+  for (const rel of [
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]) {
+    assert.ok(
+      await fs.readFile(path.join(root, rel)).then(() => true, () => false),
+      `${rel} was not starved by the duplicates`,
+    );
+  }
+});
+
+// THE CONTROL for the test above: a tree with no duplicate import composes
+// exactly as it did before the dedupe existed — every entry present, each pulled
+// exactly once, nothing skipped. The dedupe collapses REPEATS of one rel and
+// nothing else.
+//
+// NOT CLAIMING byte-identity by re-running the old code, which would mean
+// reverting source; the claim is the shape — `pulled` is the nine allow-list and
+// import entries, once each, in the ranked order.
+test('two distinct @-imports are still two entries, each pulled once', async () => {
+  await seedTree(remote.root);
+  await fs.mkdir(path.join(remote.root, 'docs'), { recursive: true });
+  await fs.writeFile(path.join(remote.root, 'docs/A.md'), 'a\n');
+  await fs.writeFile(path.join(remote.root, 'docs/B.md'), 'b\n');
+  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), '@CONVENTIONS.md\n@docs/B.md\n@docs/A.md\n');
+
+  const { pulled, skipped } = await compose();
+
+  assert.deepEqual(skipped, []);
+  assert.deepEqual(pulled, [
+    'CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json',
+    'docs/A.md', 'docs/B.md',
+    '.claude/agents/reviewer.md', '.claude/commands/ship.md', '.claude/skills/deploy/SKILL.md',
+  ]);
+});
+
+// PINS: the pinned files LEAD the listing, so they meet the total-bytes cap
+// first. Composed the other way round, the capped entries take the whole 4 MiB
+// budget, CLAUDE.md and CONVENTIONS.md are both skipped by it, and
+// ensureLocalImport then writes a 16-byte CLAUDE.md importing a CONVENTIONS.md
+// that is not there — a config surface that looks present and delivers nothing.
+//
+// NOT CLAIMING that the pinned entries are EXEMPT from the byte cap. They are
+// not, deliberately; the claim is only that they meet it FIRST.
+//
+// EVERY FILE IS SIZED AT EXACTLY THE PER-FILE CAP so the budget residue left
+// after the last one that fits is smaller than a single pinned file BY
+// CONSTRUCTION — a fixture that relied on arithmetic over seedTree's byte counts
+// would stop discriminating if any of those moved.
+//
+// GREEN ON ARRIVAL, and honestly so: `find` walks its starting points in argv
+// order, which already puts the four ALLOW_FILES first, so this passed before
+// the ranking existed. It is a CONTRAST — it pins the property the ranking must
+// not lose while replacing that accidental order with a deliberate one — and its
+// non-vacuity is the mutation prover's to establish, not this file's.
+test('the pinned files get the byte budget before the capped ones do', async () => {
+  await seedTree(remote.root);
+  const cap = SESSION_ROOT_FILE_CAP_BYTES;
+  await fs.writeFile(path.join(remote.root, 'CLAUDE.md'), `@CONVENTIONS.md\n${'p'.repeat(cap - 16)}`);
+  await fs.writeFile(path.join(remote.root, 'CONVENTIONS.md'), 'r'.repeat(cap));
+  await fs.mkdir(path.join(remote.root, '.claude/skills/bulk'), { recursive: true });
+  // 17 × the per-file cap is more than the 4 MiB total budget on its own.
+  for (let i = 0; i < 17; i += 1) {
+    await fs.writeFile(path.join(remote.root, `.claude/skills/bulk/f${i}.md`), 'b'.repeat(cap));
+  }
+
+  const { root, skipped } = await compose();
+
+  assert.equal((await fs.stat(path.join(root, 'CONVENTIONS.md'))).size, cap, 'CONVENTIONS.md survived');
+  assert.equal(
+    (await fs.stat(path.join(root, 'CLAUDE.md'))).size, cap,
+    'CLAUDE.md is the pulled file, not the 16-byte ensureLocalImport stub',
+  );
+  assert.deepEqual(
+    skipped.filter(s => s.path === 'CLAUDE.md' || s.path === 'CONVENTIONS.md'), [],
+    'neither pinned file was refused by the byte cap',
+  );
 });
 
 // ── The LISTING fence, which is not one of the caps above ────────────

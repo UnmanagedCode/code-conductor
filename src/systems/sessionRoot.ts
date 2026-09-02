@@ -192,18 +192,56 @@ function toPosix(rel: string): string {
 const ALLOW_FILES = ['CLAUDE.md', 'CONVENTIONS.md', '.claude/settings.json', '.claude/settings.local.json'];
 const ALLOW_DIRS = ['.claude/skills', '.claude/commands', '.claude/agents'];
 
-// Caps, per §3.4's "warns loudly and skips rather than failing the spawn". A
-// repo that committed one enormous FILE under `.claude/skills` must not be a
-// project cc cannot open a session on. An enormous NUMBER of files is the other
-// case and not this one — see the fence below, which refuses.
+// CAPS AND A FENCE, and the difference is in what each one BOUNDS rather than
+// in how many of each there are.
+//
+// Per §3.4's "warns loudly and skips rather than failing the spawn": a repo that
+// committed one enormous FILE under `.claude/skills` must not be a project cc
+// cannot open a session on, and neither must one that committed an enormous
+// NUMBER of small ones. The caps here skip and NAME; the fence below refuses,
+// because it cannot name what it dropped (card 2026-0274).
 export const SESSION_ROOT_FILE_CAP_BYTES = 256 * 1024;
 export const SESSION_ROOT_TOTAL_CAP_BYTES = 4 * 1024 * 1024;
 
-// A FENCE, not a third cap — the distinction is in the name because it is the
-// whole difference in behaviour. The two caps above bound PULLED CONTENT: they
-// are consulted per entry, after every record has been materialised, and each
-// one they refuse is skipped and NAMED. This one bounds the LISTING those
-// records are read out of, and past it the compose FAILS, for the reason
+// WHY A COUNT AND NOT ONLY BYTES. The total cap sums SIZES, so it never fires
+// for a tree of many tiny files. Measured over the wire: 14,589 one-byte files
+// under `.claude/skills` were pulled IN FULL — 14,597 readFile round trips,
+// 8.6 s, a 969 KB manifest, `skipped` empty — for ~14 KB of content, on every
+// spawn AND every resume. The fence below bounds that only indirectly, at
+// ~92,000 entries at ordinary path lengths, and it refuses rather than
+// degrading — so before this cap existed, a project just under the fence was
+// merely slow and one just over it could not open a session at all. Only the
+// second half still holds, and it is the LIMIT of what this cap buys: it
+// degrades everything below the fence's ceiling and nothing above it.
+//
+// 2,000 is far above any real config surface — the largest `.claude/skills`
+// tree measured on this host is 53 files, and the entire official plugin
+// marketplace is 446 across skills, commands and agents — and it holds that
+// same 14,589-file tree to 2 `exec` + 2,005 `readFile` round trips, ~1.6 s and
+// a 133 KB manifest, with a resume falling from 823 ms to ~200 ms — 2 `exec` +
+// 1 `readFile` — CLAUDE.md, for the imports pass — and not one entry re-pulled.
+//
+// IT COUNTS LISTING POSITIONS, NOT SUCCESSFUL PULLS, which is what makes one
+// number bound the round trips, the manifest, the skip list and the stderr
+// those skips become, all at once: the two caps above can only fire inside the
+// window this one admits, so the 10,494 skip lines (1.24 MB) the same tree
+// reaches through the byte cap at 1 KiB per file become ~2,005 at worst.
+// A tree whose admitted window is mostly over the per-file cap therefore
+// salvages less content than a budget of successful PULLS would — that outcome
+// is named entry by entry either way, and is accepted.
+//
+// NOT exported and NOT a setting: the tests assert the literal, so reading the
+// number out of the module under test cannot be what makes them pass.
+const SESSION_ROOT_ENTRY_CAP = 2000;
+
+// A FENCE, not another cap — the distinction is in the name because it is the
+// whole difference in behaviour. The caps above bound WHAT IS PULLED — the
+// bytes of one entry, the bytes of the whole surface, and how much of the
+// listing is considered at all — and every one of them SAYS what it refused:
+// the byte caps name each entry they drop, the entry cap names the first and
+// counts the rest. This one bounds the BYTES OF `find` OUTPUT those records are parsed
+// out of — a different quantity from the entry cap's count of positions WITHIN
+// a parsed listing — and past it the compose FAILS, for the reason
 // runGit's does (src/worktrees.ts): findManifest parses the output WHOLE, so a
 // clipped-but-successful parse is read as the config surface itself.
 //
@@ -345,7 +383,22 @@ async function pullSessionRoot(
   const cwd = path.join(root, mirror.offset);
   await fs.mkdir(cwd, { recursive: true });
 
-  const listing = await listAllowed(system, systemPath, mirror);
+  const { pinned, capped } = await listAllowed(system, systemPath, mirror);
+  // THE ENTRY CAP, applied HERE rather than inside the loop below. `pinned` is
+  // admitted because it is pinned, and the loop keeps the shape it had — a gate
+  // inside it would compute the same answer while being redundant with the
+  // ranking, and therefore unkillable by any test.
+  //
+  // `pinned` LEADS, and that is load-bearing a SECOND time, independently of the
+  // cap: the total-bytes cap below is first-come-first-served, and a pinned entry
+  // is still subject to it. Measured with these two concatenated the other way
+  // round, on a project with a 100 KB CLAUDE.md and 2,500 4 KiB skills: the
+  // skills take the whole 4 MiB budget, CLAUDE.md and CONVENTIONS.md are BOTH
+  // skipped by it, and ensureLocalImport then writes a 16-byte CLAUDE.md whose
+  // @CONVENTIONS.md names a file that is not there — a config surface that looks
+  // present and delivers nothing (card 2026-0274).
+  const listing = [...pinned, ...capped.slice(0, SESSION_ROOT_ENTRY_CAP)];
+  const dropped = capped.slice(SESSION_ROOT_ENTRY_CAP);
 
   const next = new Map<string, ManifestEntry>();
   const skipped: SessionRootSkip[] = [];
@@ -387,9 +440,28 @@ async function pullSessionRoot(
     pulled.push(entry.rel);
   }
 
-  // An entry that has gone from the system must go from the root too. A stale
-  // local copy is a boundary leak: Read would answer from a file the system,
-  // and therefore Bash, says is not there.
+  // ONE skip for the whole overflow, not one per entry. THIS cap CAN name every
+  // entry it dropped — that is exactly what separates it from the fence, which
+  // cannot — but naming 12,592 of them puts 12,592 `system`/`stderr` lines on
+  // the session at every launch, which is a second way to make a large config
+  // surface expensive: measured, the same shape reached 10,494 lines and 1.24 MB
+  // through the byte cap with nothing bounding the listing positions, which the
+  // cap above now holds to ~2,005. The first entry not pulled, the total, and a
+  // per-target rollup are what a user acts on.
+  if (dropped.length > 0) {
+    skipped.push({
+      path: dropped[0].rel,
+      reason: `the ${SESSION_ROOT_ENTRY_CAP}-entry session-root cap was already reached, so `
+        + `${dropped.length} further ${dropped.length === 1 ? 'entry was' : 'entries were'} `
+        + `not pulled (${rollup(dropped)})`,
+    });
+  }
+
+  // An entry that has gone from the system must go from the root too — and an
+  // entry that has fallen PAST the cap since an earlier compose is simply absent
+  // from `next`, so it takes this path unchanged. A stale local copy is a
+  // boundary leak: Read would answer from a file the system, and therefore Bash,
+  // says is not there.
   for (const rel of manifest.entries.keys()) {
     if (next.has(rel)) continue;
     await fs.rm(path.join(cwd, rel), { force: true });
@@ -462,25 +534,93 @@ async function resetRoot(systemId: string, project: string, worktree: string | n
   return { remoteId: null, mirrorRoot: null, entries: new Map() };
 }
 
-interface Listed { rel: string; abs: string; size: number; mtimeMs: number }
+export interface Listed { rel: string; abs: string; size: number; mtimeMs: number }
+
+// THE RANKING, and it is CC'S rather than `find`'s.
+//
+// A count bound drops whatever the listing order puts past it, so the ORDER is
+// the design. The starting points come back in argv order — which is what puts
+// the four ALLOW_FILES at listing positions 0-3, and the `@`-imports pass, a
+// SECOND `find` whose records are appended after the whole first pass, LAST —
+// but the order PAST them is the `find` IMPLEMENTATION's, and findManifest runs
+// `find` off the REMOTE system's PATH, so it is the target machine's choice and
+// not cc's. Measured over one argv, GNU findutils and bfs descend depth-first
+// and breadth-first respectively and agree with neither each other nor the
+// ranking below (both orders are in tests/systems-session-root.test.mjs), so
+// inheriting that order would make this guarantee a claim about which `find`
+// the far side happens to ship (card 2026-0274).
+//
+// PINNED is the four ALLOW_FILES, and it is exempt from the entry cap because
+// it is PINNED, never because it is short: its size is a property of THIS FILE
+// rather than of the tree, so a fifth entry in ALLOW_FILES leaves the bound
+// intact.
+//
+// CAPPED is everything else, `@`-imports first — content CLAUDE.md explicitly
+// asks the CLI to load outranks an optional skill.
+//
+// BOTH HALVES OF `capped` ARE SORTED, for one reason: every order arriving here
+// is `find`'s. Within a directory it is readdir order — stable across runs on
+// the filesystem measured here, but not by contract, and an unstable one would
+// have a resume delete and re-pull a different 2,000 entries every time. The
+// imports are no exception: ONE `find` walks all of them, so their records come
+// back in argv-then-readdir order too, and an import naming a DIRECTORY (which
+// findManifest's refusal below already notes is possible) is readdir order
+// outright. Sorting costs 89 ms at the listing fence's ceiling of ~96,000
+// records, 1 ms at 15,000. What it costs in MEANING: CLAUDE.md's `@`-line order
+// stops ranking its own imports — never a designed signal, only the same
+// inherited accident this function exists to delete.
+export interface RankedSurface { pinned: Listed[]; capped: Listed[] }
+
+const byRel = (a: Listed, b: Listed) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+
+// Exported for ONE reason: a test must be able to feed it a listing cc's own
+// callers can never produce.
+export function rankConfigSurface(targets: Listed[], imports: Listed[]): RankedSurface {
+  const pinned: Listed[] = [];
+  const dirs: Listed[] = [];
+  for (const e of targets) (ALLOW_FILES.includes(e.rel) ? pinned : dirs).push(e);
+  pinned.sort((a, b) => ALLOW_FILES.indexOf(a.rel) - ALLOW_FILES.indexOf(b.rel));
+  // `imports` is the caller's array; `listAllowed` has already filtered it
+  // against `have`, and sorting it in place would reorder that caller's data.
+  return { pinned, capped: [...[...imports].sort(byRel), ...dirs.sort(byRel)] };
+}
 
 // ONE batched `exec` for the whole allow-list — a `find` over the four fixed
 // files and three fixed directories, plus a second pass for the `@`-imports the
 // first pass's CLAUDE.md names. Two round trips at spawn, not one per entry.
-async function listAllowed(system: System, systemPath: string, mirror: MirrorScope): Promise<Listed[]> {
+async function listAllowed(system: System, systemPath: string, mirror: MirrorScope): Promise<RankedSurface> {
   const targets = [...ALLOW_FILES, ...ALLOW_DIRS].map(rel => path.posix.join(systemPath, rel));
   const first = await findManifest(system, systemPath, targets, mirror.exclude);
   const claude = first.find(e => e.rel === 'CLAUDE.md');
-  if (!claude) return first;
+  if (!claude) return rankConfigSurface(first, []);
   const imports = parseImports(await system.readFile(claude.abs), systemPath);
-  if (imports.length === 0) return first;
+  if (imports.length === 0) return rankConfigSurface(first, []);
   const have = new Set(first.map(e => e.rel));
   // THE SECOND PASS IS BOUND BY THE SAME LIST. An import names an arbitrary
   // path in the project, so it is exactly the case a target-shaped filter
   // misses; passing `exclude` here rather than pre-filtering keeps ONE gate.
-  const extra = (await findManifest(system, systemPath, imports, mirror.exclude))
-    .filter(e => !have.has(e.rel));
-  return [...first, ...extra];
+  //
+  // DEDUPED BY REL AGAINST ITSELF, not only against the targets pass. `imports`
+  // is one entry per `@` line, so a CLAUDE.md naming the same file twice sends
+  // `find` the same path twice and gets the record back twice — as does an
+  // import naming a DIRECTORY that another import sits under. The double pull
+  // that produced is older than the entry cap: it cost a second `readFile` on
+  // every COLD pull (a resume's manifest check short-circuits both copies) and a
+  // second charge against the byte budget on every compose, since `total` is
+  // charged above that check. What the cap turned it into is a FALSE CLAIM,
+  // because 2,001 copies of one import fill the cap and the summary skip then
+  // names a file that is on disk. Fixed by construction here rather
+  // than reworded downstream, so the cap bounds 2,000 DISTINCT entries.
+  //
+  // Scoped to this pass because it is the only one whose targets a project
+  // controls: the seven allow-list targets are disjoint by construction.
+  const extra: Listed[] = [];
+  for (const e of await findManifest(system, systemPath, imports, mirror.exclude)) {
+    if (have.has(e.rel)) continue;
+    have.add(e.rel);
+    extra.push(e);
+  }
+  return rankConfigSurface(first, extra);
 }
 
 // `-path` matches with fnmatch, so a path containing a glob metacharacter would
@@ -628,6 +768,18 @@ async function ensureLocalImport(target: string, pulled: boolean): Promise<void>
   const existing = await fs.readFile(target, 'utf8');
   if (existing.split('\n').some(line => line.trim() === CONVENTIONS_IMPORT_LINE)) return;
   await fs.writeFile(target, `${CONVENTIONS_IMPORT_LINE}\n${existing}`);
+}
+
+// Which TARGET the dropped entries came from, which is what a user can act on —
+// a list of paths would be as long as the overflow itself. An entry under none
+// of the recursive dirs came from the `@`-imports pass, the only other source.
+function rollup(dropped: Listed[]): string {
+  const counts = new Map<string, number>();
+  for (const e of dropped) {
+    const dir = ALLOW_DIRS.find(d => e.rel === d || e.rel.startsWith(`${d}/`)) ?? '@-imports';
+    counts.set(dir, (counts.get(dir) ?? 0) + 1);
+  }
+  return [...counts].map(([d, n]) => `${d} ${n}`).join(', ');
 }
 
 async function exists(p: string): Promise<boolean> {
