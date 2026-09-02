@@ -40,7 +40,7 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { waitFor } from './plugin-helpers.mjs';
 import { createPluginHost } from '../src/plugins/registry.ts';
-import { createProject, deleteProject, projectStoreDir } from '../src/projects.ts';
+import { createProject, deleteProject, projectStoreDir, tryResolveProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { setPluginConventionsProvider } from '../src/projectConventions.ts';
@@ -85,6 +85,34 @@ describe('a discovery scan that could not reach a project says so', () => {
   }
   async function boxUp() {
     await fs.rm(gate);
+  }
+
+  // THE BOX IS REACHABLE AGAIN, ESTABLISHED BY MEASUREMENT RATHER THAN BY
+  // ELAPSED TIME. Returns only once the project resolves through its System AND
+  // a real file has been read back through the handle that resolution produced.
+  //
+  // Both halves matter to the caller. Removing the gate file is not enough to
+  // make cc able to reach the box: the connection that failed during the
+  // down-phase is still cached with its failure count, and it REFUSES inside
+  // its own retry window without ever contacting the provider. Any assertion
+  // taken in that window cannot tell "the flag is latched" from "a live probe
+  // was refused by a backoff" — the two answers are identical. Dropping the
+  // handles retires that connection so the next one is fresh, and the wait then
+  // runs the exact resolution rescanInternal runs until it genuinely succeeds.
+  //
+  // WHAT THIS PERTURBS, stated rather than implied: disposing handles moves the
+  // placement fingerprint, so it invalidates any memoized conventions() result.
+  // It touches NEITHER term the discovery flag is computed from — not the
+  // recorded unreachable set, not the store — and it does not rescan. It also
+  // leaves the handle WARM, so a read taken immediately after does not pay a
+  // reconnect it could mistake for an outage.
+  async function boxVerifiablyReachable(project, manifestPath) {
+    disposeSystemHandles();
+    await waitFor(async () => {
+      const { system } = await tryResolveProject(project);
+      if (!system) return false;
+      return (await system.readFile(manifestPath)).includes('"id"');
+    }, { timeout: 15000, interval: 25 });
   }
 
   // A project on the gated box, created while the box is still up.
@@ -267,23 +295,35 @@ describe('a discovery scan that could not reach a project says so', () => {
   });
 
   // D5 ─────────────────────────────────────────────────────────────────
-  // PINS BOTH HALVES OF THE LATCH, in order. First: the box coming back does
-  // NOT clear the flag on its own — the assertion between boxUp() and the
-  // rescan observes that state directly, which is what rules out re-probing
-  // reachability at read time. Second: a rescan does clear it, and the
-  // fragment returns with it.
+  // PINS BOTH HALVES OF THE LATCH, in order. First: THE DEGRADE OUTLIVES THE
+  // CONNECTION'S RETRY WINDOW — a read taken once the box is VERIFIABLY
+  // reachable again, with no rescan in between, still reads degraded. Second:
+  // a rescan does clear it, and the fragment returns with it.
   //
-  // The first assertion is the one that carries the design decision. Without
-  // it a read-time re-probe of the recorded unreachable set would satisfy
-  // every other test in this file.
+  // The first assertion carries the design decision, and it is the ONLY place
+  // in this file that can: everywhere else the box is still down when the flag
+  // is read, so a read-time re-probe would answer "unreachable" and agree with
+  // the latch. This is the one moment where the two implementations must give
+  // different answers.
   //
-  // NOT CLAIMING: that the rescan succeeds on the immediately-next call —
-  // ProviderConnection opens a backoff window after a failed connect and
-  // refuses inside it, which is what the waitFor here is bounded against. And
-  // NOT claiming that the compose loop was in a position to re-probe anything
-  // here: the plugin is out of the catalog by then, so the only thing a
-  // read-time probe could consult is the recorded unreachable set — which is
-  // exactly what this pins is never consulted for liveness.
+  // Where it is taken is therefore the whole of its value. Asserting straight
+  // after the gate file is removed
+  // proves nothing: the connection that failed during the down-phase is still
+  // cached and refuses inside its own retry window, so a read-time re-probe —
+  // the shape this exists to rule out — answers "cannot reach it" honestly and
+  // is indistinguishable from a latch. Mutation-measured: that is exactly how
+  // the earlier version of this assertion passed. boxVerifiablyReachable()
+  // closes it by establishing reachability through a real resolution and read
+  // first, so a re-probe would have to succeed.
+  //
+  // NOT CLAIMING: that the rescan succeeds on the immediately-next call (the
+  // waitFor below is bounded against a fresh connect, not asserted to be
+  // instant). NOT claiming the compose loop was in a position to re-probe
+  // anything here: the plugin is out of the catalog by then, so the only thing
+  // a read-time probe could consult is the recorded unreachable set — which is
+  // precisely what this pins is never consulted for liveness. And NOT claiming
+  // anything about how long the retry window is; the point of measuring
+  // reachability instead of sleeping is that this test does not know or care.
   test('a rescan after the box comes back clears the degrade and restores the fragment', async () => {
     const tree = await boxProject('gp');
     await seedPluginTree(tree, manifest('gated-plug'), 'GATED CONTENT');
@@ -295,8 +335,15 @@ describe('a discovery scan that could not reach a project says so', () => {
     assert.equal(isDegraded(await host.conventions()), true);
 
     await boxUp();
+    await boxVerifiablyReachable('gp', path.join(tree, 'conductor.plugin.json'));
+
+    // THE LATCH, AT A MOMENT WHEN A RE-PROBE WOULD HAVE SUCCEEDED. The line
+    // above just resolved this project through its System and read its manifest
+    // back, on a warm handle, so "cannot reach it" is not available as an
+    // answer here. Nothing has rescanned, so the recorded unreachable set is
+    // untouched — and the flag is still up.
     assert.equal(isDegraded(await host.conventions()), true,
-      'the box is back and nothing has rescanned — the flag is latched to the last completed scan, not re-derived from reachability at read time');
+      'the degrade outlives the connection\'s retry window: it is latched to the last completed scan, not re-derived from reachability at read time');
 
     const recovered = await waitFor(async () => {
       await host.rescan();
@@ -315,17 +362,30 @@ describe('a discovery scan that could not reach a project says so', () => {
   // scan iterates listProjects(), which IS the registration enumeration, so a
   // deleted project is never skipped by it — it is simply absent.
   //
-  // AND THE MEASUREMENT THAT MADE THIS SITE DIFFERENT: the assertion below is
-  // that `projectStoreDir(name)` does NOT exist for a healthy, freshly-created
-  // in-root project. Card 2026-0263's discriminator reads a missing store dir
-  // as "authoritatively unregistered", so importing that discriminator into
-  // discovery would classify a live project as unregistered and drop its
-  // contributions at `degraded:false` — not merely unreachable here, but
-  // actively wrong.
+  // WHAT IT ACTUALLY DISCRIMINATES, stated narrowly because the obvious
+  // reading is wider than the test: it stops the flag being raised on "there
+  // is an enabled record" alone. Here the store still holds the enabled record
+  // for local-plug after the delete, and the catalog must stay healthy anyway,
+  // because the recorded unreachable set is EMPTY — the project left the
+  // enumeration rather than failing to resolve inside it.
+  //
+  // IT DOES NOT GUARD THE DISCRIMINATOR ITSELF. Mutation-measured: a store-dir
+  // term added to the read is never once evaluated during this test, because
+  // the empty-set early return short-circuits before any per-record term runs.
+  // A change that imports card 2026-0263's discriminator while keeping that
+  // early return is caught by D1/D2/D4/D5/D8, not here. What this test kills is
+  // the aggressive form that drops the early return as well.
+  //
+  // THE MEASUREMENT BELOW IS STILL WORTH PINNING, as the reason that
+  // discriminator has no future at this site: `projectStoreDir(name)` does NOT
+  // exist for a healthy, freshly-created in-root project. Card 2026-0263 reads
+  // a missing store dir as "authoritatively unregistered", so the same term
+  // here would classify a LIVE project as unregistered and drop its
+  // contributions at `degraded:false` — not merely unreachable at this site,
+  // but actively wrong.
   //
   // NOT CLAIMING: a red before the fix — this is a guard on the fix's
-  // narrowing, and it passed on the unfixed source too. What it stops is a
-  // later widening of the read to "any enabled record" or to a store-dir test.
+  // narrowing, and it passed on the unfixed source too.
   test('an unregistered project is absent from the scan, not skipped by it, and does not degrade', async () => {
     const dir = await localProject('localplug');
     await seedPluginTree(dir, manifest('local-plug'), 'LOCAL CONTENT');
@@ -394,14 +454,21 @@ describe('a discovery scan that could not reach a project says so', () => {
   // fixture, so the difference cannot be read as a fixture artefact.
   //
   // This is deliberately over-flagging: over-flagging costs a freeze that the
-  // next Rescan clears, under-flagging rewrites a committed file. It is here
-  // to stop a later author "tightening" the narrowing with a declares-any-
-  // conventions term — a persisted record is `{project, enabled,
-  // activeVersion}` and nothing else, so no such term exists at this site.
+  // next Rescan clears, under-flagging rewrites a committed file.
+  //
+  // NOT THE SOLE SENTINEL FOR THAT, though it reads like one. Mutation-measured:
+  // no declares-any-conventions term can actually distinguish this fixture from
+  // D1's contributing one at scan time, because the entry leaves `byId` with
+  // the same swap that records the unreachable set — so any such term reads
+  // uniformly false, the flag collapses entirely, and D1/D2/D5 die alongside
+  // this test. What is unique here is the FIXTURE, not the kill: it is the only
+  // place where compose-time and scan-time are made to disagree about one
+  // plugin in one run, which is what turns the documented difference into an
+  // observation.
   //
   // NOT CLAIMING: that the freeze is desirable for this plugin in particular
-  // (had the box been up it would have contributed nothing); that the store
-  // could not be TAUGHT such a term, only that it holds none today.
+  // (had the project resolved it would have contributed nothing); that the
+  // store could not be TAUGHT such a term, only that it holds none today.
   test('a no-conventions plugin degrades at scan time though it never could at compose time', async () => {
     const tree = await boxProject('barep');
     await seedPluginTree(tree, bareManifest('bare-plug'), 'UNUSED');
