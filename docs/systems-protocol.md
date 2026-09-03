@@ -433,8 +433,11 @@ to know:
   on the `openStream` frame and arms no cc-side deadline on that `exec`.
 - What is bounded is each **framed command** inside it, by
   `DEFAULT_COMMAND_TIMEOUT_MS` (605 000 ms = the built-in Bash tool's documented
-  600 000 ms max plus 5 s of slack, so the caller's own timer always expires
-  first; `ORCH_SHELL_COMMAND_TIMEOUT_MS` overrides it).
+  600 000 ms max plus 5 s of slack, so that for any tool timeout **up to that
+  documented max** the caller's own timer expires first and cc's never decides
+  the outcome; `ORCH_SHELL_COMMAND_TIMEOUT_MS` overrides it). A tool timeout
+  **above** the documented max is unmeasured; if the CLI honours one it outruns
+  this ceiling, and raising that var is what restores the ordering.
 - **A caller's `timeout` cannot move it.** The tool timeout a redirected `Bash`
   carries is a *foreground wait* and cc treats it as one: it bounds only how long
   that command waits for its turn on the shell (`EBUSY` past it), never how long

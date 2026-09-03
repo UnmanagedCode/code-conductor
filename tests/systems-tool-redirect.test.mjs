@@ -85,10 +85,22 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
 // GREEN ON ARRIVAL — card 2026-0305 changed what ProviderShell DOES with the
 // number, not how it travels. It is here because nothing tested the branch at
 // all: after that card the timeout no longer changes any run outcome, so the
-// argv is the only place the omit/emit decision is observable. The three
-// omitting inputs are the three `Number()` produces something unusable from —
-// absent (NaN), a literal 0, and prose — and each would silently become
-// `--timeout NaN`/`--timeout 0` on the wire without the guard.
+// argv is the only place the omit/emit decision is observable.
+//
+// THE FIVE OMITTING INPUTS SPLIT BY WHICH HALF OF THE GUARD CATCHES THEM, and
+// both halves are load-bearing: two are unusable to `Number()` and caught by
+// `Number.isFinite` (absent and prose, both NaN), and three are perfectly
+// finite and caught by `> 0` (a literal `0`; `null`, which `Number()` also
+// turns into `0`; and `-5`, which stays `-5`). Without `isFinite` the first two
+// reach the argv as `--timeout NaN`; without `> 0` the other three reach it as
+// `--timeout 0` / `--timeout -5`.
+//
+// AND THE ARGV IS WHERE THAT IS OBSERVABLE, which is this test's reason to
+// exist: two downstream layers independently re-drop these, at different
+// points — bashForwarder.ts's `timeoutMs && Number.isFinite(timeoutMs)` drops
+// NaN and 0 but SENDS `-5` on the body, and routes.ts's
+// `Number.isFinite(timeoutMs) && timeoutMs > 0` drops all three. So the far
+// side's behaviour is identical whether or not the guard here exists.
 test('a positive tool timeout rides out as --timeout, and nothing else does', async () => {
   const argvFor = async (input) =>
     (await pre('Bash', { command: 'echo hi', ...input })).updatedInput.command;

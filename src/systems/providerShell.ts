@@ -92,10 +92,17 @@ function isFsErrorCode(code: SystemErrorCode): boolean {
 // this constant to.
 const BASH_TOOL_MAX_TIMEOUT_MS = 600_000;
 
-// Extra time cc keeps a command past the CLI's own ceiling, so the CLI's timer
-// always expires first and cc's is never what decides the outcome. Same value
-// and same reason as providerSystem.ts's EXEC_TIMEOUT_SLACK_MS, which is not
-// shared because providerSystem.ts imports THIS module.
+// Extra time cc keeps a command past the DOCUMENTED max above, so that for any
+// tool timeout up to it the caller's own timer expires first and cc's is never
+// what decides the outcome. SCOPED TO THE DOCUMENTED MAX ON PURPOSE: a tool
+// timeout ABOVE 600_000 is unmeasured (the rig could not make the model emit
+// one), and if the CLI honours such a value it outruns this ceiling — cc would
+// then reset at 605s a command the CLI is still waiting on, which is this
+// card's own dead-pointer divergence relocated. ORCH_SHELL_COMMAND_TIMEOUT_MS
+// restores the ordering, and that is the answer rather than a placeholder:
+// measuring the CLI's true maximum is not cheaply possible from here. Same
+// value and same reason as providerSystem.ts's EXEC_TIMEOUT_SLACK_MS, which is
+// not shared because providerSystem.ts imports THIS module.
 const SHELL_TIMEOUT_SLACK_MS = 5_000;
 
 // THE PER-COMMAND CEILING, AND IT IS ONE NUMBER DOING THREE JOBS: the longest a
@@ -105,10 +112,13 @@ const SHELL_TIMEOUT_SLACK_MS = 5_000;
 // caller that does not control the command — and here the MODEL writes the
 // command: an unterminated quote is enough to wedge a shell, and nothing clears
 // it early (the idle sweep is armed only after a command finishes). At this
-// value cc never kills a command the CLI itself would still be waiting for, and
-// a wedge always clears well inside toolRedirect.ts's 15-minute idle TTL. Raise
-// it for legitimately longer background work — a LOCAL background Bash has no
-// deadline at all — knowing the wedge window rises with it.
+// value cc never kills a command the CLI would still be waiting for FOR ANY
+// TOOL TIMEOUT UP TO ITS DOCUMENTED MAX (see SHELL_TIMEOUT_SLACK_MS above for
+// what is unmeasured past it), and a wedge always clears well inside
+// toolRedirect.ts's 15-minute idle TTL. Raise it for legitimately longer
+// background work — a LOCAL background Bash has no deadline at all — or to
+// restore the ordering against a tool timeout above the documented max,
+// knowing the wedge window rises with it either way.
 //
 // EXPORTED so a test can pin the value and the derivation without waiting either
 // out, the same shape as providerSystem.ts's DEFAULT_OP_TIMEOUT_MS. Read HERE

@@ -774,8 +774,11 @@ function recordingOneShotHost() {
 //
 // The value itself is pinned here too, because it is derived rather than
 // written: 600_000 is the built-in Bash tool's documented max (the same number
-// src/mcp/handlers.ts clamps `project_bash` to) plus the 5s slack that keeps the
-// CLI's own timer, never cc's, the one that decides the outcome.
+// src/mcp/handlers.ts clamps `project_bash` to) plus 5s of slack, so that for a
+// tool timeout up to that documented max the caller's own timer is the one that
+// decides the outcome and never cc's. Past the documented max that ordering is
+// unmeasured and ORCH_SHELL_COMMAND_TIMEOUT_MS is what restores it — this test
+// pins the NUMBER and the derivation, and claims nothing about which timer wins.
 test("the per-command deadline is cc's ceiling, and a caller's timeoutMs cannot move it", async () => {
   assert.equal(DEFAULT_COMMAND_TIMEOUT_MS, 605_000, 'the ceiling is 600_000 + 5_000 of slack');
 
@@ -1020,9 +1023,13 @@ test('a command whose sentinel never arrives times out and RESETS the shell', as
     // THE WORDING, not just the code (card 2026-0305 §4 D4). After that card
     // this same message is also what a worker reads when a legitimately long
     // command hits cc's ceiling, so it has to name the ceiling as a ceiling
-    // rather than describe a wedge — "no shell sentinel" read as an internal
-    // fault. The number is THIS shell's ceiling, so a message carrying a
-    // literal fails here.
+    // rather than describe a wedge — the old wedge-shaped wording read as an
+    // internal fault. The number is THIS shell's ceiling, so a message carrying
+    // a literal fails here.
+    //
+    // The retired string is deliberately NOT quoted here: the acceptance sweep
+    // greps for it expecting zero hits, and a comment holding a copy would make
+    // a real regression of the message indistinguishable from this comment.
     assert.match(e.message, /still running after 50ms/, e.message);
     return true;
   });
