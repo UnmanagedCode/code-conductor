@@ -773,8 +773,13 @@ describe('an unknown or removed backend never falls through to real claude', () 
 // spontaneous crash() (nonzero exit + stderr) or Instance.kill() (signalled
 // exit). Mirrors FakeChildProcess's drain-then-exit so stderr is fully read by
 // the parent readline before 'exit' fires.
+//
+// Note this launcher's healthy children emit ONLY 'exit', never 'close' — so
+// nothing in the terminal-latch design may REQUIRE a 'close', and nothing does.
+// `failNext` arms the opposite shape (card 2026-0286): a spawn that never
+// started, which emits 'error' then 'close' and no 'exit' at all.
 class ControllableLauncher {
-  constructor() { this.children = []; }
+  constructor() { this.children = []; this.failNext = null; }
   launch() {
     const child = new EventEmitter();
     child.pid = null;
@@ -793,6 +798,22 @@ class ControllableLauncher {
     };
     child.crash = (msg) => { child.stderr.write(msg + '\n'); finish(1, null); };
     child.kill = () => { finish(null, 'SIGTERM'); return true; };
+    // A spawn that NEVER STARTED, matching real child_process.spawn against a
+    // missing binary: 'error' then 'close(-2, null)', never 'exit', and no
+    // stderr — the process never ran, so the reason rides on the spawn_error
+    // event rather than launch_failed's stderr field.
+    child.failSpawn = (msg) => {
+      if (child._exited) return; child._exited = true;
+      child.stdout.end(); child.stderr.end();
+      child.emit('error', Object.assign(new Error(msg), { code: 'ENOENT' }));
+      child.emit('close', -2, null);
+    };
+    if (this.failNext) {
+      const msg = this.failNext;
+      this.failNext = null;
+      // Deferred a tick: Instance wires its listeners AFTER launch() returns.
+      setImmediate(() => child.failSpawn(msg));
+    }
     this.children.push(child);
     return child;
   }
@@ -850,6 +871,29 @@ describe('launch_failed crash signal', () => {
     await waitFor(() => cinst.get(id)?.status === 'crashed');
     assert.ok(events.find(e => e.kind === 'system' && e.subtype === 'exit'), 'exit still emitted');
     assert.equal(hasLaunchFailed(), undefined, 'no launch_failed for claude backend');
+  });
+
+  // T10 (card 2026-0286) — the case docs/protocol.md names FIRST ("wrapper binary
+  // missing") and which emitted NOTHING terminal before the terminal latch: the
+  // wrapper never started, so there was no 'exit' to key launch_failed on.
+  test('a substitution-backend spawn that NEVER STARTED also emits launch_failed', async () => {
+    await addBackend({ id: 'ghosty', label: 'Ghosty', template: 'ghostyctl claude --model {model} --' });
+    await addCustomModel({ label: 'G', model: 'g:v1', backend: 'ghosty', contextWindow: 100_000 });
+    await api(cbase, 'POST', '/api/projects', { name: 'p' });
+    launcher.failNext = 'spawn ghostyctl ENOENT';
+    const r = await api(cbase, 'POST', '/api/instances',
+      { project: 'p', mode: 'bypassPermissions', model: 'g:v1', backend: 'ghosty' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = cinst.get(r.body.id);
+    await waitFor(() => inst.proc === null);
+    assert.equal(inst.status, 'crashed');
+    const ev = hasLaunchFailed();
+    assert.ok(ev, 'launch_failed emitted for a spawn that never started');
+    assert.equal(ev.data.code, -2);
+    assert.equal(ev.data.signal, null);
+    assert.equal(ev.data.stderr, null, 'no process ever ran, so there is no stderr');
+    const se = events.find(e => e.kind === 'system' && e.subtype === 'spawn_error');
+    assert.match(se.data.message, /ghostyctl ENOENT/, 'the reason rides on spawn_error');
   });
 
   test('a commanded kill of a substitution-backend session does NOT emit launch_failed', async () => {
