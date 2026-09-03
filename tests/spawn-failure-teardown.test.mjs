@@ -27,8 +27,10 @@
 //   window ('error' delivered so the launch is doomed, terminal event not yet, so
 //   `proc` is still assigned and the early-out cannot fire — the state the card
 //   measured). T5 and T12 get there on the HEALTHY path, where `proc` is
-//   legitimately live and the await is unavoidable either way; they earn their
-//   place by pinning the one-shot flag and the arm, not by window entry.
+//   legitimately live and the await is unavoidable either way; what each earns its
+//   place with, per test: the ONE-SHOT FLAG is T5 alone — T12 cannot see a lost
+//   flag, because ExitOnlyLauncher's own `exited` guard means its `finish` never
+//   fires twice in the first place — and the ARM is T5 (both) plus T12 (exit).
 //     T3  InstanceManager.shutdown() returns          ← the card's TITLE behaviour
 //         · race window · CLOSE arm
 //     T4  kill() resolves off 'close' alone, leaving no ref'd timer
@@ -48,7 +50,9 @@
 //   EARLY-OUT / INTEGRATION CHECKS — they pin the settled end state and its
 //   consequences, not the await. Each is red on the base tree because `proc` never
 //   becomes null there, i.e. they fail at the settle barrier rather than at the
-//   operation each is named for. All reach the latch through its CLOSE arm.
+//   operation each is named for. None of them reaches the await — that is what
+//   makes them early-outs — but the event that SETTLED each instance ahead of the
+//   call was 'close' in every case, so none constrains the exit arm either.
 //     T1  a failed spawn ends with proc null, pid null, status crashed, and the
 //         ring carrying spawn_error THEN exit
 //     T2  kill() on an ALREADY-settled failure resolves — the early-out itself
