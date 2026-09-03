@@ -411,17 +411,29 @@ test('a second hello that arrives AFTER the handshake still fails the next opera
   } finally { sys.dispose(); }
 });
 
-test('a hello with no absolute system.shell is refused at the handshake', async () => {
-  // `system.shell` is the only descriptor field cc ACTS on. Accepting '' here
-  // defers the failure to the first redirected shell, where it surfaces as an
-  // obscure spawn error with nothing pointing at the handshake.
-  const sys = fakeSystem('bad-shell');
+// T8 — THE INVERSE OF A REFUSAL THIS FILE USED TO CARRY, and the reason it is
+// this rather than an inversion. The hello once REQUIRED a `system` object whose
+// `shell` was an absolute path, refused EPROTO at the handshake; card 2026-0312
+// deleted the whole descriptor, because `shell` was the only field cc ever acted
+// on (it opened the long-lived shell) and the other three had zero readers
+// before that card.
+//
+// INVERTING the old test would have pinned NOTHING: "a hello without an absolute
+// `system.shell` is accepted" passes for a tree that still has the validation,
+// as long as the fake sends a valid value — and it would pass trivially for
+// ever. So what is asserted is the strictly stronger thing: a hello with NO
+// `system` KEY AT ALL connects, and the System it yields WORKS.
+//
+// RECORDED, because a future reader must not mistake this for a ruling: it says
+// nothing reads the descriptor today, NOT that cc has decided it never will. An
+// unknown key is ignored by contract, so a future consumer simply re-adds the
+// field it needs at no compatibility cost.
+test('a hello with no system descriptor at all connects', async () => {
+  const sys = fakeSystem('ok');
   try {
-    await assert.rejects(() => sys.connect(), (e) => {
-      assert.equal(e.code, 'EPROTO', e.message);
-      assert.match(e.message, /absolute system\.shell/);
-      return true;
-    });
+    const hs = await sys.connect();
+    assert.equal('system' in hs, false, 'cc records no descriptor, because it reads none');
+    assert.match(hs.provider, /^fake-ok\//);
   } finally { sys.dispose(); }
 });
 

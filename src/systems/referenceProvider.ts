@@ -39,7 +39,6 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import {
   BINARY_SNIFF_BYTES, CHUNK_BYTES, MAX_FILE_BYTES, NdjsonDecoder, PROTOCOL_VERSION,
@@ -189,12 +188,6 @@ export class ReferenceProvider {
           processGroupSignal: this.#opts.processGroupSignal,
           remotes: this.#opts.remotes.size > 0,
           remoteDescriptors: this.#opts.mirrors.size > 0,
-        },
-        system: {
-          os: process.platform,
-          pathSep: path.sep,
-          shell: process.env.SHELL || '/bin/bash',
-          home: os.homedir(),
         },
       });
       return;

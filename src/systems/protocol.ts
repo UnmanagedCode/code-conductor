@@ -189,27 +189,25 @@ export function readCapabilities(v: unknown): Capabilities {
   };
 }
 
-// What the provider tells cc about the far side at handshake. cc uses `shell`
-// to open the long-lived shell and reports the rest.
-export interface SystemDescriptor {
-  os: string;
-  pathSep: string;
-  shell: string;
-  home: string;
-}
-
 // ── Frames ───────────────────────────────────────────────────────────
 
 export interface HelloClientFrame { type: 'hello'; protocol: number; client: string }
+// NO `system` DESCRIPTOR. The hello used to carry one — `os`, `pathSep`,
+// `shell`, `home` — with `shell` REQUIRED and refusal-enforced. `shell` was the
+// only field cc ever acted on (it opened the long-lived shell with it) and card
+// 2026-0312 removed that shell, taking the last reader with it; the other three
+// had ZERO readers before that card, and the claims that cc "reports the rest"
+// were false when they were written.
+//
+// THIS RECORDS "NOTHING READS IT TODAY", NOT "cc will never need `os`/`pathSep`/
+// `home`". There is no compatibility cost to a future consumer re-adding the
+// field it needs: an unknown key is ignored by contract, so a provider may
+// already send one and cc simply will not look.
 export interface HelloProviderFrame {
   type: 'hello';
   protocol: number;
   provider: string;
   capabilities?: Record<string, unknown>;
-  // REQUIRED, and `shell` within it must be an absolute path: it is the only
-  // descriptor field cc acts on, and a hello without it is refused EPROTO at
-  // the handshake. The rest of the descriptor is advisory and defaulted.
-  system: { shell: string } & Partial<SystemDescriptor>;
 }
 
 // ── The four REQUEST frames, and the one field they share ────────────

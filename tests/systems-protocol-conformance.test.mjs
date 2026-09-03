@@ -61,15 +61,18 @@ for (const config of CAPABILITY_CONFIGS) {
 
   // ── Handshake and capability negotiation ─────────────────────────
 
-  test(`${tag} the handshake carries the protocol version, the provider name, the capabilities and the system`, async () => {
+  // The descriptor assertions went with card 2026-0312: the hello carries no
+  // `system` object at all, and this suite's provider sends none — so every
+  // operation below is also the positive half of "a hello with no descriptor
+  // yields a System that works" (T8's other half is in
+  // tests/systems-provider-supervision.test.mjs).
+  test(`${tag} the handshake carries the protocol version, the provider name and the capabilities`, async () => {
     await withSystem(config.flags, async (sys) => {
       const hs = sys.handshake;
       assert.deepEqual(hs.capabilities, config.caps, 'the flags the provider was launched with are what it advertises');
       assert.match(hs.provider, /^\S+\/\S+$/, 'a provider names and versions itself');
       if (IS_REFERENCE_PROVIDER) assert.match(hs.provider, /^reference-local\//);
-      assert.equal(hs.system.pathSep, path.sep);
-      assert.ok(hs.system.shell.startsWith('/'), 'the far side names the shell cc opens for a redirected Bash');
-      assert.ok(hs.system.home.length > 0);
+      assert.equal('system' in hs, false, 'cc records no descriptor, because it reads none');
       assert.equal(PROTOCOL_VERSION, 1);
     });
   });

@@ -19,7 +19,7 @@
 import path from 'node:path';
 import {
   CHUNK_BYTES, MAX_FILE_BYTES, NO_CAPABILITIES, SystemError, classifySpawnError, execFailure, isSystemErrorCode,
-  type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor, type SystemErrorCode,
+  type AnyFrame, type Capabilities, type ClientFrame, type SystemErrorCode,
 } from './protocol.ts';
 import { ExecOutputCollector } from './execCollector.ts';
 import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } from './mirror.ts';
@@ -611,8 +611,6 @@ export class ProviderSystem implements System, ShellHost {
   get capabilities(): Capabilities {
     return this.#conn.handshake?.capabilities ?? NO_CAPABILITIES;
   }
-
-  get descriptor(): SystemDescriptor | null { return this.#conn.handshake?.system ?? null; }
 
   execOneShot(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> { return this.exec(spec, opts); }
 

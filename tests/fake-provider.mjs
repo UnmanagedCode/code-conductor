@@ -29,7 +29,6 @@
 //   double-hello  answers the handshake twice IN ONE WRITE, so the violation
 //                 lands between the handshake resolving and cc recording it
 //   late-hello    answers the handshake, then sends a second hello later
-//   bad-shell     says hello with an empty system.shell
 //   bad-b64       says hello, then answers an exec with a CORRUPTED payload
 //   no-datab64    says hello, then answers with a payload frame that has none
 //   deaf          says hello, then IGNORES stdin EOF — a provider in breach of
@@ -94,7 +93,6 @@ function handle(f) {
       protocol: mode === 'bad-version' ? 99 : 1,
       provider: `fake-${mode}/0.1.0`,
       capabilities: { processGroupSignal: true },
-      system: { os: 'linux', pathSep: '/', shell: mode === 'bad-shell' ? '' : '/bin/bash', home: '/root' },
     };
     if (mode === 'double-hello') {
       // ONE write, so both frames arrive in one chunk: cc must not record a
