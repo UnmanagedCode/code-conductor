@@ -29,7 +29,7 @@ System owns a project's tree, its git repo and shell commands run inside it.
 | Payload validity | A `dataB64` on a `stdout`, `stderr`, `data` or `stdin` frame **MUST be canonical base64** (standard alphabet, correct padding, length a multiple of 4) and **MUST be present**. A payload is part of its frame, so an invalid one is `EPROTO` and fatal exactly as an unparseable line is — decoders in most languages stop at the first bad character and return the prefix, which would turn a corrupted chunk into a silently truncated success. |
 | Chunk size | `CHUNK_BYTES` = 64 KiB of raw bytes per `data` frame, before base64. **Both ends MUST chunk at it** — a payload is not permitted to ride as one large frame. A 32 MiB read sent as a single frame breaches the line ceiling below and dies `EPROTO` mid-transfer. |
 | Per-file cap | `MAX_FILE_BYTES` = 32 MiB. A read or write above it is `EFBIG`. |
-| Paths | **Absolute, on the system.** cc never sends a relative path — **enforced client-side, on both implementations of `System`** (`requireAbsolute`, `src/systems/system.ts`, since the invariant is a property of cc's callers rather than of a transport): every path-taking operation, plus the `cwd` of `exec` **and** of `openStream` (the persistent shell — the second way a `cwd` reaches an `exec` frame). A relative path is cc's own bug, so it REJECTS with the operation named, never a returned refusal and never a frame a provider has to reject. |
+| Paths | **Absolute, on the system.** cc never sends a relative path — **enforced client-side, on both implementations of `System`** (`requireAbsolute`, `src/systems/system.ts`, since the invariant is a property of cc's callers rather than of a transport): every path-taking operation, plus the `cwd` of `exec`, which is the one way a `cwd` reaches the wire. A relative path is cc's own bug, so it REJECTS with the operation named, never a returned refusal and never a frame a provider has to reject. |
 
 Provider MUSTs:
 
@@ -127,30 +127,31 @@ The provider answers exactly once:
 
 ```json
 {"type":"hello","protocol":1,"provider":"docker-exec/0.1.0",
- "capabilities":{"persistentShell":true,"processGroupSignal":true,"remotes":true},
- "system":{"os":"linux","pathSep":"/","shell":"/bin/bash","home":"/root"}}
+ "capabilities":{"processGroupSignal":true,"remotes":true}}
 ```
 
 - `protocol` is an integer. **A mismatch is refused** (`EPROTO`) — cc speaks
   `PROTOCOL_VERSION`, currently `1`.
 - `capabilities`: a **missing key is `false`**; an **unknown key is ignored**.
-- **`system.shell` is REQUIRED and MUST be an absolute path.** It is the only
-  descriptor field cc *acts* on — it is what a redirected shell is opened with
-  (§5) — so a hello without it, or with a relative or empty one, is refused
-  `EPROTO` at the handshake. Refusing here rather than later is deliberate: the
-  alternative surfaces much later as an obscure spawn failure inside a shell
-  session, with nothing pointing back at the handshake. A provider that does not
-  know its target's shell up front must find one before answering (`getent
-  passwd`, `$SHELL`, or a hardcoded `/bin/sh`) rather than omit the field.
-- The other `system` fields (`os`, `pathSep`, `home`) are advisory: cc reports
-  them and defaults them when absent.
-- **The `system` descriptor describes the provider's DEFAULT target.** A
-  provider that advertises `remotes` still sends exactly one, and cc opens every
-  redirected shell with that one `system.shell` — so on a multi-target provider
-  every target gets the same shell. A provider whose targets need different
-  shells has no way to say so yet. The one per-target fact cc does negotiate is
-  the **mirror advertisement** (§2.1), which rides its own frame precisely
-  because the handshake carries a single descriptor.
+- **There is NO `system` descriptor.** The hello carried one — `os`, `pathSep`,
+  `shell`, `home`, with `shell` REQUIRED and refused `EPROTO` when absent — and
+  it is gone. `shell` was the only field cc ever acted on (it opened the
+  long-lived shell) and there is no long-lived shell; the other three had **zero
+  readers** even before that, so the claim that cc "reports the rest" was false
+  when it was written. Send one anyway if you like: an unknown key is ignored.
+  - **This records that nothing reads it today, NOT that cc has decided it never
+    will.** A future consumer re-adds the field it needs and cc starts reading
+    it; there is no compatibility cost either way, because a provider that
+    already sends one is already ignored.
+- **THE PROVIDER OWNS THE INTERPRETER, per target.** cc requires a POSIX shell
+  and nothing more, and its framing (§5) does not care which one or whether it is
+  a login shell — measured on this host under `bash -lc`, `bash -c`, `/bin/sh -c`
+  and `/bin/sh` (dash 0.5.12): identical `$?` propagation, identical `$PWD`
+  capture, and the opening sentinel discarding whatever the interpreter printed
+  before the script in every case. So a provider whose targets need different
+  shells simply uses different ones; nothing is negotiated and nothing needs to
+  be. The one per-target fact cc DOES negotiate is the **mirror advertisement**
+  (§2.1), which rides its own frame.
 - Unknown *frame types* are likewise ignored by both ends. Unknown capability
   keys and unknown frame types are the extension point: **the contract can grow
   without a version bump.**
@@ -164,10 +165,9 @@ a user-visible difference, **and a test that runs the fallback**.
 | Capability | Bucket | Absent-behaviour | User-visible difference | Fallback test |
 |---|---|---|---|---|
 | `exec`, `readFile`, `writeFile` | **1 — MUST** | Registration fails; there is no cc without them | — | — |
-| **`persistentShell`** | **2 — OPTIONAL** | cc runs every redirected shell command as a **one-shot `exec`** of the same framing, passing `cwd` explicitly and reading `$PWD` back from the sentinel to carry into the next call | **cwd persists; exports, shell functions and background jobs do not** — which matches the local CLI, whose `Bash` also carries only cwd. Three further differences the mode really does have, stated rather than glossed: **(1)** each command gets a fresh login shell, so profile-file output would land in the command's output — the framing's opening sentinel (§5) is what stops it, and it is load-bearing here in a way it is not for a persistent shell; **(2)** a cwd deleted since the last command fails the NEXT command with `ENOENT` rather than running it somewhere, where a persistent shell would keep running in the deleted directory; **(3)** the command is carried by the `exec` frame's `shell` form, so what it needs of the far side is that form's login shell, not the `system.shell` a persistent session is opened with | `tests/systems-shell-framing.test.mjs`, every case, in both modes |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
-| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The session root is the local image of the project root exactly as before, `mirrorRoot = systemPath`, `offset = ""`, and no path is excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry, same walk | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, `offset === ''`, `cwd === root`, the exclude list is empty. Plus the `remoteDescriptors:false` row asserted in all three configurations of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
+| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The session root is the local image of the project root exactly as before, `mirrorRoot = systemPath`, `offset = ""`, and no path is excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry, same walk | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, `offset === ''`, `cwd === root`, the exclude list is empty. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename`, `symlink` | **not in the protocol** | — | cc issues neither: nothing on the `System` interface renames or symlinks on a system, so a provider is never asked to | — |
@@ -262,8 +262,6 @@ anything — but it is lying in its own logs.
 |---|---|---|
 | `hello` | `protocol`, `client` | Opens the connection |
 | `exec` | `id`, `cwd`, **`argv`** *or* **`shell`**, `remoteId?`, `env?`, `timeoutMs?`, `killGraceMs?`, `stdin?` | Run a command |
-| `stdin` | `id`, `dataB64` | Write to a running command's stdin. **Requires `persistentShell`** |
-| `stdinClose` | `id` | EOF its stdin. **Requires `persistentShell`** |
 | `signal` | `id`, `signal`, `processGroup` | Signal a running command. **`signal` is a POSIX signal NAME in `SIG*` form** (`"SIGTERM"`, `"SIGKILL"`) — never a bare name and never a number |
 | `close` | `id` | Abandon the operation |
 | `readFile` | `id`, `path`, `remoteId?`, `offset?`, `length?` | Read |
@@ -282,7 +280,7 @@ would be unsafe.
 
 | Frame | Fields | Meaning |
 |---|---|---|
-| `hello` | `protocol`, `provider`, `capabilities?`, **`system`** (with an absolute `system.shell`; `os`/`pathSep`/`home` optional) | Handshake reply |
+| `hello` | `protocol`, `provider`, `capabilities?` | Handshake reply |
 | `stdout` / `stderr` | `id`, `seq`, `dataB64` | Output of a running command |
 | `exit` | `id`, `code`, `signal`, `timedOut`, `descendantsMaySurvive?` | Terminal for an `exec` |
 | `readFileResult` | `id`, `size`, `mode`, `isBinary` | Opens a read; `data`… then `end` follow |
@@ -304,7 +302,7 @@ Ids are generated by cc, are never reused, and are opaque to the provider.
 **AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME.** The `remoteId` on the
 opening `exec` / `readFile` / `writeFile` is the operation's target for every
 frame that follows it (`describeRemote`, the fourth request frame, has no
-follow-on frames — it opens and closes in one exchange) — `stdin`, `stdinClose`, `signal`, `close`, `data`, `end`
+follow-on frames — it opens and closes in one exchange) — `signal`, `close`, `data`, `end`
 carry no `remoteId` and a provider must not look for one on them. A provider
 that re-derived the target per frame would have to answer "which target" for a
 frame that never names one.
@@ -326,7 +324,7 @@ cc  →  {"type":"exec","id":"e7","remoteId":"ctr-a","cwd":"/app","argv":["git",
 | Field | Contract |
 |---|---|
 | `argv` | Run the binary directly, no shell. `argv[0]` is the executable. |
-| `shell` | Run the string through a **login shell** (`bash -lc <string>`). This is what a user-authored hook or start command expects: pipes, `&&`, login-shell PATH. |
+| `shell` | Run the string through a shell (`bash -lc <string>` in the reference provider; `sh -c` is equally valid — see §11). **The interpreter is the provider's choice, per target**: cc requires a POSIX shell and nothing more, and cc's own framing (§5) is interpreter-agnostic and does not require a *login* shell. Whichever is picked must give a user-authored hook or start command what it expects: pipes, `&&`, a usable PATH. |
 | `cwd` | Absolute. The command's working directory. |
 | `env` | **REPLACES** the environment, exactly as `posix_spawn` does — not an overlay. Absent means the provider's own environment. |
 | `timeoutMs` | The **provider** enforces it: SIGTERM the command (its whole group where the capability allows), SIGKILL after `killGraceMs`, then report `{"code":124,"timedOut":true}`. 124 is `timeout(1)`'s convention. |
@@ -348,29 +346,26 @@ Rules:
   `descendantsMaySurvive: true`** on the eventual `exit`.
 - `close` means cc has stopped listening: kill the command (hard) and emit
   **no further frames** for that id.
-- **Backstop: no operation is unbounded.** cc arms its own deadline on every
-  `exec` **except the persistent shell's** — at `timeoutMs + 5 s` when the caller
-  named one, and at a generous default ceiling when it did not (`runGit` and the
+- **Backstop: no operation is unbounded, with no exceptions.** cc arms its own
+  deadline on every `exec` — at `timeoutMs + 5 s` when the caller named one, and at a generous default ceiling when it did not (`runGit` and the
   §7 derivations deliberately carry no timeout, because locally there is nothing
   to time out against). Expiry sends `close`, which is the provider's instruction
   to kill the command, and reports `{code:124, timedOut:true}`. `readFile` and
   `writeFile` carry the same ceiling and fail `ETIMEDOUT`. The ceiling is a
   liveness fence, not a performance budget: it sits above the slowest legitimate
   operation cc issues, so it can only ever turn a hang into a reported failure.
-  `openStream` arms **none** and sends no `timeoutMs`: the shell it carries is
-  meant to outlive any one command, so what bounds that path is the **per-command**
-  ceiling in §5, and expiry there **resets the shell** instead of reporting
-  `{code:124,timedOut:true}`.
+  **No operation is an exception**: a redirected shell command is an ordinary
+  bounded `exec`, carrying the per-command ceiling of §5 as its `timeoutMs`.
 
-### The long-lived shell (cc-side framing)
+### The redirected shell command (cc-side framing)
 
-There is **no shell operation in this protocol**. A redirected shell is one
-`exec` of `$SHELL -l` that cc keeps open and writes framed commands into. Only
-`persistentShell` is negotiated; the framing is entirely cc's
-(`src/systems/shellFraming.ts`), which is why a provider needs to implement
-nothing for it beyond honouring `stdin` frames.
+There is **no shell operation in this protocol**, and nothing long-lived. A
+redirected shell command is **one `exec` per command** of a script cc frames
+itself (`src/systems/shellFraming.ts`) — the shape a LOCAL `Bash` call already
+has, where nothing outlives the command either. A provider implements nothing
+for it beyond `exec`.
 
-For each command cc writes:
+For each command cc sends:
 
 ```sh
 printf '\n__CC_<nonce>_BEGIN__\n'; printf '\n__CC_<nonce>_BEGIN__\n' >&2
@@ -380,73 +375,78 @@ __cc_rc=$?; printf '\n__CC_<nonce>__ %d %s\n' "$__cc_rc" "$(printf %s "$PWD" | b
 printf '\n__CC_<nonce>__\n' >&2
 ```
 
-Braces rather than a subshell, so `cd` and `export` land in the shell itself;
-`$PWD` rides as base64 because a path may contain spaces or newlines. Each
-stream is bracketed by its OWN pair of sentinels, so cc knows both where a
-command's output starts and when it is done.
+Braces rather than a subshell, so a `cd` inside the command is the shell's own
+and `$PWD` reports it; `$PWD` rides as base64 because a path may contain spaces
+or newlines. Each stream is bracketed by its OWN pair of sentinels, so cc knows
+both where a command's output starts and when it is done.
+
+**THE SENTINEL'S `$?` IS THE ONLY EXIT CODE THERE IS**, and it is not redundant
+with the `exit` frame. Measured: the framed script's own `exec` exits **0** while
+the user command exits **2** (`ls /nope`) — the script's last statement is a
+`printf`. A provider MUST NOT synthesise a command's exit code from the `exec`'s.
+
+**CAPTURE, NOT CARRY.** cc reads `$PWD` back so it can TELL the worker where its
+command ended; it never feeds that value into the next command's `cwd`. Every
+command starts at the project root, and a command that ended elsewhere gets a
+notice saying so — because a discarded `cd` that is never mentioned is the
+silent divergence this whole layer exists to prevent.
 
 Five rules, each earned by a measured or reasoned failure:
 
 1. **The nonce is random per command, not per shell.** A fixed nonce is
    forgeable: a command that echoed the sentinel was measured desynchronising
    the parser — five frames for four commands, the forgery parsed as `rc=999`.
-2. **First match wins, then stop parsing** until cc writes the next command. A
-   forgery can then truncate only its own output; **a desync cannot propagate
-   past one command.**
-3. **`< /dev/null` on the command group.** A command genuinely needing stdin
-   runs as its own one-shot `exec`, at the cost of not sharing shell state.
+2. **First match wins, then stop parsing.** A forgery can then truncate only its
+   own output; **a desync cannot propagate past one command.**
+3. **`< /dev/null` on the command group**, matching `project_bash`'s
+   `stdin:'ignore'` and the CLI's own Bash tool, which has no stdin parameter.
 4. **EVERY sentinel line — opening and closing, on BOTH streams — is emitted
    with an injected leading newline.** A sentinel only counts when it STARTS a
    line, and whatever precedes it may have no trailing newline of its own: a
    command ending in `printf err >&2`, or a login profile printing an
    unterminated banner. Without the injected newline the marker glues itself to
-   that text, never matches, and the command wedges until its deadline — and in
-   a persistent shell the reset reopens the same login shell, which reprints the
-   same banner, so it is a *loop*: one wedge per command for the life of the
-   session. This is the rule to keep if any line of the script is ever edited;
-   the four sentinels are just today's instances of it.
+   that text, never matches, and the command runs to its deadline instead of
+   returning — on EVERY command, because every command gets its own shell and its
+   own copy of that banner. This is the rule to keep if any line of the script is
+   ever edited; the four sentinels are just today's instances of it.
 5. **cc strips the injected newline back off the CLOSING sentinels**, so a blank
    line is never attributed to the command. The opening ones need no strip:
    everything before them is discarded by definition.
 
-**The opening sentinel is what separates the shell's output from the command's.**
-`$SHELL -l` is a *login* shell: it sources profile files, and whatever they
-print arrives before the command's own output. Everything up to and including
-the opening sentinel line is discarded. This matters most in the
-`persistentShell:false` fallback, where every command gets its own login shell
-and so its own copy of that banner.
+**The opening sentinel is what separates the shell's output from the command's**,
+and it is load-bearing on EVERY command. Whatever the interpreter prints before
+cc's first `printf` — a login shell's MOTD, an `nvm` banner — arrives on the
+stream ahead of the command's own output, and everything up to and including the
+opening sentinel line is discarded. This is why the interpreter is the provider's
+choice (§2): a login shell is safe because the banner is discarded, and a
+non-login shell is safe because there is nothing to discard.
 
-Two wedge modes, one recovery: an unterminated quote leaves the shell awaiting
-input and no sentinel arrives (the per-command deadline fires → `ETIMEDOUT`); a
-command that exits the shell closes the channel (`ESHELLGONE`). Both **reset**
-the shell — close it and open a fresh one on the next command. A reconnected
-shell says it lost its state rather than silently restoring cwd and looking
-continuous. Concurrent commands are serialised per shell; a wait past its bound
-is `EBUSY`.
+**THE WEDGE CLASS IS GONE.** A command that destroys its own framing — an
+unterminated quote, a syntax error, an `exit` — takes its own shell with it and
+fails `ESHELLGONE`, immediately (measured: 17 ms, against the 1504 ms full
+deadline the long-lived shell took to notice the same input). It costs the next
+command nothing, because the next command has its own shell. **Nothing is
+serialised**: N commands of one session are N independent processes, exactly as
+a local fan-out produces, bounded by the same thing that bounds it locally.
 
-**The shell's deadline is PER COMMAND, and it is cc's, not the caller's.**
-Distinct from every other operation's fence in three ways a provider author has
-to know:
+**The deadline is PER COMMAND, it is cc's, and no caller can move it.**
+`DEFAULT_COMMAND_TIMEOUT_MS` is 605 000 ms = the built-in Bash tool's documented
+600 000 ms max plus 5 s of slack, so that for any tool timeout **up to that
+documented max** the caller's own timer expires first and cc's never decides the
+outcome; `ORCH_SHELL_COMMAND_TIMEOUT_MS` overrides it. A tool timeout **above**
+the documented max is unmeasured; if the CLI honours one it outruns this ceiling,
+and raising that var is what restores the ordering.
 
-- **A shell `exec` may legitimately live for the whole session**, so a provider
-  **must not impose an idle timeout of its own on it** — cc sends no `timeoutMs`
-  on the `openStream` frame and arms no cc-side deadline on that `exec`.
-- What is bounded is each **framed command** inside it, by
-  `DEFAULT_COMMAND_TIMEOUT_MS` (605 000 ms = the built-in Bash tool's documented
-  600 000 ms max plus 5 s of slack, so that for any tool timeout **up to that
-  documented max** the caller's own timer expires first and cc's never decides
-  the outcome; `ORCH_SHELL_COMMAND_TIMEOUT_MS` overrides it). A tool timeout
-  **above** the documented max is unmeasured; if the CLI honours one it outruns
-  this ceiling, and raising that var is what restores the ordering.
-- **A caller's `timeout` cannot move it.** The tool timeout a redirected `Bash`
-  carries is a *foreground wait* and cc treats it as one: it bounds only how long
-  that command waits for its turn on the shell (`EBUSY` past it), never how long
-  it may run.
+It is enforced by the **provider**, as the `exec` frame's own `timeoutMs`, and
+expiry kills the command and reports `{code:124,timedOut:true}` exactly as any
+other bounded `exec` does. It does **one** job — the longest a command may run.
+It used to do three, also capping how long a wedged shell stayed wedged and how
+long a queued command waited for its turn, and both of those went with the
+long-lived shell and the queue.
 
-Expiry **resets the shell** and fails the command `ETIMEDOUT`, rather than
-sending `close` and reporting `{code:124,timedOut:true}` as a bounded `exec`
-does: a framed command shares the shell's process group and has no `exec` id of
-its own to signal.
+The tool timeout a redirected `Bash` carries reaches cc **not at all**. The CLI
+enforces it by killing the forwarder, which closes the socket — that is cc's
+cancellation channel, and it needs no number.
 
 ## 6. `readFile` and `writeFile`
 
@@ -562,8 +562,7 @@ shell.
 | `ETRANSPORT` | The connection is gone: the provider exited, the pipe broke, or the launch failed. Every in-flight operation fails with it **immediately**. |
 | `ETIMEDOUT` | A bounded wait elapsed: the handshake, or a shell command's deadline. |
 | `EUNSUPPORTED` | An optional capability the provider does not advertise was asked for. |
-| `EBUSY` | The wait for a serialised shell exceeded its bound. |
-| `ESHELLGONE` | The long-lived shell died, or a command destroyed the framing so no sentinel can arrive. |
+| `ESHELLGONE` | A redirected command destroyed its own framing, so no sentinel could arrive. |
 | `EFBIG` | A read or write above `MAX_FILE_BYTES`. |
 | `ENOREMOTE` | The request named a `remoteId` this provider does not serve — or named none, on a provider that advertises `remotes` and therefore has no default. cc converts it to `REMOTE_NOT_FOUND` (502) at the registry. **It MUST be id-addressed** — see §9. |
 
@@ -577,7 +576,6 @@ provider's choice — it follows from what failed:
 | `readFile` / `writeFile` that the filesystem refused | **the FS code the local filesystem would have raised**: `ENOENT`, `EACCES`, `EEXIST` (an `exclusive` write over an existing file), `EISDIR` (a read of a directory), `ENOTDIR`, `ENOSPC` |
 | `readFile` / `writeFile` above `MAX_FILE_BYTES` | `EFBIG` |
 | an `exec` whose command **never started** | the FS code of the spawn failure — usually `ENOENT` (no such binary, or a cwd that is gone), `EACCES` |
-| a `stdin` / `stdinClose` frame it did not advertise `persistentShell` for | `EUNSUPPORTED` |
 | a request naming a `remoteId` it does not serve, or naming none while it advertises `remotes` | `ENOREMOTE`, **id-addressed** |
 | a frame it could not read at all | `EPROTO`, **id-less** — that is a connection-level failure |
 | a filesystem failure it has no code for | `EUNKNOWN`, with `exitCode`/`stderr` filled in |
@@ -633,10 +631,9 @@ CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
 ```
 
 `CC_CONFORMANCE_PROVIDER` is a JSON argv array. The suite **appends** the
-capability flags `--no-persistent-shell` and `--no-process-group-signal` to it,
-so a provider being verified has to accept them (or map them onto its own
-switches) to be exercised in all three configurations; without that it runs the
-first configuration only. The suite builds its fixtures with node's own `fs` and
+capability flag `--no-process-group-signal` to it, so a provider being verified
+has to accept it (or map it onto its own switch) to be exercised in every
+configuration; without that it runs the first configuration only. The suite builds its fixtures with node's own `fs` and
 then asks the provider about them, so it verifies a provider that reaches **the
 same filesystem as the test process**.
 
@@ -644,7 +641,7 @@ Then run the whole application over it:
 
 ```
 CC_LOCAL_SYSTEM_PROVIDER='["your-provider","--flags"]' npm test
-npm run gate:systems     # the reference provider, in all three of the gate's capability configurations
+npm run gate:systems     # the reference provider, in each of the gate's capability configurations
 ```
 
 `CC_LOCAL_SYSTEM_PROVIDER` replaces the in-process `local` system with a
@@ -676,12 +673,11 @@ ten of each.
 |---|---|
 | `exec` | `docker exec -w <cwd> -e … <ctr> sh -c …`, where `<ctr>` is the frame's `remoteId` |
 | `remotes` | `true` — the daemon serves every container it knows. An unknown `<ctr>` is `ENOREMOTE`, id-addressed |
-| the long-lived shell | one `docker exec -i <ctr> $SHELL -l` |
 | `signal`, `processGroup:true` | `docker exec … kill -- -<pgid>` → `processGroupSignal: true` |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
 | `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
 
-Three primitives and four capabilities; a `docker exec` provider satisfies all
+Three primitives and three capabilities; a `docker exec` provider satisfies all
 of them. **Three things it is not thin about**, worth knowing before starting one:
 
 1. **Reaping.** MUST 3 does not come free: `docker exec` children live in the

@@ -517,6 +517,44 @@ describe('a worker session on a remote system', () => {
     await assert.rejects(fs.stat(marker));
   });
 
+  // T3's END-TO-END HALF: removing the session reaches the redirect's teardown
+  // through the ROUTE, and a command still running on the system is stopped
+  // there rather than merely abandoned.
+  //
+  // WHY THIS PATH AND NOT ONLY THE UNIT ONE (tests/systems-tool-redirect.test.mjs
+  // exercises `SessionRedirect.close()` directly): the defect that motivated the
+  // fix was found at the unit layer, and `close()` having a live lever proves
+  // nothing about anything CALLING it. Instance exit, kill and DELETE all reach
+  // it, and only a real DELETE proves the wiring.
+  //
+  // THE WITNESS IS THE FAR SIDE'S OWN FILESYSTEM, for the same reason as the
+  // unit test: cc's bookkeeping reads clean whether the command was reaped or
+  // forgotten, and only a file the command writes AFTER a delay can tell them
+  // apart.
+  //
+  // NOT CLAIMING anything about the forwarder process's own exit code — the CLI
+  // is not running here, and cc closing the response is what the forwarder sees.
+  test('deleting the session stops a command still running on the system', async () => {
+    const started = onSystem('DEL_STARTED.txt');
+    const late = onSystem('DEL_LATE.txt');
+    const r = await hook({ tool_name: 'Bash', tool_input: {
+      command: `touch ${started}; sleep 3; touch ${late}`,
+    } });
+    // Not awaited: it is the in-flight command.
+    const running = runAsTheCliWouldStreaming(r.body.hookSpecificOutput.updatedInput.command, root)
+      .catch(() => {});
+    await waitFor(() => fs.stat(started));
+
+    const del = await api(baseUrl, 'DELETE', `/api/instances/${instId}`);
+    assert.equal(del.status, 200, JSON.stringify(del.body));
+
+    // Past when the command would have written it, had it survived teardown.
+    await new Promise(res => setTimeout(res, 3500));
+    await assert.rejects(fs.stat(late),
+      'the command must not have run to completion after the session was deleted');
+    await running;
+  });
+
   // The one sentence a remote project adds to every worker's system prompt.
   //
   // It loads into the prompt of every session on the project, so it is held to
@@ -563,40 +601,34 @@ describe('a worker session on a remote system', () => {
     assert.match(block, /same file/);
   });
 
-  // PINS AC6: the disclosure states that shell state is PER AGENT. On a remote
-  // system `export` persists across an agent's own commands, where a local
-  // session persists neither `export` nor `cd` — each local `Bash` call gets a
-  // brand-new shell and the CLI resets the working directory to the project root
-  // (measured on CLI 2.1.258; card 2026-0305 §2, correcting an earlier wording
-  // here that said only `cd` failed to persist locally). So the asymmetry is
-  // wider than it was documented as, and it invites the false generalisation
-  // that a dispatched subagent inherits it; told, the agent passes the value in the subagent's prompt instead, and
-  // told the converse it stops treating a subagent's `cd` as a hazard to its own
-  // state. Nothing else volunteers either half: a missing export in a subagent
-  // looks like an ordinary unset variable, and a subagent's `cd` NOT reaching the
-  // parent is unobservable by construction.
+  // PINS A DELETION, WHICH IS THE ONLY WAY A DELETION FROM A SYSTEM PROMPT STAYS
+  // DELETED. Card 2026-0312 removed a third sentence saying shell state was PER
+  // AGENT. It existed for an asymmetry that no longer exists: `export` used to
+  // persist across an agent's own commands while a local session persisted
+  // nothing, which invited the false generalisation that a dispatched subagent
+  // inherited it. With one shell per command nothing an agent's command sets
+  // reaches ANY later command, its own included — exactly as locally — so the
+  // sentence's subject is gone.
   //
-  // The two negative assertions are the two clauses deliberately CUT from the
-  // draft, pinned so a later editor does not re-add them. "a subagent's Bash
-  // starts at <systemPath>" is true only of that subagent's FIRST command, so a
-  // subagent reading it would hold a false statement about itself — and neither
-  // reader needs to know where the other starts, only that state does not cross.
-  // "background jobs" is non-vacuously true in only one of the two capability
-  // modes, and changes nothing the cwd/exports clause does not already change;
-  // the facts a worker acts on about background jobs are delivered at the point
-  // of use, by the reset notice and docs/features.md.
+  // EACH NEGATIVE IS A CLAIM SOMEONE WOULD PLAUSIBLY RE-ADD, not a grep for
+  // absence: the retired per-agent sentence, the two clauses cut from its draft
+  // before it shipped, and the "every command starts at the project root" fact
+  // that this card deliberately did NOT put here — it is delivered by cc's own
+  // notice on the one command whose `cd` was discarded, at the point of use,
+  // which the workspace "push what nothing volunteers" rule prefers to a
+  // sentence every session pays for.
   //
-  // NOT CLAIMING that the model obeys it.
-  test('the disclosure states that each agent has its own shell', async () => {
+  // NOT CLAIMING that the two surviving sentences are enough — the tests above
+  // pin what each of them says.
+  test('the disclosure says nothing about shells, agents or where a command starts', async () => {
     const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
       .split('# Workspace conventions')[0];
 
-    assert.match(block, /Each agent has its own shell here/);
-    assert.match(block, /not shared with a subagent you dispatch/);
-    assert.match(block, /in either direction/);
-
-    assert.ok(!/starts/.test(block), `it makes no claim about where a subagent's Bash starts: ${block}`);
-    assert.ok(!/background/i.test(block), `it makes no claim about background jobs: ${block}`);
+    assert.ok(!/shell/i.test(block), `it makes no claim about shells: ${block}`);
+    assert.ok(!/subagent|each agent/i.test(block), `nor about agents: ${block}`);
+    assert.ok(!/starts/i.test(block), `nor about where a command starts: ${block}`);
+    assert.ok(!/background/i.test(block), `nor about background jobs: ${block}`);
+    assert.ok(!/export/i.test(block), `nor about exported variables: ${block}`);
 
     // And a local project still says nothing at all.
     assert.ok(!/^# System$/m.test(await composeProjectConventionsDoc([])));

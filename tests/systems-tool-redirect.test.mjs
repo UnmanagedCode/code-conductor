@@ -494,6 +494,75 @@ test('a Bash result is annotated only when it actually shows a system path', asy
   assert.equal(await post('Bash', {}, { stdout: 'all tests passed\n', stderr: '' }), null);
 });
 
+// T3 — A LIVE PRE-EXISTING DEFECT, FOUND WHILE PLANNING THIS CARD AND FIXED ON
+// IT. `SessionRedirect.close()` did not reap an in-flight command in the
+// one-shot mode — the mode card 2026-0312 makes the only mode. It closed
+// SHELLS, and in one-shot mode there is no shell, so nothing reached the
+// running `exec`.
+//
+// MEASURED IN BOTH MODES BEFORE THE STRIP, identical rig, with a witness file
+// that only appears if the command completes: the persistent mode gave
+// `code=1` and the command did NOT complete; the fallback gave `code=0` WITH
+// THE COMMAND'S OUTPUT, having run to completion on the far side 1.2s after
+// the session was torn down. Reachable in production TODAY on any provider that
+// did not advertise `persistentShell` — this card does not introduce it, it
+// PROMOTES a fallback-only defect to the only behaviour, so shipping the strip
+// without the fix ships a regression in effect.
+//
+// THE WITNESS IS THE FAR SIDE'S OWN FILESYSTEM. cc's bookkeeping cannot tell
+// teardown from forgetting: `close()` drops its handle either way, so any
+// assertion about cc's own state reads clean while the command is still running
+// on someone else's machine. Only a file the command writes AFTER a delay can.
+//
+// NOT CLAIMING: any ordering between the abort and the command's own exit, nor
+// that the far-side process is gone by any particular instant — only that the
+// command did not run to completion.
+test('close() reaps a command that is still in flight', async () => {
+  const witness = onSystem('LATE_WITNESS');
+  const streamed = [];
+  const inFlight = redirect.runForwarded(
+    `printf 'RUNNING\\n'; sleep 1.2; touch ${JSON.stringify(witness)}; echo late`,
+    { sink: { notice: () => {}, out: (t) => streamed.push(t), err: () => {} } },
+  );
+  // GENUINELY IN FLIGHT, not merely issued: the first bytes have crossed back to
+  // cc, so the command is running on the system when close() lands.
+  await waitFor(() => streamed.join('').includes('RUNNING'), { timeout: 5000 });
+
+  await redirect.close();
+  const r = await inFlight;
+  assert.notEqual(r.code, 0, `the caller is told the command failed: ${JSON.stringify(r)}`);
+
+  // Past when the command would have written it, had it survived teardown.
+  await new Promise(res => setTimeout(res, 1500));
+  await assert.rejects(fs.stat(witness),
+    'the command must not have run to completion on the far side after close()');
+
+  // And close() is idempotent, which instance exit + kill + discardAll all rely
+  // on: they can each reach it for the same session.
+  await redirect.close();
+});
+
+// PINS THE HALF THAT MAKES THE FIX ABOVE SAFE, and it is not hypothetical: a
+// REWIND/RESPAWN calls `close()` too (src/instances.ts) — the CLI's prefix is
+// rewritten, so whatever was running belongs to a conversation the worker no
+// longer has — and the SAME redirect then serves the next turn. A teardown lever
+// that stayed pulled would make every command after any rewind fail ECANCELLED
+// the instant it was issued, on every remote session.
+//
+// FOUND BY THIS SUITE'S SIBLING, not by reasoning: the first version of the fix
+// aborted a single controller once, and six end-to-end tests in
+// tests/systems-remote-worker.test.mjs went red with
+// `cc: the command was cancelled by its caller`.
+//
+// NOT CLAIMING that anything survives the close — nothing does, deliberately.
+test('a redirect keeps working after close(), because a rewind calls it too', async () => {
+  assert.equal((await bash('echo before')).stdout.trim(), 'before');
+  await redirect.close();
+  const after = await bash('echo after');
+  assert.equal(after.code, 0, after.stderr);
+  assert.equal(after.stdout.trim(), 'after', 'the next command runs normally, not ECANCELLED');
+});
+
 // PINS: `@mention` pre-hydration pulls the named file into the session root
 // BEFORE the prompt reaches the CLI — the CLI expands a mention with no hook,
 // so a file that is not already local is simply absent from the turn.

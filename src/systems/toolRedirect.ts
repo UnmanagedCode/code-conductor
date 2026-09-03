@@ -178,6 +178,23 @@ export class SessionRedirect {
   // keep apart (card 2026-0312 §3a).
   #shell: ProviderShell | null = null;
 
+  // WHAT `close()` PULLS. There is no shell process to close any more, so
+  // teardown needs its own lever on the commands still running: this is aborted,
+  // and every command combines it with its caller's own signal. Without it a
+  // command survives its session and runs to completion on someone else's
+  // machine with nobody left to read the result — measured, and reachable in
+  // production before this card on any provider without `persistentShell`
+  // (card 2026-0312 §3c F-3).
+  //
+  // REPLACED ON EVERY close(), NOT ABORTED ONCE, and this is load-bearing:
+  // `close()` is NOT terminal for a redirect. Instance exit and DELETE never
+  // touch it again, but a REWIND/RESPAWN also calls it — the CLI's prefix is
+  // rewritten, so whatever was running belongs to a conversation the worker no
+  // longer has — and the SAME redirect then serves the next turn. A single
+  // controller left aborted makes every later command fail ECANCELLED the
+  // instant it is issued.
+  #abort = new AbortController();
+
   constructor(opts: SessionRedirectOptions) {
     this.map = new SessionPathMap(opts.sessionRoot, opts.mirror.mirrorRoot, opts.mirror.exclude);
     this.systemId = opts.systemId;
@@ -402,12 +419,18 @@ export class SessionRedirect {
     let notice: string | null = null;
     try {
       const shell = this.#ensureShell();
+      // TWO REASONS A COMMAND STOPS, combined into the one signal `exec` takes.
       // The CLI kills the forwarder on a tool timeout or an interrupt, which
-      // closes the socket. That is cc's only signal that the worker no longer
-      // wants THIS command, and it reaches the far side as a `signal` on this
-      // command's own `exec` id — so nothing else is disturbed.
+      // closes the socket — that is cc's only signal that the worker no longer
+      // wants THIS command, and it reaches the far side as a `close` on this
+      // command's own `exec` id, so nothing else is disturbed. The session's own
+      // teardown is the other, and it reaches every command at once.
+      //
+      // `AbortSignal.any` rather than a hand-rolled relay: it detaches when the
+      // combined signal is garbage-collected, so a long-lived session controller
+      // does not accumulate one listener per command it has ever run.
       const r = await shell.run(command, {
-        ...(signal ? { signal } : {}),
+        signal: signal ? AbortSignal.any([signal, this.#abort.signal]) : this.#abort.signal,
         ...(sink ? { onOut: (t: string) => sink.out(t), onErr: (t: string) => sink.err(t) } : {}),
       });
       // LAST, after the command has settled: where it ended cannot be known
@@ -483,9 +506,14 @@ export class SessionRedirect {
 
   // ── Lifecycle ──────────────────────────────────────────────────────
 
-  // Drop the session's shell. Called on instance exit, kill and discardAll.
-  // Idempotent.
+  // Stop everything this session has running ON THE SYSTEM, not merely abandon
+  // it, and drop the shell. Called on instance exit, kill, discardAll AND on a
+  // rewind/respawn — see #abort above for why the controller is replaced rather
+  // than left aborted. Idempotent: a second call aborts a controller with
+  // nothing attached to it.
   async close(): Promise<void> {
+    this.#abort.abort();
+    this.#abort = new AbortController();
     this.#shell = null;
   }
 }

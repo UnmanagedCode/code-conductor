@@ -2670,10 +2670,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // gone, so the tool won't run anyway, but we still need to free
     // the held-open HTTP responses.
     this._hooks.discardAll();
-    // And close EVERY shell this session opened on the remote system — the main
-    // agent's plus one per subagent that ran a command. Each is a process on
-    // someone else's machine keyed to a session that no longer exists; nothing
-    // will ever write to any of them again.
+    // And stop every command this session still has running on the remote
+    // system. Each is a process on someone else's machine keyed to a session
+    // that no longer exists, with nobody left to read its result.
     void this._redirect?.close();
     this._closeDebugStreams();
     // `_suppressTempDelete` is set by the resume-restart path
@@ -3839,9 +3838,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._lastLeafUuid = null;
     this._planFiles.reset();
     this._hooks.discardAll();
-    // A rewind/respawn rewrites the CLI's prefix, so the shell's accumulated
-    // cwd and exports belong to a conversation the worker no longer has. Close
-    // it: the next command opens a fresh one and says what it lost.
+    // A rewind/respawn rewrites the CLI's prefix, so a command still running on
+    // the system belongs to a conversation the worker no longer has. Stop it —
+    // and NOTE that the redirect keeps serving this session afterwards, which is
+    // why close() re-arms rather than staying torn down (card 2026-0312 §3c).
     void this._redirect?.close();
     // Per-turn cache-miss capture is owned by _setStatus (into-'turn' reset)
     // and the spawn() that always follows a wipe. But a rewind/respawn rewrites
