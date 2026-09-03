@@ -445,10 +445,6 @@ sending `close` and reporting `{code:124,timedOut:true}` as a bounded `exec`
 does: a framed command shares the shell's process group and has no `exec` id of
 its own to signal.
 
-Because `$SHELL -l` is a **login** shell, cc discards one framed no-op
-immediately after opening it, so profile-file output is never attributed to a
-user command.
-
 ## 6. `readFile` and `writeFile`
 
 ```
