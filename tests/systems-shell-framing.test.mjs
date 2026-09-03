@@ -488,45 +488,6 @@ test(`the ceiling names itself as a ceiling in the message a worker reads`, asyn
   }, { commandTimeoutMs: 400 });
 });
 
-// PINS card 2026-0305 §4 D1 AT A REAL SHELL: the caller's `timeoutMs` bounds
-// how long the call WAITS for its turn, and no longer how long the command may
-// RUN. Before this card the two were one number, so a command that outlived
-// the tool's own timeout was killed at that instant — while the CLI had
-// already DETACHED the forwarder and handed the agent a pointer to output that
-// kept arriving. The run bound is cc's ceiling (`commandTimeoutMs` here), and
-// the caller cannot move it in either direction.
-//
-// THE TIGHT CASE IS THE MEASUREMENT, not decoration: 1ms as the FIRST command
-// on this shell. `#acquire` on a quiescent shell returns without arming a timer
-// at all, so a wait bound smaller than any real round trip still passes. If that
-// stopped holding, this is the assertion that would flake first, and it is what
-// licenses the 100ms below.
-test(`a command outlives the tool's own timeout`, async () => {
-  await withShell(async (sh) => {
-    const tight = await sh.run('echo tight', { timeoutMs: 1 });
-    assert.equal(tight.stdout, 'tight\n', 'opening the shell is not inside the wait window');
-    assert.equal(tight.code, 0);
-
-    const r = await sh.run('sleep 0.3; echo done', { timeoutMs: 100 });
-    assert.equal(r.stdout, 'done\n', 'the command ran 3x past the timeout the caller named');
-    assert.equal(r.code, 0);
-  }, { commandTimeoutMs: 2_000 });
-});
-
-// PINS: cc serialises per shell, and the wait a queued call is willing to
-// spend is ITS OWN timeout — a call that would only run for 30ms gives up
-// waiting after 30ms, with EBUSY.
-test(`cc serialises per shell, and a wait past the call's own timeout is EBUSY`, async () => {
-  await withShell(async (sh) => {
-    const slow = sh.run('sleep 0.5; echo slow');
-    await assert.rejects(() => sh.run('echo fast', { timeoutMs: 30 }), (e) => {
-      assert.equal(e.code, 'EBUSY', `got ${e.code}: ${e.message}`);
-      return true;
-    });
-    assert.equal((await slow).stdout, 'slow\n', 'the command that held the shell still completes');
-  });
-});
-
 // PINS B3: a command that produces more output than the fence allows is
 // KILLED and reported as a failure. Without a fence cc accumulates every byte
 // the command produces in its own heap, so one runaway command on one session
@@ -581,35 +542,10 @@ test(`output below the fence is untouched`, async () => {
 
 // ── Cancellation ───────────────────────────────────────────────────
 
-// PINS: cancelling a QUEUED call cancels that call and NOTHING ELSE. The
-// in-flight command finishes normally, and — the part that matters — the
-// cancelled command never runs, so its effects never land on the system. An
-// interrupt whose command executes anyway defeats the point of interrupting.
-test(`cancelling a queued command runs neither it nor over the one in flight`, async () => {
-  await withShell(async (sh, cwd) => {
-    const witness = path.join(cwd, 'QUEUED_RAN');
-    const inFlight = sh.run('sleep 0.4; echo survivor');
-    const ac = new AbortController();
-    const queued = sh.run(`touch ${JSON.stringify(witness)}`, { signal: ac.signal });
-    // Abort while it is still waiting for its turn.
-    ac.abort();
-
-    await assert.rejects(() => queued, (e) => {
-      assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
-      return true;
-    });
-    const r = await inFlight;
-    assert.equal(r.stdout, 'survivor\n', 'the unrelated in-flight command was untouched');
-    assert.equal(r.code, 0);
-    await assert.rejects(fs.stat(witness), 'the cancelled command never ran');
-  });
-});
-
-// PINS: cancelling the IN-FLIGHT call stops the command itself — including in
-// the fallback mode, where there is no live stream to close and cc has to
-// reach the far side through `exec`'s own cancellation. Asserted by the
-// command's own witness file, written after a delay: a command still running
-// when the assertion is made will have written it.
+// PINS: cancelling a command stops the command itself. There is no live stream
+// to close, so the abort has to reach the far side through `exec`'s own
+// cancellation. Asserted by the command's own witness file, written after a
+// delay: a command still running when the assertion is made will have written it.
 test(`cancelling the in-flight command actually stops it`, async () => {
   await withShell(async (sh, cwd) => {
     const witness = path.join(cwd, 'STILL_RUNNING');
@@ -628,6 +564,31 @@ test(`cancelling the in-flight command actually stops it`, async () => {
   });
 });
 
+// T4 — PINS THAT NOTHING SERIALISES, and that EBUSY cannot come back. Two
+// commands issued on ONE shell at the same instant both run: distinct far-side
+// pids, both exit 0, neither refused.
+//
+// STRUCTURAL, not wall-clock: neither command can finish unless the other was
+// already running, because they rendezvous through two files. Under the turn
+// this replaces, the second waited for the first to release the shell and both
+// failed on their bound — this test cannot pass with a queue in the middle.
+//
+// NOT CLAIMING any ordering between them, only simultaneous progress.
+test(`two commands on one shell run at the same time — nothing takes a turn`, async () => {
+  await withShell(async (sh, cwd) => {
+    const [a, b] = await Promise.all([
+      sh.run(`cd ${JSON.stringify(cwd)}; touch A_UP; while [ ! -e B_UP ]; do sleep 0.02; done; echo "A $$"`),
+      sh.run(`cd ${JSON.stringify(cwd)}; touch B_UP; while [ ! -e A_UP ]; do sleep 0.02; done; echo "B $$"`),
+    ]);
+    assert.equal(a.code, 0, a.stderr);
+    assert.equal(b.code, 0, b.stderr);
+    const [aTag, aPid] = a.stdout.trim().split(' ');
+    const [bTag, bPid] = b.stdout.trim().split(' ');
+    assert.deepEqual([aTag, bTag], ['A', 'B'], 'each result holds only its own output');
+    assert.notEqual(aPid, bPid, 'two independent far-side processes, not one shell taking turns');
+  }, { commandTimeoutMs: 8_000 });
+});
+
 // PINS: a signal that is already aborted never starts the command at all.
 test(`a pre-aborted signal never reaches the system`, async () => {
   await withShell(async (sh, cwd) => {
@@ -640,25 +601,11 @@ test(`a pre-aborted signal never reaches the system`, async () => {
   });
 });
 
-// PINS S2: the queue wait is the CALL'S OWN timeout, not a fixed bound. A
-// long command must not make a queued call that was willing to wait for it
-// fail with "the shell is busy" while everything is healthy.
-test(`a queued call waits as long as its own timeout allows`, async () => {
-  await withShell(async (sh) => {
-    const slow = sh.run('sleep 0.4; echo first');
-    // Past the 30ms default bound, inside its own 10s one.
-    const queued = await sh.run('echo second', { timeoutMs: 10_000 });
-    assert.equal(queued.stdout, 'second\n', 'it waited for its turn instead of failing EBUSY');
-    assert.equal((await slow).stdout, 'first\n');
-  });
-});
-
-// PINS S1: the reset reason is delivered to the command that RUNS on the new
-// shell, not to whichever call happened to be constructed next. R5's rule is
-// that a reconnected shell SAYS it lost state — a notice attached to the
-// wrong command means the command that actually ran on the fresh shell said
-// nothing.
-test(`the reset reason goes to the next command to acquire the shell`, async () => {
+// PINS S1: the reset reason is delivered to the command that RUNS on the fresh
+// shell, and exactly once. R5's rule is that a shell whose predecessor died
+// SAYS so — a notice attached to the wrong command means the command that
+// actually ran said nothing.
+test(`the reset reason goes to the next command to run`, async () => {
   await withShell(async (sh) => {
     assert.equal(sh.takeResetReason(), null, 'a healthy shell has nothing to report');
     await assert.rejects(() => sh.run('exit 3'));
@@ -774,14 +721,15 @@ function recordingOneShotHost() {
   return { host, seen };
 }
 
-// PINS card 2026-0305 §4 D1 AND D2 AT THE ONE LINE THEY BOTH LIVE ON, and this
-// is the test that fails if a future editor re-wires `timeoutMs` to the
-// deadline: the RESOLVED per-command deadline is cc's ceiling for every call,
-// whatever the caller asked for.
+// PINS card 2026-0305 §4 D1 AND D2, and the fact that no caller has a run bound
+// to offer any more: EVERY command's `exec` carries cc's ceiling as its
+// `timeoutMs`, and nothing on the call can move it.
 //
-// Three resolutions, and the third is the one the old code could not produce:
-// a caller asking for MORE than the ceiling does not get it either. `Math.max`
-// on the caller's number would pass the first two and fail this one.
+// THE UNKNOWN-OPTION HALF IS THE GUARD THAT SURVIVED THE DELETION. `run()` takes
+// an options object, so a future editor re-introducing a caller-supplied run
+// bound would do it by reading a key back off it — and a test that only called
+// `run(cmd)` would pass throughout. Passing `timeoutMs` explicitly and asserting
+// the ceiling is unmoved is what fails that.
 //
 // The value itself is pinned here too, because it is derived rather than
 // written: 600_000 is the built-in Bash tool's documented max (the same number
@@ -790,7 +738,7 @@ function recordingOneShotHost() {
 // decides the outcome and never cc's. Past the documented max that ordering is
 // unmeasured and ORCH_SHELL_COMMAND_TIMEOUT_MS is what restores it — this test
 // pins the NUMBER and the derivation, and claims nothing about which timer wins.
-test("the per-command deadline is cc's ceiling, and a caller's timeoutMs cannot move it", async () => {
+test("the per-command deadline is cc's ceiling, and no caller can move it", async () => {
   assert.equal(DEFAULT_COMMAND_TIMEOUT_MS, 605_000, 'the ceiling is 600_000 + 5_000 of slack');
 
   const { host, seen } = recordingOneShotHost();
@@ -800,123 +748,7 @@ test("the per-command deadline is cc's ceiling, and a caller's timeoutMs cannot 
   assert.equal((await sh.run('echo c', { timeoutMs: 900_000 })).code, 0);
 
   assert.deepEqual(seen, [DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS],
-    'an untimed call, a tighter one and a LOOSER one all resolve to the same ceiling');
-});
-
-// ── The four abort windows, one test each ────────────────────────────
-//
-// run()'s cancellation is FOUR guards over four DIFFERENT windows, not four
-// copies of one check. Removing the cluster is caught, but each guard has to be
-// independently killable or the next refactor drops three of them silently —
-// and window 4 below is exactly where a real defect lived (a cancelled command
-// reached the shell and became permanently un-cancellable, because
-// `{once:true}` on an already-fired signal never fires).
-//
-// Windows 1 and 2 are pinned by WHEN the call settles rather than by its code,
-// because the later guards produce the same ECANCELLED eventually. The
-// difference is that they produce it only after the IN-FLIGHT command finishes:
-// a caller that has gone away must not sit in the queue behind a ten-minute
-// build. So each asserts the cancelled call settled while the in-flight one was
-// still running.
-
-// A shell whose first command hangs until the test releases it, so there is a
-// real in-flight command to queue behind.
-function heldShell() {
-  const { host, state } = fakeHost({
-    // The held command is answered by NOTHING, so it stays in flight until the
-    // test ends it. Releasing it is what ends it — waiting out a deadline
-    // instead would put seconds of dead wall clock in the suite for no extra
-    // coverage.
-    respond: (command) => (command.includes('HOLD') ? { silent: true } : { stdout: 'ran' }),
-  });
-  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 5000 });
-  // Settled-ness is OBSERVED, not timed: `inFlightDone` flips only when the held
-  // command actually finishes, so the ordering assertions below cannot pass on a
-  // slow machine for the wrong reason.
-  let inFlightDone = false;
-  const inFlight = sh.run('HOLD').catch(() => {}).finally(() => { inFlightDone = true; });
-  return { sh, state, inFlight, release: () => state.releaseHeld(), get inFlightDone() { return inFlightDone; } };
-}
-
-// WINDOW 1 — the signal was already aborted before run() was called.
-//
-// Without the entry check the call enqueues instead, and `addEventListener` on
-// an ALREADY-ABORTED signal never fires (the abort event has been dispatched),
-// so nothing rejects it until it is handed the turn.
-test('an already-aborted call never takes a place in the queue', async () => {
-  const h = heldShell();
-  await waitFor(() => h.state.commands.length === 1, { timeout: 2000 });
-
-  const ac = new AbortController();
-  ac.abort();
-  await assert.rejects(() => h.sh.run('touch W1', { signal: ac.signal }), (e) => {
-    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
-    return true;
-  });
-  assert.equal(h.inFlightDone, false, 'it settled while the in-flight command was still running');
-  assert.deepEqual(h.state.commands, ['HOLD'], 'and never reached the shell');
-  h.release();
-  await h.inFlight;
-});
-
-// WINDOW 2 — the abort lands DURING the queue wait.
-//
-// Without the waiter's own abort listener the call stays queued and is only
-// rejected once it is handed the turn, which is after the in-flight command
-// finishes — so a gone caller holds a queue slot behind a long build.
-test('an abort during the queue wait rejects that call without waiting for the shell', async () => {
-  const h = heldShell();
-  await waitFor(() => h.state.commands.length === 1, { timeout: 2000 });
-
-  const ac = new AbortController();
-  const queued = h.sh.run('touch W2', { signal: ac.signal });
-  // Queued, not running: #acquire pushes the waiter synchronously on invocation.
-  ac.abort();
-
-  await assert.rejects(() => queued, (e) => {
-    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
-    return true;
-  });
-  assert.equal(h.inFlightDone, false, 'it settled while the in-flight command was still running');
-  assert.deepEqual(h.state.commands, ['HOLD'], 'and never reached the shell');
-
-  // And the queue is intact: releasing the in-flight command still serves the
-  // next caller, so a cancelled waiter did not consume a turn on its way out.
-  h.release();
-  await h.inFlight;
-  assert.equal((await h.sh.run('echo next')).stdout, 'ran');
-});
-
-// WINDOW 3 — the abort lands after the waiter is handed the turn (its listener
-// already detached by #releaseTurn) and before the command is written.
-//
-// That window is a MICROTASK GAP: #releaseTurn resolves the waiter and the
-// continuation runs on the next tick, and no external caller can schedule code
-// between them. So it is driven with an AbortSignal DOUBLE that flips between
-// the two reads — standing in for the gap rather than pretending to reproduce
-// it. Nothing else here is faked: it is the real run() reading a real sequence
-// of answers.
-test('a signal that turns aborted after acquisition still stops the command', async () => {
-  const { host, state } = fakeHost({ respond: () => ({ stdout: 'ran' }) });
-  const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 2000 });
-
-  let reads = 0;
-  const flipping = {
-    // Read 1 is run()'s entry check, read 2 the post-acquisition re-check. The
-    // shell is idle, so #acquire resolves without touching the signal at all.
-    get aborted() { reads += 1; return reads > 1; },
-    addEventListener() {}, removeEventListener() {},
-  };
-
-  await assert.rejects(() => sh.run('touch W3', { signal: flipping }), (e) => {
-    assert.equal(e.code, 'ECANCELLED', `got ${e.code}: ${e.message}`);
-    return true;
-  });
-  assert.deepEqual(state.commands, [], 'the command was never written to the shell');
-  // Exactly two reads before the command would have been written. If a future
-  // change adds or removes one, this fails LOUDLY rather than silently reading
-  // a different guard than the one under test.
-  assert.equal(reads, 2, 'the entry check and the post-acquisition re-check, and nothing else');
+    'an untimed call, and two that name a tighter and a LOOSER bound, all resolve to the ceiling');
 });
 
 test('a banner with NO trailing newline still frames — on both streams', async () => {

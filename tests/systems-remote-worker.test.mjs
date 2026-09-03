@@ -463,41 +463,6 @@ describe('a worker session on a remote system', () => {
     assert.equal(ran.code, 0);
   });
 
-  // PINS THE WHOLE TIMEOUT CHAIN ON ONE OBSERVABLE, and after card 2026-0305 it
-  // is the only end-of-chain observable left: the tool's `timeout` no longer
-  // changes any run outcome, so nothing downstream of it can be read off the
-  // command's own behaviour. What is left is the WAIT bound, and `50` can only
-  // have reached it through every hop — hook `tool_input.timeout` → the rewrite's
-  // `--timeout` argv → a real forwarder process → `timeoutMs` on the POST body →
-  // `Number(body.timeoutMs)` in src/routes.ts → `runForwarded` → `shell.run` →
-  // `#acquire`. Any hop dropping it leaves the queued call waiting out the
-  // 605s ceiling instead, and this test times out rather than passing.
-  //
-  // GREEN ON ARRIVAL — the chain is unchanged by that card, which is the point:
-  // `--timeout` had to stay load-bearing for the argv branch to keep its reason.
-  //
-  // The witness file is the barrier, not a sleep: the shell is provably busy
-  // only once the held command has actually started running ON THE SYSTEM.
-  test('the tool timeout reaches the shell as the wait bound, through every hop', async () => {
-    const held = await hook({ tool_name: 'Bash', tool_input: {
-      command: `touch ${JSON.stringify(onSystem('HOLDING'))}; sleep 2`,
-    } });
-    // Not awaited: it holds the session's main-agent shell for ~2s.
-    const holding = runAsTheCliWouldStreaming(held.body.hookSpecificOutput.updatedInput.command, root);
-    await waitFor(() => fs.stat(onSystem('HOLDING')));
-
-    const queued = await hook({ tool_name: 'Bash', tool_input: { command: 'echo hi', timeout: 50 } });
-    const ran = await runAsTheCliWouldStreaming(queued.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ran.code, 1, ran.of('out') + ran.of('err'));
-    assert.match(ran.of('err'), /the shell is busy — waited 50ms for its turn/);
-    assert.equal(ran.of('out'), '', 'it never ran, so it produced nothing');
-
-    // The holder still completes normally: a refused queued call must not
-    // disturb the command that held the shell.
-    const done = await holding;
-    assert.equal(done.code, 0, done.of('err'));
-  });
-
   // PINS: cc's own refusals still reach the worker. The endpoint answers in
   // frames now, so a refusal written in the old single-object shape would be
   // silently ignored by the forwarder and surface as an unexplained failure.
@@ -552,9 +517,17 @@ describe('a worker session on a remote system', () => {
   });
 
   // PINS: killing the forwarder — what the CLI does on a tool timeout or an
-  // interrupt — stops the command on the system, and the NEXT command tells the
-  // worker its shell was restarted rather than looking continuous.
-  test('killing the forwarder resets the shell and the next command says so', async () => {
+  // interrupt — stops the command ON THE SYSTEM. The socket closing is cc's only
+  // signal that the worker no longer wants the command, so a kill that left it
+  // running would leave work on someone else's machine with nobody to read it.
+  //
+  // RE-BASED on card 2026-0312: this also used to assert the NEXT command was
+  // told its shell had been restarted. Nothing is restarted — the command's own
+  // `exec` was killed and no state was shared for anyone to lose — so telling
+  // the next command it lost its exports would be an R5-class false statement
+  // about state it never had. What it must still say is nothing at all, which is
+  // asserted here.
+  test('killing the forwarder stops the command on the system', async () => {
     const marker = onSystem('slow-finished.txt');
     const started = onSystem('slow-started.txt');
     const r = await hook({
@@ -571,11 +544,10 @@ describe('a worker session on a remote system', () => {
     const next = await hook({ tool_name: 'Bash', tool_input: { command: 'echo back' } });
     const ran = await runAsTheCliWouldStreaming(next.body.hookSpecificOutput.updatedInput.command, root);
     assert.equal(ran.of('out'), 'back\n');
-    assert.match(ran.of('err'), /was restarted/);
-    // FIRST on stderr, ahead of anything else there: a shell that lost its
-    // exports has to say so before output that may be wrong because of it.
-    assert.match(ran.writes.filter(w => w.fd === 'err')[0].text, /^\[cc\]/);
-    // The command really was stopped, not merely abandoned.
+    assert.equal(ran.of('err'), '', 'and it is told about no reset it never had');
+    // The command really was stopped, not merely abandoned. `sleep 20` against a
+    // test that gets here in well under a second, so the marker's absence is the
+    // kill and not the clock.
     await assert.rejects(fs.stat(marker));
   });
 

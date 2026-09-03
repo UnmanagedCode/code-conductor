@@ -54,32 +54,20 @@ async function forward(args) {
   }
 }
 
-// PINS: `--timeout <ms>` becomes `timeoutMs` on the request body, and its
-// ABSENCE leaves the key off entirely rather than sending null or 0. The route
-// reads `Number(body.timeoutMs)` and only forwards a finite positive one, so a
-// key that arrived as null would be indistinguishable from absent there — but
-// the omission is asserted HERE because this is the layer that decides it.
-test('--timeout becomes timeoutMs on the wire, and its absence sends no key', async () => {
-  const withIt = await forward(['--timeout', '4242', '--', 'echo hi']);
-  assert.equal(withIt.ran.code, 0, withIt.ran.stderr);
-  assert.equal(withIt.ran.stdout, 'ok');
-  assert.deepEqual(withIt.body, { command: 'echo hi', timeoutMs: 4242 });
-
-  const without = await forward(['--', 'echo hi']);
-  assert.equal(without.ran.code, 0, without.ran.stderr);
-  assert.deepEqual(without.body, { command: 'echo hi' });
-  assert.equal('timeoutMs' in without.body, false);
-
-  // THIS SCRIPT'S OWN GUARD, not the rewrite's: `timeoutMs && Number.isFinite`
-  // has a truthiness half, so a `--timeout 0` on the argv must leave the key
-  // OFF the body rather than send `{timeoutMs: 0}`. src/systems/toolRedirect.ts
-  // never emits `--timeout 0` and src/routes.ts would re-drop it if it arrived,
-  // so this is end-to-end inert today — it is asserted because the argv→body
-  // mapping is the whole subject of this file, and dropping the truthiness half
-  // is otherwise invisible to the entire suite.
-  const zero = await forward(['--timeout', '0', '--', 'echo hi']);
-  assert.equal(zero.ran.code, 0, zero.ran.stderr);
-  assert.deepEqual(zero.body, { command: 'echo hi' }, 'a zero timeout sends no key at all');
+// INVERTED on card 2026-0312 §2 D-b: `--timeout` used to become `timeoutMs` on
+// the request body. Neither the flag nor the key exists any more — its only
+// consumer was the wait bound on a queue that is gone, and the CLI enforces its
+// own tool timeout by KILLING this process, which closes the socket. That is
+// cc's cancellation channel and it carries no number.
+//
+// ASSERTED AS AN EXACT BODY SHAPE, not just an absent key: this is the layer
+// that decides what goes on the wire, so an extra field re-appearing here is
+// what this catches.
+test('the body carries the command and nothing else', async () => {
+  const r = await forward(['--', 'echo hi']);
+  assert.equal(r.ran.code, 0, r.ran.stderr);
+  assert.equal(r.ran.stdout, 'ok');
+  assert.deepEqual(r.body, { command: 'echo hi' });
 });
 
 // PINS: `--agent` rides the same way, and the MAIN agent's invocation carries
@@ -98,7 +86,7 @@ test('--agent becomes agentId on the wire, and the main agent sends no key', asy
 // a shell one-liner — no quoting of the original command survives into a second
 // shell.
 test('everything past -- is the command, verbatim', async () => {
-  const { body } = await forward(['--timeout', '10', '--', `echo 'it\\'s here' && ls "a b"`]);
+  const { body } = await forward(['--agent', 'a1', '--', `echo 'it\\'s here' && ls "a b"`]);
   assert.equal(body.command, `echo 'it\\'s here' && ls "a b"`);
-  assert.equal(body.timeoutMs, 10);
+  assert.equal(body.agentId, 'a1');
 });

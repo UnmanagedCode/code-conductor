@@ -1549,7 +1549,7 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       const inst = instances.get(req.params.id);
       const redirect = inst?._redirect;
       if (!redirect) { refuse(404, 'this session is not redirected to a system'); return; }
-      const body = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown; agentId?: unknown };
+      const body = (req.body ?? {}) as { command?: unknown; agentId?: unknown };
       const command = typeof body.command === 'string' ? body.command : '';
       if (!command) { refuse(400, 'the forwarder sent no command'); return; }
       // WHICH AGENT'S SHELL this command runs in. Absent for the session's main
@@ -1567,7 +1567,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
         if (res.writableEnded || res.destroyed) return;
         res.write(`${JSON.stringify(frame)}\n`);
       };
-      const timeoutMs = Number(body.timeoutMs);
       // runForwarded never rejects: every failure comes back as a non-zero exit
       // with its reason streamed on `err`, which is the channel the worker reads.
       const result = await redirect.runForwarded(command, {
@@ -1578,7 +1577,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           out: (text) => write({ t: 'out', text }),
           err: (text) => write({ t: 'err', text }),
         },
-        ...(Number.isFinite(timeoutMs) && timeoutMs > 0 ? { timeoutMs } : {}),
       });
       // ONLY the code: the text has already gone out through the sink, and
       // writing the aggregate here would deliver every byte twice.

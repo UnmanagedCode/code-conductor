@@ -7,17 +7,19 @@
 // (card 2026-0312 §1).
 //
 // FAILURE MODES, all reachable and all tested:
-//   EBUSY       — cc serialises per shell; a wait past its bound is refused
-//                 rather than queued forever.
 //   ETIMEDOUT   — the per-command ceiling expired: a command that legitimately
 //                 ran that long. The provider is what kills it, through the
 //                 `exec` frame's own `timeoutMs`.
 //   ESHELLGONE  — the command destroyed its own framing (an `exit`, a syntax
 //                 error that takes the shell with it), so no sentinel arrived.
 //   ECANCELLED  — the caller went away (an interrupt, a tool timeout). PER
-//                 CALL: a cancelled call that was still QUEUED never runs at
-//                 all, and an unrelated command is untouched — each command is
-//                 its own `exec`, with its own never-reused id to signal.
+//                 CALL: an unrelated command is untouched, because each command
+//                 is its own `exec` with its own never-reused id to signal.
+//
+// NOTHING SERIALISES. N commands of one session are N independent processes,
+// which is exactly what a local fan-out produces and is bounded by the same
+// thing that bounds it locally — how many Bash calls the CLI runs at once
+// (card 2026-0312 §2 D-b).
 
 import {
   FS_ERROR_CODES, SystemError, classifySpawnError, type SystemErrorCode,
@@ -76,20 +78,20 @@ const BASH_TOOL_MAX_TIMEOUT_MS = 600_000;
 // not shared because providerSystem.ts imports THIS module.
 const SHELL_TIMEOUT_SLACK_MS = 5_000;
 
-// THE PER-COMMAND CEILING, AND IT IS ONE NUMBER DOING THREE JOBS: the longest a
-// command may run, the longest a WEDGED shell stays wedged, and the longest a
-// queued command waits for its turn on that agent's shell. So it is not "as
-// large as possible". Unbounded is what the output fence below rules out for a
-// caller that does not control the command — and here the MODEL writes the
-// command: an unterminated quote is enough to wedge a shell, and nothing clears
-// it early (the idle sweep is armed only after a command finishes). At this
-// value cc never kills a command the CLI would still be waiting for FOR ANY
-// TOOL TIMEOUT UP TO ITS DOCUMENTED MAX (see SHELL_TIMEOUT_SLACK_MS above for
-// what is unmeasured past it), and a wedge always clears well inside
-// toolRedirect.ts's 15-minute idle TTL. Raise it for legitimately longer
+// THE PER-COMMAND CEILING, AND IT NOW DOES EXACTLY ONE JOB: the longest a
+// command may run. It used to do three (card 2026-0312 §2 D-d) — it also capped
+// how long a WEDGED shell stayed wedged and how long a queued command waited for
+// its turn — and both of those went with the long-lived shell and the queue. The
+// counter-pressure that made card 2026-0305 say "no value is simply correct" WAS
+// those two jobs; for the one that is left, this value simply is correct.
+//
+// ENFORCED BY THE PROVIDER, not by a cc-side timer: it leaves cc as the `exec`
+// frame's `timeoutMs`, which is where every other operation's ceiling already
+// lives. At this value cc never kills a command the CLI would still be waiting
+// for FOR ANY TOOL TIMEOUT UP TO ITS DOCUMENTED MAX (see SHELL_TIMEOUT_SLACK_MS
+// above for what is unmeasured past it). Raise it for legitimately longer
 // background work — a LOCAL background Bash has no deadline at all — or to
-// restore the ordering against a tool timeout above the documented max,
-// knowing the wedge window rises with it either way.
+// restore the ordering against a tool timeout above the documented max.
 //
 // EXPORTED so a test can pin the value and the derivation without waiting either
 // out, the same shape as providerSystem.ts's DEFAULT_OP_TIMEOUT_MS. Read HERE
@@ -100,13 +102,16 @@ export const DEFAULT_COMMAND_TIMEOUT_MS =
   Number(process.env.ORCH_SHELL_COMMAND_TIMEOUT_MS) || BASH_TOOL_MAX_TIMEOUT_MS + SHELL_TIMEOUT_SLACK_MS;
 
 // Everything a caller can say about one command. `signal` cancels THIS call;
-// `onStart` fires once it owns the shell, which is where a caller learns whether
-// the shell it is about to use was reset since the last command.
+// `onStart` fires as the command is handed over, which is where a caller learns
+// whether the shell the LAST command ran in was lost.
+//
+// NO RUN BOUND HERE, DELIBERATELY. The ceiling is cc's and a caller cannot move
+// it: mirroring the tool's own `timeout` onto it killed the command at the same
+// instant the CLI DETACHED the forwarder and handed the agent a pointer to
+// output that kept arriving, so the pointer was dead (card 2026-0305 §3). The
+// CLI enforces its own tool timeout by killing the forwarder, which closes the
+// socket — that is the cancellation channel, and it needs no number.
 export interface ShellRunOptions extends ShellStreamSink {
-  // HOW LONG THIS CALL WILL WAIT FOR ITS TURN on the shell, and nothing else. It
-  // does NOT bound how long the command may run — that is
-  // DEFAULT_COMMAND_TIMEOUT_MS above, and no caller can move it. See run().
-  timeoutMs?: number;
   signal?: AbortSignal;
   onStart?: () => void;
 }
@@ -119,8 +124,6 @@ function overflowed(limit: number | undefined): SystemError {
   return new SystemError('EFBIG', `output exceeded the ${limit}-byte limit — the command was killed`);
 }
 
-interface Waiter { resolve: () => void; reject: (e: Error) => void; timer: NodeJS.Timeout; drop: () => void }
-
 export class ProviderShell {
   readonly #host: ShellHost;
   readonly #env: NodeJS.ProcessEnv | undefined;
@@ -128,8 +131,6 @@ export class ProviderShell {
   readonly #maxOutputBytes: number | undefined;
 
   #cwd: string;
-  #busy = false;
-  #waiters: Waiter[] = [];
   // Set to a reason when the last command lost the shell it ran in, so the next
   // one can SAY so rather than look continuous.
   #resetReason: string | null = null;
@@ -154,76 +155,11 @@ export class ProviderShell {
   // The shell's real cwd, carried from the last command's sentinel.
   get cwd(): string { return this.#cwd; }
 
-  async run(command: string, { timeoutMs, onOut, onErr, signal, onStart }: ShellRunOptions = {}): Promise<ShellResult> {
-    // TWO NUMBERS NOW, AND ONLY ONE OF THEM IS THE CALLER'S TO SET.
-    //
-    // `timeoutMs` is how long THIS CALL is willing to WAIT for its turn on the
-    // shell — the caller's own patience, and the same semantic the CLI's Bash
-    // `timeout` has: a foreground wait, not a kill order. A call that would only
-    // run for 30ms gives up waiting after 30ms; a call willing to run for ten
-    // minutes waits that long rather than failing behind a healthy command (a
-    // fixed 60s bound made a long command fail every queued call behind it).
-    //
-    // The RUN bound is cc's ceiling and the caller cannot move it. Mirroring
-    // `timeoutMs` onto the deadline turned that foreground wait into a kill: the
-    // CLI DETACHES a timed-out forwarder and hands the agent a pointer to output
-    // that keeps arriving, and cc killed the command at the same instant, so the
-    // pointer was dead. Nothing on the shell path may take its run bound from
-    // the caller again (card 2026-0305 §3).
-    const waitMs = timeoutMs ?? this.#commandTimeoutMs;
-    const deadline = this.#commandTimeoutMs;
+  async run(command: string, { onOut, onErr, signal, onStart }: ShellRunOptions = {}): Promise<ShellResult> {
     if (signal?.aborted) throw cancelled();
-    await this.#acquire(waitMs, signal);
-    try {
-      // RE-CHECKED AFTER ACQUISITION, and this is the whole of why a cancelled
-      // queued call does not run: the caller may have gone away during the
-      // wait, and the command's effects would land on the system with nobody
-      // left to read the result.
-      if (signal?.aborted) throw cancelled();
-      onStart?.();
-      const sink: ShellStreamSink = { ...(onOut ? { onOut } : {}), ...(onErr ? { onErr } : {}) };
-      return await this.#runOneShot(command, deadline, sink, signal);
-    } finally {
-      this.#releaseTurn();
-    }
-  }
-
-  // ── Serialisation ──────────────────────────────────────────────────
-
-  #acquire(waitMs: number, signal?: AbortSignal): Promise<void> {
-    if (!this.#busy) { this.#busy = true; return Promise.resolve(); }
-    return new Promise<void>((resolve, reject) => {
-      const waiter: Waiter = {
-        resolve, reject,
-        timer: setTimeout(() => {
-          waiter.drop();
-          reject(new SystemError('EBUSY', `the shell is busy — waited ${waitMs}ms for its turn`));
-        }, waitMs),
-        // Leaving the shell UNTOUCHED. A waiter that gives up — timed out or
-        // cancelled — has never owned the turn, so it must not release one:
-        // #releaseTurn would hand the shell to the next waiter while the
-        // in-flight command is still using it.
-        drop: () => {
-          clearTimeout(waiter.timer);
-          this.#waiters = this.#waiters.filter(w => w !== waiter);
-          signal?.removeEventListener('abort', onAbort);
-        },
-      };
-      const onAbort = () => { waiter.drop(); reject(cancelled()); };
-      waiter.timer.unref?.();
-      this.#waiters.push(waiter);
-      signal?.addEventListener('abort', onAbort, { once: true });
-    });
-  }
-
-  #releaseTurn(): void {
-    const next = this.#waiters.shift();
-    if (!next) { this.#busy = false; return; }
-    // `drop()` also detaches its abort listener, so a waiter that has been
-    // handed the turn can no longer be cancelled out from under itself — the
-    // post-acquisition re-check in run() is what cancels it from here on.
-    next.drop();
-    next.resolve();
+    onStart?.();
+    const sink: ShellStreamSink = { ...(onOut ? { onOut } : {}), ...(onErr ? { onErr } : {}) };
+    return this.#runOneShot(command, this.#commandTimeoutMs, sink, signal);
   }
 
   // The reason the last command lost its shell, or null. Surfaced to the
@@ -279,8 +215,12 @@ export class ProviderShell {
     // timed-out or unframed, and reporting either of those would describe the
     // consequence instead of the cause.
     if (signal?.aborted) {
+      // NO RESET REASON. A cancelled command's `exec` was killed and nothing was
+      // shared for anyone to have lost, so telling the NEXT command "the shell
+      // was restarted, your exports are gone" would be an R5-class false
+      // statement about state it never had. With the queue gone this is
+      // reachable on the ordinary interrupt path (card 2026-0312 §2 D-b).
       flushFilters(filters, sink);
-      this.#resetReason = 'the command was interrupted by its caller';
       throw cancelled();
     }
     if (r.outputOverflowed) {
@@ -290,7 +230,9 @@ export class ProviderShell {
     }
     if (r.timedOut) {
       flushFilters(filters, sink);
-      throw new SystemError('ETIMEDOUT', `the command was still running after ${deadline}ms, cc's per-command ceiling — the shell was reset`);
+      // NOTHING IS RESET — the provider killed the command, and no state was
+      // shared for the next one to have lost.
+      throw new SystemError('ETIMEDOUT', `the command was still running after ${deadline}ms, cc's per-command ceiling`);
     }
     if (r.spawnError) {
       // The shell itself never started — a cwd deleted since the last command

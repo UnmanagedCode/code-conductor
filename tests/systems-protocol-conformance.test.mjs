@@ -627,7 +627,6 @@ test('every code in the taxonomy is produced by a real failure somewhere in this
     EPROTO: 'tests/systems-protocol-codec.test.mjs + tests/systems-provider-supervision.test.mjs',
     ETRANSPORT: 'tests/systems-provider-supervision.test.mjs',
     ETIMEDOUT: 'tests/systems-provider-supervision.test.mjs + tests/systems-shell-framing.test.mjs',
-    EBUSY: 'tests/systems-shell-framing.test.mjs',
     ESHELLGONE: 'tests/systems-shell-framing.test.mjs',
     ECANCELLED: 'tests/systems-shell-framing.test.mjs + tests/systems-tool-redirect.test.mjs',
     // The one code no test can provoke without filling a disk; its classifier

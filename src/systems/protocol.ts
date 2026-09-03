@@ -55,11 +55,6 @@ export const PROTOCOL_ERROR_CODES = [
   'ETRANSPORT',    // the connection is gone (provider exited, pipe broke)
   'ETIMEDOUT',     // a bounded wait elapsed
   'EUNSUPPORTED',  // an optional capability the provider does not advertise
-  // providerShell.ts: one shell serialises its commands and a wait past its
-  // bound is refused rather than queued forever. It never reaches a worker as a
-  // protocol error frame — it surfaces as a non-zero exit with the reason on
-  // stderr.
-  'EBUSY',
   'ESHELLGONE',    // the shell died or never framed the command
   'EFBIG',         // a file above MAX_FILE_BYTES, or output above a caller's fence
   'ECANCELLED',    // the caller went away: an interrupt, or a tool timeout

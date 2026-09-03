@@ -35,32 +35,33 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-// `--agent` names the AGENT whose shell this command belongs to — the main
-// agent's invocation carries none. It is on the argv because the rewrite is the
-// only place cc knows it: the hook that carried `agent_id` is long finished by
-// the time the CLI spawns this process, so the id has to travel out on the
-// command line and back on the request body.
-function parseArgs(argv: string[]): { url: string; timeoutMs: number | null; agentId: string | null; command: string } {
+// `--agent` names the AGENT this command belongs to — the main agent's
+// invocation carries none. It is on the argv because the rewrite is the only
+// place cc knows it: the hook that carried `agent_id` is long finished by the
+// time the CLI spawns this process, so the id has to travel out on the command
+// line and back on the request body.
+//
+// THE TOOL'S `timeout` DOES NOT TRAVEL. The CLI enforces it by killing this
+// process, which closes the socket — that is cc's cancellation channel, and it
+// needs no number (card 2026-0312 §2 D-b).
+function parseArgs(argv: string[]): { url: string; agentId: string | null; command: string } {
   let url = '';
-  let timeoutMs: number | null = null;
   let agentId: string | null = null;
   let i = 0;
   for (; i < argv.length; i++) {
     if (argv[i] === '--url') { url = argv[++i] ?? ''; continue; }
-    if (argv[i] === '--timeout') { timeoutMs = Number(argv[++i]); continue; }
     if (argv[i] === '--agent') { agentId = argv[++i] ?? null; continue; }
     if (argv[i] === '--') { i++; break; }
     break;
   }
-  return { url, timeoutMs, agentId, command: argv.slice(i).join(' ') };
+  return { url, agentId, command: argv.slice(i).join(' ') };
 }
 
-const { url, timeoutMs, agentId, command } = parseArgs(process.argv.slice(2));
+const { url, agentId, command } = parseArgs(process.argv.slice(2));
 if (!url || !command) fail('malformed forwarder invocation');
 
 const body = JSON.stringify({
   command,
-  ...(timeoutMs && Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
   ...(agentId ? { agentId } : {}),
 });
 const req = http.request(url, {

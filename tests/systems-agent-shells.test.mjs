@@ -129,8 +129,7 @@ test("a new agent's shell starts at the project root", async () => {
 test('interrupting one command leaves a concurrent one untouched', async () => {
   const streamed = [];
   const ac = new AbortController();
-  const survivor = run('a2', 'while [ ! -e DOOMED_GONE ]; do sleep 0.02; done; echo SURVIVED',
-    { timeoutMs: 8000 });
+  const survivor = run('a2', 'while [ ! -e DOOMED_GONE ]; do sleep 0.02; done; echo SURVIVED');
   const doomed = run('a1', "printf 'RUNNING\\n'; sleep 5", {
     signal: ac.signal,
     sink: { notice: () => {}, out: (t) => streamed.push(t), err: () => {} },
@@ -232,10 +231,8 @@ test("a displaced MAIN agent's reset notice names its own working directory", as
 // NOT CLAIMING: any ordering between the two, only simultaneous progress.
 test("two agents' commands genuinely overlap", async () => {
   const both = await Promise.all([
-    run(null, 'touch M_RUNNING; while [ ! -e S_SEEN ]; do sleep 0.02; done; echo M-DONE',
-      { timeoutMs: 8000 }),
-    run('a1', 'while [ ! -e M_RUNNING ]; do sleep 0.02; done; touch S_SEEN; echo S-DONE',
-      { timeoutMs: 8000 }),
+    run(null, 'touch M_RUNNING; while [ ! -e S_SEEN ]; do sleep 0.02; done; echo M-DONE'),
+    run('a1', 'while [ ! -e M_RUNNING ]; do sleep 0.02; done; touch S_SEEN; echo S-DONE'),
   ]);
   assert.equal(both[0].code, 0, both[0].stderr);
   assert.equal(both[1].code, 0, both[1].stderr);
@@ -246,8 +243,8 @@ test("two agents' commands genuinely overlap", async () => {
   // concurrently, with each result holding exactly its own in order.
   const N = 300;
   const [m, s] = await Promise.all([
-    run(null, `for i in $(seq 1 ${N}); do echo "M-$i"; done`, { timeoutMs: 8000 }),
-    run('a1', `for i in $(seq 1 ${N}); do echo "S-$i"; done`, { timeoutMs: 8000 }),
+    run(null, `for i in $(seq 1 ${N}); do echo "M-$i"; done`),
+    run('a1', `for i in $(seq 1 ${N}); do echo "S-$i"; done`),
   ]);
   const expected = (tag) => Array.from({ length: N }, (_, i) => `${tag}-${i + 1}`);
   assert.deepEqual(m.stdout.trim().split('\n'), expected('M'), "the main agent's own lines, in order");

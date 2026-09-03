@@ -247,18 +247,16 @@ export class SessionRedirect {
   #redirectBash(toolInput: Record<string, unknown>, agentId: string | null): RedirectDecision {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     if (!command) return { decision: 'allow' };
-    // The tool's own timeout is forwarded as the CALLER'S OWN PATIENCE: it
-    // bounds how long this command waits for its turn on that agent's shell,
-    // and it cannot move cc's per-command ceiling. It used to become the
-    // deadline, which killed the command at the same instant the CLI detached
-    // the forwarder and handed the agent a pointer to it (card 2026-0305 §4).
-    // The ceiling now sits above the built-in Bash tool's documented max, so a
-    // worker asking for ten minutes is not reset early either way.
-    const timeout = Number(toolInput.timeout);
+    // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and that is deliberate. It once
+    // became cc's deadline, which killed the command at the same instant the CLI
+    // detached the forwarder and handed the agent a pointer to it (card
+    // 2026-0305 §4); it then became a wait bound on the shell's queue, and card
+    // 2026-0312 removed the queue. The CLI enforces its own tool timeout by
+    // KILLING THE FORWARDER, which closes the socket — cc's cancellation channel
+    // — so nothing here needs the number.
     const argv = [
       shQuote(process.execPath), shQuote(FORWARDER),
       '--url', shQuote(this.#forwarderUrl),
-      ...(Number.isFinite(timeout) && timeout > 0 ? ['--timeout', String(Math.floor(timeout))] : []),
       // THE ONLY CHANNEL the agent id has. `agent_id` arrives on the hook, but
       // the command does not run there: the CLI later spawns the forwarder as
       // its own process, which POSTs the command back to cc. So the id rides
@@ -399,22 +397,29 @@ export class SessionRedirect {
   // `agentId` null for the session's main agent. Called by the forwarder's HTTP
   // request, which carries the id back from the rewrite.
   //
-  // TWO COMMANDS OF ONE SESSION NOW GENUINELY OVERLAP, where before every
-  // command of a session queued on its single shell. That holds because the
-  // layers below are multiplexed, which was measured rather than assumed: each
-  // `exec` owns its own never-reused id on the connection, every frame is routed
-  // by that id BEFORE any decoder sees the bytes, and each ProviderShell owns
-  // its own decoders and its own pending command — so two shells' bytes never
+  // EVERY COMMAND OF A SESSION GENUINELY OVERLAPS EVERY OTHER — nothing
+  // serialises. That holds because the layers below are multiplexed, which was
+  // measured rather than assumed: each `exec` owns its own never-reused id on
+  // the connection, every frame is routed by that id BEFORE any decoder sees the
+  // bytes, and each command owns its own parser — so two commands' bytes never
   // enter one parser even though a single read from the provider was observed
   // carrying frames for both. The per-command nonce defends something else
   // (forgery within one stream) and is not what makes this safe.
   //
-  // NEVER REJECTS. Every failure — a wedged shell, a dead provider, a busy one,
-  // the subagent-shell cap — comes back as a non-zero exit with the reason on
+  // WHAT BOUNDS cc's HEAP WITH N IN FLIGHT (card 2026-0312 §G-4): the output
+  // fence below is PER COMMAND, so the exposure is `N × maxOutputBytes`. N is
+  // whatever the CLI's own Bash concurrency is — realistically 1-10, since the
+  // model issues Bash calls one turn at a time and a wide fan-out is a handful
+  // of subagents each issuing one — i.e. 8 MiB to 80 MiB. It is UNBOUNDED IN
+  // PRINCIPLE and small in practice, and it is strictly better than what it
+  // replaced: the old ceiling was `17 × fence` (the main agent plus the
+  // 16-subagent cap), ~136 MiB, and cc had no say in it either.
+  //
+  // NEVER REJECTS. Every failure — a command that destroyed its own framing, a
+  // dead provider, a deadline — comes back as a non-zero exit with the reason on
   // stderr, because that is the channel the worker actually reads. A rejected
-  // HTTP request would reach it as an opaque forwarder crash instead. That is
-  // why acquisition happens INSIDE the try.
-  async runForwarded(command: string, { timeoutMs, signal, sink, agentId }: { timeoutMs?: number; signal?: AbortSignal; sink?: ForwardSink; agentId?: string | null } = {}): Promise<ForwardedResult> {
+  // HTTP request would reach it as an opaque forwarder crash instead.
+  async runForwarded(command: string, { signal, sink, agentId }: { signal?: AbortSignal; sink?: ForwardSink; agentId?: string | null } = {}): Promise<ForwardedResult> {
     let notice: string | null = null;
     try {
       const shell = this.#ensureShell(shellKey(agentId ?? null));
@@ -434,15 +439,11 @@ export class SessionRedirect {
       };
       // The CLI kills the forwarder on a tool timeout or an interrupt, which
       // closes the socket. That is cc's only signal that the worker no longer
-      // wants THIS command, and the shell is what decides what to do with it:
-      // a call still waiting for its turn is simply dropped, and only the
-      // in-flight one costs a reset. Closing the shell from here instead would
-      // kill whatever unrelated command happened to be running and still let
-      // the cancelled one execute when its turn came.
+      // wants THIS command, and it reaches the far side as a `signal` on this
+      // command's own `exec` id — so nothing else is disturbed.
       const r = await shell.run(command, {
         onStart,
         ...(signal ? { signal } : {}),
-        ...(timeoutMs === undefined ? {} : { timeoutMs }),
         ...(sink ? { onOut: (t: string) => sink.out(t), onErr: (t: string) => sink.err(t) } : {}),
       });
       return { stdout: r.stdout, stderr: r.stderr, code: r.code, notice };

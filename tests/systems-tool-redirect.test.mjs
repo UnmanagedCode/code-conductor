@@ -79,55 +79,33 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
   assert.equal(d.updatedInput.description, 'x');
 });
 
-// PINS THE FIRST HOP of the tool timeout's chain: `timeout` on the tool input
-// becomes `--timeout <ms>` on the forwarder's argv, and nothing else does.
+// INVERTED on card 2026-0312 §2 D-b: this used to pin that a positive tool
+// `timeout` rode out as `--timeout <ms>` on the forwarder's argv. NOTHING of the
+// tool's own timeout travels any more. Its only consumer was the wait bound on a
+// queue that no longer exists, and the CLI enforces its timeout by KILLING the
+// forwarder — which closes the socket, which is cc's cancellation channel and
+// needs no number.
 //
-// GREEN ON ARRIVAL — card 2026-0305 changed what ProviderShell DOES with the
-// number, not how it travels. It is here because nothing tested the branch at
-// all: after that card the timeout no longer changes any run outcome, so the
-// argv is the only place the omit/emit decision is observable.
+// THE ARGV IS WHERE THIS IS OBSERVABLE AT ALL, which is this test's reason to
+// exist: re-adding the flag would change no far-side behaviour cc can see, so
+// only the argv can catch it coming back.
 //
-// BOTH HALVES OF `Number.isFinite(timeout) && timeout > 0` ARE LOAD-BEARING,
-// and each half's UNIQUE input is named because they are wildly uneven —
-// measured, not reasoned:
-//
-//   `> 0` alone would catch      absent, prose, 0, -5, null, -Infinity
-//   `Number.isFinite` alone      absent, prose, ±Infinity
-//   unique to `> 0`              0, -5, null   (all finite, so isFinite passes them)
-//   unique to `Number.isFinite`  +Infinity     — AND NOTHING ELSE
-//
-// So `Number.isFinite` is NOT what stops the NaN inputs: `NaN > 0` is `false`,
-// and `> 0` catches absent and prose on its own. `+Infinity` is the whole of
-// what `isFinite` uniquely buys — without it `{timeout: 'Infinity'}` reaches
-// the argv as `--timeout Infinity`, which is why that case is in the loop
-// below. An earlier revision of this comment claimed `isFinite` was what
-// stopped the NaN cases; a mutant deleting it survived and proved otherwise.
-//
-// AND THE ARGV IS WHERE ALL OF THIS IS OBSERVABLE, which is this test's reason
-// to exist: two downstream layers independently re-drop these values, so the
-// far side behaves identically with or without the guard here. Measured —
-// bashForwarder.ts's `timeoutMs && Number.isFinite(timeoutMs)` drops NaN, 0 and
-// Infinity but SENDS `-5` on the body, and routes.ts's
-// `Number.isFinite(timeoutMs) && timeoutMs > 0` drops all four.
-test('a positive tool timeout rides out as --timeout, and nothing else does', async () => {
+// EVERY SHAPE THAT USED TO PRODUCE A FLAG is asserted here, not just one: the
+// guard that dropped the others (`Number.isFinite(timeout) && timeout > 0`) went
+// with the flag, so a partial restoration would put `--timeout Infinity` on a
+// real argv.
+test('no tool timeout rides out on the argv, whatever shape it arrives in', async () => {
   const argvFor = async (input) =>
     (await pre('Bash', { command: 'echo hi', ...input })).updatedInput.command;
 
-  assert.match(await argvFor({ timeout: 45_000 }), /--timeout 45000 /);
-  // Floored, not rounded or stringified raw: the far side parses it with
-  // Number() and a fractional millisecond is not a deadline anyone asked for.
-  assert.match(await argvFor({ timeout: 1500.7 }), /--timeout 1500 /);
-  // A numeric STRING is what a JSON payload can legitimately carry.
-  assert.match(await argvFor({ timeout: '2000' }), /--timeout 2000 /);
-
-  // `'Infinity'` is the ONE input only `Number.isFinite` catches, and a JSON
-  // string is a shape a model can emit. Without it nothing in the suite
-  // distinguishes the real guard from `timeout > 0`.
-  for (const input of [{}, { timeout: 0 }, { timeout: -5 }, { timeout: 'soon' },
+  for (const input of [{ timeout: 45_000 }, { timeout: 1500.7 }, { timeout: '2000' },
+                       {}, { timeout: 0 }, { timeout: -5 }, { timeout: 'soon' },
                        { timeout: null }, { timeout: 'Infinity' }]) {
     assert.doesNotMatch(await argvFor(input), /--timeout/,
       `${JSON.stringify(input)} must not put a timeout on the wire`);
   }
+  // The command itself still rides, so this is not passing by producing no argv.
+  assert.match(await argvFor({ timeout: 45_000 }), /echo hi/);
 });
 
 // PINS: a forwarded command runs on the SYSTEM, not on cc. Both directions are
@@ -239,10 +217,15 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 });
 
 // PINS B1 AT THE REDIRECT LAYER: an interrupt cancels THAT call and nothing
-// else. The unrelated in-flight command completes normally, and the cancelled
+// else. The unrelated concurrent command completes normally, and the cancelled
 // one never runs on the system — its effects must not land when its caller has
 // gone away.
-test('interrupting a queued command leaves the in-flight one alone and never runs it', async () => {
+//
+// RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
+// waiting for its TURN on a shell, and there is no turn any more. What it
+// actually pins — a call cancelled before it crosses leaves nothing on the far
+// side — is unchanged and is the half a worker cares about.
+test('a cancelled call never reaches the system, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
   const ac = new AbortController();
@@ -274,18 +257,16 @@ test('interrupting the in-flight command stops it on the system', async () => {
 });
 
 // PINS T5 — THE ACTUAL REAL-WORLD SHAPE, not just the guards. A long build is
-// in flight on a LIVE, streaming shell; a second call is queued behind it; that
-// second call's caller is interrupted.
+// in flight and STREAMING; a second call is issued alongside it; that second
+// call's caller is interrupted.
 //
-// The neighbouring cancellation tests abort synchronously right after invoking,
-// so they always race the shell OPEN and exercise the pre-open window. This one
-// waits for the in-flight command's first bytes to arrive before queuing behind
-// it, which is the only way the queued call is cancelled against a shell that is
-// genuinely mid-command.
+// LIVE, not merely started: the test waits for the long command's first bytes to
+// reach cc before issuing the second, so the cancellation lands against a
+// command that is genuinely mid-flight rather than one still being handed over.
 //
 // Every claim is witnessed on the SYSTEM's filesystem, which is the only witness
 // that can tell "was not run" from "was run and its result discarded".
-test('interrupting a queued call leaves a live in-flight command untouched', async () => {
+test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
 
@@ -294,15 +275,13 @@ test('interrupting a queued call leaves a live in-flight command untouched', asy
     "printf 'A1\n'; sleep 1; printf 'A2\n'; touch A_DONE",
     { sink: { ...sink, out: (t) => streamed.push(t) } },
   );
-  // LIVE, not merely started: the first bytes have crossed to cc, so the shell
-  // is past its open and mid-command.
   await waitFor(() => streamed.join('').includes('A1'), { timeout: 5000 });
 
   const ac = new AbortController();
-  const queued = redirect.runForwarded('touch B_WITNESS', { signal: ac.signal, sink });
+  const cancelledCall = redirect.runForwarded('touch B_WITNESS', { signal: ac.signal, sink });
   ac.abort();
 
-  const b = await queued;
+  const b = await cancelledCall;
   assert.equal(b.code, 1, 'the cancelled call reports a failure');
   assert.match(b.stderr, /interrupt|cancel/i, b.stderr);
 
@@ -314,68 +293,14 @@ test('interrupting a queued call leaves a live in-flight command untouched', asy
   assert.ok(await fs.stat(onSystem('A_DONE')).catch(() => null), 'A finished on the system');
   await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B never ran on the system');
 
-  // And no shell was reset, so nothing has a reset to report — a spurious notice
-  // would tell a worker it lost state it still has.
+  // And nothing was reset — the cancelled command's `exec` was killed and no
+  // state was shared for anyone to lose — so a notice here would tell a worker
+  // it lost state it never had.
   assert.equal(a.notice, null);
   assert.equal(b.notice, null);
   assert.deepEqual(seen.filter(([k]) => k === 'notice'), []);
   const after = await bash('echo "[$CC_PROBE_UNSET]"');
   assert.equal(after.notice, null, 'and the next command is not told about a reset either');
-});
-
-// PINS B2 AT THE REDIRECT LAYER. R5's abort was once implemented only as a shell
-// close, which reached nothing when there was no live stream — so the
-// interrupted command ran to completion on the system, bounded only by the
-// worker's own Bash timeout. The abort now reaches the far side through `exec`
-// itself, which is the only channel there is.
-test('interrupting stops the command, and a queued one never runs', async () => {
-  const running = onSystem('FB_STILL_RUNNING');
-  const queued = onSystem('FB_QUEUED_RAN');
-
-  const inFlight = redirect.runForwarded(`sleep 0.5; touch ${JSON.stringify(running)}`, {});
-  const ac = new AbortController();
-  const q = redirect.runForwarded(`touch ${JSON.stringify(queued)}`, { signal: ac.signal });
-  ac.abort();
-  assert.notEqual((await q).code, 0);
-  await inFlight;
-  await assert.rejects(fs.stat(queued), 'the cancelled queued command never ran');
-
-  // And the in-flight half: interrupt one that is actually running.
-  const ac2 = new AbortController();
-  const p = redirect.runForwarded(`sleep 0.5; touch ${JSON.stringify(running)}`, { signal: ac2.signal });
-  await new Promise(r => setTimeout(r, 120));
-  ac2.abort();
-  assert.notEqual((await p).code, 0);
-  await fs.rm(running, { force: true });
-  await new Promise(r => setTimeout(r, 700));
-  await assert.rejects(fs.stat(running), 'the interrupted command is not still running on the system');
-});
-
-// PINS S1: the reset notice goes to the command that RUNS on the fresh shell,
-// not to whichever call was constructed next. Here the aborted command resets
-// the shell and a call that was already queued behind it is the one that runs
-// on the replacement — so it is the one that must be told its exports are gone.
-test('the reset notice lands on the command that runs on the new shell', async () => {
-  await bash('export CC_PROBE=before');
-  const notices = [];
-  const mkSink = (tag) => ({
-    notice: (t) => notices.push({ tag, t }),
-    out: () => {}, err: () => {},
-  });
-
-  const ac = new AbortController();
-  const doomed = redirect.runForwarded('sleep 0.4; echo doomed', { signal: ac.signal, sink: mkSink('doomed') });
-  const queued = redirect.runForwarded('echo "[$CC_PROBE]"', { sink: mkSink('queued') });
-  await new Promise(r => setTimeout(r, 120));
-  ac.abort();
-  await doomed;
-  const after = await queued;
-
-  assert.equal(after.stdout, '[]\n', 'it really did run on a shell that had lost the export');
-  assert.deepEqual(notices.map(n => n.tag), ['queued'],
-    'exactly one notice, and it went to the command that ran on the new shell');
-  assert.match(notices[0].t, /restarted/);
-  assert.equal(after.notice, notices[0].t);
 });
 
 // PINS: a notice is delivered ONCE. A command that follows a reported reset
