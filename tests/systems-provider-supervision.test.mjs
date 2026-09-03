@@ -428,6 +428,26 @@ test('a second hello that arrives AFTER the handshake still fails the next opera
 // nothing reads the descriptor today, NOT that cc has decided it never will. An
 // unknown key is ignored by contract, so a future consumer simply re-adds the
 // field it needs at no compatibility cost.
+// THE OTHER DIRECTION, and it is what C5's deletion actually rests on: a
+// provider that STILL SENDS the descriptor must connect unchanged. Every
+// provider written before card 2026-0312 does, so refusing one — or letting a
+// stray field reach any decode path that rejects — would break every existing
+// third-party provider on upgrade, which is the one thing D12 does not license.
+//
+// The spec rule this pins is stated separately from the unknown-capability-key
+// and unknown-frame-type ones in docs/systems-protocol.md §2, because it IS a
+// third rule: an unknown FIELD on a KNOWN frame is ignored.
+//
+// NOT CLAIMING that cc reads any of it — it reads none, which is the test above.
+test('a hello that still carries the deleted system descriptor connects, and is ignored', async () => {
+  const sys = fakeSystem('legacy-hello');
+  try {
+    const hs = await sys.connect();
+    assert.equal('system' in hs, false, 'the stray field reaches no recorded handshake');
+    assert.deepEqual(hs.capabilities.processGroupSignal, true, 'and the fields cc DOES read still arrive');
+  } finally { sys.dispose(); }
+});
+
 test('a hello with no system descriptor at all connects', async () => {
   const sys = fakeSystem('ok');
   try {

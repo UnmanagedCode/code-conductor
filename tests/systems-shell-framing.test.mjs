@@ -236,19 +236,19 @@ test('the cwd survives spaces and newlines because it rides as base64', () => {
   assert.equal(m.cwd, weird);
 });
 
-test('the nonce is fresh per command, and the script keeps cd and export in the shell', () => {
+test('the nonce is fresh per command, and the script keeps cd and export in the shell FOR THAT COMMAND', () => {
   assert.notEqual(newNonce(), newNonce(), 'a fixed nonce is forgeable — that is the measured desync');
   assert.match(newNonce(), /^[0-9a-f]{32}$/, '128 bits');
   const script = frameCommand('N', 'echo hi');
   assert.ok(script.startsWith(String.raw`printf '\n__CC_N_BEGIN__\n'; printf '\n__CC_N_BEGIN__\n' >&2`),
     'the opening sentinel is emitted on BOTH streams before the command runs, each newline-prefixed');
-  assert.match(script, /\{ echo hi\n\} < \/dev\/null\n/, 'braces, not a subshell, so cd and export land in the shell');
+  assert.match(script, /\{ echo hi\n\} < \/dev\/null\n/, 'braces, not a subshell, so cd and export land in the shell running THIS command — nothing carries to the next one, which has its own');
   assert.match(script, /< \/dev\/null/, 'the command group gets a closed stdin, like project_bash and the Bash tool');
   assert.ok(script.includes(String.raw`printf '\n__CC_N__\n' >&2`),
     'stderr carries its own sentinel, newline-prefixed like stdout\'s, so a command whose stderr has no trailing newline still frames');
 });
 
-// ── End to end, in both capability modes ─────────────────────────────
+// ── End to end, against a real provider ─────────────────────────────
 
 // PINS: output reaches the caller BEFORE the command finishes, and what it
 // received is byte-identical to the buffered result. Asserted by ORDER, not
@@ -398,7 +398,7 @@ test(`exit codes are captured, and stderr is routed with its own sentinel`, asyn
     // NEITHER stream may assume a trailing newline. `printf err >&2` is
     // ordinary, and a stderr sentinel that landed mid-line would never match
     // — the command would wedge until its deadline instead of returning.
-    const bare = await sh.run('printf out-no-nl; printf err-no-nl >&2', { timeoutMs: 4_000 });
+    const bare = await sh.run('printf out-no-nl; printf err-no-nl >&2');
     assert.equal(bare.stdout, 'out-no-nl');
     assert.equal(bare.stderr, 'err-no-nl');
     assert.equal(bare.code, 0);

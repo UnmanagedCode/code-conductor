@@ -201,8 +201,11 @@ export interface HelloClientFrame { type: 'hello'; protocol: number; client: str
 //
 // THIS RECORDS "NOTHING READS IT TODAY", NOT "cc will never need `os`/`pathSep`/
 // `home`". There is no compatibility cost to a future consumer re-adding the
-// field it needs: an unknown key is ignored by contract, so a provider may
-// already send one and cc simply will not look.
+// field it needs. AN UNKNOWN FIELD ON A KNOWN FRAME IS IGNORED BY CONTRACT
+// (§2) — a separate rule from the unknown-capability-key and unknown-frame-type
+// ones, and the one this deletion actually rests on: every provider written
+// before this card still sends a `system` object, and each must connect
+// unchanged rather than be refused for a field cc no longer reads.
 export interface HelloProviderFrame {
   type: 'hello';
   protocol: number;

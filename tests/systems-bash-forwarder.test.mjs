@@ -7,10 +7,11 @@
 // production — the CLI spawns it with process.execPath as argv[0] — so spawning
 // is the faithful shape, not a workaround.
 //
-// GREEN ON ARRIVAL. Card 2026-0305 changed what ProviderShell does with the
-// number the forwarder carries, not how it carries it. The hop is pinned here
-// because after that card the tool timeout no longer changes any run outcome, so
-// the request BODY is the only place `--timeout` is observable.
+// THE REQUEST BODY IS WHAT THIS FILE PINS, and after card 2026-0312 what it
+// pins is an ABSENCE: neither the tool's `timeout` nor the dispatching agent's
+// id travels any more, and the body carries the command alone. Nothing on the
+// far side would look different if either came back, so the body is the only
+// place their return is observable.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -56,9 +57,11 @@ async function forward(args) {
 
 // INVERTED on card 2026-0312 §2 D-b: `--timeout` used to become `timeoutMs` on
 // the request body. Neither the flag nor the key exists any more — its only
-// consumer was the wait bound on a queue that is gone, and the CLI enforces its
-// own tool timeout by KILLING this process, which closes the socket. That is
-// cc's cancellation channel and it carries no number.
+// consumer was the wait bound on a queue that is gone, and cc needs the number
+// for nothing: at the tool timeout the CLI DETACHES this process and hands the
+// agent a background task (card 2026-0305 §3), so the command keeps running
+// under cc's own ceiling. A kill, when one comes, closes the socket — cc's
+// cancellation channel, which carries no number either.
 //
 // ASSERTED AS AN EXACT BODY SHAPE, not just an absent key: this is the layer
 // that decides what goes on the wire, so an extra field re-appearing here is

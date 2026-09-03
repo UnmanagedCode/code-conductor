@@ -555,7 +555,7 @@ describe('a worker session on a remote system', () => {
     await running;
   });
 
-  // The one sentence a remote project adds to every worker's system prompt.
+  // The TWO sentences a remote project adds to every worker's system prompt.
   //
   // It loads into the prompt of every session on the project, so it is held to
   // the workspace "System-prompt docs" rule: each sentence must change what the
@@ -645,10 +645,10 @@ describe('a worker session on a remote system', () => {
   });
 });
 
-// ── A session's shell, on a system that serves many targets ────────
+// ── A session's commands, on a system that serves many targets ─────
 //
-// Every agent's shell is opened with an `exec` on the project's bound handle, so
-// its commands must land on the project's target — not on the provider's default,
+// Every command is its own `exec` on the project's bound handle, so it must land
+// on the project's target — not on the provider's default,
 // and not on a sibling project's. Asserted with CC_REMOTE, because on a machine
 // where every target is one filesystem "the command worked" is exactly what the
 // wrong target produces too.

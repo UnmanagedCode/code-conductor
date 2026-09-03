@@ -145,16 +145,25 @@ The provider answers exactly once:
     already sends one is already ignored.
 - **THE PROVIDER OWNS THE INTERPRETER, per target.** cc requires a POSIX shell
   and nothing more, and its framing (§5) does not care which one or whether it is
-  a login shell — measured on this host under `bash -lc`, `bash -c`, `/bin/sh -c`
-  and `/bin/sh` (dash 0.5.12): identical `$?` propagation, identical `$PWD`
-  capture, and the opening sentinel discarding whatever the interpreter printed
-  before the script in every case. So a provider whose targets need different
+  a login shell — measured on Linux 6.17 / bash 5.2.37 / dash 0.5.12 as
+  `/bin/sh`, under `bash -lc`, `bash -c`, `/bin/sh -c` and `/bin/sh`: identical
+  `$?` propagation, identical `$PWD` capture, and the opening sentinel discarding
+  whatever the interpreter printed before the script in every case. **Four
+  interpreters on one host is the whole of the evidence** — nothing here has been
+  measured on another OS, another libc, or a non-POSIX shell. So a provider whose targets need different
   shells simply uses different ones; nothing is negotiated and nothing needs to
   be. The one per-target fact cc DOES negotiate is the **mirror advertisement**
   (§2.1), which rides its own frame.
+- **An unknown FIELD on a KNOWN frame is ignored too**, and this is stated
+  separately because it is a third rule, not a restatement of the two above: cc
+  reads the fields it knows off a frame and never rejects one for carrying more.
+  It became load-bearing when the hello's `system` descriptor was deleted (card
+  2026-0312) — every provider written before that still sends one, and each must
+  connect unchanged rather than be refused for a field cc no longer reads.
+  Pinned by `tests/systems-protocol-conformance.test.mjs`.
 - Unknown *frame types* are likewise ignored by both ends. Unknown capability
-  keys and unknown frame types are the extension point: **the contract can grow
-  without a version bump.**
+  keys, unknown frame types and unknown fields are the extension point: **the
+  contract can grow, and shrink, without a version bump.**
 
 ### Capability classification
 
@@ -444,9 +453,13 @@ It used to do three, also capping how long a wedged shell stayed wedged and how
 long a queued command waited for its turn, and both of those went with the
 long-lived shell and the queue.
 
-The tool timeout a redirected `Bash` carries reaches cc **not at all**. The CLI
-enforces it by killing the forwarder, which closes the socket — that is cc's
-cancellation channel, and it needs no number.
+The tool timeout a redirected `Bash` carries reaches cc **not at all**, and cc
+needs it for nothing. At the tool timeout the CLI **detaches** the forwarder and
+hands the agent a background task (measured, card 2026-0305 §3) — the command
+keeps running, bounded by this ceiling, which is why the ceiling sits **above**
+the documented max rather than at it. The CLI's **kill** of the forwarder, on an
+interrupt or a stopped background task, closes the socket, and that is cc's
+cancellation channel; it carries no number either.
 
 ## 6. `readFile` and `writeFile`
 

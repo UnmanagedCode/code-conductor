@@ -16,9 +16,9 @@
 //
 // It is a SEPARATE PROCESS, not a shell one-liner, for two reasons: the
 // original command travels as one argv element, so no quoting of it survives
-// into a second shell; and the CLI's own kill of this process — on a tool
-// timeout or an interrupt — closes the HTTP socket, which is how cc learns to
-// kill the command on the far side.
+// into a second shell; and the CLI's own kill of this process — on an interrupt,
+// or when the worker stops a background task — closes the HTTP socket, which is
+// how cc learns to kill the command on the far side.
 //
 // Node builtins only. It is spawned by whatever shell the CLI uses, with
 // process.execPath as argv[0], so it must not depend on cwd, PATH or the
@@ -35,11 +35,14 @@ function fail(message: string): never {
 }
 
 // ONE FLAG AND THE COMMAND. Neither the tool's `timeout` nor the dispatching
-// agent's id travels any more (card 2026-0312): the timeout's only consumer was
-// a queue that no longer exists — the CLI enforces its own by KILLING this
-// process, which closes the socket, and that is cc's cancellation channel — and
-// the agent id's only consumer was a per-agent shell, which is gone because no
-// command's state reaches any later one.
+// agent's id travels any more (card 2026-0312). The timeout's only consumer was
+// a queue that no longer exists, and cc needs the number for nothing: at the
+// tool timeout the CLI DETACHES this process rather than killing it, handing the
+// agent a background task while the command keeps running on the system (card
+// 2026-0305 §3), bounded by cc's own ceiling. A kill, when one comes, closes the
+// socket — cc's cancellation channel, which carries no number either. The agent
+// id's only consumer was a per-agent shell, which is gone because no command's
+// state reaches any later one.
 function parseArgs(argv: string[]): { url: string; command: string } {
   let url = '';
   let i = 0;

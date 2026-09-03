@@ -190,6 +190,28 @@ test('capability negotiation: a missing key is false, an unknown key is ignored'
     'only a literal true enables a capability');
 });
 
+// PINS THE DECODE HALF of the rule card 2026-0312's descriptor deletion rests
+// on: an unknown FIELD on a KNOWN frame survives decoding untouched rather than
+// being rejected. Separate from the unknown-capability-key and unknown-frame-type
+// rules — this one is about a frame cc fully understands carrying more than cc
+// reads, which is every pre-0312 provider's hello.
+//
+// NOT CLAIMING that anything downstream reads the field; the handshake half is
+// tests/systems-provider-supervision.test.mjs's.
+test('an unknown field on a KNOWN frame decodes, it is not refused', () => {
+  const f = decodeFrame(JSON.stringify({
+    type: 'hello', protocol: 1, provider: 'legacy/0.1.0',
+    capabilities: { processGroupSignal: true },
+    system: { os: 'linux', pathSep: '/', shell: '/bin/bash', home: '/root' },
+    somethingCcHasNeverHeardOf: { nested: [1, 2, 3] },
+  }));
+  assert.equal(f.type, 'hello');
+  assert.equal(f.provider, 'legacy/0.1.0');
+  assert.deepEqual(f.system, { os: 'linux', pathSep: '/', shell: '/bin/bash', home: '/root' },
+    'the deleted descriptor rides through the decoder untouched');
+  assert.deepEqual(f.somethingCcHasNeverHeardOf, { nested: [1, 2, 3] });
+});
+
 test('the taxonomy is closed: every named code is recognised and nothing else is', () => {
   for (const c of [...PROTOCOL_ERROR_CODES, ...FS_ERROR_CODES]) assert.equal(isSystemErrorCode(c), true, c);
   for (const c of ['EWHATEVER', '', null, 7]) assert.equal(isSystemErrorCode(c), false, String(c));

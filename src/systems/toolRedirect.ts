@@ -127,9 +127,9 @@ export interface SessionRedirectOptions {
   //
   // IT IS NOT THE FAR END OF THE PREFIX RULE. That is the mirror root below,
   // which is the same path only when the provider advertises nothing. The two
-  // were one field until P7, and widening it would silently have re-based every
-  // agent's shell on the mirror root and matched the annotation against
-  // essentially all output.
+  // were one field until P7, and widening it would silently have started every
+  // command at the mirror root and matched the annotation against essentially
+  // all output.
   systemPath: string;
   // The LOCAL IMAGE of the mirror root. The CLI's cwd is `sessionRoot +
   // mirror.offset`, which this derives rather than takes, so the two cannot
@@ -252,13 +252,20 @@ export class SessionRedirect {
   #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     if (!command) return { decision: 'allow' };
-    // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and that is deliberate. It once
-    // became cc's deadline, which killed the command at the same instant the CLI
-    // detached the forwarder and handed the agent a pointer to it (card
+    // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and cc needs it for nothing. It
+    // once became cc's deadline, which killed the command at the same instant the
+    // CLI DETACHED the forwarder and handed the agent a pointer to it (card
     // 2026-0305 §4); it then became a wait bound on the shell's queue, and card
-    // 2026-0312 removed the queue. The CLI enforces its own tool timeout by
-    // KILLING THE FORWARDER, which closes the socket — cc's cancellation channel
-    // — so nothing here needs the number.
+    // 2026-0312 removed the queue.
+    //
+    // AT THE TOOL TIMEOUT THE CLI DETACHES, IT DOES NOT KILL — measured: a
+    // redirected command is always the node forwarder, so the harness always
+    // takes its detach branch and hands the agent a background task (card
+    // 2026-0305 §3). The command keeps running, bounded by cc's ceiling, which
+    // is why that ceiling sits above the documented max rather than at it. What
+    // the CLI DOES kill the forwarder for — an interrupt, or a background task
+    // the worker stops — closes the socket, and that is cc's cancellation
+    // channel; it carries no number either.
     const argv = [
       shQuote(process.execPath), shQuote(FORWARDER),
       '--url', shQuote(this.#forwarderUrl),
@@ -417,20 +424,40 @@ export class SessionRedirect {
   // HTTP request would reach it as an opaque forwarder crash instead.
   async runForwarded(command: string, { signal, sink }: { signal?: AbortSignal; sink?: ForwardSink } = {}): Promise<ForwardedResult> {
     let notice: string | null = null;
+    // TWO REASONS A COMMAND STOPS, relayed into the one signal `exec` takes.
+    // Declared OUT here rather than inside the try, because the `finally` is
+    // what detaches them and it has to reach them however the call ended.
+    // The caller's is the socket closing — the CLI kills the forwarder when the
+    // worker interrupts or stops a background task, and that is cc's only signal
+    // that the worker no longer wants THIS command. It reaches the far side as a
+    // `close` on this command's own `exec` id, so nothing else is disturbed. The
+    // session's own teardown is the other, and it reaches every command at once.
+    //
+    // A PER-CALL CONTROLLER WITH EXPLICIT REMOVAL, and NOT `AbortSignal.any`.
+    // `any` retains per-call state on the LONGEST-LIVED input for as long as
+    // that input lives, which here is the session controller: measured on node
+    // v24.18.0, heapUsed climbed linearly with the number of commands a session
+    // had ever run, while this shape and a bare per-call signal both stayed
+    // flat. The `removeEventListener` in the `finally` is what makes it flat —
+    // the identical shape WITHOUT it grows just as `any` does, measured.
+    //
+    // NO TEST CAN AUDIT THIS, which is why it landed unnoticed: `any` attaches
+    // through internals `getEventListeners` does not enumerate, so it reports
+    // ZERO listeners on a signal with a thousand live combined signals hanging
+    // off it, while an ordinary `addEventListener` reads 1 and its removal
+    // reads 0. A leak assertion here can only be a heap measurement, so this
+    // comment is the record and the shape is the guard.
+    const call = new AbortController();
+    const relay = () => call.abort();
+    const sources = signal ? [signal, this.#abort.signal] : [this.#abort.signal];
+    for (const s of sources) {
+      if (s.aborted) call.abort();
+      else s.addEventListener('abort', relay, { once: true });
+    }
     try {
       const shell = this.#ensureShell();
-      // TWO REASONS A COMMAND STOPS, combined into the one signal `exec` takes.
-      // The CLI kills the forwarder on a tool timeout or an interrupt, which
-      // closes the socket — that is cc's only signal that the worker no longer
-      // wants THIS command, and it reaches the far side as a `close` on this
-      // command's own `exec` id, so nothing else is disturbed. The session's own
-      // teardown is the other, and it reaches every command at once.
-      //
-      // `AbortSignal.any` rather than a hand-rolled relay: it detaches when the
-      // combined signal is garbage-collected, so a long-lived session controller
-      // does not accumulate one listener per command it has ever run.
       const r = await shell.run(command, {
-        signal: signal ? AbortSignal.any([signal, this.#abort.signal]) : this.#abort.signal,
+        signal: call.signal,
         ...(sink ? { onOut: (t: string) => sink.out(t), onErr: (t: string) => sink.err(t) } : {}),
       });
       // LAST, after the command has settled: where it ended cannot be known
@@ -446,6 +473,12 @@ export class SessionRedirect {
       const stderr = `cc: ${errMsg(e)}\n`;
       sink?.err(stderr);
       return { stdout: '', stderr, code: 1, notice };
+    } finally {
+      // However the command ended. `{once:true}` already detaches a listener
+      // that FIRED; this is for the ordinary case, where neither source ever
+      // fires and the session controller would otherwise hold one per command
+      // for the life of the session.
+      for (const s of sources) s.removeEventListener('abort', relay);
     }
   }
 
@@ -477,6 +510,15 @@ export class SessionRedirect {
   // moved; a subshell's `cd` and a child process's `chdir` both leave it silent
   // (measured). The forwarder is exactly that shape — a child the CLI's shell
   // spawns — so cc's notice is the only one a worker sees.
+  //
+  // THE COMPARISON IS BYTE-EXACT, and a real transport can break the silence
+  // half on that alone. The sentinel reports the shell's own `$PWD`, so a
+  // provider whose interpreter canonicalises it — a symlinked project root, or
+  // anything with `pwd -P` semantics — returns a path that never equals
+  // `systemPath` and every command gets a notice, which is the noise divergence
+  // this guard exists to avoid. The reference provider passes `cwd` through
+  // unchanged, so no test here can see it. A provider that canonicalises should
+  // advertise the canonical root.
   #cwdNotice(endedAt: string): string | null {
     if (!endedAt || endedAt === this.systemPath) return null;
     return `[cc] the command ended in ${endedAt}; the next command starts at ${this.systemPath} `

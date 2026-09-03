@@ -64,6 +64,23 @@ afterEach(async () => {
 const run = (command, opts = {}) => redirect.runForwarded(command, opts);
 const onSystem = (rel) => path.join(remote.root, rel);
 
+// A far-side rendezvous that GIVES UP, and that is the whole point of it being a
+// helper. Every test here proves concurrency by having two commands wait on each
+// other, which under anything that serialises them is a DEADLOCK — and an
+// unbounded `while [ ! -e X ]` turns that into a hang until cc's 605 s ceiling:
+// a wedged suite nobody diagnoses rather than a failure someone reads. Bounded,
+// the same regression reds in ~3 s with a message naming what never arrived.
+//
+// IT ENDS IN `&&`, and NOT in `exit`. A bare `exit` inside the framed command
+// group exits the SHELL, so cc reports ESHELLGONE and the diagnostic line never
+// reaches the result — measured. Short-circuiting instead leaves the frame
+// intact, so the message arrives on stderr, the rest of the command is skipped,
+// and the exit code is an ordinary non-zero.
+const RENDEZVOUS_TICKS = 150;   // × 20 ms = ~3 s
+const waitFor_ = (marker) =>
+  `i=0; while [ ! -e ${marker} ] && [ $i -lt ${RENDEZVOUS_TICKS} ]; do sleep 0.02; i=$((i+1)); done; `
+  + `{ [ -e ${marker} ] || { echo "RENDEZVOUS-TIMEOUT: ${marker} never appeared" >&2; false; }; } && `;
+
 // PINS THE BLAST RADIUS OF AN INTERRUPT: aborting one command stops that command
 // and nothing else. Each command is its own `exec` with its own never-reused id,
 // so a signal wired to the wrong id — the way this has actually been broken on
@@ -91,7 +108,7 @@ const onSystem = (rel) => path.join(remote.root, rel);
 test('interrupting one command leaves a concurrent one untouched', async () => {
   const streamed = [];
   const ac = new AbortController();
-  const survivor = run('while [ ! -e DOOMED_GONE ]; do sleep 0.02; done; echo SURVIVED');
+  const survivor = run(`${waitFor_('DOOMED_GONE')}echo SURVIVED`);
   const doomed = run("printf 'RUNNING\\n'; sleep 5", {
     signal: ac.signal,
     sink: { notice: () => {}, out: (t) => streamed.push(t), err: () => {} },
@@ -125,9 +142,11 @@ test('interrupting one command leaves a concurrent one untouched', async () => {
 // NOT CLAIMING: any ordering between the two, only simultaneous progress.
 test('two commands of one session genuinely overlap, and neither sees the other\'s output', async () => {
   const both = await Promise.all([
-    run('touch M_RUNNING; while [ ! -e S_SEEN ]; do sleep 0.02; done; echo M-DONE'),
-    run('while [ ! -e M_RUNNING ]; do sleep 0.02; done; touch S_SEEN; echo S-DONE'),
+    run(`touch M_RUNNING; ${waitFor_('S_SEEN')}echo M-DONE`),
+    run(`${waitFor_('M_RUNNING')}touch S_SEEN; echo S-DONE`),
   ]);
+  // A serialising layer deadlocks these two, and the bounded wait is what turns
+  // that from a hang at cc's ceiling into a named failure in ~3 s.
   assert.equal(both[0].code, 0, both[0].stderr);
   assert.equal(both[1].code, 0, both[1].stderr);
   assert.equal(both[0].stdout.trim(), 'M-DONE');

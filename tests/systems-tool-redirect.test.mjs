@@ -31,7 +31,7 @@ const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtur
 
 let home, remote, redirect, root, events;
 
-async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs, maxOutputBytes } = {}) {
+async function build({ flags = [], shellCommandTimeoutMs, maxOutputBytes } = {}) {
   ({ home } = await freshProjectsRoot());
   remote = await bindRemoteSystem({ flags });
   root = path.join(home, 'session-root');
@@ -48,7 +48,6 @@ async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs, maxOutputBy
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
     localRoots: [path.join(home, 'local-ok')],
     emit: (ev) => events.push(ev),
-    ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
     ...(maxOutputBytes === undefined ? {} : { maxOutputBytes }),
   });
@@ -81,10 +80,11 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
 
 // INVERTED on card 2026-0312 §2 D-b: this used to pin that a positive tool
 // `timeout` rode out as `--timeout <ms>` on the forwarder's argv. NOTHING of the
-// tool's own timeout travels any more. Its only consumer was the wait bound on a
-// queue that no longer exists, and the CLI enforces its timeout by KILLING the
-// forwarder — which closes the socket, which is cc's cancellation channel and
-// needs no number.
+// tool's own timeout travels any more, and cc needs it for nothing: its only
+// consumer was the wait bound on a queue that no longer exists, and at the tool
+// timeout the CLI DETACHES the forwarder rather than killing it (card 2026-0305
+// §3), so the command keeps running under cc's own ceiling. A kill, when one
+// comes, closes the socket — cc's cancellation channel, which needs no number.
 //
 // THE ARGV IS WHERE THIS IS OBSERVABLE AT ALL, which is this test's reason to
 // exist: re-adding the flag would change no far-side behaviour cc can see, so
@@ -94,7 +94,7 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
 // guard that dropped the others (`Number.isFinite(timeout) && timeout > 0`) went
 // with the flag, so a partial restoration would put `--timeout Infinity` on a
 // real argv.
-test('no tool timeout rides out on the argv, whatever shape it arrives in', async () => {
+test('neither a tool timeout nor an agent id rides out on the argv', async () => {
   const argvFor = async (input) =>
     (await pre('Bash', { command: 'echo hi', ...input })).updatedInput.command;
 
@@ -103,6 +103,16 @@ test('no tool timeout rides out on the argv, whatever shape it arrives in', asyn
                        { timeout: null }, { timeout: 'Infinity' }]) {
     assert.doesNotMatch(await argvFor(input), /--timeout/,
       `${JSON.stringify(input)} must not put a timeout on the wire`);
+    // THE `--agent` HALF, and it is not decoration: the forwarder's `parseArgs`
+    // BREAKS AT THE FIRST UNRECOGNISED TOKEN and folds everything after it into
+    // the command. Measured against the shipped script: an argv carrying
+    // `--agent a1 -- echo hi` posts `{"command":"--agent a1 -- echo hi"}` — the
+    // body still has exactly one key and exactly the right SHAPE, so
+    // tests/systems-bash-forwarder.test.mjs's exact-body assertion passes while
+    // the far side runs the wrong command. The argv is the only layer that can
+    // catch it.
+    assert.doesNotMatch(await argvFor(input), /--agent/,
+      `${JSON.stringify(input)} must not put an agent id on the wire either`);
   }
   // The command itself still rides, so this is not passing by producing no argv.
   assert.match(await argvFor({ timeout: 45_000 }), /echo hi/);

@@ -114,8 +114,10 @@ export const DEFAULT_COMMAND_TIMEOUT_MS =
 // it: mirroring the tool's own `timeout` onto it killed the command at the same
 // instant the CLI DETACHED the forwarder and handed the agent a pointer to
 // output that kept arriving, so the pointer was dead (card 2026-0305 §3). The
-// CLI enforces its own tool timeout by killing the forwarder, which closes the
-// socket — that is the cancellation channel, and it needs no number.
+// CLI DETACHES a timed-out forwarder rather than killing it (measured, card
+// 2026-0305 §3), so the command keeps running and cc's ceiling is what bounds
+// it. The kill that does come — an interrupt, or a stopped background task —
+// closes the socket, which is the cancellation channel and needs no number.
 export interface ShellRunOptions extends ShellStreamSink {
   signal?: AbortSignal;
 }

@@ -521,9 +521,10 @@ test('parseFindLines refuses a malformed entry rather than skipping it', () => {
 
 // ── describeRemote: the mirror advertisement (§2.1) ──────────────────
 //
-// Outside the per-configuration loop: none of the three configurations passes a
-// mirror flag, and the frame's behaviour does not depend on the other two
-// capabilities.
+// Outside the per-configuration loop: no configuration in CAPABILITY_CONFIGS
+// passes a mirror flag, and the frame's behaviour does not depend on the other
+// capabilities. (The count is deliberately not restated here — it moved from
+// three to two on card 2026-0312 and the harness owns it.)
 
 // PINS: the frame round-trips, and both halves of the advertisement survive it.
 //

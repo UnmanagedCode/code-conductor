@@ -5467,9 +5467,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     if (inst.proc) await inst.kill({ graceMs: 500 });
     // Independently of the kill: an instance can be removed with no live
-    // process (it crashed, or it already exited), and its shells on the remote
-    // system — one per agent — would then outlive every reference to the session
-    // that owns them.
+    // process (it crashed, or it already exited), and a command it still has
+    // running on the remote system would then outlive every reference to the
+    // session that owns it — finishing on someone else's machine with nobody
+    // left to read the result.
     await inst._redirect?.close();
     // And the per-session tmp root cc created for it (see spawn()). One
     // directory per redirected session, never reclaimed, is a leak that grows
