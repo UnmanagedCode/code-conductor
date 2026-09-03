@@ -78,9 +78,10 @@ broken, because that boundary is easy to assume wrongly in both directions.
 - **What a provider author should expect to see, and it is SPLIT.** For a
   provider that accepts operations and answers nothing:
   - **The project row discloses.** A timed-out git command is a `GIT_TIMED_OUT`
-    refusal (504, `src/worktrees.ts`); the project listing reports
-    `isGitRepo: undefined` and a `systemUnreachable` reason naming the system,
-    and merge / sync convert it to their own returned refusals.
+    refusal (504, `src/worktrees.ts`); the project listing **omits `isGitRepo`**
+    — absent, never `false`, since "could not look" is not the claim "not a git
+    repo" — and carries a `systemUnreachable` reason naming the system, and
+    merge / sync convert it to their own returned refusals.
   - **The worktree listing and the session lookup SWALLOW it**, matching exactly
     what they do for a system that is simply unreachable: `listWorktrees`
     applies no git filter, so **every registration lists** (`src/worktrees.ts`),

@@ -194,7 +194,12 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
   // "not a git repo" about a box cc never got an answer from (card 2026-0299).
   // 504, and its own code: the repair is fix the provider, not fix the path.
   if (r.timedOut) {
-    throw httpError(504, `git ${args[0] ?? ''} did not answer on system '${system.id}' in ${cwd} `
+    // The SUBCOMMAND, not `args[0]`: the diff argv builders (src/gitDiff.ts)
+    // lead with `--literal-pathspecs` and `-c core.quotePath=false`, so
+    // `args[0]` renders "git -c did not answer" and names nothing a reader can
+    // act on. First non-option that is not `-c`'s value.
+    const sub = args.find((a, i) => !a.startsWith('-') && args[i - 1] !== '-c') ?? '';
+    throw httpError(504, `git ${sub} did not answer on system '${system.id}' in ${cwd} `
       + 'before the operation deadline', { code: 'GIT_TIMED_OUT', systemRefusal: true });
   }
   if (r.spawnError) {

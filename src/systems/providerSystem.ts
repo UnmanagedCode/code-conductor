@@ -50,11 +50,21 @@ const EXEC_TIMEOUT_SLACK_MS = 5_000;
 // wrong one. MEASURED (card 2026-0299 §2): the slowest unbounded operation is a
 // `git worktree add` checking out a 100k-file repo, ~3.7 s; `git worktree
 // remove --force` and an `rm -rf` of the same tree are ~1.2 s and ~0.9 s, and
-// every other unbounded operation is under half a second AND size-fenced
-// (MAX_FILE_BYTES, GIT_OUTPUT_LIMIT_BYTES, the session-root listing fence).
-// 60 s is 16x the worst of them. NOT a clone: nothing reaches `exec` by that
-// route — cloning is cc-level and local, through `runGitLive`'s own
-// CLONE_TIMEOUT_MS.
+// every other unbounded operation measured under half a second. 60 s is 16x
+// the worst of them.
+//
+// SIZE FENCES COVER SOME OF THEM, NOT ALL — the distinction matters, because
+// for the uncovered ones this ceiling is the ONLY bound. `readFile`/`writeFile`
+// are capped by MAX_FILE_BYTES, `runGit` by GIT_OUTPUT_LIMIT_BYTES, and the
+// session-root listing by its own fence; but `#derive` passes no
+// `maxBufferBytes` (nor `cap`/`headCapBytes`), and ExecOutputCollector fences
+// only when one is given (src/systems/execCollector.ts), so no §7 derivation is
+// output-fenced. `readDir` is the one whose output scales with its target — a
+// `find -maxdepth 1` over a directory with very many entries accumulates in
+// cc's own process, and only time stops it.
+//
+// NOT a clone: nothing reaches `exec` by that route — cloning is cc-level and
+// local, through `runGitLive`'s own CLONE_TIMEOUT_MS.
 //
 // ORCH_OP_TIMEOUT_MS is the knob for the case those measurements do not cover:
 // a real transport's per-frame latency, a cold cache, a network filesystem, or
