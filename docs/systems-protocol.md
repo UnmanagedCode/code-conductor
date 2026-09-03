@@ -157,10 +157,12 @@ The provider answers exactly once:
 - **An unknown FIELD on a KNOWN frame is ignored too**, and this is stated
   separately because it is a third rule, not a restatement of the two above: cc
   reads the fields it knows off a frame and never rejects one for carrying more.
-  It became load-bearing when the hello's `system` descriptor was deleted (card
-  2026-0312) — every provider written before that still sends one, and each must
-  connect unchanged rather than be refused for a field cc no longer reads.
-  Pinned by `tests/systems-protocol-conformance.test.mjs`.
+  It became load-bearing when the hello's `system` descriptor was deleted — every
+  provider written before that still sends one, and each must connect unchanged
+  rather than be refused for a field cc no longer reads.
+  Pinned by `tests/systems-provider-supervision.test.mjs` (a provider still
+  sending it connects) and `tests/systems-protocol-codec.test.mjs` (it survives
+  decoding).
 - Unknown *frame types* are likewise ignored by both ends. Unknown capability
   keys, unknown frame types and unknown fields are the extension point: **the
   contract can grow, and shrink, without a version bump.**
@@ -455,9 +457,10 @@ long-lived shell and the queue.
 
 The tool timeout a redirected `Bash` carries reaches cc **not at all**, and cc
 needs it for nothing. At the tool timeout the CLI **detaches** the forwarder and
-hands the agent a background task (measured, card 2026-0305 §3) — the command
-keeps running, bounded by this ceiling, which is why the ceiling sits **above**
-the documented max rather than at it. The CLI's **kill** of the forwarder, on an
+hands the agent a background task — measured, and always, since a redirected
+command is always the forwarder process, so the harness always takes its detach
+branch. The command keeps running, bounded by this ceiling, which is why the
+ceiling sits **above** the documented max rather than at it. The CLI's **kill** of the forwarder, on an
 interrupt or a stopped background task, closes the socket, and that is cc's
 cancellation channel; it carries no number either.
 
