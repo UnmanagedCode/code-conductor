@@ -1,17 +1,19 @@
 // Shared fixture for the protocol suites: a ProviderSystem wired to the
 // reference provider, in each capability configuration.
 //
-// EVERY protocol suite runs its battery across all three configurations, not
-// just whichever one the ambient CC_LOCAL_SYSTEM_PROVIDER happens to select.
-// That is what makes `npm test` alone prove both fallbacks; the three-way whole-
-// suite gate (`npm run gate:systems`) then proves that the protocol is
-// SUFFICIENT for the rest of the app in each of them.
+// EVERY protocol suite runs its battery across all configurations, not just
+// whichever one the ambient CC_LOCAL_SYSTEM_PROVIDER happens to select. That is
+// what makes `npm test` alone prove the fallback; the whole-suite gate
+// (`npm run gate:systems`) then proves that the protocol is SUFFICIENT for the
+// rest of the app in each of them.
 //
 // THIS MATRIX AND THE GATE'S ARE TWO MATRICES, NOT ONE, and deliberately differ.
-// This is a UNIT matrix over the two TOGGLED capabilities, so its first entry
-// stays `remotes:false` and the remotes tests launch their own providers. The
-// gate's first row additionally carries `--remote` (card 2026-0266); do not
-// unify the two lists to make them agree.
+// This is a UNIT matrix over the TOGGLED capability, so its first entry stays
+// `remotes:false` and the remotes tests launch their own providers. The gate's
+// first row additionally carries `--remote` (card 2026-0266); do not unify the
+// two lists to make them agree. They shrank from three entries to two on card
+// 2026-0312 for their OWN reasons, at the same time — a coincidence, not a
+// coupling.
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,13 +31,12 @@ export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', '
 //   CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
 //     node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 //
-// The capability flags below are APPENDED to that argv — exactly the two `--no-*`
-// flags and nothing else, so a provider being verified has to accept
-// `--no-persistent-shell` / `--no-process-group-signal` (or map them) to be
-// exercised in all three configurations. Nothing in the
-// suite is otherwise specific to the reference provider — that is what makes
-// "the conformance suite is the definition of a valid provider" true rather
-// than aspirational.
+// The capability flag below is APPENDED to that argv — exactly one `--no-*`
+// flag and nothing else, so a provider being verified has to accept
+// `--no-process-group-signal` (or map it) to be exercised in both
+// configurations. Nothing in the suite is otherwise specific to the reference
+// provider — that is what makes "the conformance suite is the definition of a
+// valid provider" true rather than aspirational.
 export const PROVIDER_ARGV_ENV = 'CC_CONFORMANCE_PROVIDER';
 
 // Same parser the registry uses for CC_LOCAL_SYSTEM_PROVIDER — one spelling of
@@ -61,10 +62,10 @@ export const IS_REFERENCE_PROVIDER = !process.env[PROVIDER_ARGV_ENV]?.trim();
 // another machine needs the fixtures built over the protocol too — a bigger
 // change than this harness, and out of scope until a transport exists.
 //
-// The three UNIT configurations. `caps` is what the handshake must report, so a
-// test can assert the negotiation rather than trust the flag.
+// The UNIT configurations. `caps` is what the handshake must report, so a test
+// can assert the negotiation rather than trust the flag.
 //
-// None of them passes `--remote` or `--mirror`, so all three report
+// Neither passes `--remote` or `--mirror`, so both report
 // `remotes:false` and `remoteDescriptors:false`. That is a property of THIS
 // matrix, not of the gate's — see the divergence note at the top of the file.
 // `remotes` and `remoteDescriptors` have their own multi-target/mirror fixtures,
@@ -78,17 +79,12 @@ export const CAPABILITY_CONFIGS = [
   {
     name: 'all capabilities',
     flags: [],
-    caps: { persistentShell: true, processGroupSignal: true, remotes: false, remoteDescriptors: false },
-  },
-  {
-    name: 'persistentShell:false',
-    flags: ['--no-persistent-shell'],
-    caps: { persistentShell: false, processGroupSignal: true, remotes: false, remoteDescriptors: false },
+    caps: { processGroupSignal: true, remotes: false, remoteDescriptors: false },
   },
   {
     name: 'processGroupSignal:false',
     flags: ['--no-process-group-signal'],
-    caps: { persistentShell: true, processGroupSignal: false, remotes: false, remoteDescriptors: false },
+    caps: { processGroupSignal: false, remotes: false, remoteDescriptors: false },
   },
 ];
 

@@ -283,8 +283,9 @@ test('dispose() reaps a shell that is still running a command', async () => {
   });
 });
 
-// PINS: the reaping covers the plain one-shot `exec` path too, not just the
-// persistent shell — a different cc-side code path, which leaks independently.
+// PINS: the reaping covers an `exec` a caller started directly, not only one a
+// redirected shell started — they are different cc-side call sites, and they
+// leak independently.
 // NOT CLAIMING: anything about how exec's promise settles; it never rejects, by
 // design.
 test('dispose() reaps an exec that is still in flight', async () => {
@@ -410,17 +411,49 @@ test('a second hello that arrives AFTER the handshake still fails the next opera
   } finally { sys.dispose(); }
 });
 
-test('a hello with no absolute system.shell is refused at the handshake', async () => {
-  // `system.shell` is the only descriptor field cc ACTS on. Accepting '' here
-  // defers the failure to the first redirected shell, where it surfaces as an
-  // obscure spawn error with nothing pointing at the handshake.
-  const sys = fakeSystem('bad-shell');
+// T8 — THE INVERSE OF A REFUSAL THIS FILE USED TO CARRY, and the reason it is
+// this rather than an inversion. The hello once REQUIRED a `system` object whose
+// `shell` was an absolute path, refused EPROTO at the handshake; card 2026-0312
+// deleted the whole descriptor, because `shell` was the only field cc ever acted
+// on (it opened the long-lived shell) and the other three had zero readers
+// before that card.
+//
+// INVERTING the old test would have pinned NOTHING: "a hello without an absolute
+// `system.shell` is accepted" passes for a tree that still has the validation,
+// as long as the fake sends a valid value — and it would pass trivially for
+// ever. So what is asserted is the strictly stronger thing: a hello with NO
+// `system` KEY AT ALL connects, and the System it yields WORKS.
+//
+// RECORDED, because a future reader must not mistake this for a ruling: it says
+// nothing reads the descriptor today, NOT that cc has decided it never will. An
+// unknown key is ignored by contract, so a future consumer simply re-adds the
+// field it needs at no compatibility cost.
+// THE OTHER DIRECTION, and it is what C5's deletion actually rests on: a
+// provider that STILL SENDS the descriptor must connect unchanged. Every
+// provider written before card 2026-0312 does, so refusing one — or letting a
+// stray field reach any decode path that rejects — would break every existing
+// third-party provider on upgrade, which is the one thing D12 does not license.
+//
+// The spec rule this pins is stated separately from the unknown-capability-key
+// and unknown-frame-type ones in docs/systems-protocol.md §2, because it IS a
+// third rule: an unknown FIELD on a KNOWN frame is ignored.
+//
+// NOT CLAIMING that cc reads any of it — it reads none, which is the test above.
+test('a hello that still carries the deleted system descriptor connects, and is ignored', async () => {
+  const sys = fakeSystem('legacy-hello');
   try {
-    await assert.rejects(() => sys.connect(), (e) => {
-      assert.equal(e.code, 'EPROTO', e.message);
-      assert.match(e.message, /absolute system\.shell/);
-      return true;
-    });
+    const hs = await sys.connect();
+    assert.equal('system' in hs, false, 'the stray field reaches no recorded handshake');
+    assert.deepEqual(hs.capabilities.processGroupSignal, true, 'and the fields cc DOES read still arrive');
+  } finally { sys.dispose(); }
+});
+
+test('a hello with no system descriptor at all connects', async () => {
+  const sys = fakeSystem('ok');
+  try {
+    const hs = await sys.connect();
+    assert.equal('system' in hs, false, 'cc records no descriptor, because it reads none');
+    assert.match(hs.provider, /^fake-ok\//);
   } finally { sys.dispose(); }
 });
 
@@ -446,12 +479,10 @@ test('a payload that is not valid base64 fails the operation instead of truncati
 // ── No `exec` operation is unbounded ─────────────────────────────────
 //
 // SCOPED TO `exec`/`readFile`/`writeFile`, which is what this file exercises.
-// The persistent shell's `exec` is the one deliberate exception — `openStream`
-// arms no cc-side deadline and sends no `timeoutMs`, because the shell it
-// carries is meant to outlive any one command. What bounds THAT path is
-// `ProviderShell`'s per-command ceiling, tested in
-// tests/systems-shell-framing.test.mjs. So the header is not a claim about a
-// path this file never drives (card 2026-0305 §6).
+// There is no longer any exception: the redirected shell's `exec` carries a
+// `timeoutMs` like every other, and what supplies it is `ProviderShell`'s
+// per-command ceiling, tested in tests/systems-shell-framing.test.mjs
+// (card 2026-0305 §6; the `openStream` exception went with card 2026-0312).
 
 test('every operation a mute provider accepts is bounded, not just the ones a caller timed', async () => {
   // A provider that completes the handshake and then answers nothing. Before

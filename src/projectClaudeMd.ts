@@ -40,7 +40,7 @@ const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 // conventions would read as workspace ones. Heading only — no prose.
 const PROJECT_HEADING = '# Project conventions';
 
-// THE THREE SENTENCES A REMOTE PROJECT ADDS TO EVERY WORKER'S SYSTEM PROMPT.
+// THE TWO SENTENCES A REMOTE PROJECT ADDS TO EVERY WORKER'S SYSTEM PROMPT.
 //
 // It is here rather than in the workspace or conductor scope because it is a
 // fact about THIS project's placement, and it must arrive through the channel
@@ -63,30 +63,22 @@ const PROJECT_HEADING = '# Project conventions';
 //     tool result ("Saved to /app/… on system '<id>'."). The prohibition is what
 //     carries the behaviour, so it says NEVER OPEN one — true wherever the path
 //     came from — rather than making a claim about where such paths can appear.
-//   * The third states that shell state is PER AGENT, and its reason is an
-//     ASYMMETRY the worker cannot see. Here `export` persists across an agent's
-//     own commands, where a local session persists NEITHER `export` NOR `cd`:
-//     each local `Bash` call gets a brand-new shell and the CLI resets the
-//     working directory to the project root (measured on CLI 2.1.258; card
-//     2026-0305 §2 — an earlier wording here said only `cd` failed to persist
-//     locally, which the measurement refutes). So the asymmetry is wider than it
-//     was documented as, and it invites the false generalisation that a subagent
-//     it dispatches inherits that state. Told, it passes the value in the subagent's prompt; told the
-//     converse, it stops treating a subagent's `cd` as a hazard to its own
-//     shell. Neither half is volunteered anywhere: a missing export in a
-//     subagent looks like an ordinary unset variable, and a subagent's `cd` NOT
-//     reaching the parent is unobservable by construction. It claims nothing
-//     about persistence WITHIN an agent, so it stays true in the
-//     `persistentShell:false` fallback too.
-//     TWO CLAUSES WERE CUT from it, and stay cut. "a subagent's Bash starts at
-//     <systemPath>" is true only of that subagent's FIRST command — after its own
-//     `cd`, later commands start where it left off — so a subagent reading it
-//     would hold a false statement about itself; and neither reader needs to know
-//     where the other STARTS, only that state does not cross. "background jobs"
-//     is non-vacuously true in only one of the two capability modes, and changes
-//     nothing the cwd/exports clause does not already change — the reset notice
-//     and docs/features.md deliver what a worker acts on there, at the point of
-//     use.
+// A THIRD SENTENCE WAS DELETED BY CARD 2026-0312 AND NOTHING REPLACED IT — a
+// per-session saving, recorded so it is not re-added by someone rediscovering
+// the problem it solved. It said shell state is PER AGENT, and it existed for an
+// ASYMMETRY: `export` persisted across an agent's own commands while a local
+// session persisted nothing, which invited the false generalisation that a
+// dispatched subagent inherited that state. That card deleted the long-lived
+// shell, so the asymmetry does not exist: nothing an agent's command sets
+// reaches ANY later command, its own included, exactly as locally. The
+// sentence's subject is gone.
+//
+// SPECIFICALLY NOT ADDED IN ITS PLACE: anything about each command starting at
+// the project root. That fact IS delivered — by cc's own notice on the one
+// command where it matters, the one whose `cd` was discarded
+// (src/systems/toolRedirect.ts) — and the workspace "push what nothing
+// volunteers" rule makes a channel that fires at the point of use beat a
+// sentence every session pays for.
 //
 // Nothing more. `Glob`/`Grep` being gone is volunteered by the tool registry; a
 // write outside the session root is named by its own refusal; a failed
@@ -97,9 +89,7 @@ function systemDisclosure(system: { id: string; path: string }): string {
   return `# System\n\n`
     + `This project's tree is at \`${system.path}\` on system \`${system.id}\`, where \`Bash\` commands run. `
     + `Read, write and edit files at their paths under this session's working directory — `
-    + `never at their \`${system.path}\` paths, which name the same files seen from the system. `
-    + `Each agent has its own shell here: the working directory and exported variables set by your `
-    + `\`Bash\` commands are not shared with a subagent you dispatch, in either direction.\n`;
+    + `never at their \`${system.path}\` paths, which name the same files seen from the system.\n`;
 }
 
 // The disclosure argument for a project being CREATED on a system, from the two

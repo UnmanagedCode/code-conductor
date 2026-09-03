@@ -14,6 +14,7 @@
 // quietly passing.
 
 import { test, beforeEach, afterEach } from 'node:test';
+import { getEventListeners } from 'node:events';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -31,7 +32,7 @@ const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtur
 
 let home, remote, redirect, root, events;
 
-async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs, maxOutputBytes } = {}) {
+async function build({ flags = [], shellCommandTimeoutMs, maxOutputBytes } = {}) {
   ({ home } = await freshProjectsRoot());
   remote = await bindRemoteSystem({ flags });
   root = path.join(home, 'session-root');
@@ -48,7 +49,6 @@ async function build({ flags = [], idleTtlMs, shellCommandTimeoutMs, maxOutputBy
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
     localRoots: [path.join(home, 'local-ok')],
     emit: (ev) => events.push(ev),
-    ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
     ...(maxOutputBytes === undefined ? {} : { maxOutputBytes }),
   });
@@ -63,7 +63,7 @@ afterEach(async () => {
 
 const onSystem = (rel) => path.join(remote.root, rel);
 const inSession = (rel) => path.join(root, rel);
-const pre = (tool, input, agentId) => redirect.preToolUse(tool, input, agentId);
+const pre = (tool, input) => redirect.preToolUse(tool, input);
 const post = (tool, input, response = {}) => redirect.postToolUse(tool, input, response);
 const bash = (command) => redirect.runForwarded(command, {});
 
@@ -79,55 +79,44 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
   assert.equal(d.updatedInput.description, 'x');
 });
 
-// PINS THE FIRST HOP of the tool timeout's chain: `timeout` on the tool input
-// becomes `--timeout <ms>` on the forwarder's argv, and nothing else does.
+// INVERTED on card 2026-0312 §2 D-b: this used to pin that a positive tool
+// `timeout` rode out as `--timeout <ms>` on the forwarder's argv. NOTHING of the
+// tool's own timeout travels any more, and cc needs it for nothing: its only
+// consumer was the wait bound on a queue that no longer exists, and at the tool
+// timeout the CLI DETACHES the forwarder rather than killing it (card 2026-0305
+// §3), so the command keeps running under cc's own ceiling. A kill, when one
+// comes, closes the socket — cc's cancellation channel, which needs no number.
 //
-// GREEN ON ARRIVAL — card 2026-0305 changed what ProviderShell DOES with the
-// number, not how it travels. It is here because nothing tested the branch at
-// all: after that card the timeout no longer changes any run outcome, so the
-// argv is the only place the omit/emit decision is observable.
+// THE ARGV IS WHERE THIS IS OBSERVABLE AT ALL, which is this test's reason to
+// exist: re-adding the flag would change no far-side behaviour cc can see, so
+// only the argv can catch it coming back.
 //
-// BOTH HALVES OF `Number.isFinite(timeout) && timeout > 0` ARE LOAD-BEARING,
-// and each half's UNIQUE input is named because they are wildly uneven —
-// measured, not reasoned:
-//
-//   `> 0` alone would catch      absent, prose, 0, -5, null, -Infinity
-//   `Number.isFinite` alone      absent, prose, ±Infinity
-//   unique to `> 0`              0, -5, null   (all finite, so isFinite passes them)
-//   unique to `Number.isFinite`  +Infinity     — AND NOTHING ELSE
-//
-// So `Number.isFinite` is NOT what stops the NaN inputs: `NaN > 0` is `false`,
-// and `> 0` catches absent and prose on its own. `+Infinity` is the whole of
-// what `isFinite` uniquely buys — without it `{timeout: 'Infinity'}` reaches
-// the argv as `--timeout Infinity`, which is why that case is in the loop
-// below. An earlier revision of this comment claimed `isFinite` was what
-// stopped the NaN cases; a mutant deleting it survived and proved otherwise.
-//
-// AND THE ARGV IS WHERE ALL OF THIS IS OBSERVABLE, which is this test's reason
-// to exist: two downstream layers independently re-drop these values, so the
-// far side behaves identically with or without the guard here. Measured —
-// bashForwarder.ts's `timeoutMs && Number.isFinite(timeoutMs)` drops NaN, 0 and
-// Infinity but SENDS `-5` on the body, and routes.ts's
-// `Number.isFinite(timeoutMs) && timeoutMs > 0` drops all four.
-test('a positive tool timeout rides out as --timeout, and nothing else does', async () => {
+// EVERY SHAPE THAT USED TO PRODUCE A FLAG is asserted here, not just one: the
+// guard that dropped the others (`Number.isFinite(timeout) && timeout > 0`) went
+// with the flag, so a partial restoration would put `--timeout Infinity` on a
+// real argv.
+test('neither a tool timeout nor an agent id rides out on the argv', async () => {
   const argvFor = async (input) =>
     (await pre('Bash', { command: 'echo hi', ...input })).updatedInput.command;
 
-  assert.match(await argvFor({ timeout: 45_000 }), /--timeout 45000 /);
-  // Floored, not rounded or stringified raw: the far side parses it with
-  // Number() and a fractional millisecond is not a deadline anyone asked for.
-  assert.match(await argvFor({ timeout: 1500.7 }), /--timeout 1500 /);
-  // A numeric STRING is what a JSON payload can legitimately carry.
-  assert.match(await argvFor({ timeout: '2000' }), /--timeout 2000 /);
-
-  // `'Infinity'` is the ONE input only `Number.isFinite` catches, and a JSON
-  // string is a shape a model can emit. Without it nothing in the suite
-  // distinguishes the real guard from `timeout > 0`.
-  for (const input of [{}, { timeout: 0 }, { timeout: -5 }, { timeout: 'soon' },
+  for (const input of [{ timeout: 45_000 }, { timeout: 1500.7 }, { timeout: '2000' },
+                       {}, { timeout: 0 }, { timeout: -5 }, { timeout: 'soon' },
                        { timeout: null }, { timeout: 'Infinity' }]) {
     assert.doesNotMatch(await argvFor(input), /--timeout/,
       `${JSON.stringify(input)} must not put a timeout on the wire`);
+    // THE `--agent` HALF, and it is not decoration: the forwarder's `parseArgs`
+    // BREAKS AT THE FIRST UNRECOGNISED TOKEN and folds everything after it into
+    // the command. Measured against the shipped script: an argv carrying
+    // `--agent a1 -- echo hi` posts `{"command":"--agent a1 -- echo hi"}` — the
+    // body still has exactly one key and exactly the right SHAPE, so
+    // tests/systems-bash-forwarder.test.mjs's exact-body assertion passes while
+    // the far side runs the wrong command. The argv is the only layer that can
+    // catch it.
+    assert.doesNotMatch(await argvFor(input), /--agent/,
+      `${JSON.stringify(input)} must not put an agent id on the wire either`);
   }
+  // The command itself still rides, so this is not passing by producing no argv.
+  assert.match(await argvFor({ timeout: 45_000 }), /echo hi/);
 });
 
 // PINS: a forwarded command runs on the SYSTEM, not on cc. Both directions are
@@ -141,19 +130,20 @@ test('a forwarded command runs on the system and not on cc', async () => {
   assert.notEqual(miss.code, 0);
 });
 
-// PINS: ONE AGENT's shell is long-lived — `cd` and `export` carry between that
-// agent's commands, and cwd is read back from the shell rather than parsed out of
-// the command. Every call here is the main agent's; the isolation BETWEEN agents
-// is tests/systems-agent-shells.test.mjs's subject.
-test('the redirected shell carries cwd and exports between commands', async () => {
+// INVERTED on card 2026-0312 — THE PARITY THIS CARD EXISTS FOR, at the layer a
+// worker actually meets it. This used to assert that `cd` AND `export` carried
+// between an agent's commands. Neither does: every command runs in its own
+// shell, which is what a local session already does (measured on CLI 2.1.258 —
+// a local Bash call persists nothing and the harness announces the cwd reset).
+test('nothing carries between two redirected commands — every one starts at the project root', async () => {
   await fs.mkdir(onSystem('sub'), { recursive: true });
   await bash('cd sub');
-  const pwd = await bash('pwd');
-  assert.equal(pwd.stdout.trim(), path.join(remote.root, 'sub'));
+  assert.equal((await bash('pwd')).stdout.trim(), remote.root,
+    'the second command starts at the project root, not where the first ended');
 
   await bash('export CC_PROBE=carried');
-  const echo = await bash('echo "$CC_PROBE"');
-  assert.equal(echo.stdout.trim(), 'carried');
+  assert.equal((await bash('echo "[$CC_PROBE]"')).stdout.trim(), '[]',
+    'nothing an agent exports reaches its next command');
 });
 
 // A sink that records what arrived and WHEN, relative to the promise settling.
@@ -192,22 +182,44 @@ test('a forwarded command streams its output before it finishes', async () => {
   assert.equal(r.code, 0);
 });
 
-// PINS: the R5 reset notice reaches the sink FIRST, ahead of the command's own
-// output. A shell that lost its exports has to say so before the output that
-// might be wrong because of it.
-test('the reset notice reaches the sink before any of the command output', async () => {
-  await bash('export CC_PROBE=before');
-  await bash('exit');
-
+// T7 — INVERTED on card 2026-0312, and the ORDER inverts with the content. The
+// R5 notice said a shell had been RESTARTED and went out FIRST, ahead of output
+// that might be wrong because the exports were gone. There is no restart; what a
+// worker now needs to be told is that its `cd` was discarded, and that cannot be
+// known until the command has ended — so the notice arrives LAST.
+//
+// NOT CLAIMING that the CLI's own wording matches cc's. The CLI prints its own
+// line when ITS shell's cwd moves; cc's string is its own and is pinned here.
+test('the cwd notice reaches the sink AFTER the command output, and carries cc\'s own wording', async () => {
+  await fs.mkdir(onSystem('sub'), { recursive: true });
   const state = { settled: false };
   const { seen, sink } = recordingSink(state);
-  const r = await redirect.runForwarded('echo after', { sink });
+  const r = await redirect.runForwarded('cd sub; echo after', { sink });
   state.settled = true;
 
-  assert.equal(seen[0].k, 'notice', 'the notice is the FIRST thing the sink saw');
-  assert.match(seen[0].t, /restarted/);
-  assert.equal(r.notice, seen[0].t, 'and it is the same notice the aggregate carries');
-  assert.match(seen.filter(x => x.k === 'out').map(x => x.t).join(''), /after/);
+  assert.equal(seen.at(-1).k, 'notice', 'the notice is the LAST thing the sink saw');
+  assert.ok(seen.some(x => x.k === 'out' && x.t.includes('after')), 'the output came first');
+  assert.equal(r.notice, seen.at(-1).t, 'and it is the same notice the aggregate carries');
+  assert.ok(r.notice.startsWith('[cc] '), r.notice);
+  assert.ok(r.notice.includes(`ended in ${path.join(remote.root, 'sub')}`), r.notice);
+  assert.ok(r.notice.includes(`starts at ${remote.root}`), r.notice);
+  assert.ok(r.notice.includes(`system '${remote.id}'`), r.notice);
+});
+
+// T7's SILENCE HALF, and it is not decoration: a notice on every command is
+// noise, and noise is itself a divergence from a local session, where nothing is
+// said unless the cwd actually moved.
+test('a command that does not move the cwd is told nothing', async () => {
+  assert.equal((await bash('echo plain')).notice, null);
+  assert.equal((await bash('pwd')).notice, null);
+  // A `cd` in a SUBSHELL never moves the command's own cwd, so there is nothing
+  // to report — the notice reads the shell's answer, not the command's text.
+  await fs.mkdir(onSystem('sub'), { recursive: true });
+  assert.equal((await bash('(cd sub && pwd)')).notice, null);
+  // THE POSITIVE CONTROL, in the same test: without it every assertion above is
+  // satisfied by a notice channel that never fires at all.
+  assert.notEqual((await bash('cd sub')).notice, null,
+    'a command that really did move IS reported');
 });
 
 // PINS: cc's own failure text reaches the sink too. The route no longer writes
@@ -238,10 +250,15 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 });
 
 // PINS B1 AT THE REDIRECT LAYER: an interrupt cancels THAT call and nothing
-// else. The unrelated in-flight command completes normally, and the cancelled
+// else. The unrelated concurrent command completes normally, and the cancelled
 // one never runs on the system — its effects must not land when its caller has
 // gone away.
-test('interrupting a queued command leaves the in-flight one alone and never runs it', async () => {
+//
+// RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
+// waiting for its TURN on a shell, and there is no turn any more. What it
+// actually pins — a call cancelled before it crosses leaves nothing on the far
+// side — is unchanged and is the half a worker cares about.
+test('a cancelled call never reaches the system, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
   const ac = new AbortController();
@@ -273,18 +290,16 @@ test('interrupting the in-flight command stops it on the system', async () => {
 });
 
 // PINS T5 — THE ACTUAL REAL-WORLD SHAPE, not just the guards. A long build is
-// in flight on a LIVE, streaming shell; a second call is queued behind it; that
-// second call's caller is interrupted.
+// in flight and STREAMING; a second call is issued alongside it; that second
+// call's caller is interrupted.
 //
-// The neighbouring cancellation tests abort synchronously right after invoking,
-// so they always race the shell OPEN and exercise the pre-open window. This one
-// waits for the in-flight command's first bytes to arrive before queuing behind
-// it, which is the only way the queued call is cancelled against a shell that is
-// genuinely mid-command.
+// LIVE, not merely started: the test waits for the long command's first bytes to
+// reach cc before issuing the second, so the cancellation lands against a
+// command that is genuinely mid-flight rather than one still being handed over.
 //
 // Every claim is witnessed on the SYSTEM's filesystem, which is the only witness
 // that can tell "was not run" from "was run and its result discarded".
-test('interrupting a queued call leaves a live in-flight command untouched', async () => {
+test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
 
@@ -293,15 +308,13 @@ test('interrupting a queued call leaves a live in-flight command untouched', asy
     "printf 'A1\n'; sleep 1; printf 'A2\n'; touch A_DONE",
     { sink: { ...sink, out: (t) => streamed.push(t) } },
   );
-  // LIVE, not merely started: the first bytes have crossed to cc, so the shell
-  // is past its open and mid-command.
   await waitFor(() => streamed.join('').includes('A1'), { timeout: 5000 });
 
   const ac = new AbortController();
-  const queued = redirect.runForwarded('touch B_WITNESS', { signal: ac.signal, sink });
+  const cancelledCall = redirect.runForwarded('touch B_WITNESS', { signal: ac.signal, sink });
   ac.abort();
 
-  const b = await queued;
+  const b = await cancelledCall;
   assert.equal(b.code, 1, 'the cancelled call reports a failure');
   assert.match(b.stderr, /interrupt|cancel/i, b.stderr);
 
@@ -313,80 +326,14 @@ test('interrupting a queued call leaves a live in-flight command untouched', asy
   assert.ok(await fs.stat(onSystem('A_DONE')).catch(() => null), 'A finished on the system');
   await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B never ran on the system');
 
-  // And no shell was reset, so nothing has a reset to report — a spurious notice
-  // would tell a worker it lost state it still has.
+  // And nothing was reset — the cancelled command's `exec` was killed and no
+  // state was shared for anyone to lose — so a notice here would tell a worker
+  // it lost state it never had.
   assert.equal(a.notice, null);
   assert.equal(b.notice, null);
   assert.deepEqual(seen.filter(([k]) => k === 'notice'), []);
   const after = await bash('echo "[$CC_PROBE_UNSET]"');
   assert.equal(after.notice, null, 'and the next command is not told about a reset either');
-});
-
-// PINS B2 IN THE FALLBACK MODE, at the redirect layer. R5's abort was
-// implemented only as a shell close, and in `persistentShell:false` there is no
-// live stream and no retained exec id — so the close reached nothing and the
-// interrupted command ran to completion on the system, bounded only by the
-// worker's own Bash timeout. D10 makes the fallback the deliverable, not a
-// degraded mode, so an interrupt that does nothing there fails the phase.
-test('[persistentShell:false] interrupting stops the command, and a queued one never runs', async () => {
-  await build({ flags: ['--no-persistent-shell'] });
-  const running = onSystem('FB_STILL_RUNNING');
-  const queued = onSystem('FB_QUEUED_RAN');
-
-  const inFlight = redirect.runForwarded(`sleep 0.5; touch ${JSON.stringify(running)}`, {});
-  const ac = new AbortController();
-  const q = redirect.runForwarded(`touch ${JSON.stringify(queued)}`, { signal: ac.signal });
-  ac.abort();
-  assert.notEqual((await q).code, 0);
-  await inFlight;
-  await assert.rejects(fs.stat(queued), 'the cancelled queued command never ran');
-
-  // And the in-flight half: interrupt one that is actually running.
-  const ac2 = new AbortController();
-  const p = redirect.runForwarded(`sleep 0.5; touch ${JSON.stringify(running)}`, { signal: ac2.signal });
-  await new Promise(r => setTimeout(r, 120));
-  ac2.abort();
-  assert.notEqual((await p).code, 0);
-  await fs.rm(running, { force: true });
-  await new Promise(r => setTimeout(r, 700));
-  await assert.rejects(fs.stat(running), 'the interrupted command is not still running on the system');
-});
-
-// PINS S1: the reset notice goes to the command that RUNS on the fresh shell,
-// not to whichever call was constructed next. Here the aborted command resets
-// the shell and a call that was already queued behind it is the one that runs
-// on the replacement — so it is the one that must be told its exports are gone.
-test('the reset notice lands on the command that runs on the new shell', async () => {
-  await bash('export CC_PROBE=before');
-  const notices = [];
-  const mkSink = (tag) => ({
-    notice: (t) => notices.push({ tag, t }),
-    out: () => {}, err: () => {},
-  });
-
-  const ac = new AbortController();
-  const doomed = redirect.runForwarded('sleep 0.4; echo doomed', { signal: ac.signal, sink: mkSink('doomed') });
-  const queued = redirect.runForwarded('echo "[$CC_PROBE]"', { sink: mkSink('queued') });
-  await new Promise(r => setTimeout(r, 120));
-  ac.abort();
-  await doomed;
-  const after = await queued;
-
-  assert.equal(after.stdout, '[]\n', 'it really did run on a shell that had lost the export');
-  assert.deepEqual(notices.map(n => n.tag), ['queued'],
-    'exactly one notice, and it went to the command that ran on the new shell');
-  assert.match(notices[0].t, /restarted/);
-  assert.equal(after.notice, notices[0].t);
-});
-
-// PINS: a notice is delivered ONCE. A command that follows a reported reset
-// must not be told about a reset it never experienced.
-test('a reset is reported exactly once', async () => {
-  await bash('exit');
-  const first = await bash('echo one');
-  assert.match(first.notice ?? '', /restarted/);
-  const second = await bash('echo two');
-  assert.equal(second.notice, null);
 });
 
 // PINS: exit codes are the command's own, not the forwarder's.
@@ -558,55 +505,125 @@ test('a Bash result is annotated only when it actually shows a system path', asy
   assert.equal(await post('Bash', {}, { stdout: 'all tests passed\n', stderr: '' }), null);
 });
 
-// PINS: a shell that had to be restarted TELLS the worker, rather than
-// restoring cwd and looking continuous while its exports are silently gone.
-test('a restarted shell tells the worker what it lost', async () => {
-  await bash('export CC_PROBE=before');
-  // `exit` inside the framed command group takes the shell with it, so no
-  // sentinel can arrive — one of the two wedge modes, both of which reset.
-  const died = await bash('exit');
-  assert.notEqual(died.code, 0);
+// T3 — A LIVE PRE-EXISTING DEFECT, FOUND WHILE PLANNING THIS CARD AND FIXED ON
+// IT. `SessionRedirect.close()` did not reap an in-flight command in the
+// one-shot mode — the mode card 2026-0312 makes the only mode. It closed
+// SHELLS, and in one-shot mode there is no shell, so nothing reached the
+// running `exec`.
+//
+// MEASURED IN BOTH MODES BEFORE THE STRIP, identical rig, with a witness file
+// that only appears if the command completes: the persistent mode gave
+// `code=1` and the command did NOT complete; the fallback gave `code=0` WITH
+// THE COMMAND'S OUTPUT, having run to completion on the far side 1.2s after
+// the session was torn down. Reachable in production TODAY on any provider that
+// did not advertise `persistentShell` — this card does not introduce it, it
+// PROMOTES a fallback-only defect to the only behaviour, so shipping the strip
+// without the fix ships a regression in effect.
+//
+// THE WITNESS IS THE FAR SIDE'S OWN FILESYSTEM. cc's bookkeeping cannot tell
+// teardown from forgetting: `close()` drops its handle either way, so any
+// assertion about cc's own state reads clean while the command is still running
+// on someone else's machine. Only a file the command writes AFTER a delay can.
+//
+// NOT CLAIMING: any ordering between the abort and the command's own exit, nor
+// that the far-side process is gone by any particular instant — only that the
+// command did not run to completion.
+test('close() reaps a command that is still in flight', async () => {
+  const witness = onSystem('LATE_WITNESS');
+  const streamed = [];
+  const inFlight = redirect.runForwarded(
+    `printf 'RUNNING\\n'; sleep 1.2; touch ${JSON.stringify(witness)}; echo late`,
+    { sink: { notice: () => {}, out: (t) => streamed.push(t), err: () => {} } },
+  );
+  // GENUINELY IN FLIGHT, not merely issued: the first bytes have crossed back to
+  // cc, so the command is running on the system when close() lands.
+  await waitFor(() => streamed.join('').includes('RUNNING'), { timeout: 5000 });
 
-  const after = await bash('echo "[$CC_PROBE]"');
-  assert.equal(after.code, 0);
-  assert.match(after.notice, /restarted/);
-  assert.match(after.notice, /export/i);
-  assert.equal(after.stdout.trim(), '[]', 'the export really is gone — the notice is not decorative');
-  // Told ONCE: the next command is ordinary again.
-  assert.equal((await bash('true')).notice, null);
+  await redirect.close();
+  const r = await inFlight;
+  assert.notEqual(r.code, 0, `the caller is told the command failed: ${JSON.stringify(r)}`);
+
+  // Past when the command would have written it, had it survived teardown.
+  await new Promise(res => setTimeout(res, 1500));
+  await assert.rejects(fs.stat(witness),
+    'the command must not have run to completion on the far side after close()');
+
+  // And close() is idempotent, which instance exit + kill + discardAll all rely
+  // on: they can each reach it for the same session.
+  await redirect.close();
 });
 
-// PINS: an idle shell is closed rather than held open for the life of the
-// session, and the next command transparently opens a fresh one.
-test('an idle shell is closed on its TTL', async () => {
-  await redirect.close();
-  await build({ idleTtlMs: 40 });
-  await bash('true');
-  assert.equal(redirect.shellOpen, true);
-  await waitFor(() => redirect.shellOpen === false, { timeout: 4000 });
-  assert.equal((await bash('echo alive')).stdout.trim(), 'alive');
+// S1 — PINS THAT `runForwarded` DETACHES WHAT IT ATTACHED. It relays two abort
+// sources into a per-call controller, and the `removeEventListener` loop in its
+// `finally` is what keeps the SESSION-lived controller from accumulating one
+// listener per command the session has ever run. That leak was measured before
+// the fix: `AbortSignal.any([caller, session])` grew heapUsed linearly with the
+// command count, while this shape stayed flat — and the identical shape WITHOUT
+// the removal grew just as `any` did, which is what isolates the removal as the
+// thing that matters.
+//
+// THE CALLER'S SIGNAL IS THE OBSERVABLE, and it is enough: both sources are
+// detached by the SAME loop, so deleting it leaves a listener on both. The
+// session controller is private to `SessionRedirect` and cannot be reached from
+// here; the caller's is handed in by this test.
+//
+// THE EVENT-NAME FORM IS REQUIRED. `getEventListeners(sig, 'abort')` reads 1 for
+// one ordinary listener and 0 after its removal; the no-name form
+// `getEventListeners(sig)` reads 0 either way, so an assertion written with it
+// would pass whether or not the removal ran.
+//
+// BOTH OUTCOMES, because the removal is in a `finally` and a pin on the success
+// path alone would not notice it moving into the `try`.
+//
+// NOT CLAIMING the absence of a leak — that is a heap measurement, and it is
+// recorded in the comment at the call site rather than asserted here. What is
+// asserted is the mechanism the measurement identified.
+test('runForwarded leaves no abort listener on its caller signal, on either outcome', async () => {
+  const ok = new AbortController();
+  assert.equal(getEventListeners(ok.signal, 'abort').length, 0, 'the premise: a fresh signal has none');
+  const good = await redirect.runForwarded('echo fine', { signal: ok.signal });
+  assert.equal(good.code, 0, good.stderr);
+  assert.equal(getEventListeners(ok.signal, 'abort').length, 0,
+    'a command that SUCCEEDED detached its relay');
+
+  // The failure path through the same `finally`: a command that destroys its own
+  // framing throws inside the try and is caught, and must detach just the same.
+  const bad = new AbortController();
+  const failed = await redirect.runForwarded('exit', { signal: bad.signal });
+  assert.notEqual(failed.code, 0, 'the premise: this command failed');
+  assert.equal(getEventListeners(bad.signal, 'abort').length, 0,
+    'and a command that FAILED detached its relay too');
+
+  // And a signal that actually FIRES: `{once:true}` detaches a listener that
+  // ran, so this half would pass even without the removal — it is here so the
+  // three shapes are not confused for one another by a later reader.
+  const aborted = new AbortController();
+  const running = redirect.runForwarded('sleep 5', { signal: aborted.signal });
+  await new Promise(r => setTimeout(r, 120));
+  aborted.abort();
+  await running;
+  assert.equal(getEventListeners(aborted.signal, 'abort').length, 0);
 });
 
-// PINS C6: an idle-TTL close TELLS the next command, exactly as a wedge or an
-// interrupt does. The sweep is cc's own decision, made while the worker was
-// away, so a shell that silently looks continuous while its exports are gone is
-// the same R5 violation — and this path used to be the silent one.
-test('an idle-TTL close tells the next command what it lost', async () => {
+// PINS THE HALF THAT MAKES THE FIX ABOVE SAFE, and it is not hypothetical: a
+// REWIND/RESPAWN calls `close()` too (src/instances.ts) — the CLI's prefix is
+// rewritten, so whatever was running belongs to a conversation the worker no
+// longer has — and the SAME redirect then serves the next turn. A teardown lever
+// that stayed pulled would make every command after any rewind fail ECANCELLED
+// the instant it was issued, on every remote session.
+//
+// FOUND BY THIS SUITE'S SIBLING, not by reasoning: the first version of the fix
+// aborted a single controller once, and six end-to-end tests in
+// tests/systems-remote-worker.test.mjs went red with
+// `cc: the command was cancelled by its caller`.
+//
+// NOT CLAIMING that anything survives the close — nothing does, deliberately.
+test('a redirect keeps working after close(), because a rewind calls it too', async () => {
+  assert.equal((await bash('echo before')).stdout.trim(), 'before');
   await redirect.close();
-  await build({ idleTtlMs: 40 });
-  await bash('export CC_PROBE=before');
-  await waitFor(() => redirect.shellOpen === false, { timeout: 4000 });
-
-  const notices = [];
-  const after = await redirect.runForwarded('echo "[$CC_PROBE]"', {
-    sink: { notice: (t) => notices.push(t), out: () => {}, err: () => {} },
-  });
-  assert.equal(after.stdout, '[]\n', 'it really did run on a shell that had lost the export');
-  assert.equal(notices.length, 1, 'the idle close is reported, not silent');
-  assert.match(notices[0], /restarted/);
-  assert.equal(after.notice, notices[0]);
-  // And once only.
-  assert.equal((await bash('echo again')).notice, null);
+  const after = await bash('echo after');
+  assert.equal(after.code, 0, after.stderr);
+  assert.equal(after.stdout.trim(), 'after', 'the next command runs normally, not ECANCELLED');
 });
 
 // PINS: `@mention` pre-hydration pulls the named file into the session root
@@ -617,61 +634,6 @@ test('@mention pre-hydration pulls the named files before the prompt is sent', a
   await fs.writeFile(onSystem('docs/spec.md'), '# the spec\n');
   await redirect.hydrateMentions('please read @docs/spec.md and @nope/missing.md then stop');
   assert.equal(await fs.readFile(inSession('docs/spec.md'), 'utf8'), '# the spec\n');
-});
-
-// PINS: with the persistent-shell capability absent, a redirected Bash still
-// works and still carries cwd — the fallback is the deliverable, not the flag.
-test('the persistentShell fallback still runs commands and carries cwd', async () => {
-  await redirect.close();
-  await build({ flags: ['--no-persistent-shell'] });
-  await fs.mkdir(onSystem('sub'), { recursive: true });
-  assert.equal((await bash('cat ONLY-ON-SYSTEM.txt')).stdout, 'system side\n');
-  await bash('cd sub');
-  assert.equal((await bash('pwd')).stdout.trim(), path.join(remote.root, 'sub'));
-  // Exactly the local CLI's own behaviour: cwd carries, exports do not.
-  await bash('export CC_PROBE=gone');
-  assert.equal((await bash('echo "[$CC_PROBE]"')).stdout.trim(), '[]');
-});
-
-// PINS HOP 1 OF 4 of the agent id's journey (PreToolUse → argv → forwarder POST
-// → runForwarded): the rewritten command carries the dispatching subagent's id,
-// and carries no `--agent` at all for the main agent.
-//
-// A POSITIVE CONTROL PER INPUT SHAPE, because the failure here is FAIL-OPEN: if
-// `--agent` is dropped the subagent's command still runs, just on the main
-// agent's shell, and every assertion about "it worked" still passes. Both
-// shapes drive the same rewrite, so a guard that fails open on the absent case
-// cannot hide behind the present one.
-//
-// NOT CLAIMING: that the forwarder parses the flag (the end-to-end test in
-// tests/systems-remote-worker.test.mjs), that the shell it selects is a
-// different one (the per-agent shell tests), or that the CLI populates
-// `agent_id` at all (the gated CLI-contract suite).
-test('the rewrite carries the agent id, and carries none for the main agent', async () => {
-  const sub = await pre('Bash', { command: 'ls' }, 'a8620fbbffcb7f234');
-  assert.equal(sub.decision, 'allow');
-  assert.match(sub.updatedInput.command, /--agent 'a8620fbbffcb7f234'/);
-
-  const main = await pre('Bash', { command: 'ls' }, null);
-  assert.equal(main.decision, 'allow');
-  assert.ok(!main.updatedInput.command.includes('--agent'),
-    `the main agent's rewrite carries no --agent: ${main.updatedInput.command}`);
-
-  // The default is the main agent's shape, so a caller that never learned about
-  // agents cannot accidentally name one.
-  const legacy = await pre('Bash', { command: 'ls' });
-  assert.ok(!legacy.updatedInput.command.includes('--agent'));
-});
-
-// PINS: an agent id is quoted like every other argv element, so an id
-// containing a shell metacharacter cannot break out of the rewritten command.
-// The CLI's ids are hex today; the rewrite runs through a shell either way.
-//
-// NOT CLAIMING: anything about what the CLI's ids actually look like, nor that
-// cc validates them — it quotes them.
-test('an agent id with shell metacharacters is quoted, not interpolated', async () => {
-  const d = await pre('Bash', { command: 'echo hi' }, "a'; touch /tmp/pwned; '");
-  assert.match(d.updatedInput.command, /--agent 'a'\\''; touch \/tmp\/pwned; '\\''/);
 });
 
 // ── A WIDE MIRROR: the two things it would silently break (card 2026-0259) ──
@@ -724,22 +686,26 @@ test('a wide mirror does not turn the targeted Bash annotation into an every-com
   } finally { await wide.close(); }
 });
 
-// PINS 8c: a new agent's shell is seeded from the PROJECT root under a wide
-// mirror, not from the mirror root. Asserted on the `exec` frame's `cwd` ON THE
-// WIRE — a direct measurement of the binding, where `pwd` succeeding would only
-// show that some directory existed on a machine where every directory does.
+// PINS 8c: EVERY COMMAND runs from the PROJECT root under a wide mirror, not
+// from the mirror root. Asserted on the `exec` frame's `cwd` ON THE WIRE — a
+// direct measurement of the binding, where `pwd` succeeding would only show that
+// some directory existed on a machine where every directory does.
+//
+// TWO COMMANDS, not one, and the second follows a `cd`: under a wide mirror the
+// binding and the carry would fail differently, and a single command cannot tell
+// "seeded at the project root" from "carried from the project root".
 //
 // NOT CLAIMING: that the shell runs there; the framing suite owns that.
-test('a wide mirror still opens each agent shell at the project root', async () => {
+test('a wide mirror still runs every command at the project root', async () => {
   const { wide, rec } = await wideRedirect();
   try {
+    await wide.runForwarded('cd /', {});
     await wide.runForwarded('true', {});
-    await wide.runForwarded('true', { agentId: 'sub-1' });
     const frames = (await fs.readFile(rec, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
     const cwds = frames.filter(f => f.type === 'exec').map(f => f.cwd);
-    assert.ok(cwds.length >= 2, `two shells opened: ${JSON.stringify(cwds)}`);
+    assert.ok(cwds.length >= 2, `two commands ran: ${JSON.stringify(cwds)}`);
     for (const cwd of cwds) {
-      assert.equal(cwd, remote.root, 'every shell opened at the project root, never at the mirror root');
+      assert.equal(cwd, remote.root, 'every command ran at the project root, never at the mirror root');
     }
     assert.ok(!cwds.includes('/'), 'and never at `/`');
   } finally { await wide.close(); }

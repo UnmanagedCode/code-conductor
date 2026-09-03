@@ -129,25 +129,26 @@ t('a Bash pattern deny is still enforced under bypassPermissions', async () => {
   } finally { await hooks.close(); await clean(); }
 });
 
-// PINS THE UNDOCUMENTED SURFACE A SHELL-PER-AGENT RESTS ON: a SUBAGENT's
-// `PreToolUse` payload carries a non-empty string `agent_id`, and the main
-// agent's does not carry the field at all. That difference is the only thing
-// that tells cc which shell a redirected command belongs in.
+// PINS AN UNDOCUMENTED CLI SURFACE: a SUBAGENT's `PreToolUse` payload carries a
+// non-empty string `agent_id`, and the main agent's does not carry the field at
+// all.
 //
-// SILENT IF IT REGRESSES, which is why it is here. A CLI upgrade that stopped
-// sending `agent_id` would collapse every subagent back onto the main agent's
-// shell — a subagent's `cd` would re-base the main agent's next command — and
-// every command would still succeed. One that started sending it for the main
-// agent too would give main its own consistent shell, still isolated; harmless,
-// and this test would say so rather than leaving it to be discovered.
+// CC NO LONGER CONSUMES IT (card 2026-0312 deleted the per-agent shell it keyed,
+// because no command's state reaches any later command for a subagent's to
+// re-base). This stays as a CLI-CONTRACT FACT, established by a real-binary run:
+// the shape is a real thing about the CLI, it is the natural channel for any
+// future per-agent behaviour, and re-establishing it later would cost another
+// real-binary session. Nothing in `src/` reads it, so a regression here changes
+// nothing cc does today — the test says what the CLI does, and no longer what cc
+// depends on.
 //
 // Asserted over the hook envelopes, never the model's prose: what is pinned is
 // what the CLI put on the wire.
 //
-// NOT CLAIMING: the id's format (opaque to cc — it is only ever a map key), nor
-// anything about NESTED subagents, for which no clean two-level sample exists,
-// nor that the CLI would refuse to reorder the two steps — if it ever ran the
-// dispatch first this fails, and re-reading the prompt is the right response.
+// NOT CLAIMING: the id's format, nor anything about NESTED subagents, for which
+// no clean two-level sample exists, nor that the CLI would refuse to reorder the
+// two steps — if it ever ran the dispatch first this fails, and re-reading the
+// prompt is the right response.
 t('a subagent PreToolUse payload carries agent_id and the main agent does not', async () => {
   const { dir, clean } = await fixture();
   const hooks = await hookServer(() => allow());
@@ -178,9 +179,9 @@ t('a subagent PreToolUse payload carries agent_id and the main agent does not', 
     // order — the main agent's own Bash call is step (1), the dispatch is step
     // (2) — so the FIRST envelope to arrive is provably the main agent's. Both
     // sets being non-empty is equally true of a CLI that swapped the semantics
-    // (subagents omit the field, the main agent carries one), and cc reading it
-    // that way is the silent collapse this case exists to catch: every subagent
-    // would land on the main agent's shell while every command still succeeded.
+    // (subagents omit the field, the main agent carries one), and a consumer
+    // reading it that way would be reading it exactly backwards — which is what
+    // this case exists to catch, whatever cc does with it.
     assert.ok(!('agent_id' in bash[0]),
       `the main agent's own call came first and carries no agent_id, got ${JSON.stringify(bash[0].agent_id)}`);
     assert.ok(bash.slice(1).some(e => typeof e.agent_id === 'string' && e.agent_id.length > 0),

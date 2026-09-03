@@ -370,44 +370,6 @@ describe('a worker session on a remote system', () => {
     assert.notEqual(ran2.code, 0);
   });
 
-  // PINS ALL FOUR HOPS of the agent id at once — hook envelope → forwarder argv
-  // → forwarder POST body → runForwarded — by the only witness that cannot be
-  // faked by a hop that dropped it: the far-side shell's OWN pid.
-  //
-  // THIS IS THE FAIL-OPEN CATCHER. If `--agent` is lost anywhere on that path,
-  // the subagent's command still runs and still exits zero; it just runs on the
-  // main agent's shell, and the two pids become equal.
-  //
-  // NOT CLAIMING that the CLI populates `agent_id` — this test supplies it. That
-  // contract is the gated tests/systems-cli-contract.real.test.mjs's subject.
-  test("a subagent's Bash runs on its own shell, end to end", async () => {
-    const shellPid = async (over) => {
-      const r = await hook({ tool_name: 'Bash', tool_input: { command: 'echo $$' }, ...over });
-      const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
-      assert.equal(ran.code, 0, ran.stderr);
-      assert.match(ran.stdout.trim(), /^\d+$/, ran.stdout);
-      return ran.stdout.trim();
-    };
-
-    const sub = await shellPid({ agent_id: 'a8620fbbffcb7f234' });
-    const main = await shellPid({});
-    assert.notEqual(sub, main, "the subagent's command ran in a shell of its own");
-    assert.equal(await shellPid({}), main, 'and the main agent keeps its shell across calls');
-    assert.equal(await shellPid({ agent_id: 'a8620fbbffcb7f234' }), sub, 'as does the subagent');
-
-    // The state half, through the same four hops: the subagent moves its own
-    // shell and the main agent's is still standing in the project tree.
-    const moved = await hook({
-      tool_name: 'Bash', tool_input: { command: 'cd / && pwd' }, agent_id: 'a8620fbbffcb7f234',
-    });
-    const ranMoved = await runAsTheCliWould(moved.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ranMoved.stdout.trim(), '/', ranMoved.stderr);
-
-    const where = await hook({ tool_name: 'Bash', tool_input: { command: 'pwd' } });
-    const ranWhere = await runAsTheCliWould(where.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ranWhere.stdout.trim(), tree, "the main agent's shell never moved");
-  });
-
   // PINS: quoting survives the rewrite. The command travels through a shell as
   // one argv element, so a command containing quotes, `$` or a newline must
   // arrive byte-identical or the worker silently runs something else.
@@ -467,41 +429,6 @@ describe('a worker session on a remote system', () => {
     assert.equal(ran.code, 0);
   });
 
-  // PINS THE WHOLE TIMEOUT CHAIN ON ONE OBSERVABLE, and after card 2026-0305 it
-  // is the only end-of-chain observable left: the tool's `timeout` no longer
-  // changes any run outcome, so nothing downstream of it can be read off the
-  // command's own behaviour. What is left is the WAIT bound, and `50` can only
-  // have reached it through every hop — hook `tool_input.timeout` → the rewrite's
-  // `--timeout` argv → a real forwarder process → `timeoutMs` on the POST body →
-  // `Number(body.timeoutMs)` in src/routes.ts → `runForwarded` → `shell.run` →
-  // `#acquire`. Any hop dropping it leaves the queued call waiting out the
-  // 605s ceiling instead, and this test times out rather than passing.
-  //
-  // GREEN ON ARRIVAL — the chain is unchanged by that card, which is the point:
-  // `--timeout` had to stay load-bearing for the argv branch to keep its reason.
-  //
-  // The witness file is the barrier, not a sleep: the shell is provably busy
-  // only once the held command has actually started running ON THE SYSTEM.
-  test('the tool timeout reaches the shell as the wait bound, through every hop', async () => {
-    const held = await hook({ tool_name: 'Bash', tool_input: {
-      command: `touch ${JSON.stringify(onSystem('HOLDING'))}; sleep 2`,
-    } });
-    // Not awaited: it holds the session's main-agent shell for ~2s.
-    const holding = runAsTheCliWouldStreaming(held.body.hookSpecificOutput.updatedInput.command, root);
-    await waitFor(() => fs.stat(onSystem('HOLDING')));
-
-    const queued = await hook({ tool_name: 'Bash', tool_input: { command: 'echo hi', timeout: 50 } });
-    const ran = await runAsTheCliWouldStreaming(queued.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ran.code, 1, ran.of('out') + ran.of('err'));
-    assert.match(ran.of('err'), /the shell is busy — waited 50ms for its turn/);
-    assert.equal(ran.of('out'), '', 'it never ran, so it produced nothing');
-
-    // The holder still completes normally: a refused queued call must not
-    // disturb the command that held the shell.
-    const done = await holding;
-    assert.equal(done.code, 0, done.of('err'));
-  });
-
   // PINS: cc's own refusals still reach the worker. The endpoint answers in
   // frames now, so a refusal written in the old single-object shape would be
   // silently ignored by the forwarder and surface as an unexplained failure.
@@ -555,49 +482,86 @@ describe('a worker session on a remote system', () => {
     assert.equal(await fs.readFile(onSystem('mix.txt'), 'utf8'), 'ALPHA\nBETA\n');
   });
 
-  // PINS: killing the forwarder — what the CLI does on a tool timeout or an
-  // interrupt — stops the command on the system, and the NEXT command tells the
-  // worker its shell was restarted rather than looking continuous.
-  test('killing the forwarder resets the shell and the next command says so', async () => {
+  // PINS: killing the forwarder — what the CLI does when the worker INTERRUPTS
+  // or stops a background task — stops the command ON THE SYSTEM. The socket
+  // closing is cc's only signal that the worker no longer wants the command, so
+  // a kill that left it running would leave work on someone else's machine with
+  // nobody to read it.
+  //
+  // NOT a tool TIMEOUT, which is what an earlier wording here said: at the
+  // timeout the CLI detaches the forwarder rather than killing it (card
+  // 2026-0305 §3), so this test drives the kill itself rather than reproducing
+  // one the timeout would have caused.
+  //
+  // RE-BASED on card 2026-0312: this also used to assert the NEXT command was
+  // told its shell had been restarted. Nothing is restarted — the command's own
+  // `exec` was killed and no state was shared for anyone to lose — so telling
+  // the next command it lost its exports would be an R5-class false statement
+  // about state it never had. What it must still say is nothing at all, which is
+  // asserted here.
+  test('killing the forwarder stops the command on the system', async () => {
     const marker = onSystem('slow-finished.txt');
-    const r = await hook({ tool_name: 'Bash', tool_input: { command: `sleep 20; touch ${marker}` } });
+    const started = onSystem('slow-started.txt');
+    const r = await hook({
+      tool_name: 'Bash',
+      tool_input: { command: `touch ${started}; sleep 20; touch ${marker}` },
+    });
     const child = spawn('bash', ['-c', r.body.hookSpecificOutput.updatedInput.command], { cwd: root, stdio: 'ignore' });
-    await waitFor(async () => instances.get(instId)._redirect.shellOpen);
+    // The far side's own answer that the command is genuinely running: cc holds
+    // no observable for it any more, and killing the forwarder before the
+    // command started would prove nothing.
+    await waitFor(() => fs.stat(started).then(() => true, () => false));
     child.kill('SIGKILL');
 
     const next = await hook({ tool_name: 'Bash', tool_input: { command: 'echo back' } });
     const ran = await runAsTheCliWouldStreaming(next.body.hookSpecificOutput.updatedInput.command, root);
     assert.equal(ran.of('out'), 'back\n');
-    assert.match(ran.of('err'), /was restarted/);
-    // FIRST on stderr, ahead of anything else there: a shell that lost its
-    // exports has to say so before output that may be wrong because of it.
-    assert.match(ran.writes.filter(w => w.fd === 'err')[0].text, /^\[cc\]/);
-    // The command really was stopped, not merely abandoned.
+    assert.equal(ran.of('err'), '', 'and it is told about no reset it never had');
+    // The command really was stopped, not merely abandoned. `sleep 20` against a
+    // test that gets here in well under a second, so the marker's absence is the
+    // kill and not the clock.
     await assert.rejects(fs.stat(marker));
   });
 
-  // PINS: removing the session reaches the redirect's teardown at all, with NO
-  // live process left to kill — a crashed or already-exited session has none,
-  // and a shell left open is a process on someone else's machine keyed to a
-  // session that is gone. `close()` reaps every agent's shell, not just the main
-  // agent's; only the main agent's is open here.
+  // T3's END-TO-END HALF: removing the session reaches the redirect's teardown
+  // through the ROUTE, and a command still running on the system is stopped
+  // there rather than merely abandoned.
   //
-  // NOT CLAIMING that the far-side shell processes actually die — `shellOpen`
-  // answers from cc's entry map, which teardown clears either way. That is pinned
-  // by pid in tests/systems-agent-shells.test.mjs.
-  test('removing the session reaches the shell teardown with no process left', async () => {
-    const r = await hook({ tool_name: 'Bash', tool_input: { command: 'echo hi' } });
-    await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
-    const redirect = instances.get(instId)._redirect;
-    assert.equal(redirect.shellOpen, true);
-    assert.equal(instances.get(instId).proc, null, 'no process left — the shell must still be reaped');
+  // WHY THIS PATH AND NOT ONLY THE UNIT ONE (tests/systems-tool-redirect.test.mjs
+  // exercises `SessionRedirect.close()` directly): the defect that motivated the
+  // fix was found at the unit layer, and `close()` having a live lever proves
+  // nothing about anything CALLING it. Instance exit, kill and DELETE all reach
+  // it, and only a real DELETE proves the wiring.
+  //
+  // THE WITNESS IS THE FAR SIDE'S OWN FILESYSTEM, for the same reason as the
+  // unit test: cc's bookkeeping reads clean whether the command was reaped or
+  // forgotten, and only a file the command writes AFTER a delay can tell them
+  // apart.
+  //
+  // NOT CLAIMING anything about the forwarder process's own exit code — the CLI
+  // is not running here, and cc closing the response is what the forwarder sees.
+  test('deleting the session stops a command still running on the system', async () => {
+    const started = onSystem('DEL_STARTED.txt');
+    const late = onSystem('DEL_LATE.txt');
+    const r = await hook({ tool_name: 'Bash', tool_input: {
+      command: `touch ${started}; sleep 3; touch ${late}`,
+    } });
+    // Not awaited: it is the in-flight command.
+    const running = runAsTheCliWouldStreaming(r.body.hookSpecificOutput.updatedInput.command, root)
+      .catch(() => {});
+    await waitFor(() => fs.stat(started));
 
     const del = await api(baseUrl, 'DELETE', `/api/instances/${instId}`);
     assert.equal(del.status, 200, JSON.stringify(del.body));
-    assert.equal(redirect.shellOpen, false);
+
+    // Past when the command would have written it, had it survived teardown.
+    await new Promise(res => setTimeout(res, 3500));
+    await assert.rejects(fs.stat(late),
+      'the command must not have run to completion after the session was deleted');
+    await running;
   });
 
-  // The one sentence a remote project adds to every worker's system prompt.
+  // The TWO sentences a remote project adds to every worker's system prompt.
   //
   // It loads into the prompt of every session on the project, so it is held to
   // the workspace "System-prompt docs" rule: each sentence must change what the
@@ -643,40 +607,34 @@ describe('a worker session on a remote system', () => {
     assert.match(block, /same file/);
   });
 
-  // PINS AC6: the disclosure states that shell state is PER AGENT. On a remote
-  // system `export` persists across an agent's own commands, where a local
-  // session persists neither `export` nor `cd` — each local `Bash` call gets a
-  // brand-new shell and the CLI resets the working directory to the project root
-  // (measured on CLI 2.1.258; card 2026-0305 §2, correcting an earlier wording
-  // here that said only `cd` failed to persist locally). So the asymmetry is
-  // wider than it was documented as, and it invites the false generalisation
-  // that a dispatched subagent inherits it; told, the agent passes the value in the subagent's prompt instead, and
-  // told the converse it stops treating a subagent's `cd` as a hazard to its own
-  // state. Nothing else volunteers either half: a missing export in a subagent
-  // looks like an ordinary unset variable, and a subagent's `cd` NOT reaching the
-  // parent is unobservable by construction.
+  // PINS A DELETION, WHICH IS THE ONLY WAY A DELETION FROM A SYSTEM PROMPT STAYS
+  // DELETED. Card 2026-0312 removed a third sentence saying shell state was PER
+  // AGENT. It existed for an asymmetry that no longer exists: `export` used to
+  // persist across an agent's own commands while a local session persisted
+  // nothing, which invited the false generalisation that a dispatched subagent
+  // inherited it. With one shell per command nothing an agent's command sets
+  // reaches ANY later command, its own included — exactly as locally — so the
+  // sentence's subject is gone.
   //
-  // The two negative assertions are the two clauses deliberately CUT from the
-  // draft, pinned so a later editor does not re-add them. "a subagent's Bash
-  // starts at <systemPath>" is true only of that subagent's FIRST command, so a
-  // subagent reading it would hold a false statement about itself — and neither
-  // reader needs to know where the other starts, only that state does not cross.
-  // "background jobs" is non-vacuously true in only one of the two capability
-  // modes, and changes nothing the cwd/exports clause does not already change;
-  // the facts a worker acts on about background jobs are delivered at the point
-  // of use, by the reset notice and docs/features.md.
+  // EACH NEGATIVE IS A CLAIM SOMEONE WOULD PLAUSIBLY RE-ADD, not a grep for
+  // absence: the retired per-agent sentence, the two clauses cut from its draft
+  // before it shipped, and the "every command starts at the project root" fact
+  // that this card deliberately did NOT put here — it is delivered by cc's own
+  // notice on the one command whose `cd` was discarded, at the point of use,
+  // which the workspace "push what nothing volunteers" rule prefers to a
+  // sentence every session pays for.
   //
-  // NOT CLAIMING that the model obeys it.
-  test('the disclosure states that each agent has its own shell', async () => {
+  // NOT CLAIMING that the two surviving sentences are enough — the tests above
+  // pin what each of them says.
+  test('the disclosure says nothing about shells, agents or where a command starts', async () => {
     const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
       .split('# Workspace conventions')[0];
 
-    assert.match(block, /Each agent has its own shell here/);
-    assert.match(block, /not shared with a subagent you dispatch/);
-    assert.match(block, /in either direction/);
-
-    assert.ok(!/starts/.test(block), `it makes no claim about where a subagent's Bash starts: ${block}`);
-    assert.ok(!/background/i.test(block), `it makes no claim about background jobs: ${block}`);
+    assert.ok(!/shell/i.test(block), `it makes no claim about shells: ${block}`);
+    assert.ok(!/subagent|each agent/i.test(block), `nor about agents: ${block}`);
+    assert.ok(!/starts/i.test(block), `nor about where a command starts: ${block}`);
+    assert.ok(!/background/i.test(block), `nor about background jobs: ${block}`);
+    assert.ok(!/export/i.test(block), `nor about exported variables: ${block}`);
 
     // And a local project still says nothing at all.
     assert.ok(!/^# System$/m.test(await composeProjectConventionsDoc([])));
@@ -693,10 +651,10 @@ describe('a worker session on a remote system', () => {
   });
 });
 
-// ── A session's shell, on a system that serves many targets ────────
+// ── A session's commands, on a system that serves many targets ─────
 //
-// Every agent's shell is opened with an `exec` on the project's bound handle, so
-// its commands must land on the project's target — not on the provider's default,
+// Every command is its own `exec` on the project's bound handle, so it must land
+// on the project's target — not on the provider's default,
 // and not on a sibling project's. Asserted with CC_REMOTE, because on a machine
 // where every target is one filesystem "the command worked" is exactly what the
 // wrong target produces too.

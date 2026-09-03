@@ -100,15 +100,15 @@ test('canonical base64 is what isBase64 accepts, and nothing else', () => {
   }
 });
 
-test('a payload frame with a corrupted or missing dataB64 is EPROTO — on all four types', () => {
+test('a payload frame with a corrupted or missing dataB64 is EPROTO — on every payload type', () => {
   // A payload is part of its frame. `Buffer.from(s,'base64')` stops at the first
   // unreadable character and returns the prefix, so decoding leniently turns a
   // corrupted chunk into a SILENT PARTIAL ANSWER: a writeFile that reports
   // success having dropped its tail, or a command whose stdout is quietly
   // truncated with exit 0. Checked here, once, for both ends and both
-  // directions — `stdout`/`stderr`/`data` come from the provider, `stdin` and
-  // `data` go to it.
-  for (const type of ['stdout', 'stderr', 'data', 'stdin']) {
+  // directions — `stdout`/`stderr`/`data` come from the provider, `data` goes to
+  // it.
+  for (const type of ['stdout', 'stderr', 'data']) {
     assert.throws(
       () => decodeFrame(`{"type":"${type}","id":"x","seq":0,"dataB64":"SEVMTE8=!!corrupted"}`),
       (e) => e instanceof SystemError && e.code === 'EPROTO' && /invalid base64/.test(e.message),
@@ -182,12 +182,34 @@ test('an unmatched failure carries its exit code and its RAW stderr, verbatim', 
 
 test('capability negotiation: a missing key is false, an unknown key is ignored', () => {
   assert.deepEqual(readCapabilities(undefined), NO_CAPABILITIES);
-  assert.deepEqual(readCapabilities({ persistentShell: true, somethingFuture: true }),
-    { ...NO_CAPABILITIES, persistentShell: true });
+  assert.deepEqual(readCapabilities({ processGroupSignal: true, somethingFuture: true }),
+    { ...NO_CAPABILITIES, processGroupSignal: true });
   assert.deepEqual(readCapabilities({ remotes: true }), { ...NO_CAPABILITIES, remotes: true },
     'a system that serves many targets says so, and says nothing else');
-  assert.deepEqual(readCapabilities({ persistentShell: 'yes' }), NO_CAPABILITIES,
+  assert.deepEqual(readCapabilities({ processGroupSignal: 'yes' }), NO_CAPABILITIES,
     'only a literal true enables a capability');
+});
+
+// PINS THE DECODE HALF of the rule card 2026-0312's descriptor deletion rests
+// on: an unknown FIELD on a KNOWN frame survives decoding untouched rather than
+// being rejected. Separate from the unknown-capability-key and unknown-frame-type
+// rules — this one is about a frame cc fully understands carrying more than cc
+// reads, which is every pre-0312 provider's hello.
+//
+// NOT CLAIMING that anything downstream reads the field; the handshake half is
+// tests/systems-provider-supervision.test.mjs's.
+test('an unknown field on a KNOWN frame decodes, it is not refused', () => {
+  const f = decodeFrame(JSON.stringify({
+    type: 'hello', protocol: 1, provider: 'legacy/0.1.0',
+    capabilities: { processGroupSignal: true },
+    system: { os: 'linux', pathSep: '/', shell: '/bin/bash', home: '/root' },
+    somethingCcHasNeverHeardOf: { nested: [1, 2, 3] },
+  }));
+  assert.equal(f.type, 'hello');
+  assert.equal(f.provider, 'legacy/0.1.0');
+  assert.deepEqual(f.system, { os: 'linux', pathSep: '/', shell: '/bin/bash', home: '/root' },
+    'the deleted descriptor rides through the decoder untouched');
+  assert.deepEqual(f.somethingCcHasNeverHeardOf, { nested: [1, 2, 3] });
 });
 
 test('the taxonomy is closed: every named code is recognised and nothing else is', () => {

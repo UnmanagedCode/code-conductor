@@ -15,7 +15,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
   NdjsonDecoder, PROTOCOL_VERSION, SystemError, encodeFrame, isSystemErrorCode,
-  readCapabilities, type AnyFrame, type Capabilities, type ClientFrame, type SystemDescriptor,
+  readCapabilities, type AnyFrame, type Capabilities, type ClientFrame,
 } from './protocol.ts';
 
 export interface ProviderLaunch {
@@ -30,7 +30,6 @@ export interface ProviderLaunch {
 export interface Handshake {
   provider: string;
   capabilities: Capabilities;
-  system: SystemDescriptor;
 }
 
 export interface OpHandlers {
@@ -233,30 +232,9 @@ export class ProviderConnection {
             reject(err);
             return;
           }
-          const sys = (typeof f.system === 'object' && f.system !== null ? f.system : {}) as Partial<SystemDescriptor>;
-          // `system.shell` is the only field cc ACTS on — it is what a
-          // redirected shell is opened with. An empty or relative value is
-          // accepted silently here and then explodes much later as an obscure
-          // spawn failure inside a shell session, so it is refused at the
-          // handshake, where the message can still name the field.
-          if (typeof sys.shell !== 'string' || !sys.shell.startsWith('/')) {
-            const err = new SystemError(
-              'EPROTO',
-              `provider hello has no absolute system.shell (got ${JSON.stringify(sys.shell)})`,
-            );
-            this.#teardown(child, err);
-            reject(err);
-            return;
-          }
           resolve({
             provider: typeof f.provider === 'string' ? f.provider : 'unknown',
             capabilities: readCapabilities(f.capabilities),
-            system: {
-              os: sys.os ?? 'unknown',
-              pathSep: sys.pathSep ?? '/',
-              shell: sys.shell,
-              home: sys.home ?? '/',
-            },
           });
         }),
         down: (err) => done(() => reject(err)),

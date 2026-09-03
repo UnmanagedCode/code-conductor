@@ -155,11 +155,10 @@ guardSuite('ProviderSystem', async () => {
   return systemById('refbox', null, 'test');
 });
 
-// The PERSISTENT SHELL is a second entry into an `exec` frame, and it carried
-// its own `cwd` past the guard: `execOneShot` goes through `exec` and was
-// covered, `openStream` did not. It is the entry a redirected Bash session
-// drives, so a hole there is the one that matters most.
-describe('the persistent shell carries its cwd through the same guard', () => {
+// The REDIRECTED SHELL carries its own `cwd` into every `exec` frame, and it is
+// the entry a redirected Bash session drives — so a hole there is the one that
+// matters most. It runs through `execOneShot` -> `exec`, where the guard lives.
+describe('the redirected shell carries its cwd through the same guard', () => {
   let home, sys, prevCwd;
   beforeEach(async () => {
     ({ home } = await freshProjectsRoot());
@@ -175,34 +174,23 @@ describe('the persistent shell carries its cwd through the same guard', () => {
   });
   afterEach(async () => { process.chdir(prevCwd); disposeSystemHandles(); await rmrf(home); });
 
-  // PINS: openStream refuses a relative cwd. Unguarded, a shell either failed
-  // from the FAR side (the relative path had crossed the wire) or — with a
-  // directory of that name present where the provider ran — happily served
-  // commands from a directory nobody chose, reporting success.
-  test('openStream refuses a relative cwd', async () => {
-    await assert.rejects(
-      () => sys.openStream({ argv: ['/bin/sh', '-l'] }, { cwd: 'relative' }, {
-        onStdout: () => {}, onStderr: () => {}, onExit: () => {}, onDown: () => {},
-      }),
-      (e) => /absolute/i.test(e.message) && /cwd/.test(e.message),
-    );
-  });
-
-  // PINS the same through `shell()`, the surface a caller actually uses — the
-  // guard has to fire before a command can run, not merely on the raw entry.
-  test('shell() refuses one before a command can run', async () => {
+  // PINS the guard through `shell()`, the surface a caller actually uses — it
+  // has to fire before a command can run. Unguarded, a shell either failed from
+  // the FAR side (the relative path had crossed the wire) or — with a directory
+  // of that name present where the provider ran — happily served commands from a
+  // directory nobody chose, reporting success.
+  test('shell() refuses a relative cwd before a command can run', async () => {
     const shell = sys.shell({ cwd: 'relative' });
     await assert.rejects(() => shell.run('pwd'), (e) => /absolute/i.test(e.message) && /cwd/.test(e.message));
   });
 
-  // PINS: an absolute cwd still opens a working shell, so the guard did not
-  // close the persistent-shell path itself.
-  test('an absolute cwd still opens a working shell', async () => {
+  // PINS: an absolute cwd still runs a working command, so the guard did not
+  // close the redirected-shell path itself.
+  test('an absolute cwd still runs a working command', async () => {
     const shell = sys.shell({ cwd: home });
     const r = await shell.run('pwd');
     assert.equal(r.code, 0, JSON.stringify(r));
     assert.equal(r.stdout.trim(), home);
-    shell.forget?.();
   });
 });
 

@@ -2,7 +2,7 @@
 //
 //   npm run gate:systems
 //
-// Runs the ENTIRE test suite three times with the in-process `local` system
+// Runs the ENTIRE test suite once per row with the in-process `local` system
 // replaced by a ProviderSystem speaking the wire protocol to the reference
 // provider.
 //
@@ -11,22 +11,22 @@
 //     expressed as the three primitives plus the derivations. Nothing in the
 //     suite knows it is talking to a provider, so nothing is testing a
 //     convenient subset.
-//   * BOTH FALLBACKS RUN — a capability whose absent-behaviour has never
+//   * THE FALLBACK RUNS — a capability whose absent-behaviour has never
 //     executed is a flag, not a fallback.
 //
-// WHICH OF THE FOUR OPTIONAL CAPABILITIES (Capabilities, src/systems/protocol.ts)
-// THE MATRIX MOVES. It TOGGLES two — `persistentShell` and `processGroupSignal`,
-// one row each with the fallback on. It carries `remotes` ON IN ROW 1 — folded
-// into an existing pass rather than given a fourth, and cleared on rows 2 and 3
-// — and it does not exercise `remoteDescriptors` at all.
+// WHICH OF THE THREE OPTIONAL CAPABILITIES (Capabilities, src/systems/protocol.ts)
+// THE MATRIX MOVES. It TOGGLES one — `processGroupSignal`, one row with the
+// fallback on. It carries `remotes` ON IN ROW 1 — folded into an existing pass
+// rather than given its own, and cleared on row 2 — and it does not exercise
+// `remoteDescriptors` at all.
 //
 //   * `remotes` is folded because a fourth pass costs a whole suite and buys the
 //     SAME field on the SAME frames. Measured: row 1 with `--remote` sends the
 //     identical 14,052 request frames it sends without it — 10,223 `exec`, 2,212
 //     `writeFile`, 1,617 `readFile` — differing only in carrying
 //     `remoteId: "gate"` instead of nothing. The fold costs ~0.4s of the ~73s
-//     pass; a fourth pass would cost ~73s to re-run those frames unnamed, which
-//     rows 2 and 3 already do.
+//     pass; a separate pass would cost ~73s to re-run those frames unnamed,
+//     which row 2 already does.
 //   * `remoteDescriptors` is absent because a `--mirror` row is provably a
 //     no-op: `mirror()` is unreachable for the system id `local` whatever class
 //     backs it, since its only consumer is composeSessionRoot and both call
@@ -36,13 +36,13 @@
 //     and by the `remoteDescriptors:false` row of the conformance suite.
 //
 // WHAT THE FOLD COSTS, so it is not discovered by surprise: no configuration
-// here now runs `persistentShell:true` + `processGroupSignal:true` +
-// `remotes:false` together. That cell is covered at UNIT level by
-// CAPABILITY_CONFIGS[0] in tests/systems-protocol-conformance.test.mjs and
+// here now runs `processGroupSignal:true` + `remotes:false` together. That cell
+// is covered at UNIT level by CAPABILITY_CONFIGS[0] in
+// tests/systems-protocol-conformance.test.mjs and
 // tests/systems-provider-parity.test.mjs, which run inside `npm test` and
 // therefore inside every row here. **If that row is ever removed from those
 // suites, this fold becomes a real hole.** The remotes-OFF whole-suite path
-// itself is still proved twice over, by rows 2 and 3.
+// itself is still proved by row 2.
 //
 // The fold is self-proving, which is why no test asserts the negotiation:
 // row 1's provider argv and its LOCAL_REMOTE_ENV binding cannot silently drift
@@ -64,10 +64,10 @@
 // rendered by tests/gateSummary.mjs and tested by tests/systems-gate-summary.test.mjs.
 //
 // It is a separate command rather than part of `npm test` because it IS
-// `npm test`, three times over. The per-configuration protocol suites
+// `npm test`, once per row. The per-configuration protocol suites
 // (tests/systems-*.test.mjs) run inside the ordinary suite and cover the same
-// capability matrix at the unit level, so a plain `npm test` still exercises
-// both fallbacks; this proves the whole application over them.
+// capability matrix at the unit level, so a plain `npm test` still exercises the
+// fallback; this proves the whole application over it.
 
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -90,11 +90,10 @@ const GATE_REMOTE = 'gate';
 // bound handle is refused EUNSUPPORTED on every operation.
 const CONFIGS = [
   {
-    name: 'persistentShell+processGroupSignal+remotes',
+    name: 'processGroupSignal+remotes',
     flags: ['--remote', `${GATE_REMOTE}=/`],
     remoteId: GATE_REMOTE,
   },
-  { name: 'persistentShell:false', flags: ['--no-persistent-shell'] },
   { name: 'processGroupSignal:false', flags: ['--no-process-group-signal'] },
 ];
 

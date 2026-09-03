@@ -55,15 +55,7 @@ export const PROTOCOL_ERROR_CODES = [
   'ETRANSPORT',    // the connection is gone (provider exited, pipe broke)
   'ETIMEDOUT',     // a bounded wait elapsed
   'EUNSUPPORTED',  // an optional capability the provider does not advertise
-  // TWO PRODUCERS, different causes and different timings. providerShell.ts:
-  // one shell serialises its commands and a wait past its bound is refused
-  // rather than queued forever. toolRedirect.ts: a new subagent wants a shell,
-  // the per-session cap is reached and every existing one is running a
-  // command — that one waits for nothing and is raised IMMEDIATELY. Neither
-  // reaches a worker as a protocol error frame; both surface as a non-zero exit
-  // with the reason on stderr.
-  'EBUSY',
-  'ESHELLGONE',    // the long-lived shell died or never framed the command
+  'ESHELLGONE',    // the shell died or never framed the command
   'EFBIG',         // a file above MAX_FILE_BYTES, or output above a caller's fence
   'ECANCELLED',    // the caller went away: an interrupt, or a tool timeout
   'ENOREMOTE',     // the named remote is not one this provider serves
@@ -159,10 +151,6 @@ export function classifySpawnError(message: string): FsErrorCode {
 // ignored, which is the extension point that lets this list grow without a
 // protocol bump.
 export interface Capabilities {
-  // exec supports a long-lived child whose stdin cc keeps writing into
-  // (`stdin`/`stdinClose` frames). Absent → the redirected shell degrades to
-  // one framed exec per command: cwd still carries, exports do not.
-  persistentShell: boolean;
   // A `signal` frame with `processGroup:true` reaches the child's whole process
   // GROUP. Absent → the direct child only, and any result cc terminated carries
   // `descendantsMaySurvive`.
@@ -189,49 +177,48 @@ export interface Capabilities {
 }
 
 export const NO_CAPABILITIES: Capabilities = {
-  persistentShell: false, processGroupSignal: false, remotes: false, remoteDescriptors: false,
+  processGroupSignal: false, remotes: false, remoteDescriptors: false,
 };
 
 export function readCapabilities(v: unknown): Capabilities {
   const o = (typeof v === 'object' && v !== null ? v : {}) as Record<string, unknown>;
   return {
-    persistentShell: o.persistentShell === true,
     processGroupSignal: o.processGroupSignal === true,
     remotes: o.remotes === true,
     remoteDescriptors: o.remoteDescriptors === true,
   };
 }
 
-// What the provider tells cc about the far side at handshake. cc uses `shell`
-// to open the long-lived shell and reports the rest.
-export interface SystemDescriptor {
-  os: string;
-  pathSep: string;
-  shell: string;
-  home: string;
-}
-
 // ── Frames ───────────────────────────────────────────────────────────
 
 export interface HelloClientFrame { type: 'hello'; protocol: number; client: string }
+// NO `system` DESCRIPTOR. The hello used to carry one — `os`, `pathSep`,
+// `shell`, `home` — with `shell` REQUIRED and refusal-enforced. `shell` was the
+// only field cc ever acted on (it opened the long-lived shell with it) and card
+// 2026-0312 removed that shell, taking the last reader with it; the other three
+// had ZERO readers before that card, and the claims that cc "reports the rest"
+// were false when they were written.
+//
+// THIS RECORDS "NOTHING READS IT TODAY", NOT "cc will never need `os`/`pathSep`/
+// `home`". There is no compatibility cost to a future consumer re-adding the
+// field it needs. AN UNKNOWN FIELD ON A KNOWN FRAME IS IGNORED BY CONTRACT
+// (§2) — a separate rule from the unknown-capability-key and unknown-frame-type
+// ones, and the one this deletion actually rests on: every provider written
+// before this card still sends a `system` object, and each must connect
+// unchanged rather than be refused for a field cc no longer reads.
 export interface HelloProviderFrame {
   type: 'hello';
   protocol: number;
   provider: string;
   capabilities?: Record<string, unknown>;
-  // REQUIRED, and `shell` within it must be an absolute path: it is the only
-  // descriptor field cc acts on, and a hello without it is refused EPROTO at
-  // the handshake. The rest of the descriptor is advisory and defaulted.
-  system: { shell: string } & Partial<SystemDescriptor>;
 }
 
 // ── The four REQUEST frames, and the one field they share ────────────
 //
 // `remoteId` names which of the provider's targets the operation is for. It is
 // carried by the four REQUESTS only (`exec`, `readFile`, `writeFile`,
-// `describeRemote`): every follow-on frame (`stdin`,
-// `stdinClose`, `signal`, `close`, `data`, `end`) is addressed by `id`, and AN
-// ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
+// `describeRemote`): every follow-on frame (`signal`, `close`, `data`, `end`)
+// is addressed by `id`, and AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
 // a provider that advertises `remotes`; `describeRemote` — the fourth — is
 // itself sent only to one that advertises `remoteDescriptors`.
 export interface ExecFrame {
@@ -246,8 +233,6 @@ export interface ExecFrame {
   killGraceMs?: number;
   stdin?: 'ignore' | 'pipe';
 }
-export interface StdinFrame { type: 'stdin'; id: string; dataB64: string }
-export interface StdinCloseFrame { type: 'stdinClose'; id: string }
 export interface SignalFrame { type: 'signal'; id: string; signal: string; processGroup: boolean }
 export interface CloseFrame { type: 'close'; id: string }
 export interface ReadFileFrame {
@@ -289,7 +274,7 @@ export interface ErrorFrame {
 }
 
 export type ClientFrame =
-  | HelloClientFrame | ExecFrame | StdinFrame | StdinCloseFrame | SignalFrame | CloseFrame
+  | HelloClientFrame | ExecFrame | SignalFrame | CloseFrame
   | ReadFileFrame | WriteFileFrame | DescribeRemoteFrame | DataFrame | EndFrame;
 
 export type ProviderFrame =
@@ -400,7 +385,7 @@ export function decodeFrame(text: string): AnyFrame {
 
 // The frame types whose meaning IS their payload. A type not listed here may
 // carry a `dataB64` cc does not know about; unknown fields stay ignorable.
-const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data', 'stdin']);
+const PAYLOAD_FRAMES = new Set(['stdout', 'stderr', 'data']);
 
 // Strict base64: canonical alphabet, correct padding, length a multiple of 4.
 // Deliberately two linear tests rather than one regex with a `*` group, so a

@@ -25,11 +25,12 @@
 //                 ExecOutputCollector returns `code: timedOut ? 124 : …`, so
 //                 a consumer sees 124 either way and this mode cannot be used
 //                 to tell a flag-keyed cc-side guard from a code-keyed one.
+//   legacy-hello  says hello carrying the pre-card-2026-0312 `system` descriptor
+//                 — a field cc no longer reads and MUST ignore rather than refuse
 //   early-frame   sends an id-carrying frame BEFORE its hello
 //   double-hello  answers the handshake twice IN ONE WRITE, so the violation
 //                 lands between the handshake resolving and cc recording it
 //   late-hello    answers the handshake, then sends a second hello later
-//   bad-shell     says hello with an empty system.shell
 //   bad-b64       says hello, then answers an exec with a CORRUPTED payload
 //   no-datab64    says hello, then answers with a payload frame that has none
 //   deaf          says hello, then IGNORES stdin EOF — a provider in breach of
@@ -93,8 +94,11 @@ function handle(f) {
       type: 'hello',
       protocol: mode === 'bad-version' ? 99 : 1,
       provider: `fake-${mode}/0.1.0`,
-      capabilities: { persistentShell: true, processGroupSignal: true },
-      system: { os: 'linux', pathSep: '/', shell: mode === 'bad-shell' ? '' : '/bin/bash', home: '/root' },
+      capabilities: { processGroupSignal: true },
+      // A provider written before the descriptor was deleted still sends it.
+      ...(mode === 'legacy-hello'
+        ? { system: { os: 'linux', pathSep: '/', shell: '/bin/bash', home: '/root' } }
+        : {}),
     };
     if (mode === 'double-hello') {
       // ONE write, so both frames arrive in one chunk: cc must not record a

@@ -89,7 +89,7 @@ A **System** is a third placement for a project: its tree, git repo and shell co
 | `Read` / `Write` / `Edit` / `NotebookEdit` | at their **local paths** — cc fetches the file from the system before the tool runs and pushes the result back after |
 | `Glob` / `Grep` | **neither** — removed and refused; `find` / `grep` through `Bash` answer about the right machine |
 
-A file tool aimed outside that boundary is refused by name, and a failed push back to the system is a hard failure that sticks until the file is read again. The rest — the per-agent shells and their cap, the output fence, the pull manifest, and the named refusals for a system that is unreachable or serves no targets — is in [docs/features.md](docs/features.md) → Projects on a system / Worker sessions on a system.
+A file tool aimed outside that boundary is refused by name, and a failed push back to the system is a hard failure that sticks until the file is read again. The rest — one fresh shell per command and what that means for `cd`, the output fence, the pull manifest, and the named refusals for a system that is unreachable or serves no targets — is in [docs/features.md](docs/features.md) → Projects on a system / Worker sessions on a system.
 
 ### Technical
 
@@ -123,7 +123,7 @@ CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
   node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 ```
 
-- **`npm run gate:systems`** — the whole suite once per configuration in `CONFIGS` (`tests/systems-gate.mjs`, which owns the list): `persistentShell`+`processGroupSignal`+`remotes` on, then `persistentShell` off, then `processGroupSignal` off. Those two fallbacks are therefore proved to execute rather than merely to exist. The first configuration also carries `--remote`, so every project-scoped operation in that pass is **target-bound** — folded into it rather than given a fourth pass, since a separate pass costs a whole suite and puts the same field on the same frames. The gate does **not** vary `remoteDescriptors`: `mirror()` is unreachable for the system id `local` whatever backs it, so a `--mirror` configuration receives no `describeRemote` frame at all.
+- **`npm run gate:systems`** — the whole suite once per configuration in `CONFIGS` (`tests/systems-gate.mjs`, which owns the list): `processGroupSignal`+`remotes` on, then `processGroupSignal` off. That fallback is therefore proved to execute rather than merely to exist. The first configuration also carries `--remote`, so every project-scoped operation in that pass is **target-bound** — folded into it rather than given a pass of its own, since a separate pass costs a whole suite and puts the same field on the same frames. The gate does **not** vary `remoteDescriptors`: `mirror()` is unreachable for the system id `local` whatever backs it, so a `--mirror` configuration receives no `describeRemote` frame at all.
 - **`CC_LOCAL_SYSTEM_PROVIDER='["your-provider"]' npm test`** — swaps the in-process `local` system for a `ProviderSystem` over the named command, so **every project-scoped operation in cc runs over the protocol** and nothing in the suite knows it. This is the seam `gate:systems` drives.
 
 Two Systems suites are opt-in because they need something the repo does not ship:
@@ -165,9 +165,7 @@ Layout: [docs/architecture.md](docs/architecture.md) → On-disk state.
 - **Adopting a repo dirties its working tree** — `adopt_project` writes cc's own `CONVENTIONS.md` into the target and prepends an `@CONVENTIONS.md` line to its `CLAUDE.md` (creating one if absent). That is the only channel the workspace/project conventions have, so it is unconditional; both land as uncommitted changes in the adopted repo. Recovery is `git checkout -- CONVENTIONS.md` / deleting the file.
 - **Systems: what a target must provide, and what a session on one gives up** — see [Systems](#systems).
   - **Non-POSIX targets are out of scope by contract.** Alpine and other busybox images do not satisfy the POSIX assumption: `readDir` and `realpath` fail outright there and `stat` loses its millisecond precision silently. cc ships no BSD or busybox dialect — an untested second code path is worse than a refusal. Measured breakdown: [docs/systems-protocol.md](docs/systems-protocol.md) §11.
-  - **One shell descriptor per provider.** The handshake carries exactly one `system.shell`, describing the provider's **default** target, so on a multi-target provider every target gets the same shell. Per-remote descriptors are out of scope.
   - **`Glob` and `Grep` are unavailable in a session on a system.** A search result can be annotated but never substituted, so both are removed and refused by name; `find` and `grep` through `Bash` answer about the right machine.
-  - **Interrupting a command ends the shell it ran in** — that agent's `cd`, exported variables and background jobs go with it, and the same happens at the idle timeout. The next command on that shell says so. Blast radius is the interrupting agent's own shell.
   - **cc's store must not sit inside a git repository.** Registering a system refuses when any ancestor of `<store>/systems/<id>/sessions/` is one: the CLI probes for a containing repo by walking up from its cwd, so a session root inside one would report the wrong tree's git state.
 - **No auth** — bound to 127.0.0.1; anyone with shell access can drive it.
 - **Best-effort metadata writes** — crash between turn-end and metadata append may omit the `last-prompt` line and hide the session from `claude --resume`'s picker. Transcript itself is intact.
