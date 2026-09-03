@@ -43,6 +43,53 @@ Provider MUSTs:
    provider has to SIGKILL its in-flight `docker exec` processes on exit. cc has
    no way to clean up after a provider that does not.
 4. Interleave concurrent ids correctly (§4).
+5. **Answer every operation it accepts, or refuse it.** Each `id` cc opens
+   terminates in a frame for that `id` — `exit`, `readFileResult` + `end`,
+   `writeFileResult`, `remoteDescriptor`, or an `error` frame from §8's
+   taxonomy — unless cc `close`s it first, after which the provider emits
+   nothing for it (§5's rules). Accepting an operation and then answering
+   nothing is a breach.
+
+### Non-conformance is a provider defect
+
+The MUSTs above are the contract. This section says what happens when one is
+broken, because that boundary is easy to assume wrongly in both directions.
+
+- **What cc guarantees.** An operation cc did not bound itself expires at
+  `DEFAULT_OP_TIMEOUT_MS` (`src/systems/providerSystem.ts`; override
+  `ORCH_OP_TIMEOUT_MS`, `docs/architecture.md`'s env table), and **the operation
+  fails with a named code** — `{code:124, timedOut:true}` from an `exec`,
+  `ETIMEDOUT` from `readFile` / `writeFile` / `describeRemote`. Expiry sends
+  `close`, which is this protocol's instruction to kill the command; a provider
+  that ignores `close` keeps running it, and cc cannot reap what it started
+  (MUST 3). See *Backstop* in §5's rules for the deadlines cc arms and their
+  scope.
+- **What cc does NOT do.** Model, classify, retry, recover from, or gracefully
+  degrade around a breach. cc's only stateful accommodation for a provider is
+  the restart backoff for one that **dies** (`ProviderConnection`'s failure
+  count and refusal window) — a provider that answers nothing never reaches it,
+  because it has not died. Nothing is keyed on slowness, nothing trips on a
+  timeout, and nothing remembers that an operation expired. The deadline is the
+  whole of it: a liveness fence, so cc's own surfaces stay answerable.
+- **Why the boundary is drawn here.** Implementing this protocol is the
+  provider's job. Every mechanism cc could add to compensate would also make a
+  broken provider look partly usable, which is how a wrong answer reaches a user
+  instead of a refusal.
+- **What a provider author should expect to see, and it is SPLIT.** For a
+  provider that accepts operations and answers nothing:
+  - **The project row discloses.** A timed-out git command is a `GIT_TIMED_OUT`
+    refusal (504, `src/worktrees.ts`); the project listing reports
+    `isGitRepo: undefined` and a `systemUnreachable` reason naming the system,
+    and merge / sync convert it to their own returned refusals.
+  - **The worktree listing and the session lookup SWALLOW it**, matching exactly
+    what they do for a system that is simply unreachable: `listWorktrees`
+    applies no git filter, so **every registration lists** (`src/worktrees.ts`),
+    and `findSessionLocation` composes a place for each of those unfiltered
+    registrations (`src/projects.ts`). Neither says anything.
+  - So such a provider **can change what a worktree listing contains — and
+    which places a session lookup probes — with nothing on either to say so.**
+    That is a property a system that is DOWN already has, and cc does not
+    distinguish the two: see *What cc does NOT do* above.
 
 ### The POSIX assumption
 

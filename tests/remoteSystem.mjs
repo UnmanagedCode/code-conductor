@@ -42,6 +42,20 @@ export function referenceLaunch(...flags) {
   return ['node', REFERENCE_PROVIDER, ...flags];
 }
 
+// A registered system whose provider completes the handshake and then answers
+// NOTHING — accepted operations, no terminating frame, no death, no protocol
+// violation. Nothing in ProviderConnection's supervision fires on it, so the
+// only thing that settles an operation is the ceiling.
+//
+// `fake-provider.mjs --mode wedge` already IS that behaviour, so this wraps it
+// rather than adding a second fixture. Swap a healthy row to it with
+// `updateSystem(id, { launch: wedgeLaunch() })` exactly as `flakyLaunch` is
+// swapped in: the handshake still succeeds, so registration and resolution both
+// pass the door and the stall happens inside the operation.
+export function wedgeLaunch() {
+  return ['node', path.join(__dirname, 'fake-provider.mjs'), '--mode', 'wedge'];
+}
+
 // The registered SYSTEM's id, which is not a remote's: one system serves many
 // remotes, and the two are different keys.
 export const SYSTEM_ID = 'refbox';

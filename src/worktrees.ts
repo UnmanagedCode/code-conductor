@@ -185,6 +185,18 @@ export const GIT_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
 // a git binary that could not be started is not git saying no there either.
 export async function runGit(system: System, cwd: string, args: string[]): Promise<GitResult> {
   const r = await system.exec({ argv: ['git', '-C', cwd, ...args] }, { cwd, maxBufferBytes: GIT_OUTPUT_LIMIT_BYTES });
+  // A COMMAND WHOSE ANSWER NEVER ARRIVED IS THE SAME EPISTEMIC STATE AS ONE
+  // THAT NEVER RAN, so it takes the same route out — see the spawn-error
+  // reasoning directly below rather than a second copy of it here. The concrete
+  // falsehood this stops: `isGitRepo` read the `{code:124, stdout:''}` a
+  // provider deadline produces as git ANSWERING, so the project list reported
+  // `isGitRepo: false` with `systemUnreachable: null` — the positive claim
+  // "not a git repo" about a box cc never got an answer from (card 2026-0299).
+  // 504, and its own code: the repair is fix the provider, not fix the path.
+  if (r.timedOut) {
+    throw httpError(504, `git ${args[0] ?? ''} did not answer on system '${system.id}' in ${cwd} `
+      + 'before the operation deadline', { code: 'GIT_TIMED_OUT', systemRefusal: true });
+  }
   if (r.spawnError) {
     // NOT every spawn failure is a transport failure, and conflating them would
     // launder in the OTHER direction: a missing cwd or a non-executable git is a

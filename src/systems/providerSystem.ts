@@ -45,11 +45,27 @@ const EXEC_TIMEOUT_SLACK_MS = 5_000;
 // derived operations deliberately carry no timeout, because locally there is
 // nothing to time out against.
 //
-// Generous ON PURPOSE. This is a liveness fence, not a performance budget: it
-// has to sit above the slowest legitimate operation cc issues (an `rm -rf` of a
-// large tree, a clone) so it can never turn a slow answer into a wrong one.
-// Injectable so a test can assert the fence without waiting for it.
-const DEFAULT_OP_TIMEOUT_MS = 10 * 60_000;
+// A liveness fence, not a performance budget: it has to sit above the slowest
+// legitimate operation cc issues so it can never turn a slow answer into a
+// wrong one. MEASURED (card 2026-0299 §2): the slowest unbounded operation is a
+// `git worktree add` checking out a 100k-file repo, ~3.7 s; `git worktree
+// remove --force` and an `rm -rf` of the same tree are ~1.2 s and ~0.9 s, and
+// every other unbounded operation is under half a second AND size-fenced
+// (MAX_FILE_BYTES, GIT_OUTPUT_LIMIT_BYTES, the session-root listing fence).
+// 60 s is 16x the worst of them. NOT a clone: nothing reaches `exec` by that
+// route — cloning is cc-level and local, through `runGitLive`'s own
+// CLONE_TIMEOUT_MS.
+//
+// ORCH_OP_TIMEOUT_MS is the knob for the case those measurements do not cover:
+// a real transport's per-frame latency, a cold cache, a network filesystem, or
+// a tree large enough to push a checkout or an `rm -rf` past the bound. Raise
+// it there rather than editing this number.
+//
+// EXPORTED so a test can pin the value. `bindRemote` passes the field on as a
+// constructor argument rather than exposing it, and ViewOptions is not
+// exported, so nothing outside this class can read what a handle was built
+// with. Injectable so a test can assert the fence without waiting for it.
+export const DEFAULT_OP_TIMEOUT_MS = Number(process.env.ORCH_OP_TIMEOUT_MS) || 60_000;
 
 export interface ProviderSystemOptions extends ConnectionOptions {
   id: string;

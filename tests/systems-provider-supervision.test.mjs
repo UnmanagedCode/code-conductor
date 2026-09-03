@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ProviderSystem } from '../src/systems/providerSystem.ts';
+import { DEFAULT_OP_TIMEOUT_MS, ProviderSystem } from '../src/systems/providerSystem.ts';
 import { providerArgv } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 
@@ -458,6 +458,10 @@ test('every operation a mute provider accepts is bounded, not just the ones a ca
       const started = Date.now();
       await assert.rejects(() => sys.readFile('/whatever'), (e) => {
         assert.equal(e.code, 'ETIMEDOUT', e.message);
+        // The message reports THIS HANDLE's ceiling, not a literal. That is
+        // what lets a surface test read the number back out of an ETIMEDOUT
+        // and know which ceiling fired.
+        assert.match(e.message, /within 400ms/, e.message);
         return true;
       }, 'readFile');
       await assert.rejects(() => sys.writeFile('/whatever', 'x'), (e) => e.code === 'ETIMEDOUT', 'writeFile');
@@ -477,6 +481,23 @@ test('every operation a mute provider accepts is bounded, not just the ones a ca
       assert.ok(Date.now() - started < 30_000, 'all of it inside the fence, none of it a hang');
     } finally { sys.dispose(); }
   });
+});
+
+// PINS THE VALUE OF THE FENCE, and nothing else. The fence's EXISTENCE is
+// pinned by the test above; that DEFAULT_OP_TIMEOUT_MS is what an unconfigured
+// handle actually falls back to, and that ORCH_OP_TIMEOUT_MS is read, are
+// pinned at a surface in tests/systems-op-timeout.test.mjs — three claims,
+// three killers.
+//
+// The literal is hardcoded here on purpose: reading it from the module would
+// assert the constant equals itself. Do not set ORCH_OP_TIMEOUT_MS for this
+// file; the override exists and this is the unoverridden default.
+//
+// 60 s, not the 10 min it was: the ceiling is what a caller that named no
+// deadline waits out against a provider that answers nothing, and cc's own
+// project listing pays three of them in sequence (card 2026-0299 §2).
+test('the default operation ceiling is 60s', () => {
+  assert.equal(DEFAULT_OP_TIMEOUT_MS, 60_000);
 });
 
 test('one failed launch is ONE failure, however many callers were waiting on it', async () => {
