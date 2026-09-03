@@ -33,9 +33,11 @@
 // resolve the expected location from `sessionRootPath` INDEPENDENTLY of the
 // instance that produced it, so a cwd composed against the project rather than
 // the image root gives a different answer instead of agreeing by accident. The
-// rest (T5(b), T6, T7, T8, T9, T12) assert against the instance's own `cwd` or
-// against the tree path directly — they are about which PLACE answers and what
-// the answer is used for, not about how the geometry is composed.
+// T8's arm (c) and T13 resolve their expected location the same way, from
+// `sessionRootPath` with no instance in play. T5(b), T6, T7, T8's arms (a)/(b)
+// and T9 assert against the instance's own `cwd` or against the tree path
+// directly, and T12 asserts no cwd at all — those are about which PLACE answers
+// and what the answer is used for, not about how the geometry is composed.
 //
 // TEST-FIRST STATUS. T1–T9 and T12 had free BEHAVIOURAL red on the shipped
 // code: it produced the wrong answer, the wrong refusal or no answer at all,
@@ -52,7 +54,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl, waitFor } from './helpers.mjs';
-import { bindRemoteSystem, referenceLaunch, seedRepo } from './remoteSystem.mjs';
+import { bindRemoteSystem, flakyLaunch, referenceLaunch, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import {
   adoptProject, findSessionLocation, getProject, projectStoreDir,
@@ -332,9 +334,10 @@ describe('a session on a project on a system', () => {
   // PINS: all THREE consuming READ sites read the transcript that exists rather
   // than an empty directory on the other machine — MCP get_transcript serves
   // events, GET /summary's staleness count is the real message count, and
-  // POST /summary 200s where it used to 500 (`flattenTranscript` throws at the
-  // remote tree path with no `statusCode`, so the route surfaced a 500; today
-  // it 404s because nothing locates at all). POST is exercised through the real
+  // POST /summary 200s where the pre-fix route returned a clean 404 — and where
+  // a PROBE-ONLY widening would have 500'd, `flattenTranscript` throwing at the
+  // tree path with no `statusCode`. That 500 is the counterfactual this card's
+  // scope exists to avoid, never shipped behaviour. POST is exercised through the real
   // route with `CLAUDE_BIN` pointed at tests/fake-claude-summarize.mjs, the
   // same device tests/session-summaries.test.mjs uses — an earlier draft of
   // this file omitted the arm claiming it "spawns `claude`", which was FALSE
@@ -389,10 +392,15 @@ describe('a session on a project on a system', () => {
   // clears it"). Arm (c) keeps the record-names-an-unregistered-system variant
   // as defence in depth, and it is deliberately second — a user cannot reach it,
   // because deleting a system row is refused while a project references it.
-  // NOT claiming the probe avoids contacting the box: composing a place walks
-  // each project's worktree store THROUGH its system and swallows the failure.
-  // What is claimed is that no ANSWER here needs the box. NOT claiming a spawn
-  // there could succeed.
+  // NOT claiming the probe avoids the box, and NOT claiming a box that is down
+  // cannot change the answer — it can. What the lookup needs from the box is
+  // one contract with one home, on `findSessionLocation` (src/projects.ts);
+  // this header does not restate it. What IS claimed here is narrower: a box
+  // that cannot run anything still leaves this session locatable and readable.
+  // Arm (d) is the THIRD refusal shape — a provider that answers the handshake
+  // and dies on its first operation, which gets past resolution and refuses
+  // 502 inside the session-root compose instead.
+  // NOT claiming a spawn there could succeed.
   test('T8: a system cc cannot reach refuses the resume by name and still serves the read', async () => {
     const remote = await bindRemoteSystem();
     const tree = await seedRepo(path.join(remote.root, 'app'));
@@ -431,6 +439,28 @@ describe('a session on a project on a system', () => {
     const t2 = unwrap(await callTool('get_transcript', { sessionId: sid }));
     assert.equal(t2.source, 'disk', JSON.stringify(t2));
     assert.ok(t2.events.length >= 1, `expected >= 1 event, got ${t2.events.length}`);
+
+    // (d) the THIRD refusal shape: a registered row whose provider ANSWERS the
+    // handshake and then dies on its first operation. The resume gets past
+    // resolution and refuses inside the session-root compose, so the refusal is
+    // 502 rather than 501 — and it has to NAME the system, because a reader with
+    // several registered cannot act on "the system". The read still works.
+    const dead = await bindRemoteSystem({ id: 'deadbox' });
+    const deadTree = await seedRepo(path.join(dead.root, 'gamma'));
+    assert.equal((await adoptProject('gamma', deadTree, { system: 'deadbox' })).ok, true);
+    const g = await retiredSession({ project: 'gamma' });
+    // Swapped AFTER the adopt and the spawn, which both need a live box. The
+    // budget is per provider PROCESS, so verifySystemLaunch's throwaway probe
+    // does not spend the handle's.
+    assert.ok(await updateSystem('deadbox', { launch: flakyLaunch({ budget: 0 }) }));
+    disposeSystemHandles();
+
+    const r3 = await api(baseUrl, 'POST', '/api/instances', { resume: g.sessionId });
+    assert.equal(r3.status, 502, JSON.stringify(r3.body));
+    assert.match(String(r3.body.error), /deadbox/);
+    const t3 = unwrap(await callTool('get_transcript', { sessionId: g.sessionId }));
+    assert.equal(t3.source, 'disk', JSON.stringify(t3));
+    assert.ok(t3.events.length >= 1, `expected >= 1 event, got ${t3.events.length}`);
   });
 
   // ── T9 ──────────────────────────────────────────────────────────────
@@ -515,37 +545,47 @@ describe('a session on a project on a system', () => {
   });
 
   // ── T13 ─────────────────────────────────────────────────────────────
-  // PINS: a lookup does NO WORK for a place ordered after the one that answers
-  // in pass 1 — measured ON THE WIRE, because that is the only honest evidence
-  // for a frame cc must not send. Composing a project's worktree places calls
-  // listWorktrees, which resolves the project and runs `git worktree list`
-  // THROUGH its system, so an eagerly-built place list contacts every
-  // registered remote system on every lookup — and `runGit` passes no
-  // `timeoutMs`, so one wedged provider would stall every locate, transcript
-  // read, summary and bare resume up to the provider operation timeout.
-  // Arm (b) is not decoration: without it arm (a) would also pass if the
-  // recorder never recorded anything at all.
-  // NOT a claim about what the ANSWER needs from the box (nothing — a separate
-  // property), and NOT a timing claim: this says nothing about how long an
-  // unreachable or wedged system takes. It is only about WHICH places a lookup
-  // composes, which is the thing that decides whether the box is reached at all.
-  test('T13: a pass-1 hit composes no place ordered after it, measured on the wire', async () => {
-    // 'early' answers; 'zzz' sorts after it and is the one that must stay
-    // untouched. Its provider is the recorder, so any contact leaves bytes.
-    const early = await bindRemoteSystem({ id: 'early' });
+  // PINS: a pass-1 hit CONTACTS NO SYSTEM ordered after it — measured ON THE
+  // WIRE, because a frame cc must not send has no other honest evidence.
+  // Composing a project's worktree places calls listWorktrees, which resolves
+  // the project and runs `git worktree list` THROUGH its system, so an
+  // eagerly-built place list contacts every registered remote system on every
+  // lookup — and `runGit` passes no `timeoutMs`, so one wedged provider would
+  // stall every locate, transcript read, summary and bare resume up to the
+  // provider operation timeout.
+  // BOTH HALVES of "ordered after" are covered, because the hit project has a
+  // registered remote worktree of its own: arm (a)'s empty transcript rules out
+  // the hit project's OWN worktree walk as well as the later project entirely.
+  // Both systems record to ONE file so the assertion is a single zero; arm (b)
+  // is what makes that zero evidence rather than a dead fixture, and it asserts
+  // BOTH trees appear on a miss, so neither half's absence in (a) is vacuous.
+  // NOT a claim of "no work": the wire cannot see composition, only contact —
+  // composing a project's ROOT place is wire-free by construction, so nothing
+  // here pins that. NOT a timing claim either.
+  test('T13: a pass-1 hit contacts no system ordered after it, measured on the wire', async () => {
+    // 'aaa' answers at its own root, and it has a registered remote WORKTREE
+    // whose place is ordered after that root; 'zzz' sorts after 'aaa' entirely.
+    // BOTH systems are the recorder and BOTH write to ONE file, so "no contact
+    // for anything ordered after the answer" is a single empty transcript.
+    const box = await mkdtemp('cc-0292-box-');
     const rec = path.join(await mkdtemp('cc-0292-rec-'), 'frames.jsonl');
-    await addSystem({ id: 'later', label: 'later', launch: ['node', RECORDER, '--record', rec] });
+    await addSystem({ id: 'aaabox', label: 'aaabox', launch: ['node', RECORDER, '--record', rec] });
+    await addSystem({ id: 'zzzbox', label: 'zzzbox', launch: ['node', RECORDER, '--record', rec] });
 
-    const earlyTree = await seedRepo(path.join(early.root, 'aaa'));
-    assert.equal((await adoptProject('aaa', earlyTree, { system: early.id })).ok, true);
-    const laterTree = await seedRepo(path.join(early.root, 'zzz'));
-    assert.equal((await adoptProject('zzz', laterTree, { system: 'later' })).ok, true);
+    const hitTree = await seedRepo(path.join(box, 'aaa'));
+    assert.equal((await adoptProject('aaa', hitTree, { system: 'aaabox' })).ok, true);
+    const wt = await createWorktree('aaa', { name: 'wt1' });
+    const laterTree = await seedRepo(path.join(box, 'zzz'));
+    assert.equal((await adoptProject('zzz', laterTree, { system: 'zzzbox' })).ok, true);
+    // The worktree place ordered after 'aaa's root really EXISTS — otherwise
+    // arm (a) would be vacuous in the "there was nothing after it" sense.
+    assert.ok(await getWorktree('aaa', wt.worktreeName));
 
     // Seed the session directly at 'aaa's session root rather than through the
     // spawn route: a route call broadcasts, and plugin discovery resolves every
     // project off that broadcast, which would put frames on the wire this test
     // cannot attribute.
-    const imageRoot = sessionRootPath(early.id, 'aaa', null);
+    const imageRoot = sessionRootPath('aaabox', 'aaa', null);
     await fs.mkdir(imageRoot, { recursive: true });
     const cwd = await fs.realpath(imageRoot);
     const sid = 'eeeeeeee-1111-4111-8111-aaaaaaaaaaaa';
@@ -558,12 +598,21 @@ describe('a session on a project on a system', () => {
     // (a) the hit is at 'aaa's own root — the first place in probe order.
     assert.deepEqual(await findSessionLocation(sid), { project: 'aaa', worktreeName: null, cwd });
     assert.deepEqual(await wireFrames(rec), [],
-      'a pass-1 hit must not compose a place ordered after it, and composing one talks to its system');
+      'a pass-1 hit must contact no system ordered after it — not the hit project\'s own '
+      + 'worktree walk, and not a later project at all');
 
-    // (b) a MISS enumerates everything, so the recorder does see frames — which
-    // is what makes (a)'s empty transcript evidence rather than a dead fixture.
+    // (b) a MISS enumerates everything, so BOTH the hit project's worktree walk
+    // and the later project reach their boxes. Asserting each shows up SEPARATELY
+    // is what makes each half of (a)'s zero evidence rather than a dead fixture.
+    // The frame's `cwd` is the attributable field: `listWorktrees` runs git in
+    // the PROJECT's directory (the worktree paths come back in the response, so
+    // they are never in a request frame), which is exactly why the walk is
+    // attributable to the project whose tree it names.
     assert.equal(await findSessionLocation(UNKNOWN_ID), null);
-    assert.ok((await wireFrames(rec)).length >= 1,
-      'a full miss composes every place, so the later system IS contacted');
+    const cwds = new Set((await wireFrames(rec)).map(f => f.cwd));
+    assert.ok(cwds.has(hitTree),
+      `a full miss walks the HIT project's worktrees on its own box; cwds: ${[...cwds]}`);
+    assert.ok(cwds.has(laterTree),
+      `a full miss composes the LATER project too; cwds: ${[...cwds]}`);
   });
 });
