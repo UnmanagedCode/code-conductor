@@ -36,7 +36,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const { bootServer, api, freshProjectsRoot, rmrf } = await import('./helpers.mjs');
-const { bindRemoteSystem, seedRepo, git, wedgeLaunch } = await import('./remoteSystem.mjs');
+const { bindRemoteSystem, seedRepo, git, wedgeLaunch, timedOutCode1Launch } = await import('./remoteSystem.mjs');
 const { ProviderSystem } = await import('../src/systems/providerSystem.ts');
 const { createWorktree, listWorktrees, runGit } = await import('../src/worktrees.ts');
 const { adoptProject, findSessionLocation } = await import('../src/projects.ts');
@@ -94,6 +94,33 @@ test('runGit throws a tagged system refusal when git never answers', async () =>
       assert.equal(e.statusCode, 504, e.message);
       assert.equal(isSystemRefusal(e), true, 'the converters key on the tag, not the code');
       assert.match(e.message, /system 'wbox'/, e.message);
+      return true;
+    });
+  } finally { sys.dispose(); }
+});
+
+// PINS: the refusal fires on `timedOut`, the FLAG, not on the exit code 124
+// that today's producers happen to send with it.
+//
+// `timedOut` and `code` are independent fields on the `exit` frame — the flag
+// says the far side abandoned the command, the code is the command's own exit
+// status — and nothing in the protocol pairs them. Every producer in this tree
+// emits 124 alongside the flag (the reference provider, ProviderSystem's own
+// abandon timer, groupedCommand), so `timedOut:true ⇔ code === 124` holds by
+// COINCIDENCE OF PRODUCERS rather than by contract, and a guard written
+// `r.code === 124` is indistinguishable from the correct one against every
+// other fixture. This is the fixture that separates them.
+//
+// What the coincidence breaking would cost is this card's whole point: a
+// provider reporting `{timedOut:true, code:1}` would leave `runGit` returning
+// `{code:1}`, and its callers read a non-zero code as git having RUN and
+// answered "no" — the falsehood the throw exists to remove.
+test('the refusal fires on the timedOut FLAG, not on exit code 124', async () => {
+  const sys = new ProviderSystem({ id: 'wbox2', launch: { argv: timedOutCode1Launch() } });
+  try {
+    await assert.rejects(() => runGit(sys, '/tmp', ['rev-parse', '--git-dir']), (e) => {
+      assert.equal(e.code, 'GIT_TIMED_OUT', e.message);
+      assert.equal(isSystemRefusal(e), true, 'the converters key on the tag');
       return true;
     });
   } finally { sys.dispose(); }

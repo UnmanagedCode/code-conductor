@@ -18,6 +18,7 @@ import { addSystem } from '../src/appSettings.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const FLAKY_PROVIDER = path.join(__dirname, 'fixtures', 'flakyProvider.mjs');
+const FAKE_PROVIDER = path.join(__dirname, 'fake-provider.mjs');
 export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', 'referenceProvider.ts');
 
 // The FLAKY wrapper's launch argv: the same real provider behind a passthrough
@@ -53,7 +54,16 @@ export function referenceLaunch(...flags) {
 // swapped in: the handshake still succeeds, so registration and resolution both
 // pass the door and the stall happens inside the operation.
 export function wedgeLaunch() {
-  return ['node', path.join(__dirname, 'fake-provider.mjs'), '--mode', 'wedge'];
+  return ['node', FAKE_PROVIDER, '--mode', 'wedge'];
+}
+
+// A registered system whose provider answers an exec with `timedOut:true` and a
+// code that is NOT 124 — the one wire-legal shape that separates a cc-side
+// guard reading the FLAG from one reading the exit code. Every other producer
+// in the tree emits the 124 pair, so without this fixture the two readings are
+// indistinguishable by test.
+export function timedOutCode1Launch() {
+  return ['node', FAKE_PROVIDER, '--mode', 'timedout-code1'];
 }
 
 // The registered SYSTEM's id, which is not a remote's: one system serves many
