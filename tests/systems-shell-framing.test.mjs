@@ -470,6 +470,39 @@ for (const mode of MODES) {
     });
   });
 
+  // PINS D4's WORDING ON *BOTH* MESSAGE SITES, and it exists because the
+  // fallback one had no deliberate coverage at all.
+  //
+  // The two sites are different code paths that must not describe one outcome
+  // two ways: `#exchange`'s reset timer (persistent) and `#runOneShot`'s
+  // `r.timedOut` branch (fallback). The wedge test above reaches only the first
+  // — a fallback wedge kills bash outright and reports ESHELLGONE, so no
+  // fallback case in this loop had ever asserted an ETIMEDOUT message. Its only
+  // killer was tests/systems-shell-ceiling-env.test.mjs reading the number back
+  // out of the message to get at the ceiling, which is INCIDENTAL: that test
+  // would still pass with the old wedge-shaped wording restored. What would
+  // regress is a fallback-mode worker at the ceiling reading a message that
+  // describes an internal fault instead of a ceiling (card 2026-0305 §4 D4).
+  //
+  // A plain `sleep` reaches both, which a wedge does not: in persistent mode
+  // the reset timer fires, in the fallback mode `exec`'s own timeout does and
+  // the provider reports `timedOut`. 400ms against a 30s sleep, so neither side
+  // of the comparison can flake; measured at ~403ms and ~414ms.
+  test(`[${mode.name}] the ceiling names itself as a ceiling in the message a worker reads`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      await assert.rejects(() => sh.run('sleep 30'), (e) => {
+        assert.equal(e.code, 'ETIMEDOUT', `got ${e.code}: ${e.message}`);
+        // The number is THIS shell's resolved ceiling, so a literal fails here;
+        // and the phrasing is the ceiling's, not the wedge's.
+        assert.match(e.message, /still running after 400ms/, e.message);
+        assert.match(e.message, /per-command ceiling/, e.message);
+        return true;
+      });
+      // And the shell recovers, in both modes.
+      assert.equal((await sh.run('echo alive')).stdout, 'alive\n');
+    }, { commandTimeoutMs: 400 });
+  });
+
   // PINS card 2026-0305 §4 D1 AT A REAL SHELL: the caller's `timeoutMs` bounds
   // how long the call WAITS for its turn, and no longer how long the command may
   // RUN. Before this card the two were one number, so a command that outlived

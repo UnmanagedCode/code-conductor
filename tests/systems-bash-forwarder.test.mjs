@@ -69,6 +69,17 @@ test('--timeout becomes timeoutMs on the wire, and its absence sends no key', as
   assert.equal(without.ran.code, 0, without.ran.stderr);
   assert.deepEqual(without.body, { command: 'echo hi' });
   assert.equal('timeoutMs' in without.body, false);
+
+  // THIS SCRIPT'S OWN GUARD, not the rewrite's: `timeoutMs && Number.isFinite`
+  // has a truthiness half, so a `--timeout 0` on the argv must leave the key
+  // OFF the body rather than send `{timeoutMs: 0}`. src/systems/toolRedirect.ts
+  // never emits `--timeout 0` and src/routes.ts would re-drop it if it arrived,
+  // so this is end-to-end inert today — it is asserted because the argv→body
+  // mapping is the whole subject of this file, and dropping the truthiness half
+  // is otherwise invisible to the entire suite.
+  const zero = await forward(['--timeout', '0', '--', 'echo hi']);
+  assert.equal(zero.ran.code, 0, zero.ran.stderr);
+  assert.deepEqual(zero.body, { command: 'echo hi' }, 'a zero timeout sends no key at all');
 });
 
 // PINS: `--agent` rides the same way, and the MAIN agent's invocation carries

@@ -87,20 +87,28 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
 // all: after that card the timeout no longer changes any run outcome, so the
 // argv is the only place the omit/emit decision is observable.
 //
-// THE FIVE OMITTING INPUTS SPLIT BY WHICH HALF OF THE GUARD CATCHES THEM, and
-// both halves are load-bearing: two are unusable to `Number()` and caught by
-// `Number.isFinite` (absent and prose, both NaN), and three are perfectly
-// finite and caught by `> 0` (a literal `0`; `null`, which `Number()` also
-// turns into `0`; and `-5`, which stays `-5`). Without `isFinite` the first two
-// reach the argv as `--timeout NaN`; without `> 0` the other three reach it as
-// `--timeout 0` / `--timeout -5`.
+// BOTH HALVES OF `Number.isFinite(timeout) && timeout > 0` ARE LOAD-BEARING,
+// and each half's UNIQUE input is named because they are wildly uneven —
+// measured, not reasoned:
 //
-// AND THE ARGV IS WHERE THAT IS OBSERVABLE, which is this test's reason to
-// exist: two downstream layers independently re-drop these, at different
-// points — bashForwarder.ts's `timeoutMs && Number.isFinite(timeoutMs)` drops
-// NaN and 0 but SENDS `-5` on the body, and routes.ts's
-// `Number.isFinite(timeoutMs) && timeoutMs > 0` drops all three. So the far
-// side's behaviour is identical whether or not the guard here exists.
+//   `> 0` alone would catch      absent, prose, 0, -5, null, -Infinity
+//   `Number.isFinite` alone      absent, prose, ±Infinity
+//   unique to `> 0`              0, -5, null   (all finite, so isFinite passes them)
+//   unique to `Number.isFinite`  +Infinity     — AND NOTHING ELSE
+//
+// So `Number.isFinite` is NOT what stops the NaN inputs: `NaN > 0` is `false`,
+// and `> 0` catches absent and prose on its own. `+Infinity` is the whole of
+// what `isFinite` uniquely buys — without it `{timeout: 'Infinity'}` reaches
+// the argv as `--timeout Infinity`, which is why that case is in the loop
+// below. An earlier revision of this comment claimed `isFinite` was what
+// stopped the NaN cases; a mutant deleting it survived and proved otherwise.
+//
+// AND THE ARGV IS WHERE ALL OF THIS IS OBSERVABLE, which is this test's reason
+// to exist: two downstream layers independently re-drop these values, so the
+// far side behaves identically with or without the guard here. Measured —
+// bashForwarder.ts's `timeoutMs && Number.isFinite(timeoutMs)` drops NaN, 0 and
+// Infinity but SENDS `-5` on the body, and routes.ts's
+// `Number.isFinite(timeoutMs) && timeoutMs > 0` drops all four.
 test('a positive tool timeout rides out as --timeout, and nothing else does', async () => {
   const argvFor = async (input) =>
     (await pre('Bash', { command: 'echo hi', ...input })).updatedInput.command;
@@ -112,7 +120,11 @@ test('a positive tool timeout rides out as --timeout, and nothing else does', as
   // A numeric STRING is what a JSON payload can legitimately carry.
   assert.match(await argvFor({ timeout: '2000' }), /--timeout 2000 /);
 
-  for (const input of [{}, { timeout: 0 }, { timeout: -5 }, { timeout: 'soon' }, { timeout: null }]) {
+  // `'Infinity'` is the ONE input only `Number.isFinite` catches, and a JSON
+  // string is a shape a model can emit. Without it nothing in the suite
+  // distinguishes the real guard from `timeout > 0`.
+  for (const input of [{}, { timeout: 0 }, { timeout: -5 }, { timeout: 'soon' },
+                       { timeout: null }, { timeout: 'Infinity' }]) {
     assert.doesNotMatch(await argvFor(input), /--timeout/,
       `${JSON.stringify(input)} must not put a timeout on the wire`);
   }
