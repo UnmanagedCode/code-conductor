@@ -19,12 +19,12 @@
 //   double-exit   says hello, answers an exec with TWO exit frames
 //   timedout-code1
 //                 says hello, answers an exec with `timedOut:true` and a
-//                 code that is NOT 124. Wire-legal: `timedOut` is the flag
-//                 and `code` is the command's exit status, and nothing in
-//                 the protocol pairs them — every other producer happens to
-//                 emit 124 alongside it, which is what makes this the one
-//                 shape that tells a cc-side guard reading the FLAG apart
-//                 from one reading the CODE.
+//                 code that is NOT 124 — a timeout the PROVIDER reports,
+//                 rather than one cc's own abandon timer produces. The frame
+//                 is wire-legal, but cc does not pass the pair through:
+//                 ExecOutputCollector returns `code: timedOut ? 124 : …`, so
+//                 a consumer sees 124 either way and this mode cannot be used
+//                 to tell a flag-keyed cc-side guard from a code-keyed one.
 //   early-frame   sends an id-carrying frame BEFORE its hello
 //   double-hello  answers the handshake twice IN ONE WRITE, so the violation
 //                 lands between the handshake resolving and cc recording it

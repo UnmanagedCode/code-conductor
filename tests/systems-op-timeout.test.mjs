@@ -99,23 +99,30 @@ test('runGit throws a tagged system refusal when git never answers', async () =>
   } finally { sys.dispose(); }
 });
 
-// PINS: the refusal fires on `timedOut`, the FLAG, not on the exit code 124
-// that today's producers happen to send with it.
+// PINS: a timeout the PROVIDER reports becomes a `runGit` refusal too — the
+// second producer path into the same guard, and the only one T3 does not cover.
+// T3 starts from cc's own abandon timer; this starts from an `exit` frame the
+// far side sent with `timedOut` set, and runs it through `#exec` → the
+// collector → `runGit`. No other single test asserts that composite:
+// systems-protocol-conformance and systems-provider-parity both stop at the
+// ExecResult (`r.timedOut`, `r.code`) and neither calls `runGit`.
 //
-// `timedOut` and `code` are independent fields on the `exit` frame — the flag
-// says the far side abandoned the command, the code is the command's own exit
-// status — and nothing in the protocol pairs them. Every producer in this tree
-// emits 124 alongside the flag (the reference provider, ProviderSystem's own
-// abandon timer, groupedCommand), so `timedOut:true ⇔ code === 124` holds by
-// COINCIDENCE OF PRODUCERS rather than by contract, and a guard written
-// `r.code === 124` is indistinguishable from the correct one against every
-// other fixture. This is the fixture that separates them.
+// AND IT ADDS NO MUTATION-DETECTABLE COVERAGE, which is the more important half
+// of this header. `ExecOutputCollector.result` returns
+// `code: timedOut ? 124 : …` (src/systems/execCollector.ts), and BOTH
+// implementations of `exec` route through that collector — so the flag and the
+// code are FUSED one layer BELOW this guard, and `{timedOut:true, code≠124}`
+// can never reach it. Measured: against this fixture, which sends `code:1`,
+// `sys.exec` resolves `{code:124, timedOut:true}`.
 //
-// What the coincidence breaking would cost is this card's whole point: a
-// provider reporting `{timedOut:true, code:1}` would leave `runGit` returning
-// `{code:1}`, and its callers read a non-zero code as git having RUN and
-// answered "no" — the falsehood the throw exists to remove.
-test('the refusal fires on the timedOut FLAG, not on exit code 124', async () => {
+// So `if (r.timedOut)` and `if (r.code === 124)` are extensionally identical at
+// `runGit`, and this test CANNOT tell them apart — do not read it as
+// load-bearing for that distinction. The pairing is cc's own contract, enforced
+// by the collector, not a coincidence of what the reference provider,
+// ProviderSystem's abandon timer and groupedCommand happen to emit. The
+// mutation prover confirmed the code-keyed mutant survives the whole suite; it
+// is waived as equivalent, not uncovered.
+test('a timeout the provider reports becomes a runGit refusal, not just cc\'s own', async () => {
   const sys = new ProviderSystem({ id: 'wbox2', launch: { argv: timedOutCode1Launch() } });
   try {
     await assert.rejects(() => runGit(sys, '/tmp', ['rev-parse', '--git-dir']), (e) => {

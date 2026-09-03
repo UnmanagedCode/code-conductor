@@ -57,11 +57,15 @@ export function wedgeLaunch() {
   return ['node', FAKE_PROVIDER, '--mode', 'wedge'];
 }
 
-// A registered system whose provider answers an exec with `timedOut:true` and a
-// code that is NOT 124 — the one wire-legal shape that separates a cc-side
-// guard reading the FLAG from one reading the exit code. Every other producer
-// in the tree emits the 124 pair, so without this fixture the two readings are
-// indistinguishable by test.
+// A provider that answers an exec with `timedOut:true` and a code that is NOT
+// 124 — the PROVIDER-REPORTED timeout, as opposed to cc's own abandon timer.
+// That is the path this serves.
+//
+// It does NOT separate a cc-side guard reading the flag from one reading the
+// code: ExecOutputCollector returns `code: timedOut ? 124 : …`, so the pair is
+// fused before any consumer sees it (measured — this fixture sends `code:1` and
+// `exec` resolves `code:124`). See the header on its test in
+// tests/systems-op-timeout.test.mjs.
 export function timedOutCode1Launch() {
   return ['node', FAKE_PROVIDER, '--mode', 'timedout-code1'];
 }
