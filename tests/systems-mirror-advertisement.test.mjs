@@ -348,7 +348,11 @@ describe('the mirror advertisement', () => {
   // NOT CLAIMING that no two candidates ever coincide — `/a/./b/proj` is the
   // arm where two do. NOT CLAIMING that two DIFFERENT image roots cannot
   // collide: that is a property of `sessionRootPath`'s key, not of this set,
-  // and the scan is confined to one image root.
+  // and the scan is confined to one image root. That half is only PARTLY
+  // answered elsewhere: `sessionRootKeyCollision` refuses a colliding KEY at
+  // creation (card 2026-0293 §10), but an offset contributes characters the key
+  // comparison never sees, so two different image roots CAN still name one
+  // transcript directory. It stays an OPEN non-claim (card 2026-0304).
   test('the offsets of a normal-form systemPath never name one transcript directory', () => {
     for (const systemPath of GEOMETRIES) {
       const offs = mirrorOffsets(systemPath);
