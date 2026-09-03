@@ -15,24 +15,40 @@
 // await, and `remove()`/`shutdown()` hit the same guard. So a test that waits for
 // settle as a precondition asserts the end state and never reaches the await.
 //
-//   LATCH PINS — entered INSIDE the race window: 'error' delivered (the launch is
-//   doomed) but the terminal 'close' NOT yet, so `proc` is still assigned, the
-//   early-out cannot fire, and the await is the only way out. This is the state
-//   the card measured.
+// The latch has TWO ARMS, and NO single fake exercises both in isolation, so the
+// arm each test reaches is recorded below: removing one arm is invisible to every
+// test that can only reach the other. Measured launcher inventory —
+// FailSpawnLauncher below emits close/error only, ExitOnlyLauncher emits exit
+// only, a real failed spawn emits close only, and tests/inProcessLauncher.mjs
+// emits exit THEN close (so it isolates neither).
+//
+//   LATCH PINS — they reach the `await this._procEnded` and would hang or
+//   mis-count without it. T3/T4/T6 get there by being entered INSIDE the race
+//   window ('error' delivered so the launch is doomed, terminal event not yet, so
+//   `proc` is still assigned and the early-out cannot fire — the state the card
+//   measured). T5 and T12 get there on the HEALTHY path, where `proc` is
+//   legitimately live and the await is unavoidable either way; they earn their
+//   place by pinning the one-shot flag and the arm, not by window entry.
 //     T3  InstanceManager.shutdown() returns          ← the card's TITLE behaviour
+//         · race window · CLOSE arm
 //     T4  kill() resolves off 'close' alone, leaving no ref'd timer
+//         · race window · CLOSE arm
 //     T6  InstanceManager.remove() returns            ← the MCP kill_instance body
-//     T5  the normal path: one healthy kill runs _handleExit EXACTLY once though
-//         both 'exit' and 'close' fire, and leaves no ref'd timer. Asserted ONE
-//         MACROTASK after kill() resolves — kill()'s continuation is a microtask
-//         off 'exit', while the fake child's 'close' is a later setImmediate, so
-//         asserting immediately would count only the first terminal event and a
-//         double-run of _handleExit would go unseen.
+//         · race window · CLOSE arm
+//     T5  one healthy kill runs _handleExit EXACTLY once though BOTH 'exit' and
+//         'close' fire, and leaves no ref'd timer. Asserted ONE MACROTASK after
+//         kill() resolves — kill()'s continuation is a microtask off 'exit', while
+//         the fake child's 'close' is a later setImmediate, so asserting
+//         immediately would count only the first terminal event and a double-run
+//         of _handleExit would go unseen.       · healthy · BOTH arms
+//     T12 kill() on a healthy child whose terminal event is 'exit' with NO 'close'
+//         (the measured detached-grandchild-holds-the-pipes shape) resolves, and
+//         _handleExit ran once.                 · healthy · EXIT arm ALONE
 //
 //   EARLY-OUT / INTEGRATION CHECKS — they pin the settled end state and its
 //   consequences, not the await. Each is red on the base tree because `proc` never
 //   becomes null there, i.e. they fail at the settle barrier rather than at the
-//   operation each is named for.
+//   operation each is named for. All reach the latch through its CLOSE arm.
 //     T1  a failed spawn ends with proc null, pid null, status crashed, and the
 //         ring carrying spawn_error THEN exit
 //     T2  kill() on an ALREADY-settled failure resolves — the early-out itself
@@ -122,6 +138,47 @@ class FailSpawnLauncher {
         new Error('spawn /nonexistent/definitely-not-claude ENOENT'), { code: 'ENOENT' }));
       if (!defer) child.deliverClose();
     });
+    this.children.push(child);
+    return child;
+  }
+  get last() { return this.children[this.children.length - 1]; }
+}
+
+// The MIRROR IMAGE of FailSpawnLauncher: a child that is HEALTHY at spawn and
+// whose terminal event is 'exit' with NO 'close', ever. That is the measured
+// shape of a child killed while a DETACHED GRANDCHILD still holds its
+// stdout/stderr pipes — `exit(null,'SIGKILL')` at +417 ms and no 'close' in the
+// following 2.6 s — so stdout/stderr here are never ended and 'close' can never
+// fire, which is exactly what makes the pair of fakes complementary: that one
+// reaches the latch's 'close' arm only, this one its 'exit' arm only. Without
+// both, removing either arm is invisible to this whole file.
+//
+// Not a real detached grandchild on purpose: the injected child pins the same
+// branch deterministically, spawns no process, and leaves nothing for the
+// suite's leaked-process sweep to chase.
+class ExitOnlyLauncher {
+  constructor() { this.children = []; }
+  launch() {
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let exited = false;
+    // Async, mirroring a real ChildProcess: never synchronous inside launch().
+    const finish = (code, signal) => {
+      if (exited) return;
+      exited = true;
+      setImmediate(() => child.emit('exit', code, signal));
+    };
+    child.kill = (signal = 'SIGTERM') => {
+      if (signal === 'SIGKILL') finish(null, 'SIGKILL');
+      else finish(0, null);
+      return true;
+    };
+    // stdin EOF is how kill() asks for a graceful exit; a real CLI answers it by
+    // exiting 0. The pipes stay open regardless — the grandchild holds them.
+    child.stdin.on('finish', () => finish(0, null));
     this.children.push(child);
     return child;
   }
@@ -316,6 +373,50 @@ describe('a healthy instance killed normally', () => {
     // _handleExit runs (two _redirect.close()s, two temp archives).
     assert.equal(sysOf(inst, 'exit').length, 1, 'exactly one terminal exit');
     assert.equal(inst.proc, null);
+    assert.equal(refdTimers() - before, 0, 'no ref\'d timer outlived the settled kill');
+  });
+});
+
+// ── the latch's 'exit' arm, in isolation ─────────────────────────────────────
+// Every OTHER test in this file reaches the latch through 'close' — the
+// spawn-failure fake emits close/error only, and so does a real failed spawn —
+// while T5's in-process fake emits both and so cannot isolate either. Without
+// this block, deleting `launched.on('exit', …)` is invisible to the whole file,
+// and the scenario that arm uniquely serves (a healthy child whose detached
+// grandchild holds the pipes: 'exit' and never 'close') has no coverage at all.
+// Dropping it would reintroduce this card's bug in a different shape.
+describe('a healthy child whose terminal event is exit with NO close', () => {
+  let ctx, instances, launcher, home;
+
+  before(async () => {
+    launcher = new ExitOnlyLauncher();
+    ctx = await bootServer({ scenarioPath: SCENARIO, claudeLauncher: launcher });
+    ({ instances } = ctx);
+  });
+  after(async () => { await ctx.close(); });
+  beforeEach(async () => {
+    const r = await freshProjectsRoot();
+    home = r.home;
+    ctx.projectsRoot = r.projectsRoot;
+    ctx.claudeProjectsRoot = r.claudeProjectsRoot;
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+  });
+  afterEach(async () => { await instances.shutdown(); await rmrf(home); });
+
+  test('T12 kill() resolves off exit alone and _handleExit ran once', async () => {
+    const inst = await instances.create({ project: 'demo', mode: 'bypassPermissions' });
+    await within(waitFor(() => inst.status === 'idle'), 5000, 'T12 idle');
+    // Self-check on the fixture: if this fake ever starts emitting 'close', the
+    // isolation is gone and this test silently stops covering the 'exit' arm.
+    let sawClose = false;
+    launcher.last.on('close', () => { sawClose = true; });
+    const before = refdTimers();
+    // See T2 on why the grace is above LEAK_GRACE_MS (15 s).
+    await within(inst.kill({ graceMs: 20_000 }), 5000, 'T12 kill');
+    await new Promise((r) => setImmediate(r)); // see T5 on why setImmediate
+    assert.equal(sawClose, false, 'this fake must reach the latch by \'exit\' ALONE');
+    assert.equal(inst.proc, null, 'the exit routed to _handleExit');
+    assert.equal(sysOf(inst, 'exit').length, 1, 'exactly one terminal exit');
     assert.equal(refdTimers() - before, 0, 'no ref\'d timer outlived the settled kill');
   });
 });
