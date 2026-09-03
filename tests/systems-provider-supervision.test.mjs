@@ -443,7 +443,15 @@ test('a payload that is not valid base64 fails the operation instead of truncati
   }
 });
 
-// ── No operation is unbounded ────────────────────────────────────────
+// ── No `exec` operation is unbounded ─────────────────────────────────
+//
+// SCOPED TO `exec`/`readFile`/`writeFile`, which is what this file exercises.
+// The persistent shell's `exec` is the one deliberate exception — `openStream`
+// arms no cc-side deadline and sends no `timeoutMs`, because the shell it
+// carries is meant to outlive any one command. What bounds THAT path is
+// `ProviderShell`'s per-command ceiling, tested in
+// tests/systems-shell-framing.test.mjs. So the header is not a claim about a
+// path this file never drives (card 2026-0305 §6).
 
 test('every operation a mute provider accepts is bounded, not just the ones a caller timed', async () => {
   // A provider that completes the handshake and then answers nothing. Before
