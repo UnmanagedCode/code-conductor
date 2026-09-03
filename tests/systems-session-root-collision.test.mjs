@@ -85,9 +85,18 @@ describe('session-root key collisions are refused at creation', () => {
     }));
     assert.ok(r, 'createProject must refuse');
     assert.equal(r.status, 409);
-    assert.match(r.text, /p--p_worktree_w/, 'names the candidate');
-    assert.match(r.text, /p_worktree_w/, 'names the colliding worktree');
-    assert.match(r.text, /'p'/, 'names the colliding worktree\'s project');
+    // THE MACHINE-READABLE MARKER, not just the status: 409 is what a duplicate
+    // name and a bad path also answer, so the code is the only part of this
+    // refusal a caller can branch on. T2 pins the same marker on the adopt
+    // surface.
+    assert.equal(r.thrown.code, 'SESSION_ROOT_COLLISION');
+    // BOTH MEMBERS OF THE PAIR, each anchored to its own slot in the sentence.
+    // A bare /p--p_worktree_w/ is satisfied by the HELD path alone, so the
+    // candidate half has to be anchored to `cannot register <subject>` or it is
+    // not pinned at all — the card's acceptance is that the refusal names the
+    // pair, not one end of it.
+    assert.match(r.text, /cannot register project 'p--p_worktree_w' on system/, 'names the CANDIDATE');
+    assert.match(r.text, /belongs to worktree 'p_worktree_w' of project 'p'/, 'names the HOLDER');
     // THE BYTE-EQUAL MESSAGE SHAPE, pinned distinctly from the encode-only one
     // in T4: this pair really does land in ONE session root, so the flat harm
     // sentence is the true one here.
@@ -138,7 +147,16 @@ describe('session-root key collisions are refused at creation', () => {
     const r = await refusal(() => createWorktree('r', { name: 'w' }));
     assert.ok(r, 'createWorktree must refuse');
     assert.equal(r.status, 409);
-    assert.match(r.text, /r--r_worktree_w/, 'names the colliding project');
+    // THE MARKER ON THIS SURFACE. Load-bearing beyond the usual: T9's
+    // duplicate-vs-collision discriminator is `code === undefined` on the
+    // BRANCH pre-check's throw, which only discriminates if the collision
+    // refusal actually carries a code. This is the half that says it does.
+    assert.equal(r.thrown.code, 'SESSION_ROOT_COLLISION');
+    // Both members again, and the candidate half via this surface's OWN subject
+    // expression — a different one from the project surface's, so pinning it
+    // there does not pin it here.
+    assert.match(r.text, /cannot register worktree 'w' of project 'r' on system/, 'names the CANDIDATE');
+    assert.match(r.text, /belongs to project 'r--r_worktree_w'/, 'names the HOLDER');
 
     // No git state touched: no branch, no worktree dir, no registration.
     const branches = await git(onSystem('r'), 'branch', '--list', 'code-conductor/w');
@@ -326,8 +344,17 @@ describe('session-root key collisions are refused at creation', () => {
   // DOES share a transcript directory today and is deliberately left unfixed
   // (card 2026-0293 §G-3; the local half is card 2026-0303).
   //
-  // GREEN ON ARRIVAL by construction. Its job is to make a future widening of
-  // the guard to local places fail loudly rather than pass unnoticed.
+  // GREEN ON ARRIVAL, and — measured, not assumed — UNPROVABLE BY MUTATION
+  // against this architecture: no mutant of the guard can put a local place in
+  // front of the predicate, because a local project is given no store record
+  // (writeProjectRecord runs only for a placement) and the enumeration walks the
+  // store. So this does NOT "fail loudly on any widening to local places"; a
+  // widening reachable by mutating this diff does not exist.
+  //
+  // What it is worth is still real, and narrower: it pins today's behaviour, and
+  // it is a canary for FUTURE code that invents local registrations — the one
+  // change that would make the local half reachable — which is the boundary card
+  // 2026-0303 owns. Do not upgrade this comment to a completeness claim.
   test('T7 — CONTROL: the guard does not run for local places', async () => {
     const a = await createProject('my_app');
     const b = await createProject('my-app');
