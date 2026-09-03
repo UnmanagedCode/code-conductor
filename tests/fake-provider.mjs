@@ -17,6 +17,14 @@
 //   crash-once    says hello; exits on the FIRST launch's first request, behaves on later ones
 //   wedge         says hello, accepts every request, answers nothing
 //   double-exit   says hello, answers an exec with TWO exit frames
+//   timedout-code1
+//                 says hello, answers an exec with `timedOut:true` and a
+//                 code that is NOT 124 — a timeout the PROVIDER reports,
+//                 rather than one cc's own abandon timer produces. The frame
+//                 is wire-legal, but cc does not pass the pair through:
+//                 ExecOutputCollector returns `code: timedOut ? 124 : …`, so
+//                 a consumer sees 124 either way and this mode cannot be used
+//                 to tell a flag-keyed cc-side guard from a code-keyed one.
 //   early-frame   sends an id-carrying frame BEFORE its hello
 //   double-hello  answers the handshake twice IN ONE WRITE, so the violation
 //                 lands between the handshake resolving and cc recording it
@@ -113,6 +121,12 @@ function handle(f) {
         ? { type: 'stdout', id: f.id, seq: 0, dataB64: 'SEVMTE8=!!corrupted' }
         : { type: 'stdout', id: f.id, seq: 0 });
       send({ type: 'exit', id: f.id, code: 0, signal: null, timedOut: false });
+      return;
+    }
+    if (mode === 'timedout-code1') {
+      // Nothing on stdout: a command the far side abandoned mid-flight has no
+      // answer to hand back, which is the whole reason its code is not data.
+      send({ type: 'exit', id: f.id, code: 1, signal: null, timedOut: true });
       return;
     }
     send({ type: 'stdout', id: f.id, seq: 0, dataB64: Buffer.from(`fake launch ${launch}\n`).toString('base64') });

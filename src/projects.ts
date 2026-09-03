@@ -1672,9 +1672,9 @@ interface SessionPlace {
 //   - A DOWN box SURFACES a worktree place a HEALTHY box PRUNES. The box's git
 //     answer is data this lookup consumes, and losing it changes the answer
 //     rather than only costing a swallowed failure.
-//   - A WEDGED box can stall this lookup up to the provider operation timeout:
-//     `runGit` passes no `timeoutMs` and the registry constructs its
-//     ProviderSystem with no `defaultOpTimeoutMs`.
+//   - A WEDGED box can stall this lookup up to DEFAULT_OP_TIMEOUT_MS
+//     (src/systems/providerSystem.ts) — one exec per project on that box,
+//     measured (card 2026-0299 §2). Bounded, not removed.
 // The lazy composition below is what keeps both off a lookup that a nearer
 // place already answers.
 export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> {

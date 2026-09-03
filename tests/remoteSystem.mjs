@@ -18,6 +18,7 @@ import { addSystem } from '../src/appSettings.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const FLAKY_PROVIDER = path.join(__dirname, 'fixtures', 'flakyProvider.mjs');
+const FAKE_PROVIDER = path.join(__dirname, 'fake-provider.mjs');
 export const REFERENCE_PROVIDER = path.join(__dirname, '..', 'src', 'systems', 'referenceProvider.ts');
 
 // The FLAKY wrapper's launch argv: the same real provider behind a passthrough
@@ -40,6 +41,33 @@ export function flakyLaunch({ budget, dieOn, dieStderr, errorFrame, errorCode, f
 
 export function referenceLaunch(...flags) {
   return ['node', REFERENCE_PROVIDER, ...flags];
+}
+
+// A registered system whose provider completes the handshake and then answers
+// NOTHING — accepted operations, no terminating frame, no death, no protocol
+// violation. Nothing in ProviderConnection's supervision fires on it, so the
+// only thing that settles an operation is the ceiling.
+//
+// `fake-provider.mjs --mode wedge` already IS that behaviour, so this wraps it
+// rather than adding a second fixture. Swap a healthy row to it with
+// `updateSystem(id, { launch: wedgeLaunch() })` exactly as `flakyLaunch` is
+// swapped in: the handshake still succeeds, so registration and resolution both
+// pass the door and the stall happens inside the operation.
+export function wedgeLaunch() {
+  return ['node', FAKE_PROVIDER, '--mode', 'wedge'];
+}
+
+// A provider that answers an exec with `timedOut:true` and a code that is NOT
+// 124 — the PROVIDER-REPORTED timeout, as opposed to cc's own abandon timer.
+// That is the path this serves.
+//
+// It does NOT separate a cc-side guard reading the flag from one reading the
+// code: ExecOutputCollector returns `code: timedOut ? 124 : …`, so the pair is
+// fused before any consumer sees it (measured — this fixture sends `code:1` and
+// `exec` resolves `code:124`). See the header on its test in
+// tests/systems-op-timeout.test.mjs.
+export function timedOutCode1Launch() {
+  return ['node', FAKE_PROVIDER, '--mode', 'timedout-code1'];
 }
 
 // The registered SYSTEM's id, which is not a remote's: one system serves many
