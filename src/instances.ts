@@ -580,6 +580,11 @@ export class Instance extends EventEmitter implements InstanceLike {
   lastResponseAt: number | null;
   createdAt: number;
   proc: LaunchedProc | null;
+  // Resolved by the CURRENT launch's terminal latch — 'exit' OR 'close',
+  // whichever arrives first. kill() awaits THIS, never a raw 'exit': a child
+  // whose spawn FAILED emits 'error' then 'close' and never exits at all
+  // (card 2026-0286 §1). Non-nullable so kill() needs no fallback branch.
+  _procEnded: Promise<void>;
   parser: Parser;
   ring: EventLog;
   _userEchoCount: number;
@@ -743,6 +748,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // re-stamp in lockstep on every unrelated status broadcast (see mergeLive).
     this.createdAt = Date.now();
     this.proc = null;
+    this._procEnded = Promise.resolve();
     this.parser = new Parser();
     this.ring = new EventLog();
     // Absolute ordinal of the next outer user_echo, stamped onto the event
@@ -2212,7 +2218,27 @@ export class Instance extends EventEmitter implements InstanceLike {
       this._emitUi({ kind: 'system', subtype: 'stderr', data: { line } });
     });
 
-    this.proc.on('exit', (code, signal) => this._handleExit(code as number | null, signal as NodeJS.Signals | null));
+    // ONE terminal path per launch, latched on 'exit' OR 'close'. A failed spawn
+    // emits 'error' then 'close' and NEVER 'exit', so keying only on 'exit'
+    // strands the instance with a live `proc` whose pid is undefined — and
+    // `proc != null` is this codebase's liveness oracle (liveForSession /
+    // isSessionLive), so every reaper then reads the corpse as alive
+    // (card 2026-0286 §2). The latch is one-shot: a healthy child emits both
+    // events, and _handleExit must run exactly once.
+    const launched = this.proc;
+    let ended = false;
+    let resolveEnded!: () => void;
+    this._procEnded = new Promise<void>((r) => { resolveEnded = r; });
+    const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
+      if (ended) return;
+      ended = true;
+      resolveEnded();
+      this._handleExit(code, signal);
+    };
+    launched.on('exit', (code, signal) => finish(code as number | null, signal as NodeJS.Signals | null));
+    launched.on('close', (code, signal) => finish(code as number | null, signal as NodeJS.Signals | null));
+    // NOT part of the latch: 'error' also fires POST-spawn (a failed kill), so it
+    // is not a terminal signal and must never null `proc` — only the latch does.
     this.proc.on('error', (err) => {
       this._emitUi({ kind: 'system', subtype: 'spawn_error', data: { message: (err as Error).message } });
       this._setStatus('crashed');
@@ -2621,10 +2647,12 @@ export class Instance extends EventEmitter implements InstanceLike {
     const crashed = !(code === 0 && !signal);
     this._emitUi({ kind: 'system', subtype: 'exit', data: { code, signal } });
     // A SUBSTITUTION-backend subprocess that crashed on its own (not a commanded
-    // kill) is the silent-launch-failure case: the wrapper command died — binary
-    // missing, server gone, cloud-auth 401, etc. Surface it distinctly from the
-    // bare `exit`, carrying the captured stderr so the reason is visible. Plain
-    // claude exits and clean/commanded wrapper exits are untouched.
+    // kill) is the silent-launch-failure case: the wrapper command died — or
+    // NEVER STARTED, since the terminal latch also routes a failed spawn here
+    // (card 2026-0286 §2), in which case `stderr` is null and the reason rides on
+    // the preceding `spawn_error`. Surface it distinctly from the bare `exit`,
+    // carrying the captured stderr where there is any. Plain claude exits and
+    // clean/commanded wrapper exits are untouched.
     if (crashed && this.backend !== CLAUDE_BACKEND_ID
         && !this._killing && !this._suppressTempDelete) {
       this._emitUi({
@@ -2662,6 +2690,17 @@ export class Instance extends EventEmitter implements InstanceLike {
   // still cleaned up (it is ephemeral; only the main .jsonl matters for
   // restore). Title and conducted markers are kept — they are still
   // meaningful on an archived session.
+  //
+  // Reached by a session whose spawn FAILED as well as by a killed one
+  // (card 2026-0286 §1): there is no jsonl, so this marks a sessionId no file
+  // backs. Inert only because every reader stat-gates the file first (see
+  // src/archivedSessions.ts's header + src/projects.ts's session-row build); a
+  // reader that enumerates the set without that stat would surface a phantom
+  // row. Not a NEW state: markTemp fires at spawn time, so before the terminal
+  // latch a stranded failure kept its TEMP marker until the next graceful
+  // restart, whose orphan sweep (scheduleRestart → orphanedTempIdsSync, plus
+  // shutdownTempSync) does this same unmarkTemp+markArchived pair. The latch
+  // changes WHEN that archived marker appears, not WHETHER.
   async _archiveTempSession(): Promise<void> {
     if (!this.backingSessionId) return;
     await fsp.rm(subAgentDirPath(this.cwd, this.backingSessionId), { recursive: true, force: true });
@@ -3471,18 +3510,21 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._killing = true;
     try { this.proc.stdin?.end(); } catch { /* ignore */ }
     const proc = this.proc;
-    await new Promise<void>((resolve) => {
-      let done = false;
-      const onExit = () => { if (!done) { done = true; resolve(); } };
-      proc.once('exit', onExit);
-      const t1 = setTimeout(() => {
-        try { proc.kill('SIGTERM'); } catch { /* ignore */ }
-      }, graceMs);
-      const t2 = setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
-      }, graceMs + 3000);
-      proc.once('exit', () => { clearTimeout(t1); clearTimeout(t2); });
-    });
+    // The launch's terminal latch, NOT a fresh proc.once('exit'): a child whose
+    // spawn failed never emits 'exit', and its 'close' has usually already been
+    // delivered by the time anything gets around to reaping it — a listener
+    // registered here would never fire (card 2026-0286 §4).
+    const ended = this._procEnded;
+    const t1 = setTimeout(() => {
+      try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+    }, graceMs);
+    const t2 = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+    }, graceMs + 3000);
+    // `finally`, NOT a second listener: the clear must not key on any event, or a
+    // kill that settles via 'close' leaves a live SIGKILL timer holding the loop
+    // open in the very path whose job is to let the process go.
+    try { await ended; } finally { clearTimeout(t1); clearTimeout(t2); }
   }
 
   // Rewind this session to before the Nth user prompt (0-indexed). Kills
