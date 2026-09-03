@@ -155,10 +155,11 @@ export function sessionRootPath(systemId: string, project: string, worktree?: st
 // worse than one that is merely a proxy. The byte-equal half is unconditional
 // regardless of any offset.
 //
-// NO SELF-EXCLUSION IS NEEDED, at this call site or any other, because
-// encodeCwd is LENGTH-PRESERVING and so can only merge keys of equal length: a
-// worktree's candidate key `p--p_worktree_w` can never match its own project's
-// key `p`.
+// THE CANDIDATE'S OWN PROJECT needs no exclusion, because encodeCwd is
+// LENGTH-PRESERVING and so can only merge keys of equal length: a worktree's
+// candidate key `p--p_worktree_w` can never match its own project's key `p`.
+// The candidate's own IDENTITY is a different row and IS excluded — see the
+// loop below.
 //
 // A systemId containing `_` would collide with its `-` twin one level up, in
 // sessionRootsDir — UNREACHABLE, and deliberately unguarded: SLUG_RE
@@ -197,7 +198,7 @@ export async function sessionRootKeyCollision(
       // it names the two states a user can be in ("still registered" / "deleted
       // and left the branch behind"), where this one would only say "pick
       // another name". Distinct from the self-collision the length argument
-      // below rules out: that one is a candidate against its own PROJECT's key,
+      // above rules out: that one is a candidate against its own PROJECT's key,
       // which cannot match; this one is a candidate against ITSELF, which can.
       if (name === project && wt === worktree) continue;
       const held = sessionRootKey(name, wt);

@@ -9,8 +9,11 @@
 // the bare slug.
 //
 // The refusal is over COMPUTED KEYS, never over parsed `--` splits, and it is
-// `encodeCwd`-equality rather than byte-equality — so it also catches the pair
-// that lands in one transcript directory without landing in one root.
+// `encodeCwd`-equality rather than byte-equality — so it also refuses a pair
+// that would land in one transcript directory without landing in one root. That
+// is a PROXY, not a test for one: it is wrong in both directions, and T4's
+// NOT-CLAIMING block is the authority on which. Nothing in this file claims the
+// predicate is sufficient.
 //
 // The fixture keeps the two path spaces disjoint (trees under a temp dir
 // outside PROJECTS_ROOT), so nothing here can pass by accident on cc's own disk.
