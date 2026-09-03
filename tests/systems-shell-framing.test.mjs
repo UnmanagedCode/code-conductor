@@ -486,8 +486,24 @@ for (const mode of MODES) {
   //
   // A plain `sleep` reaches both, which a wedge does not: in persistent mode
   // the reset timer fires, in the fallback mode `exec`'s own timeout does and
-  // the provider reports `timedOut`. 400ms against a 30s sleep, so neither side
-  // of the comparison can flake; measured at ~403ms and ~414ms.
+  // the provider reports `timedOut`. 400ms against a 30s sleep — a 60x+ margin,
+  // and in persistent mode the timer is cc's own `setTimeout`, so starvation
+  // barely moves it. Measured n=16/mode: 401-404ms quiet, 401-438ms at 72-way
+  // starvation (load 40).
+  //
+  // NO RECOVERY ASSERTION HERE, DELIBERATELY — do not add one back. A
+  // `run('echo alive')` after the reset would run under this same 400ms
+  // ceiling, and that is the one thin margin on this card: measured 3.0x at
+  // 72-way (max 132ms), against a branch whose docs/architecture.md records a
+  // 10x quiet margin INVERTING under the same condition (card 2026-0228). It
+  // would also buy nothing. In persistent mode the unterminated-quote case
+  // above already pins recovery after a real-provider deadline reset, and the
+  // fake-host case at the end of this file pins it without any wall clock at
+  // all; in the FALLBACK mode there is nothing to recover, because
+  // `#runOneShot`'s `r.timedOut` branch throws without a teardown and records
+  // no reset reason — each command is its own `exec`. So the assertion would be
+  // redundant in one mode, vacuous in the other, and the only new flake vector
+  // in either. The ceiling stays tight because the message is the subject.
   test(`[${mode.name}] the ceiling names itself as a ceiling in the message a worker reads`, async () => {
     await withShell(mode.flags, async (sh) => {
       await assert.rejects(() => sh.run('sleep 30'), (e) => {
@@ -498,8 +514,6 @@ for (const mode of MODES) {
         assert.match(e.message, /per-command ceiling/, e.message);
         return true;
       });
-      // And the shell recovers, in both modes.
-      assert.equal((await sh.run('echo alive')).stdout, 'alive\n');
     }, { commandTimeoutMs: 400 });
   });
 

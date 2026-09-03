@@ -644,9 +644,13 @@ describe('a worker session on a remote system', () => {
   });
 
   // PINS AC6: the disclosure states that shell state is PER AGENT. On a remote
-  // system `export` persists across an agent's own commands — better than local
-  // — which invites the false generalisation that a dispatched subagent inherits
-  // it; told, the agent passes the value in the subagent's prompt instead, and
+  // system `export` persists across an agent's own commands, where a local
+  // session persists neither `export` nor `cd` — each local `Bash` call gets a
+  // brand-new shell and the CLI resets the working directory to the project root
+  // (measured on CLI 2.1.258; card 2026-0305 §2, correcting an earlier wording
+  // here that said only `cd` failed to persist locally). So the asymmetry is
+  // wider than it was documented as, and it invites the false generalisation
+  // that a dispatched subagent inherits it; told, the agent passes the value in the subagent's prompt instead, and
   // told the converse it stops treating a subagent's `cd` as a hazard to its own
   // state. Nothing else volunteers either half: a missing export in a subagent
   // looks like an ordinary unset variable, and a subagent's `cd` NOT reaching the

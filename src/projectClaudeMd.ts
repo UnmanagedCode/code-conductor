@@ -65,9 +65,13 @@ const PROJECT_HEADING = '# Project conventions';
 //     came from — rather than making a claim about where such paths can appear.
 //   * The third states that shell state is PER AGENT, and its reason is an
 //     ASYMMETRY the worker cannot see. Here `export` persists across an agent's
-//     own commands — better than a local session, where only `cd` does — which
-//     invites the false generalisation that a subagent it dispatches inherits
-//     that state. Told, it passes the value in the subagent's prompt; told the
+//     own commands, where a local session persists NEITHER `export` NOR `cd`:
+//     each local `Bash` call gets a brand-new shell and the CLI resets the
+//     working directory to the project root (measured on CLI 2.1.258; card
+//     2026-0305 §2 — an earlier wording here said only `cd` failed to persist
+//     locally, which the measurement refutes). So the asymmetry is wider than it
+//     was documented as, and it invites the false generalisation that a subagent
+//     it dispatches inherits that state. Told, it passes the value in the subagent's prompt; told the
 //     converse, it stops treating a subagent's `cd` as a hazard to its own
 //     shell. Neither half is volunteered anywhere: a missing export in a
 //     subagent looks like an ordinary unset variable, and a subagent's `cd` NOT
