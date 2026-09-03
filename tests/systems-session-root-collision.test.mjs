@@ -85,6 +85,12 @@ describe('session-root key collisions are refused at creation', () => {
     assert.match(r.text, /p--p_worktree_w/, 'names the candidate');
     assert.match(r.text, /p_worktree_w/, 'names the colliding worktree');
     assert.match(r.text, /'p'/, 'names the colliding worktree\'s project');
+    // THE BYTE-EQUAL MESSAGE SHAPE, pinned distinctly from the encode-only one
+    // in T4: this pair really does land in ONE session root, so the flat harm
+    // sentence is the true one here.
+    assert.match(r.text, /its session root would be/);
+    assert.match(r.text, /Two places on one session root share a config surface/);
+    assert.doesNotMatch(r.text, /collapses/, 'not the encode-only wording');
 
     assert.equal(await record('p--p_worktree_w'), null, 'no record written for a refused create');
     assert.equal(await exists(onSystem('collider')), false, 'nothing created on the system');
@@ -148,11 +154,18 @@ describe('session-root key collisions are refused at creation', () => {
   // `-` when it names a transcript directory, so both sessions' transcripts
   // land in one place.
   //
-  // NOT CLAIMING: that an `encodeCwd`-equal pair always shares a transcript
-  // directory. The CLI's cwd is `realpath(root) + mirror.offset` and the offset
-  // is the PROVIDER's, so two providers advertising different mirror geometries
-  // would not in fact collide. The predicate is deliberately wider than the
-  // measured collision in that sub-case (card 2026-0293 §G-4).
+  // NOT CLAIMING EITHER DIRECTION of "encodeCwd-equal keys IFF one transcript
+  // directory". Both fail, because the CLI's cwd is `realpath(root) +
+  // mirror.offset` and the offset is the PROVIDER's:
+  //   • WIDER — two places whose keys encode alike but whose providers
+  //     advertise different mirror geometries do not in fact collide, so this
+  //     refuses a pair that would have been fine (card 2026-0293 §G-4).
+  //   • NARROWER — the offset supplies characters the key comparison never
+  //     sees, so a pair whose KEYS differ can still land in one transcript
+  //     directory (project `p` at offset `-q` versus project `p--q`). That is
+  //     NOT refused, here or anywhere; card 2026-0304 owns it.
+  // The predicate is a proxy keyed on cc's own stable geometry, deliberately,
+  // and neither this test nor any other claims it is sufficient.
   test('T4 — a key that only ENCODES alike is refused too', async () => {
     // (a) project `a--a-worktree-b` versus worktree `b` of project `a`.
     await seedRepo(onSystem('a'));
@@ -169,7 +182,16 @@ describe('session-root key collisions are refused at creation', () => {
     }));
     assert.ok(ra, 'an encode-only collision must refuse');
     assert.equal(ra.status, 409);
-    assert.match(ra.text, /a_worktree_b/);
+    // THE ENCODE-ONLY MESSAGE SHAPE. `sameRoot` is the discriminator, so both
+    // arms of it are pinned: this pair does NOT share a session root, and
+    // saying it did would be the overclaim. Also pins the possessive rewrite —
+    // `${held}'s` rendered `…project 'a''s`.
+    assert.match(ra.text, /collapses when it names a transcript directory/);
+    assert.match(ra.text, /the one worktree 'a_worktree_b' of project 'a' already holds/);
+    assert.match(ra.text, /The two roots stay separate/);
+    assert.doesNotMatch(ra.text, /Two places on one session root share/,
+      'the byte-equal harm is false here — the roots differ');
+    assert.doesNotMatch(ra.text, /''/, 'no double-apostrophe possessive');
 
     // (b) remote `my_app` versus remote `my-app` on the same system.
     await createProject('my_app', { system: remote.id, systemPath: onSystem('my_app') });
@@ -180,6 +202,32 @@ describe('session-root key collisions are refused at creation', () => {
     assert.equal(rb.status, 409);
     assert.match(rb.text, /my_app/);
     assert.equal(await exists(onSystem('my-app')), false);
+  });
+
+  // ── T9 ─────────────────────────────────────────────────────────────
+  //
+  // PINS THE CANDIDATE-IDENTITY EXCLUSION. Re-creating a worktree that is
+  // already registered is a DUPLICATE-CREATE, not a cross-place collision, and
+  // it must keep reaching the branch pre-check — whose diagnostic names the two
+  // states a user can actually be in ("still registered" / "deleted and left
+  // the branch behind"), where the collision guard would only say "pick another
+  // name".
+  //
+  // NOT CLAIMING that the branch pre-check is correct, or that it covers the
+  // deleted-but-branch-left case; this asserts only WHICH refusal answers, by
+  // its message and by the absence of the collision guard's `code`.
+  test('T9 — re-creating a still-registered worktree is a DUPLICATE, not a session-root collision', async () => {
+    await seedRepo(onSystem('dup'));
+    await adoptProject('dup', onSystem('dup'), { system: remote.id });
+    await createWorktree('dup', { name: 'w' });
+
+    const r = await refusal(() => createWorktree('dup', { name: 'w' }));
+    assert.ok(r, 'a duplicate worktree is still refused');
+    assert.equal(r.status, 409);
+    assert.equal(r.thrown.code, undefined, 'not the collision guard');
+    assert.match(r.text, /branch 'code-conductor\/w' already exists in project 'dup'/);
+    assert.match(r.text, /still registered/, 'the diagnostic the branch check owns');
+    assert.doesNotMatch(r.text, /session root/);
   });
 
   // ── T5 (CONTROL) ───────────────────────────────────────────────────

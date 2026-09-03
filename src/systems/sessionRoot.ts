@@ -138,15 +138,22 @@ export function sessionRootPath(systemId: string, project: string, worktree?: st
 // directory: each place lists the other's sessions as its own, and
 // findSessionLocation attributes a session to whichever it met first.
 //
-// DELIBERATELY WIDER THAN THE MEASURED COLLISION in one sub-case, and the trade
-// is the point (card 2026-0293 §G-4). The CLI's cwd is `realpath(root) +
-// mirror.offset` and the offset is the PROVIDER's, so two places whose keys
-// merely ENCODE alike would not in fact share a transcript directory if their
-// providers advertised different mirror geometries. This keys on the key, which
-// is cc's own geometry and stable, rather than on the offset, which is the
-// provider's and changes with a connection generation: a refusal that changed
-// its answer when a box went down would be worse than a slightly wide one. The
-// byte-equal half is unconditional regardless of any offset.
+// A PROXY FOR THAT COLLISION, WRONG IN BOTH DIRECTIONS, AND KEPT ANYWAY. The
+// CLI's cwd is `realpath(root) + mirror.offset` and the offset is the
+// PROVIDER's, so:
+//   • WIDER — two places whose keys encode alike but whose providers advertise
+//     different mirror geometries do not in fact share a directory, so this
+//     refuses a pair that would have been fine (card 2026-0293 §G-4).
+//   • NARROWER — the offset contributes characters this comparison never sees,
+//     so a pair whose KEYS differ can still land in one transcript directory
+//     (project `p` at offset `-q` versus project `p--q`). NOT refused, here or
+//     anywhere; card 2026-0304 owns that half. Do not read this predicate, or
+//     any doc describing it, as sufficient.
+// Keying on the key rather than the offset is the deliberate trade: the key is
+// cc's own geometry and stable, while an offset changes with a connection
+// generation, and a refusal whose answer changed when a box went down would be
+// worse than one that is merely a proxy. The byte-equal half is unconditional
+// regardless of any offset.
 //
 // NO SELF-EXCLUSION IS NEEDED, at this call site or any other, because
 // encodeCwd is LENGTH-PRESERVING and so can only merge keys of equal length: a
@@ -162,7 +169,17 @@ export function sessionRootPath(systemId: string, project: string, worktree?: st
 //
 // STORE-ONLY: projectsBySystem is record-derived and registeredWorktreeNames
 // readdirs cc's own store, so no creation path grows a system round trip and no
-// system being down can change the answer.
+// system being DOWN can change the answer.
+//
+// A STORE DEGRADATION CAN, THOUGH, AND IT FAILS OPEN — silently and
+// permissively. A corrupt `project.json` degrades to EMPTY_META, so the project
+// reads as local and it AND all its worktrees drop out of projectsBySystem();
+// registeredWorktreeNames swallows any readdir error to []. Either loses places
+// from this enumeration, and a lost place cannot be collided with. Left open
+// deliberately: failing closed would refuse every create on a system because
+// some unrelated project's record is corrupt, and that corruption already
+// demotes the project to local everywhere else. No supported operation produces
+// one.
 export async function sessionRootKeyCollision(
   systemId: string, project: string, worktree: string | null,
 ): Promise<SessionRootCollision | null> {
@@ -174,6 +191,15 @@ export async function sessionRootKeyCollision(
   const { registeredWorktreeNames } = await import('../worktrees.ts');
   for (const { name } of (await projectsBySystem())[systemId] ?? []) {
     for (const wt of [null, ...await registeredWorktreeNames(name)]) {
+      // THE CANDIDATE'S OWN IDENTITY IS NOT A COLLISION. Re-creating a worktree
+      // that is already registered is a DUPLICATE-CREATE, and createWorktree's
+      // branch pre-check diagnoses that far better than this guard could —
+      // it names the two states a user can be in ("still registered" / "deleted
+      // and left the branch behind"), where this one would only say "pick
+      // another name". Distinct from the self-collision the length argument
+      // below rules out: that one is a candidate against its own PROJECT's key,
+      // which cannot match; this one is a candidate against ITSELF, which can.
+      if (name === project && wt === worktree) continue;
       const held = sessionRootKey(name, wt);
       if (encodeCwd(held) === encoded) {
         return { project: name, worktree: wt, key: held, sameRoot: held === key };
@@ -204,14 +230,26 @@ export function sessionRootCollisionReason(
     ? `worktree '${hit.worktree}' of project '${hit.project}'`
     : `project '${hit.project}'`;
   const heldPath = path.join(sessionRootsDir(systemId), hit.key);
-  const shared = hit.sameRoot
-    ? `its session root would be '${heldPath}', which already belongs to ${held}`
-    : `its session root '${path.join(sessionRootsDir(systemId), candidateKey)}' differs from ${held}'s `
-      + `('${heldPath}') only in characters the Claude CLI collapses when it names a transcript `
-      + `directory ('_' and '.' both become '-'), so the two would normally share one`;
-  return `cannot register ${subject} on system '${systemId}': ${shared}. `
-    + `Two places on one session root share a config surface, a manifest and a transcript directory. `
-    + `Pick another name.`;
+  // BOTH HALVES BRANCH ON `sameRoot`, not just the first. In the encode-only
+  // branch the two places do NOT share a session root, so the flat one-root
+  // harm would be a plain falsehood two clauses after saying the roots differ.
+  // Hence "normally" — the predicate is a proxy in both directions, for the
+  // reasons on sessionRootKeyCollision above. That reasoning stays in a comment
+  // and out of the string: a provider's mirror offset is not something a user
+  // picking a new name can act on, and a refusal has to stay short.
+  const [shared, harm] = hit.sameRoot
+    ? [
+      `its session root would be '${heldPath}', which already belongs to ${held}`,
+      `Two places on one session root share a config surface, a manifest and a transcript directory.`,
+    ]
+    : [
+      `its session root would be '${path.join(sessionRootsDir(systemId), candidateKey)}', which differs `
+        + `from the one ${held} already holds ('${heldPath}') only in characters the Claude CLI collapses `
+        + `when it names a transcript directory ('_' and '.' both become '-')`,
+      `The two roots stay separate, but the sessions in them would normally land in one transcript `
+        + `directory — each place listing the other's sessions as its own.`,
+    ];
+  return `cannot register ${subject} on system '${systemId}': ${shared}. ${harm} Pick another name.`;
 }
 
 // EVERY LOCAL CWD a session on this (system, project, worktree) can have run
