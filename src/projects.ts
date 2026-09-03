@@ -840,6 +840,24 @@ export async function renameWorkspace(oldName: string, newName: string): Promise
   return { renamed: true, name: newV, movedProjects: members };
 }
 
+// Why registering PROJECT `name` on `systemId` would put two places on one
+// session root, or null when it would not. Both creation paths ask, because a
+// name can be free and its key still taken: `--` is legal inside a project
+// name, so `p--p_worktree_w` computes the key worktree `p_worktree_w` of
+// project `p` computes (card 2026-0293 §10). createWorktree asks the same
+// predicate directly for the other half of the pair.
+//
+// Lazy import for the same projects.ts <-> systems/sessionRoot.ts circular edge
+// removeSessionRoot's callers sit on.
+async function projectKeyCollisionReason(systemId: string, name: string): Promise<string | null> {
+  const { sessionRootCollisionReason, sessionRootKey, sessionRootKeyCollision } =
+    await import('./systems/sessionRoot.ts');
+  const hit = await sessionRootKeyCollision(systemId, name, null);
+  return hit === null
+    ? null
+    : sessionRootCollisionReason(systemId, `project '${name}'`, sessionRootKey(name, null), hit);
+}
+
 export async function createProject(
   name: string,
   { conventionsDoc = null, system: systemId = null, remoteId = null, systemPath = null }: {
@@ -872,6 +890,13 @@ export async function createProject(
   // EEXIST branch below stays as the race backstop.
   if (await heldNameReason(name)) {
     throw httpError(409, `project '${name}' already exists`);
+  }
+  // A name is free and still unusable when its SESSION-ROOT KEY is already
+  // taken on this system. Only for a placement — a local project has no
+  // session root, so there is no key to take.
+  if (placement) {
+    const why = await projectKeyCollisionReason(placement.system, name);
+    if (why) throw httpError(409, why, { code: 'SESSION_ROOT_COLLISION' });
   }
   try {
     await system.mkdir(full);
@@ -1326,6 +1351,13 @@ export async function adoptProject(
 
   const held = await heldNameReason(name);
   if (held) return { ok: false, code: 'PROJECT_EXISTS', reason: held };
+
+  // The same check createProject makes, in this path's RETURNED-refusal shape,
+  // and BEFORE writeProjectRecord below so a refused adopt writes nothing.
+  if (placement) {
+    const why = await projectKeyCollisionReason(placement.system, name);
+    if (why) return { ok: false, code: 'SESSION_ROOT_COLLISION', reason: why };
+  }
 
   if (placement) {
     // The RECORD is the registration for a remote project — there is no local

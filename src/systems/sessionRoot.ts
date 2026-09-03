@@ -31,12 +31,13 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot } from '../projects.ts';
+import { encodeCwd, orchStoreRoot, projectsBySystem } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { CONVENTIONS_IMPORT_LINE } from '../conventionsImport.ts';
 import {
   isExcluded, mirrorOffsets, resolveMirrorScope, within, withinPosix, type MirrorScope,
 } from './mirror.ts';
+import { LOCAL_SYSTEM_ID } from './localSystem.ts';
 import { requireAbsolute, type System } from './system.ts';
 
 // `<store>/systems/<systemId>/sessions/` — the parent of every session root for
@@ -93,12 +94,124 @@ export async function assertSessionRootsPlaceable(systemId: string): Promise<voi
 
 // ── Where one session's root is ──────────────────────────────────────
 
-// `--` separates the project from its worktree. Both charsets are
-// `[a-zA-Z0-9._-]` (validateName / worktree names), so the separator cannot
-// occur inside either half and the key is unambiguous.
+// THE KEY, and it is NOT INJECTIVE. `--` separates the project from its
+// worktree, but `--` is also legal INSIDE a project name (validateName's
+// charset is `[a-zA-Z0-9._-]`), so a project literally named `p--p_worktree_w`
+// computes the key worktree `p_worktree_w` of project `p` computes: one root,
+// one manifest, one CLI cwd, one transcript directory.
+//
+// Do not re-derive an "unambiguous" claim from the charsets. The right half is
+// the worktree DIRECTORY name `<project>_worktree_<slug>` (worktrees.ts), not a
+// bare slug, so it carries `_` and the project's own name — which is exactly
+// why the reachable collider embeds its own prefix twice.
+//
+// What makes the key safe is not its spelling: it is sessionRootKeyCollision
+// below, refused at every creation path, plus the fact that nothing renames a
+// registered place afterwards. The claim that earns is narrow and is the only
+// one to make — no REGISTERED pair on one system shares a key — not that the
+// key is injective (card 2026-0293 §10).
+//
+// One home for the key, so a guard and a path cannot disagree about it.
+export function sessionRootKey(project: string, worktree?: string | null): string {
+  return worktree ? `${project}--${worktree}` : project;
+}
+
 export function sessionRootPath(systemId: string, project: string, worktree?: string | null): string {
-  const key = worktree ? `${project}--${worktree}` : project;
-  return path.join(sessionRootsDir(systemId), key);
+  return path.join(sessionRootsDir(systemId), sessionRootKey(project, worktree));
+}
+
+// A place already registered on `systemId` whose session-root key collides with
+// the candidate's, or null. Returns null for the local system: a local place
+// has no session root, so it has no key to collide on.
+//
+// OVER COMPUTED KEYS, never over parsed `--` splits. A split-parser would have
+// to know that a worktree slug cannot contain `--` — true, because
+// slugifyWorktreeName collapses every RUN of non-alphanumerics to a single `-`,
+// which is a charset property and not a sample — but that is a fact about a
+// function this module does not own. Comparing what sessionRootKey actually
+// returns cannot be wrong about it, and survives any change to either.
+//
+// `encodeCwd`-EQUALITY, NOT byte-equality. Byte-equality catches only the
+// one-root case. The CLI names its transcript directory with encodeCwd, which
+// collapses `_`, `.` and `/` alike to `-`, so `a--a_worktree_b` and
+// `a--a-worktree-b` are two roots that normally land in ONE transcript
+// directory: each place lists the other's sessions as its own, and
+// findSessionLocation attributes a session to whichever it met first.
+//
+// DELIBERATELY WIDER THAN THE MEASURED COLLISION in one sub-case, and the trade
+// is the point (card 2026-0293 §G-4). The CLI's cwd is `realpath(root) +
+// mirror.offset` and the offset is the PROVIDER's, so two places whose keys
+// merely ENCODE alike would not in fact share a transcript directory if their
+// providers advertised different mirror geometries. This keys on the key, which
+// is cc's own geometry and stable, rather than on the offset, which is the
+// provider's and changes with a connection generation: a refusal that changed
+// its answer when a box went down would be worse than a slightly wide one. The
+// byte-equal half is unconditional regardless of any offset.
+//
+// NO SELF-EXCLUSION IS NEEDED, at this call site or any other, because
+// encodeCwd is LENGTH-PRESERVING and so can only merge keys of equal length: a
+// worktree's candidate key `p--p_worktree_w` can never match its own project's
+// key `p`.
+//
+// A systemId containing `_` would collide with its `-` twin one level up, in
+// sessionRootsDir — UNREACHABLE, and deliberately unguarded: SLUG_RE
+// (src/identifiers.ts) admits no `_` in a system id, and pinning a state no
+// supported operation reaches is what card 2026-0287 got wrong. WIDENING
+// SLUG_RE TO ADMIT `_` REOPENS IT, and this enumeration — scoped to one
+// systemId — would not see it (card 2026-0293 §G-2).
+//
+// STORE-ONLY: projectsBySystem is record-derived and registeredWorktreeNames
+// readdirs cc's own store, so no creation path grows a system round trip and no
+// system being down can change the answer.
+export async function sessionRootKeyCollision(
+  systemId: string, project: string, worktree: string | null,
+): Promise<SessionRootCollision | null> {
+  if (systemId === LOCAL_SYSTEM_ID) return null;
+  const key = sessionRootKey(project, worktree);
+  const encoded = encodeCwd(key);
+  // Lazy, for the same projects.ts <-> worktrees.ts circular edge every other
+  // caller of this function sits on (src/projects.ts).
+  const { registeredWorktreeNames } = await import('../worktrees.ts');
+  for (const { name } of (await projectsBySystem())[systemId] ?? []) {
+    for (const wt of [null, ...await registeredWorktreeNames(name)]) {
+      const held = sessionRootKey(name, wt);
+      if (encodeCwd(held) === encoded) {
+        return { project: name, worktree: wt, key: held, sameRoot: held === key };
+      }
+    }
+  }
+  return null;
+}
+
+export interface SessionRootCollision {
+  project: string;
+  worktree: string | null;
+  key: string;
+  // Byte-equal keys (literally one root), versus keys that merely encode alike
+  // (two roots that normally share one transcript directory). The refusal says
+  // which, because they are different harms and a reader picking a new name
+  // needs to know which characters matter.
+  sameRoot: boolean;
+}
+
+// The refusal sentence, in ONE shape for all three creation paths, naming both
+// members of the pair and what they would share. `subject` is the candidate as
+// the caller would say it ("project 'x'", "worktree 'w' of project 'p'").
+export function sessionRootCollisionReason(
+  systemId: string, subject: string, candidateKey: string, hit: SessionRootCollision,
+): string {
+  const held = hit.worktree
+    ? `worktree '${hit.worktree}' of project '${hit.project}'`
+    : `project '${hit.project}'`;
+  const heldPath = path.join(sessionRootsDir(systemId), hit.key);
+  const shared = hit.sameRoot
+    ? `its session root would be '${heldPath}', which already belongs to ${held}`
+    : `its session root '${path.join(sessionRootsDir(systemId), candidateKey)}' differs from ${held}'s `
+      + `('${heldPath}') only in characters the Claude CLI collapses when it names a transcript `
+      + `directory ('_' and '.' both become '-'), so the two would normally share one`;
+  return `cannot register ${subject} on system '${systemId}': ${shared}. `
+    + `Two places on one session root share a config surface, a manifest and a transcript directory. `
+    + `Pick another name.`;
 }
 
 // EVERY LOCAL CWD a session on this (system, project, worktree) can have run

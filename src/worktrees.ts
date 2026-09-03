@@ -18,6 +18,9 @@ import {
   type ProjectInfo,
 } from './projects.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
+import {
+  sessionRootCollisionReason, sessionRootKey, sessionRootKeyCollision,
+} from './systems/sessionRoot.ts';
 import { classifySpawnError } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 
@@ -510,6 +513,25 @@ export async function createWorktree(
     dirName,
   );
   const branch = worktreeBranchName(id);
+
+  // THE SESSION-ROOT KEY THIS WORKTREE WOULD TAKE, checked before any git state
+  // is touched — the reverse of createProject's order, and the other half of
+  // the same pair: a project named `<project>_worktree_<slug>`-with-a-`--` can
+  // already hold it. `dirName`, not `id`: the stored worktreeName is the
+  // directory name, and that is what the key is built from. No local guard
+  // here — the predicate answers null for a local place, which has no session
+  // root (card 2026-0293 §10).
+  const keyHit = await sessionRootKeyCollision(system.id, projectName, dirName);
+  if (keyHit) {
+    throw httpError(
+      409,
+      sessionRootCollisionReason(
+        system.id, `worktree '${id}' of project '${projectName}'`,
+        sessionRootKey(projectName, dirName), keyHit,
+      ),
+      { code: 'SESSION_ROOT_COLLISION' },
+    );
+  }
 
   // Collision pre-check. A random short id realistically never collides, but a
   // slug does ('auth' twice). What this buys is a clean 409 instead of the
