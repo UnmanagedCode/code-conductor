@@ -1616,9 +1616,16 @@ interface SessionPlace {
 // answer, for any id, under any project ordering. Local places contribute
 // nothing to pass 2, so a local project's set and order are what they were.
 //
-// The place list is built ONCE here and reused by every probe below: pass 2
-// must not re-walk the worktree store, and the read-tolerance loop must not
-// re-walk it per segment either.
+// WHAT THIS NEEDS FROM THE SYSTEM, stated exactly because the tempting summary
+// — "it never touches the box" — is FALSE. Nothing in the ANSWER comes from the
+// box: the candidate cwds come from `listProjects` (store-derived for a remote
+// row), `sessionRootPath`, `mirrorOffsets` and a realpath of cc's own store,
+// and the transcripts are on cc's own disk, so a system that is down cannot
+// change what this returns. But GETTING there does reach for the box —
+// `loadWorktreesFor` runs `git worktree list` through it (see the memo below) —
+// so an unreachable system costs a swallowed failure here, and a WEDGED one can
+// stall this lookup up to the provider operation timeout. The lazy composition
+// below is what keeps that cost off a lookup a nearer place answers.
 export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> {
   // Permissive validation: sessionIds are UUIDs in practice but we accept
   // anything that's safe to interpolate into a filename. The point is to
@@ -1654,31 +1661,61 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   // this module.
   const { sessionRootCwds } = await import('./systems/sessionRoot.ts');
 
-  const places: SessionPlace[] = [];
-  for (const proj of projects) {
-    // A remote row's `path` IS its `systemPath` (listProjects), but `systemPath`
-    // is the field that NAMES the meaning, and it is null for a listed row with
-    // no placement — which contributes no primary, only its fallback.
-    const rows: Array<{ worktreeName: string | null; treePath: string; sysPath: string | null }> =
-      [{ worktreeName: null, treePath: proj.path, sysPath: proj.systemPath }];
+  // One place, composed. `sysPath` is null for a listed remote row with no
+  // placement — which contributes no primary, only its fallback. A remote row's
+  // `path` IS its `systemPath` (listProjects), but `systemPath` is the field
+  // that NAMES the meaning, so the project's row is asked with that one.
+  const compose = async (
+    proj: ProjectInfo, worktreeName: string | null, treePath: string, sysPath: string | null,
+  ): Promise<SessionPlace> => {
+    if (proj.system === LOCAL_SYSTEM_ID) {
+      return { project: proj.name, worktreeName, primary: [treePath], fallback: [] };
+    }
+    return {
+      project: proj.name,
+      worktreeName,
+      primary: sysPath ? await sessionRootCwds(proj.system, proj.name, worktreeName, sysPath) : [],
+      fallback: [treePath],
+    };
+  };
+
+  // THE PLACE LIST IS COMPOSED LAZILY, IN PROBE ORDER, AND MEMOISED — and the
+  // laziness is load-bearing rather than a micro-optimisation. Composing a
+  // project's WORKTREE places calls `loadWorktreesFor` = `listWorktrees`, which
+  // resolves the project and runs `git worktree list` THROUGH ITS SYSTEM: for a
+  // project on a remote system that is a real `exec` over the provider wire. An
+  // eager list would therefore put every registered system's responsiveness on
+  // the critical path of a lookup that a nearer place already answers, so one
+  // wedged provider would stall every locate, transcript read, summary and bare
+  // resume up to the operation timeout. Pass 1 composes a place only when the
+  // sweep reaches it, exactly as the pre-session-root probe did.
+  //
+  // The memo is what makes pass 2 and the read-tolerance loop free: pass 2 runs
+  // ONLY when pass 1 missed everywhere, which is precisely the case that has
+  // already composed every place, so both replay rather than re-walk.
+  const rootMemo: Array<SessionPlace | undefined> = new Array(projects.length);
+  const rootPlace = async (i: number): Promise<SessionPlace> => {
+    const cached = rootMemo[i];
+    if (cached) return cached;
+    const proj = projects[i];
+    const built = await compose(proj, null, proj.path, proj.systemPath);
+    rootMemo[i] = built;
+    return built;
+  };
+  const worktreeMemo: Array<SessionPlace[] | undefined> = new Array(projects.length);
+  const worktreePlaces = async (i: number): Promise<SessionPlace[]> => {
+    const cached = worktreeMemo[i];
+    if (cached) return cached;
+    const proj = projects[i];
     let wts: WorktreeMeta[] = [];
     try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
+    const built: SessionPlace[] = [];
     // A worktree's offsets come from the WORKTREE's own path on the system, not
     // its project's: the two differ under a mirror root wider than the project.
-    for (const wt of wts) rows.push({ worktreeName: wt.worktreeName, treePath: wt.worktreePath, sysPath: wt.worktreePath });
-    for (const row of rows) {
-      if (proj.system === LOCAL_SYSTEM_ID) {
-        places.push({ project: proj.name, worktreeName: row.worktreeName, primary: [row.treePath], fallback: [] });
-        continue;
-      }
-      places.push({
-        project: proj.name,
-        worktreeName: row.worktreeName,
-        primary: row.sysPath ? await sessionRootCwds(proj.system, proj.name, row.worktreeName, row.sysPath) : [],
-        fallback: [row.treePath],
-      });
-    }
-  }
+    for (const wt of wts) built.push(await compose(proj, wt.worktreeName, wt.worktreePath, wt.worktreePath));
+    worktreeMemo[i] = built;
+    return built;
+  };
 
   const probe = async (id: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> => {
     const holds = async (cwd: string): Promise<boolean> => {
@@ -1689,14 +1726,27 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
         return false;
       }
     };
-    for (const pl of places) {
-      for (const cwd of pl.primary) {
-        if (await holds(cwd)) return { project: pl.project, worktreeName: pl.worktreeName, cwd };
+    const first = async (place: SessionPlace, cwds: string[]) => {
+      for (const cwd of cwds) {
+        if (await holds(cwd)) return { project: place.project, worktreeName: place.worktreeName, cwd };
+      }
+      return null;
+    };
+    for (let i = 0; i < projects.length; i++) {
+      // The project's own place BEFORE its worktrees, so a hit at a project root
+      // never pays that project's worktree walk either.
+      const root = await rootPlace(i);
+      const atRoot = await first(root, root.primary);
+      if (atRoot) return atRoot;
+      for (const pl of await worktreePlaces(i)) {
+        const atWt = await first(pl, pl.primary);
+        if (atWt) return atWt;
       }
     }
-    for (const pl of places) {
-      for (const cwd of pl.fallback) {
-        if (await holds(cwd)) return { project: pl.project, worktreeName: pl.worktreeName, cwd };
+    for (let i = 0; i < projects.length; i++) {
+      for (const pl of [await rootPlace(i), ...await worktreePlaces(i)]) {
+        const hitHere = await first(pl, pl.fallback);
+        if (hitHere) return hitHere;
       }
     }
     return null;

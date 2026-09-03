@@ -702,7 +702,10 @@ async function findManifest(
     { cwd: systemPath, stdin: 'ignore', maxBufferBytes: SESSION_ROOT_LISTING_FENCE_BYTES },
   );
   if (r.spawnError) {
-    throw httpError(502, `composing the session root: could not list the config surface on the system: ${r.spawnError}`);
+    // NAMES THE SYSTEM, like its sibling refusal below: this is the message a
+    // resume shows when the box cannot answer, and "the system" sends a reader
+    // with several registered to look at all of them (card 2026-0292).
+    throw httpError(502, `composing the session root: could not list the config surface on system '${system.id}': ${r.spawnError}`);
   }
   // THE FENCE FIRED, and this is why it cannot be §3.4's skip-with-warning. A
   // skip NAMES what it dropped. A truncated listing cannot: it is cut at an

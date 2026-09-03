@@ -26,12 +26,16 @@
 // reachable through supported operations (T6) and it is strictly last because a
 // remote place's tree path can name a LOCAL project's real cwd (T5).
 //
-// SAME-MACHINE TRAP, GUARDED THE WAY EVERY REMOTE-PLACEMENT FILE HERE GUARDS IT.
-// The reference provider IS this machine, so a project tree lives under an
-// `mkdtemp` prefix OUTSIDE `PROJECTS_ROOT` and every expected location is
-// resolved from `sessionRootPath` independently of the instance that produced
-// it — a cwd composed against the project instead of the image root gives a
-// different answer here rather than agreeing by accident.
+// SAME-MACHINE TRAP. The reference provider IS this machine, so a project tree
+// always lives under an `mkdtemp` prefix OUTSIDE `PROJECTS_ROOT`: any code that
+// composes a path from `projectsRoot()` lands where the tree is not, and an
+// assertion fails instead of accidentally succeeding. On top of that, T1–T4
+// resolve the expected location from `sessionRootPath` INDEPENDENTLY of the
+// instance that produced it, so a cwd composed against the project rather than
+// the image root gives a different answer instead of agreeing by accident. The
+// rest (T5(b), T6, T7, T8, T9, T12) assert against the instance's own `cwd` or
+// against the tree path directly — they are about which PLACE answers and what
+// the answer is used for, not about how the geometry is composed.
 //
 // TEST-FIRST STATUS. T1–T9 and T12 had free BEHAVIOURAL red on the shipped
 // code: it produced the wrong answer, the wrong refusal or no answer at all,
@@ -46,6 +50,7 @@ import { test, describe, before, after, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf, seedSessionJsonl, waitFor } from './helpers.mjs';
 import { bindRemoteSystem, referenceLaunch, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
@@ -54,7 +59,7 @@ import {
 } from '../src/projects.ts';
 import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { getWorktree, createWorktree } from '../src/worktrees.ts';
-import { addSystem } from '../src/appSettings.ts';
+import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 import { setSummary } from '../src/sessionSummaries.ts';
@@ -64,6 +69,12 @@ import { recordRotation } from '../src/sessionLineage.ts';
 // a system was byte-identical to this one's, which is why the fix is about
 // distinguishability and not only about resume.
 const UNKNOWN_ID = '00000000-0000-4000-8000-000000000000';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const FAKE_SUMMARIZE = path.join(HERE, 'fake-claude-summarize.mjs');
+// The passthrough that appends every CLIENT frame cc sends to a file — the only
+// honest evidence for a claim about a frame cc must NOT emit (T13).
+const RECORDER = path.join(HERE, 'fixtures', 'recordingProvider.mjs');
 
 describe('a session on a project on a system', () => {
   let ctx, baseUrl, instances, home, claudeProjectsRoot;
@@ -94,6 +105,15 @@ describe('a session on a project on a system', () => {
     return (await res.json());
   }
   const unwrap = (body) => JSON.parse(body.result.content[0].text);
+
+  // Every CLIENT frame the recording provider has seen since the file was last
+  // truncated. Absent file reads as none — the recorder appends, never creates
+  // eagerly.
+  async function wireFrames(file) {
+    let raw = '';
+    try { raw = await fs.readFile(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    return raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
+  }
 
   // Spawn one session, seed the transcript the CLI would have written at its
   // OWN cwd (the fake engine writes none), then kill it — so what remains is a
@@ -237,11 +257,13 @@ describe('a session on a project on a system', () => {
   // root answer, whatever order the projects come in. Arms (a)/(b) run with the
   // REMOTE place sorting first, which is where the pre-fix code misattributed a
   // local project's own session to the remote project. Arm (c) is the SAME
-  // fixture with the names swapped so the LOCAL place sorts first: it is GREEN
-  // a CONTROL for the second ordering — it exists so the "the answer does not
-  // depend on project ordering" claim is pinned by something rather than by a
-  // paragraph. It is the mutation prover, not this run, that establishes its
-  // non-vacuity.
+  // fixture with the names swapped so the LOCAL place sorts first, and it is
+  // NOT a green-on-arrival control: its first assertion holds on the shipped
+  // code (the local place already sorted first there) but its second is
+  // behaviourally red — the remote session resolved to `null`. Both arms carry
+  // the same invariant, that the answer does not depend on the ordering, and
+  // neither is redundant: with the passes inverted, arm (c)'s first assertion
+  // returns `zzz` instead of `aaa`.
   // NOT claiming project ordering is stable or specified, and NOT a general fix
   // for encodeCwd collisions (two local, or two remote, places that collide
   // still resolve by listProjects() order).
@@ -264,7 +286,7 @@ describe('a session on a project on a system', () => {
     assert.deepEqual(await findSessionLocation(s.sessionId),
       { project: 'app', worktreeName: null, cwd: s.cwd }, 'b: the remote session still resolves');
 
-    // (c) CONTROL, the other ordering: 'aaa' (local) sorts before 'zzz' (remote).
+    // (c) the other ordering: 'aaa' (local) sorts before 'zzz' (remote).
     const tree2 = await seedRepo(path.join(remote.root, 'other'));
     assert.equal((await adoptProject('zzz', tree2, { system: remote.id })).ok, true);
     assert.equal((await adoptProject('aaa', tree2, {})).ok, true);
@@ -307,12 +329,20 @@ describe('a session on a project on a system', () => {
   });
 
   // ── T7 ──────────────────────────────────────────────────────────────
-  // PINS: the two consuming READ sites read the transcript that exists rather
+  // PINS: all THREE consuming READ sites read the transcript that exists rather
   // than an empty directory on the other machine — MCP get_transcript serves
-  // events, and GET /summary's staleness count is the real message count.
-  // NOT claiming POST /summary generates a good summary (that spawns `claude`);
-  // the fixture pins only that the transcript is reachable.
-  test('T7: get_transcript and the summary staleness count read the right cwd', async () => {
+  // events, GET /summary's staleness count is the real message count, and
+  // POST /summary 200s where it used to 500 (`flattenTranscript` throws at the
+  // remote tree path with no `statusCode`, so the route surfaced a 500; today
+  // it 404s because nothing locates at all). POST is exercised through the real
+  // route with `CLAUDE_BIN` pointed at tests/fake-claude-summarize.mjs, the
+  // same device tests/session-summaries.test.mjs uses — an earlier draft of
+  // this file omitted the arm claiming it "spawns `claude`", which was FALSE
+  // and left one of the two sites §3.3 exists to fix undiscriminated.
+  // NOT claiming the generated summary TEXT is good: the fake binary owns that,
+  // and what is pinned here is the status and the message count the route read
+  // off the transcript.
+  test('T7: get_transcript and both summary routes read the right cwd', async () => {
     const remote = await bindRemoteSystem();
     const tree = await seedRepo(path.join(remote.root, 'app'));
     assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
@@ -333,23 +363,61 @@ describe('a session on a project on a system', () => {
     assert.equal(g.status, 200, JSON.stringify(g.body));
     assert.equal(g.body.data.short.isStale, true);
     assert.equal(g.body.data.medium.isStale, false);
+
+    // POST: the site whose cwd used to come from getWorktree/getProject. It has
+    // to reach the transcript to count anything, so `messageCount === 2` is the
+    // discriminating assertion — the remote tree path yields a throw, not a 2.
+    const origBin = process.env.CLAUDE_BIN;
+    process.env.CLAUDE_BIN = `${process.execPath} ${FAKE_SUMMARIZE}`;
+    try {
+      const post = await api(baseUrl, 'POST', `/api/sessions/${s.sessionId}/summary`, { length: 'long' });
+      assert.equal(post.status, 200, JSON.stringify(post.body));
+      assert.equal(post.body.data.long.messageCount, 2, JSON.stringify(post.body.data.long));
+    } finally {
+      if (origBin === undefined) delete process.env.CLAUDE_BIN;
+      else process.env.CLAUDE_BIN = origBin;
+    }
   });
 
   // ── T8 ──────────────────────────────────────────────────────────────
-  // PINS: a session whose system is UNREACHABLE resolves from local geometry
-  // alone. (a) the bare resume refuses 501 NAMING THE BOX instead of the
-  // indistinguishable `400 project required`; (b) the transcript read succeeds,
-  // because it needs only local bytes and nothing has to be resurrected.
-  // NOT claiming the box is probed or that its state is known — the point is
-  // that nothing contacts it — and NOT that a spawn there could succeed.
-  test('T8: an unreachable system refuses by name on resume and still serves the read', async () => {
-    // A project record naming a system with no registry row at all: the probe's
-    // inputs (listProjects, the worktree store, sessionRootPath, mirrorOffsets)
-    // are all local, so it can still answer.
+  // PINS: a session on a system cc cannot run anything on still RESOLVES, so
+  // (a) the bare resume refuses 501 NAMING THE BOX instead of the
+  // indistinguishable `400 project required`, and (b) the transcript read
+  // SUCCEEDS, because the bytes it wants are on cc's own disk.
+  // THE STATE IS A USER-REACHABLE ONE: arm (a)/(b) clear a registered row's
+  // launch command, which `updateSystem` supports explicitly ("an explicit null
+  // clears it"). Arm (c) keeps the record-names-an-unregistered-system variant
+  // as defence in depth, and it is deliberately second — a user cannot reach it,
+  // because deleting a system row is refused while a project references it.
+  // NOT claiming the probe avoids contacting the box: composing a place walks
+  // each project's worktree store THROUGH its system and swallows the failure.
+  // What is claimed is that no ANSWER here needs the box. NOT claiming a spawn
+  // there could succeed.
+  test('T8: a system cc cannot reach refuses the resume by name and still serves the read', async () => {
+    const remote = await bindRemoteSystem();
+    const tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
+    const s = await retiredSession({ project: 'app' });
+
+    // (a)+(b): the row keeps its project and its session root; it just has no
+    // provider command any more, which is what a user does in Settings → Systems.
+    assert.ok(await updateSystem(remote.id, { launch: null }));
+    disposeSystemHandles();
+    assert.deepEqual(await findSessionLocation(s.sessionId),
+      { project: 'app', worktreeName: null, cwd: s.cwd });
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { resume: s.sessionId });
+    assert.equal(r.status, 501, JSON.stringify(r.body));
+    assert.match(String(r.body.error), new RegExp(remote.id));
+
+    const t = unwrap(await callTool('get_transcript', { sessionId: s.sessionId }));
+    assert.equal(t.source, 'disk', JSON.stringify(t));
+    assert.ok(t.events.length >= 1, `expected >= 1 event, got ${t.events.length}`);
+
+    // (c) defence in depth: a record naming a system with NO registry row.
     const dir = projectStoreDir('beta');
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify({ system: 'prod-box', systemPath: '/app' }));
-
     const imageRoot = sessionRootPath('prod-box', 'beta', null);
     await fs.mkdir(imageRoot, { recursive: true });
     const cwd = await fs.realpath(imageRoot);
@@ -357,16 +425,12 @@ describe('a session on a project on a system', () => {
     await seedSessionJsonl(claudeProjectsRoot, cwd, sid);
 
     assert.deepEqual(await findSessionLocation(sid), { project: 'beta', worktreeName: null, cwd });
-
-    const r = await api(baseUrl, 'POST', '/api/instances', { resume: sid });
-    assert.equal(r.status, 501, JSON.stringify(r.body));
-    assert.match(String(r.body.error), /prod-box/);
-
-    const body = await callTool('get_transcript', { sessionId: sid });
-    assert.ok(body.result && !body.error, JSON.stringify(body));
-    const t = unwrap(body);
-    assert.equal(t.source, 'disk');
-    assert.ok(t.events.length >= 1, `expected >= 1 event, got ${t.events.length}`);
+    const r2 = await api(baseUrl, 'POST', '/api/instances', { resume: sid });
+    assert.equal(r2.status, 501, JSON.stringify(r2.body));
+    assert.match(String(r2.body.error), /prod-box/);
+    const t2 = unwrap(await callTool('get_transcript', { sessionId: sid }));
+    assert.equal(t2.source, 'disk', JSON.stringify(t2));
+    assert.ok(t2.events.length >= 1, `expected >= 1 event, got ${t2.events.length}`);
   });
 
   // ── T9 ──────────────────────────────────────────────────────────────
@@ -448,5 +512,58 @@ describe('a session on a project on a system', () => {
     const r = await api(baseUrl, 'GET', `/api/sessions/${s.sessionId}/locate`);
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.deepEqual(r.body, { project: 'app', worktreeName: null, archived: false });
+  });
+
+  // ── T13 ─────────────────────────────────────────────────────────────
+  // PINS: a lookup does NO WORK for a place ordered after the one that answers
+  // in pass 1 — measured ON THE WIRE, because that is the only honest evidence
+  // for a frame cc must not send. Composing a project's worktree places calls
+  // listWorktrees, which resolves the project and runs `git worktree list`
+  // THROUGH its system, so an eagerly-built place list contacts every
+  // registered remote system on every lookup — and `runGit` passes no
+  // `timeoutMs`, so one wedged provider would stall every locate, transcript
+  // read, summary and bare resume up to the provider operation timeout.
+  // Arm (b) is not decoration: without it arm (a) would also pass if the
+  // recorder never recorded anything at all.
+  // NOT a claim about what the ANSWER needs from the box (nothing — a separate
+  // property), and NOT a timing claim: this says nothing about how long an
+  // unreachable or wedged system takes. It is only about WHICH places a lookup
+  // composes, which is the thing that decides whether the box is reached at all.
+  test('T13: a pass-1 hit composes no place ordered after it, measured on the wire', async () => {
+    // 'early' answers; 'zzz' sorts after it and is the one that must stay
+    // untouched. Its provider is the recorder, so any contact leaves bytes.
+    const early = await bindRemoteSystem({ id: 'early' });
+    const rec = path.join(await mkdtemp('cc-0292-rec-'), 'frames.jsonl');
+    await addSystem({ id: 'later', label: 'later', launch: ['node', RECORDER, '--record', rec] });
+
+    const earlyTree = await seedRepo(path.join(early.root, 'aaa'));
+    assert.equal((await adoptProject('aaa', earlyTree, { system: early.id })).ok, true);
+    const laterTree = await seedRepo(path.join(early.root, 'zzz'));
+    assert.equal((await adoptProject('zzz', laterTree, { system: 'later' })).ok, true);
+
+    // Seed the session directly at 'aaa's session root rather than through the
+    // spawn route: a route call broadcasts, and plugin discovery resolves every
+    // project off that broadcast, which would put frames on the wire this test
+    // cannot attribute.
+    const imageRoot = sessionRootPath(early.id, 'aaa', null);
+    await fs.mkdir(imageRoot, { recursive: true });
+    const cwd = await fs.realpath(imageRoot);
+    const sid = 'eeeeeeee-1111-4111-8111-aaaaaaaaaaaa';
+    await seedSessionJsonl(claudeProjectsRoot, cwd, sid);
+
+    // Everything above has already talked to both boxes. Start the recording
+    // from empty, so what follows is attributable to the lookup alone.
+    await fs.writeFile(rec, '');
+
+    // (a) the hit is at 'aaa's own root — the first place in probe order.
+    assert.deepEqual(await findSessionLocation(sid), { project: 'aaa', worktreeName: null, cwd });
+    assert.deepEqual(await wireFrames(rec), [],
+      'a pass-1 hit must not compose a place ordered after it, and composing one talks to its system');
+
+    // (b) a MISS enumerates everything, so the recorder does see frames — which
+    // is what makes (a)'s empty transcript evidence rather than a dead fixture.
+    assert.equal(await findSessionLocation(UNKNOWN_ID), null);
+    assert.ok((await wireFrames(rec)).length >= 1,
+      'a full miss composes every place, so the later system IS contacted');
   });
 });
