@@ -467,6 +467,41 @@ describe('a worker session on a remote system', () => {
     assert.equal(ran.code, 0);
   });
 
+  // PINS THE WHOLE TIMEOUT CHAIN ON ONE OBSERVABLE, and after card 2026-0305 it
+  // is the only end-of-chain observable left: the tool's `timeout` no longer
+  // changes any run outcome, so nothing downstream of it can be read off the
+  // command's own behaviour. What is left is the WAIT bound, and `50` can only
+  // have reached it through every hop — hook `tool_input.timeout` → the rewrite's
+  // `--timeout` argv → a real forwarder process → `timeoutMs` on the POST body →
+  // `Number(body.timeoutMs)` in src/routes.ts → `runForwarded` → `shell.run` →
+  // `#acquire`. Any hop dropping it leaves the queued call waiting out the
+  // 605s ceiling instead, and this test times out rather than passing.
+  //
+  // GREEN ON ARRIVAL — the chain is unchanged by that card, which is the point:
+  // `--timeout` had to stay load-bearing for the argv branch to keep its reason.
+  //
+  // The witness file is the barrier, not a sleep: the shell is provably busy
+  // only once the held command has actually started running ON THE SYSTEM.
+  test('the tool timeout reaches the shell as the wait bound, through every hop', async () => {
+    const held = await hook({ tool_name: 'Bash', tool_input: {
+      command: `touch ${JSON.stringify(onSystem('HOLDING'))}; sleep 2`,
+    } });
+    // Not awaited: it holds the session's main-agent shell for ~2s.
+    const holding = runAsTheCliWouldStreaming(held.body.hookSpecificOutput.updatedInput.command, root);
+    await waitFor(() => fs.stat(onSystem('HOLDING')));
+
+    const queued = await hook({ tool_name: 'Bash', tool_input: { command: 'echo hi', timeout: 50 } });
+    const ran = await runAsTheCliWouldStreaming(queued.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ran.code, 1, ran.of('out') + ran.of('err'));
+    assert.match(ran.of('err'), /the shell is busy — waited 50ms for its turn/);
+    assert.equal(ran.of('out'), '', 'it never ran, so it produced nothing');
+
+    // The holder still completes normally: a refused queued call must not
+    // disturb the command that held the shell.
+    const done = await holding;
+    assert.equal(done.code, 0, done.of('err'));
+  });
+
   // PINS: cc's own refusals still reach the worker. The endpoint answers in
   // frames now, so a refusal written in the old single-object shape would be
   // silently ignored by the forwarder and surface as an unexplained failure.
@@ -609,9 +644,13 @@ describe('a worker session on a remote system', () => {
   });
 
   // PINS AC6: the disclosure states that shell state is PER AGENT. On a remote
-  // system `export` persists across an agent's own commands — better than local
-  // — which invites the false generalisation that a dispatched subagent inherits
-  // it; told, the agent passes the value in the subagent's prompt instead, and
+  // system `export` persists across an agent's own commands, where a local
+  // session persists neither `export` nor `cd` — each local `Bash` call gets a
+  // brand-new shell and the CLI resets the working directory to the project root
+  // (measured on CLI 2.1.258; card 2026-0305 §2, correcting an earlier wording
+  // here that said only `cd` failed to persist locally). So the asymmetry is
+  // wider than it was documented as, and it invites the false generalisation
+  // that a dispatched subagent inherits it; told, the agent passes the value in the subagent's prompt instead, and
   // told the converse it stops treating a subagent's `cd` as a hazard to its own
   // state. Nothing else volunteers either half: a missing export in a subagent
   // looks like an ordinary unset variable, and a subagent's `cd` NOT reaching the

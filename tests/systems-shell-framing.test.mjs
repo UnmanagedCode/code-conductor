@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ProviderShell } from '../src/systems/providerShell.ts';
+import { DEFAULT_COMMAND_TIMEOUT_MS, ProviderShell } from '../src/systems/providerShell.ts';
 import {
   FramedStreamFilter, beginFor, frameCommand, newNonce,
   parseFramedStderr, parseFramedStdout, sentinelFor,
@@ -470,6 +470,80 @@ for (const mode of MODES) {
     });
   });
 
+  // PINS D4's WORDING ON *BOTH* MESSAGE SITES, and it exists because the
+  // fallback one had no deliberate coverage at all.
+  //
+  // The two sites are different code paths that must not describe one outcome
+  // two ways: `#exchange`'s reset timer (persistent) and `#runOneShot`'s
+  // `r.timedOut` branch (fallback). The wedge test above reaches only the first
+  // — a fallback wedge kills bash outright and reports ESHELLGONE, so no
+  // fallback case in this loop had ever asserted an ETIMEDOUT message. Its only
+  // killer was tests/systems-shell-ceiling-env.test.mjs reading the number back
+  // out of the message to get at the ceiling, which is INCIDENTAL: that test
+  // would still pass with the old wedge-shaped wording restored. What would
+  // regress is a fallback-mode worker at the ceiling reading a message that
+  // describes an internal fault instead of a ceiling (card 2026-0305 §4 D4).
+  //
+  // A plain `sleep` reaches both, which a wedge does not: in persistent mode
+  // the reset timer fires, in the fallback mode `exec`'s own timeout does and
+  // the provider reports `timedOut`. 400ms against a 30s sleep — a 60x+ margin,
+  // and in persistent mode the timer is cc's own `setTimeout`, so starvation
+  // barely moves it. Measured n=16/mode: 401-404ms quiet, 401-438ms at 72-way
+  // starvation (load 40).
+  //
+  // NO RECOVERY ASSERTION HERE, DELIBERATELY — do not add one back. A
+  // `run('echo alive')` after the reset would run under this same 400ms
+  // ceiling, and that is the one thin margin on this card: measured 3.0x at
+  // 72-way (max 132ms), against a branch whose docs/architecture.md records a
+  // 10x quiet margin INVERTING under the same condition (card 2026-0228). It
+  // would also buy nothing. In persistent mode the unterminated-quote case
+  // above already pins recovery after a real-provider deadline reset, and the
+  // fake-host case at the end of this file pins it without any wall clock at
+  // all; in the FALLBACK mode there is nothing to recover, because
+  // `#runOneShot`'s `r.timedOut` branch throws without a teardown and records
+  // no reset reason — each command is its own `exec`. So the assertion would be
+  // redundant in one mode, vacuous in the other, and the only new flake vector
+  // in either. The ceiling stays tight because the message is the subject.
+  test(`[${mode.name}] the ceiling names itself as a ceiling in the message a worker reads`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      await assert.rejects(() => sh.run('sleep 30'), (e) => {
+        assert.equal(e.code, 'ETIMEDOUT', `got ${e.code}: ${e.message}`);
+        // The number is THIS shell's resolved ceiling, so a literal fails here;
+        // and the phrasing is the ceiling's, not the wedge's.
+        assert.match(e.message, /still running after 400ms/, e.message);
+        assert.match(e.message, /per-command ceiling/, e.message);
+        return true;
+      });
+    }, { commandTimeoutMs: 400 });
+  });
+
+  // PINS card 2026-0305 §4 D1 AT A REAL SHELL: the caller's `timeoutMs` bounds
+  // how long the call WAITS for its turn, and no longer how long the command may
+  // RUN. Before this card the two were one number, so a command that outlived
+  // the tool's own timeout was killed at that instant — while the CLI had
+  // already DETACHED the forwarder and handed the agent a pointer to output that
+  // kept arriving. The run bound is cc's ceiling (`commandTimeoutMs` here), and
+  // the caller cannot move it in either direction.
+  //
+  // THE TIGHT CASE IS THE MEASUREMENT, not decoration: 1ms as the FIRST command
+  // on a shell that has never been opened. `#acquire` on a quiescent shell
+  // returns without arming a timer at all, and the shell OPEN happens after
+  // acquisition — `#runPersistent` awaits `#ensureStream` only once it owns the
+  // turn — so a wait bound smaller than any real open still passes. If either
+  // fact stopped holding, this is the assertion that would flake first, and it
+  // is what licenses the 100ms below.
+  test(`[${mode.name}] a command outlives the tool's own timeout`, async () => {
+    await withShell(mode.flags, async (sh) => {
+      const tight = await sh.run('echo tight', { timeoutMs: 1 });
+      assert.equal(tight.stdout, 'tight\n', 'opening the shell is not inside the wait window');
+      assert.equal(tight.code, 0);
+
+      const r = await sh.run('sleep 0.3; echo done', { timeoutMs: 100 });
+      assert.equal(r.stdout, 'done\n', 'the command ran 3x past the timeout the caller named');
+      assert.equal(r.code, 0);
+    }, { commandTimeoutMs: 2_000 });
+  });
+
   // PINS: cc serialises per shell, and the wait a queued call is willing to
   // spend is ITS OWN timeout — a call that would only run for 30ms gives up
   // waiting after 30ms, with EBUSY.
@@ -710,6 +784,61 @@ function fakeHost({ banner = '', bannerErr = '', respond }) {
   return { host, state };
 }
 
+// A FALLBACK-MODE host that records the `timeoutMs` each command's `exec` was
+// actually given, and answers it as a real shell running the framed script
+// would. `persistentShell:false` is the mode where the resolved deadline is
+// VISIBLE — it leaves cc as `ExecOptions.timeoutMs` — rather than living only in
+// a cc-side timer, which is why the probe is built on it.
+function recordingOneShotHost() {
+  const seen = [];
+  const host = {
+    capabilities: { persistentShell: false, processGroupSignal: true },
+    descriptor: { os: 'linux', pathSep: '/', shell: '/bin/bash', home: '/root' },
+    openStream() { throw new Error('not used'); },
+    async execOneShot(spec, opts) {
+      seen.push(opts.timeoutMs);
+      const { out, err } = shellEmissions(spec.shell);
+      const closing = out[1].replace('%d', '0').replace('%s', Buffer.from('/w').toString('base64'));
+      const stdout = `${out[0]}${closing}`;
+      const stderr = `${err[0]}${err[1]}`;
+      return {
+        code: 0, stdout, stderr, output: stdout + stderr,
+        timedOut: false, truncated: false, durationMs: 0, spawnError: null,
+      };
+    },
+  };
+  return { host, seen };
+}
+
+// PINS card 2026-0305 §4 D1 AND D2 AT THE ONE LINE THEY BOTH LIVE ON, and this
+// is the test that fails if a future editor re-wires `timeoutMs` to the
+// deadline: the RESOLVED per-command deadline is cc's ceiling for every call,
+// whatever the caller asked for.
+//
+// Three resolutions, and the third is the one the old code could not produce:
+// a caller asking for MORE than the ceiling does not get it either. `Math.max`
+// on the caller's number would pass the first two and fail this one.
+//
+// The value itself is pinned here too, because it is derived rather than
+// written: 600_000 is the built-in Bash tool's documented max (the same number
+// src/mcp/handlers.ts clamps `project_bash` to) plus 5s of slack, so that for a
+// tool timeout up to that documented max the caller's own timer is the one that
+// decides the outcome and never cc's. Past the documented max that ordering is
+// unmeasured and ORCH_SHELL_COMMAND_TIMEOUT_MS is what restores it — this test
+// pins the NUMBER and the derivation, and claims nothing about which timer wins.
+test("the per-command deadline is cc's ceiling, and a caller's timeoutMs cannot move it", async () => {
+  assert.equal(DEFAULT_COMMAND_TIMEOUT_MS, 605_000, 'the ceiling is 600_000 + 5_000 of slack');
+
+  const { host, seen } = recordingOneShotHost();
+  const sh = new ProviderShell(host, { cwd: '/w' });
+  assert.equal((await sh.run('echo a')).code, 0);
+  assert.equal((await sh.run('echo b', { timeoutMs: 100 })).code, 0);
+  assert.equal((await sh.run('echo c', { timeoutMs: 900_000 })).code, 0);
+
+  assert.deepEqual(seen, [DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS],
+    'an untimed call, a tighter one and a LOOSER one all resolve to the same ceiling');
+});
+
 // PINS C2: an abort that lands while the shell is being OPENED still cancels
 // the command. `run()` checks the signal before acquiring and again after, then
 // awaits `#ensureStream()` — and the kill listener only arms inside `#exchange`,
@@ -936,7 +1065,21 @@ test('a command whose sentinel never arrives times out and RESETS the shell', as
     return { ...s, close: () => { closed++; } };
   };
   const sh = new ProviderShell(host, { cwd: '/w', commandTimeoutMs: 50 });
-  await assert.rejects(() => sh.run('wedge'), (e) => e.code === 'ETIMEDOUT');
+  await assert.rejects(() => sh.run('wedge'), (e) => {
+    assert.equal(e.code, 'ETIMEDOUT', e.message);
+    // THE WORDING, not just the code (card 2026-0305 §4 D4). After that card
+    // this same message is also what a worker reads when a legitimately long
+    // command hits cc's ceiling, so it has to name the ceiling as a ceiling
+    // rather than describe a wedge — the old wedge-shaped wording read as an
+    // internal fault. The number is THIS shell's ceiling, so a message carrying
+    // a literal fails here.
+    //
+    // The retired string is deliberately NOT quoted here: the acceptance sweep
+    // greps for it expecting zero hits, and a comment holding a copy would make
+    // a real regression of the message indistinguishable from this comment.
+    assert.match(e.message, /still running after 50ms/, e.message);
+    return true;
+  });
   assert.equal(closed, 1, 'the wedged shell is closed, not left holding the next command');
   assert.equal(sh.open, false);
   assert.match(sh.resetReason, /deadline/, 'the reason is recorded so a reconnect can SAY it lost its state');

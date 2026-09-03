@@ -349,14 +349,18 @@ Rules:
 - `close` means cc has stopped listening: kill the command (hard) and emit
   **no further frames** for that id.
 - **Backstop: no operation is unbounded.** cc arms its own deadline on every
-  `exec` — at `timeoutMs + 5 s` when the caller named one, and at a generous
-  default ceiling when it did not (`runGit` and the §7 derivations deliberately
-  carry no timeout, because locally there is nothing to time out against).
-  Expiry sends `close`, which is the provider's instruction to kill the command,
-  and reports `{code:124, timedOut:true}`. `readFile` and `writeFile` carry the
-  same ceiling and fail `ETIMEDOUT`. The ceiling is a liveness fence, not a
-  performance budget: it sits above the slowest legitimate operation cc issues,
-  so it can only ever turn a hang into a reported failure.
+  `exec` **except the persistent shell's** — at `timeoutMs + 5 s` when the caller
+  named one, and at a generous default ceiling when it did not (`runGit` and the
+  §7 derivations deliberately carry no timeout, because locally there is nothing
+  to time out against). Expiry sends `close`, which is the provider's instruction
+  to kill the command, and reports `{code:124, timedOut:true}`. `readFile` and
+  `writeFile` carry the same ceiling and fail `ETIMEDOUT`. The ceiling is a
+  liveness fence, not a performance budget: it sits above the slowest legitimate
+  operation cc issues, so it can only ever turn a hang into a reported failure.
+  `openStream` arms **none** and sends no `timeoutMs`: the shell it carries is
+  meant to outlive any one command, so what bounds that path is the **per-command**
+  ceiling in §5, and expiry there **resets the shell** instead of reporting
+  `{code:124,timedOut:true}`.
 
 ### The long-lived shell (cc-side framing)
 
@@ -413,16 +417,36 @@ the opening sentinel line is discarded. This matters most in the
 and so its own copy of that banner.
 
 Two wedge modes, one recovery: an unterminated quote leaves the shell awaiting
-input and no sentinel arrives (a per-command deadline fires → `ETIMEDOUT`); a
+input and no sentinel arrives (the per-command deadline fires → `ETIMEDOUT`); a
 command that exits the shell closes the channel (`ESHELLGONE`). Both **reset**
 the shell — close it and open a fresh one on the next command. A reconnected
 shell says it lost its state rather than silently restoring cwd and looking
 continuous. Concurrent commands are serialised per shell; a wait past its bound
 is `EBUSY`.
 
-Because `$SHELL -l` is a **login** shell, cc discards one framed no-op
-immediately after opening it, so profile-file output is never attributed to a
-user command.
+**The shell's deadline is PER COMMAND, and it is cc's, not the caller's.**
+Distinct from every other operation's fence in three ways a provider author has
+to know:
+
+- **A shell `exec` may legitimately live for the whole session**, so a provider
+  **must not impose an idle timeout of its own on it** — cc sends no `timeoutMs`
+  on the `openStream` frame and arms no cc-side deadline on that `exec`.
+- What is bounded is each **framed command** inside it, by
+  `DEFAULT_COMMAND_TIMEOUT_MS` (605 000 ms = the built-in Bash tool's documented
+  600 000 ms max plus 5 s of slack, so that for any tool timeout **up to that
+  documented max** the caller's own timer expires first and cc's never decides
+  the outcome; `ORCH_SHELL_COMMAND_TIMEOUT_MS` overrides it). A tool timeout
+  **above** the documented max is unmeasured; if the CLI honours one it outruns
+  this ceiling, and raising that var is what restores the ordering.
+- **A caller's `timeout` cannot move it.** The tool timeout a redirected `Bash`
+  carries is a *foreground wait* and cc treats it as one: it bounds only how long
+  that command waits for its turn on the shell (`EBUSY` past it), never how long
+  it may run.
+
+Expiry **resets the shell** and fails the command `ETIMEDOUT`, rather than
+sending `close` and reporting `{code:124,timedOut:true}` as a bounded `exec`
+does: a framed command shares the shell's process group and has no `exec` id of
+its own to signal.
 
 ## 6. `readFile` and `writeFile`
 

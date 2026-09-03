@@ -298,10 +298,13 @@ export class SessionRedirect {
   #redirectBash(toolInput: Record<string, unknown>, agentId: string | null): RedirectDecision {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     if (!command) return { decision: 'allow' };
-    // The tool's own timeout becomes the shell's deadline. Without it a worker
-    // that asked for ten minutes would have its shell RESET at cc's default
-    // two, losing that agent's cwd and exports for a command that was still
-    // healthy.
+    // The tool's own timeout is forwarded as the CALLER'S OWN PATIENCE: it
+    // bounds how long this command waits for its turn on that agent's shell,
+    // and it cannot move cc's per-command ceiling. It used to become the
+    // deadline, which killed the command at the same instant the CLI detached
+    // the forwarder and handed the agent a pointer to it (card 2026-0305 §4).
+    // The ceiling now sits above the built-in Bash tool's documented max, so a
+    // worker asking for ten minutes is not reset early either way.
     const timeout = Number(toolInput.timeout);
     const argv = [
       shQuote(process.execPath), shQuote(FORWARDER),

@@ -12,9 +12,11 @@
 // FOUR FAILURE MODES, all reachable and all tested:
 //   EBUSY       — cc serialises per shell; a wait past its bound is refused
 //                 rather than queued forever.
-//   ETIMEDOUT   — no sentinel inside the deadline (an unterminated quote leaves
-//                 the shell reading input that will never come). RESETS the
-//                 shell; the next command gets a fresh one.
+//   ETIMEDOUT   — the per-command ceiling expired. TWO CAUSES, one outcome: a
+//                 wedge (an unterminated quote leaves the shell reading input
+//                 that will never come, so no sentinel can arrive) or a command
+//                 that legitimately ran that long. RESETS the shell either way;
+//                 the next command gets a fresh one.
 //   ESHELLGONE  — the shell died, or the command destroyed the framing (an
 //                 `exit`, a syntax error that takes the shell with it), so no
 //                 sentinel can arrive. Also a reset.
@@ -82,12 +84,57 @@ function isFsErrorCode(code: SystemErrorCode): boolean {
   return (FS_ERROR_CODES as readonly string[]).includes(code) && code !== 'EUNKNOWN';
 }
 
-const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+// THE CLI's OWN CEILING for one Bash call. cc's sits ABOVE it rather than being
+// tied to it: two timers armed on the same nominal value made which framing the
+// agent got at the deadline a coin flip (card 2026-0305 §1). 600_000 is the
+// built-in Bash tool's documented max — the same number src/mcp/handlers.ts
+// clamps `project_bash` to — and 120_000 is its default, which cc used to tie
+// this constant to.
+const BASH_TOOL_MAX_TIMEOUT_MS = 600_000;
+
+// Extra time cc keeps a command past the DOCUMENTED max above, so that for any
+// tool timeout up to it the caller's own timer expires first and cc's is never
+// what decides the outcome. SCOPED TO THE DOCUMENTED MAX ON PURPOSE: a tool
+// timeout ABOVE 600_000 is unmeasured (the rig could not make the model emit
+// one), and if the CLI honours such a value it outruns this ceiling — cc would
+// then reset at 605s a command the CLI is still waiting on, which is this
+// card's own dead-pointer divergence relocated. ORCH_SHELL_COMMAND_TIMEOUT_MS
+// restores the ordering, and that is the answer rather than a placeholder:
+// measuring the CLI's true maximum is not cheaply possible from here. Same
+// value and same reason as providerSystem.ts's EXEC_TIMEOUT_SLACK_MS, which is
+// not shared because providerSystem.ts imports THIS module.
+const SHELL_TIMEOUT_SLACK_MS = 5_000;
+
+// THE PER-COMMAND CEILING, AND IT IS ONE NUMBER DOING THREE JOBS: the longest a
+// command may run, the longest a WEDGED shell stays wedged, and the longest a
+// queued command waits for its turn on that agent's shell. So it is not "as
+// large as possible". Unbounded is what the output fence below rules out for a
+// caller that does not control the command — and here the MODEL writes the
+// command: an unterminated quote is enough to wedge a shell, and nothing clears
+// it early (the idle sweep is armed only after a command finishes). At this
+// value cc never kills a command the CLI would still be waiting for FOR ANY
+// TOOL TIMEOUT UP TO ITS DOCUMENTED MAX (see SHELL_TIMEOUT_SLACK_MS above for
+// what is unmeasured past it), and a wedge always clears well inside
+// toolRedirect.ts's 15-minute idle TTL. Raise it for legitimately longer
+// background work — a LOCAL background Bash has no deadline at all — or to
+// restore the ordering against a tool timeout above the documented max,
+// knowing the wedge window rises with it either way.
+//
+// EXPORTED so a test can pin the value and the derivation without waiting either
+// out, the same shape as providerSystem.ts's DEFAULT_OP_TIMEOUT_MS. Read HERE
+// rather than threaded through src/instances.ts: `commandTimeoutMs` below is a
+// test seam beside three equally-unwired siblings in toolRedirect.ts, so this
+// env var is the only thing a deployment has.
+export const DEFAULT_COMMAND_TIMEOUT_MS =
+  Number(process.env.ORCH_SHELL_COMMAND_TIMEOUT_MS) || BASH_TOOL_MAX_TIMEOUT_MS + SHELL_TIMEOUT_SLACK_MS;
 
 // Everything a caller can say about one command. `signal` cancels THIS call;
 // `onStart` fires once it owns the shell, which is where a caller learns whether
 // the shell it is about to use was reset since the last command.
 export interface ShellRunOptions extends ShellStreamSink {
+  // HOW LONG THIS CALL WILL WAIT FOR ITS TURN on the shell, and nothing else. It
+  // does NOT bound how long the command may run — that is
+  // DEFAULT_COMMAND_TIMEOUT_MS above, and no caller can move it. See run().
   timeoutMs?: number;
   signal?: AbortSignal;
   onStart?: () => void;
@@ -152,14 +199,25 @@ export class ProviderShell {
   get persistent(): boolean { return this.#host.capabilities.persistentShell; }
 
   async run(command: string, { timeoutMs, onOut, onErr, signal, onStart }: ShellRunOptions = {}): Promise<ShellResult> {
-    const deadline = timeoutMs ?? this.#commandTimeoutMs;
+    // TWO NUMBERS NOW, AND ONLY ONE OF THEM IS THE CALLER'S TO SET.
+    //
+    // `timeoutMs` is how long THIS CALL is willing to WAIT for its turn on the
+    // shell — the caller's own patience, and the same semantic the CLI's Bash
+    // `timeout` has: a foreground wait, not a kill order. A call that would only
+    // run for 30ms gives up waiting after 30ms; a call willing to run for ten
+    // minutes waits that long rather than failing behind a healthy command (a
+    // fixed 60s bound made a long command fail every queued call behind it).
+    //
+    // The RUN bound is cc's ceiling and the caller cannot move it. Mirroring
+    // `timeoutMs` onto the deadline turned that foreground wait into a kill: the
+    // CLI DETACHES a timed-out forwarder and hands the agent a pointer to output
+    // that keeps arriving, and cc killed the command at the same instant, so the
+    // pointer was dead. Nothing on the shell path may take its run bound from
+    // the caller again (card 2026-0305 §3).
+    const waitMs = timeoutMs ?? this.#commandTimeoutMs;
+    const deadline = this.#commandTimeoutMs;
     if (signal?.aborted) throw cancelled();
-    // ONE KNOB, and it is the call's own deadline. A call willing to RUN for
-    // ten minutes is willing to wait that long for its turn; a fixed 60s bound
-    // made a long healthy command fail every queued call behind it with "the
-    // shell is busy" while nothing was wrong. A separate wait bound could only
-    // ever contradict the timeout the caller already stated.
-    await this.#acquire(deadline, signal);
+    await this.#acquire(waitMs, signal);
     try {
       // RE-CHECKED AFTER ACQUISITION, and this is the whole of why a cancelled
       // queued call does not run: the caller may have gone away during the
@@ -272,14 +330,17 @@ export class ProviderShell {
         pending.resolve = resolve;
         pending.reject = reject;
         timer = setTimeout(() => {
-          // A wedge — an unterminated quote leaves the shell waiting for input
-          // that will never come. Reset rather than hang: a shell that cannot
-          // frame a command cannot frame the next one either. The reset is what
-          // fails this command, with ETIMEDOUT rather than the generic
-          // shell-gone code, because the deadline is what it was.
+          // Either a wedge — an unterminated quote leaves the shell waiting for
+          // input that will never come — or a command that really ran this
+          // long. Reset either way: a shell that cannot frame a command cannot
+          // frame the next one either, and a command with no exec id of its own
+          // can only be stopped by closing the shell it shares a process group
+          // with. The reset is what fails this command, with ETIMEDOUT rather
+          // than the generic shell-gone code, because the deadline is what it
+          // was.
           this.#tearDown(
             'a command exceeded its deadline',
-            new SystemError('ETIMEDOUT', `no shell sentinel within ${deadline}ms — the shell was reset`),
+            new SystemError('ETIMEDOUT', `the command was still running after ${deadline}ms, cc's per-command ceiling — the shell was reset`),
           );
         }, deadline);
         timer.unref?.();
@@ -405,7 +466,7 @@ export class ProviderShell {
     }
     if (r.timedOut) {
       flushFilters(filters, sink);
-      throw new SystemError('ETIMEDOUT', `no shell sentinel within ${deadline}ms — the shell was reset`);
+      throw new SystemError('ETIMEDOUT', `the command was still running after ${deadline}ms, cc's per-command ceiling — the shell was reset`);
     }
     if (r.spawnError) {
       // The shell itself never started — a cwd deleted since the last command
