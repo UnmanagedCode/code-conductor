@@ -60,21 +60,13 @@ export interface HookEnvelope {
   tool_name?: unknown;
   tool_input?: unknown;
   tool_response?: unknown;
-  // Present on a SUBAGENT's PreToolUse payload and absent on the main agent's
-  // (measured). It is what lets a redirected session give each agent its own
-  // shell on the far side instead of sharing one.
-  agent_id?: unknown;
 }
 
 // What the broker needs from a redirected session, and nothing more. Satisfied
 // structurally by SessionRedirect (src/systems/toolRedirect.ts), so the broker
 // does not import the Systems layer's machinery to answer a hook.
 export interface HookRedirector {
-  preToolUse(
-    toolName: string,
-    toolInput: Record<string, unknown>,
-    agentId: string | null,
-  ): Promise<RedirectDecision>;
+  preToolUse(toolName: string, toolInput: Record<string, unknown>): Promise<RedirectDecision>;
   // The note to attach to the tool result, or null for none.
   postToolUse(toolName: string, toolInput: Record<string, unknown>, toolResponse: unknown): Promise<string | null>;
 }
@@ -157,10 +149,7 @@ export class HookBroker {
 
     let updatedInput: Record<string, unknown> | undefined;
     if (redirect) {
-      // An empty string is the CLI saying nothing, not an agent named '' — it
-      // must select the main agent's shell rather than a shell of its own.
-      const agentId = typeof envelope?.agent_id === 'string' && envelope.agent_id ? envelope.agent_id : null;
-      const decision = await redirect.preToolUse(toolName, toolInput, agentId);
+      const decision = await redirect.preToolUse(toolName, toolInput);
       if (decision.decision === 'deny') {
         respondDeny(res, decision.reason ?? `orchestrator: ${toolName} is not available on this system`);
         return;

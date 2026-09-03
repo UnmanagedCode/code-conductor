@@ -205,36 +205,3 @@ test('with no redirector the broker is unchanged', async () => {
   assert.equal(events.length, 0);
 });
 
-// PINS HOP 2 OF 4 of the agent id's journey: the broker lifts `agent_id` off the
-// CLI's envelope and hands it to the redirector, and hands exactly `null` when
-// the field is absent.
-//
-// OTHERWISE INVISIBLE. Both envelopes produce an identical allow, so nothing
-// downstream of the broker can tell whether the id was read — a broker that
-// dropped it would put every subagent on the main agent's shell with every
-// command still succeeding. Hence a recording fake and both input shapes.
-//
-// NOT CLAIMING: what the redirector does with the id (the per-agent shell
-// tests), nor that the CLI populates the field (the gated CLI-contract suite).
-test('the broker passes agent_id through, and null when it is absent', async () => {
-  const seen = [];
-  const { b } = broker({ redirect: {
-    preToolUse: async (name, input, agentId) => { seen.push(agentId); return { decision: 'allow' }; },
-    postToolUse: async () => null,
-  } });
-
-  const withId = fakeRes();
-  b.handle(envelope({ agent_id: 'a8620fbbffcb7f234' }), withId);
-  await settled(withId);
-
-  const without = fakeRes();
-  b.handle(envelope(), without);
-  await settled(without);
-
-  // An empty string is the CLI saying nothing, not an agent named ''.
-  const blank = fakeRes();
-  b.handle(envelope({ agent_id: '' }), blank);
-  await settled(blank);
-
-  assert.deepEqual(seen, ['a8620fbbffcb7f234', null, null]);
-});

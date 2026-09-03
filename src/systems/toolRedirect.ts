@@ -13,9 +13,9 @@
 // So the three tool families are handled, and nothing is left to fall through:
 //   Bash          — REWRITTEN into a local forwarder that runs the command on
 //                   the system as its own `exec`, one per command
-//                   (src/systems/bashForwarder.ts). Which agent asked selects
-//                   the cwd the command starts from, keyed off the `agent_id`
-//                   the hook carries.
+//                   (src/systems/bashForwarder.ts). Nothing outlives a command,
+//                   so no command's state reaches any later one and there is
+//                   nothing to keep one agent's commands apart from another's.
 //   Read/Write/    — PULL-THEN-PUSH through src/systems/fileBridge.ts, at the
 //   Edit/Notebook    path the CLI is about to open. Never rewritten.
 //   Glob/Grep     — removed from the tool registry by the injected settings
@@ -116,15 +116,6 @@ const UNREDIRECTABLE_TOOLS = new Set(['Glob', 'Grep']);
 // far below what threatens the process.
 const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
-// The main agent's shell key. Every subagent's is `agent:<id>`, and the prefix
-// is namespacing rather than decoration: a bare `agentId ?? 'main'` would put an
-// agent whose id is literally `main` on the MAIN agent's shell.
-const MAIN_SHELL_KEY = 'main';
-
-function shellKey(agentId: string | null): string {
-  return agentId ? `agent:${agentId}` : MAIN_SHELL_KEY;
-}
-
 const FORWARDER = path.join(path.dirname(new URL(import.meta.url).pathname), 'bashForwarder.ts');
 
 export interface SessionRedirectOptions {
@@ -181,10 +172,11 @@ export class SessionRedirect {
   readonly #shellCommandTimeoutMs: number | undefined;
   readonly #maxOutputBytes: number;
 
-  // Keyed by shellKey(): the main agent's shell plus one per subagent that has
-  // run a command. Each holds that agent's cwd and nothing else — no process
-  // outlives a command, so an entry costs nothing on the far side.
-  readonly #shells = new Map<string, ProviderShell>();
+  // ONE for the whole session, built on first use. It holds configuration only —
+  // the project root, the fence, the ceiling — because no command's state
+  // reaches any later command, so there is nothing left for a per-agent one to
+  // keep apart (card 2026-0312 §3a).
+  #shell: ProviderShell | null = null;
 
   constructor(opts: SessionRedirectOptions) {
     this.map = new SessionPathMap(opts.sessionRoot, opts.mirror.mirrorRoot, opts.mirror.exclude);
@@ -223,15 +215,9 @@ export class SessionRedirect {
 
   // ── PreToolUse ─────────────────────────────────────────────────────
 
-  // `agentId` is the dispatching subagent's `agent_id` off the CLI's hook
-  // envelope, or null for the session's main agent (the field is ABSENT on the
-  // main agent's payload — measured). It selects which shell the command runs
-  // in; nothing else branches on it. Defaulted so a caller that has no agent to
-  // name does not have to say so.
   async preToolUse(
     toolName: string,
     toolInput: Record<string, unknown>,
-    agentId: string | null = null,
   ): Promise<RedirectDecision> {
     if (UNREDIRECTABLE_TOOLS.has(toolName)) {
       return {
@@ -240,13 +226,13 @@ export class SessionRedirect {
           + `project's files are. Use \`find\` or \`grep\` through Bash, which runs there.`,
       };
     }
-    if (toolName === 'Bash') return this.#redirectBash(toolInput, agentId);
+    if (toolName === 'Bash') return this.#redirectBash(toolInput);
     const key = FILE_TOOLS[toolName];
     if (key === undefined) return { decision: 'allow' };
     return this.#redirectFile(toolName, key, toolInput);
   }
 
-  #redirectBash(toolInput: Record<string, unknown>, agentId: string | null): RedirectDecision {
+  #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
     if (!command) return { decision: 'allow' };
     // THE TOOL'S OWN `timeout` IS NOT FORWARDED, and that is deliberate. It once
@@ -259,13 +245,6 @@ export class SessionRedirect {
     const argv = [
       shQuote(process.execPath), shQuote(FORWARDER),
       '--url', shQuote(this.#forwarderUrl),
-      // THE ONLY CHANNEL the agent id has. `agent_id` arrives on the hook, but
-      // the command does not run there: the CLI later spawns the forwarder as
-      // its own process, which POSTs the command back to cc. So the id rides
-      // the forwarder's argv and returns on its request body. Omitted entirely
-      // for the main agent, so a forwarder invocation and a body without it
-      // both mean the same thing.
-      ...(agentId ? ['--agent', shQuote(agentId)] : []),
       '--', shQuote(command),
     ];
     // Spread the original: `updatedInput` REPLACES the tool input, so a field
@@ -395,9 +374,7 @@ export class SessionRedirect {
 
   // ── The forwarded command ──────────────────────────────────────────
 
-  // Run one command in the shell belonging to the AGENT that asked for it —
-  // `agentId` null for the session's main agent. Called by the forwarder's HTTP
-  // request, which carries the id back from the rewrite.
+  // Run one command on the system. Called by the forwarder's HTTP request.
   //
   // EVERY COMMAND OF A SESSION GENUINELY OVERLAPS EVERY OTHER — nothing
   // serialises. That holds because the layers below are multiplexed, which was
@@ -421,10 +398,10 @@ export class SessionRedirect {
   // dead provider, a deadline — comes back as a non-zero exit with the reason on
   // stderr, because that is the channel the worker actually reads. A rejected
   // HTTP request would reach it as an opaque forwarder crash instead.
-  async runForwarded(command: string, { signal, sink, agentId }: { signal?: AbortSignal; sink?: ForwardSink; agentId?: string | null } = {}): Promise<ForwardedResult> {
+  async runForwarded(command: string, { signal, sink }: { signal?: AbortSignal; sink?: ForwardSink } = {}): Promise<ForwardedResult> {
     let notice: string | null = null;
     try {
-      const shell = this.#ensureShell(shellKey(agentId ?? null));
+      const shell = this.#ensureShell();
       // The CLI kills the forwarder on a tool timeout or an interrupt, which
       // closes the socket. That is cc's only signal that the worker no longer
       // wants THIS command, and it reaches the far side as a `signal` on this
@@ -449,25 +426,17 @@ export class SessionRedirect {
     }
   }
 
-  // The agent's shell, created on first use. A NEW AGENT'S SHELL IS SEEDED FROM
-  // THE PROJECT ROOT with no inherited environment, exactly as the main agent's
-  // is: exports live inside the parent's shell PROCESS and reading them means
-  // running a command in it, which serialises behind whatever it is doing and
-  // races its next command — and carrying the cwd alone while the environment
-  // silently did not come along is the invisible divergence R5 exists to forbid.
-  // Locally a subagent inherits nothing from its parent either.
-  #ensureShell(key: string): ProviderShell {
-    const existing = this.#shells.get(key);
-    if (existing) return existing;
-    const shell = new ProviderShell(this.#system, {
+  // The session's shell, built on first use.
+  #ensureShell(): ProviderShell {
+    if (this.#shell) return this.#shell;
+    this.#shell = new ProviderShell(this.#system, {
       // THE PROJECT, never the mirror root: a wide mirror must not start every
-      // agent's shell at `/`.
+      // command at `/`.
       cwd: this.systemPath,
       maxOutputBytes: this.#maxOutputBytes,
       ...(this.#shellCommandTimeoutMs === undefined ? {} : { commandTimeoutMs: this.#shellCommandTimeoutMs }),
     });
-    this.#shells.set(key, shell);
-    return shell;
+    return this.#shell;
   }
 
   // THE CWD-RESET PARITY NOTICE, and the only thing standing between a
@@ -514,10 +483,10 @@ export class SessionRedirect {
 
   // ── Lifecycle ──────────────────────────────────────────────────────
 
-  // Drop every agent's shell. Called on instance exit, kill and discardAll.
+  // Drop the session's shell. Called on instance exit, kill and discardAll.
   // Idempotent.
   async close(): Promise<void> {
-    this.#shells.clear();
+    this.#shell = null;
   }
 }
 

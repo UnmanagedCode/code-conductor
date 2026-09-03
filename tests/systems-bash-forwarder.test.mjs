@@ -62,7 +62,8 @@ async function forward(args) {
 //
 // ASSERTED AS AN EXACT BODY SHAPE, not just an absent key: this is the layer
 // that decides what goes on the wire, so an extra field re-appearing here is
-// what this catches.
+// what this catches. `--agent` went the same way on card 2026-0312 — its only
+// consumer was a per-agent shell, and no command's state reaches any later one.
 test('the body carries the command and nothing else', async () => {
   const r = await forward(['--', 'echo hi']);
   assert.equal(r.ran.code, 0, r.ran.stderr);
@@ -70,23 +71,11 @@ test('the body carries the command and nothing else', async () => {
   assert.deepEqual(r.body, { command: 'echo hi' });
 });
 
-// PINS: `--agent` rides the same way, and the MAIN agent's invocation carries
-// no key at all — a forwarder invocation and a body without it must mean the
-// same thing, because that is what src/routes.ts keys the main agent's shell on.
-test('--agent becomes agentId on the wire, and the main agent sends no key', async () => {
-  const sub = await forward(['--agent', 'a1', '--', 'echo hi']);
-  assert.deepEqual(sub.body, { command: 'echo hi', agentId: 'a1' });
-
-  const main = await forward(['--', 'echo hi']);
-  assert.equal('agentId' in main.body, false);
-});
-
 // PINS: the command survives as ONE argv element past `--`, spaces, quotes and
 // all. That is the whole reason the forwarder is a separate process rather than
 // a shell one-liner — no quoting of the original command survives into a second
 // shell.
 test('everything past -- is the command, verbatim', async () => {
-  const { body } = await forward(['--agent', 'a1', '--', `echo 'it\\'s here' && ls "a b"`]);
+  const { body } = await forward(['--', `echo 'it\\'s here' && ls "a b"`]);
   assert.equal(body.command, `echo 'it\\'s here' && ls "a b"`);
-  assert.equal(body.agentId, 'a1');
 });

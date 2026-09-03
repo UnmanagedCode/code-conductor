@@ -63,7 +63,7 @@ afterEach(async () => {
 
 const onSystem = (rel) => path.join(remote.root, rel);
 const inSession = (rel) => path.join(root, rel);
-const pre = (tool, input, agentId) => redirect.preToolUse(tool, input, agentId);
+const pre = (tool, input) => redirect.preToolUse(tool, input);
 const post = (tool, input, response = {}) => redirect.postToolUse(tool, input, response);
 const bash = (command) => redirect.runForwarded(command, {});
 
@@ -504,47 +504,6 @@ test('@mention pre-hydration pulls the named files before the prompt is sent', a
   assert.equal(await fs.readFile(inSession('docs/spec.md'), 'utf8'), '# the spec\n');
 });
 
-// PINS HOP 1 OF 4 of the agent id's journey (PreToolUse → argv → forwarder POST
-// → runForwarded): the rewritten command carries the dispatching subagent's id,
-// and carries no `--agent` at all for the main agent.
-//
-// A POSITIVE CONTROL PER INPUT SHAPE, because the failure here is FAIL-OPEN: if
-// `--agent` is dropped the subagent's command still runs, just on the main
-// agent's shell, and every assertion about "it worked" still passes. Both
-// shapes drive the same rewrite, so a guard that fails open on the absent case
-// cannot hide behind the present one.
-//
-// NOT CLAIMING: that the forwarder parses the flag (the end-to-end test in
-// tests/systems-remote-worker.test.mjs), that the shell it selects is a
-// different one (the per-agent shell tests), or that the CLI populates
-// `agent_id` at all (the gated CLI-contract suite).
-test('the rewrite carries the agent id, and carries none for the main agent', async () => {
-  const sub = await pre('Bash', { command: 'ls' }, 'a8620fbbffcb7f234');
-  assert.equal(sub.decision, 'allow');
-  assert.match(sub.updatedInput.command, /--agent 'a8620fbbffcb7f234'/);
-
-  const main = await pre('Bash', { command: 'ls' }, null);
-  assert.equal(main.decision, 'allow');
-  assert.ok(!main.updatedInput.command.includes('--agent'),
-    `the main agent's rewrite carries no --agent: ${main.updatedInput.command}`);
-
-  // The default is the main agent's shape, so a caller that never learned about
-  // agents cannot accidentally name one.
-  const legacy = await pre('Bash', { command: 'ls' });
-  assert.ok(!legacy.updatedInput.command.includes('--agent'));
-});
-
-// PINS: an agent id is quoted like every other argv element, so an id
-// containing a shell metacharacter cannot break out of the rewritten command.
-// The CLI's ids are hex today; the rewrite runs through a shell either way.
-//
-// NOT CLAIMING: anything about what the CLI's ids actually look like, nor that
-// cc validates them — it quotes them.
-test('an agent id with shell metacharacters is quoted, not interpolated', async () => {
-  const d = await pre('Bash', { command: 'echo hi' }, "a'; touch /tmp/pwned; '");
-  assert.match(d.updatedInput.command, /--agent 'a'\\''; touch \/tmp\/pwned; '\\''/);
-});
-
 // ── A WIDE MIRROR: the two things it would silently break (card 2026-0259) ──
 //
 // Before P7 one field — the map's far end — was three things at once: the
@@ -595,22 +554,26 @@ test('a wide mirror does not turn the targeted Bash annotation into an every-com
   } finally { await wide.close(); }
 });
 
-// PINS 8c: a new agent's shell is seeded from the PROJECT root under a wide
-// mirror, not from the mirror root. Asserted on the `exec` frame's `cwd` ON THE
-// WIRE — a direct measurement of the binding, where `pwd` succeeding would only
-// show that some directory existed on a machine where every directory does.
+// PINS 8c: EVERY COMMAND runs from the PROJECT root under a wide mirror, not
+// from the mirror root. Asserted on the `exec` frame's `cwd` ON THE WIRE — a
+// direct measurement of the binding, where `pwd` succeeding would only show that
+// some directory existed on a machine where every directory does.
+//
+// TWO COMMANDS, not one, and the second follows a `cd`: under a wide mirror the
+// binding and the carry would fail differently, and a single command cannot tell
+// "seeded at the project root" from "carried from the project root".
 //
 // NOT CLAIMING: that the shell runs there; the framing suite owns that.
-test('a wide mirror still opens each agent shell at the project root', async () => {
+test('a wide mirror still runs every command at the project root', async () => {
   const { wide, rec } = await wideRedirect();
   try {
+    await wide.runForwarded('cd /', {});
     await wide.runForwarded('true', {});
-    await wide.runForwarded('true', { agentId: 'sub-1' });
     const frames = (await fs.readFile(rec, 'utf8')).split('\n').filter(Boolean).map(l => JSON.parse(l));
     const cwds = frames.filter(f => f.type === 'exec').map(f => f.cwd);
-    assert.ok(cwds.length >= 2, `two shells opened: ${JSON.stringify(cwds)}`);
+    assert.ok(cwds.length >= 2, `two commands ran: ${JSON.stringify(cwds)}`);
     for (const cwd of cwds) {
-      assert.equal(cwd, remote.root, 'every shell opened at the project root, never at the mirror root');
+      assert.equal(cwd, remote.root, 'every command ran at the project root, never at the mirror root');
     }
     assert.ok(!cwds.includes('/'), 'and never at `/`');
   } finally { await wide.close(); }
