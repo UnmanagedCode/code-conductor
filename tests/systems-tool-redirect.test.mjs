@@ -79,6 +79,33 @@ test('Bash is rewritten into the forwarder, carrying the original command', asyn
   assert.equal(d.updatedInput.description, 'x');
 });
 
+// PINS THE FIRST HOP of the tool timeout's chain: `timeout` on the tool input
+// becomes `--timeout <ms>` on the forwarder's argv, and nothing else does.
+//
+// GREEN ON ARRIVAL — card 2026-0305 changed what ProviderShell DOES with the
+// number, not how it travels. It is here because nothing tested the branch at
+// all: after that card the timeout no longer changes any run outcome, so the
+// argv is the only place the omit/emit decision is observable. The three
+// omitting inputs are the three `Number()` produces something unusable from —
+// absent (NaN), a literal 0, and prose — and each would silently become
+// `--timeout NaN`/`--timeout 0` on the wire without the guard.
+test('a positive tool timeout rides out as --timeout, and nothing else does', async () => {
+  const argvFor = async (input) =>
+    (await pre('Bash', { command: 'echo hi', ...input })).updatedInput.command;
+
+  assert.match(await argvFor({ timeout: 45_000 }), /--timeout 45000 /);
+  // Floored, not rounded or stringified raw: the far side parses it with
+  // Number() and a fractional millisecond is not a deadline anyone asked for.
+  assert.match(await argvFor({ timeout: 1500.7 }), /--timeout 1500 /);
+  // A numeric STRING is what a JSON payload can legitimately carry.
+  assert.match(await argvFor({ timeout: '2000' }), /--timeout 2000 /);
+
+  for (const input of [{}, { timeout: 0 }, { timeout: -5 }, { timeout: 'soon' }, { timeout: null }]) {
+    assert.doesNotMatch(await argvFor(input), /--timeout/,
+      `${JSON.stringify(input)} must not put a timeout on the wire`);
+  }
+});
+
 // PINS: a forwarded command runs on the SYSTEM, not on cc. Both directions are
 // asserted, so a forwarder that quietly ran locally cannot pass.
 test('a forwarded command runs on the system and not on cc', async () => {
