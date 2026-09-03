@@ -39,7 +39,7 @@ import { SessionRedirect } from '../src/systems/toolRedirect.ts';
 
 let home, remote, redirect, root;
 
-async function build({ flags = [], idleTtlMs, maxAgentShells } = {}) {
+async function build({ flags = [], idleTtlMs, maxAgentShells, shellCommandTimeoutMs } = {}) {
   ({ home } = await freshProjectsRoot());
   remote = await bindRemoteSystem({ flags });
   // Disjoint from the system's tree, exactly as a real session root is: nothing
@@ -58,6 +58,7 @@ async function build({ flags = [], idleTtlMs, maxAgentShells } = {}) {
     emit: () => {},
     ...(idleTtlMs === undefined ? {} : { idleTtlMs }),
     ...(maxAgentShells === undefined ? {} : { maxAgentShells }),
+    ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
   });
 }
 
@@ -227,7 +228,16 @@ test("aborting a subagent's command does not disturb the main agent's shell", as
 });
 
 // PINS: a subagent's command exceeding ITS deadline resets ITS shell and no
-// other. 80ms against a 5s sleep, so neither side of the comparison can flake.
+// other. 2000ms against a 30s sleep, so neither side of the comparison can flake.
+//
+// THE VEHICLE MOVED, THE CLAIM DID NOT (card 2026-0305 §4 D3). This used to make
+// the deadline fire by passing `{timeoutMs: 80}` on the call. That number is now
+// the WAIT bound and no longer bounds the run at all, so the short deadline
+// comes from the redirect's `shellCommandTimeoutMs` seam instead — which is the
+// only remaining way to make a deadline fire at THIS layer, and per-agent
+// isolation cannot be tested one layer down because it lives in SessionRedirect.
+// 2000ms rather than 80ms because the warm-up commands below now run under the
+// same ceiling, and a provider round trip needs the margin.
 //
 // The reason it holds — the deadline path's only shell-state effect is a
 // teardown of the ProviderShell instance that timed out, the same method a
@@ -241,12 +251,13 @@ test("aborting a subagent's command does not disturb the main agent's shell", as
 // deliberately records no reset reason on a deadline — nothing was carried
 // there, so there is nothing to have lost.
 test("a subagent's command timing out does not disturb the main agent's shell", async () => {
+  await rebuild({ shellCommandTimeoutMs: 2000 });
   await run(null, 'pwd');
   await run(null, 'export CC_MAIN=m');
 
-  const timedOut = await run('a1', 'sleep 5', { timeoutMs: 80 });
+  const timedOut = await run('a1', 'sleep 30');
   assert.notEqual(timedOut.code, 0);
-  assert.match(timedOut.stderr, /sentinel within 80ms/);
+  assert.match(timedOut.stderr, /still running after 2000ms/);
 
   const main = await run(null, 'echo "[$CC_MAIN]"');
   assert.equal(main.stdout.trim(), '[m]');
