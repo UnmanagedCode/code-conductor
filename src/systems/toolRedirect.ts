@@ -65,7 +65,8 @@ export interface ForwardedResult {
   stdout: string;
   stderr: string;
   code: number;
-  // Non-null exactly once after the shell had to be restarted (R5).
+  // Non-null when the command ended somewhere other than the project root, and
+  // its `cd` is therefore about to be discarded. See #cwdNotice.
   notice: string | null;
 }
 
@@ -77,7 +78,8 @@ export interface ForwardedResult {
 //
 // The three are separate rather than one interleaved callback because the
 // forwarder has to write each to a different file descriptor, and because the
-// R5 notice must precede the command's own output rather than be mixed into it.
+// notice has to be separable from the command's own stderr rather than mixed
+// into it.
 export interface ForwardSink {
   notice(text: string): void;
   out(text: string): void;
@@ -423,36 +425,24 @@ export class SessionRedirect {
     let notice: string | null = null;
     try {
       const shell = this.#ensureShell(shellKey(agentId ?? null));
-      // THE NOTICE IS TAKEN AT ACQUISITION, not here. A command may queue behind
-      // others, and the shell it eventually runs on is not necessarily the one
-      // that existed when its request arrived — reading the reason now attaches
-      // it to the wrong command, leaving the one that actually ran on the fresh
-      // shell saying nothing about the state it lost. R5's rule is about the
-      // command that runs.
-      const onStart = () => {
-        const reason = shell.takeResetReason();
-        if (!reason) return;
-        notice = this.#resetNotice(shell, reason);
-        // FIRST, ahead of the command's own output: a shell that lost its exports
-        // has to say so before output that may be wrong because of it.
-        sink?.notice(notice);
-      };
       // The CLI kills the forwarder on a tool timeout or an interrupt, which
       // closes the socket. That is cc's only signal that the worker no longer
       // wants THIS command, and it reaches the far side as a `signal` on this
       // command's own `exec` id — so nothing else is disturbed.
       const r = await shell.run(command, {
-        onStart,
         ...(signal ? { signal } : {}),
         ...(sink ? { onOut: (t: string) => sink.out(t), onErr: (t: string) => sink.err(t) } : {}),
       });
+      // LAST, after the command has settled: where it ended cannot be known
+      // before then, so it arrives after the command's own output rather than
+      // ahead of it.
+      notice = this.#cwdNotice(r.cwd);
+      if (notice) sink?.notice(notice);
       return { stdout: r.stdout, stderr: r.stderr, code: r.code, notice };
     } catch (e) {
       // Through the SINK as well: the route has already streamed and will not
       // write the aggregate, so a diagnostic that only landed in the return
-      // value would reach the worker as an empty result. Whatever reset the
-      // shell has already recorded its own reason on it, so the NEXT command to
-      // acquire the shell is the one that reports it.
+      // value would reach the worker as an empty result.
       const stderr = `cc: ${errMsg(e)}\n`;
       sink?.err(stderr);
       return { stdout: '', stderr, code: 1, notice };
@@ -480,15 +470,25 @@ export class SessionRedirect {
     return shell;
   }
 
-  // R5: a reconnected shell TELLS the worker. Restoring only the cwd and
-  // saying nothing hands it something that looks continuous while the rest of
-  // the state is silently gone — the invisible divergence that costs a session
-  // its trust in its own results.
-  #resetNotice(shell: ProviderShell, reason: string): string {
-    const cwd = shell.cwd;
-    return `[cc] the shell on system '${this.systemId}' was restarted (${reason}). `
-      + `Its working directory is still ${cwd}, but exported variables, shell functions and `
-      + `background jobs from earlier commands are gone.`;
+  // THE CWD-RESET PARITY NOTICE, and the only thing standing between a
+  // redirected agent and a `cd` that silently vanishes. Every command runs in
+  // its own shell, so a `cd` reaches nothing after it — exactly as it does
+  // LOCALLY, where the CLI's own harness announces the same thing (measured on
+  // CLI 2.1.258, which prints its own `Shell cwd was reset to <root>` line;
+  // cc's wording is its own and claims no byte-identity with it).
+  //
+  // ONLY WHEN THE COMMAND ACTUALLY MOVED, matching local's silence: a notice on
+  // every command is noise, and noise is itself a divergence from a local
+  // session, where nothing is said unless the cwd moved.
+  //
+  // NO DOUBLE EMISSION. The CLI emits its own line only when ITS OWN shell's cwd
+  // moved; a subshell's `cd` and a child process's `chdir` both leave it silent
+  // (measured). The forwarder is exactly that shape — a child the CLI's shell
+  // spawns — so cc's notice is the only one a worker sees.
+  #cwdNotice(endedAt: string): string | null {
+    if (!endedAt || endedAt === this.systemPath) return null;
+    return `[cc] the command ended in ${endedAt}; the next command starts at ${this.systemPath} `
+      + `on system '${this.systemId}', because each command runs in its own shell.`;
   }
 
   // ── @mention pre-hydration ─────────────────────────────────────────

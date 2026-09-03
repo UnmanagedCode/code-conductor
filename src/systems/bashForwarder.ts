@@ -3,11 +3,10 @@
 // `PreToolUse` rewrites the worker's command into an invocation of THIS script
 // (src/systems/toolRedirect.ts). The CLI runs it on cc's machine, as it runs
 // every Bash command; the script hands the original command to cc over
-// loopback, cc runs it in that AGENT's long-lived shell on the system and
-// STREAMS the output back, and the script replays it as its own — stdout on
-// stdout, stderr on stderr, exit code as its exit code. To the CLI and to the
-// model it is an ordinary Bash call whose output happens to describe the other
-// machine.
+// loopback, cc runs it in its own shell on the system and STREAMS the output
+// back, and the script replays it as its own — stdout on stdout, stderr on
+// stderr, exit code as its exit code. To the CLI and to the model it is an
+// ordinary Bash call whose output happens to describe the other machine.
 //
 // IT WRITES AS IT READS. A build or a test run has to reach the worker while it
 // is still running: `run_in_background` + `BashOutput` poll this process's
@@ -81,10 +80,11 @@ const req = http.request(url, {
     let f: Frame;
     try { f = JSON.parse(line) as Frame; }
     catch { broken ??= `cc replied with a line this script could not parse: ${line.slice(0, 200)}`; return; }
-    // The reset notice goes out ahead of the command's own output, on stderr: a
-    // shell that lost its exports has to SAY so, or the worker reads the next
-    // failure as the command's fault (R5). cc orders the frames; this only
-    // preserves that order by writing each as it arrives.
+    // cc's notice goes on stderr, not stdout, so it can never be mistaken for
+    // the command's own output. It arrives AFTER the command has settled —
+    // where the command ended cannot be known before then — and cc is what
+    // orders the frames; this only preserves that order by writing each as it
+    // arrives.
     if (f.t === 'notice') process.stderr.write(`${f.text ?? ''}\n`);
     else if (f.t === 'out') process.stdout.write(f.text ?? '');
     else if (f.t === 'err') process.stderr.write(f.text ?? '');

@@ -1,9 +1,10 @@
-// A CWD PER AGENT, AND CONCURRENCY. A worker session on a remote system used to
-// run every command in ONE long-lived shell on the far side, so a subagent's
-// `cd` silently re-based the main agent's next command. Card 2026-0312 removed
-// that shell entirely — one `exec` per command — so isolation is now total and
-// unconditional rather than achieved by keying, and fifteen of this file's
-// eighteen tests retired with the mechanism they measured.
+// CONCURRENCY. A worker session on a remote system used to run every command in
+// ONE long-lived shell on the far side, so a subagent's `cd` silently re-based
+// the main agent's next command and a subagent inherited the session's exports.
+// Card 2026-0312 removed that shell entirely — one `exec` per command — so
+// isolation is now total and unconditional rather than achieved by keying: no
+// command's state reaches ANY later command, including its own agent's. Fifteen
+// of this file's eighteen tests retired with the mechanism they measured.
 //
 // WHAT IS LEFT IS THE PART THE STRIP MADE MATTER MORE: with nothing serialising,
 // commands of one session genuinely overlap, and each result must hold exactly
@@ -70,38 +71,6 @@ const onSystem = (rel) => path.join(remote.root, rel);
 // the reference provider's shells are children of a process cc spawned.
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-// PINS: a subagent's `cd` does not move the main agent's shell, in both
-// directions — the subagent really does change its own cwd, and the main agent's
-// is where it was.
-//
-// NOT CLAIMING: anything about exported variables (below), nor about teardown.
-test("a subagent's cd does not move the main agent's shell", async () => {
-  assert.equal((await run(null, 'pwd')).stdout.trim(), remote.root);
-
-  await run('a1', 'cd sub');
-  assert.equal((await run('a1', 'pwd')).stdout.trim(), onSystem('sub'),
-    "the subagent's own cd took effect on its own shell");
-
-  assert.equal((await run(null, 'pwd')).stdout.trim(), remote.root,
-    "and the main agent's shell never moved");
-});
-
-// PINS: a new agent's shell starts at the project root on the system, not at
-// wherever the main agent's shell happens to be standing. Exports live inside
-// the parent's shell process and cannot be snapshotted without racing it, and
-// copying the cwd alone would hand a subagent something that looks continuous
-// while the rest of the state is silently absent — so nothing is inherited.
-//
-// NOT CLAIMING: that the parent is told anything about a subagent starting, and
-// nothing about ordering between agents.
-test("a new agent's shell starts at the project root", async () => {
-  await run(null, 'cd sub');
-  assert.equal((await run(null, 'pwd')).stdout.trim(), onSystem('sub'), 'the parent really did move');
-
-  assert.equal((await run('a2', 'pwd')).stdout.trim(), remote.root,
-    'a fresh agent starts at the project root, not at the parent\'s cwd');
-});
-
 // PINS THE BLAST RADIUS OF AN INTERRUPT: aborting one command stops that command
 // and nothing else. Each command is its own `exec` with its own never-reused id,
 // so a signal wired to the wrong id — the way this has actually been broken on
@@ -144,80 +113,6 @@ test('interrupting one command leaves a concurrent one untouched', async () => {
   const ok = await survivor;
   assert.equal(ok.code, 0, ok.stderr);
   assert.equal(ok.stdout.trim(), 'SURVIVED');
-});
-
-// PINS THAT A RESET NOTICE NAMES THE RESTARTED AGENT'S OWN WORKING DIRECTORY.
-// The notice tells a worker "Its working directory is still X" — the one thing in
-// it a worker acts on directly — so a notice that reported some other agent's cwd
-// would be a false statement about the reader's own state, which is exactly what
-// R5 exists to forbid.
-//
-// BOTH DIRECTIONS, because the two cwds must be observed DISAGREEING: every other
-// notice in these suites is taken with the agent standing at the project root,
-// where a per-agent read and a session-wide one coincide and neither can be told
-// from the other. Here the subagent has `cd`'d first, so the main agent's shell
-// and the subagent's are in different directories when both are reset.
-//
-// NOT CLAIMING: anything about the rest of the notice's text (the reset-reason
-// wording and its once-only delivery are pinned in
-// tests/systems-tool-redirect.test.mjs), nor that cwd is RESTORED after a reset —
-// it is; what is pinned is what the worker is told.
-test("a reset notice names the restarted agent's own working directory", async () => {
-  await run('a1', 'cd sub');
-  assert.equal((await run('a1', 'pwd')).stdout.trim(), onSystem('sub'));
-  assert.equal((await run(null, 'pwd')).stdout.trim(), remote.root,
-    'the premise: the two agents are standing in different directories');
-
-  assert.notEqual((await run('a1', 'exit')).code, 0, "the subagent's shell died");
-  assert.notEqual((await run(null, 'exit')).code, 0, "and so did the main agent's");
-
-  const sub = await run('a1', 'echo s');
-  const main = await run(null, 'echo m');
-  assert.match(sub.notice ?? '', /restarted/);
-  assert.match(main.notice ?? '', /restarted/);
-
-  // Anchored on the sentence's own wording and terminated by the comma, so
-  // `<root>/sub` cannot satisfy the `<root>` assertion by being a prefix of it.
-  assert.ok(sub.notice.includes(`still ${onSystem('sub')},`),
-    `the subagent is told its OWN cwd: ${sub.notice}`);
-  assert.ok(!sub.notice.includes(`still ${remote.root},`),
-    `and not the main agent's: ${sub.notice}`);
-  assert.ok(main.notice.includes(`still ${remote.root},`),
-    `the main agent is told its own: ${main.notice}`);
-  assert.ok(!main.notice.includes(`still ${onSystem('sub')},`),
-    `and not the subagent's: ${main.notice}`);
-});
-
-// THE SAME INVARIANT WITH THE ROLES SWAPPED: the notice names the agent whose
-// shell it was, when the displaced agent is the MAIN one. The test above leaves
-// main standing at the project root, where a notice reporting main's own cwd and
-// one reporting the project root are the same string — so a notice that lied
-// about MAIN's whereabouts specifically, and only about main's, would be
-// invisible. Here main has `cd`'d away and the subagent is the one at the root.
-//
-// NOT CLAIMING anything the test above already claims (nothing about the rest of
-// the notice's text, and nothing about cwd being restored after the reset); this
-// exists only to remove the main agent's exemption from that test's premise.
-test("a displaced MAIN agent's reset notice names its own working directory", async () => {
-  await run(null, 'cd sub');
-  assert.equal((await run(null, 'pwd')).stdout.trim(), onSystem('sub'));
-  assert.equal((await run('a1', 'pwd')).stdout.trim(), remote.root,
-    'the premise, inverted: this time it is the main agent that has moved');
-
-  assert.notEqual((await run(null, 'exit')).code, 0, "the main agent's shell died");
-  assert.notEqual((await run('a1', 'exit')).code, 0, "and so did the subagent's");
-
-  const main = await run(null, 'echo m');
-  const sub = await run('a1', 'echo s');
-  assert.match(main.notice ?? '', /restarted/);
-  assert.match(sub.notice ?? '', /restarted/);
-
-  assert.ok(main.notice.includes(`still ${onSystem('sub')},`),
-    `the main agent is told its OWN cwd, not the project root: ${main.notice}`);
-  assert.ok(!main.notice.includes(`still ${remote.root},`), main.notice);
-  assert.ok(sub.notice.includes(`still ${remote.root},`),
-    `and the subagent is told its own: ${sub.notice}`);
-  assert.ok(!sub.notice.includes(`still ${onSystem('sub')},`), sub.notice);
 });
 
 // PINS THE NEW ASSUMPTION this whole change introduces: two agents' commands on

@@ -119,20 +119,20 @@ test('a forwarded command runs on the system and not on cc', async () => {
   assert.notEqual(miss.code, 0);
 });
 
-// PARTLY INVERTED on card 2026-0312: the export half used to assert that an
-// agent's `export` carried to its next command. There is no long-lived shell to
-// carry it, so it does not — which is what the local CLI already does. cwd is
-// still READ BACK from the shell's own `$PWD` rather than parsed out of the
-// command text, which is what this keeps pinning.
-test('the redirected shell reads its cwd back from the shell, and carries no exports', async () => {
+// INVERTED on card 2026-0312 — THE PARITY THIS CARD EXISTS FOR, at the layer a
+// worker actually meets it. This used to assert that `cd` AND `export` carried
+// between an agent's commands. Neither does: every command runs in its own
+// shell, which is what a local session already does (measured on CLI 2.1.258 —
+// a local Bash call persists nothing and the harness announces the cwd reset).
+test('nothing carries between two redirected commands — every one starts at the project root', async () => {
   await fs.mkdir(onSystem('sub'), { recursive: true });
   await bash('cd sub');
-  const pwd = await bash('pwd');
-  assert.equal(pwd.stdout.trim(), path.join(remote.root, 'sub'));
+  assert.equal((await bash('pwd')).stdout.trim(), remote.root,
+    'the second command starts at the project root, not where the first ended');
 
   await bash('export CC_PROBE=carried');
-  const echo = await bash('echo "[$CC_PROBE]"');
-  assert.equal(echo.stdout.trim(), '[]', 'nothing an agent exports reaches its next command');
+  assert.equal((await bash('echo "[$CC_PROBE]"')).stdout.trim(), '[]',
+    'nothing an agent exports reaches its next command');
 });
 
 // A sink that records what arrived and WHEN, relative to the promise settling.
@@ -171,22 +171,44 @@ test('a forwarded command streams its output before it finishes', async () => {
   assert.equal(r.code, 0);
 });
 
-// PINS: the R5 reset notice reaches the sink FIRST, ahead of the command's own
-// output. A shell that lost its exports has to say so before the output that
-// might be wrong because of it.
-test('the reset notice reaches the sink before any of the command output', async () => {
-  await bash('export CC_PROBE=before');
-  await bash('exit');
-
+// T7 — INVERTED on card 2026-0312, and the ORDER inverts with the content. The
+// R5 notice said a shell had been RESTARTED and went out FIRST, ahead of output
+// that might be wrong because the exports were gone. There is no restart; what a
+// worker now needs to be told is that its `cd` was discarded, and that cannot be
+// known until the command has ended — so the notice arrives LAST.
+//
+// NOT CLAIMING that the CLI's own wording matches cc's. The CLI prints its own
+// line when ITS shell's cwd moves; cc's string is its own and is pinned here.
+test('the cwd notice reaches the sink AFTER the command output, and carries cc\'s own wording', async () => {
+  await fs.mkdir(onSystem('sub'), { recursive: true });
   const state = { settled: false };
   const { seen, sink } = recordingSink(state);
-  const r = await redirect.runForwarded('echo after', { sink });
+  const r = await redirect.runForwarded('cd sub; echo after', { sink });
   state.settled = true;
 
-  assert.equal(seen[0].k, 'notice', 'the notice is the FIRST thing the sink saw');
-  assert.match(seen[0].t, /restarted/);
-  assert.equal(r.notice, seen[0].t, 'and it is the same notice the aggregate carries');
-  assert.match(seen.filter(x => x.k === 'out').map(x => x.t).join(''), /after/);
+  assert.equal(seen.at(-1).k, 'notice', 'the notice is the LAST thing the sink saw');
+  assert.ok(seen.some(x => x.k === 'out' && x.t.includes('after')), 'the output came first');
+  assert.equal(r.notice, seen.at(-1).t, 'and it is the same notice the aggregate carries');
+  assert.ok(r.notice.startsWith('[cc] '), r.notice);
+  assert.ok(r.notice.includes(`ended in ${path.join(remote.root, 'sub')}`), r.notice);
+  assert.ok(r.notice.includes(`starts at ${remote.root}`), r.notice);
+  assert.ok(r.notice.includes(`system '${remote.id}'`), r.notice);
+});
+
+// T7's SILENCE HALF, and it is not decoration: a notice on every command is
+// noise, and noise is itself a divergence from a local session, where nothing is
+// said unless the cwd actually moved.
+test('a command that does not move the cwd is told nothing', async () => {
+  assert.equal((await bash('echo plain')).notice, null);
+  assert.equal((await bash('pwd')).notice, null);
+  // A `cd` in a SUBSHELL never moves the command's own cwd, so there is nothing
+  // to report — the notice reads the shell's answer, not the command's text.
+  await fs.mkdir(onSystem('sub'), { recursive: true });
+  assert.equal((await bash('(cd sub && pwd)')).notice, null);
+  // THE POSITIVE CONTROL, in the same test: without it every assertion above is
+  // satisfied by a notice channel that never fires at all.
+  assert.notEqual((await bash('cd sub')).notice, null,
+    'a command that really did move IS reported');
 });
 
 // PINS: cc's own failure text reaches the sink too. The route no longer writes
@@ -301,16 +323,6 @@ test('cancelling one call leaves a live concurrent command untouched', async () 
   assert.deepEqual(seen.filter(([k]) => k === 'notice'), []);
   const after = await bash('echo "[$CC_PROBE_UNSET]"');
   assert.equal(after.notice, null, 'and the next command is not told about a reset either');
-});
-
-// PINS: a notice is delivered ONCE. A command that follows a reported reset
-// must not be told about a reset it never experienced.
-test('a reset is reported exactly once', async () => {
-  await bash('exit');
-  const first = await bash('echo one');
-  assert.match(first.notice ?? '', /restarted/);
-  const second = await bash('echo two');
-  assert.equal(second.notice, null);
 });
 
 // PINS: exit codes are the command's own, not the forwarder's.
@@ -480,24 +492,6 @@ test('a Bash result is annotated only when it actually shows a system path', asy
   assert.ok(shown && shown.includes(remote.id));
 
   assert.equal(await post('Bash', {}, { stdout: 'all tests passed\n', stderr: '' }), null);
-});
-
-// PINS: a shell that had to be restarted TELLS the worker, rather than
-// restoring cwd and looking continuous while its exports are silently gone.
-test('a restarted shell tells the worker what it lost', async () => {
-  await bash('export CC_PROBE=before');
-  // `exit` inside the framed command group takes the shell with it, so no
-  // sentinel can arrive — one of the two wedge modes, both of which reset.
-  const died = await bash('exit');
-  assert.notEqual(died.code, 0);
-
-  const after = await bash('echo "[$CC_PROBE]"');
-  assert.equal(after.code, 0);
-  assert.match(after.notice, /restarted/);
-  assert.match(after.notice, /export/i);
-  assert.equal(after.stdout.trim(), '[]', 'the export really is gone — the notice is not decorative');
-  // Told ONCE: the next command is ordinary again.
-  assert.equal((await bash('true')).notice, null);
 });
 
 // PINS: `@mention` pre-hydration pulls the named file into the session root

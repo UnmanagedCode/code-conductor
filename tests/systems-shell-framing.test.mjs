@@ -328,18 +328,34 @@ test(`a command that kills the shell still streams what it printed`, async () =>
   });
 });
 
-test(`cd persists across commands, read back from the shell`, async () => {
+// T6 — INVERTED on card 2026-0312, and this is the parity the whole card exists
+// for: a `cd` does NOT reach the next command. It used to, in BOTH capability
+// modes — the one-shot fallback carried the sentinel's `$PWD` into the next
+// `exec`'s `cwd`, so this test passed for the wrong reason and the card's claim
+// that "the code path already exists" was false for cwd (card 2026-0312 §1 C-1).
+// Locally the CLI gives every Bash call a fresh shell AND announces the reset.
+//
+// CAPTURE SURVIVED, CARRY DIED, and both halves are asserted: the result still
+// REPORTS where the command ended — read back from the shell's own `$PWD`, so an
+// indirect `cd` is tracked just as well — and the NEXT command still starts
+// where the shell was configured. A change that restored the carry fails the
+// second half; one that dropped the capture fails the first, and would take the
+// worker's cwd notice with it (src/systems/toolRedirect.ts).
+test(`a cd is CAPTURED but never carried — the next command starts where the shell was configured`, async () => {
   await withShell(async (sh, cwd) => {
     const a = await sh.run('cd /tmp; echo one');
     assert.equal(a.stdout, 'one\n');
-    assert.equal(a.cwd, '/tmp');
+    assert.equal(a.cwd, '/tmp', 'the result reports where the command ENDED');
+
     const b = await sh.run('pwd');
-    assert.equal(b.stdout.trim(), '/tmp', 'the SECOND command started where the first ended');
-    assert.equal(sh.cwd, '/tmp');
+    assert.equal(b.stdout.trim(), cwd, 'and the SECOND command started where the shell was configured');
+    assert.equal(b.cwd, cwd);
+
     // Not parsed out of the command text: the cwd comes back from the shell's
     // own $PWD, so an indirect cd is tracked just as well.
-    const c = await sh.run(`d=${cwd}; cd "$d"`);
-    assert.equal(c.cwd, cwd);
+    const c = await sh.run('d=/tmp; cd "$d"');
+    assert.equal(c.cwd, '/tmp');
+    assert.equal((await sh.run('pwd')).stdout.trim(), cwd, 'and that one did not carry either');
   });
 });
 
@@ -598,26 +614,6 @@ test(`a pre-aborted signal never reaches the system`, async () => {
       (e) => { assert.equal(e.code, 'ECANCELLED'); return true; },
     );
     await assert.rejects(fs.stat(witness));
-  });
-});
-
-// PINS S1: the reset reason is delivered to the command that RUNS on the fresh
-// shell, and exactly once. R5's rule is that a shell whose predecessor died
-// SAYS so — a notice attached to the wrong command means the command that
-// actually ran said nothing.
-test(`the reset reason goes to the next command to run`, async () => {
-  await withShell(async (sh) => {
-    assert.equal(sh.takeResetReason(), null, 'a healthy shell has nothing to report');
-    await assert.rejects(() => sh.run('exit 3'));
-
-    const seen = [];
-    await sh.run('echo after', { onStart: () => seen.push(sh.takeResetReason()) });
-    assert.equal(seen.length, 1);
-    assert.match(seen[0] ?? '', /shell|exit/i, 'the command that ran on the fresh shell was told why');
-    // And exactly once: the next command has nothing to report.
-    const again = [];
-    await sh.run('echo later', { onStart: () => again.push(sh.takeResetReason()) });
-    assert.deepEqual(again, [null]);
   });
 });
 

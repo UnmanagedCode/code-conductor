@@ -370,40 +370,6 @@ describe('a worker session on a remote system', () => {
     assert.notEqual(ran2.code, 0);
   });
 
-  // PINS ALL FOUR HOPS of the agent id at once — hook envelope → forwarder argv
-  // → forwarder POST body → runForwarded — by a witness that cannot be faked by
-  // a hop that dropped it: the far side's OWN `pwd`.
-  //
-  // THE WITNESS MOVED ON CARD 2026-0312. It used to be the far-side shell's `$$`,
-  // which no longer distinguishes anything: every command is its own process, so
-  // every pid differs whether or not the id survived the trip.
-  //
-  // THIS IS THE FAIL-OPEN CATCHER. If `--agent` is lost anywhere on that path,
-  // the subagent's command still runs and still exits zero; it just lands on the
-  // main agent's cwd, and the two answers become equal.
-  //
-  // NOT CLAIMING that the CLI populates `agent_id` — this test supplies it. That
-  // contract is the gated tests/systems-cli-contract.real.test.mjs's subject.
-  test("a subagent's Bash keeps its own working directory, end to end", async () => {
-    const moved = await hook({
-      tool_name: 'Bash', tool_input: { command: 'cd / && pwd' }, agent_id: 'a8620fbbffcb7f234',
-    });
-    const ranMoved = await runAsTheCliWould(moved.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ranMoved.stdout.trim(), '/', ranMoved.stderr);
-
-    const where = await hook({ tool_name: 'Bash', tool_input: { command: 'pwd' } });
-    const ranWhere = await runAsTheCliWould(where.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ranWhere.stdout.trim(), tree, "the main agent's shell never moved");
-
-    // And the subagent's own next command is still where it left it — so the id
-    // survived the round trip in BOTH directions, not just once.
-    const again = await hook({
-      tool_input: { command: 'pwd' }, tool_name: 'Bash', agent_id: 'a8620fbbffcb7f234',
-    });
-    const ranAgain = await runAsTheCliWould(again.body.hookSpecificOutput.updatedInput.command, root);
-    assert.equal(ranAgain.stdout.trim(), '/', 'the subagent came back to its own cwd');
-  });
-
   // PINS: quoting survives the rewrite. The command travels through a shell as
   // one argv element, so a command containing quotes, `$` or a newline must
   // arrive byte-identical or the worker silently runs something else.

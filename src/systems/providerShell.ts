@@ -20,6 +20,12 @@
 // which is exactly what a local fan-out produces and is bounded by the same
 // thing that bounds it locally — how many Bash calls the CLI runs at once
 // (card 2026-0312 §2 D-b).
+//
+// CAPTURE, NOT CARRY. `ShellResult.cwd` still reports where the command ENDED,
+// read back from the shell's own `$PWD` — but it is never fed into the next
+// command, which always starts at the cwd this shell was configured with.
+// src/systems/toolRedirect.ts turns the difference into the notice a worker
+// reads, which is where a discarded `cd` becomes visible instead of silent.
 
 import {
   FS_ERROR_CODES, SystemError, classifySpawnError, type SystemErrorCode,
@@ -47,9 +53,10 @@ export interface ShellResult {
   stdout: string;
   stderr: string;
   code: number;
-  // Read back from the shell itself, never parsed out of the command. A `cd`
-  // inside a function, a `pushd`, a symlinked path — the shell's own answer is
-  // the only one that is right.
+  // WHERE THE COMMAND ENDED, read back from the shell itself and never parsed
+  // out of the command. A `cd` inside a function, a `pushd`, a symlinked path —
+  // the shell's own answer is the only one that is right. It is a REPORT, not a
+  // hand-off: nothing feeds it into the next command.
   cwd: string;
 }
 
@@ -101,9 +108,7 @@ const SHELL_TIMEOUT_SLACK_MS = 5_000;
 export const DEFAULT_COMMAND_TIMEOUT_MS =
   Number(process.env.ORCH_SHELL_COMMAND_TIMEOUT_MS) || BASH_TOOL_MAX_TIMEOUT_MS + SHELL_TIMEOUT_SLACK_MS;
 
-// Everything a caller can say about one command. `signal` cancels THIS call;
-// `onStart` fires as the command is handed over, which is where a caller learns
-// whether the shell the LAST command ran in was lost.
+// Everything a caller can say about one command. `signal` cancels THIS call.
 //
 // NO RUN BOUND HERE, DELIBERATELY. The ceiling is cc's and a caller cannot move
 // it: mirroring the tool's own `timeout` onto it killed the command at the same
@@ -113,7 +118,6 @@ export const DEFAULT_COMMAND_TIMEOUT_MS =
 // socket — that is the cancellation channel, and it needs no number.
 export interface ShellRunOptions extends ShellStreamSink {
   signal?: AbortSignal;
-  onStart?: () => void;
 }
 
 function cancelled(): SystemError {
@@ -130,10 +134,9 @@ export class ProviderShell {
   readonly #commandTimeoutMs: number;
   readonly #maxOutputBytes: number | undefined;
 
-  #cwd: string;
-  // Set to a reason when the last command lost the shell it ran in, so the next
-  // one can SAY so rather than look continuous.
-  #resetReason: string | null = null;
+  // FIXED, and `readonly` says so. Every command starts here; where the last one
+  // ENDED is reported in its own `ShellResult.cwd` and fed to nothing.
+  readonly #cwd: string;
 
   constructor(host: ShellHost, opts: {
     cwd: string; env?: NodeJS.ProcessEnv; commandTimeoutMs?: number;
@@ -152,31 +155,10 @@ export class ProviderShell {
     this.#maxOutputBytes = opts.maxOutputBytes;
   }
 
-  // The shell's real cwd, carried from the last command's sentinel.
-  get cwd(): string { return this.#cwd; }
-
-  async run(command: string, { onOut, onErr, signal, onStart }: ShellRunOptions = {}): Promise<ShellResult> {
+  async run(command: string, { onOut, onErr, signal }: ShellRunOptions = {}): Promise<ShellResult> {
     if (signal?.aborted) throw cancelled();
-    onStart?.();
     const sink: ShellStreamSink = { ...(onOut ? { onOut } : {}), ...(onErr ? { onErr } : {}) };
     return this.#runOneShot(command, this.#commandTimeoutMs, sink, signal);
-  }
-
-  // The reason the last command lost its shell, or null. Surfaced to the
-  // worker: a command that ran on a shell an earlier one destroyed must SAY so
-  // rather than look continuous.
-  get resetReason(): string | null { return this.#resetReason; }
-
-  // The same reason, CONSUMED. Called from `onStart` — the moment a command owns
-  // the shell — so the notice lands on the command that actually runs on the
-  // fresh shell. Reading it when the call was merely CONSTRUCTED attaches it to
-  // whichever call entered next, which may queue behind others and may never run
-  // on that shell at all; the command that did run then says nothing, which is
-  // exactly what R5 forbids.
-  takeResetReason(): string | null {
-    const r = this.#resetReason;
-    this.#resetReason = null;
-    return r;
   }
 
   // ── One framed exec per command ────────────────────────────────────
@@ -225,7 +207,6 @@ export class ProviderShell {
     }
     if (r.outputOverflowed) {
       flushFilters(filters, sink);
-      this.#resetReason = 'a command exceeded its output limit';
       throw overflowed(this.#maxOutputBytes);
     }
     if (r.timedOut) {
@@ -235,10 +216,9 @@ export class ProviderShell {
       throw new SystemError('ETIMEDOUT', `the command was still running after ${deadline}ms, cc's per-command ceiling`);
     }
     if (r.spawnError) {
-      // The shell itself never started — a cwd deleted since the last command
-      // is the reachable case. That is ENOENT, and saying so beats reporting it
-      // as "the command ended the shell", which is not what happened.
-      this.#resetReason = r.spawnError;
+      // The shell itself never started — a cwd deleted under the project is the
+      // reachable case. That is ENOENT, and saying so beats reporting it as
+      // "the command ended the shell", which is not what happened.
       // Same rule as ProviderSystem's #derive and runGit: a transport failure is
       // never classified by its text, because that text is the dying provider's
       // own stderr tail.
@@ -255,15 +235,15 @@ export class ProviderShell {
       flushFilters(filters, sink);
       // No sentinel and the shell is already gone: the command took the shell
       // with it (an `exit`, or a syntax error that never reached the framing).
-      this.#resetReason = 'the command ended the shell before it could be framed';
       throw new SystemError(
         'ESHELLGONE',
         `the command ended the shell before it could be framed (exit ${r.code})`,
         { exitCode: r.code, stderr: r.stderr },
       );
     }
-    this.#cwd = out.cwd || this.#cwd;
-    return { stdout: out.text, stderr: err.text, code: out.code, cwd: this.#cwd };
+    // CAPTURED, NEVER CARRIED: this is where the command ENDED, and it is fed
+    // to nothing — the next command starts at `#cwd` like this one did.
+    return { stdout: out.text, stderr: err.text, code: out.code, cwd: out.cwd || this.#cwd };
   }
 }
 
