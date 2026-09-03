@@ -24,18 +24,14 @@ import assert from 'node:assert/strict';
 
 const { DEFAULT_COMMAND_TIMEOUT_MS, ProviderShell } = await import('../src/systems/providerShell.ts');
 
-// A fallback-mode host that records the `timeoutMs` each command's `exec` was
-// given and answers every one as timed out. `persistentShell:false` is the mode
-// where the resolved deadline is VISIBLE on the wire as `ExecOptions.timeoutMs`
-// rather than living only in a cc-side timer, and the ETIMEDOUT message reports
-// THIS shell's resolved deadline — so the number can be read back two
-// independent ways from one call.
+// A host that records the `timeoutMs` each command's `exec` was given and
+// answers every one as timed out. The resolved deadline is VISIBLE on the wire
+// as `ExecOptions.timeoutMs`, and the ETIMEDOUT message reports THIS shell's
+// resolved deadline — so the number can be read back two independent ways from
+// one call.
 function recordingHost() {
   const seen = [];
   const host = {
-    capabilities: { persistentShell: false, processGroupSignal: true },
-    descriptor: { os: 'linux', pathSep: '/', shell: '/bin/bash', home: '/root' },
-    openStream() { throw new Error('not used'); },
     async execOneShot(_spec, opts) {
       seen.push(opts.timeoutMs);
       return {

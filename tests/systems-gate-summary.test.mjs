@@ -187,9 +187,9 @@ test('a FAIL row carries its verdict and its failing test names into the block',
   // Both the verdict and every name are in the closing block, not upstream in
   // the row's own output.
   const out = render([
-    { name: 'persistentShell:false', code: 1, ...scanRowOutput(FAILING_ROW) },
+    { name: 'processGroupSignal:false', code: 1, ...scanRowOutput(FAILING_ROW) },
   ]);
-  assert.match(out, /FAIL {2}persistentShell:false/);
+  assert.match(out, /FAIL {2}processGroupSignal:false/);
   assert.match(out, /hang-guard: 346\/346 files reported/);
   assert.match(out, /failing tests \(3\):/);
   for (const name of ['inner one', 'a nested failing case', 'top level failing case']) {

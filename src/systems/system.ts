@@ -72,9 +72,9 @@ export interface ExecOptions {
   // output WHOLE — a clipped-but-successful parse would be read as the truth,
   // which is worse than a reported failure. It rides on `runGit`
   // (src/worktrees.ts), on the session-root config-surface walk
-  // (src/systems/sessionRoot.ts) and on `ProviderShell`'s
-  // non-persistent-shell fallback (src/systems/providerShell.ts); omitting it
-  // means unbounded retention in this process.
+  // (src/systems/sessionRoot.ts) and on every redirected shell command
+  // (src/systems/providerShell.ts); omitting it means unbounded retention in
+  // this process.
   maxBufferBytes?: number;
   // Called with each decoded chunk AS IT ARRIVES, and with the stream it came
   // from — the streaming hook every caller that shows live output uses. It

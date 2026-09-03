@@ -283,8 +283,9 @@ test('dispose() reaps a shell that is still running a command', async () => {
   });
 });
 
-// PINS: the reaping covers the plain one-shot `exec` path too, not just the
-// persistent shell — a different cc-side code path, which leaks independently.
+// PINS: the reaping covers an `exec` a caller started directly, not only one a
+// redirected shell started — they are different cc-side call sites, and they
+// leak independently.
 // NOT CLAIMING: anything about how exec's promise settles; it never rejects, by
 // design.
 test('dispose() reaps an exec that is still in flight', async () => {
@@ -446,12 +447,10 @@ test('a payload that is not valid base64 fails the operation instead of truncati
 // ── No `exec` operation is unbounded ─────────────────────────────────
 //
 // SCOPED TO `exec`/`readFile`/`writeFile`, which is what this file exercises.
-// The persistent shell's `exec` is the one deliberate exception — `openStream`
-// arms no cc-side deadline and sends no `timeoutMs`, because the shell it
-// carries is meant to outlive any one command. What bounds THAT path is
-// `ProviderShell`'s per-command ceiling, tested in
-// tests/systems-shell-framing.test.mjs. So the header is not a claim about a
-// path this file never drives (card 2026-0305 §6).
+// There is no longer any exception: the redirected shell's `exec` carries a
+// `timeoutMs` like every other, and what supplies it is `ProviderShell`'s
+// per-command ceiling, tested in tests/systems-shell-framing.test.mjs
+// (card 2026-0305 §6; the `openStream` exception went with card 2026-0312).
 
 test('every operation a mute provider accepts is bounded, not just the ones a caller timed', async () => {
   // A provider that completes the handshake and then answers nothing. Before

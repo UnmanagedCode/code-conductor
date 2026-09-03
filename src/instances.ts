@@ -4498,7 +4498,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // always local — but never in the project's own directory, which is a path
     // on another machine. Its cwd is a cc-owned session root (resolved below,
     // once the worktree is known), and its tools cross the boundary one call at
-    // a time. A system cc cannot open a shell on cannot host a session at all:
+    // a time. A system cc cannot run a command on cannot host a session at all:
     // every non-local system is reached over the provider protocol, so this
     // refuses rather than silently degrading to a session with no Bash.
     const remote = proj.system.id !== LOCAL_SYSTEM_ID;
@@ -4506,7 +4506,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       throw httpError(
         501,
         `WORKER_SESSIONS_NEED_A_SHELL: project '${proj.name}' is on system '${proj.system.id}', `
-        + `which cc cannot open a shell on, so a worker there would have no Bash.`,
+        + `which cc cannot run a command on, so a worker there would have no Bash.`,
       );
     }
     // create() is policy-light: mode never depends on temp here. The UI's

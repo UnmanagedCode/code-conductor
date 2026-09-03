@@ -100,15 +100,15 @@ test('canonical base64 is what isBase64 accepts, and nothing else', () => {
   }
 });
 
-test('a payload frame with a corrupted or missing dataB64 is EPROTO — on all four types', () => {
+test('a payload frame with a corrupted or missing dataB64 is EPROTO — on every payload type', () => {
   // A payload is part of its frame. `Buffer.from(s,'base64')` stops at the first
   // unreadable character and returns the prefix, so decoding leniently turns a
   // corrupted chunk into a SILENT PARTIAL ANSWER: a writeFile that reports
   // success having dropped its tail, or a command whose stdout is quietly
   // truncated with exit 0. Checked here, once, for both ends and both
-  // directions — `stdout`/`stderr`/`data` come from the provider, `stdin` and
-  // `data` go to it.
-  for (const type of ['stdout', 'stderr', 'data', 'stdin']) {
+  // directions — `stdout`/`stderr`/`data` come from the provider, `data` goes to
+  // it.
+  for (const type of ['stdout', 'stderr', 'data']) {
     assert.throws(
       () => decodeFrame(`{"type":"${type}","id":"x","seq":0,"dataB64":"SEVMTE8=!!corrupted"}`),
       (e) => e instanceof SystemError && e.code === 'EPROTO' && /invalid base64/.test(e.message),
@@ -182,11 +182,11 @@ test('an unmatched failure carries its exit code and its RAW stderr, verbatim', 
 
 test('capability negotiation: a missing key is false, an unknown key is ignored', () => {
   assert.deepEqual(readCapabilities(undefined), NO_CAPABILITIES);
-  assert.deepEqual(readCapabilities({ persistentShell: true, somethingFuture: true }),
-    { ...NO_CAPABILITIES, persistentShell: true });
+  assert.deepEqual(readCapabilities({ processGroupSignal: true, somethingFuture: true }),
+    { ...NO_CAPABILITIES, processGroupSignal: true });
   assert.deepEqual(readCapabilities({ remotes: true }), { ...NO_CAPABILITIES, remotes: true },
     'a system that serves many targets says so, and says nothing else');
-  assert.deepEqual(readCapabilities({ persistentShell: 'yes' }), NO_CAPABILITIES,
+  assert.deepEqual(readCapabilities({ processGroupSignal: 'yes' }), NO_CAPABILITIES,
     'only a literal true enables a capability');
 });
 

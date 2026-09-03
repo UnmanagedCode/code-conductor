@@ -11,8 +11,7 @@
 // It is also the worked example a third-party provider is written from: three
 // operations, ~400 lines, no cc imports beyond the shared frame vocabulary.
 //
-//   node src/systems/referenceProvider.ts [--no-persistent-shell]
-//                                         [--no-process-group-signal]
+//   node src/systems/referenceProvider.ts [--no-process-group-signal]
 //                                         [--remote <id>=<absolute root>]…
 //                                         [--mirror <[id=]absolute root>]…
 //                                         [--exclude <[id=]absolute path>]…
@@ -75,7 +74,6 @@ function withinRoot(root: string, p: string): boolean {
 }
 
 interface Options {
-  persistentShell: boolean;
   processGroupSignal: boolean;
   // remote id → the absolute root that target is scoped to. EMPTY means this
   // provider serves exactly one target, does not advertise `remotes`, and
@@ -98,7 +96,7 @@ function parseTargeted(flag: string, spec: string): { id: string; value: string 
 
 export function parseProviderArgs(argv: string[]): Options {
   const o: Options = {
-    persistentShell: true, processGroupSignal: true, remotes: new Map(), mirrors: new Map(),
+    processGroupSignal: true, remotes: new Map(), mirrors: new Map(),
     name: 'reference-local',
   };
   const mirrorFor = (id: string): { mirrorRoot: string | null; exclude: string[] } => {
@@ -108,8 +106,7 @@ export function parseProviderArgs(argv: string[]): Options {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--no-persistent-shell') o.persistentShell = false;
-    else if (a === '--no-process-group-signal') o.processGroupSignal = false;
+    if (a === '--no-process-group-signal') o.processGroupSignal = false;
     else if (a === '--remote') {
       const spec = argv[++i] ?? '';
       const eq = spec.indexOf('=');
@@ -189,7 +186,6 @@ export class ReferenceProvider {
         protocol: PROTOCOL_VERSION,
         provider: `${this.#opts.name}/0.1.0`,
         capabilities: {
-          persistentShell: this.#opts.persistentShell,
           processGroupSignal: this.#opts.processGroupSignal,
           remotes: this.#opts.remotes.size > 0,
           remoteDescriptors: this.#opts.mirrors.size > 0,
@@ -236,8 +232,6 @@ export class ReferenceProvider {
     }
     switch (f.type) {
       case 'exec': return this.#exec(f);
-      case 'stdin': return this.#stdin(f);
-      case 'stdinClose': return this.#stdinClose(f);
       case 'signal': return this.#signal(f);
       case 'close': return this.#close(f);
       case 'readFile': return void this.#readFile(f);
@@ -342,30 +336,6 @@ export class ReferenceProvider {
     };
     send(signal);
     if (signal === 'SIGTERM') setTimeout(() => send('SIGKILL'), state.killGraceMs).unref();
-  }
-
-  #stdin(f: AnyFrame): void {
-    const id = String(f.id);
-    const state = this.#execs.get(id);
-    if (!state) return;
-    if (!this.#opts.persistentShell) {
-      // The capability is exactly "cc may keep writing into a live child".
-      // Refusing here is what makes the flag real rather than decorative.
-      state.closed = true;
-      if (state.timer) clearTimeout(state.timer);
-      this.#execs.delete(id);
-      try { state.child.kill('SIGKILL'); } catch { /* already gone */ }
-      this.#fail(id, 'EUNSUPPORTED', 'this provider does not support writing to a running command');
-      return;
-    }
-    state.child.stdin?.write(Buffer.from(String(f.dataB64 ?? ''), 'base64'));
-  }
-
-  #stdinClose(f: AnyFrame): void {
-    const state = this.#execs.get(String(f.id));
-    if (!state) return;
-    if (!this.#opts.persistentShell) { this.#stdin({ ...f, type: 'stdin', dataB64: '' }); return; }
-    state.child.stdin?.end();
   }
 
   #signal(f: AnyFrame): void {

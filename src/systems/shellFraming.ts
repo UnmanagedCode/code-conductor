@@ -10,10 +10,8 @@
 // the forgery parsed as `rc=999`. The two rules below are the fix, and each is
 // exercised by tests/systems-shell-framing.test.mjs.
 //
-// The same framing serves BOTH modes. With `persistentShell` the script is
-// written into one long-lived shell's stdin; without it, the identical script
-// runs as a one-shot `exec` with an explicit cwd. One implementation, so the
-// fallback cannot parse differently from the path it falls back from.
+// ONE `exec` PER COMMAND: this script is what cc runs, with an explicit cwd,
+// through whatever interpreter the provider chooses (card 2026-0312 §5).
 
 import { randomBytes } from 'node:crypto';
 
@@ -60,8 +58,7 @@ function afterMarkerLine(text: string, marker: string): number {
 // - BRACES, not a subshell: `cd` and `export` must land in the shell itself.
 // - `< /dev/null` on the group, matching project_bash's `stdin:'ignore'` and
 //   the CLI's own Bash tool, which has no stdin parameter — so it is not a
-//   regression. A command genuinely needing stdin runs as its own one-shot
-//   exec, at the cost of not sharing shell state.
+//   regression.
 // - `$PWD` is base64'd because a path may contain spaces or newlines.
 // - stderr gets its own sentinel, opening AND closing, so cc knows when both
 //   streams are done and where each one's command output starts.
@@ -72,9 +69,8 @@ function afterMarkerLine(text: string, marker: string): number {
 //   command that ends with `printf err >&2`, or a login profile that prints an
 //   unterminated banner. Without the injected newline the marker glues itself
 //   to that text, never matches, and the command wedges until its deadline —
-//   and in persistent mode the reset reopens the same login shell, which
-//   reprints the same banner, so it is a LOOP: one wedge per command for the
-//   life of the session.
+//   on EVERY command, because every command gets its own shell and its own
+//   copy of that banner.
 //   The CLOSING sentinels' newline is stripped back off by the parser, so a
 //   blank line is never attributed to the command. The OPENING ones need no
 //   strip: everything before them is discarded by definition.
@@ -93,10 +89,6 @@ export interface FramedStdout {
   text: string;
   code: number;
   cwd: string;
-  // Offset just past the sentinel line. Everything from here on belongs to a
-  // forgery's own trailing output and is DISCARDED — which is what confines a
-  // desync to the one command that caused it.
-  consumed: number;
 }
 
 // FIRST MATCH WINS, then stop parsing. A forged sentinel can therefore only
@@ -123,11 +115,11 @@ export function parseFramedStdout(text: string, nonce: string): FramedStdout | n
     const before = at > 0 && body[at - 1] === '\n' ? body.slice(0, at - 1) : body.slice(0, at);
     let cwd = '';
     try { cwd = Buffer.from(m[2], 'base64').toString('utf8'); } catch { cwd = ''; }
-    return { text: before, code: Number(m[1]), cwd, consumed: start + nl + 1 };
+    return { text: before, code: Number(m[1]), cwd };
   }
 }
 
-export interface FramedStderr { text: string; consumed: number }
+export interface FramedStderr { text: string }
 
 // The stderr sentinel carries no payload — it exists so cc knows the stderr
 // stream is done for this command and can attribute later bytes to the next
@@ -148,7 +140,7 @@ export function parseFramedStderr(text: string, nonce: string): FramedStderr | n
     // Strip the one newline cc injected before the sentinel, exactly as the
     // stdout half does.
     const before = at > 0 && body[at - 1] === '\n' ? body.slice(0, at - 1) : body.slice(0, at);
-    return { text: before, consumed: start + nl + 1 };
+    return { text: before };
   }
 }
 

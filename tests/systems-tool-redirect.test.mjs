@@ -141,19 +141,20 @@ test('a forwarded command runs on the system and not on cc', async () => {
   assert.notEqual(miss.code, 0);
 });
 
-// PINS: ONE AGENT's shell is long-lived — `cd` and `export` carry between that
-// agent's commands, and cwd is read back from the shell rather than parsed out of
-// the command. Every call here is the main agent's; the isolation BETWEEN agents
-// is tests/systems-agent-shells.test.mjs's subject.
-test('the redirected shell carries cwd and exports between commands', async () => {
+// PARTLY INVERTED on card 2026-0312: the export half used to assert that an
+// agent's `export` carried to its next command. There is no long-lived shell to
+// carry it, so it does not — which is what the local CLI already does. cwd is
+// still READ BACK from the shell's own `$PWD` rather than parsed out of the
+// command text, which is what this keeps pinning.
+test('the redirected shell reads its cwd back from the shell, and carries no exports', async () => {
   await fs.mkdir(onSystem('sub'), { recursive: true });
   await bash('cd sub');
   const pwd = await bash('pwd');
   assert.equal(pwd.stdout.trim(), path.join(remote.root, 'sub'));
 
   await bash('export CC_PROBE=carried');
-  const echo = await bash('echo "$CC_PROBE"');
-  assert.equal(echo.stdout.trim(), 'carried');
+  const echo = await bash('echo "[$CC_PROBE]"');
+  assert.equal(echo.stdout.trim(), '[]', 'nothing an agent exports reaches its next command');
 });
 
 // A sink that records what arrived and WHEN, relative to the promise settling.
@@ -322,14 +323,12 @@ test('interrupting a queued call leaves a live in-flight command untouched', asy
   assert.equal(after.notice, null, 'and the next command is not told about a reset either');
 });
 
-// PINS B2 IN THE FALLBACK MODE, at the redirect layer. R5's abort was
-// implemented only as a shell close, and in `persistentShell:false` there is no
-// live stream and no retained exec id — so the close reached nothing and the
+// PINS B2 AT THE REDIRECT LAYER. R5's abort was once implemented only as a shell
+// close, which reached nothing when there was no live stream — so the
 // interrupted command ran to completion on the system, bounded only by the
-// worker's own Bash timeout. D10 makes the fallback the deliverable, not a
-// degraded mode, so an interrupt that does nothing there fails the phase.
-test('[persistentShell:false] interrupting stops the command, and a queued one never runs', async () => {
-  await build({ flags: ['--no-persistent-shell'] });
+// worker's own Bash timeout. The abort now reaches the far side through `exec`
+// itself, which is the only channel there is.
+test('interrupting stops the command, and a queued one never runs', async () => {
   const running = onSystem('FB_STILL_RUNNING');
   const queued = onSystem('FB_QUEUED_RAN');
 
@@ -576,39 +575,6 @@ test('a restarted shell tells the worker what it lost', async () => {
   assert.equal((await bash('true')).notice, null);
 });
 
-// PINS: an idle shell is closed rather than held open for the life of the
-// session, and the next command transparently opens a fresh one.
-test('an idle shell is closed on its TTL', async () => {
-  await redirect.close();
-  await build({ idleTtlMs: 40 });
-  await bash('true');
-  assert.equal(redirect.shellOpen, true);
-  await waitFor(() => redirect.shellOpen === false, { timeout: 4000 });
-  assert.equal((await bash('echo alive')).stdout.trim(), 'alive');
-});
-
-// PINS C6: an idle-TTL close TELLS the next command, exactly as a wedge or an
-// interrupt does. The sweep is cc's own decision, made while the worker was
-// away, so a shell that silently looks continuous while its exports are gone is
-// the same R5 violation — and this path used to be the silent one.
-test('an idle-TTL close tells the next command what it lost', async () => {
-  await redirect.close();
-  await build({ idleTtlMs: 40 });
-  await bash('export CC_PROBE=before');
-  await waitFor(() => redirect.shellOpen === false, { timeout: 4000 });
-
-  const notices = [];
-  const after = await redirect.runForwarded('echo "[$CC_PROBE]"', {
-    sink: { notice: (t) => notices.push(t), out: () => {}, err: () => {} },
-  });
-  assert.equal(after.stdout, '[]\n', 'it really did run on a shell that had lost the export');
-  assert.equal(notices.length, 1, 'the idle close is reported, not silent');
-  assert.match(notices[0], /restarted/);
-  assert.equal(after.notice, notices[0]);
-  // And once only.
-  assert.equal((await bash('echo again')).notice, null);
-});
-
 // PINS: `@mention` pre-hydration pulls the named file into the session root
 // BEFORE the prompt reaches the CLI — the CLI expands a mention with no hook,
 // so a file that is not already local is simply absent from the turn.
@@ -617,20 +583,6 @@ test('@mention pre-hydration pulls the named files before the prompt is sent', a
   await fs.writeFile(onSystem('docs/spec.md'), '# the spec\n');
   await redirect.hydrateMentions('please read @docs/spec.md and @nope/missing.md then stop');
   assert.equal(await fs.readFile(inSession('docs/spec.md'), 'utf8'), '# the spec\n');
-});
-
-// PINS: with the persistent-shell capability absent, a redirected Bash still
-// works and still carries cwd — the fallback is the deliverable, not the flag.
-test('the persistentShell fallback still runs commands and carries cwd', async () => {
-  await redirect.close();
-  await build({ flags: ['--no-persistent-shell'] });
-  await fs.mkdir(onSystem('sub'), { recursive: true });
-  assert.equal((await bash('cat ONLY-ON-SYSTEM.txt')).stdout, 'system side\n');
-  await bash('cd sub');
-  assert.equal((await bash('pwd')).stdout.trim(), path.join(remote.root, 'sub'));
-  // Exactly the local CLI's own behaviour: cwd carries, exports do not.
-  await bash('export CC_PROBE=gone');
-  assert.equal((await bash('echo "[$CC_PROBE]"')).stdout.trim(), '[]');
 });
 
 // PINS HOP 1 OF 4 of the agent id's journey (PreToolUse → argv → forwarder POST

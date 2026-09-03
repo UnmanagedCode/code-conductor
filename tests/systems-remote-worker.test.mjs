@@ -371,32 +371,20 @@ describe('a worker session on a remote system', () => {
   });
 
   // PINS ALL FOUR HOPS of the agent id at once — hook envelope → forwarder argv
-  // → forwarder POST body → runForwarded — by the only witness that cannot be
-  // faked by a hop that dropped it: the far-side shell's OWN pid.
+  // → forwarder POST body → runForwarded — by a witness that cannot be faked by
+  // a hop that dropped it: the far side's OWN `pwd`.
+  //
+  // THE WITNESS MOVED ON CARD 2026-0312. It used to be the far-side shell's `$$`,
+  // which no longer distinguishes anything: every command is its own process, so
+  // every pid differs whether or not the id survived the trip.
   //
   // THIS IS THE FAIL-OPEN CATCHER. If `--agent` is lost anywhere on that path,
-  // the subagent's command still runs and still exits zero; it just runs on the
-  // main agent's shell, and the two pids become equal.
+  // the subagent's command still runs and still exits zero; it just lands on the
+  // main agent's cwd, and the two answers become equal.
   //
   // NOT CLAIMING that the CLI populates `agent_id` — this test supplies it. That
   // contract is the gated tests/systems-cli-contract.real.test.mjs's subject.
-  test("a subagent's Bash runs on its own shell, end to end", async () => {
-    const shellPid = async (over) => {
-      const r = await hook({ tool_name: 'Bash', tool_input: { command: 'echo $$' }, ...over });
-      const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
-      assert.equal(ran.code, 0, ran.stderr);
-      assert.match(ran.stdout.trim(), /^\d+$/, ran.stdout);
-      return ran.stdout.trim();
-    };
-
-    const sub = await shellPid({ agent_id: 'a8620fbbffcb7f234' });
-    const main = await shellPid({});
-    assert.notEqual(sub, main, "the subagent's command ran in a shell of its own");
-    assert.equal(await shellPid({}), main, 'and the main agent keeps its shell across calls');
-    assert.equal(await shellPid({ agent_id: 'a8620fbbffcb7f234' }), sub, 'as does the subagent');
-
-    // The state half, through the same four hops: the subagent moves its own
-    // shell and the main agent's is still standing in the project tree.
+  test("a subagent's Bash keeps its own working directory, end to end", async () => {
     const moved = await hook({
       tool_name: 'Bash', tool_input: { command: 'cd / && pwd' }, agent_id: 'a8620fbbffcb7f234',
     });
@@ -406,6 +394,14 @@ describe('a worker session on a remote system', () => {
     const where = await hook({ tool_name: 'Bash', tool_input: { command: 'pwd' } });
     const ranWhere = await runAsTheCliWould(where.body.hookSpecificOutput.updatedInput.command, root);
     assert.equal(ranWhere.stdout.trim(), tree, "the main agent's shell never moved");
+
+    // And the subagent's own next command is still where it left it — so the id
+    // survived the round trip in BOTH directions, not just once.
+    const again = await hook({
+      tool_input: { command: 'pwd' }, tool_name: 'Bash', agent_id: 'a8620fbbffcb7f234',
+    });
+    const ranAgain = await runAsTheCliWould(again.body.hookSpecificOutput.updatedInput.command, root);
+    assert.equal(ranAgain.stdout.trim(), '/', 'the subagent came back to its own cwd');
   });
 
   // PINS: quoting survives the rewrite. The command travels through a shell as
@@ -560,9 +556,16 @@ describe('a worker session on a remote system', () => {
   // worker its shell was restarted rather than looking continuous.
   test('killing the forwarder resets the shell and the next command says so', async () => {
     const marker = onSystem('slow-finished.txt');
-    const r = await hook({ tool_name: 'Bash', tool_input: { command: `sleep 20; touch ${marker}` } });
+    const started = onSystem('slow-started.txt');
+    const r = await hook({
+      tool_name: 'Bash',
+      tool_input: { command: `touch ${started}; sleep 20; touch ${marker}` },
+    });
     const child = spawn('bash', ['-c', r.body.hookSpecificOutput.updatedInput.command], { cwd: root, stdio: 'ignore' });
-    await waitFor(async () => instances.get(instId)._redirect.shellOpen);
+    // The far side's own answer that the command is genuinely running: cc holds
+    // no observable for it any more, and killing the forwarder before the
+    // command started would prove nothing.
+    await waitFor(() => fs.stat(started).then(() => true, () => false));
     child.kill('SIGKILL');
 
     const next = await hook({ tool_name: 'Bash', tool_input: { command: 'echo back' } });
@@ -574,27 +577,6 @@ describe('a worker session on a remote system', () => {
     assert.match(ran.writes.filter(w => w.fd === 'err')[0].text, /^\[cc\]/);
     // The command really was stopped, not merely abandoned.
     await assert.rejects(fs.stat(marker));
-  });
-
-  // PINS: removing the session reaches the redirect's teardown at all, with NO
-  // live process left to kill — a crashed or already-exited session has none,
-  // and a shell left open is a process on someone else's machine keyed to a
-  // session that is gone. `close()` reaps every agent's shell, not just the main
-  // agent's; only the main agent's is open here.
-  //
-  // NOT CLAIMING that the far-side shell processes actually die — `shellOpen`
-  // answers from cc's entry map, which teardown clears either way. That is pinned
-  // by pid in tests/systems-agent-shells.test.mjs.
-  test('removing the session reaches the shell teardown with no process left', async () => {
-    const r = await hook({ tool_name: 'Bash', tool_input: { command: 'echo hi' } });
-    await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
-    const redirect = instances.get(instId)._redirect;
-    assert.equal(redirect.shellOpen, true);
-    assert.equal(instances.get(instId).proc, null, 'no process left — the shell must still be reaped');
-
-    const del = await api(baseUrl, 'DELETE', `/api/instances/${instId}`);
-    assert.equal(del.status, 200, JSON.stringify(del.body));
-    assert.equal(redirect.shellOpen, false);
   });
 
   // The one sentence a remote project adds to every worker's system prompt.

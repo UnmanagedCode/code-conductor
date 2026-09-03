@@ -365,33 +365,6 @@ for (const config of CAPABILITY_CONFIGS) {
 
 // ── Cases that do not vary by capability ─────────────────────────────
 
-test('a provider that does not advertise persistentShell refuses to be written to', async () => {
-  // The capability IS "cc may keep writing into a live child". Both halves are
-  // asserted: cc refuses to ask, and a provider refuses to be asked.
-  const sys = makeProviderSystem(['--no-persistent-shell']);
-  try {
-    await sys.connect();
-    await assert.rejects(
-      () => sys.openStream({ argv: ['cat'] }, { cwd: os.tmpdir() }, {
-        onStdout() {}, onStderr() {}, onExit() {}, onDown() {},
-      }),
-      (e) => expectCode(e, 'EUNSUPPORTED', 'openStream without the capability'),
-    );
-  } finally { sys.dispose(); }
-
-  const conn = new ProviderConnection({ launch: { argv: providerArgv(['--no-persistent-shell']) } });
-  try {
-    await conn.ensureUp();
-    const id = conn.nextId('e');
-    const refusal = await new Promise((resolve) => {
-      conn.open(id, { frame: (f) => { if (f.type === 'error') resolve(f); }, down: resolve });
-      conn.send({ type: 'exec', id, cwd: os.tmpdir(), argv: ['cat'] });
-      conn.send({ type: 'stdin', id, dataB64: Buffer.from('hi').toString('base64') });
-    });
-    expectCode(refusal, 'EUNSUPPORTED', 'a stdin frame sent to a provider without the capability');
-  } finally { conn.dispose(); }
-});
-
 test('a provider refuses a corrupted write payload — it never lands a partial file', async () => {
   // The other direction of the same rule. `Buffer.from(s,'base64')` would keep
   // the readable prefix, so a doc-conforming provider that decoded leniently
@@ -458,28 +431,27 @@ test('a bound handle names its remote on exec, readFile and writeFile', async ()
   });
 });
 
+// RE-BASED on card 2026-0312, not deleted: this used to prove the §4 rule
+// through a `stdin` frame, which no longer exists. The RULE does — a follow-on
+// frame carries no `remoteId` and the `id` is its whole address — so it is
+// re-based on `signal`, one of the two follow-on frames that survive.
+//
+// A LONG command plus a signal that lands on it: the signal frame names no
+// remote, and the only way it can reach the right child is through the id the
+// `exec` bound. A signal that reached the WRONG target, or none, leaves the
+// command running to its own completion and the assertion fails on the code.
+//
+// NOT CLAIMING anything about process groups (their own capability, own tests).
 test('an id is bound to one remote for its whole lifetime — follow-on frames carry none', async () => {
   await withRemotes(async (sys, { rootA }) => {
-    if (!sys.handshake.capabilities.persistentShell) return; // stdin frames need the capability
     const a = sys.bindRemote('a');
-    let echoed;
-    const heard = new Promise((resolve) => { echoed = resolve; });
-    const stream = await a.openStream({ argv: ['cat'] }, { cwd: rootA }, {
-      onStdout: (b) => echoed(b.toString('utf8')),
-      onStderr: () => {},
-      onExit: () => echoed(''),
-      onDown: () => echoed(''),
-    });
-    stream.retain();
-    try {
-      // The stdin frame names NO remote. The `id` is the whole address.
-      stream.write('routed\n');
-      assert.equal(await heard, 'routed\n',
-        'a stdin frame with no remoteId reached the child the exec id named');
-    } finally {
-      stream.close();
-      stream.release();
-    }
+    const ac = new AbortController();
+    const running = a.exec({ shell: 'sleep 30' }, { cwd: rootA, signal: ac.signal });
+    // The `signal`/`close` frames cc sends for this abort name NO remote.
+    setTimeout(() => ac.abort(), 150).unref?.();
+    const r = await running;
+    assert.notEqual(r.code, 0, 'the abort reached the child the exec id named');
+    assert.ok(r.durationMs < 20_000, `it was killed rather than left running: ${r.durationMs}ms`);
   });
 });
 

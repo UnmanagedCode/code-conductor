@@ -93,7 +93,7 @@ function handle(f) {
       type: 'hello',
       protocol: mode === 'bad-version' ? 99 : 1,
       provider: `fake-${mode}/0.1.0`,
-      capabilities: { persistentShell: true, processGroupSignal: true },
+      capabilities: { processGroupSignal: true },
       system: { os: 'linux', pathSep: '/', shell: mode === 'bad-shell' ? '' : '/bin/bash', home: '/root' },
     };
     if (mode === 'double-hello') {

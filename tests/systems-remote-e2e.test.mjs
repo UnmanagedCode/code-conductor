@@ -199,13 +199,13 @@ describe('a project on a system, end to end, with no worker', () => {
     assert.ok(!/! system unreachable/.test(text), 'a reachable system is not flagged');
   });
 
-  // PINS: the whole flow still works when the provider advertises neither
-  // optional capability — the fallbacks are on the remote-project path too, not
-  // only in the protocol suites.
-  test('the same flow runs against a provider with both capabilities off', async () => {
+  // PINS: the whole flow still works when the provider advertises no optional
+  // capability — the fallback is on the remote-project path too, not only in the
+  // protocol suites.
+  test('the same flow runs against a provider with its capabilities off', async () => {
     disposeSystemHandles();
     const degraded = await bindRemoteSystem({
-      id: 'plainbox', flags: ['--no-persistent-shell', '--no-process-group-signal'],
+      id: 'plainbox', flags: ['--no-process-group-signal'],
     });
     const tree = await seedRepo(path.join(degraded.root, 'app'));
     const r = await api(baseUrl, 'POST', '/api/projects/external', {

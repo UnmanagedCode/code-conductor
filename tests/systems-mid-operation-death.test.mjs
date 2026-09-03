@@ -594,18 +594,16 @@ describe('a system that dies mid-operation', () => {
 
   // ── ProviderShell's start path ───────────────────────────────────────
 
-  // PINS: the shell's own transport/command split, on the one-shot fallback —
-  // the path a provider without `persistentShell` takes, which is reachable
-  // today. A cwd that vanished is ENOENT; a dead transport is ETRANSPORT even
-  // when its stderr says ENOENT.
+  // PINS: the shell's own transport/command split. A cwd that vanished is
+  // ENOENT; a dead transport is ETRANSPORT even when its stderr says ENOENT.
   test("the shell's start path splits transport from a real ENOENT", async () => {
-    await goFlaky({ flags: ['--no-persistent-shell'] });
+    await goFlaky();
     const live = await systemById(remote.id, null, 'test');
     const gone = live.shell({ cwd: path.join(remote.root, 'never-existed') });
     await assert.rejects(() => gone.run('pwd'), (e) => e.code === 'ENOENT',
       'a cwd that is really absent is a real FS answer');
 
-    await goFlaky({ budget: 0, dieStderr: POISON, flags: ['--no-persistent-shell'] });
+    await goFlaky({ budget: 0, dieStderr: POISON });
     const dead = await systemById(remote.id, null, 'test');
     await assert.rejects(
       () => dead.shell({ cwd: remote.root }).run('pwd'),

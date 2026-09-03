@@ -24,7 +24,7 @@ import {
 import { ExecOutputCollector } from './execCollector.ts';
 import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } from './mirror.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
-import { ProviderShell, type ShellHost, type ShellStream, type ShellStreamHandlers } from './providerShell.ts';
+import { ProviderShell, type ShellHost } from './providerShell.ts';
 import { requireAbsolute } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
@@ -104,7 +104,6 @@ export class ProviderSystem implements System, ShellHost {
   // Whether this handle OWNS the connection. False for a bound view, which
   // shares the owner's — one endpoint, many targets, one process.
   readonly #owns: boolean;
-  #shell: ProviderShell | null = null;
   // The handshake this view's remote was last confirmed against. Object
   // identity is the connection GENERATION: ProviderConnection replaces it on
   // every successful re-handshake, so a provider restart re-probes and nothing
@@ -147,11 +146,9 @@ export class ProviderSystem implements System, ShellHost {
   async connect(): Promise<Handshake> { return this.#conn.ensureUp(); }
 
   dispose(): void {
-    this.#shell?.forget();
-    this.#shell = null;
-    // A VIEW DOES NOT OWN THE CONNECTION: disposing one forgets its own shell
-    // and leaves the process serving every other target on it. Only the owner's
-    // dispose kills the provider.
+    // A VIEW DOES NOT OWN THE CONNECTION: disposing one leaves the process
+    // serving every other target on it. Only the owner's dispose kills the
+    // provider.
     if (this.#owns) this.#conn.dispose();
   }
 
@@ -619,49 +616,12 @@ export class ProviderSystem implements System, ShellHost {
 
   execOneShot(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> { return this.exec(spec, opts); }
 
-  async openStream(spec: ExecSpec, opts: ExecOptions, handlers: ShellStreamHandlers): Promise<ShellStream> {
-    // The SECOND way a cwd reaches an `exec` frame. The one-shot fallback goes
-    // through `exec` and is guarded there; this is the persistent-shell path,
-    // and it is the one a redirected Bash session drives every command through.
-    requireAbsolute('openStream', 'cwd', opts.cwd);
-    const hs = await this.#conn.ensureUp();
-    if (!hs.capabilities.persistentShell) {
-      throw new SystemError('EUNSUPPORTED', `system '${this.id}' does not support a persistent shell`);
-    }
-    if (this.remoteId !== null && !hs.capabilities.remotes) {
-      throw new SystemError(
-        'EUNSUPPORTED',
-        `system '${this.id}' is served by ${hs.provider}, which does not support named remotes`,
-      );
-    }
-    const id = this.#conn.nextId('s');
-    // keepAlive:false — the shell is idle between commands and must never hold
-    // the event loop open on its own; ProviderShell retains around each command.
-    this.#conn.open(id, {
-      frame: (f) => {
-        if (f.type === 'stdout') handlers.onStdout(decodeData(f));
-        else if (f.type === 'stderr') handlers.onStderr(decodeData(f));
-        else if (f.type === 'exit') handlers.onExit(typeof f.code === 'number' ? f.code : 1);
-        // The provider's own code is preserved so the shell can tell "could
-        // not start" (ENOENT on a vanished cwd) from "died".
-        else if (f.type === 'error') handlers.onDown(new SystemError(isSystemErrorCode(f.code) ? f.code : 'ESHELLGONE', frameMessage(f)));
-      },
-      down: (err) => handlers.onDown(err),
-    }, { keepAlive: false });
-    this.#conn.send(execFrame(id, this.remoteId, spec, opts, opts.env ?? process.env));
-    return {
-      write: (text) => this.#conn.send({ type: 'stdin', id, dataB64: Buffer.from(text, 'utf8').toString('base64') }),
-      close: () => { this.#conn.send({ type: 'close', id }); this.#conn.close(id, { keepAlive: false }); },
-      retain: () => this.#conn.retain(),
-      release: () => this.#conn.releaseRetain(),
-    };
-  }
-
-  // The long-lived shell that carries `Bash` continuity for this system. One
-  // per system handle; opened lazily on the first command.
+  // A redirected shell on this system: one framed `exec` per command. A TEST
+  // SEAM — production builds its own in src/systems/toolRedirect.ts — and
+  // deliberately NOT memoised, since a ProviderShell is now config-only and a
+  // memo silently ignored a second call's `cwd`.
   shell(opts: { cwd: string; env?: NodeJS.ProcessEnv } & Partial<{ commandTimeoutMs: number; maxOutputBytes: number }>): ProviderShell {
-    if (!this.#shell) this.#shell = new ProviderShell(this, opts);
-    return this.#shell;
+    return new ProviderShell(this, opts);
   }
 }
 
