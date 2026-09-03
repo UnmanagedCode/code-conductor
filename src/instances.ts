@@ -583,7 +583,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Resolved by the CURRENT launch's terminal latch — 'exit' OR 'close',
   // whichever arrives first. kill() awaits THIS, never a raw 'exit': a child
   // whose spawn FAILED emits 'error' then 'close' and never exits at all
-  // (card 2026-0286). Non-nullable so kill() needs no fallback branch.
+  // (card 2026-0286 §1). Non-nullable so kill() needs no fallback branch.
   _procEnded: Promise<void>;
   parser: Parser;
   ring: EventLog;
@@ -2696,8 +2696,11 @@ export class Instance extends EventEmitter implements InstanceLike {
   // backs. Inert only because every reader stat-gates the file first (see
   // src/archivedSessions.ts's header + src/projects.ts's session-row build); a
   // reader that enumerates the set without that stat would surface a phantom
-  // row. It REPLACES a worse leak — markTemp fires at spawn time, so before the
-  // terminal latch a stranded failure kept a TEMP marker forever.
+  // row. Not a NEW state: markTemp fires at spawn time, so before the terminal
+  // latch a stranded failure kept its TEMP marker until the next graceful
+  // restart, whose orphan sweep (scheduleRestart → orphanedTempIdsSync, plus
+  // shutdownTempSync) does this same unmarkTemp+markArchived pair. The latch
+  // changes WHEN that archived marker appears, not WHETHER.
   async _archiveTempSession(): Promise<void> {
     if (!this.backingSessionId) return;
     await fsp.rm(subAgentDirPath(this.cwd, this.backingSessionId), { recursive: true, force: true });
@@ -3510,7 +3513,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // The launch's terminal latch, NOT a fresh proc.once('exit'): a child whose
     // spawn failed never emits 'exit', and its 'close' has usually already been
     // delivered by the time anything gets around to reaping it — a listener
-    // registered here would never fire (card 2026-0286).
+    // registered here would never fire (card 2026-0286 §4).
     const ended = this._procEnded;
     const t1 = setTimeout(() => {
       try { proc.kill('SIGTERM'); } catch { /* ignore */ }

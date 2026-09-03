@@ -776,7 +776,7 @@ describe('an unknown or removed backend never falls through to real claude', () 
 //
 // Note this launcher's healthy children emit ONLY 'exit', never 'close' — so
 // nothing in the terminal-latch design may REQUIRE a 'close', and nothing does.
-// `failNext` arms the opposite shape (card 2026-0286): a spawn that never
+// `failNext` arms the opposite shape (card 2026-0286 §2): a spawn that never
 // started, which emits 'error' then 'close' and no 'exit' at all.
 class ControllableLauncher {
   constructor() { this.children = []; this.failNext = null; }
@@ -873,7 +873,7 @@ describe('launch_failed crash signal', () => {
     assert.equal(hasLaunchFailed(), undefined, 'no launch_failed for claude backend');
   });
 
-  // T10 (card 2026-0286) — the case docs/protocol.md names FIRST ("wrapper binary
+  // T10 (card 2026-0286 §2) — the case docs/protocol.md names FIRST ("wrapper binary
   // missing") and which emitted NOTHING terminal before the terminal latch: the
   // wrapper never started, so there was no 'exit' to key launch_failed on.
   test('a substitution-backend spawn that NEVER STARTED also emits launch_failed', async () => {

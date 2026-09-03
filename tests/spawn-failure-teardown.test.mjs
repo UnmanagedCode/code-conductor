@@ -9,23 +9,38 @@
 // isSessionLive), so every reaper — kill, remove, shutdown, respawn, the resume
 // manifest — reads the corpse as alive.
 //
-// INVARIANTS PINNED HERE (one line each, per test):
-//   T1  a failed spawn ends with proc null, pid null, status crashed, and the
-//       ring carrying spawn_error THEN exit
-//   T2  kill() on a settled spawn failure resolves
-//   T3  InstanceManager.shutdown() returns with such an instance registered
-//   T4  kill() entered INSIDE the race window (proc still assigned, terminal
-//       event not yet delivered) resolves off 'close' alone, and leaves no
-//       ref'd timer behind
-//   T5  the normal path is unchanged: one healthy kill runs _handleExit EXACTLY
-//       once though both 'exit' and 'close' fire, and leaves no ref'd timer
-//   T6  InstanceManager.remove() returns
-//   T7  the liveness oracles read false, so MCP kill_instance soft-refuses
-//       SESSION_NOT_LIVE instead of wedging
-//   T8  MCP respawn_instance is accepted instead of 409 'instance still running'
-//   T9  the real-subprocess arm agrees with the injected one (T1 + T2 through an
-//       unresolvable CLAUDE_BIN)
-//   T11 the resume manifest carries NO entry for a session that never ran
+// INVARIANTS PINNED HERE, in TWO KINDS — named as such, because the distinction
+// decides what each test can and cannot catch. Once a failure has SETTLED
+// (`proc === null`), `kill()`'s `if (!this.proc) return` fires AHEAD of the latch
+// await, and `remove()`/`shutdown()` hit the same guard. So a test that waits for
+// settle as a precondition asserts the end state and never reaches the await.
+//
+//   LATCH PINS — entered INSIDE the race window: 'error' delivered (the launch is
+//   doomed) but the terminal 'close' NOT yet, so `proc` is still assigned, the
+//   early-out cannot fire, and the await is the only way out. This is the state
+//   the card measured.
+//     T3  InstanceManager.shutdown() returns          ← the card's TITLE behaviour
+//     T4  kill() resolves off 'close' alone, leaving no ref'd timer
+//     T6  InstanceManager.remove() returns            ← the MCP kill_instance body
+//     T5  the normal path: one healthy kill runs _handleExit EXACTLY once though
+//         both 'exit' and 'close' fire, and leaves no ref'd timer. Asserted ONE
+//         MACROTASK after kill() resolves — kill()'s continuation is a microtask
+//         off 'exit', while the fake child's 'close' is a later setImmediate, so
+//         asserting immediately would count only the first terminal event and a
+//         double-run of _handleExit would go unseen.
+//
+//   EARLY-OUT / INTEGRATION CHECKS — they pin the settled end state and its
+//   consequences, not the await. Each is red on the base tree because `proc` never
+//   becomes null there, i.e. they fail at the settle barrier rather than at the
+//   operation each is named for.
+//     T1  a failed spawn ends with proc null, pid null, status crashed, and the
+//         ring carrying spawn_error THEN exit
+//     T2  kill() on an ALREADY-settled failure resolves — the early-out itself
+//     T7  the liveness oracles read false, so MCP kill_instance soft-refuses
+//         SESSION_NOT_LIVE instead of wedging
+//     T8  MCP respawn_instance is accepted instead of 409 'instance still running'
+//     T9  the real-subprocess arm agrees with the injected one
+//     T11 the resume manifest carries NO entry for a session that never ran
 //
 // Two launchers deliberately. The real-subprocess arm proves the fake models the
 // true event shape; the injected arm is REQUIRED, not merely cheaper, because
@@ -149,6 +164,23 @@ describe('an instance whose spawn failed (injected launcher)', () => {
   // listener attached afterwards — is the only place to read it from.
   const failed = () => instances.create({ project: 'demo', mode: 'bypassPermissions' });
 
+  // Park an instance INSIDE the race window and hand back the trigger that
+  // leaves it. 'error' has landed (the launch is doomed, status crashed) but the
+  // terminal 'close' has not, so `proc` is still assigned — the state the card
+  // measured, and the ONLY state in which a reaper reaches the latch await
+  // instead of short-circuiting on `if (!this.proc) return`.
+  //
+  // Call the reaper FIRST and `deliverClose()` second: reversing them settles
+  // the instance ahead of the call and silently degrades the test into the
+  // early-out check T2 already owns.
+  async function inRaceWindow(label) {
+    launcher.deferClose = true;
+    const inst = await failed();
+    await within(waitFor(() => inst.status === 'crashed'), 3000, `${label} window`);
+    assert.ok(inst.proc, `${label}: still inside the race window — proc is assigned`);
+    return { inst, deliverClose: launcher.last.deliverClose };
+  }
+
   test('T1 a failed spawn ends proc null, pid null, crashed, ring spawn_error then exit', async () => {
     const inst = await failed();
     await within(waitFor(() => inst.proc === null), 3000, 'T1 proc null');
@@ -174,23 +206,24 @@ describe('an instance whose spawn failed (injected launcher)', () => {
     await within(inst.kill({ graceMs: 30_000 }), 2000, 'T2 kill');
   });
 
-  test('T3 InstanceManager.shutdown() returns with such an instance registered', async () => {
-    const inst = await failed();
-    await within(waitFor(() => inst.proc === null), 3000, 'T3 settle');
-    await within(instances.shutdown(), 3000, 'T3 shutdown');
+  // The card's TITLE behaviour, and the shape it was filed from: a shutdown()
+  // that hangs with `proc` still assigned. It must be driven from inside the
+  // window — waiting for settle first makes the instance's own kill() early-out
+  // and shutdown() never touches the latch.
+  test('T3 InstanceManager.shutdown() returns from inside the race window', async () => {
+    const { inst, deliverClose } = await inRaceWindow('T3');
+    const done = instances.shutdown();
+    deliverClose();
+    await within(done, 3000, 'T3 shutdown');
+    assert.equal(inst.proc, null, 'the close routed to _handleExit');
   });
 
   test('T4 kill() inside the race window resolves off close alone, leaking no timer', async () => {
-    launcher.deferClose = true;
-    const inst = await failed();
-    // The window: 'error' has landed (status crashed) but the terminal 'close'
-    // has NOT, so `proc` is still assigned and kill()'s early-out cannot fire.
-    await within(waitFor(() => inst.status === 'crashed'), 3000, 'T4 window');
-    assert.ok(inst.proc, 'still inside the race window — proc is assigned');
+    const { inst, deliverClose } = await inRaceWindow('T4');
     const before = refdTimers();
     // See T2 on why 30_000 and not a small number.
     const killed = inst.kill({ graceMs: 30_000 });
-    launcher.last.deliverClose();
+    deliverClose();
     await within(killed, 2000, 'T4 kill');
     assert.equal(inst.proc, null, 'the close routed to _handleExit');
     // A kill that settles via 'close' must not leave its SIGTERM/SIGKILL timers
@@ -199,11 +232,14 @@ describe('an instance whose spawn failed (injected launcher)', () => {
     assert.equal(refdTimers() - before, 0, 'no ref\'d timer outlived the settled kill');
   });
 
-  test('T6 InstanceManager.remove() returns', async () => {
-    const inst = await failed();
-    await within(waitFor(() => inst.proc === null), 3000, 'T6 settle');
-    await within(instances.remove(inst.id), 3000, 'T6 remove');
+  // Same window, and this one is the MCP kill_instance body.
+  test('T6 InstanceManager.remove() returns from inside the race window', async () => {
+    const { inst, deliverClose } = await inRaceWindow('T6');
+    const done = instances.remove(inst.id);
+    deliverClose();
+    await within(done, 3000, 'T6 remove');
     assert.equal(instances.get(inst.id), undefined, 'forgotten');
+    assert.equal(inst.proc, null, 'the close routed to _handleExit');
   });
 
   test('T7 the liveness oracles read false and MCP kill_instance soft-refuses', async () => {
@@ -263,6 +299,18 @@ describe('a healthy instance killed normally', () => {
     // See T2 on why the grace is above LEAK_GRACE_MS (15 s) — a small value here
     // would make the timer-delta assertion vacuous.
     await within(inst.kill({ graceMs: 20_000 }), 5000, 'T5 kill');
+    // SETTLE ONE MACROTASK, and it MUST be setImmediate — not setTimeout(0).
+    // kill()'s continuation is a MICROTASK off the synchronous resolve in the
+    // 'exit' handler, while FakeChildProcess._finish
+    // (tests/inProcessLauncher.mjs) queues the 'close'-emitting setImmediate
+    // INSIDE the 'exit'-emitting one. Check-phase FIFO therefore GUARANTEES
+    // 'close' is delivered before this later-queued callback; a setTimeout(0)
+    // would rest on loop-phase reasoning instead, which that guarantee does not
+    // cover. Assert without any settle and only the FIRST terminal event has
+    // landed (measured: ["exit"] at kill()-resolve, ["exit","close"] one
+    // setImmediate later) — so a latch that lost its one-shot flag would
+    // double-run _handleExit and the count below would still read 1.
+    await new Promise((r) => setImmediate(r));
     // The fake child emits BOTH 'exit' and 'close'. The latch is one-shot, so
     // the single terminal path runs once: two exit rows would mean two
     // _handleExit runs (two _redirect.close()s, two temp archives).
