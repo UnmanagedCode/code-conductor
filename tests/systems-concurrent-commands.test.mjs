@@ -69,14 +69,25 @@ const onSystem = (rel) => path.join(remote.root, rel);
 // other, which under anything that serialises them is a DEADLOCK — and an
 // unbounded `while [ ! -e X ]` turns that into a hang until cc's 605 s ceiling:
 // a wedged suite nobody diagnoses rather than a failure someone reads. Bounded,
-// the same regression reds in ~3 s with a message naming what never arrived.
+// the same regression reds in ~10 s with a message naming what never arrived.
 //
 // IT ENDS IN `&&`, and NOT in `exit`. A bare `exit` inside the framed command
 // group exits the SHELL, so cc reports ESHELLGONE and the diagnostic line never
 // reaches the result — measured. Short-circuiting instead leaves the frame
 // intact, so the message arrives on stderr, the rest of the command is skipped,
 // and the exit code is an ordinary non-zero.
-const RENDEZVOUS_TICKS = 150;   // × 20 ms = ~3 s
+// 10 s, NOT 3 s, and the margin is the whole reason. This is the only
+// wall-clock dependence in these tests' PASS path — the shape it replaced had
+// none — so a spurious trip is a flaky red, which is strictly worse than the
+// fail-slow hang it exists to prevent. Measured standalone: 0.22 s quiet,
+// 0.81-1.10 s at 32-way starvation, 0.92-1.30 s at 72-way. Against 3 s that is
+// a 2.3x margin, where this suite's convention is ~75x and this branch already
+// carries a card about a 3.3x margin inverting under exactly this load; the
+// gate runs the whole suite twice with provider processes alongside, so real
+// inflation beyond those standalone numbers is likely. 10 s gives ~7.7x at
+// 72-way and is still ~60x better than the 605 s hang. It costs nothing real:
+// the helper is used only where a deadlock IS the detected failure.
+const RENDEZVOUS_TICKS = 500;   // × 20 ms = ~10 s
 const waitFor_ = (marker) =>
   `i=0; while [ ! -e ${marker} ] && [ $i -lt ${RENDEZVOUS_TICKS} ]; do sleep 0.02; i=$((i+1)); done; `
   + `{ [ -e ${marker} ] || { echo "RENDEZVOUS-TIMEOUT: ${marker} never appeared" >&2; false; }; } && `;

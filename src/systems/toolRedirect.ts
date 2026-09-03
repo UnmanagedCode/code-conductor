@@ -442,11 +442,15 @@ export class SessionRedirect {
     // the identical shape WITHOUT it grows just as `any` does, measured.
     //
     // NO TEST CAN AUDIT THIS, which is why it landed unnoticed: `any` attaches
-    // through internals `getEventListeners` does not enumerate, so it reports
-    // ZERO listeners on a signal with a thousand live combined signals hanging
-    // off it, while an ordinary `addEventListener` reads 1 and its removal
-    // reads 0. A leak assertion here can only be a heap measurement, so this
-    // comment is the record and the shape is the guard.
+    // through internals `getEventListeners` does not enumerate. MEASURE IT WITH
+    // THE EVENT-NAME FORM OR THE COMPARISON IS MEANINGLESS —
+    // `getEventListeners(sig, 'abort')` reads 0 on a signal with a thousand live
+    // combined signals hanging off it, and reads 1 for one ordinary
+    // `addEventListener` and 0 after its removal. The no-name form,
+    // `getEventListeners(sig)`, reads 0 for ALL THREE, so a reader reaching for
+    // it measures 0/0/0 and concludes this comment miscounts. A leak assertion
+    // here can only be a heap measurement, so this comment is the record and the
+    // shape is the guard.
     const call = new AbortController();
     const relay = () => call.abort();
     const sources = signal ? [signal, this.#abort.signal] : [this.#abort.signal];
@@ -517,8 +521,16 @@ export class SessionRedirect {
   // anything with `pwd -P` semantics — returns a path that never equals
   // `systemPath` and every command gets a notice, which is the noise divergence
   // this guard exists to avoid. The reference provider passes `cwd` through
-  // unchanged, so no test here can see it. A provider that canonicalises should
-  // advertise the canonical root.
+  // unchanged, so no test here can see it.
+  //
+  // ADVERTISING CANNOT FIX IT, so do not reach for the mirror advertisement: the
+  // comparison is against `systemPath`, the REGISTERED spelling, which no
+  // advertisement changes — and a `mirrorRoot` that does not contain the
+  // registered project path is refused MIRROR_ROOT_EXCLUDES_PROJECT outright, so
+  // advertising a differing canonical root is refused rather than effective. A
+  // provider whose interpreter canonicalises `$PWD` should serve its targets at
+  // already-canonical paths, so the registered spelling and the shell's answer
+  // agree.
   #cwdNotice(endedAt: string): string | null {
     if (!endedAt || endedAt === this.systemPath) return null;
     return `[cc] the command ended in ${endedAt}; the next command starts at ${this.systemPath} `

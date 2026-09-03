@@ -1535,8 +1535,14 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     // because the forwarder writes each to a different file descriptor.
     //
     // The socket closing is load-bearing, not incidental: the CLI kills the
-    // forwarder on a tool timeout or an interrupt, and that abort is cc's only
-    // signal to stop the command on the far side.
+    // forwarder when the worker interrupts or stops a background task, and that
+    // abort is cc's only signal to stop the command on the far side. At a plain
+    // tool TIMEOUT it detaches instead (card 2026-0305 §3). THE TWO HALVES ARE
+    // NOT EQUALLY EVIDENCED: the not-killed half is measured; that no abort
+    // therefore arrives here — the socket staying open — is its mechanical
+    // consequence and is unobserved. Card 2026-0310 would settle it, and this
+    // route is unaffected either way: an abort that did arrive takes the
+    // interrupt path already written below.
     r.post('/instances/:id/bash-forward', async (req, res) => {
       // A REFUSAL IS FRAMED TOO. The forwarder reads frames and ignores anything
       // else, so a refusal written in some other shape would reach the worker as

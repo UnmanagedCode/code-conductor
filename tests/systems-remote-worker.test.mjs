@@ -482,10 +482,16 @@ describe('a worker session on a remote system', () => {
     assert.equal(await fs.readFile(onSystem('mix.txt'), 'utf8'), 'ALPHA\nBETA\n');
   });
 
-  // PINS: killing the forwarder — what the CLI does on a tool timeout or an
-  // interrupt — stops the command ON THE SYSTEM. The socket closing is cc's only
-  // signal that the worker no longer wants the command, so a kill that left it
-  // running would leave work on someone else's machine with nobody to read it.
+  // PINS: killing the forwarder — what the CLI does when the worker INTERRUPTS
+  // or stops a background task — stops the command ON THE SYSTEM. The socket
+  // closing is cc's only signal that the worker no longer wants the command, so
+  // a kill that left it running would leave work on someone else's machine with
+  // nobody to read it.
+  //
+  // NOT a tool TIMEOUT, which is what an earlier wording here said: at the
+  // timeout the CLI detaches the forwarder rather than killing it (card
+  // 2026-0305 §3), so this test drives the kill itself rather than reproducing
+  // one the timeout would have caused.
   //
   // RE-BASED on card 2026-0312: this also used to assert the NEXT command was
   // told its shell had been restarted. Nothing is restarted — the command's own
