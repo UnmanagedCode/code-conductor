@@ -421,7 +421,7 @@ test('findSessionLocation returns {project, worktreeName:null} for project-root 
   const sid = '11111111-2222-3333-4444-555555555555';
   await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
   const hit = await findSessionLocation(sid);
-  assert.deepEqual(hit, { project: 'host', worktreeName: null });
+  assert.deepEqual(hit, { project: 'host', worktreeName: null, cwd: path.join(projectsRoot, 'host') });
 });
 
 test('findSessionLocation finds sessions inside a worktree', async () => {
@@ -446,7 +446,7 @@ test('findSessionLocation finds sessions inside a worktree', async () => {
   await fs.copyFile(FIXTURE_JSONL, path.join(wtDir, `${sid}.jsonl`));
 
   const hit = await findSessionLocation(sid);
-  assert.deepEqual(hit, { project: 'wtproj', worktreeName: wtName });
+  assert.deepEqual(hit, { project: 'wtproj', worktreeName: wtName, cwd: wtPath });
 });
 
 test('findSessionLocation returns null for unknown sessionId', async () => {

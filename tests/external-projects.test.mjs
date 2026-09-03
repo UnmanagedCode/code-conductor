@@ -109,7 +109,10 @@ test('a session under encodeCwd(realpath) is located; one under encodeCwd(linkPa
   await fs.mkdir(realDir, { recursive: true });
   const sid = '11111111-2222-3333-4444-555555555555';
   await fs.copyFile(FIXTURE_JSONL, path.join(realDir, `${sid}.jsonl`));
-  assert.deepEqual(await findSessionLocation(sid), { project: 'ext', worktreeName: null });
+  // `cwd` is REQUIRED on the answer and is the directory the transcript was
+  // found in — for an external project that is the target's REALPATH, which is
+  // the same property this test is about (card 2026-0292).
+  assert.deepEqual(await findSessionLocation(sid), { project: 'ext', worktreeName: null, cwd: real });
 
   // The logical (symlink) path encodes to a different dir. The CLI never writes
   // there — it encodes from getcwd(), which is always the realpath — so a

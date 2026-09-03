@@ -1566,14 +1566,86 @@ async function loadWorktreesFor(projectName: string): Promise<WorktreeMeta[]> {
   return listWorktrees(projectName);
 }
 
+// ONE PLACE a session could have run: a project or one of its worktrees, with
+// every cwd that place admits. `primary` and `fallback` are the two PASSES of
+// findSessionLocation's probe, not two guesses at one path — see the precedence
+// rule on it.
+interface SessionPlace {
+  project: string;
+  worktreeName: string | null;
+  primary: string[];
+  fallback: string[];
+}
+
 // Look up which project (and optionally which worktree) owns a given
-// sessionId by probing the conventional `~/.claude/projects/<encoded-cwd>/
-// <sid>.jsonl` path against every known project + worktree. Returns
-// { project, worktreeName: string|null } on hit, null when nothing matches.
+// sessionId, and the cwd its transcript was actually found at, by probing the
+// conventional `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` path against
+// every cwd every known project + worktree admits. Returns
+// { project, worktreeName: string|null, cwd } on hit, null when nothing matches.
 // `encodeCwd` is one-way (lossy: '_' and '/' both collapse to '-'), so
 // we can't reverse-map a directory name back to a project — enumerating
 // known paths and probing is the only correct approach.
-export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null } | null> {
+//
+// `cwd` IS THE ANSWER, not a convenience: a caller that re-derives it from the
+// project's tree path lands on the OTHER MACHINE for a project on a system, and
+// then reads an empty transcript. It is REQUIRED for that reason — an optional
+// field invites `hit.cwd ?? proj.path`, which is precisely the bug this fixes
+// (card 2026-0292). It is NOT a public field: `GET /sessions/:id/locate`
+// projects the body explicitly so it stays in-process.
+//
+// WHICH CWDS A PLACE ADMITS depends on where its tree is. A LOCAL place admits
+// exactly its tree path — the CLI ran there. A place on a SYSTEM admits its
+// local SESSION ROOTS (`sessionRootCwds`): the CLI is always local, so a session
+// on another machine's tree still ran in a cc-owned directory here, and the
+// tree path names a directory on a host cc never had a cwd in.
+//
+// TWO PASSES, WITH GLOBAL PRECEDENCE. Pass 1 sweeps every place's `primary`
+// (local tree paths, remote session roots). Pass 2 sweeps only the remote
+// places' `fallback` — the raw path on the system, which is exactly the probe
+// this function ran before session roots existed.
+//   - Pass 2 is KEPT because the state it serves is REACHABLE: adopt a project
+//     locally at P, accrue sessions in that tree, unregister it, re-adopt it on
+//     a system whose path is also P. Those older transcripts are genuinely that
+//     project's and nothing else finds them. Its WORKTREE half serves no state
+//     cc's own operations produce — `deleteProject`'s cascade unregisters a
+//     project's worktrees and `setProjectRemote` refuses while any exist, so no
+//     supported sequence leaves a remote worktree registration whose tree once
+//     held local sessions — and is kept as defence in depth, uniformly with the
+//     project half rather than as a special case.
+//   - It is STRICTLY LAST, globally rather than per-project, because a remote
+//     place's tree path can collide (via encodeCwd, or by naming the same
+//     string) with a LOCAL project's real cwd — and there the raw answer is
+//     wrong while a session-root answer elsewhere is right. Demoting it below
+//     every primary everywhere cures that by precedence, deleting nothing.
+// A session-root answer must therefore never lose to a raw remote-tree-path
+// answer, for any id, under any project ordering. Local places contribute
+// nothing to pass 2, so a local project's set and order are what they were.
+//
+// WHAT THIS NEEDS FROM THE SYSTEM. THE ONE HOME for this contract — the sites
+// that care (`src/mcp/handlers.ts`'s disk branch, `docs/architecture.md`,
+// tests/systems-remote-session-location.test.mjs) point here instead of keeping
+// their own copy, because two comfortable summaries are both FALSE and a third
+// paraphrase is how the last two got written:
+//   NOT "it never touches the box" — `loadWorktreesFor` reaches for it.
+//   NOT "a box that is down cannot change what this returns" — it can.
+//
+// Almost every candidate cwd is computed from cc's own store and disk:
+// `listProjects` (store-derived for a remote row), `sessionRootPath`,
+// `mirrorOffsets`, a realpath of cc's own store — and the transcripts are on
+// cc's own disk. ONE INPUT IS NOT, the WORKTREE STORE. `loadWorktreesFor` is
+// `listWorktrees`, which runs `git worktree list` THROUGH the project's system
+// and then lets the answer PRUNE any registration the box no longer reports,
+// while SWALLOWING the box's refusal when it cannot answer (so every
+// registration lists). Consequences, both real:
+//   - A DOWN box SURFACES a worktree place a HEALTHY box PRUNES. The box's git
+//     answer is data this lookup consumes, and losing it changes the answer
+//     rather than only costing a swallowed failure.
+//   - A WEDGED box can stall this lookup up to the provider operation timeout:
+//     `runGit` passes no `timeoutMs` and the registry constructs its
+//     ProviderSystem with no `defaultOpTimeoutMs`.
+// The lazy composition below is what keeps both off a lookup that a nearer
+// place already answers.
+export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> {
   // Permissive validation: sessionIds are UUIDs in practice but we accept
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
@@ -1603,25 +1675,102 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     }
   } catch { /* .conduct doesn't exist yet — skip */ }
 
-  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null } | null> => {
-    for (const proj of projects) {
-      const file = sessionFilePath(proj.path, id);
+  // Lazy import for the same projects.ts ↔ systems/sessionRoot.ts circular edge
+  // the two worktrees imports sit on — sessionRoot.ts imports orchStoreRoot from
+  // this module.
+  const { sessionRootCwds } = await import('./systems/sessionRoot.ts');
+
+  // One place, composed. `sysPath` is null for a listed remote row with no
+  // placement — which contributes no primary, only its fallback. A remote row's
+  // `path` IS its `systemPath` (listProjects), but `systemPath` is the field
+  // that NAMES the meaning, so the project's row is asked with that one.
+  const compose = async (
+    proj: ProjectInfo, worktreeName: string | null, treePath: string, sysPath: string | null,
+  ): Promise<SessionPlace> => {
+    if (proj.system === LOCAL_SYSTEM_ID) {
+      return { project: proj.name, worktreeName, primary: [treePath], fallback: [] };
+    }
+    return {
+      project: proj.name,
+      worktreeName,
+      primary: sysPath ? await sessionRootCwds(proj.system, proj.name, worktreeName, sysPath) : [],
+      fallback: [treePath],
+    };
+  };
+
+  // THE PLACE LIST IS COMPOSED LAZILY, IN PROBE ORDER, AND MEMOISED — and the
+  // laziness is load-bearing rather than a micro-optimisation. Composing a
+  // project's WORKTREE places calls `loadWorktreesFor` = `listWorktrees`, which
+  // resolves the project and runs `git worktree list` THROUGH ITS SYSTEM: for a
+  // project on a remote system that is a real `exec` over the provider wire. An
+  // eager list would therefore put every registered system's responsiveness on
+  // the critical path of a lookup that a nearer place already answers, so one
+  // wedged provider would stall every locate, transcript read, summary and bare
+  // resume up to the operation timeout. Pass 1 composes a place only when the
+  // sweep reaches it, exactly as the pre-session-root probe did.
+  //
+  // The memo means a place is composed AT MOST ONCE per lookup, so pass 2 and
+  // the read-tolerance loop do not re-walk. Nothing depends on that beyond
+  // cost: pass 2 runs only when pass 1 missed everywhere, which is precisely
+  // the case that has already composed every place.
+  const rootMemo: Array<SessionPlace | undefined> = new Array(projects.length);
+  const rootPlace = async (i: number): Promise<SessionPlace> => {
+    const cached = rootMemo[i];
+    if (cached) return cached;
+    const proj = projects[i];
+    const built = await compose(proj, null, proj.path, proj.systemPath);
+    rootMemo[i] = built;
+    return built;
+  };
+  const worktreeMemo: Array<SessionPlace[] | undefined> = new Array(projects.length);
+  const worktreePlaces = async (i: number): Promise<SessionPlace[]> => {
+    const cached = worktreeMemo[i];
+    if (cached) return cached;
+    const proj = projects[i];
+    let wts: WorktreeMeta[] = [];
+    try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
+    const built: SessionPlace[] = [];
+    // A worktree's offsets come from the WORKTREE's own path on the system, not
+    // its project's: the two differ under a mirror root wider than the project.
+    for (const wt of wts) built.push(await compose(proj, wt.worktreeName, wt.worktreePath, wt.worktreePath));
+    worktreeMemo[i] = built;
+    return built;
+  };
+
+  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> => {
+    const holds = async (cwd: string): Promise<boolean> => {
       try {
-        const stat = await fs.stat(file);
-        if (stat.isFile()) return { project: proj.name, worktreeName: null };
+        return (await fs.stat(sessionFilePath(cwd, id))).isFile();
       } catch (e) {
         if (errCode(e) !== 'ENOENT') throw e;
+        return false;
       }
-      let wts: WorktreeMeta[] = [];
-      try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
-      for (const wt of wts) {
-        const wtFile = sessionFilePath(wt.worktreePath, id);
-        try {
-          const stat = await fs.stat(wtFile);
-          if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
-        } catch (e) {
-          if (errCode(e) !== 'ENOENT') throw e;
-        }
+    };
+    const first = async (place: SessionPlace, cwds: string[]) => {
+      for (const cwd of cwds) {
+        if (await holds(cwd)) return { project: place.project, worktreeName: place.worktreeName, cwd };
+      }
+      return null;
+    };
+    for (let i = 0; i < projects.length; i++) {
+      // The project's own place BEFORE its worktrees, so a hit at a project root
+      // does not pay that project's OWN worktree walk either — the within-project
+      // half of the same invariant, and the half a per-project eager build would
+      // lose silently. Its observable consequence (no frame reaches that
+      // project's box) is pinned by T13 in
+      // tests/systems-remote-session-location.test.mjs.
+      const root = await rootPlace(i);
+      const atRoot = await first(root, root.primary);
+      if (atRoot) return atRoot;
+      for (const pl of await worktreePlaces(i)) {
+        const atWt = await first(pl, pl.primary);
+        if (atWt) return atWt;
+      }
+    }
+    for (let i = 0; i < projects.length; i++) {
+      for (const pl of [await rootPlace(i), ...await worktreePlaces(i)]) {
+        const hitHere = await first(pl, pl.fallback);
+        if (hitHere) return hitHere;
       }
     }
     return null;

@@ -983,17 +983,6 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
     } catch (e) { next(e); }
   });
 
-  // Resolve the filesystem cwd for a session from findSessionLocation's result.
-  async function cwdForHit(hit: { project: string; worktreeName: string | null } | null): Promise<string | null> {
-    if (!hit) return null;
-    if (hit.worktreeName) {
-      const wt = await getWorktree(hit.project, hit.worktreeName);
-      return wt?.worktreePath ?? null;
-    }
-    const proj = await getProject(hit.project);
-    return proj.path;
-  }
-
   type SessionSummaries = Awaited<ReturnType<typeof getSummaries>>;
 
   // Build the tier response data object, adding per-tier isStale.
@@ -1021,11 +1010,11 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       let currentCount = 0;
       const hasTiers = Object.keys(tiers).length > 0;
       if (hasTiers) {
+        // `hit.cwd` is where the transcript WAS FOUND, never re-derived from the
+        // project's tree — that tree is a path on another machine for a project
+        // on a system, where the count would silently be 0 (card 2026-0292).
         const hit = await findSessionLocation(sid);
-        if (hit) {
-          const cwd = await cwdForHit(hit);
-          if (cwd) currentCount = await countMessages(backing, cwd).catch(() => 0);
-        }
+        if (hit) currentCount = await countMessages(backing, hit.cwd).catch(() => 0);
       }
       res.json({ ok: true, sessionId: sid, data: buildTierData(tiers, currentCount) });
     } catch (e) { next(e); }
@@ -1045,10 +1034,18 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       }
       const hit = await findSessionLocation(sid);
       if (!hit) throw httpError(404, 'session not found');
-      const cwd = await cwdForHit(hit);
-      if (!cwd) throw httpError(404, 'session not found');
+      // ONE 404, not two. The hit's `cwd` is PROOF the directory holds the file
+      // — the probe stat'd it — so the second "resolved to nothing" 404 that
+      // used to sit here has no state left to catch. It covered a RE-DERIVATION
+      // (getWorktree returning null, or getProject refusing) that could
+      // disagree with the probe; nothing re-derives now. The one falsy `cwd`
+      // still constructible is `''`, from a remote record with no `systemPath`
+      // — and there `''` is the CORRECT cwd for what the probe found
+      // (`sessionFilePath('', id)` is `<claudeProjectsRoot>/<id>.jsonl`), so a
+      // 404 would refuse a read that works.
       // The transcript reads take the backing id; the summaries store keeps the
       // caller's id (cc-owned, not filename-keyed — see the GET above).
+      const cwd = hit.cwd;
       const { summary, messageCount, costUsd } = await generateSummary(backing, cwd, length as SummaryLength);
       await setSummary(sid, length as SummaryLength, { summary, generatedAt: Date.now(), messageCount });
       broadcastProjects();
@@ -1070,7 +1067,12 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
       // session that was archived on a plain restart (its jsonl is retained,
       // so locate still 200s) instead of silently resurrecting it. Deliberate
       // resume-from-archived stays allowed — this only feeds the automatic path.
-      res.json({ ...hit, archived: await isArchived(backing) });
+      //
+      // PROJECTED EXPLICITLY, not spread: findSessionLocation also returns the
+      // `cwd` it found the transcript at, which is internal — a local absolute
+      // path, and for a project on a system one inside cc's own store. This body
+      // is the wire contract and must not grow a field (card 2026-0292).
+      res.json({ project: hit.project, worktreeName: hit.worktreeName, archived: await isArchived(backing) });
     } catch (e) { next(e); }
   });
 

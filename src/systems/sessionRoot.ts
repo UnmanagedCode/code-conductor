@@ -35,7 +35,7 @@ import { orchStoreRoot } from '../projects.ts';
 import { httpError } from '../httpError.ts';
 import { CONVENTIONS_IMPORT_LINE } from '../conventionsImport.ts';
 import {
-  isExcluded, resolveMirrorScope, within, withinPosix, type MirrorScope,
+  isExcluded, mirrorOffsets, resolveMirrorScope, within, withinPosix, type MirrorScope,
 } from './mirror.ts';
 import { requireAbsolute, type System } from './system.ts';
 
@@ -99,6 +99,31 @@ export async function assertSessionRootsPlaceable(systemId: string): Promise<voi
 export function sessionRootPath(systemId: string, project: string, worktree?: string | null): string {
   const key = worktree ? `${project}--${worktree}` : project;
   return path.join(sessionRootsDir(systemId), key);
+}
+
+// EVERY LOCAL CWD a session on this (system, project, worktree) can have run
+// in — the read-only counterpart of the two lines pullSessionRoot computes
+// before a launch: realpath the image root, then join the mirror offset. It
+// lives here, beside sessionRootPath and the only other place that knows this
+// geometry, so a locator does not grow a second copy of it (card 2026-0292).
+//
+// REALPATH, not the raw path: projectsRoot() is `PROJECTS_ROOT` verbatim while
+// the CLI keys its transcript directory off getcwd(), so a store reached
+// through a symlink gives cc and the CLI two spellings of one session dir —
+// the same reason pullSessionRoot realpaths below. Realpath failure falls back
+// to the raw path: a root that does not exist holds no session either way.
+//
+// COMPLETE, which is what makes it a SEARCH SPACE rather than a guess — see
+// mirrorOffsets' own contract in ./mirror.ts for why no advertisement can put a
+// session at a cwd outside this set. `systemPath` is the path of the PLACE
+// being asked about, so a worktree's offsets come from the worktree's own path
+// on the system, not from its project's.
+export async function sessionRootCwds(
+  systemId: string, project: string, worktree: string | null, systemPath: string,
+): Promise<string[]> {
+  const raw = sessionRootPath(systemId, project, worktree);
+  const root = await fs.realpath(raw).catch(() => raw);
+  return mirrorOffsets(systemPath).map(o => path.join(root, o));
 }
 
 // The manifest of what was last pulled, kept BESIDE the root rather than inside
@@ -677,7 +702,10 @@ async function findManifest(
     { cwd: systemPath, stdin: 'ignore', maxBufferBytes: SESSION_ROOT_LISTING_FENCE_BYTES },
   );
   if (r.spawnError) {
-    throw httpError(502, `composing the session root: could not list the config surface on the system: ${r.spawnError}`);
+    // NAMES THE SYSTEM, like its sibling refusal below: this is the message a
+    // resume shows when the box cannot answer, and "the system" sends a reader
+    // with several registered to look at all of them (card 2026-0292).
+    throw httpError(502, `composing the session root: could not list the config surface on system '${system.id}': ${r.spawnError}`);
   }
   // THE FENCE FIRED, and this is why it cannot be §3.4's skip-with-warning. A
   // skip NAMES what it dropped. A truncated listing cannot: it is cut at an

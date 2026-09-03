@@ -138,7 +138,7 @@ export function buildTools(): Tool[] {
       description:
         'Find which project (and optionally which worktree) owns a given sessionId, by ' +
         'probing the conventional ~/.claude/projects/<encoded-cwd>/<sid>.jsonl path against ' +
-        'every known project + worktree. Returns {project, worktree: string|null}. ' +
+        'every cwd every known project + worktree could have run in. Returns {project, worktree: string|null}. ' +
         'Errors with "session not found" when nothing matches.',
       inputSchema: {
         type: 'object',

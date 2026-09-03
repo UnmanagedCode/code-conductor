@@ -281,8 +281,17 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
   if (hit) {
     const backingSessionId = await resolveToBackingId(sessionId);
     if (backingSessionId) {
-      const { cwd } = await resolveProjectCwd(hit.project, hit.worktreeName);
-      return { disk: { sessionId, backingSessionId, cwd } };
+      // The probe's OWN cwd, not a re-resolve of the project: for a project on
+      // a system, resolveProjectCwd answers with the tree path on that machine
+      // — a directory the CLI never had as a cwd, where this read would serve a
+      // successfully EMPTY page. It also cannot REFUSE for an unreachable
+      // system, which is right: the bytes this read wants are on cc's own disk
+      // under claudeProjectsRoot(), so a box that is down does not stop the
+      // READ. What the LOOKUP that produced `hit` needs from the box is a
+      // separate contract and is NOT "nothing" — findSessionLocation in
+      // ../projects.ts is its one home; do not paraphrase it here
+      // (card 2026-0292).
+      return { disk: { sessionId, backingSessionId, cwd: hit.cwd } };
     }
   }
 
