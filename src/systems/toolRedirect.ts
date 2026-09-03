@@ -441,16 +441,21 @@ export class SessionRedirect {
     // flat. The `removeEventListener` in the `finally` is what makes it flat —
     // the identical shape WITHOUT it grows just as `any` does, measured.
     //
-    // NO TEST CAN AUDIT THIS, which is why it landed unnoticed: `any` attaches
-    // through internals `getEventListeners` does not enumerate. MEASURE IT WITH
-    // THE EVENT-NAME FORM OR THE COMPARISON IS MEANINGLESS —
-    // `getEventListeners(sig, 'abort')` reads 0 on a signal with a thousand live
-    // combined signals hanging off it, and reads 1 for one ordinary
-    // `addEventListener` and 0 after its removal. The no-name form,
-    // `getEventListeners(sig)`, reads 0 for ALL THREE, so a reader reaching for
-    // it measures 0/0/0 and concludes this comment miscounts. A leak assertion
-    // here can only be a heap measurement, so this comment is the record and the
-    // shape is the guard.
+    // WHAT IS AUDITABLE AND WHAT IS NOT, because the two halves differ and an
+    // earlier wording here claimed neither was:
+    //   * THE RELAY BELOW IS AUDITABLE. It is an ordinary `addEventListener`, so
+    //     `getEventListeners(sig, 'abort')` reads 1 while it is attached and 0
+    //     once the `finally` removes it — and deleting that removal is caught by
+    //     a test, not only by a heap profile
+    //     (tests/systems-tool-redirect.test.mjs).
+    //   * `any` IS NOT. It attaches through internals `getEventListeners` does
+    //     not enumerate: it reads 0 on a signal with a thousand live combined
+    //     signals hanging off it. So the `any`-versus-manual COMPARISON is the
+    //     part that can only be a heap measurement, and that measurement is what
+    //     this comment records.
+    // MEASURE WITH THE EVENT-NAME FORM EITHER WAY. The no-name form,
+    // `getEventListeners(sig)`, reads 0 for all three cases above, so a reader
+    // reaching for it measures 0/0/0 and concludes this comment miscounts.
     const call = new AbortController();
     const relay = () => call.abort();
     const sources = signal ? [signal, this.#abort.signal] : [this.#abort.signal];

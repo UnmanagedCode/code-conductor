@@ -14,6 +14,7 @@
 // quietly passing.
 
 import { test, beforeEach, afterEach } from 'node:test';
+import { getEventListeners } from 'node:events';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -550,6 +551,58 @@ test('close() reaps a command that is still in flight', async () => {
   // And close() is idempotent, which instance exit + kill + discardAll all rely
   // on: they can each reach it for the same session.
   await redirect.close();
+});
+
+// S1 — PINS THAT `runForwarded` DETACHES WHAT IT ATTACHED. It relays two abort
+// sources into a per-call controller, and the `removeEventListener` loop in its
+// `finally` is what keeps the SESSION-lived controller from accumulating one
+// listener per command the session has ever run. That leak was measured before
+// the fix: `AbortSignal.any([caller, session])` grew heapUsed linearly with the
+// command count, while this shape stayed flat — and the identical shape WITHOUT
+// the removal grew just as `any` did, which is what isolates the removal as the
+// thing that matters.
+//
+// THE CALLER'S SIGNAL IS THE OBSERVABLE, and it is enough: both sources are
+// detached by the SAME loop, so deleting it leaves a listener on both. The
+// session controller is private to `SessionRedirect` and cannot be reached from
+// here; the caller's is handed in by this test.
+//
+// THE EVENT-NAME FORM IS REQUIRED. `getEventListeners(sig, 'abort')` reads 1 for
+// one ordinary listener and 0 after its removal; the no-name form
+// `getEventListeners(sig)` reads 0 either way, so an assertion written with it
+// would pass whether or not the removal ran.
+//
+// BOTH OUTCOMES, because the removal is in a `finally` and a pin on the success
+// path alone would not notice it moving into the `try`.
+//
+// NOT CLAIMING the absence of a leak — that is a heap measurement, and it is
+// recorded in the comment at the call site rather than asserted here. What is
+// asserted is the mechanism the measurement identified.
+test('runForwarded leaves no abort listener on its caller signal, on either outcome', async () => {
+  const ok = new AbortController();
+  assert.equal(getEventListeners(ok.signal, 'abort').length, 0, 'the premise: a fresh signal has none');
+  const good = await redirect.runForwarded('echo fine', { signal: ok.signal });
+  assert.equal(good.code, 0, good.stderr);
+  assert.equal(getEventListeners(ok.signal, 'abort').length, 0,
+    'a command that SUCCEEDED detached its relay');
+
+  // The failure path through the same `finally`: a command that destroys its own
+  // framing throws inside the try and is caught, and must detach just the same.
+  const bad = new AbortController();
+  const failed = await redirect.runForwarded('exit', { signal: bad.signal });
+  assert.notEqual(failed.code, 0, 'the premise: this command failed');
+  assert.equal(getEventListeners(bad.signal, 'abort').length, 0,
+    'and a command that FAILED detached its relay too');
+
+  // And a signal that actually FIRES: `{once:true}` detaches a listener that
+  // ran, so this half would pass even without the removal — it is here so the
+  // three shapes are not confused for one another by a later reader.
+  const aborted = new AbortController();
+  const running = redirect.runForwarded('sleep 5', { signal: aborted.signal });
+  await new Promise(r => setTimeout(r, 120));
+  aborted.abort();
+  await running;
+  assert.equal(getEventListeners(aborted.signal, 'abort').length, 0);
 });
 
 // PINS THE HALF THAT MAKES THE FIX ABOVE SAFE, and it is not hypothetical: a

@@ -15,10 +15,26 @@
 
 import { randomBytes } from 'node:crypto';
 
-// RANDOM PER COMMAND, not per shell. A fixed nonce is forgeable — that is the
-// measured desync. 128 bits makes accidental collision impossible; deliberate
-// self-inspection by the command is out of scope (the operator already has
-// arbitrary execution on their own machine).
+// RANDOM AND UNGUESSABLE. 128 bits is what makes accidental emission of the
+// sentinel impossible; a CONSTANT nonce is forgeable, which is the measured
+// desync. Deliberate self-inspection by the command is out of scope (the
+// operator already has arbitrary execution on their own machine).
+//
+// PER COMMAND BY CONSTRUCTION, AND THAT FRESHNESS IS NO LONGER LOAD-BEARING —
+// stated because the rationale here used to rest on it. It came from a world
+// with a long-lived shell, where one byte stream carried every command and a
+// forged sentinel could move the NEXT command's boundary. Card 2026-0312 gave
+// each command its own `exec`, its own stream and its own parser, so a forgery
+// is confined to its own command by CONSTRUCTION rather than by freshness, and a
+// nonce shared across a session's commands would break nothing.
+//
+// WHAT IS STILL LOAD-BEARING IS THE PAIRING: the value a command is FRAMED with
+// must be the value it is PARSED with. Today that is lexical — one `const` per
+// call in providerShell.ts's `#runOneShot`, read by `frameCommand` and by both
+// parsers. Move it to a field ASSIGNED PER RUN and two concurrent commands
+// overwrite each other's, so the first parses its own output with the second's
+// nonce and fails ESHELLGONE; that is what the concurrency tests catch, not the
+// freshness.
 export function newNonce(): string {
   return randomBytes(16).toString('hex');
 }

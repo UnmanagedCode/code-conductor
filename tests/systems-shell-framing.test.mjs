@@ -237,7 +237,15 @@ test('the cwd survives spaces and newlines because it rides as base64', () => {
 });
 
 test('the nonce is fresh per command, and the script keeps cd and export in the shell FOR THAT COMMAND', () => {
-  assert.notEqual(newNonce(), newNonce(), 'a fixed nonce is forgeable — that is the measured desync');
+  // THE RANDOMNESS IS WHAT THIS PINS, and it is the whole of what the nonce is
+  // relied on for post-card-2026-0312: a CONSTANT nonce is forgeable, which is
+  // the measured desync. The per-command FRESHNESS this expression also happens
+  // to demonstrate is NOT load-bearing — each command has its own `exec`, stream
+  // and parser, so a forgery cannot leave the command that made it — and it is
+  // deliberately not pinned at the call site. What is load-bearing there is the
+  // PAIRING (framed with the nonce it is parsed with), which the concurrency
+  // tests catch.
+  assert.notEqual(newNonce(), newNonce(), 'a CONSTANT nonce is forgeable — that is the measured desync');
   assert.match(newNonce(), /^[0-9a-f]{32}$/, '128 bits');
   const script = frameCommand('N', 'echo hi');
   assert.ok(script.startsWith(String.raw`printf '\n__CC_N_BEGIN__\n'; printf '\n__CC_N_BEGIN__\n' >&2`),

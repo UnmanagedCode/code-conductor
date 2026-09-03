@@ -404,9 +404,15 @@ silent divergence this whole layer exists to prevent.
 
 Five rules, each earned by a measured or reasoned failure:
 
-1. **The nonce is random per command, not per shell.** A fixed nonce is
-   forgeable: a command that echoed the sentinel was measured desynchronising
-   the parser — five frames for four commands, the forgery parsed as `rc=999`.
+1. **The nonce is random and unguessable** — 128 bits, so a command cannot emit
+   the sentinel by accident. A CONSTANT nonce is forgeable: a command that echoed
+   it was measured desynchronising the parser — five frames for four commands,
+   the forgery parsed as `rc=999`. cc generates one per command, but that
+   FRESHNESS is no longer what makes anything safe: it mattered when one byte
+   stream carried every command, and each command now has its own `exec`, its own
+   stream and its own parser, so a forgery is confined to its own command by
+   construction. What IS load-bearing is that a command is parsed with the nonce
+   it was framed with.
 2. **First match wins, then stop parsing.** A forgery can then truncate only its
    own output; **a desync cannot propagate past one command.**
 3. **`< /dev/null` on the command group**, matching `project_bash`'s
