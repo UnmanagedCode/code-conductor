@@ -291,7 +291,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
   // PINS B1 ACROSS THE BOUNDARY: interrupting one call stops THAT call on the
   // far side and nothing else. Witnessed from INSIDE the container, because cc's
   // own return value cannot tell "was stopped" from "was abandoned and finished
-  // anyway": `ProviderShell#runOneShot` (src/systems/providerShell.ts:200-207)
+  // anyway": `ProviderShell#runOneShot` (src/systems/providerShell.ts)
   // re-checks `signal?.aborted` once the exec has RETURNED and throws
   // `cancelled()` there, ahead of reading the result's own
   // `outputOverflowed`/`timedOut` — so the exec's result is discarded, and what
@@ -452,7 +452,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     // state was shared for anyone to lose, so telling the next command its
     // exports were gone would be an R5-class false statement. The production
     // site says exactly that in its own comment — `ProviderShell#runOneShot`'s
-    // post-exec `signal?.aborted` re-check (src/systems/providerShell.ts:200-207,
+    // post-exec `signal?.aborted` re-check (src/systems/providerShell.ts,
     // "NO RESET REASON", citing card 2026-0312 §2 D-b). THAT RE-CHECK IS NOT
     // PINNED HERE: deleting it leaves this whole file green, and an assertion
     // that does red is the same-machine one at
