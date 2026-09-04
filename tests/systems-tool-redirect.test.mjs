@@ -251,8 +251,8 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 
 // PINS B1 AT THE REDIRECT LAYER: an interrupt cancels THAT call and nothing
 // else. The unrelated concurrent command completes normally, and the cancelled
-// one never runs on the system — its effects must not land when its caller has
-// gone away.
+// one's write does not land on the system — its effects must not, when its
+// caller has gone away.
 //
 // RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
 // waiting for its TURN on a shell, and there is no turn any more. WHAT IT PINS
@@ -273,7 +273,7 @@ test('a cancelled call\'s write does not land, and a concurrent one is untouched
   const survived = await inFlight;
   assert.equal(survived.code, 0, 'the unrelated in-flight command was untouched');
   assert.equal(survived.stdout, 'survivor\n');
-  await assert.rejects(fs.stat(witness), 'the cancelled command never ran on the system');
+  await assert.rejects(fs.stat(witness), 'the cancelled command\'s write did not land on the system');
 });
 
 // PINS B2: interrupting the IN-FLIGHT command stops it on the system — in both
@@ -346,9 +346,9 @@ test('cancelling one call leaves a live concurrent command untouched', async () 
   assert.equal(a.code, 0, `the unrelated in-flight command completed normally: ${a.stderr}`);
   assert.equal(a.stdout, 'A1\nA2\n', 'with ALL of its output, not a truncated prefix');
 
-  // The system's own account: A ran to completion, B never ran at all.
+  // The system's own account: A ran to completion, and B's write did not land.
   assert.ok(await fs.stat(onSystem('A_DONE')).catch(() => null), 'A finished on the system');
-  await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B never ran on the system');
+  await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B\'s write did not land on the system');
 
   // And nothing was reset — the cancelled command's `exec` was killed and no
   // state was shared for anyone to lose — so a notice here would tell a worker
