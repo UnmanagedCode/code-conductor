@@ -234,8 +234,7 @@ export class ProviderSystem implements System, ShellHost {
   // THE RULE IS IN THIS MODULE'S HEADER. What it buys: cc's environment names
   // paths on cc's machine, so sending it makes the target's own PATH, HOME and
   // toolchain unreachable from the far side, and hands everything cc holds —
-  // a live session token among it — to every process the target runs. A caller
-  // that needs a variable there ships it in argv through `env(1)`.
+  // a live session token among it — to every process the target runs.
   async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
     requireAbsolute('exec', 'cwd', opts.cwd);
     return this.#exec(spec, opts, opts.env ?? null);

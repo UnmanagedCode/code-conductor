@@ -66,13 +66,20 @@ test('exec: the ordinary results agree — streams, exit code, cwd and env', asy
     shell: normalise(await sys.exec({ shell: 'echo out; echo err >&2; exit 5' }, { cwd: root }), root),
     cwd: normalise(await sys.exec({ argv: ['pwd'] }, { cwd: root }), root),
     // A caller-named `env` REPLACES on both. THE DEFAULT IS NOT COMPARED HERE,
-    // and co-location is not the reason: a caller that mutated `process.env`
-    // after the provider launched would see the two disagree about it on this
-    // very machine, which is what the deleted `exec sends the CALLER's
-    // environment` test used to assert. They agree in this scenario because
-    // nothing in it mutates `process.env`, so both sides read one unchanging
-    // environment. Where the default IS discriminable — on the wire, and after
-    // a late mutation — tests/systems-exec-env.test.mjs pins it.
+    // and co-location is not the reason it would agree: a caller that mutates
+    // `process.env` after the provider launched now makes the two DISAGREE on
+    // this very machine. The deleted `exec sends the CALLER's environment` test
+    // was built on exactly that scenario and, under the old default, asserted
+    // the opposite — that both implementations saw the late value. This
+    // scenario mutates nothing, so both sides read one unchanging environment.
+    //
+    // Where the default is pinned instead, on the two-half split the env
+    // suite's header sets out: the LIVE half (a late mutation) in
+    // tests/systems-exec-env.test.mjs, the STATIC half (what the two
+    // environments contain) in tests/systems-docker-boundary.real.test.mjs,
+    // since on one machine those contents coincide. The field's ABSENCE on the
+    // wire is pinned in the env suite too, and is a claim about the frame
+    // rather than about either environment's contents.
     env: normalise(await sys.exec({ argv: ['sh', '-c', 'echo "[$CC_PARITY]"'] }, {
       cwd: root, env: { CC_PARITY: 'v', PATH: process.env.PATH },
     }), root),

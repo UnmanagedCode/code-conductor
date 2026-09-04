@@ -1,10 +1,10 @@
 // WHAT ENVIRONMENT A COMMAND RUNS IN, and where cc's own environment stops.
 //
 // cc sends NO `env` frame field — on a derived command (cc's own plumbing) and
-// on a caller's command alike. Every command runs in the environment of the
-// MACHINE IT RUNS ON: the target's PATH, the target's HOME, the target's
-// toolchain. A caller that needs a variable ships it in argv through `env(1)`,
-// the same way the derivations ship `LC_ALL=C`.
+// on a caller's command alike. Every command runs in THE PROVIDER'S OWN
+// ENVIRONMENT, which is the far side's: its PATH, its HOME, its toolchain. A
+// caller that needs a variable ships it in argv through `env(1)`, the same way
+// the derivations ship `LC_ALL=C`.
 //
 // THE RULE HAS A STATIC HALF AND A LIVE HALF, and they need different
 // instruments.
@@ -22,9 +22,13 @@
 // instrument for that half, and it reads the difference off a RESULT rather
 // than off the wire.
 //
-// Everything outside the live half is a claim about a field cc must NOT emit,
-// which a same-machine result cannot settle either way, so it is made on the
-// bytes that crossed the pipe (tests/fixtures/recordingProvider.mjs).
+// The NO-EMISSION claims — T1 and T5 — are about a field cc must not put on a
+// frame at all. A same-machine result cannot settle those either way, so they
+// are made on the bytes that crossed the pipe
+// (tests/fixtures/recordingProvider.mjs). T2 and T4 are not of that kind:
+// each NAMES an `env` deliberately, so what it claims is observable here — a
+// replaced environment in the child (and, for T2, the frame that carried it),
+// and an interpreter a PATH-less `env` leaves unresolvable.
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -93,7 +97,10 @@ describe('the environment on the wire', () => {
     // 5. cc's OWN reachability probe (`assertRemoteKnown`), which passes a
     //    literal null rather than falling through the default and so would
     //    survive a regression to it. Only a BOUND handle fires it, hence the
-    //    second recorder.
+    //    second recorder. It lives HERE rather than beside the other bound-
+    //    handle fixtures in tests/systems-remote-id.test.mjs because that file
+    //    is about `remoteId` binding; every claim about the `env` field is
+    //    sole-homed in this one.
     const probeRec = path.join(home, 'probe.ndjson');
     await addSystem({
       id: 'boundbox', label: 'Bound',
@@ -101,15 +108,20 @@ describe('the environment on the wire', () => {
     });
     await systemById('boundbox', 'a', `project 'p'`);
 
-    const probeFrames = await execFrames(probeRec);
-    // NON-VACUITY for shape 5: without this the union below would be satisfied
-    // by the first recorder alone and the probe would go unasserted.
-    assert.ok(probeFrames.some(f => f.cwd === '/' && f.argv?.[0] === 'true'),
-      'the reachability probe reached the wire');
+    const frames = [...await execFrames(rec), ...await execFrames(probeRec)];
 
-    const frames = [...await execFrames(rec), ...probeFrames];
-    assert.ok(frames.some(f => f.argv) && frames.some(f => f.shell),
-      'both spec forms reached the wire');
+    // ONE PRESENCE CHECK PER SITE, keyed on what only that site emits. A
+    // spec-form floor (`some(f => f.argv) && some(f => f.shell)`) was MEASURED
+    // to let three of the four argv sites vanish while the test stayed green,
+    // so the header's "at every site enumerated below" was enforced by nothing.
+    // Adding a sixth site means adding its line here in the same edit.
+    const drove = (site, pred) => assert.ok(frames.some(pred), `site ${site} never reached the wire`);
+    drove('1 (runGit)', f => f.argv?.[0] === 'git');
+    drove('2 (the framed shell)', f => typeof f.shell === 'string');
+    drove('3 (a bare-argv caller)', f => f.argv?.[0] === 'printf');
+    drove('4 (a derivation)', f => f.argv?.[0] === 'env' && f.argv?.[1] === 'LC_ALL=C');
+    drove('5 (the reachability probe)', f => f.cwd === '/' && f.argv?.[0] === 'true');
+
     assert.deepEqual(frames.filter(f => 'env' in f).map(ranWhat), []);
   });
 
