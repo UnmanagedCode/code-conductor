@@ -455,8 +455,9 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     // post-exec `signal?.aborted` re-check (src/systems/providerShell.ts,
     // "NO RESET REASON", citing card 2026-0312 §2 D-b). THAT RE-CHECK IS NOT
     // PINNED HERE: deleting it leaves this whole file green, and an assertion
-    // that does red is the same-machine one at
-    // tests/systems-tool-redirect.test.mjs:340 (card 2026-0327). What THIS line
+    // that does red is the same-machine one — the `interrupt|cancel` stderr
+    // assertion in tests/systems-tool-redirect.test.mjs's `cancelling one call
+    // leaves a live concurrent command untouched` (card 2026-0327). What THIS line
     // has teeth against was measured separately — it reds when the cwd notice
     // fires unconditionally rather than only when a command actually moved. The
     // same-machine twin asserts the same silence
