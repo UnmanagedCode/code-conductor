@@ -164,8 +164,8 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     return runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
   };
 
-  // PINS: the fixture really is two machines. Every assertion after this one is
-  // worthless without it.
+  // PINS: the fixture really is two disjoint sides of one machine. Every
+  // assertion after this one is worthless without it.
   test('the two sides are genuinely disjoint', async () => {
     assert.notEqual((await inCtr('hostname')).trim(), ccHostname.trim());
     await assert.rejects(fs.stat('/app'), 'cc has no /app');
@@ -187,15 +187,17 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
   });
 
   // PINS: a command on the system runs in the SYSTEM's environment, not cc's.
-  // The only instrument in the repo that can tell the two apart — everywhere
-  // else the provider sits on cc's own machine, where sending cc's environment
-  // and sending none produce identical values, which is exactly how the old
-  // default survived.
+  // THE STATIC HALF of that rule — what the two environments CONTAIN: PATH,
+  // HOME, the toolchain. Those values coincide wherever the provider sits on
+  // cc's own machine, so this is where the difference is observable at all,
+  // and it is exactly how the old default survived. (The LIVE half — a
+  // variable cc sets after the provider launched — needs no boundary and is
+  // pinned in tests/systems-exec-env.test.mjs.)
   //
   // Three witnesses, because each alone can be satisfied by the wrong thing:
-  // the VARIABLES cc has and the container does not, `$HOME` (the one value
-  // measured to survive `bash -l` sourcing /etc/profile, which rewrites PATH),
-  // and the argv form resolving a binary that exists only in the container.
+  // the VARIABLES cc has and the container does not, `$HOME` (measured to
+  // survive `bash -l` sourcing /etc/profile, which rewrites PATH), and the
+  // argv form resolving a binary that exists only in the container.
   //
   // NOT CLAIMING: that cc's environment is unreachable from the container by
   // any route — only that cc does not put it on the wire.

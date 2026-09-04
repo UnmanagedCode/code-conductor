@@ -65,11 +65,14 @@ test('exec: the ordinary results agree — streams, exit code, cwd and env', asy
     echo: normalise(await sys.exec({ argv: ['echo', 'hello'] }, { cwd: root }), root),
     shell: normalise(await sys.exec({ shell: 'echo out; echo err >&2; exit 5' }, { cwd: root }), root),
     cwd: normalise(await sys.exec({ argv: ['pwd'] }, { cwd: root }), root),
-    // A caller-named `env` REPLACES on both. The DEFAULT is not compared here:
-    // it is "the environment of the machine the command runs on", and both
-    // implementations run on this one, so a comparison could only agree —
-    // tests/systems-exec-env.test.mjs pins it where it is observable, on the
-    // wire.
+    // A caller-named `env` REPLACES on both. THE DEFAULT IS NOT COMPARED HERE,
+    // and co-location is not the reason: a caller that mutated `process.env`
+    // after the provider launched would see the two disagree about it on this
+    // very machine, which is what the deleted `exec sends the CALLER's
+    // environment` test used to assert. They agree in this scenario because
+    // nothing in it mutates `process.env`, so both sides read one unchanging
+    // environment. Where the default IS discriminable — on the wire, and after
+    // a late mutation — tests/systems-exec-env.test.mjs pins it.
     env: normalise(await sys.exec({ argv: ['sh', '-c', 'echo "[$CC_PARITY]"'] }, {
       cwd: root, env: { CC_PARITY: 'v', PATH: process.env.PATH },
     }), root),

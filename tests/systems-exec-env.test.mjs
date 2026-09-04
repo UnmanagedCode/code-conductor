@@ -6,17 +6,25 @@
 // toolchain. A caller that needs a variable ships it in argv through `env(1)`,
 // the same way the derivations ship `LC_ALL=C`.
 //
-// The claim is about a field cc must NOT emit, so it cannot be checked from
-// cc's side or from a result — a handle on cc's own machine answers identically
-// either way, which is precisely why the old default survived so long. The only
-// honest evidence is the bytes that crossed the pipe, so the wire claims here
-// are recorded (tests/fixtures/recordingProvider.mjs).
+// THE RULE HAS A STATIC HALF AND A LIVE HALF, and they need different
+// instruments.
 //
-// NOT CLAIMED HERE: anything about a remote machine. Every provider in this
-// file runs on cc's own host, where the environment cc would have sent and the
-// environment the far side already has are the same values. The one instrument
-// that can tell those apart is tests/systems-docker-boundary.real.test.mjs,
-// behind `RUN_DOCKER_SYSTEM=1`.
+// STATIC — what the two environments CONTAIN (PATH, HOME, the toolchain).
+// Those values coincide whenever the provider sits on cc's own machine, which
+// is every fixture in this file and precisely why the old default survived so
+// long. The instrument for that half is a real boundary:
+// tests/systems-docker-boundary.real.test.mjs, behind `RUN_DOCKER_SYSTEM=1`.
+// NOT CLAIMED HERE.
+//
+// LIVE — a variable cc sets AFTER the provider launched is in cc's environment
+// and in no other, so a command answers differently depending on whether cc
+// sent its own environment, even on a same-machine provider. T3 is the
+// instrument for that half, and it reads the difference off a RESULT rather
+// than off the wire.
+//
+// Everything outside the live half is a claim about a field cc must NOT emit,
+// which a same-machine result cannot settle either way, so it is made on the
+// bytes that crossed the pipe (tests/fixtures/recordingProvider.mjs).
 
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -59,29 +67,49 @@ describe('the environment on the wire', () => {
   });
   afterEach(async () => { disposeSystemHandles(); await rmrf(home); });
 
-  // T1 — PINS: no `exec` frame cc emits carries an `env` field, across all four
-  // caller shapes plus a derivation. This is the whole contract, measured on the
-  // wire; every other test in this file is about one edge of it.
+  // T1 — PINS: no `exec` frame cc emits carries an `env` field, at every site
+  // enumerated below. This is the whole contract, measured on the wire; every
+  // other test in this file is about one edge of it.
   test('no exec frame cc sends carries an env field', async () => {
     const sys = await systemById('recbox', null, `project 'p'`);
     const repo = await seedRepo(path.join(remoteRoot, 'app'));
 
-    // 1. runGit — 3,829 of the frames in a whole-suite census.
+    // 1. runGit — the highest-volume caller shape in a whole-suite census.
     const g = await runGit(sys, repo, ['status', '--porcelain']);
     assert.equal(g.code, 0, g.stderr);
     // 2. the redirected Bash path: ProviderShell, one framed exec per command.
+    //    A non-local `project_bash` takes this shape too — it sends
+    //    `{shell: command}` (src/mcp/handlers.ts), not argv.
     const sh = await sys.shell({ cwd: repo }).run('echo hi');
     assert.equal(sh.code, 0, sh.stderr);
-    // 3. the bare-argv shape `project_bash` and the config-surface `find` use.
+    // 3. the bare-argv shape, as the config-surface `find` in
+    //    src/systems/sessionRoot.ts sends it.
     const one = await sys.exec({ argv: ['printf', 'ok'] }, { cwd: repo });
     assert.equal(one.stdout, 'ok');
     // 4. a derivation — already env-less before this rule was general, and
     //    pinned here so the rule is asserted as one rule and not as a caller
     //    policy that happens to agree with a separate derivation policy.
     assert.ok(await sys.stat(repo));
+    // 5. cc's OWN reachability probe (`assertRemoteKnown`), which passes a
+    //    literal null rather than falling through the default and so would
+    //    survive a regression to it. Only a BOUND handle fires it, hence the
+    //    second recorder.
+    const probeRec = path.join(home, 'probe.ndjson');
+    await addSystem({
+      id: 'boundbox', label: 'Bound',
+      launch: ['node', RECORDER, '--record', probeRec, '--remote', `a=${remoteRoot}`],
+    });
+    await systemById('boundbox', 'a', `project 'p'`);
 
-    const frames = await execFrames(rec);
-    assert.ok(frames.length >= 4, `expected every shape to reach the wire, saw ${frames.length}`);
+    const probeFrames = await execFrames(probeRec);
+    // NON-VACUITY for shape 5: without this the union below would be satisfied
+    // by the first recorder alone and the probe would go unasserted.
+    assert.ok(probeFrames.some(f => f.cwd === '/' && f.argv?.[0] === 'true'),
+      'the reachability probe reached the wire');
+
+    const frames = [...await execFrames(rec), ...probeFrames];
+    assert.ok(frames.some(f => f.argv) && frames.some(f => f.shell),
+      'both spec forms reached the wire');
     assert.deepEqual(frames.filter(f => 'env' in f).map(ranWhat), []);
   });
 
@@ -110,9 +138,10 @@ describe('the environment on the wire', () => {
   });
 
   // T3 — PINS: a variable cc sets AFTER the provider launched is invisible to a
-  // far-side command. The exact discriminator: it is the one observable that
-  // differs between sending cc's process env and sending nothing, on a provider
-  // that shares cc's machine. The connection is opened FIRST, deliberately —
+  // far-side command. THE LIVE HALF of the rule (see the file header), and the
+  // half that needs no machine boundary: the variable is in cc's environment
+  // and in no other, so the answer here differs depending on whether cc sent
+  // its own environment. The connection is opened FIRST, deliberately —
   // `ProviderConnection` spawns lazily, so without the explicit connect the
   // provider would inherit the variable at launch and prove nothing.
   test('a variable set after the provider launched is invisible to its commands', async () => {
@@ -127,10 +156,10 @@ describe('the environment on the wire', () => {
   });
 
   // T4 — PINS: the reference provider spawns its `shell` interpreter
-  // UNQUALIFIED, so a frame `env` without a usable PATH loses it. That is the
-  // fact §5's `shell` row now states as a rule for any provider that honours
-  // `env`; if someone qualifies the interpreter, this reds and the row is what
-  // must be edited with it.
+  // UNQUALIFIED, so a frame `env` without a usable PATH loses it. §5's `shell`
+  // row describes that mechanism as the exemplar's and advises a provider that
+  // honours `env` to name its interpreter absolutely; if someone qualifies this
+  // one, this reds and the row is what must be edited with it.
   test('the exemplar resolves its shell interpreter through a frame env',
     { skip: IS_REFERENCE_PROVIDER ? false : 'asserts the reference provider\'s own interpreter spelling' },
     async () => {

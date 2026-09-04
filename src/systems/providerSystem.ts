@@ -11,8 +11,8 @@
 // an unmatched failure surfaces raw rather than being guessed at.
 //
 // NO `env` FIELD IS EVER PUT ON A FRAME unless a caller named one. Every
-// command — cc's own plumbing and a caller's alike — runs in the environment
-// of THE MACHINE IT RUNS ON: the target's PATH, its HOME, its toolchain. A
+// command — cc's own plumbing and a caller's alike — runs in THE PROVIDER'S
+// OWN ENVIRONMENT, which is the far side's: its PATH, its HOME, its toolchain. A
 // variable a command needs travels in argv through `env(1)`, which ADDS to that
 // environment; the derivations ship `LC_ALL=C` that way so the strerror() text
 // `classifyStderr` matches on stays untranslated. When a caller does name `env`
@@ -231,12 +231,11 @@ export class ProviderSystem implements System, ShellHost {
   // `spawnError` / `timedOut` / `code`, and one of them throwing instead would
   // be a behaviour difference between the two implementations of one primitive.
   //
-  // NO `env` UNLESS THE CALLER NAMED ONE — the same rule the derivations below
-  // follow, and the reason there is no second policy here to explain. cc's own
-  // environment names paths on cc's machine: sending it makes the target's PATH,
-  // HOME and toolchain unreachable from the far side and discloses everything
-  // cc holds, secrets included, to every process the target runs. A caller that
-  // needs a variable there ships it in argv through `env(1)`.
+  // THE RULE IS IN THIS MODULE'S HEADER. What it buys: cc's environment names
+  // paths on cc's machine, so sending it makes the target's own PATH, HOME and
+  // toolchain unreachable from the far side, and hands everything cc holds —
+  // a live session token among it — to every process the target runs. A caller
+  // that needs a variable there ships it in argv through `env(1)`.
   async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
     requireAbsolute('exec', 'cwd', opts.cwd);
     return this.#exec(spec, opts, opts.env ?? null);
