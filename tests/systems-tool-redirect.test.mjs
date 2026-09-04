@@ -251,7 +251,7 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 
 // PINS B1 AT THE REDIRECT LAYER: an interrupt cancels THAT call and nothing
 // else. The unrelated concurrent command completes normally, and the cancelled
-// one's write does not land on the system — its effects must not, when its
+// one's write does not land on the system — its effects must not land when its
 // caller has gone away.
 //
 // RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
