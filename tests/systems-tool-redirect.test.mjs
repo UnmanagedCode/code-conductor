@@ -285,10 +285,15 @@ test('a cancelled call never reaches the system, and a concurrent one is untouch
 // sat red unnoticed because that suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and
 // is in neither gated command (card 2026-0327). Change one, change both.
 //
-// NOT the same claim as the RE-FRAMED test above: that one pins the
-// CANCELLED-BEFORE-IT-CROSSES case, which has no boundary twin and needs none —
-// a boundary test cannot construct it, since the request must cross before the
-// container can witness anything.
+// NOT the same claim as the RE-FRAMED test above, and the difference is what
+// each test puts between ISSUING the call and CANCELLING it. That one puts
+// nothing there — it aborts on the next statement, so it never establishes that
+// the command started. This one interposes a delay, and its boundary twin goes
+// further still and waits for the far-side process to appear. So the RE-FRAMED
+// test has no boundary twin and needs none: a boundary copy of a cancel that
+// nothing saw start would have its marker's absence satisfied by a command that
+// never ran, which is the vacuity that file's own NON-VACUITY wait exists to
+// remove.
 test('interrupting the in-flight command stops it on the system', async () => {
   const witness = onSystem('STILL_RUNNING');
   const ac = new AbortController();
