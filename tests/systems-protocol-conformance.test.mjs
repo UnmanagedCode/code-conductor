@@ -683,6 +683,37 @@ test('CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteI
     }
   });
 
+// PINS `conformanceRemoteId()`'s WHITESPACE CONTRACT — the only normalisation
+// between the env var and `ProviderSystem`, which does none of its own.
+//
+// MEASURED: `opts.remoteId ?? null` keeps `''` (not nullish), so a handle built
+// from a blank id binds to a nonsense target and every operation comes back
+// `EUNSUPPORTED` — a whole battery of opaque failures from
+// `CC_CONFORMANCE_REMOTE_ID=$SOME_UNSET_VAR` in a CI script, which is the exact
+// failure mode this contract exists to remove, aimed at its own audience.
+//
+// The blank cases are what `.trim()` kills; the empty case is what `|| null`
+// kills where `?? null` would not; `'  t  '` kills a trim that only tests and
+// does not apply.
+//
+// Pure: reads the variable, launches nothing.
+test('an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target', () => {
+  const before = process.env[REMOTE_ID_ENV];
+  try {
+    for (const blank of ['', ' ', '  \t ', '\n']) {
+      process.env[REMOTE_ID_ENV] = blank;
+      assert.equal(conformanceRemoteId(), null, `${JSON.stringify(blank)} must not bind a handle`);
+    }
+    process.env[REMOTE_ID_ENV] = '  t  ';
+    assert.equal(conformanceRemoteId(), 't', 'a real id is TRIMMED, not passed through padded');
+    delete process.env[REMOTE_ID_ENV];
+    assert.equal(conformanceRemoteId(), null, 'unset is unbound — the default every in-repo run takes');
+  } finally {
+    if (before === undefined) delete process.env[REMOTE_ID_ENV];
+    else process.env[REMOTE_ID_ENV] = before;
+  }
+});
+
 // PINS THE BOUND-RUN PRECONDITION (§10 of docs/systems-protocol.md): a run bound
 // with CC_CONFORMANCE_REMOTE_ID against a provider that does not advertise
 // `remotes` is refused AT THE HANDSHAKE, with a message naming the flag that

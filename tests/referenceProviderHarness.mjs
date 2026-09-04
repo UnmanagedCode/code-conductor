@@ -122,6 +122,11 @@ export function makeProviderSystem(flags = [], opts = {}) {
 
 // The ONE read of REMOTE_ID_ENV, so a fixture that hand-builds a frame or a
 // provider flag binds it the same way `makeProviderSystem` does.
+//
+// BLANK OR EMPTY IS UNBOUND, and both clauses below are load-bearing for that:
+// `ProviderSystem` normalises nothing (`opts.remoteId ?? null` keeps `''`), so
+// an unset shell variable would otherwise bind every handle to a nonsense
+// target and refuse the whole battery.
 export function conformanceRemoteId() {
   return process.env[REMOTE_ID_ENV]?.trim() || null;
 }
