@@ -112,12 +112,16 @@ t('a tool timeout detaches without aborting the forwarder, and TaskStop aborts i
     // case passing while proving nothing.
     const writesAtDetach = fwd.state.writes;
     await sleep(8_000);
-    // ATTRIBUTION, not a second subject. A `TaskStop` the model issued on its
-    // own initiative closes this socket by the very mechanism the control below
-    // exercises, and the observable is identical, so a red here would not say
-    // WHICH fired. Asserted first, and after the window rather than at its
-    // entry, because the record is append-only and the later check subsumes the
-    // earlier one.
+    // A PRECONDITION ON THE WINDOW — not a second subject, and not a claim
+    // about the CLI. A `TaskStop` the model issued on its own initiative closes
+    // this socket by the very mechanism the control below exercises, and the
+    // observable is identical, so a red here would not say WHICH fired.
+    // Asserted first, and after the window rather than at its entry, because
+    // the record is append-only and the later check subsumes the earlier one.
+    // A RED MEANS THE RUN WAS CONTAMINATED and should be re-run — it does not
+    // mean the detach contract moved, so neither deleting this line nor
+    // widening the window is the response: each destroys the attribution the
+    // line exists to give.
     assert.equal(hooks.of('PreToolUse', 'TaskStop').length, 0,
       'no TaskStop reached the hook across the window, so any close in it is the CLI\'s own');
     assert.equal(fwd.state.closeWasAbort, null, 'no abort reached cc across the window past the tool timeout');
