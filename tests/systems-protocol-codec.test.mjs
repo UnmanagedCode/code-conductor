@@ -239,6 +239,9 @@ test('§8 of docs/systems-protocol.md names exactly PROTOCOL_ERROR_CODES', () =>
   assert.ok(start !== -1 && end > start,
     'could not locate §8 protocol-level block in docs/systems-protocol.md — re-anchor this test');
   const listed = [...doc.slice(start, end).matchAll(/^\| `(E[A-Z]+)`/gm)].map((m) => m[1]);
+  // MEASURED separable, via a CONSTRUCTED stimulus: only de-backticking all eight
+  // rows at once locates the block yet parses nothing and reaches here; a single
+  // de-backticked row dies earlier at `missing`. Not a pin on single-row drift.
   assert.ok(listed.length > 0, 'located the §8 block but parsed no code rows — re-anchor the row regex');
   const missing = PROTOCOL_ERROR_CODES.filter((c) => !listed.includes(c));
   const extra = listed.filter((c) => !PROTOCOL_ERROR_CODES.includes(c));
