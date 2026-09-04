@@ -156,7 +156,6 @@ export class ProviderShell {
   }
 
   async run(command: string, { onOut, onErr, signal }: ShellRunOptions = {}): Promise<ShellResult> {
-    if (signal?.aborted) throw cancelled();
     const sink: ShellStreamSink = { ...(onOut ? { onOut } : {}), ...(onErr ? { onErr } : {}) };
     return this.#runOneShot(command, this.#commandTimeoutMs, sink, signal);
   }
@@ -171,7 +170,9 @@ export class ProviderShell {
     const filters = { out: new FramedStreamFilter(nonce, 'out'), err: new FramedStreamFilter(nonce, 'err') };
     // THE LAST CHECK before the command crosses: nothing cancelled is handed to
     // the far side. Everything between here and the call below is synchronous,
-    // so there is no window for an abort to slip through unseen.
+    // so an abort that has ALREADY landed is seen here. THE ORDINARY INTERRUPT
+    // arrives while `exec` is awaited, so it is the re-check below that sees it,
+    // not this check (measured, card 2026-0328 §1, §4).
     if (signal?.aborted) throw cancelled();
     const r = await this.#host.execOneShot(
       { shell: frameCommand(nonce, command) },

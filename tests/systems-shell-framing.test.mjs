@@ -613,8 +613,13 @@ test(`two commands on one shell run at the same time — nothing takes a turn`, 
   }, { commandTimeoutMs: 8_000 });
 });
 
-// PINS: a signal that is already aborted never starts the command at all.
-test(`a pre-aborted signal never reaches the system`, async () => {
+// PINS THE CONTRACT A CALLER GETS for a signal that is already aborted:
+// `ECANCELLED`, and the command's write does not land. It does NOT pin the
+// pre-crossing check — measured, this case passes with that check deleted,
+// because the re-check after `exec` throws the same error and the far side's own
+// spawn was killed before the `touch` ran (card 2026-0328 §2). The host-seam
+// case below is what pins the crossing.
+test(`a pre-aborted signal fails ECANCELLED and its write does not land`, async () => {
   await withShell(async (sh, cwd) => {
     const witness = path.join(cwd, 'PRE_ABORTED');
     await assert.rejects(
@@ -623,6 +628,22 @@ test(`a pre-aborted signal never reaches the system`, async () => {
     );
     await assert.rejects(fs.stat(witness));
   });
+});
+
+// PINS THAT A PRE-ABORTED COMMAND IS NOT PASSED TO `execOneShot` — the half the
+// end-to-end case above cannot see, because the RESULT is `ECANCELLED` either
+// way: the re-check after `exec` returns throws the same error. The host seam is
+// what makes the difference observable. Measured with the pre-crossing check
+// deleted: the framed command went out and the reference provider spawned it in
+// 200 of 200 runs, killed by the `close` frame before the `touch` ran
+// (card 2026-0328 §2).
+test(`a pre-aborted command is not passed to execOneShot`, async () => {
+  const { host, state } = fakeHost({ respond: () => ({ stdout: 'ran\n' }) });
+  await assert.rejects(
+    () => new ProviderShell(host, { cwd: '/w' }).run('touch W', { signal: AbortSignal.abort() }),
+    (e) => { assert.equal(e.code, 'ECANCELLED'); return true; },
+  );
+  assert.deepEqual(state.commands, [], 'the host was handed no command');
 });
 
 // ── The two cases a real shell cannot be made to produce on demand ───

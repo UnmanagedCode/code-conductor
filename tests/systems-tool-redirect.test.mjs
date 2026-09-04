@@ -255,10 +255,13 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 // gone away.
 //
 // RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
-// waiting for its TURN on a shell, and there is no turn any more. What it
-// actually pins — a call cancelled before it crosses leaves nothing on the far
-// side — is unchanged and is the half a worker cares about.
-test('a cancelled call never reaches the system, and a concurrent one is untouched', async () => {
+// waiting for its TURN on a shell, and there is no turn any more. WHAT IT PINS
+// IS THE EFFECT, not a call stopped short: instrumented, this test's
+// cancellation throws at the re-check AFTER `exec` returns, and the reference
+// provider is measured to have SPAWNED the `touch` and killed it before it ran
+// (card 2026-0328 §1, §5). The witness's absence below is that kill winning the
+// race, which card 2026-0331 tracks.
+test('a cancelled call\'s write does not land, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
   const ac = new AbortController();
@@ -315,11 +318,11 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // command that is genuinely mid-flight rather than one still being handed over.
 //
 // Every claim is witnessed on the SYSTEM's filesystem, because cc's own return
-// value cannot tell "was not run" from "was run and its result discarded": all
-// three of `ProviderShell`'s `signal?.aborted` checks throw the SAME
-// `cancelled()` (src/systems/providerShell.ts:159, :175, :207), so the caller
-// sees one indistinguishable failure whether the call never crossed or crossed
-// and had its result thrown away (card 2026-0327).
+// value cannot tell "was not run" from "was run and its result discarded":
+// `ProviderShell`'s pre-crossing check and its post-exec re-check throw the SAME
+// `cancelled()`, so the caller sees one indistinguishable failure whether the
+// call was stopped before it crossed or crossed and had its result thrown away
+// (card 2026-0327).
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
