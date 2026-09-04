@@ -313,10 +313,8 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // value cannot tell "was not run" from "was run and its result discarded": all
 // three of `ProviderShell`'s `signal?.aborted` checks throw the SAME
 // `cancelled()` (src/systems/providerShell.ts:159, :175, :207), so the caller
-// sees one indistinguishable failure whether the call never crossed — this
-// test's case, aborted in the same tick it was issued, which is why "was not
-// run" is the accurate half here — or crossed and had its result thrown away
-// (card 2026-0327).
+// sees one indistinguishable failure whether the call never crossed or crossed
+// and had its result thrown away (card 2026-0327).
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };

@@ -369,8 +369,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     //   leading process: a provider that killed the sleeper alone would leave
     //   its parent shell to run the `touch`. STRUCTURAL at this layer, not
     //   measured — it runs only once `gone` has passed, so nothing establishes
-    //   its independent teeth here. That invariant IS measured same-machine by
-    //   the B2 test in tests/systems-tool-redirect.test.mjs.
+    //   its independent teeth here.
     // `20` against a path to this line that is BOUNDED BY the concurrent
     // `sleep 4` above it, so the marker's absence is the cancellation and not
     // the clock — and far under `DEFAULT_COMMAND_TIMEOUT_MS`
