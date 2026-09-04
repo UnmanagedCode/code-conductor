@@ -19,6 +19,12 @@
 // It also exercises MUST 3, which only a real container boundary can: `docker
 // exec -i` children are reparented inside the container, so cc's kill of the
 // local forwarder cannot reach them — the PROVIDER has to relay it.
+//
+// WHAT THIS FILE DOES NOT CLAIM. The container is on cc's own machine and
+// shares its kernel; what is disjoint about it is its FILESYSTEM and its
+// ENVIRONMENT. Nothing here is measured about SSH, about a genuinely remote
+// host, about latency, or about a foreign libc or toolchain — no assertion or
+// comment in this file may be read as covering any of them.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +36,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { addSystem } from '../src/appSettings.ts';
 import { adoptProject } from '../src/projects.ts';
-import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 
 const ENABLED = process.env.RUN_DOCKER_SYSTEM === '1';
@@ -45,6 +51,12 @@ const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 // run; `execCollector.ts` and `system.ts` are inert here and are carried only
 // so the copied set matches the module's siblings. Nothing else crosses in.
 const PROVIDER_FILES = ['referenceProvider.ts', 'protocol.ts', 'execCollector.ts', 'system.ts'];
+// A directory that is on the CONTAINER's PATH and on no host's, holding a
+// binary that exists only there. It is what makes the argv-form assertion below
+// a discriminator rather than a coincidence: resolving `cc-buildtool` at all
+// means the command resolved through the target's PATH.
+const TARGET_ONLY_BIN = '/opt/cc-target-only';
+const TARGET_ONLY_TOOL = 'cc-buildtool';
 
 const run = (argv, opts = {}) => new Promise((resolve, reject) => {
   execFile(argv[0], argv.slice(1), { maxBuffer: 1 << 24, ...opts }, (err, stdout, stderr) => {
@@ -94,13 +106,22 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     // unreaped". `tail -f` rather than `sleep` as the keep-alive, so the
     // container's own idle process is not itself matched by that assertion's
     // `pgrep -x sleep`.
-    await docker('run', '-d', '--init', '--name', CTR, IMAGE, 'tail', '-f', '/dev/null');
+    //
+    // The container's PATH is its image's own with TARGET_ONLY_BIN prepended,
+    // read back from the image rather than hardcoded so the tool stays
+    // reachable and nothing else about the image changes.
+    const imagePath = (await docker('run', '--rm', IMAGE, 'sh', '-c', 'printf %s "$PATH"')).stdout.trim();
+    assert.ok(imagePath.startsWith('/'), `unexpected image PATH: ${imagePath}`);
+    await docker('run', '-d', '--init', '--name', CTR,
+      '-e', `PATH=${TARGET_ONLY_BIN}:${imagePath}`, IMAGE, 'tail', '-f', '/dev/null');
     // `git` for the adopt's repo-root check, `procps` for the pgrep the MUST-3
     // assertion uses to watch the command from inside. Neither is in the slim
     // image, and both are about the FIXTURE, not about what a provider needs.
     await docker('exec', CTR, 'sh', '-lc',
       'apt-get update -qq && apt-get install -y -qq --no-install-recommends git procps >/dev/null');
-    await docker('exec', CTR, 'mkdir', '-p', '/opt/cc', '/app');
+    await docker('exec', CTR, 'mkdir', '-p', '/opt/cc', '/app', TARGET_ONLY_BIN);
+    await inCtr(`printf '#!/bin/sh\\necho target-toolchain-ok\\n' > ${TARGET_ONLY_BIN}/${TARGET_ONLY_TOOL}`
+      + ` && chmod +x ${TARGET_ONLY_BIN}/${TARGET_ONLY_TOOL}`);
     for (const f of PROVIDER_FILES) {
       await docker('cp', path.join(REPO, 'src', 'systems', f), `${CTR}:/opt/cc/${f}`);
     }
@@ -143,8 +164,8 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     return runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
   };
 
-  // PINS: the fixture really is two machines. Every assertion after this one is
-  // worthless without it.
+  // PINS: the fixture really is two disjoint sides of one machine. Every
+  // assertion after this one is worthless without it.
   test('the two sides are genuinely disjoint', async () => {
     assert.notEqual((await inCtr('hostname')).trim(), ccHostname.trim());
     await assert.rejects(fs.stat('/app'), 'cc has no /app');
@@ -163,6 +184,66 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.notEqual(host, ccHostname.trim());
     assert.equal(marker, 'system-side');
     assert.equal(cwd, '/app', 'in a directory that exists only there');
+  });
+
+  // PINS: a command on the system runs in the SYSTEM's environment, not cc's.
+  // THE STATIC HALF of that rule — what the two environments CONTAIN: PATH,
+  // HOME, the toolchain. Those values coincide wherever the provider sits on
+  // cc's own machine, so this is where the difference is observable at all,
+  // and it is exactly how the old default survived. (The LIVE half — a
+  // variable cc sets after the provider launched — needs no boundary and is
+  // pinned in tests/systems-exec-env.test.mjs.)
+  //
+  // Three witnesses, because each alone can be satisfied by the wrong thing:
+  // the VARIABLES cc has and the container does not, `$HOME` (measured to
+  // survive `bash -l` sourcing /etc/profile, which rewrites PATH), and the
+  // argv form resolving a binary that exists only in the container.
+  //
+  // NOT CLAIMING: that cc's environment is unreachable from the container by
+  // any route — only that cc does not put it on the wire.
+  test('a command on the system runs in the system\'s environment, not cc\'s', async () => {
+    // Calibrated through the container's own `bash -l`, not `inCtr`'s `sh -l`:
+    // the redirected command is spawned as `bash -lc`, and bash exports
+    // variables of its own (`SHLVL`, `_`) that this image's dash does not. A
+    // dash-calibrated set would count those as cc's and red on every run.
+    const containerEnv = new Set(
+      (await docker('exec', CTR, 'bash', '-lc', 'env')).stdout.split('\n')
+        .map(l => l.slice(0, l.indexOf('='))).filter(Boolean));
+    const orchestratorOnly = Object.keys(process.env).filter(k => !containerEnv.has(k));
+    // NON-VACUITY, checked first: on a host whose environment happened to match
+    // the image's, witness 1 would pass while asserting nothing.
+    assert.ok(orchestratorOnly.length > 0,
+      'cc has no variable the container lacks — witness 1 would be vacuous');
+    // THE SAME GUARD FOR WITNESS 3, and it is the load-bearing one: `PATH` is a
+    // key of BOTH environments, so it can never appear in `orchestratorOnly` —
+    // witness 1 structurally cannot see a PATH crossing, and witness 2 pins only
+    // `$HOME`. That leaves witness 3 as the sole guard on PATH resolution, and
+    // it discriminates only while its directory is on no PATH of cc's: on a host
+    // carrying one, cc's own environment would resolve the tool inside the
+    // container too and witness 3 would go GREEN AGAINST THE BUG.
+    assert.ok(!(process.env.PATH ?? '').split(path.delimiter).includes(TARGET_ONLY_BIN),
+      `${TARGET_ONLY_BIN} is on cc's own PATH — witness 3 would not discriminate`);
+
+    // 1. None of cc's own variables reached the far side.
+    const seen = await bashAsWorker('env');
+    assert.equal(seen.code, 0, seen.stderr);
+    const workerEnv = new Set(seen.stdout.split('\n').map(l => l.slice(0, l.indexOf('='))).filter(Boolean));
+    assert.deepEqual(orchestratorOnly.filter(k => workerEnv.has(k)), [],
+      'cc\'s own environment crossed the boundary');
+
+    // 2. $HOME is the container's, not cc's.
+    const home = (await bashAsWorker('echo "$HOME"')).stdout.trim();
+    assert.equal(home, (await inCtr('echo $HOME')).trim());
+    assert.notEqual(home, process.env.HOME);
+
+    // 3. The argv form resolves the TARGET's toolchain. `cc-buildtool` is on
+    //    the container's PATH and on no path of cc's, so a command resolved
+    //    through cc's PATH answers ENOENT instead.
+    const sys = await systemById('ctrbox', null, 'the boundary test');
+    const built = await sys.exec({ argv: [TARGET_ONLY_TOOL] }, { cwd: '/app' });
+    assert.ok(!built.spawnError, `${TARGET_ONLY_TOOL} did not start: ${built.spawnError}`);
+    assert.equal(built.code, 0, built.stderr);
+    assert.equal(built.stdout.trim(), 'target-toolchain-ok');
   });
 
   // PINS STREAMING ACROSS THE MACHINE BOUNDARY: output produced inside the

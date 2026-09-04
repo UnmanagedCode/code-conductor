@@ -61,47 +61,31 @@ async function codeOf(fn) {
 }
 
 test('exec: the ordinary results agree — streams, exit code, cwd and env', async () => {
-  // Set AFTER both systems exist: a provider launched earlier must still see it,
-  // which is only true because `exec` sends the resolved environment on every
-  // call rather than letting the provider answer from its boot snapshot.
-  process.env.CC_PARITY_AMBIENT = 'set-after-launch';
   const [a, b] = await both(null, async (sys, root) => ({
     echo: normalise(await sys.exec({ argv: ['echo', 'hello'] }, { cwd: root }), root),
     shell: normalise(await sys.exec({ shell: 'echo out; echo err >&2; exit 5' }, { cwd: root }), root),
     cwd: normalise(await sys.exec({ argv: ['pwd'] }, { cwd: root }), root),
+    // A caller-named `env` REPLACES on both. THE DEFAULT IS NOT COMPARED HERE,
+    // and co-location is not the reason it would agree: a caller that mutates
+    // `process.env` after the provider launched now makes the two DISAGREE on
+    // this very machine. The deleted `exec sends the CALLER's environment` test
+    // was built on exactly that scenario and, under the old default, asserted
+    // the opposite — that both implementations saw the late value. This
+    // scenario mutates nothing, so both sides read one unchanging environment.
+    //
+    // Where the default is pinned instead, on the two-half split the env
+    // suite's header sets out: the LIVE half (a late mutation) in
+    // tests/systems-exec-env.test.mjs, the STATIC half (what the two
+    // environments contain) in tests/systems-docker-boundary.real.test.mjs,
+    // since on one machine those contents coincide. The field's ABSENCE on the
+    // wire is pinned in the env suite too, and is a claim about the frame
+    // rather than about either environment's contents.
     env: normalise(await sys.exec({ argv: ['sh', '-c', 'echo "[$CC_PARITY]"'] }, {
       cwd: root, env: { CC_PARITY: 'v', PATH: process.env.PATH },
     }), root),
-    // The default: no `env` on the options means cc's OWN process env, which a
-    // caller that just set a variable is entitled to see.
-    inherited: normalise(await sys.exec({ argv: ['sh', '-c', 'echo "[$CC_PARITY_AMBIENT]"'] }, { cwd: root }), root),
   }));
-  delete process.env.CC_PARITY_AMBIENT;
   assert.deepEqual(a, b);
   assert.equal(a.cwd.stdout, '<ROOT>\n');
-  assert.equal(a.inherited.stdout, '[set-after-launch]\n',
-    'a caller that just set a variable sees it — on both implementations');
-});
-
-test('exec sends the CALLER\'s environment, even one changed after the provider launched', async () => {
-  // The provider is a long-lived process launched once. If `exec` omitted `env`
-  // and let it answer from its own environment, every variable a caller sets
-  // after boot would be invisible — silently, and only on the wire
-  // implementation. So the connection is opened FIRST here, deliberately.
-  const sys = makeProviderSystem([]);
-  const local = new LocalSystem();
-  try {
-    await sys.connect();
-    process.env.CC_PARITY_LATE = 'set-after-the-provider-launched';
-    const opts = { cwd: os.tmpdir() };
-    const spec = { argv: ['sh', '-c', 'echo "[$CC_PARITY_LATE]"'] };
-    assert.equal((await local.exec(spec, opts)).stdout.trim(), '[set-after-the-provider-launched]');
-    assert.equal((await sys.exec(spec, opts)).stdout.trim(), '[set-after-the-provider-launched]',
-      'the wire implementation resolves the environment per call, not at launch');
-  } finally {
-    delete process.env.CC_PARITY_LATE;
-    sys.dispose();
-  }
 });
 
 test('exec: a command that cannot start reports the same failure shape on both', async () => {

@@ -132,7 +132,6 @@ function overflowed(limit: number | undefined): SystemError {
 
 export class ProviderShell {
   readonly #host: ShellHost;
-  readonly #env: NodeJS.ProcessEnv | undefined;
   readonly #commandTimeoutMs: number;
   readonly #maxOutputBytes: number | undefined;
 
@@ -141,7 +140,7 @@ export class ProviderShell {
   readonly #cwd: string;
 
   constructor(host: ShellHost, opts: {
-    cwd: string; env?: NodeJS.ProcessEnv; commandTimeoutMs?: number;
+    cwd: string; commandTimeoutMs?: number;
     // A FENCE on one command's total output in BYTES, not a truncation: past it the
     // command is killed and the call FAILS. cc accumulates a framed command's
     // bytes in its own heap — the parser's first-match-wins rule is about the
@@ -152,7 +151,6 @@ export class ProviderShell {
   }) {
     this.#host = host;
     this.#cwd = opts.cwd;
-    this.#env = opts.env;
     this.#commandTimeoutMs = opts.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     this.#maxOutputBytes = opts.maxOutputBytes;
   }
@@ -178,8 +176,9 @@ export class ProviderShell {
     const r = await this.#host.execOneShot(
       { shell: frameCommand(nonce, command) },
       {
-        cwd: this.#cwd, ...(this.#env ? { env: this.#env } : {}),
-        timeoutMs: deadline, stdin: 'ignore',
+        // NO `env`: the command runs in the environment of the machine it
+        // runs on, exactly as a local Bash call runs in this machine's.
+        cwd: this.#cwd, timeoutMs: deadline, stdin: 'ignore',
         // THE FENCE, through the accounting `exec` already owns
         // (ExecOutputCollector).
         ...(this.#maxOutputBytes === undefined ? {} : { maxBufferBytes: this.#maxOutputBytes }),
