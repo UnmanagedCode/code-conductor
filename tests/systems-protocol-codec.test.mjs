@@ -8,6 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   FS_ERROR_CODES, MAX_LINE_BYTES, NO_CAPABILITIES, NdjsonDecoder, PROTOCOL_ERROR_CODES, PROTOCOL_VERSION,
   SystemError, classifySpawnError, classifyStderr, decodeFrame, encodeFrame, execFailure,
@@ -216,4 +217,41 @@ test('the taxonomy is closed: every named code is recognised and nothing else is
   for (const c of [...PROTOCOL_ERROR_CODES, ...FS_ERROR_CODES]) assert.equal(isSystemErrorCode(c), true, c);
   for (const c of ['EWHATEVER', '', null, 7]) assert.equal(isSystemErrorCode(c), false, String(c));
   assert.equal(PROTOCOL_VERSION, 1);
+});
+
+// PINS §8's protocol-level table against PROTOCOL_ERROR_CODES. Doc bytes are an
+// INPUT here: §8's heading text and its `| `ECODE` |` row format are load-bearing,
+// and renaming or reformatting either reds this test. That is the accepted cost.
+//
+// DO NOT move this into tests/systems-protocol-conformance.test.mjs. §10 of the
+// doc sells that battery to third parties as "YOUR provider, same battery, no
+// test edits"; they clone it without our docs, so a test in it that opens
+// docs/systems-protocol.md is broken for exactly that audience.
+test('§8 of docs/systems-protocol.md names exactly PROTOCOL_ERROR_CODES', () => {
+  const doc = readFileSync(new URL('../docs/systems-protocol.md', import.meta.url), 'utf8');
+  const start = doc.indexOf('### Protocol-level');
+  // End at the next heading of `##` depth or deeper, so a restructure that changes
+  // §8's successor level reds here instead of silently swallowing the FS-code table
+  // below. The `##` floor is load-bearing: a bare `#` would also match the shell
+  // comments inside this doc's own fenced blocks.
+  const after = start === -1 ? -1 : doc.slice(start + 1).search(/\n#{2,} /);
+  const end = after === -1 ? -1 : start + 1 + after;
+  assert.ok(start !== -1 && end > start,
+    'could not locate §8 protocol-level block in docs/systems-protocol.md — re-anchor this test');
+  const listed = [...doc.slice(start, end).matchAll(/^\| `(E[A-Z]+)`/gm)].map((m) => m[1]);
+  // MEASURED separable, via a CONSTRUCTED stimulus: de-backticking all eight
+  // rows at once locates the block yet parses nothing and reaches here; a single
+  // de-backticked row dies earlier at `missing`. Not a pin on single-row drift.
+  assert.ok(listed.length > 0, 'located the §8 block but parsed no code rows — re-anchor the row regex');
+  const missing = PROTOCOL_ERROR_CODES.filter((c) => !listed.includes(c));
+  const extra = listed.filter((c) => !PROTOCOL_ERROR_CODES.includes(c));
+  assert.deepEqual(missing, [], `in PROTOCOL_ERROR_CODES but missing from §8's table: ${missing.join(', ')}`);
+  assert.deepEqual(extra, [], `in §8's table but not in PROTOCOL_ERROR_CODES: ${extra.join(', ')}`);
+  // LAST, because it is the least diagnostic of the three: set equality holding
+  // while the counts differ means the table repeats a row, which is the one
+  // corruption the two differences above are blind to.
+  const dupes = [...new Set(listed.filter((c, i) => listed.indexOf(c) !== i))];
+  assert.equal(listed.length, PROTOCOL_ERROR_CODES.length,
+    `§8 has ${listed.length} rows for ${PROTOCOL_ERROR_CODES.length} codes, and names the right set — `
+    + `so a row is repeated: ${dupes.join(', ') || '(none found; the row regex matched something extra)'}`);
 });
