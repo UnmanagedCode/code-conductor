@@ -277,6 +277,18 @@ test('a cancelled call never reaches the system, and a concurrent one is untouch
 // capability modes, including the fallback where there is no live stream to
 // close. A worker's interrupt that leaves the command running is not an
 // interrupt.
+//
+// ITS BOUNDARY TWIN is `interrupting one call stops it inside the container and
+// leaves a concurrent call alone` in tests/systems-docker-boundary.real.test.mjs
+// — the same shape, witnessed from inside the container instead of on cc's own
+// filesystem. Card 2026-0312 re-based THIS file and missed that one, which then
+// sat red unnoticed because that suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and
+// is in neither gated command (card 2026-0327). Change one, change both.
+//
+// NOT the same claim as the RE-FRAMED test above: that one pins the
+// CANCELLED-BEFORE-IT-CROSSES case, which has no boundary twin and needs none —
+// a boundary test cannot construct it, since the request must cross before the
+// container can witness anything.
 test('interrupting the in-flight command stops it on the system', async () => {
   const witness = onSystem('STILL_RUNNING');
   const ac = new AbortController();
@@ -297,8 +309,12 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // reach cc before issuing the second, so the cancellation lands against a
 // command that is genuinely mid-flight rather than one still being handed over.
 //
-// Every claim is witnessed on the SYSTEM's filesystem, which is the only witness
-// that can tell "was not run" from "was run and its result discarded".
+// Every claim is witnessed on the SYSTEM's filesystem, because cc's own return
+// value cannot tell "was not run" from "was run and its result discarded":
+// `ProviderShell#runOneShot` (src/systems/providerShell.ts:200-207) re-checks
+// `signal?.aborted` after the exec has RETURNED and throws `cancelled()` ahead of
+// reading the result's `outputOverflowed`/`timedOut`, so that result is discarded
+// (card 2026-0327).
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };

@@ -499,6 +499,12 @@ describe('a worker session on a remote system', () => {
   // the next command it lost its exports would be an R5-class false statement
   // about state it never had. What it must still say is nothing at all, which is
   // asserted here.
+  //
+  // ITS BOUNDARY TWIN is `killing the forwarder stops the command inside the
+  // container` in tests/systems-docker-boundary.real.test.mjs. Card 2026-0312
+  // re-based THIS copy and missed that one, which then sat red unnoticed because
+  // that suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and is in neither gated
+  // command (card 2026-0327). Change one, change both.
   test('killing the forwarder stops the command on the system', async () => {
     const marker = onSystem('slow-finished.txt');
     const started = onSystem('slow-started.txt');
