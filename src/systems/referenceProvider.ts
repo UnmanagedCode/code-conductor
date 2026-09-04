@@ -3,10 +3,11 @@
 // It is not a transport (there is none in this project — see docs/systems-
 // protocol.md). It is the machine cc already runs on, reached the long way
 // round, and it exists for one reason: it makes the protocol's sufficiency
-// TESTABLE. The entire cc test suite runs against it in three capability
-// configurations, so every claim in the spec — the three primitives, the exec
-// lifecycle, the derivations, both fallbacks — is exercised by real callers
-// rather than asserted in prose.
+// TESTABLE. The entire cc test suite runs against it in each row of `CONFIGS`
+// (`tests/systems-gate.mjs`, which owns the list), so every claim in the spec —
+// the three primitives, the exec lifecycle, the derivations, the
+// optional-capability fallbacks — is exercised by real callers rather than
+// asserted in prose.
 //
 // It is also the worked example a third-party provider is written from: three
 // operations, ~400 lines, no cc imports beyond the shared frame vocabulary.

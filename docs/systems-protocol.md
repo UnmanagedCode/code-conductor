@@ -2,7 +2,9 @@
 
 The wire contract between code-conductor and a **provider** — a process cc
 launches that gives it execution and file access on one System. This document is
-complete: a conforming provider can be written from it alone.
+complete: a conforming provider can be written from it alone — §1-§9 are the
+wire contract, and §10 is the flag-and-environment surface the conformance
+harness launches a provider with.
 
 - Executable half of this spec: `src/systems/protocol.ts` (frame types, codec,
   taxonomy), shared by both ends.
@@ -652,12 +654,94 @@ CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
   node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 ```
 
-`CC_CONFORMANCE_PROVIDER` is a JSON argv array. The suite **appends** the
-capability flag `--no-process-group-signal` to it, so a provider being verified
-has to accept it (or map it onto its own switch) to be exercised in every
-configuration; without that it runs the first configuration only. The suite builds its fixtures with node's own `fs` and
-then asks the provider about them, so it verifies a provider that reaches **the
-same filesystem as the test process**.
+`CC_CONFORMANCE_PROVIDER` is a JSON argv array. The suite **appends flags** to
+it: the `flags` of every entry in `CAPABILITY_CONFIGS`
+(`tests/referenceProviderHarness.mjs` owns that list) for the core battery, and
+the target/mirror flags below in the `remotes` and `remoteDescriptors` fixtures,
+which launch providers of their own. **Every configuration runs whatever the
+provider does with those flags**: one that accepts a flag and ignores it fails
+the rows the flag toggles, and one that exits on an unknown flag fails that
+whole configuration at the handshake. Neither is skipped. The suite
+builds its fixtures with node's own `fs` and then asks the provider about them,
+so it verifies a provider that reaches **the same filesystem as the test
+process**.
+
+### The launch surface — what the suite sends beyond the wire contract
+
+Every flag is repeatable, and its capability is advertised **iff** at least one
+is given. The names are pinned by the reference provider and by every fixture
+that passes them, so renaming one reds the suite.
+
+| Flag / variable | The provider must | Effect on the handshake |
+|---|---|---|
+| `--no-process-group-signal` | send a `signal` to the direct child only (§5) | `processGroupSignal: false` |
+| `--remote <id>=<absolute root>` | serve that target — the id is its whole address; the root is where the suite places that target's fixtures, not a fence it asks you to enforce. An unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true` |
+| `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` (§2.1) | `remoteDescriptors: true` |
+| `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` | `remoteDescriptors: true` |
+| `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts**, naming the target it ran on | — (asserted directly, not negotiated) |
+
+**`CC_CONFORMANCE_REMOTE_ID` (below) presupposes `--remote`**, and the two ids
+must match. cc refuses a `remoteId` on its own side whenever the handshake
+reports `remotes:false` (§2), so binding a handle to a target the launch never
+declared loses most of the battery to bare value diffs that name neither the
+flag nor the variable. The shape that trips on this is a provider launched with
+`--mirror`/`--exclude` alone: it advertises `remoteDescriptors` and, correctly
+by the rule above, `remotes:false`. **The handshake row refuses that combination
+outright and names the flag**, so that half of the rule is enforced rather than
+remembered.
+
+**The id match itself is NOT checked.** A *declared but different* id — the
+launch says `--remote u=/`, the variable says `t` — advertises `remotes:true`,
+so it clears the handshake and fails the rest of the battery as value diffs.
+What identifies it is your own provider's `ENOREMOTE` text naming the unknown
+target, carried on the **actual** side of each diff; the assertions themselves
+name neither the flag nor the variable.
+
+### If your provider serves only NAMED targets
+
+**The core fixtures build an UNBOUND handle**, so every frame they send names no
+remote — and §8 requires a provider with no default target to refuse exactly
+those `ENOREMOTE`. A provider whose every kind serves named targets therefore
+loses most of the battery, and the failures are about binding, not about
+anything it got wrong. **That is this document's own rule meeting a fixture that
+never binds**, not a reference-specific assertion the suite could drop.
+
+`CC_CONFORMANCE_REMOTE_ID=<id>` binds every fixture handle to one target — to
+the conformance suite what `CC_LOCAL_SYSTEM_REMOTE_ID` (below) is to `npm test`:
+
+```
+CC_CONFORMANCE_PROVIDER='["node","my_provider.js","--remote","t=/"]' \
+  CC_CONFORMANCE_REMOTE_ID=t \
+  node tests/run.mjs tests/systems-protocol-conformance.test.mjs
+```
+
+**A bound run proves strictly less than the reference run**, and none of what it
+gives up is silent — each row is either relaxed here or skipped in the output
+with its own reason:
+
+- **The capability assertion is relaxed on one axis.** The capabilities
+  `CAPABILITY_CONFIGS` toggles must still match the flags exactly; `remotes` and
+  `remoteDescriptors` may be a **superset** of the configuration. So the suite
+  stops being the verifier for the `remotes` and `remoteDescriptors` rows of
+  §2's capability table.
+- **The CC-SIDE rows are SKIPPED.** They use a provider as a fixture to assert
+  what *cc* does — what it sends a provider that advertises a capability off,
+  what this suite's own defaults are — so they are pinned to the reference
+  provider and skip for any third-party one whatever its shape. **Read the
+  printed `skip` reasons off your run: they are the list, and none of them is a
+  statement about your provider.** (The shape that motivates the pin: a kind
+  that always serves named targets cannot supply a `remotes:false` fixture at
+  all, and must not be made to lie about it — that would be a test-only
+  divergence in the one field cc negotiates on.)
+
+Run it anyway, because the alternative is weaker. Without the bound path a
+provider whose kinds all serve named targets is verified only by a
+**generalisation** — that the protocol core and the file operations are
+kind-agnostic, and each kind's command builder is a pure function — while only a
+differently-shaped kind ever runs the battery. The bound path turns that
+generalisation into a **measurement against the shipped kind itself**. The
+`docker exec` provider of §11, one process serving every container, is precisely
+that shape.
 
 Then run the whole application over it:
 
@@ -679,7 +763,7 @@ of them `ENOREMOTE`. It is inert on its own — with no `CC_LOCAL_SYSTEM_PROVIDE
 stays on its own in-process machine. The gate's first configuration uses exactly
 this pair: `--remote gate=/` on the provider argv and
 `CC_LOCAL_SYSTEM_REMOTE_ID=gate` on cc. The gate's own capability matrix — which
-two capabilities it toggles, why `remotes` is folded into an existing
+capabilities it toggles, why `remotes` is folded into an existing
 configuration and why `remoteDescriptors` is absent — is documented at the top of
 `tests/systems-gate.mjs`, which owns it.
 

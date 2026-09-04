@@ -4,8 +4,12 @@
 // provider has to survive. It drives the reference provider through the three
 // MUST primitives, the full `exec` frame lifecycle including process-group
 // signalling, capability negotiation, multiplexed ids, every error code and
-// every derivation — in ALL THREE capability configurations, so neither
-// fallback is a flag nobody has run.
+// every derivation — in EVERY entry of `CAPABILITY_CONFIGS` (the harness owns
+// the list; the count is deliberately not restated here), so no fallback is a
+// flag nobody has run.
+//
+// WHAT IT PROVES FOR A THIRD-PARTY PROVIDER IS NARROWER, and card 2026-0313
+// measured how much: see docs/systems-protocol.md §10.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,8 +22,14 @@ import {
 import { ProviderConnection } from '../src/systems/providerConnection.ts';
 import { parseFindLines } from '../src/systems/providerSystem.ts';
 import {
-  CAPABILITY_CONFIGS, IS_REFERENCE_PROVIDER, makeProviderSystem, providerArgv,
+  CAPABILITY_CONFIGS, IS_REFERENCE_PROVIDER, REMOTE_ID_ENV, TOGGLED_CAPABILITIES,
+  assertNegotiatedCapabilities, conformanceRemoteId, makeProviderSystem, providerArgv,
 } from './referenceProviderHarness.mjs';
+
+// The binding for a frame or a flag a fixture builds by hand. Empty — so the
+// default run is byte-identical — unless CC_CONFORMANCE_REMOTE_ID is set.
+const BOUND = conformanceRemoteId() === null ? {} : { remoteId: conformanceRemoteId() };
+const FLAG_TARGET = conformanceRemoteId() === null ? '' : `${conformanceRemoteId()}=`;
 import { rmrf } from './rmrf.mjs';
 
 // Every taxonomy code this file provokes for real. The last test checks the
@@ -31,6 +41,18 @@ function expectCode(e, code, what) {
   produced.add(code);
   return true;
 }
+
+// The ABSENT-BEHAVIOUR rows below assert what CC does when a provider advertises
+// a capability it does not have — they use a provider as a FIXTURE rather than
+// testing one, so they are pinned to the reference provider and skip for any
+// third-party one WHATEVER ITS SHAPE. The gate is provider identity, not
+// capability: a third-party provider that can advertise `remotes:false` still
+// skips them, so the reason must not claim it cannot. (The shape that motivates
+// the pin: a kind that always serves named targets cannot supply that fixture
+// at all, and must not be made to lie to try.)
+const CC_SIDE_ONLY = IS_REFERENCE_PROVIDER
+  ? false
+  : 'cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does';
 
 async function withSystem(flags, fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-conformance-'));
@@ -69,7 +91,7 @@ for (const config of CAPABILITY_CONFIGS) {
   test(`${tag} the handshake carries the protocol version, the provider name and the capabilities`, async () => {
     await withSystem(config.flags, async (sys) => {
       const hs = sys.handshake;
-      assert.deepEqual(hs.capabilities, config.caps, 'the flags the provider was launched with are what it advertises');
+      assertNegotiatedCapabilities(hs.capabilities, config);
       assert.match(hs.provider, /^\S+\/\S+$/, 'a provider names and versions itself');
       if (IS_REFERENCE_PROVIDER) assert.match(hs.provider, /^reference-local\//);
       assert.equal('system' in hs, false, 'cc records no descriptor, because it reads none');
@@ -382,7 +404,7 @@ test('a provider refuses a corrupted write payload — it never lands a partial 
     const id = conn.nextId('w');
     const refusal = await new Promise((resolve) => {
       conn.open(id, { frame: (f) => { if (f.type === 'error' || f.type === 'writeFileResult') resolve(f); }, down: resolve });
-      conn.send({ type: 'writeFile', id, path: target });
+      conn.send({ type: 'writeFile', id, ...BOUND, path: target });
       conn.send({ type: 'data', id, seq: 0, dataB64: Buffer.from('HELLO').toString('base64') });
       // Valid JSON, valid line, unusable payload.
       conn.send({ type: 'data', id, seq: 1, dataB64: 'V09STEQ=!!corrupted' });
@@ -403,7 +425,12 @@ test('a provider refuses a corrupted write payload — it never lands a partial 
 // Outside the per-configuration loop: `remotes` is orthogonal to the other two
 // capabilities, and these launch their own provider with `--remote` flags.
 
-// A provider serving `a` and `b`, each scoped to its own root.
+// A provider serving `a` and `b`, each given its own root.
+//
+// The OWNER handle is explicitly unbound — `{ remoteId: null }` beats
+// CC_CONFORMANCE_REMOTE_ID — because this block is ABOUT binding: every test
+// here binds the target it wants, and one of them asserts what an UNBOUND
+// request gets on a provider that has no default.
 async function withRemotes(fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-remotes-'));
   const root = await fs.realpath(dir);
@@ -411,7 +438,7 @@ async function withRemotes(fn) {
   const rootB = path.join(root, 'b');
   await fs.mkdir(rootA);
   await fs.mkdir(rootB);
-  const sys = makeProviderSystem(['--remote', `a=${rootA}`, '--remote', `b=${rootB}`]);
+  const sys = makeProviderSystem(['--remote', `a=${rootA}`, '--remote', `b=${rootB}`], { remoteId: null });
   try {
     await sys.connect();
     return await fn(sys, { rootA, rootB });
@@ -486,7 +513,7 @@ test('a request that names NO remote is refused, never answered from a default',
   });
 });
 
-test('a provider that does not advertise remotes is never handed a remoteId', async () => {
+test('a provider that does not advertise remotes is never handed a remoteId', { skip: CC_SIDE_ONLY }, async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-noremotes-'));
   const root = await fs.realpath(dir);
   const sys = makeProviderSystem([]);
@@ -533,7 +560,8 @@ test('parseFindLines refuses a malformed entry rather than skipping it', () => {
 test('describeRemote round-trips the mirror root and the exclude list', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-mirror-conf-'));
   const root = await fs.realpath(dir);
-  const sys = makeProviderSystem(['--mirror', root, '--exclude', '/proc', '--exclude', '/dev']);
+  const sys = makeProviderSystem(
+    ['--mirror', `${FLAG_TARGET}${root}`, '--exclude', `${FLAG_TARGET}/proc`, '--exclude', `${FLAG_TARGET}/dev`]);
   try {
     const hs = await sys.connect();
     assert.equal(hs.capabilities.remoteDescriptors, true);
@@ -547,7 +575,7 @@ test('describeRemote round-trips the mirror root and the exclude list', async ()
 // NOT CLAIMING: the wire-level absence — that is measured with the recording
 // provider in tests/systems-mirror-fallback.test.mjs. This is the cc-side
 // contract the rest of the code reads.
-test('a provider without the capability advertises no mirror', async () => {
+test('a provider without the capability advertises no mirror', { skip: CC_SIDE_ONLY }, async () => {
   const sys = makeProviderSystem([]);
   try {
     assert.equal((await sys.connect()).capabilities.remoteDescriptors, false);
@@ -621,9 +649,130 @@ test('a write above the protocol cap is refused before a byte reaches the wire',
   } finally { sys.dispose(); }
 });
 
+// ── The third-party contract (card 2026-0313) ────────────────────────
+
+// PINS: `CC_CONFORMANCE_REMOTE_ID` binds every fixture handle to that target,
+// an explicit `{ remoteId: null }` still beats it, and the binding rides the
+// WIRE rather than only the handle. Without it a provider that serves only
+// named targets answers the core battery `ENOREMOTE` under the protocol's own
+// §8 rule — the lockout docs/systems-protocol.md §10 names.
+//
+// NOT CLAIMING: that a bound run proves as much as the reference run. It does
+// not, and §10 says which rows it gives up.
+//
+// Reference-only: it asserts the UNSET default, which a third-party run has
+// deliberately changed.
+test('CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteId still wins',
+  { skip: IS_REFERENCE_PROVIDER ? false : 'asserts the unset default' }, async () => {
+    const before = process.env[REMOTE_ID_ENV];
+    assert.equal(makeProviderSystem([]).remoteId, null, 'unset: the fixture handle is unbound');
+    process.env[REMOTE_ID_ENV] = 't';
+    try {
+      assert.equal(makeProviderSystem([]).remoteId, 't', 'set: every fixture handle is bound to it');
+      assert.equal(makeProviderSystem([], { remoteId: null }).remoteId, null,
+        'an explicit remoteId beats the env var — what keeps the remotes fixtures unbound');
+      const sys = makeProviderSystem(['--remote', 't=/']);
+      try {
+        await sys.connect();
+        const r = await sys.exec({ shell: 'echo "$CC_REMOTE"' }, { cwd: os.tmpdir() });
+        assert.equal(r.stdout.trim(), 't', 'the binding reached the far side, not just the handle');
+      } finally { sys.dispose(); }
+    } finally {
+      if (before === undefined) delete process.env[REMOTE_ID_ENV];
+      else process.env[REMOTE_ID_ENV] = before;
+    }
+  });
+
+// PINS `conformanceRemoteId()`'s WHITESPACE CONTRACT — the only normalisation
+// between the env var and `ProviderSystem`, which does none of its own.
+//
+// MEASURED: `opts.remoteId ?? null` keeps `''` (not nullish), so a handle built
+// from a blank id binds to a nonsense target and every operation comes back
+// `EUNSUPPORTED` — a whole battery of opaque failures from
+// `CC_CONFORMANCE_REMOTE_ID=$SOME_UNSET_VAR` in a CI script, which is the exact
+// failure mode this contract exists to remove, aimed at its own audience.
+//
+// The blank cases are what `.trim()` kills; the empty case is what `|| null`
+// kills where `?? null` would not; `'  t  '` kills a trim that only tests and
+// does not apply.
+//
+// Pure: reads the variable, launches nothing.
+test('an empty or blank CC_CONFORMANCE_REMOTE_ID is unbound, never bound to a nonsense target', () => {
+  const before = process.env[REMOTE_ID_ENV];
+  try {
+    for (const blank of ['', ' ', '  \t ', '\n']) {
+      process.env[REMOTE_ID_ENV] = blank;
+      assert.equal(conformanceRemoteId(), null, `${JSON.stringify(blank)} must not bind a handle`);
+    }
+    process.env[REMOTE_ID_ENV] = '  t  ';
+    assert.equal(conformanceRemoteId(), 't', 'a real id is TRIMMED, not passed through padded');
+    delete process.env[REMOTE_ID_ENV];
+    assert.equal(conformanceRemoteId(), null, 'unset is unbound — the default every in-repo run takes');
+  } finally {
+    if (before === undefined) delete process.env[REMOTE_ID_ENV];
+    else process.env[REMOTE_ID_ENV] = before;
+  }
+});
+
+// PINS THE BOUND-RUN PRECONDITION (§10 of docs/systems-protocol.md): a run bound
+// with CC_CONFORMANCE_REMOTE_ID against a provider that does not advertise
+// `remotes` is refused AT THE HANDSHAKE, with a message naming the flag that
+// fixes it and the id it must carry — instead of through the run of bare value
+// diffs cc's client-side refusal would otherwise produce.
+//
+// Deleting the guard, inverting its condition, dropping the bound id from the
+// message, or firing it on an UNBOUND run each fail this.
+//
+// Pure: it drives the assertion directly, launching no provider.
+test('a bound run is refused at the handshake unless the provider serves that target', () => {
+  const before = process.env[REMOTE_ID_ENV];
+  const config = CAPABILITY_CONFIGS[0];
+  // HERMETIC in both directions: the ambient variable is cleared first, because
+  // this file is itself run bound (that is the whole point of it), and an
+  // "unbound" assertion made while it is set would assert the wrong thing.
+  delete process.env[REMOTE_ID_ENV];
+  try {
+    // UNBOUND is untouched: this very handshake is what the default run asserts.
+    assertNegotiatedCapabilities(config.caps, config, true);
+    process.env[REMOTE_ID_ENV] = 't';
+    assert.throws(() => assertNegotiatedCapabilities(config.caps, config, true),
+      /--remote t=<absolute root>/, 'the refusal names the flag AND the bound id');
+    // A provider that DOES serve the target is entirely unaffected by the guard.
+    assertNegotiatedCapabilities({ ...config.caps, remotes: true }, config, false);
+  } finally {
+    if (before === undefined) delete process.env[REMOTE_ID_ENV];
+    else process.env[REMOTE_ID_ENV] = before;
+  }
+});
+
+// PINS: the third-party half of the capability assertion relaxes EXACTLY one
+// axis. `remotes`/`remoteDescriptors` may be a superset of the matrix, every
+// capability the matrix TOGGLES must still match, and the reference half stays
+// exact — so a relaxation cannot leak onto the default run.
+//
+// Pure: it drives the assertion directly, launching no provider.
+test('the third-party capability assertion tolerates a superset but pins the toggle', () => {
+  for (const config of CAPABILITY_CONFIGS) {
+    const superset = { ...config.caps, remotes: true, remoteDescriptors: true };
+    assertNegotiatedCapabilities(superset, config, false);
+    assert.throws(() => assertNegotiatedCapabilities(superset, config, true), assert.AssertionError,
+      'the reference provider is still held to the exact set');
+    for (const cap of TOGGLED_CAPABILITIES) {
+      assert.throws(
+        () => assertNegotiatedCapabilities({ ...superset, [cap]: !config.caps[cap] }, config, false),
+        assert.AssertionError, `${cap} is pinned for a third-party provider too`);
+    }
+  }
+});
+
 // ── Completeness ─────────────────────────────────────────────────────
 
-test('every code in the taxonomy is produced by a real failure somewhere in this suite', () => {
+test('every code in the taxonomy is produced by a real failure somewhere in this suite',
+  // Reference-only, and NOT a statement about the provider: `produced` is filled
+  // by the rows that RAN, and a third-party run skips the cc-side ones above —
+  // so the union is short by exactly their codes whatever the provider does.
+  { skip: IS_REFERENCE_PROVIDER ? false : 'counts producers across rows a third-party run skips' },
+  () => {
   // The codes this file provokes live, plus the ones whose failure modes belong
   // to another file. Naming the file is the point: a code added to the protocol
   // with nowhere to produce it fails here.
