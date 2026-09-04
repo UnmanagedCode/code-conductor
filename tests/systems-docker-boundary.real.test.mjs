@@ -367,9 +367,14 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     //   caller's signal, turns it red.
     //   `Q_WITNESS` — the kill reached the WHOLE command rather than only its
     //   leading process: a provider that killed the sleeper alone would leave
-    //   its parent shell to run the `touch`. STRUCTURAL at this layer, not
-    //   measured — it runs only once `gone` has passed, so nothing establishes
-    //   its independent teeth here.
+    //   its parent shell to run the `touch`. MEASURED to discriminate, on
+    //   card 2026-0327 and not by this file's author: a reference provider
+    //   whose `#terminate` kills only the named leading process and spares the
+    //   shell leaves `gone` green and reds THIS line alone, while the two
+    //   mutants above die at `gone` and never reach it. That stimulus is
+    //   CONSTRUCTED — it hard-codes this file's own fixture binary name into
+    //   the provider — so what it establishes is that the two assertions are
+    //   separable, not that an ordinary provider defect would take this shape.
     // `20` against a path to this line that is BOUNDED BY the concurrent
     // `sleep 4` above it, so the marker's absence is the cancellation and not
     // the clock — and far under `DEFAULT_COMMAND_TIMEOUT_MS`
@@ -448,9 +453,14 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     // exports were gone would be an R5-class false statement. The production
     // site says exactly that in its own comment — `ProviderShell#runOneShot`'s
     // post-exec `signal?.aborted` re-check (src/systems/providerShell.ts:200-207,
-    // "NO RESET REASON", citing card 2026-0312 §2 D-b) — so this assertion pins
-    // the reasoning that source already carries. The same-machine twin asserts
-    // the same silence (tests/systems-remote-worker.test.mjs).
+    // "NO RESET REASON", citing card 2026-0312 §2 D-b). THAT RE-CHECK IS NOT
+    // PINNED HERE: deleting it leaves this whole file green, and an assertion
+    // that does red is the same-machine one at
+    // tests/systems-tool-redirect.test.mjs:340 (card 2026-0327). What THIS line
+    // has teeth against was measured separately — it reds when the cwd notice
+    // fires unconditionally rather than only when a command actually moved. The
+    // same-machine twin asserts the same silence
+    // (tests/systems-remote-worker.test.mjs).
     const next = await bashAsWorker('echo back');
     assert.equal(next.stdout, 'back\n');
     assert.equal(next.stderr, '', 'and it is told about no reset it never had');
