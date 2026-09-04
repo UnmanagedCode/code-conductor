@@ -143,6 +143,14 @@ describe('the environment on the wire', () => {
       assert.equal(r.stdout, '[named][]\n', 'the named env is the whole environment');
 
       const frames = await execFrames(rec);
+      // AN ATTRIBUTION GUARD, NOT A COVERAGE PIN, and deliberately so. It makes
+      // `frames[0]` well-defined and names which frame the deepEqual below read.
+      // It is UNKILLABLE — weakened to `>= 1` the suite stays green, because
+      // this fixture drives exactly one exec, so there is no second frame for a
+      // mutant to expose — and
+      // it is not meant to be killable: its value is realised on FAILURE, for a
+      // debugger who arrives after the fixture starts emitting two. Leave it,
+      // and do not re-report it as an uncovered assert.
       assert.equal(frames.length, 1);
       assert.deepEqual(frames[0].env, named, 'sent verbatim, not merged with cc\'s');
     } finally { delete process.env.CC_0317_AMBIENT; }

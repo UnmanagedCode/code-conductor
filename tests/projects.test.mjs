@@ -102,6 +102,14 @@ test('createProject fails loudly when git init fails', async (t) => {
   // skipped count is where that shows. What it pins is cc-side error MAPPING
   // (`init.code !== 0` → 500, src/projects.ts), not wire behaviour, so the gate
   // loses nothing the gate exists for.
+  //
+  // WHICH RUNNER POLICES THE GUARD'S POLARITY, since it is not this one:
+  // inverting the condition below turns this test into a silent SKIP under
+  // plain `npm test` — measured: it skips, the run exits 0, nothing reds. Only
+  // the `gate:systems` rows catch it, because there the assertions do run,
+  // against a provider-backed local system, and fail. That asymmetry is accepted rather
+  // than patched: `gate:systems` is mandatory on this branch, so the polarity
+  // IS enforced, just not by the default run.
   if (!(localSystem() instanceof LocalSystem)) {
     t.skip('the git failure is forced through an ambient GIT_DIR, which does not cross a provider wire');
     return;
