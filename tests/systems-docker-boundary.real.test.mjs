@@ -362,19 +362,20 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.match(ls, /SURVIVOR/, 'and it finished its work');
     // WHAT THE LAST TWO ASSERTIONS PIN, because they are not the same claim.
     //   `gone` — the cancel reached the far side at all. MEASURED to
-    //   discriminate: deleting the route's close-to-abort wiring, or
-    //   `runForwarded`'s relay of the caller's signal, turns it red.
+    //   discriminate, on card 2026-0327 and not by this file's author: deleting
+    //   the route's close-to-abort wiring, or `runForwarded`'s relay of the
+    //   caller's signal, turns it red.
     //   `Q_WITNESS` — the kill reached the WHOLE command rather than only its
     //   leading process: a provider that killed the sleeper alone would leave
     //   its parent shell to run the `touch`. STRUCTURAL at this layer, not
     //   measured — it runs only once `gone` has passed, so nothing establishes
     //   its independent teeth here. That invariant IS measured same-machine by
     //   the B2 test in tests/systems-tool-redirect.test.mjs.
-    // `20` against a test that reaches here in about a second, so the marker's
-    // absence is the cancellation and not the clock — and far under
-    // `DEFAULT_COMMAND_TIMEOUT_MS` (src/systems/providerShell.ts), so nothing
-    // but the cancel can be what stopped it unless ORCH_SHELL_COMMAND_TIMEOUT_MS
-    // is set very low.
+    // `20` against a path to this line that is BOUNDED BY the concurrent
+    // `sleep 4` above it, so the marker's absence is the cancellation and not
+    // the clock — and far under `DEFAULT_COMMAND_TIMEOUT_MS`
+    // (src/systems/providerShell.ts), so nothing but the cancel can be what
+    // stopped it unless ORCH_SHELL_COMMAND_TIMEOUT_MS is set very low.
     assert.ok(!/Q_WITNESS/.test(ls), 'the cancelled command\'s later effects never landed');
   });
 

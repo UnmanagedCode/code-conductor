@@ -310,10 +310,12 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // command that is genuinely mid-flight rather than one still being handed over.
 //
 // Every claim is witnessed on the SYSTEM's filesystem, because cc's own return
-// value cannot tell "was not run" from "was run and its result discarded":
-// `ProviderShell#runOneShot` (src/systems/providerShell.ts:200-207) re-checks
-// `signal?.aborted` after the exec has RETURNED and throws `cancelled()` ahead of
-// reading the result's `outputOverflowed`/`timedOut`, so that result is discarded
+// value cannot tell "was not run" from "was run and its result discarded": all
+// three of `ProviderShell`'s `signal?.aborted` checks throw the SAME
+// `cancelled()` (src/systems/providerShell.ts:159, :175, :207), so the caller
+// sees one indistinguishable failure whether the call never crossed — this
+// test's case, aborted in the same tick it was issued, which is why "was not
+// run" is the accurate half here — or crossed and had its result thrown away
 // (card 2026-0327).
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
