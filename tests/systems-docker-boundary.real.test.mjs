@@ -370,7 +370,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     //   its parent shell to run the `touch`. MEASURED to discriminate, on
     //   card 2026-0327 and not by this file's author: a reference provider
     //   whose `#terminate` kills only the named leading process and spares the
-    //   shell leaves `gone` green and reds THIS line alone, while the two
+    //   shell leaves `gone` green and reds THIS line, while the two
     //   mutants above die at `gone` and never reach it. That stimulus is
     //   CONSTRUCTED — it hard-codes this file's own fixture binary name into
     //   the provider — so what it establishes is that the two assertions are
