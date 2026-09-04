@@ -10,7 +10,7 @@
 // asserted in prose.
 //
 // It is also the worked example a third-party provider is written from: three
-// operations, ~400 lines, no cc imports beyond the shared frame vocabulary.
+// operations, no cc imports beyond the shared frame vocabulary.
 //
 //   node src/systems/referenceProvider.ts [--no-process-group-signal]
 //                                         [--remote <id>=<absolute root>]…
@@ -193,7 +193,7 @@ export class ReferenceProvider {
       });
       return;
     }
-    // THE ROUTING GATE, and it is on the three REQUESTS only: every follow-on
+    // THE ROUTING GATE, and it is on the REQUEST frames only: every follow-on
     // frame is addressed by an `id` that is already bound to a remote, so
     // re-checking one would ask a question the id has already answered.
     //
