@@ -126,8 +126,8 @@ CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
 The flags the suite appends to that argv, and the extra `CC_CONFORMANCE_REMOTE_ID`
 a provider that serves only **named targets** needs — without which it refuses the
 core battery `ENOREMOTE` under the protocol's own rule — are in
-[docs/systems-protocol.md](docs/systems-protocol.md) §10, which also names the two
-things a bound run stops proving.
+[docs/systems-protocol.md](docs/systems-protocol.md) §10, which also names what a
+bound run stops proving — and the `--remote` the bound path presupposes.
 
 - **`npm run gate:systems`** — the whole suite once per configuration in `CONFIGS` (`tests/systems-gate.mjs`, which owns the list): `processGroupSignal`+`remotes` on, then `processGroupSignal` off. That fallback is therefore proved to execute rather than merely to exist. The first configuration also carries `--remote`, so every project-scoped operation in that pass is **target-bound** — folded into it rather than given a pass of its own, since a separate pass costs a whole suite and puts the same field on the same frames. The gate does **not** vary `remoteDescriptors`: `mirror()` is unreachable for the system id `local` whatever backs it, so a `--mirror` configuration receives no `describeRemote` frame at all.
 - **`CC_LOCAL_SYSTEM_PROVIDER='["your-provider"]' npm test`** — swaps the in-process `local` system for a `ProviderSystem` over the named command, so **every project-scoped operation in cc runs over the protocol** and nothing in the suite knows it. This is the seam `gate:systems` drives.

@@ -42,14 +42,17 @@ function expectCode(e, code, what) {
   return true;
 }
 
-// The two ABSENT-BEHAVIOUR rows below assert what CC does when a provider
-// advertises a capability it does not have — they use a provider as a fixture
-// rather than testing one, so they are pinned to the reference provider. A
-// third-party kind that always serves named targets cannot supply the
-// `remotes:false` fixture they need, and must not be made to lie to try.
+// The ABSENT-BEHAVIOUR rows below assert what CC does when a provider advertises
+// a capability it does not have — they use a provider as a FIXTURE rather than
+// testing one, so they are pinned to the reference provider and skip for any
+// third-party one WHATEVER ITS SHAPE. The gate is provider identity, not
+// capability: a third-party provider that can advertise `remotes:false` still
+// skips them, so the reason must not claim it cannot. (The shape that motivates
+// the pin: a kind that always serves named targets cannot supply that fixture
+// at all, and must not be made to lie to try.)
 const CC_SIDE_ONLY = IS_REFERENCE_PROVIDER
   ? false
-  : 'cc-side absent-behaviour: needs a provider that can advertise the capability off';
+  : 'cc-side fixture, pinned to the reference provider: asserts what CC does, not what a provider does';
 
 async function withSystem(flags, fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-conformance-'));
@@ -422,7 +425,7 @@ test('a provider refuses a corrupted write payload — it never lands a partial 
 // Outside the per-configuration loop: `remotes` is orthogonal to the other two
 // capabilities, and these launch their own provider with `--remote` flags.
 
-// A provider serving `a` and `b`, each scoped to its own root.
+// A provider serving `a` and `b`, each given its own root.
 //
 // The OWNER handle is explicitly unbound — `{ remoteId: null }` beats
 // CC_CONFORMANCE_REMOTE_ID — because this block is ABOUT binding: every test

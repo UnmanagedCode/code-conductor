@@ -658,8 +658,10 @@ CC_CONFORMANCE_PROVIDER='["python3","my_provider.py"]' \
 it: the `flags` of every entry in `CAPABILITY_CONFIGS`
 (`tests/referenceProviderHarness.mjs` owns that list) for the core battery, and
 the target/mirror flags below in the `remotes` and `remoteDescriptors` fixtures,
-which launch providers of their own. A provider that does not accept them (or
-map them onto its own switches) runs the first configuration only. The suite
+which launch providers of their own. **Every configuration runs whatever the
+provider does with those flags**: one that accepts a flag and ignores it fails
+the rows the flag toggles, and one that exits on an unknown flag fails that
+whole configuration at the handshake. Neither is skipped. The suite
 builds its fixtures with node's own `fs` and then asks the provider about them,
 so it verifies a provider that reaches **the same filesystem as the test
 process**.
@@ -673,10 +675,18 @@ that passes them, so renaming one reds the suite.
 | Flag / variable | The provider must | Effect on the handshake |
 |---|---|---|
 | `--no-process-group-signal` | send a `signal` to the direct child only (§5) | `processGroupSignal: false` |
-| `--remote <id>=<absolute root>` | serve that target, scoped to that root; an unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true` |
+| `--remote <id>=<absolute root>` | serve that target — the id is its whole address; the root is where the suite places that target's fixtures, not a fence it asks you to enforce. An unknown or absent id is an id-addressed `ENOREMOTE` (§8, §9) | `remotes: true` |
 | `--mirror <[id=]absolute root>` | answer `describeRemote` with that `mirrorRoot` (§2.1) | `remoteDescriptors: true` |
 | `--exclude <[id=]absolute path>` | add that path to the same descriptor's `exclude` | `remoteDescriptors: true` |
 | `CC_REMOTE=<id>` | be in the environment of **every child an `exec` starts**, naming the target it ran on | — (asserted directly, not negotiated) |
+
+**`CC_CONFORMANCE_REMOTE_ID` (below) presupposes `--remote`**, and the two ids
+must match. cc refuses a `remoteId` on its own side whenever the handshake
+reports `remotes:false` (§2), so binding a handle to a target the launch never
+declared loses most of the battery to bare value diffs that name neither the
+flag nor the variable. The shape that trips on this is a provider launched with
+`--mirror`/`--exclude` alone: it advertises `remoteDescriptors` and, correctly
+by the rule above, `remotes:false`.
 
 ### If your provider serves only NAMED targets
 
@@ -696,18 +706,24 @@ CC_CONFORMANCE_PROVIDER='["node","my_provider.js","--remote","t=/"]' \
   node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 ```
 
-**A bound run proves strictly less than the reference run**, and gives up
-exactly two things — each visible in the output, not silent:
+**A bound run proves strictly less than the reference run**, and none of what it
+gives up is silent — each row is either relaxed here or skipped in the output
+with its own reason:
 
 - **The capability assertion is relaxed on one axis.** The capabilities
   `CAPABILITY_CONFIGS` toggles must still match the flags exactly; `remotes` and
   `remoteDescriptors` may be a **superset** of the configuration. So the suite
-  stops being the verifier for those two rows of §2's capability table.
-- **The rows that assert CC's absent-behaviour are SKIPPED**, with their reason
-  printed. They ask what cc does with a provider advertising a capability *off*,
-  and use a provider as the fixture — which a kind that always serves named
-  targets cannot supply, and must not be made to lie about: a `remotes:false` it
-  does not mean is a test-only divergence in the one field cc negotiates on.
+  stops being the verifier for the `remotes` and `remoteDescriptors` rows of
+  §2's capability table.
+- **The CC-SIDE rows are SKIPPED.** They use a provider as a fixture to assert
+  what *cc* does — what it sends a provider that advertises a capability off,
+  what this suite's own defaults are — so they are pinned to the reference
+  provider and skip for any third-party one whatever its shape. **Read the
+  printed `skip` reasons off your run: they are the list, and none of them is a
+  statement about your provider.** (The shape that motivates the pin: a kind
+  that always serves named targets cannot supply a `remotes:false` fixture at
+  all, and must not be made to lie about it — that would be a test-only
+  divergence in the one field cc negotiates on.)
 
 Run it anyway, because the alternative is weaker. Without the bound path a
 provider whose kinds all serve named targets is verified only by a

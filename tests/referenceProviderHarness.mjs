@@ -53,6 +53,10 @@ export const PROVIDER_ARGV_ENV = 'CC_CONFORMANCE_PROVIDER';
 //     CC_CONFORMANCE_REMOTE_ID=t \
 //     node tests/run.mjs tests/systems-protocol-conformance.test.mjs
 //
+// THE ARGV MUST DECLARE THAT SAME ID. cc refuses a remoteId on its own side
+// when the handshake reports `remotes:false`, so a bound handle on a provider
+// that was not given `--remote` fails most of the battery as bare value diffs.
+//
 // A fixture that is ABOUT the unbound case passes `{ remoteId: null }`
 // explicitly, which wins over this.
 export const REMOTE_ID_ENV = 'CC_CONFORMANCE_REMOTE_ID';
