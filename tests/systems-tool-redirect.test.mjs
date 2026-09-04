@@ -251,14 +251,17 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 
 // PINS B1 AT THE REDIRECT LAYER: an interrupt cancels THAT call and nothing
 // else. The unrelated concurrent command completes normally, and the cancelled
-// one never runs on the system — its effects must not land when its caller has
-// gone away.
+// one's write does not land on the system — its effects must not land when its
+// caller has gone away.
 //
 // RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
-// waiting for its TURN on a shell, and there is no turn any more. What it
-// actually pins — a call cancelled before it crosses leaves nothing on the far
-// side — is unchanged and is the half a worker cares about.
-test('a cancelled call never reaches the system, and a concurrent one is untouched', async () => {
+// waiting for its TURN on a shell, and there is no turn any more. WHAT IT PINS
+// IS THE EFFECT, not a call stopped short: instrumented, this test's
+// cancellation throws at the re-check AFTER `exec` returns, and the reference
+// provider is measured to have SPAWNED the `touch` and killed it before it ran
+// (card 2026-0328 §1, §5). The witness's absence below is that kill winning the
+// race, which card 2026-0331 tracks.
+test('a cancelled call\'s write does not land, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
   const ac = new AbortController();
@@ -270,7 +273,7 @@ test('a cancelled call never reaches the system, and a concurrent one is untouch
   const survived = await inFlight;
   assert.equal(survived.code, 0, 'the unrelated in-flight command was untouched');
   assert.equal(survived.stdout, 'survivor\n');
-  await assert.rejects(fs.stat(witness), 'the cancelled command never ran on the system');
+  await assert.rejects(fs.stat(witness), 'the cancelled command\'s write did not land on the system');
 });
 
 // PINS B2: interrupting the IN-FLIGHT command stops it on the system — in both
@@ -315,11 +318,11 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // command that is genuinely mid-flight rather than one still being handed over.
 //
 // Every claim is witnessed on the SYSTEM's filesystem, because cc's own return
-// value cannot tell "was not run" from "was run and its result discarded": all
-// three of `ProviderShell`'s `signal?.aborted` checks throw the SAME
-// `cancelled()` (src/systems/providerShell.ts:159, :175, :207), so the caller
-// sees one indistinguishable failure whether the call never crossed or crossed
-// and had its result thrown away (card 2026-0327).
+// value cannot tell "was not run" from "was run and its result discarded":
+// `ProviderShell`'s pre-crossing check and its post-exec re-check throw the SAME
+// `cancelled()`, so the caller sees one indistinguishable failure whether the
+// call was stopped before it crossed or crossed and had its result thrown away
+// (card 2026-0327).
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
@@ -343,9 +346,9 @@ test('cancelling one call leaves a live concurrent command untouched', async () 
   assert.equal(a.code, 0, `the unrelated in-flight command completed normally: ${a.stderr}`);
   assert.equal(a.stdout, 'A1\nA2\n', 'with ALL of its output, not a truncated prefix');
 
-  // The system's own account: A ran to completion, B never ran at all.
+  // The system's own account: A ran to completion, and B's write did not land.
   assert.ok(await fs.stat(onSystem('A_DONE')).catch(() => null), 'A finished on the system');
-  await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B never ran on the system');
+  await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B\'s write did not land on the system');
 
   // And nothing was reset — the cancelled command's `exec` was killed and no
   // state was shared for anyone to lose — so a notice here would tell a worker
