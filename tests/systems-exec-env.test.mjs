@@ -98,9 +98,8 @@ describe('the environment on the wire', () => {
     //    literal null rather than falling through the default and so would
     //    survive a regression to it. Only a BOUND handle fires it, hence the
     //    second recorder. It lives HERE rather than beside the other bound-
-    //    handle fixtures in tests/systems-remote-id.test.mjs because that file
-    //    is about `remoteId` binding; every claim about the `env` field is
-    //    sole-homed in this one.
+    //    handle fixtures in tests/systems-remote-id.test.mjs because that
+    //    file is about `remoteId` binding.
     const probeRec = path.join(home, 'probe.ndjson');
     await addSystem({
       id: 'boundbox', label: 'Bound',

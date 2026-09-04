@@ -214,6 +214,15 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     // the image's, witness 1 would pass while asserting nothing.
     assert.ok(orchestratorOnly.length > 0,
       'cc has no variable the container lacks — witness 1 would be vacuous');
+    // THE SAME GUARD FOR WITNESS 3, and it is the load-bearing one: `PATH` is a
+    // key of BOTH environments, so it can never appear in `orchestratorOnly` —
+    // witness 1 structurally cannot see a PATH crossing, and witness 2 pins only
+    // `$HOME`. That leaves witness 3 as the sole guard on PATH resolution, and
+    // it discriminates only while its directory is on no PATH of cc's: on a host
+    // carrying one, cc's own environment would resolve the tool inside the
+    // container too and witness 3 would go GREEN AGAINST THE BUG.
+    assert.ok(!(process.env.PATH ?? '').split(path.delimiter).includes(TARGET_ONLY_BIN),
+      `${TARGET_ONLY_BIN} is on cc's own PATH — witness 3 would not discriminate`);
 
     // 1. None of cc's own variables reached the far side.
     const seen = await bashAsWorker('env');
