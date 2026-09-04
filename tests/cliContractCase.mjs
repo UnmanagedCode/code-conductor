@@ -193,8 +193,19 @@ export async function forwardServer({ frameMs = 500 } = {}) {
 // A LIVE stream-json session, not a one-shot: the cases below have to send a
 // second prompt or a control_request while the first turn is still running, and
 // they must not have the CLI exit underneath them and kill the forwarder for an
-// unrelated reason. Same flags as claudeArgs above plus the stream-json input
-// channel cc uses, and stdin is left OPEN for exactly that reason.
+// unrelated reason. stdin is left OPEN for exactly that reason.
+//
+// THE WHOLE DELTA FROM claudeArgs ABOVE, enumerated because keeping every
+// case's launch from drifting is this module's job.
+// `--output-format=stream-json` and the `--verbose` that goes with it are
+// claudeArgs's `format` parameter, fixed here rather than passed.
+// `--input-format=stream-json` opens the input channel, and
+// `--include-hook-events` is a flag cc passes (src/instances.ts) that
+// claudeArgs omits. Everything else is claudeArgs's set unchanged: `-p`, the
+// model, `--permission-mode`, `--allow-dangerously-skip-permissions`,
+// `--permission-prompt-tool stdio`, `--settings`. The prompt is NOT an argv
+// element here — it goes over stdin, which is what lets a case send a second
+// one.
 export function claudeSession({ cwd, settings }) {
   const child = spawn('claude', [
     '-p', '--model', MODEL,

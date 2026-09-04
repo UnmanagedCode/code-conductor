@@ -6,8 +6,8 @@
 //
 // cc's ONLY cancellation channel for a redirected command is the forwarder's
 // HTTP request being aborted (`src/routes.ts`, `res.on('close')` guarded by
-// `!res.writableEnded`). Nothing else can stop the far side. So what this file
-// pins is each half of that channel, and each failure mode is silent:
+// `!res.writableEnded`). So what this file pins is each half of that channel,
+// and each failure mode is silent:
 //   * a tool timeout starts ABORTING     → cc kills a command the CLI has just
 //     instead of detaching                 handed the worker a live background
 //                                          task and a path to its output, so
@@ -112,6 +112,14 @@ t('a tool timeout detaches without aborting the forwarder, and TaskStop aborts i
     // case passing while proving nothing.
     const writesAtDetach = fwd.state.writes;
     await sleep(8_000);
+    // ATTRIBUTION, not a second subject. A `TaskStop` the model issued on its
+    // own initiative closes this socket by the very mechanism the control below
+    // exercises, and the observable is identical, so a red here would not say
+    // WHICH fired. Asserted first, and after the window rather than at its
+    // entry, because the record is append-only and the later check subsumes the
+    // earlier one.
+    assert.equal(hooks.of('PreToolUse', 'TaskStop').length, 0,
+      'no TaskStop reached the hook across the window, so any close in it is the CLI\'s own');
     assert.equal(fwd.state.closeWasAbort, null, 'no abort reached cc across the window past the tool timeout');
     assert.ok(fwd.state.writes > writesAtDetach + 8, 'and the socket kept ACCEPTING frames throughout');
 
