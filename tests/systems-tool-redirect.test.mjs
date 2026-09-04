@@ -277,6 +277,23 @@ test('a cancelled call never reaches the system, and a concurrent one is untouch
 // capability modes, including the fallback where there is no live stream to
 // close. A worker's interrupt that leaves the command running is not an
 // interrupt.
+//
+// ITS BOUNDARY TWIN is `interrupting one call stops it inside the container and
+// leaves a concurrent call alone` in tests/systems-docker-boundary.real.test.mjs
+// — the same shape, witnessed from inside the container instead of on cc's own
+// filesystem. Card 2026-0312 re-based THIS file and missed that one, which then
+// sat red unnoticed because that suite is opt-in behind `RUN_DOCKER_SYSTEM=1` and
+// is in neither gated command (card 2026-0327). Change one, change both.
+//
+// NOT the same claim as the RE-FRAMED test above, and the difference is what
+// each test puts between ISSUING the call and CANCELLING it. That one puts
+// nothing there — it aborts on the next statement, so it never establishes that
+// the command started. This one interposes a delay, and its boundary twin goes
+// further still and waits for the far-side process to appear. So the RE-FRAMED
+// test has no boundary twin and needs none: a boundary copy of a cancel that
+// nothing saw start would have its marker's absence satisfied by a command that
+// never ran, which is the vacuity that file's own NON-VACUITY wait exists to
+// remove.
 test('interrupting the in-flight command stops it on the system', async () => {
   const witness = onSystem('STILL_RUNNING');
   const ac = new AbortController();
@@ -297,8 +314,12 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // reach cc before issuing the second, so the cancellation lands against a
 // command that is genuinely mid-flight rather than one still being handed over.
 //
-// Every claim is witnessed on the SYSTEM's filesystem, which is the only witness
-// that can tell "was not run" from "was run and its result discarded".
+// Every claim is witnessed on the SYSTEM's filesystem, because cc's own return
+// value cannot tell "was not run" from "was run and its result discarded": all
+// three of `ProviderShell`'s `signal?.aborted` checks throw the SAME
+// `cancelled()` (src/systems/providerShell.ts:159, :175, :207), so the caller
+// sees one indistinguishable failure whether the call never crossed or crossed
+// and had its result thrown away (card 2026-0327).
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };

@@ -57,6 +57,11 @@ const PROVIDER_FILES = ['referenceProvider.ts', 'protocol.ts', 'execCollector.ts
 // means the command resolved through the target's PATH.
 const TARGET_ONLY_BIN = '/opt/cc-target-only';
 const TARGET_ONLY_TOOL = 'cc-buildtool';
+// A SLEEPER WITH ITS OWN PROCESS NAME, for the cancellation test below. Nothing
+// serialises (card 2026-0312), so the unrelated call it runs against is
+// CONCURRENT and is itself a `sleep`: `pgrep -x sleep` would name both, and the
+// witness has to name exactly one.
+const CANCEL_SLEEPER = '/usr/local/bin/cc-cancelme';
 
 const run = (argv, opts = {}) => new Promise((resolve, reject) => {
   execFile(argv[0], argv.slice(1), { maxBuffer: 1 << 24, ...opts }, (err, stdout, stderr) => {
@@ -122,6 +127,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     await docker('exec', CTR, 'mkdir', '-p', '/opt/cc', '/app', TARGET_ONLY_BIN);
     await inCtr(`printf '#!/bin/sh\\necho target-toolchain-ok\\n' > ${TARGET_ONLY_BIN}/${TARGET_ONLY_TOOL}`
       + ` && chmod +x ${TARGET_ONLY_BIN}/${TARGET_ONLY_TOOL}`);
+    await inCtr(`cp "$(command -v sleep)" ${CANCEL_SLEEPER}`);
     for (const f of PROVIDER_FILES) {
       await docker('cp', path.join(REPO, 'src', 'systems', f), `${CTR}:/opt/cc/${f}`);
     }
@@ -282,40 +288,99 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.equal(ran.code, 3, 'the command\'s own code, not the forwarder\'s');
   });
 
-  // PINS B1 ACROSS THE BOUNDARY: interrupting one call cancels that call and
-  // nothing else. Witnessed from INSIDE the container, which is the only witness
-  // that can tell "was not run" from "was run and the result discarded" — the
-  // whole defect was that a cancelled command's effects landed on the system.
+  // PINS B1 ACROSS THE BOUNDARY: interrupting one call stops THAT call on the
+  // far side and nothing else. Witnessed from INSIDE the container, because cc's
+  // own return value cannot tell "was stopped" from "was abandoned and finished
+  // anyway": `ProviderShell#runOneShot` (src/systems/providerShell.ts:200-207)
+  // re-checks `signal?.aborted` once the exec has RETURNED and throws
+  // `cancelled()` there, ahead of reading the result's own
+  // `outputOverflowed`/`timedOut` — so the exec's result is discarded, and what
+  // reaches the caller describes cc's cancellation rather than the far side's
+  // state.
   //
-  // The cancelled call is driven straight at the endpoint rather than through a
-  // forwarder process, so the ORDERING is exact: its request is established
-  // (headers flushed) while the shell is demonstrably busy, so it is certainly
-  // QUEUED when the socket dies. Two forwarder processes could have reached cc in
-  // either order, which would test nothing. That a killed forwarder closes this
-  // same socket is pinned separately, below.
-  test('interrupting a queued call runs neither it nor over the one in flight', async () => {
+  // THE CANCELLED CALL IS RUNNING, NOT QUEUED, and that is not a detail.
+  // Card 2026-0312 removed the shell and its queue: nothing serialises, so a
+  // second call is dispatched immediately and runs CONCURRENTLY with the first.
+  // An earlier version of this test cancelled a bare `touch` and asserted it
+  // never ran; measured, that effect landed on the far side AFTER the socket
+  // died, so the assertion was a race the test could not win and said nothing
+  // at all about cancellation (card 2026-0327 §4).
+  //
+  // AND THE SURVIVING BEHAVIOUR IS THE ONE THAT MATCHES LOCAL, which is why this
+  // is a test defect and not a cc defect. A cancelled command keeps whatever it
+  // had already done — MEASURED (card 2026-0327 §4) — exactly as an interrupted
+  // local Bash does, which is ARGUED from the parity directive and was NOT
+  // instrumented. What card 2026-0312 removed is the QUEUED state, the only
+  // state in which a cancelled call had done nothing at all; a local session has
+  // no such state, because a dispatched command has always started. So the
+  // pre-0312 all-or-nothing outcome was cc's own serialisation layer showing
+  // through, not parity with local.
+  //
+  // So the cancelled command's effect is placed BEHIND a delay, and the test
+  // waits for the process itself before cancelling. Absence of the marker is
+  // then the cancellation rather than the clock, and the process's disappearance
+  // is the RELAY: `docker exec -i` children are reparented inside the container,
+  // so cc closing a socket cannot reach this process — only the provider can.
+  // Deliberately the same long-sleep idiom as this file's MUST-3 test below and
+  // as tests/systems-remote-worker.test.mjs's `sleep 20` twin, so the three read
+  // together.
+  test('interrupting one call stops it inside the container and leaves a concurrent call alone', async () => {
     await inCtr('rm -f /app/Q_WITNESS /app/SURVIVOR /app/INFLIGHT');
-    const inFlight = bashAsWorker('touch /app/INFLIGHT; sleep 4; touch /app/SURVIVOR');
-    // The shell is now demonstrably occupied — witnessed from inside.
+    const concurrent = bashAsWorker('touch /app/INFLIGHT; sleep 4; touch /app/SURVIVOR');
     await waitFor(async () => /INFLIGHT/.test(await inCtr('ls /app')), { timeout: 15000 });
 
     const req = http.request(`${baseUrl}/api/instances/${instId}/bash-forward`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
     });
-    // The route flushes headers before it runs anything, so `response` means the
-    // handler is live; one macrotask later its waiter is on the queue.
     const established = new Promise((r) => req.on('response', r));
     req.on('error', () => {});
-    req.end(JSON.stringify({ command: 'touch /app/Q_WITNESS' }));
+    req.end(JSON.stringify({ command: `${CANCEL_SLEEPER} 20; touch /app/Q_WITNESS` }));
     await established;
-    await new Promise(r => setTimeout(r, 50));
+
+    // NON-VACUITY, and the reason this shape replaces the old one: the command
+    // must be RUNNING INSIDE THE CONTAINER before it is cancelled. Without that
+    // wait, the marker's absence is also satisfied by a command that never
+    // started.
+    const cancelSleeper = async () => (await inCtr(`pgrep -x ${path.basename(CANCEL_SLEEPER)} || true`)).trim();
+    await waitFor(async () => (await cancelSleeper()) !== '', { timeout: 15000 });
     req.destroy();
 
-    const survived = await inFlight;
-    assert.equal(survived.code, 0, `the unrelated in-flight command was untouched: ${survived.of('err')}`);
+    const gone = await waitFor(async () => (await cancelSleeper()) === '', { timeout: 15000 })
+      .then(() => true, () => false);
+    if (!gone) {
+      // ATTRIBUTION. `waitFor` swallows its predicate's errors, so a broken
+      // `docker exec` and a genuinely surviving process both arrive here as a
+      // timeout. Probe once more UNGUARDED: a fixture failure then throws its
+      // own error instead of being reported as a cc failure.
+      assert.equal(await cancelSleeper(), '',
+        'the cancelled command was still running inside the container');
+    }
+
+    const survived = await concurrent;
+    assert.equal(survived.code, 0, `the unrelated concurrent command was untouched: ${survived.of('err')}`);
     const ls = await inCtr('ls /app');
     assert.match(ls, /SURVIVOR/, 'and it finished its work');
-    assert.ok(!/Q_WITNESS/.test(ls), 'the cancelled command never ran inside the container');
+    // WHAT THE LAST TWO ASSERTIONS PIN, because they are not the same claim.
+    //   `gone` — the cancel reached the far side at all. MEASURED to
+    //   discriminate, on card 2026-0327 and not by this file's author: deleting
+    //   the route's close-to-abort wiring, or `runForwarded`'s relay of the
+    //   caller's signal, turns it red.
+    //   `Q_WITNESS` — the kill reached the WHOLE command rather than only its
+    //   leading process: a provider that killed the sleeper alone would leave
+    //   its parent shell to run the `touch`. MEASURED to discriminate, on
+    //   card 2026-0327 and not by this file's author: a reference provider
+    //   whose `#terminate` kills only the named leading process and spares the
+    //   shell leaves `gone` green and reds THIS line, while the two
+    //   mutants above die at `gone` and never reach it. That stimulus is
+    //   CONSTRUCTED — it hard-codes this file's own fixture binary name into
+    //   the provider — so what it establishes is that the two assertions are
+    //   separable, not that an ordinary provider defect would take this shape.
+    // `20` against a path to this line that is BOUNDED BY the concurrent
+    // `sleep 4` above it, so the marker's absence is the cancellation and not
+    // the clock — and far under `DEFAULT_COMMAND_TIMEOUT_MS`
+    // (src/systems/providerShell.ts), so nothing but the cancel can be what
+    // stopped it unless ORCH_SHELL_COMMAND_TIMEOUT_MS is set very low.
+    assert.ok(!/Q_WITNESS/.test(ls), 'the cancelled command\'s later effects never landed');
   });
 
   // PINS B3 ACROSS THE BOUNDARY: a runaway command on the far side is a named
@@ -382,10 +447,23 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     assert.match(await inCtr('ls /app/SURVIVED.txt 2>&1 || true'), /No such file/,
       'the command was killed, not merely abandoned to finish');
 
-    // And the session recovers, saying what it lost.
+    // And the session recovers, claiming NO reset it never had. Card 2026-0312
+    // deleted the long-lived shell: the command's own `exec` was killed and no
+    // state was shared for anyone to lose, so telling the next command its
+    // exports were gone would be an R5-class false statement. The production
+    // site says exactly that in its own comment — `ProviderShell#runOneShot`'s
+    // post-exec `signal?.aborted` re-check (src/systems/providerShell.ts:200-207,
+    // "NO RESET REASON", citing card 2026-0312 §2 D-b). THAT RE-CHECK IS NOT
+    // PINNED HERE: deleting it leaves this whole file green, and an assertion
+    // that does red is the same-machine one at
+    // tests/systems-tool-redirect.test.mjs:340 (card 2026-0327). What THIS line
+    // has teeth against was measured separately — it reds when the cwd notice
+    // fires unconditionally rather than only when a command actually moved. The
+    // same-machine twin asserts the same silence
+    // (tests/systems-remote-worker.test.mjs).
     const next = await bashAsWorker('echo back');
     assert.equal(next.stdout, 'back\n');
-    assert.match(next.stderr, /was restarted/);
+    assert.equal(next.stderr, '', 'and it is told about no reset it never had');
   });
 });
 
