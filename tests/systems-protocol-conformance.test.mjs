@@ -683,6 +683,37 @@ test('CC_CONFORMANCE_REMOTE_ID binds the fixture handle, and an explicit remoteI
     }
   });
 
+// PINS THE BOUND-RUN PRECONDITION (§10 of docs/systems-protocol.md): a run bound
+// with CC_CONFORMANCE_REMOTE_ID against a provider that does not advertise
+// `remotes` is refused AT THE HANDSHAKE, with a message naming the flag that
+// fixes it and the id it must carry — instead of through the run of bare value
+// diffs cc's client-side refusal would otherwise produce.
+//
+// Deleting the guard, inverting its condition, dropping the bound id from the
+// message, or firing it on an UNBOUND run each fail this.
+//
+// Pure: it drives the assertion directly, launching no provider.
+test('a bound run is refused at the handshake unless the provider serves that target', () => {
+  const before = process.env[REMOTE_ID_ENV];
+  const config = CAPABILITY_CONFIGS[0];
+  // HERMETIC in both directions: the ambient variable is cleared first, because
+  // this file is itself run bound (that is the whole point of it), and an
+  // "unbound" assertion made while it is set would assert the wrong thing.
+  delete process.env[REMOTE_ID_ENV];
+  try {
+    // UNBOUND is untouched: this very handshake is what the default run asserts.
+    assertNegotiatedCapabilities(config.caps, config, true);
+    process.env[REMOTE_ID_ENV] = 't';
+    assert.throws(() => assertNegotiatedCapabilities(config.caps, config, true),
+      /--remote t=<absolute root>/, 'the refusal names the flag AND the bound id');
+    // A provider that DOES serve the target is entirely unaffected by the guard.
+    assertNegotiatedCapabilities({ ...config.caps, remotes: true }, config, false);
+  } finally {
+    if (before === undefined) delete process.env[REMOTE_ID_ENV];
+    else process.env[REMOTE_ID_ENV] = before;
+  }
+});
+
 // PINS: the third-party half of the capability assertion relaxes EXACTLY one
 // axis. `remotes`/`remoteDescriptors` may be a superset of the matrix, every
 // capability the matrix TOGGLES must still match, and the reference half stays

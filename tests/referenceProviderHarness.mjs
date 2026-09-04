@@ -143,6 +143,26 @@ export const TOGGLED_CAPABILITIES = Object.keys(CAPABILITY_CONFIGS[0].caps)
 // Split out of the suite so both halves are drivable without launching a
 // provider (tests/systems-protocol-conformance.test.mjs → T2).
 export function assertNegotiatedCapabilities(caps, config, isReference = IS_REFERENCE_PROVIDER) {
+  // THE BOUND RUN'S PRECONDITION, checked FIRST so it is the first thing a run
+  // reports. cc refuses a `remoteId` on its own side whenever the handshake says
+  // `remotes:false`, so a handle bound to a target the launch never declared
+  // fails the rest of the battery as bare value diffs naming neither the flag
+  // nor the variable — the opacity this contract exists to remove. Folded in
+  // here rather than given a call site of its own: this is already the one
+  // assertion every configuration makes about the handshake.
+  //
+  // UNREACHABLE unless CC_CONFORMANCE_REMOTE_ID is set, which no in-repo run
+  // does — the default path cannot reach the `assert.fail` below.
+  const boundTo = conformanceRemoteId();
+  if (boundTo !== null && caps.remotes !== true) {
+    assert.fail(
+      `${REMOTE_ID_ENV}=${boundTo} binds every fixture handle to the target `
+      + `'${boundTo}', but this provider advertises \`remotes:false\` — cc refuses `
+      + `the binding on its own side, and every row after this one fails as a `
+      + `value diff that names nothing. Launch it with `
+      + `--remote ${boundTo}=<absolute root> in ${PROVIDER_ARGV_ENV}, `
+      + `or unset ${REMOTE_ID_ENV}.`);
+  }
   if (isReference) {
     assert.deepEqual(caps, config.caps, 'the flags the provider was launched with are what it advertises');
     return;

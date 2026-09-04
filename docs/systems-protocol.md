@@ -686,7 +686,9 @@ reports `remotes:false` (§2), so binding a handle to a target the launch never
 declared loses most of the battery to bare value diffs that name neither the
 flag nor the variable. The shape that trips on this is a provider launched with
 `--mirror`/`--exclude` alone: it advertises `remoteDescriptors` and, correctly
-by the rule above, `remotes:false`.
+by the rule above, `remotes:false`. **The handshake row refuses that combination
+outright and names the flag**, so this is a rule the suite enforces rather than
+one you have to remember.
 
 ### If your provider serves only NAMED targets
 
