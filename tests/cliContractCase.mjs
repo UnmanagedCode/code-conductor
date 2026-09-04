@@ -26,8 +26,9 @@
 import { test } from 'node:test';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { rmrf } from './rmrf.mjs';
 
@@ -141,3 +142,122 @@ export const allow = (updatedInput) => ({
   },
 });
 
+
+// The server side of `POST /api/instances/:id/bash-forward`, shaped exactly
+// like src/routes.ts's — same NDJSON framing, and the same `close` predicate,
+// `!res.writableEnded`, which is the ONE thing under test here: it is what
+// tells a client disconnect (cc's cancellation signal) from a normal end.
+//
+// It keeps writing `{t:'out'}` frames until `finish()` is called, so a test can
+// prove the socket is still WRITABLE rather than merely un-closed — a negative
+// that only says "no close event fired" would also pass against a half-dead
+// connection.
+export async function forwardServer({ frameMs = 500 } = {}) {
+  const state = { postAt: 0, closeAt: 0, closeWasAbort: null, writes: 0, command: null };
+  let finish = () => {};
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      state.postAt = Date.now();
+      try { state.command = JSON.parse(Buffer.concat(chunks).toString('utf8')).command; } catch { /* recorded as null */ }
+      res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
+      res.flushHeaders();
+      res.on('close', () => {
+        state.closeAt = Date.now();
+        state.closeWasAbort = !res.writableEnded;
+      });
+      const timer = setInterval(() => {
+        if (res.writableEnded || res.destroyed) return;
+        res.write(`${JSON.stringify({ t: 'out', text: 'tick\n' })}\n`);
+        state.writes++;
+      }, frameMs);
+      timer.unref();
+      finish = (code = 0) => {
+        clearInterval(timer);
+        if (!res.writableEnded && !res.destroyed) res.end(`${JSON.stringify({ t: 'exit', code })}\n`);
+      };
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    state,
+    url: `http://127.0.0.1:${server.address().port}/api/instances/probe/bash-forward`,
+    finish: (code) => finish(code),
+    // closeAllConnections first: an open streamed response holds `close()` open
+    // forever, which is exactly the state most of these cases end in.
+    close: () => { server.closeAllConnections(); return new Promise((r) => server.close(r)); },
+  };
+}
+
+// A LIVE stream-json session, not a one-shot: the cases below have to send a
+// second prompt or a control_request while the first turn is still running, and
+// they must not have the CLI exit underneath them and kill the forwarder for an
+// unrelated reason. stdin is left OPEN for exactly that reason.
+//
+// THE WHOLE DELTA FROM claudeArgs ABOVE, enumerated because keeping every
+// case's launch from drifting is this module's job.
+// `--output-format=stream-json` and the `--verbose` that goes with it are
+// claudeArgs's `format` parameter, fixed here rather than passed.
+// `--input-format=stream-json` opens the input channel, and
+// `--include-hook-events` is a flag cc passes (src/instances.ts) that
+// claudeArgs omits. Everything else is claudeArgs's set unchanged: `-p`, the
+// model, `--permission-mode`, `--allow-dangerously-skip-permissions`,
+// `--permission-prompt-tool stdio`, `--settings`. The prompt is NOT an argv
+// element here — it goes over stdin, which is what lets a case send a second
+// one.
+export function claudeSession({ cwd, settings }) {
+  const child = spawn('claude', [
+    '-p', '--model', MODEL,
+    '--input-format=stream-json', '--output-format=stream-json', '--verbose',
+    '--include-hook-events',
+    '--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions',
+    '--permission-prompt-tool', 'stdio',
+    '--settings', settings,
+  ], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+
+  const events = [];
+  const waiters = [];
+  let pending = '';
+  child.stdout.on('data', (b) => {
+    pending += b;
+    let nl;
+    while ((nl = pending.indexOf('\n')) !== -1) {
+      const line = pending.slice(0, nl);
+      pending = pending.slice(nl + 1);
+      if (!line.trim()) continue;
+      let f;
+      try { f = JSON.parse(line); } catch { continue; }
+      events.push(f);
+      for (const w of waiters.slice()) {
+        if (!w.match(f)) continue;
+        waiters.splice(waiters.indexOf(w), 1);
+        w.resolve(f);
+      }
+    }
+  });
+  const send = (frame) => child.stdin.write(`${JSON.stringify(frame)}\n`);
+
+  return {
+    events,
+    prompt: (text) => send({
+      type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, parent_tool_use_id: null,
+    }),
+    // cc's real interrupt channel (src/instances.ts `_controlRequest`).
+    interrupt: () => send({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } }),
+    waitFor: (match, ms) => new Promise((resolve, reject) => {
+      for (const f of events) if (match(f)) { resolve(f); return; }
+      const w = { match, resolve };
+      waiters.push(w);
+      setTimeout(() => {
+        const i = waiters.indexOf(w);
+        if (i < 0) return;
+        waiters.splice(i, 1);
+        reject(new Error('timed out waiting for a CLI event'));
+      }, ms).unref();
+    }),
+    // MUST run in a finally: this session outlives its turn by design, so
+    // nothing else ends it.
+    kill: () => { try { child.kill('SIGKILL'); } catch { /* already gone */ } },
+  };
+}

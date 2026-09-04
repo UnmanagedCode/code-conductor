@@ -465,10 +465,11 @@ long-lived shell and the queue.
 
 The tool timeout a redirected `Bash` carries reaches cc **not at all**, and cc
 needs it for nothing. At the tool timeout the CLI **detaches** the forwarder and
-hands the agent a background task — measured, and always, since a redirected
-command is always the forwarder process, so the harness always takes its detach
-branch. The command keeps running, bounded by this ceiling, which is why the
-ceiling sits **above** the documented max rather than at it. The CLI's **kill** of the forwarder, on an
+hands the agent a background task — measured at CLI 2.1.258, for a rewritten
+forwarder command and for the same command left un-rewritten alike, and whether
+its output was flowing or silent. The command keeps running, bounded by this
+ceiling, which is why the ceiling sits **above** the documented max rather than
+at it. The CLI's **kill** of the forwarder, on an
 interrupt or a stopped background task, closes the socket, and that is cc's
 cancellation channel; it carries no number either.
 

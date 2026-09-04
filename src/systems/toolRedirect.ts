@@ -258,14 +258,15 @@ export class SessionRedirect {
     // 2026-0305 §4); it then became a wait bound on the shell's queue, and card
     // 2026-0312 removed the queue.
     //
-    // AT THE TOOL TIMEOUT THE CLI DETACHES, IT DOES NOT KILL — measured: a
-    // redirected command is always the node forwarder, so the harness always
-    // takes its detach branch and hands the agent a background task (card
-    // 2026-0305 §3). The command keeps running, bounded by cc's ceiling, which
-    // is why that ceiling sits above the documented max rather than at it. What
-    // the CLI DOES kill the forwarder for — an interrupt, or a background task
-    // the worker stops — closes the socket, and that is cc's cancellation
-    // channel; it carries no number either.
+    // AT THE TOOL TIMEOUT THE CLI DETACHES, IT DOES NOT KILL, and hands the
+    // agent a background task — measured at CLI 2.1.258, for a rewritten
+    // forwarder command and for the same command left un-rewritten alike, and
+    // whether its output was flowing or silent (card 2026-0310 §1.2). The
+    // command keeps running, bounded by cc's ceiling, which is why that ceiling
+    // sits above the documented max rather than at it. What the CLI DOES kill
+    // the forwarder for — an interrupt, or a background task the worker stops —
+    // closes the socket, and that is cc's cancellation channel; it carries no
+    // number either.
     const argv = [
       shQuote(process.execPath), shQuote(FORWARDER),
       '--url', shQuote(this.#forwarderUrl),
