@@ -10,11 +10,15 @@
 // text: src/systems/protocol.ts's `classifyStderr` owns that translation, and
 // an unmatched failure surfaces raw rather than being guessed at.
 //
-// Derived commands run under `env LC_ALL=C …` rather than an `env` field on the
-// frame, so they inherit the far side's PATH while still producing the
-// untranslated strerror() text `classifyStderr` matches on. `env` on the frame
-// REPLACES the environment, exactly as node's spawn does, because the local and
-// wire implementations of one primitive cannot differ on what an option means.
+// NO `env` FIELD IS EVER PUT ON A FRAME unless a caller named one. Every
+// command — cc's own plumbing and a caller's alike — runs in the environment
+// of THE MACHINE IT RUNS ON: the target's PATH, its HOME, its toolchain. A
+// variable a command needs travels in argv through `env(1)`, which ADDS to that
+// environment; the derivations ship `LC_ALL=C` that way so the strerror() text
+// `classifyStderr` matches on stays untranslated. When a caller does name `env`
+// it REPLACES the environment, exactly as node's spawn does, because the local
+// and wire implementations of one primitive cannot differ on what an option
+// means.
 
 import path from 'node:path';
 import {
@@ -227,14 +231,15 @@ export class ProviderSystem implements System, ShellHost {
   // `spawnError` / `timedOut` / `code`, and one of them throwing instead would
   // be a behaviour difference between the two implementations of one primitive.
   //
-  // `env` DEFAULTS TO cc's OWN process env, exactly as runGroupedCommand does,
-  // and is sent explicitly on every call: a caller that mutates process.env and
-  // then runs a command expects the command to see it, and inheriting whatever
-  // the provider was launched with would silently answer from a snapshot taken
-  // at boot.
+  // NO `env` UNLESS THE CALLER NAMED ONE — the same rule the derivations below
+  // follow, and the reason there is no second policy here to explain. cc's own
+  // environment names paths on cc's machine: sending it makes the target's PATH,
+  // HOME and toolchain unreachable from the far side and discloses everything
+  // cc holds, secrets included, to every process the target runs. A caller that
+  // needs a variable there ships it in argv through `env(1)`.
   async exec(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> {
     requireAbsolute('exec', 'cwd', opts.cwd);
-    return this.#exec(spec, opts, opts.env ?? process.env);
+    return this.#exec(spec, opts, opts.env ?? null);
   }
 
   async #exec(spec: ExecSpec, opts: ExecOptions, env: NodeJS.ProcessEnv | null): Promise<ExecResult> {
@@ -483,13 +488,13 @@ export class ProviderSystem implements System, ShellHost {
 
   // ── Derived from exec (§4.6) ───────────────────────────────────────
 
-  // `env LC_ALL=C` rather than a frame `env`: the far side keeps its own PATH,
-  // and the strerror() text stays untranslated for classifyStderr.
+  // `env LC_ALL=C` rather than a frame `env`: `env(1)` ADDS the variable to the
+  // far side's own environment, where a frame `env` would replace it — so the
+  // command keeps the target's PATH and toolchain and still produces the
+  // untranslated strerror() text classifyStderr matches on.
   async #derive(what: string, argv: string[], cwd = '/'): Promise<ExecResult> {
-    // No `env` on the frame: a derived command is CC's OWN plumbing, not the
-    // caller's, so it inherits the far side's environment (its PATH, its
-    // toolchain) rather than importing cc's. Absolute paths only — the cwd is a
-    // placeholder, since the far side's notion of "here" is not cc's.
+    // Absolute paths only — the cwd is a placeholder, since the far side's
+    // notion of "here" is not cc's.
     const r = await this.#exec({ argv: ['env', 'LC_ALL=C', ...argv] }, { cwd, stdin: 'ignore' }, null);
     if (r.timedOut) {
       throw new SystemError('ETIMEDOUT', `${what}: no answer within ${this.#defaultOpTimeoutMs}ms`);
@@ -618,7 +623,7 @@ export class ProviderSystem implements System, ShellHost {
   // SEAM — production builds its own in src/systems/toolRedirect.ts — and
   // deliberately NOT memoised, since a ProviderShell is now config-only and a
   // memo silently ignored a second call's `cwd`.
-  shell(opts: { cwd: string; env?: NodeJS.ProcessEnv } & Partial<{ commandTimeoutMs: number; maxOutputBytes: number }>): ProviderShell {
+  shell(opts: { cwd: string } & Partial<{ commandTimeoutMs: number; maxOutputBytes: number }>): ProviderShell {
     return new ProviderShell(this, opts);
   }
 }

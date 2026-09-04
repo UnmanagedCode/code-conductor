@@ -337,7 +337,7 @@ cc  →  {"type":"exec","id":"e7","remoteId":"ctr-a","cwd":"/app","argv":["git",
 | Field | Contract |
 |---|---|
 | `argv` | Run the binary directly, no shell. `argv[0]` is the executable. |
-| `shell` | Run the string through a shell (`bash -lc <string>` in the reference provider; `sh -c` is equally valid — see §11). **The interpreter is the provider's choice, per target**: cc requires a POSIX shell and nothing more, and cc's own framing (§5) is interpreter-agnostic and does not require a *login* shell. Whichever is picked must give a user-authored hook or start command what it expects: pipes, `&&`, a usable PATH. |
+| `shell` | Run the string through a shell (`bash -lc <string>` in the reference provider; `sh -c` is equally valid — see §11). **The interpreter is the provider's choice, per target**: cc requires a POSIX shell and nothing more, and cc's own framing (§5) is interpreter-agnostic and does not require a *login* shell. Whichever is picked must give a user-authored hook or start command what it expects: pipes, `&&`, a usable PATH. A provider that spawns its interpreter **unqualified** resolves it through the `env` the frame carried, not through its own — so a provider that honours `env` must either name its interpreter absolutely or accept that a caller's `PATH` selects it. |
 | `cwd` | Absolute. The command's working directory. |
 | `env` | **REPLACES** the environment, exactly as `posix_spawn` does — not an overlay. Absent means the provider's own environment. |
 | `timeoutMs` | The **provider** enforces it: SIGTERM the command (its whole group where the capability allows), SIGKILL after `killGraceMs`, then report `{"code":124,"timedOut":true}`. 124 is `timeout(1)`'s convention. |
@@ -531,10 +531,12 @@ asked to run, and so the POSIX assumption is concrete.
 That is the whole list — it is what `System`'s derived members compile to, and a
 provider's `exec` is asked to run nothing else on cc's behalf.
 
-Derived commands carry **no `env` frame field**: they are cc's own plumbing, so
-they inherit the far side's environment (its PATH, its toolchain) and get
-`LC_ALL=C` from `env(1)` so the `strerror()` text stays untranslated for §8's
-classifier.
+**No `exec` cc issues carries an `env` frame field** — a caller's command and
+cc's own plumbing alike. Every command runs in the environment of the machine it runs on
+(its PATH, its toolchain). The derived ones additionally get `LC_ALL=C` from
+`env(1)`, which ADDS a variable to that environment where a frame `env` would
+replace it, so the `strerror()` text stays untranslated for §8's classifier. A
+caller needing a variable on the far side ships it the same way, in argv.
 
 ### Every derivation is sent with `cwd: "/"`, and a provider MUST accept it
 

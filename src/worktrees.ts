@@ -393,14 +393,21 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   } catch { /* best-effort */ }
 
   const timeoutMs = Number(process.env.ORCH_POST_WORKTREE_TIMEOUT_MS) || 120_000;
-  const env = {
-    ...process.env,
-    CC_WORKTREE_PATH: meta.worktreePath,
-    CC_PROJECT_NAME: meta.parentProject,
-    CC_BRANCH: meta.branch,
-    CC_BASE_BRANCH: meta.baseBranch,
-    CC_PARENT_PATH: meta.parentPath,
-  };
+  // THE `CC_*` VARS RIDE IN ARGV, through `env(1)` — the same idiom the derived
+  // operations use for `LC_ALL=C`. That ADDS them to the environment of the
+  // machine the hook runs on rather than replacing it, which is the whole point:
+  // a hook is a build step, so it needs that machine's PATH and toolchain. They
+  // are argv entries, not shell words, so a value containing a space or an `=`
+  // crosses intact.
+  const hookArgv = [
+    'env',
+    `CC_WORKTREE_PATH=${meta.worktreePath}`,
+    `CC_PROJECT_NAME=${meta.parentProject}`,
+    `CC_BRANCH=${meta.branch}`,
+    `CC_BASE_BRANCH=${meta.baseBranch}`,
+    `CC_PARENT_PATH=${meta.parentPath}`,
+    'bash', scriptPath,
+  ];
 
   // detached=true (inside the system's exec) puts bash + all its children in
   // their own process group, so a timeout kills the whole tree — a hook running
@@ -408,8 +415,8 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   // OWN result shaping rather than the shared one: it reports `timedOut` as a
   // flag with a null exitCode instead of the runner's 124 convention, and it
   // prefixes a truncation marker at a clean line boundary.
-  const r = await system.exec({ argv: ['bash', scriptPath] }, {
-    cwd: meta.worktreePath, env, timeoutMs, cap: HOOK_OUTPUT_CAP,
+  const r = await system.exec({ argv: hookArgv }, {
+    cwd: meta.worktreePath, timeoutMs, cap: HOOK_OUTPUT_CAP,
   });
 
   if (r.spawnError) {
