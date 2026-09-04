@@ -244,4 +244,11 @@ test('§8 of docs/systems-protocol.md names exactly PROTOCOL_ERROR_CODES', () =>
   const extra = listed.filter((c) => !PROTOCOL_ERROR_CODES.includes(c));
   assert.deepEqual(missing, [], `in PROTOCOL_ERROR_CODES but missing from §8's table: ${missing.join(', ')}`);
   assert.deepEqual(extra, [], `in §8's table but not in PROTOCOL_ERROR_CODES: ${extra.join(', ')}`);
+  // LAST, because it is the least diagnostic of the three: set equality holding
+  // while the counts differ means the table repeats a row, which is the one
+  // corruption the two differences above are blind to.
+  const dupes = [...new Set(listed.filter((c, i) => listed.indexOf(c) !== i))];
+  assert.equal(listed.length, PROTOCOL_ERROR_CODES.length,
+    `§8 has ${listed.length} rows for ${PROTOCOL_ERROR_CODES.length} codes, and names the right set — `
+    + `so a row is repeated: ${dupes.join(', ') || '(none found; the row regex matched something extra)'}`);
 });

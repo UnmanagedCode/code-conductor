@@ -592,7 +592,7 @@ shell.
 | `EUNSUPPORTED` | An optional capability the provider does not advertise was asked for. |
 | `ESHELLGONE` | A redirected command destroyed its own framing, so no sentinel could arrive. |
 | `EFBIG` | A read or write above `MAX_FILE_BYTES`. |
-| `ECANCELLED` | The caller went away: an interrupt, or a tool timeout. **cc raises this one itself**, from the caller's cancellation channel (see §5), in `src/systems/providerShell.ts`. **What a provider puts in an `error` frame**, below, has no row for it. |
+| `ECANCELLED` | The caller went away: an interrupt, or a tool timeout. **cc raises this one itself**, from the caller's cancellation channel (see §5), in `src/systems/providerShell.ts`. The provider-produced table below has no row for it. |
 | `ENOREMOTE` | The request named a `remoteId` this provider does not serve — or named none, on a provider that advertises `remotes` and therefore has no default. cc converts it to `REMOTE_NOT_FOUND` (502) at the registry. **It MUST be id-addressed** — see §9. |
 
 ### What a provider puts in an `error` frame
