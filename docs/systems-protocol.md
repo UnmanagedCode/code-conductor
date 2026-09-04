@@ -687,8 +687,15 @@ declared loses most of the battery to bare value diffs that name neither the
 flag nor the variable. The shape that trips on this is a provider launched with
 `--mirror`/`--exclude` alone: it advertises `remoteDescriptors` and, correctly
 by the rule above, `remotes:false`. **The handshake row refuses that combination
-outright and names the flag**, so this is a rule the suite enforces rather than
-one you have to remember.
+outright and names the flag**, so that half of the rule is enforced rather than
+remembered.
+
+**The id match itself is NOT checked.** A *declared but different* id — the
+launch says `--remote u=/`, the variable says `t` — advertises `remotes:true`,
+so it clears the handshake and fails the rest of the battery as value diffs.
+What identifies it is your own provider's `ENOREMOTE` text naming the unknown
+target, carried on the **actual** side of each diff; the assertions themselves
+name neither the flag nor the variable.
 
 ### If your provider serves only NAMED targets
 
@@ -756,7 +763,7 @@ of them `ENOREMOTE`. It is inert on its own — with no `CC_LOCAL_SYSTEM_PROVIDE
 stays on its own in-process machine. The gate's first configuration uses exactly
 this pair: `--remote gate=/` on the provider argv and
 `CC_LOCAL_SYSTEM_REMOTE_ID=gate` on cc. The gate's own capability matrix — which
-two capabilities it toggles, why `remotes` is folded into an existing
+capabilities it toggles, why `remotes` is folded into an existing
 configuration and why `remoteDescriptors` is absent — is documented at the top of
 `tests/systems-gate.mjs`, which owns it.
 
