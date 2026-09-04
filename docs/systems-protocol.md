@@ -28,7 +28,7 @@ System owns a project's tree, its git repo and shell commands run inside it.
 | Binary payloads | base64 in a `dataB64` field (~33% overhead). |
 | Blank lines | Ignored between frames. Not an error. |
 | Line ceiling | `MAX_LINE_BYTES` = 4 MiB. A longer line is `EPROTO`. It is a framing fence, not a payload budget: one chunk frame is `CHUNK_BYTES × 4/3` plus a small envelope, an order of magnitude below it. |
-| Payload validity | A `dataB64` on a `stdout`, `stderr`, `data` or `stdin` frame **MUST be canonical base64** (standard alphabet, correct padding, length a multiple of 4) and **MUST be present**. A payload is part of its frame, so an invalid one is `EPROTO` and fatal exactly as an unparseable line is — decoders in most languages stop at the first bad character and return the prefix, which would turn a corrupted chunk into a silently truncated success. |
+| Payload validity | A `dataB64` on a `stdout`, `stderr` or `data` frame **MUST be canonical base64** (standard alphabet, correct padding, length a multiple of 4) and **MUST be present**. A payload is part of its frame, so an invalid one is `EPROTO` and fatal exactly as an unparseable line is — decoders in most languages stop at the first bad character and return the prefix, which would turn a corrupted chunk into a silently truncated success. |
 | Chunk size | `CHUNK_BYTES` = 64 KiB of raw bytes per `data` frame, before base64. **Both ends MUST chunk at it** — a payload is not permitted to ride as one large frame. A 32 MiB read sent as a single frame breaches the line ceiling below and dies `EPROTO` mid-transfer. |
 | Per-file cap | `MAX_FILE_BYTES` = 32 MiB. A read or write above it is `EFBIG`. |
 | Paths | **Absolute, on the system.** cc never sends a relative path — **enforced client-side, on both implementations of `System`** (`requireAbsolute`, `src/systems/system.ts`, since the invariant is a property of cc's callers rather than of a transport): every path-taking operation, plus the `cwd` of `exec`, which is the one way a `cwd` reaches the wire. A relative path is cc's own bug, so it REJECTS with the operation named, never a returned refusal and never a frame a provider has to reject. |
@@ -228,7 +228,7 @@ badly; the message quotes the offending value):
 | `mirrorRoot` absent or `null` | **Valid** — no advertisement |
 | `mirrorRoot` not a string, empty, or whitespace-only | refused |
 | `mirrorRoot` relative (`"app"`, `"./app"`, `"../x"`) | refused — the same absolute-paths-only rule §1 puts on cc's own callers |
-| `mirrorRoot` not in POSIX normal form (contains `.`, `..`, `//`, or a trailing `/` other than the root itself) | refused — **cc does not normalise on a provider's behalf**, because a normalised-away `..` is how a hostile root would be smuggled past a containment test |
+| `mirrorRoot` containing a NUL byte, longer than `MIRROR_PATH_MAX` (`src/systems/protocol.ts`), or not in POSIX normal form (contains `.`, `..`, `//`, or a trailing `/` other than the root itself) | refused — **cc does not normalise on a provider's behalf**, because a normalised-away `..` is how a hostile root would be smuggled past a containment test |
 | `exclude` absent | **Valid** — `[]` |
 | `exclude` not an array; any entry not a string, empty, relative or non-normalised | refused, naming the entry and its index |
 | `exclude.length > MIRROR_EXCLUDE_MAX` (`src/systems/protocol.ts`) | refused |
@@ -592,6 +592,7 @@ shell.
 | `EUNSUPPORTED` | An optional capability the provider does not advertise was asked for. |
 | `ESHELLGONE` | A redirected command destroyed its own framing, so no sentinel could arrive. |
 | `EFBIG` | A read or write above `MAX_FILE_BYTES`. |
+| `ECANCELLED` | The caller went away: an interrupt, or a tool timeout. **cc raises this one itself**, from the caller's cancellation channel (see §5), in `src/systems/providerShell.ts`. **What a provider puts in an `error` frame**, below, has no row for it. |
 | `ENOREMOTE` | The request named a `remoteId` this provider does not serve — or named none, on a provider that advertises `remotes` and therefore has no default. cc converts it to `REMOTE_NOT_FOUND` (502) at the registry. **It MUST be id-addressed** — see §9. |
 
 ### What a provider puts in an `error` frame
