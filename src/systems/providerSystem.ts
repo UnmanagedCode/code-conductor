@@ -763,8 +763,28 @@ class ClosingLineScan {
         this.#buf = '';
         return;
       }
-      // A forgery. Resume AT its terminating newline, which may itself open the
-      // next candidate — the needle's first character is that newline.
+      // A forgery. Resume AT its terminating newline, NOT past it: this needle
+      // begins with the newline, so a real frame whose only opener is the
+      // forgery's terminator starts exactly there. Stepping over it loses that
+      // frame outright and the command settles at the abandon timer instead.
+      //
+      // WHERE THAT SHAPE COMES FROM, since it is not the common one: between two
+      // sentinels the FRAMING emitted, the newline is always doubled
+      // (`frameCommand` prefixes one to each), and `nl + 1` would do there — a
+      // mutation prover measured exactly that. It is a command's OWN output that
+      // glues, by ending with an unterminated line-start forgery, which then
+      // shares the single newline the framing injects before the real sentinel.
+      // Nonce-gated, so this is defence in depth on the footing
+      // src/systems/shellFraming.ts's out-of-scope note describes — and it is a
+      // property of `frameCommand`, in another file, which is what
+      // tests/systems-shell-framing.test.mjs pins on both sides.
+      //
+      // THE PARSERS RESUME AT `nl + 1` AND ARE RIGHT TO: they search for the bare
+      // marker and test the preceding byte separately, so a shared newline costs
+      // them nothing. The difference is this needle, not a disagreement about the
+      // rule. Either index terminates — `nl >= at + needle.length > at >= from`,
+      // so `from` strictly increases — and they cost the same, so the one that
+      // handles both shapes is free.
       from = nl;
     }
   }

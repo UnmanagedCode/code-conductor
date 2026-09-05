@@ -691,6 +691,70 @@ test('a rejected candidate does not blind the scan to the real frame behind it',
   });
 });
 
+// PINS THE RESUME INDEX of the settle-scan, which nothing else can tell apart.
+//
+// After rejecting a forgery the scan resumes AT its terminating newline, not
+// past it, because the scan's needle is `\n<marker>` — the newline is part of
+// what it searches for, which is what spares it the `#atLineStart` bookkeeping
+// `FramedStreamFilter` has to carry. Step one byte past and a real frame whose
+// ONLY opening newline is the forgery's terminator becomes invisible: the scan
+// never settles, and a command that succeeded ends at the abandon timer.
+//
+// THE PARSERS DO NOT NEED THIS and correctly resume at `nl + 1`: they search for
+// the BARE marker and check the preceding byte separately, so a shared newline
+// costs them nothing. The asymmetry is the needle, not a disagreement.
+//
+// WHY A HANDWRITTEN STREAM. Between two sentinels that cc's own framing emitted
+// the newline is always DOUBLED — `frameCommand` prefixes one to every sentinel
+// and the forgery carries its own terminator — so the two-`printf` shape the
+// test above uses cannot discriminate the resume index at all (a mutation prover
+// established that; the prediction that it hung was wrong). The glued shape is
+// still reachable through real framing, by a command whose output ends with an
+// unterminated line-start forgery: there the framing's single injected newline
+// is the only separator there is. That needs the nonce, so it is defence in
+// depth on the same footing as the tail checks above (shellFraming.ts's
+// out-of-scope note) — but it is a property of `frameCommand`, in another file,
+// and this is the only test that would notice it changing.
+test('a forgery whose terminating newline is ALSO the real frame\'s opener does not hide it', async () => {
+  await withShell(async (_sh, cwd, sys) => {
+    const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+    const b64 = Buffer.from(cwd).toString('base64');
+    // Built once and used for BOTH the assertion and the command, so the two
+    // cannot drift into agreeing about a stream neither puts on the wire.
+    const fmt = { out: `\\n${m} not-a-frame\\n${m} 0 ${b64}\\n`, err: `\\n${m} also-junk\\n${m}\\n` };
+    for (const which of ['out', 'err']) {
+      const onTheWire = fmt[which].replaceAll('\\n', '\n');
+      assert.equal(onTheWire.split(`\n${m}`).length - 1, 2, `${which}: two candidates`);
+      assert.ok(!onTheWire.includes('\n\n'),
+        `${which}: the stream must be GLUED — one newline between the forgery and the real frame. `
+        + 'A doubled newline here makes this test blind to the resume index, which is exactly how '
+        + 'its two-printf predecessor came out toothless.');
+    }
+    const r = await sys.execOneShot(
+      { shell: `printf '${fmt.out}'; printf '${fmt.err}' >&2; exit 7` },
+      { cwd, timeoutMs: 4_000, completeMarker: m },
+    );
+    assert.equal(r.code, 0,
+      'the scan resumed ON the shared newline and found the real frame — resuming past it '
+      + 'would have missed the frame on BOTH streams and left the exit code to settle the call');
+  });
+});
+
+// THE CROSS-FILE HALF of the pin above, and the reason it is worth having: the
+// glued shape exists because `frameCommand` prefixes its closing sentinel with
+// exactly ONE newline, so a command whose own output does not end in one SHARES
+// it. If that ever became two, the shape would stop arising and the resume index
+// would stop being load-bearing — which is a thing to know deliberately rather
+// than to discover from a scan that quietly could not be broken.
+test('the closing stdout sentinel carries exactly one injected newline, which a command can share', () => {
+  const n = newNonce();
+  const framed = frameCommand(n, 'CMD');
+  assert.ok(framed.includes(`printf '\\n${sentinelFor(n)} %d %s\\n'`),
+    'one injected newline before the closing stdout sentinel, not two');
+  assert.ok(framed.includes(`printf '\\n${sentinelFor(n)}\\n' >&2`),
+    'and one before the closing stderr sentinel');
+});
+
 // ── Cancellation ───────────────────────────────────────────────────
 
 // PINS: cancelling a command stops the command itself. There is no live stream
