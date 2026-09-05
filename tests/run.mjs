@@ -88,10 +88,13 @@ try {
 // Measured on a 16-core box, where both terms bind at once and every figure below
 // is therefore the literal output of this expression, not an extrapolation from a
 // different core count:
-//   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
-//     double the ambient load. Those two figures were taken while a single-file
-//     floor was what capped the gain — see the next bullet, which is why they are
-//     not comparable to a run taken today.
+//   * 16 SLOTS ARE MEASURED WORSE, which is the question this cap exists to answer
+//     and used to answer only by absence: 91.2s against 82.9s wall, for CPU up 54%
+//     (746.8s against 484.8s), with per-file walls roughly DOUBLED as the
+//     deadline-bound files starved. Raising the ceiling is a tried and rejected
+//     idea, not an untried one.
+//   * AND 8 IS ALREADY NEAR-SATURATED: summed file-time over wall runs 7.27-7.46 of
+//     the 8 slots, so there is no idle dispatcher for a ninth to fill.
 //   * THERE IS NO LONGER A SINGLE-FILE FLOOR, so more slots help again. There
 //     was: tests/idle-wake-ownership.test.mjs cost 48.9s of a 57.2s quiet run at
 //     44b0b60, DEADLINE-bound (bounded real wall-clock windows) rather than
@@ -107,7 +110,10 @@ try {
 //     aggregate-work-bound at concurrency 8, not bound by any one file.
 //   * contention does NOT argue for backing off: under 8 spinners, concurrency 8
 //     was both FASTER than 4 (79.2s vs 87.6s) and had a marginally BETTER per-file
-//     kill margin (3.00x vs 2.92x). Both runs green.
+//     kill margin (3.00x vs 2.92x). Both runs green. Nor does a whole SECOND suite
+//     run alongside: `gate:systems` runs its two rows concurrently (card 2026-0344)
+//     and the per-file walls did not move — the slowest file measured 16724/16681ms
+//     across sequential rows against 16569/16611ms across concurrent ones.
 //   * the fake-claude subprocess guardrail below stayed at peak 3-4 of a budget of
 //     12 at every concurrency measured (4/8/16, quiet and contended) — and the one
 //     reading above 3 at concurrency 4 was CONTENDED, i.e. the lower slot count, so
@@ -448,7 +454,8 @@ stream.on('test:summary', (d) => {
 // figure comparable to FILE_KILL_MS, which is a process-lifetime deadline.
 // MEASURED on a 16-core box at the default concurrency: summary.duration_ms runs
 // 31-297ms LOWER, never higher, across 90 file observations. SAMPLE: every 6th name
-// of the sorted tests/*.test.mjs list (45 of 266 files), skipping the files that
+// of the sorted tests/*.test.mjs list (45 of the 266 files then in the suite — the
+// live count is on the verdict line below), skipping the files that
 // spawn nested runners of their own (then hang-guard + summary-attribution; now the
 // five hang-guard-*.test.mjs + summary-attribution); two runs, one
 // idle and one under a concurrent mutation campaign, which agreed closely — so the

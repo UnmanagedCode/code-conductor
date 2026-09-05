@@ -20,13 +20,17 @@
 // rather than given its own, and cleared on row 2 — and it does not exercise
 // `remoteDescriptors` at all.
 //
-//   * `remotes` is folded because a fourth pass costs a whole suite and buys the
-//     SAME field on the SAME frames. Measured: row 1 with `--remote` sends the
-//     identical 14,052 request frames it sends without it — 10,223 `exec`, 2,212
-//     `writeFile`, 1,617 `readFile` — differing only in carrying
-//     `remoteId: "gate"` instead of nothing. The fold costs ~0.4s of the ~73s
-//     pass; a separate pass would cost ~73s to re-run those frames unnamed,
-//     which row 2 already does.
+//   * `remotes` is folded because a separate pass costs a WHOLE SUITE and buys the
+//     same field on the same frames. Measured across the two rows: byte-for-byte
+//     identical request-frame counts — ~13,191 per row (9,890 `exec`, 2,314
+//     `writeFile`, 987 `readFile`), down to all 14 `signal` frames — differing only
+//     in +237KB of `remoteId` payload on 14.96MB, i.e. +1.6%. So an unfolded
+//     `remotes` row would re-send exactly those frames unnamed, which is what row 2
+//     already does.
+//     RE-MEASURING THAT COUNT IS WHERE IT GOES WRONG: a naive tally at
+//     ProviderConnection.send() reads ~23,529, because the suite's OWN `systems-*`
+//     tests spawn providers of their own — 40 such processes, ~10,338 frames. The
+//     seam figure is the difference.
 //   * `remoteDescriptors` is absent because a `--mirror` row is provably a
 //     no-op: `mirror()` is unreachable for the system id `local` whatever class
 //     backs it, since its only consumer is composeSessionRoot and both call
@@ -47,7 +51,7 @@
 // The fold is self-proving, which is why no test asserts the negotiation:
 // row 1's provider argv and its LOCAL_REMOTE_ENV binding cannot silently drift
 // apart in either direction, and both directions were measured LOUD with the
-// same signature — 1,286 failures against a green 4,062, and ~302s against ~73s.
+// same signature — 1,286 failures against a green 4,062, at ~4x the row's wall.
 // Argv without binding: every unnamed REQUEST frame is refused ENOREMOTE by the
 // provider's routing gate (which is on the requests only — a follow-on frame is
 // addressed by an id already bound to a target). Binding without argv: ProviderSystem's wire-level
@@ -74,6 +78,16 @@
 // §2). This decides `RUN_CLI_CONTRACT` and nothing else: other gated families
 // such as `RUN_REAL_CLAUDE` and `RUN_DOCKER_SYSTEM` reach the same one-variable
 // lever and were not priced.
+//
+// THE TWO ROWS RUN CONCURRENTLY, and their live output interleaves. Each row's
+// lines are tagged `[1] `/`[2] ` (tests/rowPrefix.mjs), mapped to names by the
+// banners printed before either row starts; the closing block is printed by this
+// process after both rows resolve, so it is still last and still untagged, and a
+// `tail` reader still gets it whole. The tag is presentation ONLY — the scanner is
+// fed the raw chunk. `TEST_CONCURRENCY` is inherited by both rows and is the lever
+// on a constrained box; there is no knob of this file's own. The fake-claude
+// guardrail is scoped to each run's own descendants (card 2026-0344), which is
+// what makes two rows on one box possible at all.
 //
 // It is a separate command rather than part of `npm test` because it IS
 // `npm test`, once per row. The per-configuration protocol suites
@@ -125,6 +139,10 @@ const CONFIGS = [
 // `setEncoding('utf8')` for the same reason in miniature: `✖` is three bytes, and
 // a chunk boundary through the middle of it would corrupt both the tee and the
 // scan. The decoder holds the partial sequence back instead.
+//
+// The row tag is a Transform IN that same chain (tests/rowPrefix.mjs), never a
+// write() loop, so a false write still pauses the child's stdout exactly as the
+// direct pipe did.
 //
 // Completeness is waited for explicitly: exit alone does not mean the pipes have
 // been drained, so this resolves only once BOTH streams have ended AND the child
