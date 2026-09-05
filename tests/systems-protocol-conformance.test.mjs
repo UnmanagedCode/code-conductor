@@ -188,6 +188,114 @@ for (const config of CAPABILITY_CONFIGS) {
     });
   });
 
+  // ── detach: end the operation without ending the command ─────────
+  //
+  // MEASURED (card 2026-0318 §1, §3): a `cmd &` job inherits the command's
+  // stdout pipe, so the provider's `'close'` — and with it the `exit` frame —
+  // does not fire when the command exits. cc therefore settles a redirected
+  // command on its OWN framing sentinel, and then has to tell the provider that
+  // the operation is over WITHOUT telling it to kill anything. `close` cannot
+  // say that: it is normatively "abandon and kill hard".
+  //
+  // PINS BOTH HALVES OF `detach`, against `close` as the contrast on the same
+  // fixture and in the same configuration:
+  //   * STOP REPORTING — not one more frame on that id, `exit` included;
+  //   * KILL NOTHING — the survivor is alive in EVERY configuration, including
+  //     the one where `close` reaps it through the process group.
+  test(`${tag} detach ends the operation and kills nothing; close kills as far as it reaches`, async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-detach-'));
+    const root = await fs.realpath(dir);
+    const conn = new ProviderConnection({ launch: { argv: providerArgv(config.flags) } });
+    const started = [];
+    // A job that keeps PRINTING, so "reporting stopped" is observed rather than
+    // inferred: a silent survivor would make the assertion vacuous.
+    const ticker = (pidFile) =>
+      `{ while :; do echo tick; sleep 0.05; done; } & echo $! > ${pidFile}; echo started`;
+    // The exec's OWN deadline, short: a provider that ignored the frame under
+    // test still has its timer armed, and this is what makes that visible
+    // inside the test rather than 605 s later.
+    const EXEC_MS = 700;
+    const launch = async (name) => {
+      const pidFile = path.join(root, `${name}.pid`);
+      const id = conn.nextId('e');
+      const frames = [];
+      conn.open(id, { frame: (f) => frames.push(f), down: () => {} });
+      conn.send({ type: 'exec', id, ...BOUND, cwd: root, shell: ticker(pidFile), timeoutMs: EXEC_MS });
+      assert.equal(await settle(() => frames.filter(f => f.type === 'stdout').length >= 2), true,
+        `${name}: the provider never reported the job's output — nothing is under test`);
+      const pid = Number((await fs.readFile(pidFile, 'utf8')).trim());
+      assert.ok(pid > 0, `${name}: the job recorded its pid`);
+      started.push(pid);
+      return { id, frames, pid };
+    };
+    try {
+      await conn.ensureUp();
+      const d = await launch('detached');
+      const c = await launch('closed');
+
+      conn.send({ type: 'detach', id: d.id });
+      conn.send({ type: 'close', id: c.id });
+      const at = { detached: d.frames.length, closed: c.frames.length };
+      // Long enough to be past the exec deadline both were given, so a provider
+      // that ignored `detach` has fired its own timer by now.
+      await new Promise((r) => setTimeout(r, EXEC_MS + 400));
+
+      assert.equal(d.frames.length, at.detached,
+        `detach: ${d.frames.length - at.detached} more frames arrived on a detached id `
+        + `(${[...new Set(d.frames.slice(at.detached).map(f => f.type))].join(', ')}) — `
+        + 'detach means stop reporting, exit included');
+      assert.equal(c.frames.length, at.closed, 'close goes quiet on the id too');
+
+      assert.equal(alive(d.pid), true,
+        'detach kills NOTHING — the job outlives the operation in every configuration');
+      // The contrast, and it is capability-keyed because `close`'s reach is:
+      // with a process group one kill reaches the survivor, without one it
+      // cannot (the same split tests/systems-protocol-conformance.test.mjs
+      // already pins for `signal`).
+      if (config.caps.processGroupSignal) {
+        assert.equal(await settle(() => !alive(c.pid)), true,
+          'close still kills hard, and with group reach that includes the survivor');
+      } else {
+        assert.equal(alive(c.pid), true, 'without group reach close cannot get to it either');
+      }
+    } finally {
+      conn.dispose();
+      for (const pid of started) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      await rmrf(dir);
+    }
+  });
+
+  // THE PARITY PIN (card 2026-0318 §3). The two shipped configurations used to
+  // DISAGREE about whether a redirected background job survives its command:
+  // cc's abandon timer sent `close`, which reaps the survivor through the
+  // process group where it has one and cannot reach it where it does not. A
+  // sentinel-settle closes that divergence — the job survives in BOTH, which is
+  // what a LOCAL Bash call does (card 2026-0318 §1/Q3).
+  //
+  // NOTE ON ITS RED: the settle is what this asserts on, so before the fix the
+  // run throws ETIMEDOUT and the aliveness assertion is never reached. That is
+  // inherent — there is no sentinel-settle to survive until there is one.
+  test(`${tag} a redirected background job outlives its command, in every configuration`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      const pidFile = path.join(root, 'bg.pid');
+      let pid = 0;
+      try {
+        const r = await sys.shell({ cwd: root, commandTimeoutMs: 500 })
+          .run(`sleep 30 & echo $! > ${pidFile}; echo started`);
+        assert.equal(r.code, 0, 'the command exited 0 and is reported as exit 0');
+        assert.equal(r.stdout, 'started\n');
+        pid = Number((await fs.readFile(pidFile, 'utf8')).trim());
+        assert.ok(pid > 0, 'the job recorded its pid');
+        // PAST the deadline the provider was given for that command: nothing
+        // reaches back to kill the job when that timer would have fired.
+        await new Promise((res) => setTimeout(res, 800));
+        assert.equal(alive(pid), true, 'the job outlives the command, as it does locally');
+      } finally {
+        if (pid > 0) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      }
+    });
+  });
+
   test(`${tag} concurrent execs are multiplexed by id and never mix their output`, async () => {
     await withSystem(config.flags, async (sys, root) => {
       const started = Date.now();

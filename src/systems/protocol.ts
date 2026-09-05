@@ -217,8 +217,8 @@ export interface HelloProviderFrame {
 //
 // `remoteId` names which of the provider's targets the operation is for. It is
 // carried by the four REQUESTS only (`exec`, `readFile`, `writeFile`,
-// `describeRemote`): every follow-on frame (`signal`, `close`, `data`, `end`)
-// is addressed by `id`, and AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
+// `describeRemote`): every follow-on frame (`signal`, `close`, `detach`, `data`,
+// `end`) is addressed by `id`, and AN ID IS BOUND TO ONE REMOTE FOR ITS WHOLE LIFETIME. The FIELD goes out only to
 // a provider that advertises `remotes`; `describeRemote` — the fourth — is
 // itself sent only to one that advertises `remoteDescriptors`.
 export interface ExecFrame {
@@ -235,6 +235,17 @@ export interface ExecFrame {
 }
 export interface SignalFrame { type: 'signal'; id: string; signal: string; processGroup: boolean }
 export interface CloseFrame { type: 'close'; id: string }
+// THE OTHER WAY AN `exec` ENDS, and the difference from `close` is the whole
+// point: `close` is abandon-and-kill-hard, `detach` is "the command is over,
+// stop reporting, kill nothing". EXEC-ONLY.
+//
+// cc sends it when a redirected shell command settles on cc's OWN framing
+// sentinel, which is the exact end of the command's output. The command's exit
+// may never be reported at all — a `cmd &` job inherits its stdout pipe and
+// holds it open, so the provider's stream-close never fires (card 2026-0318 §1)
+// — and killing at that point would reap a background job that a LOCAL Bash
+// call leaves running.
+export interface DetachFrame { type: 'detach'; id: string }
 export interface ReadFileFrame {
   type: 'readFile'; id: string; remoteId?: string; path: string; offset?: number; length?: number;
 }
@@ -274,7 +285,7 @@ export interface ErrorFrame {
 }
 
 export type ClientFrame =
-  | HelloClientFrame | ExecFrame | SignalFrame | CloseFrame
+  | HelloClientFrame | ExecFrame | SignalFrame | CloseFrame | DetachFrame
   | ReadFileFrame | WriteFileFrame | DescribeRemoteFrame | DataFrame | EndFrame;
 
 export type ProviderFrame =

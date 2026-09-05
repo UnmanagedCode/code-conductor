@@ -37,7 +37,7 @@ import { randomUUID } from 'node:crypto';
 
 const { bootServer, api, freshProjectsRoot, rmrf } = await import('./helpers.mjs');
 const { bindRemoteSystem, seedRepo, git, wedgeLaunch, timedOutCode1Launch } = await import('./remoteSystem.mjs');
-const { ProviderSystem } = await import('../src/systems/providerSystem.ts');
+const { ProviderSystem, EXEC_TIMEOUT_SLACK_MS } = await import('../src/systems/providerSystem.ts');
 const { createWorktree, listWorktrees, runGit } = await import('../src/worktrees.ts');
 const { adoptProject, findSessionLocation } = await import('../src/projects.ts');
 const { updateSystem } = await import('../src/appSettings.ts');
@@ -73,6 +73,72 @@ test('an unconfigured handle falls back to DEFAULT_OP_TIMEOUT_MS, which reads OR
     });
     assert.ok(Date.now() - started < CEILING_MS * 4,
       `the injected ceiling is the one that fired, not the 60s default (took ${Date.now() - started}ms)`);
+  } finally { sys.dispose(); }
+});
+
+// ── The abandon bound, and the number it names ───────────────────────
+
+// PINS card 2026-0318 §5.3: when the PROVIDER never reports a command's exit,
+// what settles the command is cc's own abandon timer at
+// `timeoutMs + EXEC_TIMEOUT_SLACK_MS` — and that is the number the worker is
+// told, together with WHOSE silence caused it.
+//
+// The card's own defect was a message naming the wrong number: it named the
+// per-command ceiling, which is the deadline the PROVIDER was given, while the
+// wait the worker actually served was that ceiling plus the slack. Both halves
+// below are asserted at a NON-DEFAULT bound, and at two DIFFERENT ones, so
+// neither a hardcoded constant nor a copy of the other's value can pass.
+//
+// This is also the row that keeps the backstop: a command that produces no
+// sentinel at all — this provider sends nothing — is a DIFFERENT failure mode
+// from a backgrounded job, and the sentinel-settle does not cover it.
+//
+// The two probes run CONCURRENTLY on one handle (multiplexed ids, independent
+// timers), so the test costs one slack, not two.
+test('a command the provider never answers is abandoned at timeoutMs + the slack, and says so', async () => {
+  assert.equal(typeof EXEC_TIMEOUT_SLACK_MS, 'number',
+    'the slack is EXPORTED so this test can COMPUTE the bound instead of restating it');
+  const RAW_MS = 100;
+  const SHELL_MS = 250;
+  const sys = wedgeHandle();
+  const started = Date.now();
+  try {
+    const [raw] = await Promise.all([
+      sys.exec({ shell: 'echo hi' }, { cwd: '/tmp', timeoutMs: RAW_MS }),
+      assert.rejects(() => sys.shell({ cwd: '/tmp', commandTimeoutMs: SHELL_MS }).run('echo hi'), (e) => {
+        assert.equal(e.code, 'ETIMEDOUT', e.message);
+        assert.match(e.message, new RegExp(`\\b${SHELL_MS + EXEC_TIMEOUT_SLACK_MS}ms\\b`),
+          `the message names the wait the worker actually served: ${e.message}`);
+        assert.doesNotMatch(e.message, new RegExp(`\\b${SHELL_MS}ms\\b`),
+          `and NOT the deadline the provider was given: ${e.message}`);
+        assert.match(e.message, /never reported/, `and says whose silence caused it: ${e.message}`);
+        return true;
+      }),
+    ]);
+    assert.equal(raw.timedOut, true);
+    assert.equal(raw.abandonedAfterMs, RAW_MS + EXEC_TIMEOUT_SLACK_MS,
+      'the result carries the abandoning timer\'s OWN computed value');
+    assert.ok(Date.now() - started < (SHELL_MS + EXEC_TIMEOUT_SLACK_MS) * 3,
+      `both bounds fired rather than being waited out (took ${Date.now() - started}ms)`);
+  } finally { sys.dispose(); }
+});
+
+// PINS the other side of the same field: a command the provider DID answer —
+// with its own timeout — carries no `abandonedAfterMs`, so the presence of the
+// field is what distinguishes cc's silence-bound from a provider-reported one,
+// and the message keeps naming the provider's deadline.
+test('a timeout the provider REPORTS carries no abandon value, and names the provider\'s own deadline', async () => {
+  const sys = new ProviderSystem({ id: 'wbox3', launch: { argv: timedOutCode1Launch() } });
+  try {
+    const r = await sys.exec({ shell: 'echo hi' }, { cwd: '/tmp', timeoutMs: 30_000 });
+    assert.equal(r.timedOut, true, 'the far side answered, with timedOut set');
+    assert.equal(r.abandonedAfterMs, undefined, 'cc abandoned nothing — the provider reported');
+    await assert.rejects(() => sys.shell({ cwd: '/tmp', commandTimeoutMs: 30_000 }).run('echo hi'), (e) => {
+      assert.equal(e.code, 'ETIMEDOUT', e.message);
+      assert.match(e.message, /still running after 30000ms/, e.message);
+      assert.match(e.message, /per-command ceiling/, e.message);
+      return true;
+    });
   } finally { sys.dispose(); }
 });
 

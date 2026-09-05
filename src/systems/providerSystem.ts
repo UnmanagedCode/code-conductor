@@ -28,7 +28,7 @@ import {
 import { ExecOutputCollector } from './execCollector.ts';
 import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } from './mirror.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
-import { ProviderShell, type ShellHost } from './providerShell.ts';
+import { ProviderShell, type ShellExecOptions, type ShellHost } from './providerShell.ts';
 import { requireAbsolute } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
@@ -38,7 +38,12 @@ import type {
 // given, before declaring the operation timed out itself. The provider owns the
 // timeout; this only stops a WEDGED provider from turning a bounded command
 // into an unbounded wait.
-const EXEC_TIMEOUT_SLACK_MS = 5_000;
+//
+// EXPORTED so a test can COMPUTE the abandon bound rather than restate it: the
+// bound is `opts.timeoutMs + EXEC_TIMEOUT_SLACK_MS` and it is reported to the
+// caller as `ExecResult.abandonedAfterMs`, so a test that hardcoded the sum
+// would pin the wrong thing the first time either half moved.
+export const EXEC_TIMEOUT_SLACK_MS = 5_000;
 
 // THE CEILING ON EVERY OPERATION THE CALLER DID NOT BOUND ITSELF.
 //
@@ -240,7 +245,7 @@ export class ProviderSystem implements System, ShellHost {
     return this.#exec(spec, opts, opts.env ?? null);
   }
 
-  async #exec(spec: ExecSpec, opts: ExecOptions, env: NodeJS.ProcessEnv | null): Promise<ExecResult> {
+  async #exec(spec: ExecSpec, opts: ShellExecOptions, env: NodeJS.ProcessEnv | null): Promise<ExecResult> {
     const started = Date.now();
     let hs: Handshake;
     try { hs = await this.#conn.ensureUp(); }
@@ -269,7 +274,26 @@ export class ProviderSystem implements System, ShellHost {
     const id = this.#conn.nextId('e');
     return new Promise<ExecResult>((resolve) => {
       let settled = false;
-      const collector = new ExecOutputCollector(opts, () => {
+      // ONE SCAN PER STREAM, and the AND of the two is what settles the call —
+      // cc's framing writes a closing sentinel to stdout and to stderr, and
+      // ProviderShell's parse needs BOTH (measured, card 2026-0318 §5.2:
+      // stdout at 87 ms, stderr at 88 ms). Absent unless the caller named a
+      // marker, which only the redirected shell does.
+      const scan = opts.completeMarker === undefined ? null : {
+        out: new ClosingLineScan(opts.completeMarker), err: new ClosingLineScan(opts.completeMarker),
+      };
+      const collector = new ExecOutputCollector(scan === null ? opts : {
+        ...opts,
+        // AFTER the caller's own hook and AFTER the collector's caps, which is
+        // where `onChunk` already sits: the scan must see exactly the text the
+        // result will be parsed from, or the two could disagree about whether
+        // the frame arrived.
+        onChunk: (text: string, which: 'out' | 'err') => {
+          opts.onChunk?.(text, which);
+          scan[which].push(text);
+          if (scan.out.seen && scan.err.seen) settleOnMarker();
+        },
+      }, () => {
         // The max-buffer fence fired: kill the command, then wait for the exit
         // frame so the result still reports what actually happened.
         this.#conn.send({
@@ -278,7 +302,7 @@ export class ProviderSystem implements System, ShellHost {
       });
       const finish = (code: number, extra: {
         timedOut: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode;
-        transportFailure?: true; descendantsMaySurvive?: boolean;
+        transportFailure?: true; descendantsMaySurvive?: boolean; abandonedAfterMs?: number;
       }): void => {
         if (settled) return;
         settled = true;
@@ -286,6 +310,25 @@ export class ProviderSystem implements System, ShellHost {
         opts.signal?.removeEventListener('abort', onAbort);
         this.#conn.close(id);
         resolve(collector.result(code, { ...extra, durationMs: Date.now() - started }));
+      };
+
+      // THE COMMAND'S OUTPUT IS OVER, on both streams, and that is the whole of
+      // what cc needs — the `exit` frame may never come at all, because a
+      // backgrounded job holds the command's stdout pipe open and a provider
+      // that reports exit at stream-close therefore never reports it
+      // (card 2026-0318 §1).
+      //
+      // `detach` and NOT `close`: the operation is finished, the background job
+      // is not, and killing it here would diverge from what a local Bash call
+      // leaves behind. Without the frame the provider keeps the exec open with
+      // its own timer armed and reaps the survivor when that fires.
+      //
+      // `code: 0` is not the command's code and is never read as one: the
+      // caller that passes a marker reads the code out of its own sentinel.
+      const settleOnMarker = (): void => {
+        if (settled) return;
+        this.#conn.send({ type: 'detach', id });
+        finish(0, { timedOut: false });
       };
 
       // Cancellation: `close` is the provider's instruction to kill the command
@@ -307,10 +350,26 @@ export class ProviderSystem implements System, ShellHost {
       // Abandoning sends `close`, which is the provider's instruction to kill
       // the command — so cc does not need to have sent a `timeoutMs` for the
       // command to actually stop.
+      //
+      // IT STAYS even though a redirected command now settles on its own
+      // sentinel: a command that produces NO sentinel at all — the shell died,
+      // the provider wedged — is a different failure mode, not a redundant
+      // guard (card 2026-0318 §4).
+      //
+      // The bound is REPORTED, not just enforced: it is longer than the
+      // deadline the provider was given, so a caller that named the provider's
+      // deadline in its own message told the worker it had waited a time it had
+      // not (card 2026-0318 §5.3).
+      const abandonAfterMs = opts.timeoutMs === undefined
+        ? this.#defaultOpTimeoutMs
+        : opts.timeoutMs + EXEC_TIMEOUT_SLACK_MS;
       const timer = setTimeout(() => {
         this.#conn.send({ type: 'close', id });
-        finish(124, { timedOut: true, descendantsMaySurvive: !hs.capabilities.processGroupSignal });
-      }, opts.timeoutMs === undefined ? this.#defaultOpTimeoutMs : opts.timeoutMs + EXEC_TIMEOUT_SLACK_MS);
+        finish(124, {
+          timedOut: true, abandonedAfterMs: abandonAfterMs,
+          descendantsMaySurvive: !hs.capabilities.processGroupSignal,
+        });
+      }, abandonAfterMs);
       timer.unref?.();
 
       this.#conn.open(id, {
@@ -615,7 +674,12 @@ export class ProviderSystem implements System, ShellHost {
     return this.#conn.handshake?.capabilities ?? NO_CAPABILITIES;
   }
 
-  execOneShot(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult> { return this.exec(spec, opts); }
+  // THE ONE IMPLEMENTOR of ShellHost, which is why `completeMarker` lives on
+  // ShellExecOptions and not on the shared ExecOptions (src/systems/providerShell.ts).
+  execOneShot(spec: ExecSpec, opts: ShellExecOptions): Promise<ExecResult> {
+    requireAbsolute('exec', 'cwd', opts.cwd);
+    return this.#exec(spec, opts, opts.env ?? null);
+  }
 
   // A redirected shell on this system: one framed `exec` per command. A TEST
   // SEAM — production builds its own in src/systems/toolRedirect.ts — and
@@ -623,6 +687,45 @@ export class ProviderSystem implements System, ShellHost {
   // memo silently ignored a second call's `cwd`.
   shell(opts: { cwd: string } & Partial<{ commandTimeoutMs: number; maxOutputBytes: number }>): ProviderShell {
     return new ProviderShell(this, opts);
+  }
+}
+
+// Has a COMPLETE line beginning with `marker` arrived on this stream?
+//
+// THE RULES ARE THE PARSER'S OWN (src/systems/shellFraming.ts), because a settle
+// the parser then cannot honour is worse than no settle at all:
+//   * the marker only counts at the START of a line — a command that echoes it
+//     mid-line is output, not a boundary;
+//   * and only once that line has ENDED — cc's framing writes the exit code and
+//     the cwd AFTER the marker, so settling on the marker alone hands the parser
+//     half a frame.
+// The needle carries the leading newline the framing always injects, so the
+// buffer never has to remember whether it sits at a line start.
+//
+// It keeps at most one needle's worth of text: only a PROPER PREFIX of the
+// needle can still become a match, so a command of any size costs O(1) memory
+// here and one pass in total.
+class ClosingLineScan {
+  readonly #needle: string;
+  #buf = '';
+  #seen = false;
+
+  constructor(marker: string) { this.#needle = `\n${marker}`; }
+
+  get seen(): boolean { return this.#seen; }
+
+  push(text: string): void {
+    if (this.#seen) return;
+    this.#buf += text;
+    const at = this.#buf.indexOf(this.#needle);
+    if (at === -1) {
+      if (this.#buf.length >= this.#needle.length) this.#buf = this.#buf.slice(1 - this.#needle.length);
+      return;
+    }
+    // The line is still arriving: keep it whole, and nothing before it.
+    if (this.#buf.indexOf('\n', at + this.#needle.length) === -1) { this.#buf = this.#buf.slice(at); return; }
+    this.#seen = true;
+    this.#buf = '';
   }
 }
 

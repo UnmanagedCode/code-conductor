@@ -91,9 +91,9 @@ export class ExecOutputCollector {
   // it without either clobbering real output.
   result(
     code: number,
-    { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive }: {
+    { timedOut, spawnError, spawnErrorCode, transportFailure, durationMs, descendantsMaySurvive, abandonedAfterMs }: {
       timedOut: boolean; spawnError?: string; spawnErrorCode?: SystemErrorCode; transportFailure?: true;
-      durationMs: number; descendantsMaySurvive?: boolean;
+      durationMs: number; descendantsMaySurvive?: boolean; abandonedAfterMs?: number;
     },
   ): ExecResult {
     let stderr = this.#stderr;
@@ -122,6 +122,7 @@ export class ExecOutputCollector {
       ...(spawnErrorCode ? { spawnErrorCode } : {}),
       ...(transportFailure ? { transportFailure: true as const } : {}),
       ...(descendantsMaySurvive ? { descendantsMaySurvive: true as const } : {}),
+      ...(abandonedAfterMs === undefined ? {} : { abandonedAfterMs }),
       ...(this.#overflowed ? { outputOverflowed: true as const } : {}),
     };
   }

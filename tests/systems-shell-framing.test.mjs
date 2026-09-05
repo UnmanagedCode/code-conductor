@@ -21,7 +21,7 @@ import {
   FramedStreamFilter, beginFor, frameCommand, newNonce,
   parseFramedStderr, parseFramedStdout, sentinelFor,
 } from '../src/systems/shellFraming.ts';
-import { makeProviderSystem } from './referenceProviderHarness.mjs';
+import { CAPABILITY_CONFIGS, makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 import { waitFor } from './helpers.mjs';
 
@@ -31,10 +31,10 @@ import { waitFor } from './helpers.mjs';
 // parser test that omits it is testing a stream that could never occur.
 const B = (n) => `\n${beginFor(n)}\n`;
 
-async function withShell(fn, shellOpts = {}) {
+async function withShell(fn, shellOpts = {}, flags = []) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-shell-'));
   const cwd = await fs.realpath(dir);
-  const sys = makeProviderSystem();
+  const sys = makeProviderSystem(flags);
   try {
     await sys.connect();
     return await fn(sys.shell({ cwd, ...shellOpts }), cwd);
@@ -563,6 +563,59 @@ test(`output below the fence is untouched`, async () => {
     assert.equal(r.code, 0);
   }, { maxOutputBytes: 8192 });
 });
+
+// ── A backgrounded job does not hold the command open ────────────────
+//
+// MEASURED (card 2026-0318 §1): the reference provider emits its `exit` frame
+// from the child's `'close'`, which fires when the STREAMS close, not when the
+// process exits. A `cmd &` job inherits the command's stdout pipe and holds it
+// open for as long as it runs — so a command that exited 0 was reported to the
+// worker as a FAILURE with an EMPTY stdout, at cc's own abandon timer
+// (`timeoutMs + EXEC_TIMEOUT_SLACK_MS`), while the complete parsed answer had
+// been on the wire since ~154 ms.
+//
+// cc does not wait for `exit` on a redirected command any more: its OWN closing
+// sentinel, on both streams, is the exact end-of-output marker, and it needs no
+// heuristic and no grace timer to know it.
+
+for (const config of CAPABILITY_CONFIGS) {
+  const tag = `[${config.name}]`;
+
+  // THE POSITIVE CONTROL, in the same file, the same fixture and the same
+  // ceiling as the row below it: a harness that framed or ran nothing would
+  // fail HERE, so the row below cannot pass by not running.
+  test(`${tag} a plain command still settles on its sentinel with its own exit code`, async () => {
+    await withShell(async (sh) => {
+      // `(exit 3)` and not a bare `exit 3`: the framing runs the command inside
+      // braces, so a bare exit takes the shell with it (ESHELLGONE) and this
+      // would stop being a control for the row below.
+      const r = await sh.run('echo hi; echo boom >&2; (exit 3)');
+      assert.equal(r.stdout, 'hi\n');
+      assert.equal(r.stderr, 'boom\n');
+      assert.equal(r.code, 3, "the sentinel's code is the command's, not the settle's");
+    }, { commandTimeoutMs: 1_000 }, config.flags);
+  });
+
+  // PINS THE HEADLINE of card 2026-0318: a command that backgrounds a job and
+  // exits 0 is reported as exit 0 with the output it printed. Asserted on the
+  // CODE and the STDOUT, not on latency — the defect was never slowness, it was
+  // a succeeded command reported as a failure with its output dropped.
+  test(`${tag} a command that backgrounds a job reports its own exit code and output`, async () => {
+    await withShell(async (sh, cwd) => {
+      const pidFile = path.join(cwd, 'bg.pid');
+      let pid = 0;
+      try {
+        const r = await sh.run(`sleep 60 & echo $! > ${pidFile}; echo started`);
+        assert.equal(r.code, 0, 'the command exited 0 and is reported as exit 0');
+        assert.equal(r.stdout, 'started\n', 'and its stdout is what it printed, not empty');
+        assert.equal(r.stderr, '');
+        pid = Number((await fs.readFile(pidFile, 'utf8')).trim());
+      } finally {
+        if (pid > 0) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      }
+    }, { commandTimeoutMs: 1_000 }, config.flags);
+  });
+}
 
 // ── Cancellation ───────────────────────────────────────────────────
 
