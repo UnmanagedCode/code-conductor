@@ -223,13 +223,15 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
     // and the safety property still holds because a non-zero code now reads as
     // UNKNOWN at every guard rather than as "passed". `local` does not set
     // `transportFailure` — but this branch turns on the CLASSIFICATION too, and
-    // an unclassifiable spawn error therefore throws on `local` as well:
-    // classifySpawnError names the errnos FS_ERROR_CODES tables and answers
-    // EUNKNOWN for anything else, which fd/process exhaustion in cc's
-    // single-process host reaches (measured: `spawn git EMFILE` → 502
-    // GIT_DID_NOT_RUN on system 'local'). What is unchanged locally is the
-    // CLASSIFIED case — a missing cwd or a non-executable git still returns
-    // here, diagnostic in `stderr`. (card 2026-0308 §1.1)
+    // an unclassifiable spawn error therefore throws on `local` as well. The
+    // mechanism, not a list: classifySpawnError names the errnos
+    // FS_ERROR_CODES tables and answers EUNKNOWN for anything else, and
+    // EUNKNOWN fails the second conjunct below. Measured on `local`, each
+    // reaching the 502: `spawn git EMFILE` under fd pressure, `spawn
+    // ENAMETOOLONG` from an over-long cwd, `spawn E2BIG` from an over-long
+    // argv. What is unchanged locally is the CLASSIFIED case — a missing cwd
+    // or a non-executable git still returns here, diagnostic in `stderr`.
+    // (card 2026-0308 §1.1 for the measurements, §G10 for the scoping)
     if (!r.transportFailure && classifySpawnError(r.spawnError) !== 'EUNKNOWN') {
       return { stdout: r.stdout, stderr: r.stderr || r.spawnError, code: r.code };
     }
@@ -795,10 +797,13 @@ export async function removeWorktree(
   // (measured). Ordered here, no git step after the removal decides whether
   // cc's record survives.
   //
-  // The guarantee is scoped to the git steps, which is where the throw is.
+  // THE BOUND ON THAT GUARANTEE IS STATED HERE AND CROSS-REFERENCED ELSEWHERE,
+  // because this is where it is readable beside the helper it is about:
   // dropWorktreeStoreEntry swallows its own `fs.rm` failure, so a failing local
-  // store write can still strand the registration silently, with nothing raised
-  // — a different mechanism, unchanged here. (card 2026-0308 §G2)
+  // store write still strands the registration, silently and with nothing
+  // raised. Pre-existing, a different mechanism, and unchanged here — the
+  // ordering buys the GIT steps and nothing further. (card 2026-0308 §G2, §G10
+  // — §G2 required this at five sites, §G10 replaced that with one owner here.)
   await dropWorktreeStoreEntry(projectName, meta.worktreeName);
   // Branch deletion is best-effort — if the rebase-back already
   // fast-forwarded the base onto the worktree branch then `-d` will
@@ -807,10 +812,21 @@ export async function removeWorktree(
   // Best-effort means GIT'S NO is tolerated: the exit code stays unread. It does
   // not extend to a system refusal — "git could not be run on this box" is a
   // real diagnosis about a real machine, and hiding it would report a transport
-  // failure as a clean removal. So the refusal is re-raised, ANNOTATED: by this
-  // point the worktree and its registration are already gone, and the bare
-  // refusal reads as a delete that failed. statusCode / code / systemRefusal are
-  // carried through, so both surfaces map it as they did. (card 2026-0308 §4)
+  // failure as a clean removal. So the refusal is re-raised, ANNOTATED: the
+  // removal above already succeeded, and the bare refusal reads as a delete that
+  // failed. statusCode / code / systemRefusal are carried through, so both
+  // surfaces map it as they did.
+  //
+  // THE MESSAGE ASSERTS ONLY WHAT THIS CODE MEASURED, which is `rm.code`,
+  // tested above. Two claims it deliberately does NOT make. The store-entry drop
+  // ran first but reports nothing back (bound stated above), so "unregistered"
+  // would be a claim cc did not measure, false in exactly the case that bound
+  // describes. And the branch's fate is not known either: GIT_DID_NOT_RUN means
+  // the delete never started, but GIT_TIMED_OUT means the ANSWER never arrived
+  // and the far side may have deleted it — the same uncertainty
+  // mergeWorktreeIntoParent reports as `mayHaveCompleted`. So the branch clause
+  // is hedged, and it is still the actionable half: go look.
+  // (card 2026-0308 §4.3 for preserving the fields, §G10 for the hedges)
   const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
   try {
     await runGit(system, parentPath, delArgs);
@@ -819,8 +835,8 @@ export async function removeWorktree(
     const refusal = e as Error & { statusCode?: number; code?: string };
     throw httpError(
       refusal.statusCode ?? 502,
-      `worktree '${meta.worktreeName}' was removed and unregistered, but its branch `
-      + `'${meta.branch}' was left behind: ${refusal.message}`,
+      `worktree '${meta.worktreeName}' was removed, but its branch `
+      + `'${meta.branch}' may still exist: ${refusal.message}`,
       { code: refusal.code, systemRefusal: true },
     );
   }

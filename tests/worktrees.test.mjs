@@ -1125,20 +1125,21 @@ test('DELETE worktree by bare slug still refuses (409) with a live instance atta
 //
 // THE INVARIANT PINNED BY BOTH TESTS BELOW: once `git worktree remove` reports
 // success, no git step that follows it can leave the store entry registered.
-// Scoped to the git steps deliberately — `dropWorktreeStoreEntry` swallows its
-// own `fs.rm` failure, so a failing local store write can still strand a
-// registration silently, which is a different mechanism and is not addressed
-// here (card 2026-0308 §G2).
+// Scoped to the git steps deliberately; the bound on that is stated once, at
+// the `dropWorktreeStoreEntry` call site in `src/worktrees.ts`
+// (card 2026-0308 §G2, §G10).
 
 // An argv git cannot be spawned with, built entirely out of the store's own
 // `branch` field — which this path puts in the branch-delete argv and nowhere
 // else, since force:true skips the dependents and dirty checks. The kernel
 // really refuses the spawn (`spawn E2BIG`), `classifySpawnError` reads it as
-// `EUNKNOWN`, and `runGit` raises `GIT_DID_NOT_RUN`. That is the same route the
-// production trigger takes — fd/process exhaustion in cc's single-process host,
-// measured as `spawn git EMFILE` — reached here by fixture data rather than by
-// resource pressure, so it is deterministic. Product code is untouched; the
-// magnitude has only to exceed the argv limit (card 2026-0308 §1.1, §G5).
+// `EUNKNOWN`, and `runGit` raises `GIT_DID_NOT_RUN`. Same route as the trigger
+// measured under real resource pressure (`spawn git EMFILE` on a host short of
+// fds), reached here by fixture data instead, so it is deterministic — an argv
+// limit, not exhaustion, and the route is what the two share. Product code is
+// untouched; the magnitude has only to exceed the argv limit
+// (card 2026-0308 §1.1 for the measurements, §G5 for the fixture, §G10 for the
+// scoping).
 async function makeBranchDeleteUnspawnable(project, worktreeName) {
   const metaFile = path.join(worktreeStoreDir(project, worktreeName), 'worktree.json');
   const meta = JSON.parse(await fs.readFile(metaFile, 'utf8'));
@@ -1163,7 +1164,7 @@ test('a branch delete that could not be spawned leaves no registration behind', 
 
   // The invariant.
   assert.deepEqual(await registeredWorktreeNames('demo'), [],
-    'the store entry does not outlive the directory git already removed');
+    'this removal left no store entry behind the directory git removed');
   assert.deepEqual(await listWorktrees('demo'), [],
     'so the two listings agree');
 });
@@ -1180,5 +1181,5 @@ test('the project-delete cascade strands no registration when a branch delete co
   await removeAllWorktreesForProject('demo');
 
   assert.deepEqual(await registeredWorktreeNames('demo'), [],
-    'the cascade leaves nothing registered, before deleteProject runs');
+    'this cascade left nothing registered, before deleteProject runs');
 });

@@ -944,8 +944,22 @@ export function buildRoutes({ instances, serverCtx, pluginHost, pluginLibrary }:
           await Promise.all(running.map(i => i.kill({ graceMs: 300 }).catch(() => {})));
         }
       }
-      await removeWorktree(req.params.name, wtName, { force });
-      invalidate(req.params.name);
+      // INVALIDATE ON THE THROW PATH TOO, because the removal MUTATES before it
+      // can throw: `git worktree remove` succeeds, the store entry is dropped,
+      // and only then can the best-effort branch delete raise a system refusal.
+      // Called on the success path alone, the cached row went on listing a
+      // worktree the call had already removed until the TTL expired, so a client
+      // that re-fetched on the 502 was handed it back and got a 404 for clicking
+      // it. A refusal that changed nothing pays one recompute for the same
+      // call. This held before the store entry moved above the branch delete
+      // too — the DIRECTORY was already gone at that throw, and listWorktrees
+      // prunes by `git worktree list`, so the cached row was already the only
+      // thing still showing it. (card 2026-0308 §G10, superseding §1.5.)
+      try {
+        await removeWorktree(req.params.name, wtName, { force });
+      } finally {
+        invalidate(req.params.name);
+      }
       res.json({ ok: true });
     } catch (e) { next(e); }
   });
