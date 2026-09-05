@@ -56,6 +56,21 @@ export function beginFor(nonce: string): string {
   return `__CC_${nonce}_BEGIN__`;
 }
 
+// WHAT FOLLOWS A CLOSING SENTINEL ON ITS OWN LINE, and the ONE definition of
+// it. stdout carries `$?` and the base64 `$PWD`; stderr carries nothing at all.
+// A line that starts with the sentinel and fails this is a FORGERY — the
+// command's own output — and every reader keeps scanning past it.
+//
+// SHARED, because three readers apply it and a settle that disagreed with a
+// parse would resolve a command and then fail it: `parseFramedStdout` and
+// `parseFramedStderr` below, `FramedStreamFilter`, and ProviderSystem's
+// settle-scan, which is the one that made sharing necessary (card 2026-0318 §5.2).
+export const CLOSING_STDOUT_TAIL = /^ (\d+) (\S*)$/;
+
+export function closingTailMatches(kind: 'out' | 'err', tail: string): boolean {
+  return kind === 'out' ? CLOSING_STDOUT_TAIL.test(tail) : tail === '';
+}
+
 // Index just past the newline of the first line that IS `marker`, or -1.
 function afterMarkerLine(text: string, marker: string): number {
   let from = 0;
@@ -125,7 +140,7 @@ export function parseFramedStdout(text: string, nonce: string): FramedStdout | n
     const nl = body.indexOf('\n', at);
     if (nl === -1) return null; // the sentinel line is still arriving
     const line = body.slice(at + s.length, nl);
-    const m = /^ (\d+) (\S*)$/.exec(line);
+    const m = CLOSING_STDOUT_TAIL.exec(line);
     if (!m) { from = nl + 1; continue; }
     // Strip the one newline cc injected before the sentinel.
     const before = at > 0 && body[at - 1] === '\n' ? body.slice(0, at - 1) : body.slice(0, at);
@@ -277,7 +292,7 @@ export class FramedStreamFilter {
   }
 
   #matchesTail(tail: string): boolean {
-    return this.#kind === 'out' ? /^ (\d+) (\S*)$/.test(tail) : tail === '';
+    return closingTailMatches(this.#kind, tail);
   }
 
   #lineStartAt(at: number): boolean {

@@ -29,6 +29,7 @@ import { ExecOutputCollector } from './execCollector.ts';
 import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } from './mirror.ts';
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
 import { ProviderShell, type ShellExecOptions, type ShellHost } from './providerShell.ts';
+import { closingTailMatches } from './shellFraming.ts';
 import { requireAbsolute } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
@@ -280,7 +281,8 @@ export class ProviderSystem implements System, ShellHost {
       // stdout at 87 ms, stderr at 88 ms). Absent unless the caller named a
       // marker, which only the redirected shell does.
       const scan = opts.completeMarker === undefined ? null : {
-        out: new ClosingLineScan(opts.completeMarker), err: new ClosingLineScan(opts.completeMarker),
+        out: new ClosingLineScan(opts.completeMarker, 'out'),
+        err: new ClosingLineScan(opts.completeMarker, 'err'),
       };
       const collector = new ExecOutputCollector(scan === null ? opts : {
         ...opts,
@@ -321,7 +323,11 @@ export class ProviderSystem implements System, ShellHost {
       // `detach` and NOT `close`: the operation is finished, the background job
       // is not, and killing it here would diverge from what a local Bash call
       // leaves behind. Without the frame the provider keeps the exec open with
-      // its own timer armed and reaps the survivor when that fires.
+      // its own timer armed, and when that fires it reaps the survivor WHERE IT
+      // HAS GROUP REACH — measured, card 2026-0318 §3: gone under
+      // `processGroupSignal`, alive without it. So the frame also closes a
+      // divergence between the two shipped capability configurations, rather
+      // than only sparing a job the timer would otherwise always have killed.
       //
       // `code: 0` is not the command's code and is never read as one: the
       // caller that passes a marker reads the code out of its own sentinel.
@@ -690,42 +696,67 @@ export class ProviderSystem implements System, ShellHost {
   }
 }
 
-// Has a COMPLETE line beginning with `marker` arrived on this stream?
+// Has a COMPLETE, VALID closing sentinel line arrived on this stream?
 //
-// THE RULES ARE THE PARSER'S OWN (src/systems/shellFraming.ts), because a settle
-// the parser then cannot honour is worse than no settle at all:
+// THE RULES ARE THE PARSER'S OWN, and it applies all three rather than a prefix
+// of them, because A SETTLE THE PARSER THEN REJECTS IS WORSE THAN NO SETTLE AT
+// ALL: `#runOneShot` would throw `ESHELLGONE` on a command that succeeded, which
+// is this card's own defect class reintroduced at the seam that removed it.
 //   * the marker only counts at the START of a line — a command that echoes it
 //     mid-line is output, not a boundary;
-//   * and only once that line has ENDED — cc's framing writes the exit code and
-//     the cwd AFTER the marker, so settling on the marker alone hands the parser
-//     half a frame.
+//   * only once that line has ENDED, because the tail decides what it is;
+//   * and only if that TAIL matches — `closingTailMatches`, shared with both
+//     parsers and with FramedStreamFilter so the four cannot drift
+//     (src/systems/shellFraming.ts, card 2026-0318 §5.2).
+// A line that fails the tail is a forgery, so scanning CONTINUES past it exactly
+// as the parser's own loop does; stopping there would hide a real frame arriving
+// behind it.
+//
 // The needle carries the leading newline the framing always injects, so the
 // buffer never has to remember whether it sits at a line start.
 //
-// It keeps at most one needle's worth of text: only a PROPER PREFIX of the
-// needle can still become a match, so a command of any size costs O(1) memory
-// here and one pass in total.
+// MEMORY: bounded, but no longer by the needle alone — it holds a candidate
+// sentinel LINE while that line is still arriving, so the bound is the longest
+// line that begins with the marker rather than one needle. Everything before the
+// live candidate, and everything already ruled out, is dropped on every push, so
+// a command of any output size costs no more than that and is scanned once.
 class ClosingLineScan {
   readonly #needle: string;
+  readonly #kind: 'out' | 'err';
   #buf = '';
   #seen = false;
 
-  constructor(marker: string) { this.#needle = `\n${marker}`; }
+  constructor(marker: string, kind: 'out' | 'err') {
+    this.#needle = `\n${marker}`;
+    this.#kind = kind;
+  }
 
   get seen(): boolean { return this.#seen; }
 
   push(text: string): void {
     if (this.#seen) return;
     this.#buf += text;
-    const at = this.#buf.indexOf(this.#needle);
-    if (at === -1) {
-      if (this.#buf.length >= this.#needle.length) this.#buf = this.#buf.slice(1 - this.#needle.length);
-      return;
+    let from = 0;
+    for (;;) {
+      const at = this.#buf.indexOf(this.#needle, from);
+      if (at === -1) {
+        // Nothing from `from` on matched, so a future match can only start where
+        // fewer than a needle's worth of characters remain.
+        this.#buf = this.#buf.slice(Math.max(from, this.#buf.length - this.#needle.length + 1, 0));
+        return;
+      }
+      const nl = this.#buf.indexOf('\n', at + this.#needle.length);
+      // The line is still arriving: keep it whole, and nothing before it.
+      if (nl === -1) { this.#buf = this.#buf.slice(at); return; }
+      if (closingTailMatches(this.#kind, this.#buf.slice(at + this.#needle.length, nl))) {
+        this.#seen = true;
+        this.#buf = '';
+        return;
+      }
+      // A forgery. Resume AT its terminating newline, which may itself open the
+      // next candidate — the needle's first character is that newline.
+      from = nl;
     }
-    // The line is still arriving: keep it whole, and nothing before it.
-    if (this.#buf.indexOf('\n', at + this.#needle.length) === -1) { this.#buf = this.#buf.slice(at); return; }
-    this.#seen = true;
-    this.#buf = '';
   }
 }
 

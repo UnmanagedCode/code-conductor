@@ -37,13 +37,22 @@ Provider MUSTs:
 
 1. Write **nothing but frames** to stdout.
 2. Answer cc's `hello` with a `hello` **before any other frame**.
-3. **Exit when stdin reaches EOF, taking everything it started with it.** This
-   is the whole of provider lifecycle management on cc's side: cc closes the
+3. **Exit when stdin reaches EOF, taking every operation still open with it.**
+   This is the whole of provider lifecycle management on cc's side: cc closes the
    pipe (or dies) and the provider goes away. **A provider whose children are
    not its OS descendants must relay the kill itself** — a `docker exec` child
    is reparented inside the container and outlives the provider, so a docker
    provider has to SIGKILL its in-flight `docker exec` processes on exit. cc has
    no way to clean up after a provider that does not.
+
+   **SCOPED TO OPERATIONS THAT ARE STILL OPEN, and that scope is load-bearing.**
+   An `exec` cc has ended with `detach` is closed, and its command — and anything
+   that command backgrounded — is deliberately **outside** this reap. Killing it
+   here would undo the one thing `detach` exists to say, and would break the
+   parity that motivates it: a background job started by a local shell outlives
+   the session that started it, so one started by a redirected command must too.
+   A `close`d operation is likewise already dealt with — by a kill, in that
+   case.
 4. Interleave concurrent ids correctly (§4).
 5. **Answer every operation it accepts, or refuse it.** Each `id` cc opens
    terminates in a frame for that `id` — `exit`, `readFileResult` + `end`,
@@ -430,8 +439,8 @@ and returns. The `exit` frame may arrive later, or never.
 
 **So cc does NOT require a provider to report `exit` promptly after the process
 exits — and this protocol deliberately does not ask for it.** Measured on the
-reference provider (card 2026-0318 §1, §4), both same-host and across a real
-container boundary, in both capability configurations:
+reference provider, both same-host and across a real container boundary, in
+both capability configurations (card 2026-0318 §1, §4, §G5):
 
 - A provider that reports `exit` when the child's **streams close** never
   reports it for a command that backgrounded a job, because the job inherits the
@@ -839,7 +848,7 @@ ten of each.
 | `exec` | `docker exec -w <cwd> -e … <ctr> sh -c …`, where `<ctr>` is the frame's `remoteId` |
 | `remotes` | `true` — the daemon serves every container it knows. An unknown `<ctr>` is `ENOREMOTE`, id-addressed |
 | `signal`, `processGroup:true` | `docker exec … kill -- -<pgid>` → `processGroupSignal: true` |
-| `detach` | Drop the exec from the provider's bookkeeping and stop forwarding its frames. **Signal nothing** — this frame's whole content is that the command is over and is not to be killed. MUST 3 still applies at provider exit |
+| `detach` | Drop the exec from the provider's bookkeeping and stop forwarding its frames. **Signal nothing** — this frame's whole content is that the command is over and is not to be killed. It is then **out of MUST 3's exit reap too**, which covers operations still open: a detached `docker exec` keeps running, exactly as a detached local one does |
 | `readFile` / `writeFile` | `cat` / `cat >`, with a companion `stat` for `size`/`mode`, each against the frame's `<ctr>` |
 | `remoteDescriptors` | `true` if the provider knows its containers' layouts: `mirrorRoot` = the container's project root, or `/` to let a worker read and edit anywhere in it; `exclude` = the container's pseudo-filesystems (`/proc`, `/dev`, `/sys`) |
 

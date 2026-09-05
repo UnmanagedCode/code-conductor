@@ -37,7 +37,7 @@ async function withShell(fn, shellOpts = {}, flags = []) {
   const sys = makeProviderSystem(flags);
   try {
     await sys.connect();
-    return await fn(sys.shell({ cwd, ...shellOpts }), cwd);
+    return await fn(sys.shell({ cwd, ...shellOpts }), cwd, sys);
   } finally {
     sys.dispose();
     await rmrf(dir);
@@ -616,6 +616,80 @@ for (const config of CAPABILITY_CONFIGS) {
     }, { commandTimeoutMs: 1_000 }, config.flags);
   });
 }
+
+// ── The settle scan agrees with the parser, or it must not settle ────
+//
+// `completeMarker` settles an `exec` the moment the marker has been seen on both
+// streams (card 2026-0318 §5.2). A settle the PARSER then rejects is the worst
+// available outcome: `#runOneShot` throws `ESHELLGONE` on a command that
+// succeeded — the exact defect class this card exists to remove, reintroduced at
+// the seam that removed it. So the scan has to validate everything the parser
+// validates, the per-stream TAIL included: `<marker> <rc> <b64cwd>` on stdout,
+// and nothing at all after the marker on stderr.
+//
+// Driven through `execOneShot` with a marker of the test's own choosing rather
+// than through `run()`: the nonce a real command would have to forge is
+// unguessable by construction, so this is the only way to put a rejectable
+// candidate on the wire at all.
+//
+// THE DISCRIMINATOR IS THE EXIT CODE, and it is exact, not a race: a
+// marker-settle resolves `code: 0` unconditionally, while waiting for the `exit`
+// frame resolves the command's own code. The provider writes both stream frames
+// before the exit frame (the child's `'close'` fires after its last `'data'`),
+// so which one settled the call is readable off `code` alone.
+const REJECTABLE_TAILS = [
+  { name: 'stdout tail that is not `<rc> <cwd>`', out: ' not-a-frame', err: '' },
+  { name: 'stdout tail missing the cwd field', out: ' 0', err: '' },
+  { name: 'stderr tail that is not empty', out: ' 0 Lw==', err: ' 0 Lw==' },
+];
+
+for (const c of REJECTABLE_TAILS) {
+  test(`a settle candidate the parser would REJECT does not settle the exec (${c.name})`, async () => {
+    await withShell(async (_sh, cwd, sys) => {
+      const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+      const r = await sys.execOneShot(
+        { shell: `printf '\n${m}${c.out}\n'; printf '\n${m}${c.err}\n' >&2; exit 7` },
+        { cwd, timeoutMs: 4_000, completeMarker: m },
+      );
+      assert.equal(r.code, 7,
+        'the exec waited for the real exit frame — a scan-settle would have reported 0 '
+        + 'and left the parser to throw ESHELLGONE on a command that succeeded');
+    });
+  });
+}
+
+// THE POSITIVE CONTROL for the three rows above: the SAME shape with tails the
+// parser accepts DOES settle on the marker, before the exit frame. Without it,
+// a scan that never settled at all would pass all three.
+test('a settle candidate the parser ACCEPTS settles the exec, ahead of the exit frame', async () => {
+  await withShell(async (_sh, cwd, sys) => {
+    const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+    const r = await sys.execOneShot(
+      { shell: `printf '\n${m} 0 ${Buffer.from(cwd).toString('base64')}\n'; printf '\n${m}\n' >&2; exit 7` },
+      { cwd, timeoutMs: 4_000, completeMarker: m },
+    );
+    assert.equal(r.code, 0, 'the marker settled it, and `code` is the settle\'s rather than the command\'s');
+    assert.ok(r.stdout.includes(m), 'and the frame it settled on really is in the output it settled from');
+  });
+});
+
+// A FORGERY DOES NOT CONSUME THE BOUNDARY. The parser keeps scanning past a
+// sentinel line whose tail does not match (`shellFraming.ts`, FIRST MATCH WINS
+// applies to the first VALID one), so the scan must too — stopping at the
+// forgery would leave a real frame arriving afterwards unseen for ever.
+test('a rejected candidate does not blind the scan to the real frame behind it', async () => {
+  await withShell(async (_sh, cwd, sys) => {
+    const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+    const r = await sys.execOneShot(
+      {
+        shell: `printf '\n${m} not-a-frame\n'; printf '\n${m} 0 ${Buffer.from(cwd).toString('base64')}\n'; `
+          + `printf '\n${m} also-not\n' >&2; printf '\n${m}\n' >&2; exit 7`,
+      },
+      { cwd, timeoutMs: 4_000, completeMarker: m },
+    );
+    assert.equal(r.code, 0, 'the VALID frame behind the forgery still settled the exec');
+  });
+});
 
 // ── Cancellation ───────────────────────────────────────────────────
 

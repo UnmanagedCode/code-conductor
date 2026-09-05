@@ -219,6 +219,63 @@ test('the taxonomy is closed: every named code is recognised and nothing else is
   assert.equal(PROTOCOL_VERSION, 1);
 });
 
+// PINS §3's cc → provider table against the `ClientFrame` union in
+// src/systems/protocol.ts. In kind with the §8 pin below — and here for the same
+// reason that one gives: a test in the conformance suite that opens our docs is
+// broken for the third parties §10 sells that battery to, who clone it without
+// them.
+//
+// SOURCE BYTES ARE AN INPUT HERE, and that is what this pin costs. `ClientFrame`
+// is a TYPE, erased at runtime, so there is nothing to import; a runtime array
+// beside it would be a THIRD place to keep in sync and would leave this green
+// for a frame added to the union and not to the array. So the declaration is
+// read instead: `export type ClientFrame = … ;` for the members, and each
+// member's `type: '<literal>'` for the wire name. Renaming an interface is fine
+// (members resolve by name) and reflowing the union is fine (the whole `=`…`;`
+// block is read); deleting the `export` keyword, or writing a member's `type`
+// field as anything but a single-quoted literal, re-anchors this test.
+//
+// MEASURED separable, five CONSTRUCTED doc stimuli, one at a time: a dropped row
+// fails on `missing`; a row for a frame that does not exist fails on `extra`; a
+// DUPLICATED row reaches the count assertion and fails there ("11 rows for 10
+// client frames"), which is the one the other two are blind to; de-backticking
+// every row name locates the block and parses nothing, dying at `parsed no frame
+// rows`; and renaming the heading dies at the locate guard. It arrived GREEN —
+// both inputs already agreed — so this is what stands in for a red-proof.
+test('§3 of docs/systems-protocol.md names exactly the ClientFrame union', () => {
+  const src = readFileSync(new URL('../src/systems/protocol.ts', import.meta.url), 'utf8');
+  const union = /export type ClientFrame =([^;]*);/.exec(src);
+  assert.ok(union, 'could not locate `export type ClientFrame = … ;` — re-anchor this test');
+  const members = [...union[1].matchAll(/\b(\w+Frame)\b/g)].map((m) => m[1]);
+  assert.ok(members.length > 0, 'located the ClientFrame union but parsed no members — re-anchor the member regex');
+  const declared = members.map((name) => {
+    const decl = new RegExp(`export interface ${name}\\b[^]*?\\btype:\\s*'([^']+)'`).exec(src);
+    assert.ok(decl, `${name} is in the ClientFrame union but no \`type: '…'\` literal was found for it`);
+    return decl[1];
+  });
+
+  const doc = readFileSync(new URL('../docs/systems-protocol.md', import.meta.url), 'utf8');
+  const start = doc.indexOf('### cc → provider');
+  // End at the next heading of any depth, exactly as the §8 pin bounds its own
+  // block, so a restructure reds here instead of swallowing the provider → cc
+  // table below.
+  const after = start === -1 ? -1 : doc.slice(start + 1).search(/\n#{2,} /);
+  const end = after === -1 ? -1 : start + 1 + after;
+  assert.ok(start !== -1 && end > start,
+    'could not locate §3\'s cc → provider block in docs/systems-protocol.md — re-anchor this test');
+  const listed = [...doc.slice(start, end).matchAll(/^\| `(\w+)`/gm)].map((m) => m[1]);
+  assert.ok(listed.length > 0, 'located the §3 block but parsed no frame rows — re-anchor the row regex');
+
+  const missing = declared.filter((t) => !listed.includes(t));
+  const extra = listed.filter((t) => !declared.includes(t));
+  assert.deepEqual(missing, [], `in the ClientFrame union but missing from §3's table: ${missing.join(', ')}`);
+  assert.deepEqual(extra, [], `in §3's table but not in the ClientFrame union: ${extra.join(', ')}`);
+  // LAST, for the reason the §8 pin gives: set equality holding while the counts
+  // differ means the table repeats a row, which the two diffs above are blind to.
+  assert.equal(listed.length, declared.length,
+    `§3 has ${listed.length} rows for ${declared.length} client frames, and names the right set — so a row repeats`);
+});
+
 // PINS §8's protocol-level table against PROTOCOL_ERROR_CODES. Doc bytes are an
 // INPUT here: §8's heading text and its `| `ECODE` |` row format are load-bearing,
 // and renaming or reformatting either reds this test. That is the accepted cost.

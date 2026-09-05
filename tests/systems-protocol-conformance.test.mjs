@@ -200,8 +200,8 @@ for (const config of CAPABILITY_CONFIGS) {
   // PINS BOTH HALVES OF `detach`, against `close` as the contrast on the same
   // fixture and in the same configuration:
   //   * STOP REPORTING — not one more frame on that id, `exit` included;
-  //   * KILL NOTHING — the survivor is alive in EVERY configuration, including
-  //     the one where `close` reaps it through the process group.
+  //   * KILL NOTHING — the survivor is alive in BOTH capability configurations,
+  //     including the one where `close` reaps it through the process group.
   test(`${tag} detach ends the operation and kills nothing; close kills as far as it reaches`, async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-detach-'));
     const root = await fs.realpath(dir);
@@ -247,7 +247,7 @@ for (const config of CAPABILITY_CONFIGS) {
       assert.equal(c.frames.length, at.closed, 'close goes quiet on the id too');
 
       assert.equal(alive(d.pid), true,
-        'detach kills NOTHING — the job outlives the operation in every configuration');
+        'detach kills NOTHING — the job outlives the operation in both capability configurations');
       // The contrast, and it is capability-keyed because `close`'s reach is:
       // with a process group one kill reaches the survivor, without one it
       // cannot (the same split tests/systems-protocol-conformance.test.mjs
@@ -275,7 +275,7 @@ for (const config of CAPABILITY_CONFIGS) {
   // NOTE ON ITS RED: the settle is what this asserts on, so before the fix the
   // run throws ETIMEDOUT and the aliveness assertion is never reached. That is
   // inherent — there is no sentinel-settle to survive until there is one.
-  test(`${tag} a redirected background job outlives its command, in every configuration`, async () => {
+  test(`${tag} a redirected background job outlives its command, in both capability configurations`, async () => {
     await withSystem(config.flags, async (sys, root) => {
       const pidFile = path.join(root, 'bg.pid');
       let pid = 0;
