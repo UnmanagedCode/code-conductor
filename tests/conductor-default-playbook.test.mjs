@@ -173,7 +173,7 @@ test('setting the default leaves the convention selection untouched', async () =
 test('the fallback names a real, loadable built-in playbook', async () => {
   // The product decision, pinned literally once: every other assertion reads
   // through the constant and would follow it to any other seed.
-  assert.equal(DEFAULT_PLAYBOOK_ID, 'solo');
+  assert.equal(DEFAULT_PLAYBOOK_ID, 'relay');
   assert.ok(SEED_PLAYBOOK_IDS.includes(DEFAULT_PLAYBOOK_ID), 'the fallback is a built-in seed');
   const { playbooks } = await loadPlaybooks();
   assert.ok(playbooks.has(DEFAULT_PLAYBOOK_ID), 'the fallback resolves through the real catalog');
@@ -223,9 +223,9 @@ test('an explicitly selected id beats the fallback', async () => {
 });
 
 test('default selected ⇒ its stages and per-stage descriptions are in the composed prompt', async () => {
-  await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
+  await setDefaultPlaybook({ mode: 'playbook', id: DEFAULT_PLAYBOOK_ID });
   const doc = await composeCurrentConduct();
-  assert.ok(doc.includes('## Preferred playbook — `solo`'), 'section present');
+  assert.ok(doc.includes(`## Preferred playbook — \`${DEFAULT_PLAYBOOK_ID}\``), 'section present');
   // LOAD-BEARING ORDER. The section deliberately omits the playbook's
   // description and a describe_playbook pointer because the listing above
   // carries both; met cold, it would cost the conductor the very round-trip this
@@ -236,7 +236,7 @@ test('default selected ⇒ its stages and per-stage descriptions are in the comp
   assert.ok(doc.indexOf('**Available playbooks**') < doc.indexOf('## Preferred playbook'),
     'the available-playbooks listing precedes the preferred-playbook section');
   const { playbooks } = await loadPlaybooks();
-  const pb = playbooks.get('solo');
+  const pb = playbooks.get(DEFAULT_PLAYBOOK_ID);
   for (const [name, stage] of Object.entries(pb.stages)) {
     assert.ok(doc.includes(`- **${name}**`), `stage ${name} listed`);
     assert.ok(doc.includes(stage.description), `stage ${name} description present`);
