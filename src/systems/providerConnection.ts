@@ -139,7 +139,9 @@ export class ProviderConnection {
       throw new SystemError(
         'ETRANSPORT',
         `provider '${this.#launch.argv[0]}' was disposed when its system's registration changed — `
-        + `this handle is dead and is never reconnected; a session opened on it must be restarted`,
+        + `this handle is dead and is never reconnected. Start a NEW session on the project: `
+        + `respawn, rewind and prune all relaunch through this same session's retained handle `
+        + `and fail identically`,
       );
     }
     if (this.#hello) return this.#hello;

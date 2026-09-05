@@ -28,8 +28,8 @@ import { disposeSystemHandles, systemById, systemHandleGeneration } from '../src
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RECORDER = path.join(__dirname, 'fixtures', 'recordingProvider.mjs');
 
-// Local by design: six suites carry their own four-line copy of this rather
-// than sharing one, because what counts as a frame is the test's own claim.
+// Local by design: other suites carry their own copy of this rather than
+// sharing one, because what counts as a frame is the test's own claim.
 async function wire(file) {
   let raw = '';
   try { raw = await fs.readFile(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
