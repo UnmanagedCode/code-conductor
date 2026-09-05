@@ -44,10 +44,12 @@ process.env.CC_TEST_RUN_ID = RUN_MARKER;
 // regression test.
 pinGitConfig(safeRoot.root);
 
-// Warm-start the children. Every test file runs in its own process and pays V8
+// Warm-start the children. Every test file runs in its own process and re-pays V8
 // compile + type-stripping of the same `helpers.mjs -> server.ts -> src/*.ts`
-// graph; a shared on-disk compile cache turns that ~770ms of each child's ~1s
-// startup into a load. HERE, in the same pre-fork block as the env above, because
+// graph; a shared on-disk compile cache turns that into a load. What it is worth,
+// and which per-child figure means what, are in tests/compileCache.mjs — one home,
+// because two numbers restated here would be two numbers to re-anchor. HERE, in
+// the same pre-fork block as the env above, because
 // run() below passes no `env` option — children inherit this process's env, so one
 // call covers `npm test`, both gate rows and every mutation-harness iteration with
 // no per-child wiring. tests/compileCache.mjs owns the directory choice, the size
@@ -634,11 +636,22 @@ if (sampledProcs) {
   // future test that spawns fake-claude with a curated env dropping CC_TEST_RUN_ID
   // takes the counted figure to 0 while the box-wide one stays high — which reads
   // as a clean run unless the two are printed together.
+  //
+  // THE MESSAGE MUST NOT ATTRIBUTE THE EXCESS, because nothing here can. `owned`
+  // is the count hasMarker said yes to; its complement is everything else, and
+  // that lumps together a concurrent run's children (harmless — they answer to ITS
+  // budget), a pid whose environ was unreadable, a stale pid from a dead run, and a
+  // fake-claude spawned with no marker at all. Only the last is a defect, and it is
+  // precisely the one this clause exists to expose, so narrating the gap as
+  // somebody else's run would talk the reader out of the case it was printed for.
   if (peakFakeClaudeSeen > peakFakeClaude) {
     console.log(
-      `guardrail: peak visible box-wide = ${peakFakeClaudeSeen}; the excess carries another ` +
-      'CC_TEST_RUN_ID (a concurrent suite run) and is not this run\'s to answer for. A COUNTED ' +
-      'figure near zero against a high box-wide one is this guard blind, not a clean run.',
+      `guardrail: peak fake-claude visible box-wide = ${peakFakeClaudeSeen}, above the ` +
+      `${peakFakeClaude} this run accounts for (independent maxima, so the gap is not one tick\'s). ` +
+      'THE EXCESS IS UNATTRIBUTED and cannot be attributed from here: a concurrent suite run\'s ' +
+      'children read identically to a fake-claude carrying NO CC_TEST_RUN_ID — and that second case ' +
+      'is THIS GUARD BLIND to a real spawn, since hasMarker fails closed and the process is counted ' +
+      'nowhere. A counted figure near zero against a high box-wide one is not a clean run.',
     );
   }
   // RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.

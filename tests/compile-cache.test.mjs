@@ -75,6 +75,20 @@ test('the default dir is wiped over the cap and kept under it', () => {
   assert.equal(fs.existsSync(overDir), false, 'the cache dir is removed; Node recreates it lazily');
 });
 
+test('a cache sitting exactly ON the cap is kept', () => {
+  // THE BOUNDARY, pinned separately because both directions above clear it by a
+  // wide margin: the rule is `bytes > max`, and a `>` that drifted to `>=` passes
+  // every other case in this file while throwing away a healthy cache that has
+  // settled on the cap — on every single run, silently.
+  const root = tmp();
+  const dir = path.join(root, COMPILE_CACHE_DIR_NAME);
+  fill(dir, 4096);
+  const res = enableCompileCache({ repoRoot: root, env: {}, max: 4096 });
+  assert.equal(res.bytes, 4096, 'sanity: the fixture is exactly the cap');
+  assert.equal(res.reset, false, 'equal is not over');
+  assert.equal(fs.existsSync(path.join(dir, 'v24-x64-abc', 'entry')), true);
+});
+
 test('the over-cap wipe measures the cache dir, not the repo root around it', () => {
   // The bound walks <repoRoot>/.compile-cache. A mutant that walked repoRoot
   // instead would fire on any repo bigger than the cap and wipe a healthy cache

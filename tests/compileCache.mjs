@@ -6,6 +6,20 @@
 // src/*.ts` graph. Measured on this box, importing tests/helpers.mjs in a bare
 // child: ~220ms uncached, ~120ms cached, in ~360 children per suite run.
 //
+// TWO PER-CHILD FIGURES ARE IN CIRCULATION AND THEY MEASURE DIFFERENT THINGS — do
+// not read one as a target for the other. ~770ms of a child's ~1s startup is the
+// WHOLE-CHILD cost (spawn, the module graph, type-stripping, node:test bootstrap),
+// charged under load; the ~220/~120ms pair above is a BARE-IMPORT PROBE of just
+// the graph, on an idle box, with spawn excluded. So ~100ms saved per child is the
+// probe's answer and is not a shortfall against 770 — the cache can only ever
+// attack the compile component the probe isolates. The figure that settles whether
+// it was worth doing is neither, and it is the whole-gate pair below.
+//
+// (A THIRD ~770ms in this suite is unrelated: `C`, the per-file child-lifecycle
+// cost at 72-way starvation, in tests/summary-attribution.test.mjs and
+// docs/architecture.md's ratio-vs-difference worked example. Same number, different
+// quantity, different conditions.)
+//
 // SHARED ACROSS RUNS, AND PER WORKTREE. Both halves are load-bearing:
 //   * shared, because that is the entire win — one run warms the next run, the
 //     gate's second row, and every mutation iteration. A per-run directory pays
