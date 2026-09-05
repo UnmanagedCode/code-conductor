@@ -119,6 +119,52 @@ describe('a handle retained across an argv swap', () => {
     assert.equal(await fresh.readFile(path.join(rootB, 'marker.txt')), 'MACHINE-B\n',
       'CONTROL: a freshly resolved view serves the NEW machine');
   });
+
+  // THE FENCE ON THE ORDERING INSIDE `dispose()`. T1-T4 all dispose a
+  // connection that is UP, so they cannot tell the flag being set BEFORE
+  // `dispose()`'s `if (!c) return` from it being set after. The production
+  // shape that can is a provider which ALREADY DIED, then an argv edit: the
+  // crash leaves no `#child` to tear down, and `#failures` was reset by the
+  // last successful connect, so there is no backoff window to mask a respawn
+  // either. Setting the flag after the early return would leave exactly that
+  // handle live.
+  test('T6 — disposing a connection that is already DOWN is still terminal', async () => {
+    const gen1 = ['node', RECORDER, '--record', recA, '--remote', `a=${rootA}`, '--name', 'gen1'];
+    const gen2 = ['node', RECORDER, '--record', recB, '--remote', `a=${rootB}`, '--name', 'gen2'];
+    await addSystem({ id: 'box', label: 'Box', launch: gen1 });
+
+    const stale = await systemById('box', 'a', `project 'p'`);
+    assert.equal(await stale.readFile(path.join(rootA, 'marker.txt')), 'MACHINE-A\n');
+    assert.notEqual(stale.handshake, null, 'the connection is UP before the provider is killed');
+
+    // Kill the provider from the far side rather than simulating a death: the
+    // reference provider spawns an exec as its own DIRECT child, so `$PPID`
+    // inside the shell is the provider process itself. `exec` never rejects,
+    // so the transport failure comes back in the result.
+    await stale.exec({ argv: ['sh', '-c', 'kill -9 $PPID'] }, { cwd: rootA, stdin: 'ignore' });
+    await waitFor(() => stale.handshake === null);
+
+    // THE PRECONDITION THIS TEST EXISTS FOR. Without it a fixture whose
+    // provider did not actually die would quietly degrade this into a second
+    // copy of T2.
+    assert.equal(stale.handshake, null, 'the connection is DOWN when the argv is edited');
+    const hellosBefore = await hellos(recA);
+    assert.ok(hellosBefore > 0, 'the gen1 provider really was launched to serve the baseline');
+
+    await updateSystem('box', { launch: gen2 });
+
+    // Matched on the DISPOSED guard's own wording, not just the code: a crash
+    // that had left a backoff window open would refuse with `ETRANSPORT` too,
+    // and would suppress the respawn for a reason that has nothing to do with
+    // this fix — masking the very thing the count below is here to catch.
+    // (`#failures` is only raised by a failed CONNECT, and this connection's
+    // last connect SUCCEEDED, so no window is open — this pins that.)
+    await assert.rejects(() => stale.readFile(path.join(rootA, 'marker.txt')),
+      (e) => e.code === 'ETRANSPORT' && /was disposed/.test(e.message),
+      'a handle disposed while DOWN refuses too, and refuses AS DISPOSED rather than as backed-off');
+    assert.equal(await hellos(recA), hellosBefore,
+      'and it spawned nothing: the gen1 provider command was never relaunched');
+  });
 });
 
 describe('a live session across an argv swap', () => {
@@ -221,6 +267,8 @@ describe('a live session across an argv swap', () => {
   });
 
   test('T5 — session-root recomposition cannot pull from the pre-swap machine', async () => {
+    const hellosBefore = await hellos(recA);
+    assert.ok(hellosBefore > 0, 'the gen1 provider really was launched to serve the baseline');
     await updateSystem('box', { launch: gen2Launch() });
 
     // It throws at its opening `system.mirror()` → `ensureUp()`, before the
@@ -229,5 +277,7 @@ describe('a live session across an argv swap', () => {
     await assert.rejects(() => composeSessionRoot(inst._redirectPlacement),
       (e) => e.code === 'ETRANSPORT',
       'recomposition refuses on the retained handle rather than re-pulling from MACHINE A');
+    assert.equal(await hellos(recA), hellosBefore,
+      'the gen1 provider command was never launched a second time');
   });
 });
