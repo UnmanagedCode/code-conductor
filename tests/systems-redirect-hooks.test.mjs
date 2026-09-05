@@ -207,10 +207,10 @@ test('with no redirector the broker is unchanged', async () => {
 
 
 // PINS: a LOCAL session's ask gate is not narrowed by tool name. The exemption
-// is scoped to redirection, so a tool arriving without a redirect attached —
-// whether it is `Read` (exempt only under redirect) or a name in no matcher at
-// all — raises a card rather than sailing through.
-test('a local ask-mode session gates every tool that reaches the broker', async () => {
+// is scoped to redirection, so with no redirect attached the tool's name does
+// not decide the outcome: neither `Read` (exempt only under redirect) nor a
+// name in no matcher at all is auto-allowed on that ground.
+test('a local ask-mode gate is not narrowed by tool name', async () => {
   for (const toolName of ['Read', 'FutureTool']) {
     const { b, events } = broker({ mode: 'ask' });
     const res = fakeRes();
