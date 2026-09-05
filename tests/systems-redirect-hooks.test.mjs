@@ -205,3 +205,48 @@ test('with no redirector the broker is unchanged', async () => {
   assert.equal(events.length, 0);
 });
 
+
+// PINS: a LOCAL session's ask gate is not narrowed by tool name. The exemption
+// is scoped to redirection, so with no redirect attached the tool's name does
+// not decide the outcome: neither `Read` (exempt only under redirect) nor a
+// name in no matcher at all is auto-allowed on that ground.
+test('a local ask-mode gate is not narrowed by tool name', async () => {
+  for (const toolName of ['Read', 'FutureTool']) {
+    const { b, events } = broker({ mode: 'ask' });
+    const res = fakeRes();
+    b.handle(envelope({ tool_name: toolName, tool_input: { file_path: '/x' } }), res);
+    await new Promise(r => setTimeout(r, 5));
+
+    assert.equal(res.headersSent, false, `${toolName} held open behind the card`);
+    const card = events.find(e => e.kind === 'permission_request');
+    assert.ok(card, `${toolName} raises a card on a local ask-mode session`);
+    assert.equal(card.toolName, toolName);
+
+    assert.equal(b.resolve('tu1', false), true);
+    await settled(res);
+    assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+  }
+});
+
+// PINS: the redirect exemption is a fixed list, not the complement of a gated
+// set. A tool that is hooked under redirect but named in no list GATES — so
+// widening the redirect matcher later cannot open a new auto-allow with nobody
+// deciding it (card 2026-0339).
+test('a redirected ask-mode session gates a tool that is in no list', async () => {
+  const { b, events } = broker({ mode: 'ask', redirect: {
+    preToolUse: async () => ({ decision: 'allow' }),
+    postToolUse: async () => null,
+  } });
+  const res = fakeRes();
+  b.handle(envelope({ tool_name: 'FutureTool', tool_input: {} }), res);
+  await new Promise(r => setTimeout(r, 5));
+
+  assert.equal(res.headersSent, false, 'held open behind the card');
+  const card = events.find(e => e.kind === 'permission_request');
+  assert.ok(card, 'an unlisted tool raises a card even under redirect');
+  assert.equal(card.toolName, 'FutureTool');
+
+  assert.equal(b.resolve('tu1', false), true);
+  await settled(res);
+  assert.equal(res.body.hookSpecificOutput.permissionDecision, 'deny');
+});
