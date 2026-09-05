@@ -25,14 +25,15 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { bindRemoteSystem, seedRepo, git, flakyLaunch } from './remoteSystem.mjs';
-import { adoptProject, createProject, worktreeStoreDir } from '../src/projects.ts';
+import { bindRemoteSystem, seedRepo, git, flakyLaunch, referenceLaunch } from './remoteSystem.mjs';
+import { adoptProject, createProject, setProjectRemote, worktreeStoreDir } from '../src/projects.ts';
 import {
   createWorktree, mergeWorktreeIntoParent, removeWorktree, syncWorktree, listWorktrees, runGit,
-  getProjectCommits,
+  getProjectCommits, registeredWorktreeNames,
 } from '../src/worktrees.ts';
 import { updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
+import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { liveSystemProto } from './systemHandle.mjs';
 
 let nextRpcId = 1;
@@ -691,5 +692,154 @@ describe('a system that dies mid-operation', () => {
     const app = r.body.find(p => p.name === 'app');
     assert.equal('isGitRepo' in app && app.isGitRepo === true, false,
       'the dying project invents no git fact');
+  });
+
+  // ── A stranded registration after the git removal (card 2026-0308) ────
+  //
+  // The provider is alive for `git worktree remove --force`, which really
+  // deletes the checkout, and then really dies at the branch delete — so
+  // `runGit` raises GIT_DID_NOT_RUN after the removal already happened.
+  //
+  // THE INVARIANT PINNED BY THE TESTS BELOW: once `git worktree remove` reports
+  // success, no git step that follows it can leave the store entry registered.
+  // Scoped to the git steps deliberately; the bound on that is stated once, at
+  // the `dropWorktreeStoreEntry` call site in `src/worktrees.ts`
+  // (card 2026-0308 §G2, §G10).
+
+  // `--die-on` forwards the matching frame before dying, so the branch delete
+  // genuinely is in flight on the far side when the transport drops.
+  const dieAtBranchDelete = () => goFlaky({ dieOn: '"branch","-D"' });
+
+  // Back to the healthy provider, because what the reordering is asserted
+  // against — the pruned listing, and the placement guard's target check — both
+  // need a system that answers. updateSystem disposes the live handle.
+  async function heal() {
+    await updateSystem(remote.id, { launch: referenceLaunch() });
+    disposeSystemHandles();
+  }
+
+  test('a provider that dies at the branch delete leaves no registration behind', async () => {
+    await dieAtBranchDelete();
+    const err = await removeWorktree('app', wt.worktreeName, { force: true }).then(() => null, e => e);
+    // Asserted first, and it holds before the reorder too: it is what shows the
+    // death landed at the branch delete rather than at an earlier step.
+    assert.ok(err, 'a severed transport is still raised, not swallowed');
+    assert.equal(err.statusCode, 502, err.message);
+    assert.equal(err.code, 'GIT_DID_NOT_RUN', err.message);
+    assert.equal(await exists(wt.worktreePath), false, 'the worktree directory is gone');
+
+    await heal();
+    // The invariant, and the disagreement it rules out.
+    assert.deepEqual(await registeredWorktreeNames('app'), [],
+      'this removal left no store entry behind the directory git removed');
+    assert.deepEqual((await listWorktrees('app')).map(w => w.worktreeName), [],
+      'so the two listings agree');
+  });
+
+  // PINS the measured user-facing harm. A registration is exactly what
+  // setProjectRemote's guard reads, and it reads it without consulting git — so
+  // a stranded one refused a target change by name while the listing showed
+  // nothing (measured: 409 PROJECT_PLACEMENT_IN_USE naming the worktree against
+  // an empty listing, card 2026-0308 §G8). The second assertion is what keeps
+  // the first honest: the call has to reach target verification, which on this
+  // provider refuses SYSTEM_NO_REMOTES because it serves no named targets.
+  test('a target change is not refused by a worktree the death removed', async () => {
+    await dieAtBranchDelete();
+    await assert.rejects(() => removeWorktree('app', wt.worktreeName, { force: true }));
+    await heal();
+
+    const err = await setProjectRemote('app', 'someremote', { liveInstanceIds: () => [] })
+      .then(() => null, e => e);
+    assert.notEqual(err?.code, 'PROJECT_PLACEMENT_IN_USE',
+      `no worktree registration is left to refuse on: ${err?.message}`);
+    assert.equal(err?.code, 'SYSTEM_NO_REMOTES',
+      `the placement guard was passed and target verification was reached: ${err?.message}`);
+  });
+
+  // PINS: the refusal is re-raised, not swallowed. Holds before the reorder as
+  // well as after — it fences the fix against the swallowing variant rather
+  // than demonstrating the defect. Split from its message (card 2026-0308 §G6)
+  // so a re-wording fails one assertion rather than four: these three are what
+  // the REST and MCP surfaces map the failure by, and hiding them would report
+  // a transport failure as a clean removal.
+  test('the branch delete re-raises the refusal it was given', async () => {
+    await dieAtBranchDelete();
+    const err = await removeWorktree('app', wt.worktreeName, { force: true }).then(() => null, e => e);
+    assert.ok(err, 'the diagnosis about the box survives the removal succeeding');
+    assert.equal(err.code, 'GIT_DID_NOT_RUN', err.message);
+    assert.equal(err.statusCode, 502, err.message);
+    assert.equal(err.systemRefusal, true, err.message);
+  });
+
+  // PINS: and it says what did and did not happen. The removal above already
+  // succeeded by the time this refusal is raised, so the bare "git branch could
+  // not be run" reads as a delete that failed. The two negative assertions pin
+  // the annotation's bounds: the store-entry drop reports nothing back, and a
+  // 504 means the branch delete's ANSWER never arrived rather than that it never
+  // landed — neither is cc's to assert (card 2026-0308 §G2, §G10).
+  test('the branch delete refusal says the worktree itself was already removed', async () => {
+    await dieAtBranchDelete();
+    const err = await removeWorktree('app', wt.worktreeName, { force: true }).then(() => null, e => e);
+    assert.ok(err, 'the refusal is raised');
+    assert.match(err.message, /was removed, but its branch/, err.message);
+    assert.doesNotMatch(err.message, /unregistered/, err.message);
+    assert.doesNotMatch(err.message, /left behind|was not deleted/, err.message);
+  });
+
+  // PINS: the DELETE route invalidates the projects cache on the MUTATING throw
+  // path. A refusal at the branch delete comes after the directory is gone and
+  // the store entry dropped, so an `invalidate()` reached on the success path
+  // alone left the cached row listing a worktree that no longer exists — a
+  // client re-fetching on the 502 got it back, and a 404 for clicking it
+  // (card 2026-0308 §G10, superseding §1.5's harmless ruling).
+  test('the DELETE route does not serve a removed worktree from a stale cached row', async () => {
+    // The harness pins the projects cache to TTL 0 (tests/helpers.mjs), where a
+    // completed result is never served back at all — so this restores a TTL, or
+    // the assertion below would hold whether or not the route invalidates. The
+    // magnitude is deliberately far above the production 2 s
+    // (`src/projectsCache.ts`): it has only to outlast this test's own steps, so
+    // that the sole thing which can empty the row is an invalidation and not an
+    // expiry, and no wall clock is being raced.
+    resetProjectsCache(60_000);
+    try {
+      const warm = await api(baseUrl, 'GET', '/api/projects');
+      assert.deepEqual(warm.body.find(p => p.name === 'app').worktrees.map(w => w.worktreeName),
+        [wt.worktreeName], 'the entry is cached with the worktree listed');
+
+      await dieAtBranchDelete();
+      const del = await api(baseUrl, 'DELETE', `/api/projects/app/worktrees/${wt.worktreeName}?force=1`);
+      assert.equal(del.status, 502, JSON.stringify(del.body));
+      await heal();
+
+      const after = await api(baseUrl, 'GET', '/api/projects');
+      assert.deepEqual(after.body.find(p => p.name === 'app').worktrees.map(w => w.worktreeName),
+        [], 'the row was recomputed, not served from the entry cached before the removal');
+    } finally {
+      resetProjectsCache(0);
+    }
+  });
+
+  // THE CONTROL for the test above, and the reason its `[]` means something.
+  // Test-first ordering was not available for it — the route fix had already
+  // landed — so instead: with the same restored TTL and nothing invalidating, a
+  // row really is served from the cache after the state under it changed. If the
+  // entry were never served back, the assertion above would hold for a reason
+  // that has nothing to do with `invalidate()`. The store dir goes out of band,
+  // behind cc's back, so no route and no invalidation is involved.
+  test('the restored TTL really does serve a stale row when nothing invalidates', async () => {
+    resetProjectsCache(60_000);
+    try {
+      const warm = await api(baseUrl, 'GET', '/api/projects');
+      assert.deepEqual(warm.body.find(p => p.name === 'app').worktrees.map(w => w.worktreeName),
+        [wt.worktreeName], 'the entry is cached with the worktree listed');
+
+      await fs.rm(worktreeStoreDir('app', wt.worktreeName), { recursive: true, force: true });
+
+      const after = await api(baseUrl, 'GET', '/api/projects');
+      assert.deepEqual(after.body.find(p => p.name === 'app').worktrees.map(w => w.worktreeName),
+        [wt.worktreeName], 'served from the cached entry, since nothing invalidated it');
+    } finally {
+      resetProjectsCache(0);
+    }
   });
 });
