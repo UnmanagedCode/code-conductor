@@ -265,16 +265,20 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 //   - Its absence below is the kill landing inside a 400 ms budget stated in the
 //     command text, rather than outrunning the ~10 ms a bare `touch` takes to
 //     start and run. That ~10 ms was the entire margin of the no-delay form, and
-//     is why it went red on the gate. 400 ms is a CHOICE, not a maximum: `:300`
-//     and systems-shell-framing's cancel test measure 280 ms, `:555` measures
-//     1500 ms. Raise it before suspecting the invariant.
+//     is why it went red on the gate. 400 ms is a CHOICE, not a maximum:
+//     `interrupting the in-flight command stops it on the system` below and
+//     `cancelling the in-flight command actually stops it` in
+//     tests/systems-shell-framing.test.mjs both measure 280 ms, and `close()
+//     reaps a command that is still in flight` measures 1500 ms. Raise it
+//     before suspecting the invariant.
 //   - Effects the command produced BEFORE the kill are CORRECT — cancellation is
 //     a kill, not a rollback — so the no-delay form asserted something the wire
 //     contract never promised. Not running to COMPLETION is what it promises.
 //   - RESIDUAL, bounded but not closed: the absence is still satisfiable by a
 //     command that never crossed at all. The spawn measurement above bounds
 //     that; closing it would mean waiting for the command to start, which is the
-//     collapse into `:300` that the next comment rules out.
+//     collapse into `interrupting the in-flight command stops it on the
+//     system` that the next comment rules out.
 test('a cancelled call does not run to completion, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
