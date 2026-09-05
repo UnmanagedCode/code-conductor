@@ -206,10 +206,10 @@ test('with no redirector the broker is unchanged', async () => {
 });
 
 
-// PINS: the ask gate covers every tool that reaches a LOCAL session's broker.
-// The exemption below is scoped to redirection, so a tool arriving without a
-// redirect attached — whether it is the redirect-only `Read` or a name in no
-// matcher at all — raises a card rather than sailing through.
+// PINS: a LOCAL session's ask gate is not narrowed by tool name. The exemption
+// is scoped to redirection, so a tool arriving without a redirect attached —
+// whether it is `Read` (exempt only under redirect) or a name in no matcher at
+// all — raises a card rather than sailing through.
 test('a local ask-mode session gates every tool that reaches the broker', async () => {
   for (const toolName of ['Read', 'FutureTool']) {
     const { b, events } = broker({ mode: 'ask' });
@@ -228,10 +228,10 @@ test('a local ask-mode session gates every tool that reaches the broker', async 
   }
 });
 
-// PINS: the redirect exemption is a fixed list of tools someone decided about,
-// not the complement of the ask-gated set. A tool that is hooked under redirect
-// but named in neither list GATES — so widening the redirect matcher later
-// cannot open a new auto-allow with nobody deciding it (card 2026-0339).
+// PINS: the redirect exemption is a fixed list, not the complement of a gated
+// set. A tool that is hooked under redirect but named in no list GATES — so
+// widening the redirect matcher later cannot open a new auto-allow with nobody
+// deciding it (card 2026-0339).
 test('a redirected ask-mode session gates a tool that is in no list', async () => {
   const { b, events } = broker({ mode: 'ask', redirect: {
     preToolUse: async () => ({ decision: 'allow' }),

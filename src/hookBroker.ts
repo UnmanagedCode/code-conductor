@@ -75,9 +75,10 @@ export interface HookRedirector {
 // which must therefore not raise an ask card. `Read` is here because its bytes
 // have to be fetched from the system before the CLI opens the file; gating it
 // would start prompting on reads that never prompted before. Scoped to
-// redirected sessions: a LOCAL session's ask gate covers every tool that
-// reaches it, and an entry here is a decision someone made, not a hole a new
-// tool falls through (card 2026-0339).
+// redirected sessions: with no redirector attached the gate below tests no tool
+// name at all. The exemption is this list and nothing else — a tool hooked
+// later gates unless it is added here, rather than falling through a hole
+// (card 2026-0339).
 const REDIRECT_UNGATED_TOOLS = new Set(['Read']);
 
 interface PendingCallback {
@@ -160,14 +161,15 @@ export class HookBroker {
       }
       updatedInput = decision.updatedInput;
     }
-    this._decide(envelope, res, toolName, redirect !== null, updatedInput);
+    this._decide(envelope, res, toolName, !!redirect, updatedInput);
   }
 
   // The ask-mode gate: auto-allow outside ask mode, else hold the response open
-  // behind a permission card. Unchanged in substance for a local session — every
-  // tool that reaches it gates, exactly as before redirection existed. The one
-  // deliberate difference is the redirect-scoped exemption above, which applies
-  // only when a redirector is attached.
+  // behind a permission card. Unchanged in substance for a local session —
+  // `redirected` is false there, so the condition below reduces to
+  // `mode !== 'ask'` and no tool name is tested, exactly as before redirection
+  // existed. The one deliberate difference is the redirect-scoped exemption
+  // above, which applies only when a redirector is attached.
   private _decide(
     envelope: HookEnvelope | null | undefined,
     res: Response,
