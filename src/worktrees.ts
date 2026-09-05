@@ -221,8 +221,15 @@ export async function runGit(system: System, cwd: string, args: string[]): Promi
     // The command-level branch keeps the previous shape deliberately: the
     // diagnostic in `stderr` names the real cause, callers already surface it,
     // and the safety property still holds because a non-zero code now reads as
-    // UNKNOWN at every guard rather than as "passed". `local` never sets
-    // `transportFailure`, so local behaviour is unchanged.
+    // UNKNOWN at every guard rather than as "passed". `local` does not set
+    // `transportFailure` — but this branch turns on the CLASSIFICATION too, and
+    // an unclassifiable spawn error therefore throws on `local` as well:
+    // classifySpawnError names the errnos FS_ERROR_CODES tables and answers
+    // EUNKNOWN for anything else, which fd/process exhaustion in cc's
+    // single-process host reaches (measured: `spawn git EMFILE` → 502
+    // GIT_DID_NOT_RUN on system 'local'). What is unchanged locally is the
+    // CLASSIFIED case — a missing cwd or a non-executable git still returns
+    // here, diagnostic in `stderr`. (card 2026-0308 §1.1)
     if (!r.transportFailure && classifySpawnError(r.spawnError) !== 'EUNKNOWN') {
       return { stdout: r.stdout, stderr: r.stderr || r.spawnError, code: r.code };
     }
@@ -724,8 +731,8 @@ export function dependentsRefusal(
   };
 }
 
-// Remove a worktree: deregister it via git, drop the directory, delete
-// the branch, drop the central-store entry. We refuse if the working
+// Remove a worktree: deregister it via git and drop the directory, drop the
+// central-store entry, then delete the branch. We refuse if the working
 // tree has uncommitted changes so the user can't silently throw away
 // in-progress agent work, or if another worktree is based on this one —
 // the branch delete below would take that child's base out from under it.
@@ -778,12 +785,45 @@ export async function removeWorktree(
   if (rm.code !== 0) {
     throw httpError(500, `git worktree remove failed: ${rm.stderr.trim() || rm.stdout.trim()}`);
   }
+  // THE REGISTRATION GOES HERE, NOT AFTER THE BRANCH DELETE, because the step
+  // below can THROW: runGit raises a system refusal when git could not be run
+  // or never answered, on `local` as well as over a provider. Written last, that
+  // throw left cc's record of a worktree git had already forgotten — and the two
+  // listings then disagreed, because listWorktrees prunes by `git worktree list`
+  // and stopped showing it while registeredWorktreeNames still counted it, so
+  // setProjectRemote refused 409 naming a worktree no listing displayed
+  // (measured). Ordered here, no git step after the removal decides whether
+  // cc's record survives.
+  //
+  // The guarantee is scoped to the git steps, which is where the throw is.
+  // dropWorktreeStoreEntry swallows its own `fs.rm` failure, so a failing local
+  // store write can still strand the registration silently, with nothing raised
+  // — a different mechanism, unchanged here. (card 2026-0308 §G2)
+  await dropWorktreeStoreEntry(projectName, meta.worktreeName);
   // Branch deletion is best-effort — if the rebase-back already
   // fast-forwarded the base onto the worktree branch then `-d` will
   // succeed; otherwise the branch may be ahead and we use `-D`.
+  //
+  // Best-effort means GIT'S NO is tolerated: the exit code stays unread. It does
+  // not extend to a system refusal — "git could not be run on this box" is a
+  // real diagnosis about a real machine, and hiding it would report a transport
+  // failure as a clean removal. So the refusal is re-raised, ANNOTATED: by this
+  // point the worktree and its registration are already gone, and the bare
+  // refusal reads as a delete that failed. statusCode / code / systemRefusal are
+  // carried through, so both surfaces map it as they did. (card 2026-0308 §4)
   const delArgs = ['branch', force ? '-D' : '-d', meta.branch];
-  await runGit(system, parentPath, delArgs);
-  await dropWorktreeStoreEntry(projectName, meta.worktreeName);
+  try {
+    await runGit(system, parentPath, delArgs);
+  } catch (e) {
+    if (!isSystemRefusal(e)) throw e;
+    const refusal = e as Error & { statusCode?: number; code?: string };
+    throw httpError(
+      refusal.statusCode ?? 502,
+      `worktree '${meta.worktreeName}' was removed and unregistered, but its branch `
+      + `'${meta.branch}' was left behind: ${refusal.message}`,
+      { code: refusal.code, systemRefusal: true },
+    );
+  }
   return meta;
 }
 

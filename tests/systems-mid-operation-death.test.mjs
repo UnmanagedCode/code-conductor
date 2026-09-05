@@ -25,11 +25,11 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
-import { bindRemoteSystem, seedRepo, git, flakyLaunch } from './remoteSystem.mjs';
-import { adoptProject, createProject, worktreeStoreDir } from '../src/projects.ts';
+import { bindRemoteSystem, seedRepo, git, flakyLaunch, referenceLaunch } from './remoteSystem.mjs';
+import { adoptProject, createProject, setProjectRemote, worktreeStoreDir } from '../src/projects.ts';
 import {
   createWorktree, mergeWorktreeIntoParent, removeWorktree, syncWorktree, listWorktrees, runGit,
-  getProjectCommits,
+  getProjectCommits, registeredWorktreeNames,
 } from '../src/worktrees.ts';
 import { updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
@@ -691,5 +691,95 @@ describe('a system that dies mid-operation', () => {
     const app = r.body.find(p => p.name === 'app');
     assert.equal('isGitRepo' in app && app.isGitRepo === true, false,
       'the dying project invents no git fact');
+  });
+
+  // ── A stranded registration after the git removal (card 2026-0308) ────
+  //
+  // The provider is alive for `git worktree remove --force`, which really
+  // deletes the checkout, and then really dies at the branch delete — so
+  // `runGit` raises GIT_DID_NOT_RUN after the removal already happened.
+  //
+  // THE INVARIANT PINNED BY THE FOUR TESTS BELOW: once `git worktree remove`
+  // reports success, no git step that follows it can leave the store entry
+  // registered. Scoped to the git steps deliberately — `dropWorktreeStoreEntry`
+  // swallows its own `fs.rm` failure, so a failing local store write can still
+  // strand a registration silently, which is a different mechanism and is not
+  // addressed here (card 2026-0308 §G2).
+
+  // `--die-on` forwards the matching frame before dying, so the branch delete
+  // genuinely is in flight on the far side when the transport drops.
+  const dieAtBranchDelete = () => goFlaky({ dieOn: '"branch","-D"' });
+
+  // Back to the healthy provider, because what the reordering is asserted
+  // against — the pruned listing, and the placement guard's target check — both
+  // need a system that answers. updateSystem disposes the live handle.
+  async function heal() {
+    await updateSystem(remote.id, { launch: referenceLaunch() });
+    disposeSystemHandles();
+  }
+
+  test('a provider that dies at the branch delete leaves no registration behind', async () => {
+    await dieAtBranchDelete();
+    const err = await removeWorktree('app', wt.worktreeName, { force: true }).then(() => null, e => e);
+    // Asserted first, and it holds before the reorder too: it is what shows the
+    // death landed at the branch delete rather than at an earlier step.
+    assert.ok(err, 'a severed transport is still raised, not swallowed');
+    assert.equal(err.statusCode, 502, err.message);
+    assert.equal(err.code, 'GIT_DID_NOT_RUN', err.message);
+    assert.equal(await exists(wt.worktreePath), false, 'the worktree directory is gone');
+
+    await heal();
+    // The invariant, and the disagreement it rules out.
+    assert.deepEqual(await registeredWorktreeNames('app'), [],
+      'the store entry does not outlive the directory git already removed');
+    assert.deepEqual((await listWorktrees('app')).map(w => w.worktreeName), [],
+      'so the two listings agree');
+  });
+
+  // PINS the measured user-facing harm. A registration is exactly what
+  // setProjectRemote's guard reads, and it reads it without consulting git — so
+  // a stranded one refused a target change by name while the listing showed
+  // nothing (measured: 409 PROJECT_PLACEMENT_IN_USE naming the worktree against
+  // an empty listing, card 2026-0308 §G8). The second assertion is what keeps
+  // the first honest: the call has to reach target verification, which on this
+  // provider refuses SYSTEM_NO_REMOTES because it serves no named targets.
+  test('a target change is not refused by a worktree the death removed', async () => {
+    await dieAtBranchDelete();
+    await assert.rejects(() => removeWorktree('app', wt.worktreeName, { force: true }));
+    await heal();
+
+    const err = await setProjectRemote('app', 'someremote', { liveInstanceIds: () => [] })
+      .then(() => null, e => e);
+    assert.notEqual(err?.code, 'PROJECT_PLACEMENT_IN_USE',
+      `no worktree registration is left to refuse on: ${err?.message}`);
+    assert.equal(err?.code, 'SYSTEM_NO_REMOTES',
+      `the placement guard was passed and target verification was reached: ${err?.message}`);
+  });
+
+  // PINS: the refusal is re-raised, not swallowed. Holds before the reorder as
+  // well as after — it fences the fix against the swallowing variant rather
+  // than demonstrating the defect. Split from its message (card 2026-0308 §G6)
+  // so a re-wording fails one assertion rather than four: these three are what
+  // the REST and MCP surfaces map the failure by, and hiding them would report
+  // a transport failure as a clean removal.
+  test('the branch delete re-raises the refusal it was given', async () => {
+    await dieAtBranchDelete();
+    const err = await removeWorktree('app', wt.worktreeName, { force: true }).then(() => null, e => e);
+    assert.ok(err, 'the diagnosis about the box survives the removal succeeding');
+    assert.equal(err.code, 'GIT_DID_NOT_RUN', err.message);
+    assert.equal(err.statusCode, 502, err.message);
+    assert.equal(err.systemRefusal, true, err.message);
+  });
+
+  // PINS: and it says what did and did not happen. After the reorder the
+  // worktree and its registration are both already gone by the time this
+  // refusal is raised, so the bare "git branch could not be run" reads as a
+  // delete that failed.
+  test('the branch delete refusal says the worktree was removed and unregistered', async () => {
+    await dieAtBranchDelete();
+    const err = await removeWorktree('app', wt.worktreeName, { force: true }).then(() => null, e => e);
+    assert.ok(err, 'the refusal is raised');
+    assert.match(err.message, /removed and unregistered/, err.message);
+    assert.match(err.message, /branch/, err.message);
   });
 });

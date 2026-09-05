@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
-  runGit, GIT_OUTPUT_LIMIT_BYTES,
+  registeredWorktreeNames, removeAllWorktreesForProject, runGit, GIT_OUTPUT_LIMIT_BYTES,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir } from '../src/projects.ts';
 import { localSystem } from '../src/systems/registry.ts';
@@ -1112,4 +1112,73 @@ test('DELETE worktree by bare slug still refuses (409) with a live instance atta
   assert.equal(await fs.access(wtPath).then(() => true, () => false), true,
     'the worktree directory must still exist');
   assert.ok(await getWorktree('demo', wtName), 'the record survives too');
+});
+
+// ── A stranded registration after the git removal (card 2026-0308) ─────
+//
+// `git worktree remove --force` succeeds, and then a later step raises a system
+// refusal — `runGit` throws when git could not be started or never answered.
+// Written after that step, cc's own store entry was left behind for a worktree
+// git had already forgotten, and the two listings then disagreed: `listWorktrees`
+// prunes by `git worktree list` and stopped showing it while
+// `registeredWorktreeNames` still counted it.
+//
+// THE INVARIANT PINNED BY BOTH TESTS BELOW: once `git worktree remove` reports
+// success, no git step that follows it can leave the store entry registered.
+// Scoped to the git steps deliberately — `dropWorktreeStoreEntry` swallows its
+// own `fs.rm` failure, so a failing local store write can still strand a
+// registration silently, which is a different mechanism and is not addressed
+// here (card 2026-0308 §G2).
+
+// An argv git cannot be spawned with, built entirely out of the store's own
+// `branch` field — which this path puts in the branch-delete argv and nowhere
+// else, since force:true skips the dependents and dirty checks. The kernel
+// really refuses the spawn (`spawn E2BIG`), `classifySpawnError` reads it as
+// `EUNKNOWN`, and `runGit` raises `GIT_DID_NOT_RUN`. That is the same route the
+// production trigger takes — fd/process exhaustion in cc's single-process host,
+// measured as `spawn git EMFILE` — reached here by fixture data rather than by
+// resource pressure, so it is deterministic. Product code is untouched; the
+// magnitude has only to exceed the argv limit (card 2026-0308 §1.1, §G5).
+async function makeBranchDeleteUnspawnable(project, worktreeName) {
+  const metaFile = path.join(worktreeStoreDir(project, worktreeName), 'worktree.json');
+  const meta = JSON.parse(await fs.readFile(metaFile, 'utf8'));
+  meta.branch = 'b'.repeat(3_000_000);
+  await fs.writeFile(metaFile, JSON.stringify(meta));
+}
+
+const dirExists = (p) => fs.access(p).then(() => true, () => false);
+
+test('a branch delete that could not be spawned leaves no registration behind', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'ghost' });
+  await makeBranchDeleteUnspawnable('demo', wt.worktreeName);
+
+  const err = await removeWorktree('demo', wt.worktreeName, { force: true }).then(() => null, e => e);
+  // Asserted first, and it holds before the fix too: it is what shows the run
+  // reached the branch delete rather than stopping at an earlier guard.
+  assert.ok(err, 'a git that could not be run is still raised, not swallowed');
+  assert.equal(err.statusCode, 502, err.message);
+  assert.equal(err.code, 'GIT_DID_NOT_RUN', err.message);
+  assert.equal(await dirExists(wt.worktreePath), false, 'the worktree directory is gone');
+
+  // The invariant.
+  assert.deepEqual(await registeredWorktreeNames('demo'), [],
+    'the store entry does not outlive the directory git already removed');
+  assert.deepEqual(await listWorktrees('demo'), [],
+    'so the two listings agree');
+});
+
+// The project-delete cascade swallows each removal's error, so a stranded
+// registration surfaced nothing at all there. `deleteProject` would erase the
+// whole project store dir immediately afterwards — but this asserts the cascade
+// itself strands nothing, without leaning on that backstop (card 2026-0308 §4.4).
+test('the project-delete cascade strands no registration when a branch delete could not be spawned', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'cascade' });
+  await makeBranchDeleteUnspawnable('demo', wt.worktreeName);
+
+  await removeAllWorktreesForProject('demo');
+
+  assert.deepEqual(await registeredWorktreeNames('demo'), [],
+    'the cascade leaves nothing registered, before deleteProject runs');
 });
