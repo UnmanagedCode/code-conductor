@@ -11,6 +11,7 @@ import { createSafeRoot, assertStoreIsolated, removeSafeRoot, pinGitConfig } fro
 import { snapshot, censusMatching, liveChildren, descendants, killTree, killDescendants, killPids,
          processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
+import { enableCompileCache, COMPILE_CACHE_MAX_BYTES } from './compileCache.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +43,22 @@ process.env.CC_TEST_RUN_ID = RUN_MARKER;
 // (card 2026-0290 §3); tests/git-maintenance-isolation.test.mjs is its
 // regression test.
 pinGitConfig(safeRoot.root);
+
+// Warm-start the children. Every test file runs in its own process and pays V8
+// compile + type-stripping of the same `helpers.mjs -> server.ts -> src/*.ts`
+// graph; a shared on-disk compile cache turns that ~770ms of each child's ~1s
+// startup into a load. HERE, in the same pre-fork block as the env above, because
+// run() below passes no `env` option — children inherit this process's env, so one
+// call covers `npm test`, both gate rows and every mutation-harness iteration with
+// no per-child wiring. tests/compileCache.mjs owns the directory choice, the size
+// bound and the CC_TEST_COMPILE_CACHE=0 opt-out.
+const compileCache = enableCompileCache({ repoRoot: path.join(__dirname, '..') });
+// Printed ONLY on a reset — that is the one surprising event. A run that simply
+// used its cache says nothing.
+if (compileCache.reset) {
+  console.log(`compile-cache: reset ${compileCache.dir} ` +
+    `(was ${Math.round(compileCache.bytes / 1e6)} MB, cap ${Math.round(COMPILE_CACHE_MAX_BYTES / 1e6)} MB)`);
+}
 
 // Backstop: abort loudly if the resolved store still points into the real
 // workspace (env forced above, so this validates the default and catches a
