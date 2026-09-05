@@ -17,10 +17,12 @@
 // error — 90s of bounded waits and a hang-guard SIGKILL — or turns a green case
 // red.
 //
-// EVERY FIXTURE IS A CAPTURED FRAME, BYTE FOR BYTE, from `claude` CLI 2.1.258
-// on node v24.18.0 (card 2026-0321 §1e); each case names the condition that
-// produced its own. A fixture is a claim about its producer, so a CLI release
-// that moves the field is MEANT to red these rather than to slip past.
+// EVERY FILE FIXTURE IS A CAPTURED FRAME, BYTE FOR BYTE, from `claude` CLI
+// 2.1.258 on node v24.18.0 (card 2026-0321 §1e); each case names the condition
+// that produced its own. A fixture is a claim about its producer, so a CLI
+// release that moves the field is MEANT to red these rather than to slip past.
+// The ONE case built on hand-written frames instead is fenced and labelled
+// SYNTHETIC below, and says why the captures cannot do its job.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -67,6 +69,34 @@ test('an interrupted turn is NOT an api error, though is_error is true', async (
   assert.equal('result' in f, false, 'and still carries no result text');
   assert.equal(apiErrorReason(f), null);
 });
+
+// ============================== SYNTHETIC ==============================
+// THE TWO FRAMES BELOW WERE HAND-BUILT AND ARE NOT SHAPES THE CLI HAS BEEN
+// OBSERVED TO EMIT. Every other frame in this file is a verbatim capture and
+// therefore a claim about its producer; these two are not, and must never be
+// read as one.
+//
+// They exist because the captures cannot do this job. On all four of them
+// `api_error_status != null` and `terminal_reason === 'api_error'` agree
+// exactly — 404 and 401 carry `"api_error"`, the interrupt carries
+// `"aborted_streaming"`, the healthy one `"completed"`. Two different
+// implementations of `apiErrorReason` therefore pass every captured case
+// identically, and WHICH KEY IS READ is the whole invariant the guard rests on:
+// `terminal_reason` is CLI prose about how the turn ended, while
+// `api_error_status` is the transport answer, and only the second is what the
+// harness needs to know. So these frames are constructed to make the two
+// predicates disagree, in both directions, and nothing more.
+test('the diagnosis reads api_error_status, not terminal_reason', () => {
+  const statusOnly = { type: 'result', subtype: 'success', is_error: true, terminal_reason: 'completed', api_error_status: 503, result: 'upstream said no' };
+  const why = apiErrorReason(statusOnly);
+  assert.equal(typeof why, 'string', `a status with no api_error terminal_reason is still an api error (got ${why})`);
+  assert.ok(why.includes('503'), `and is diagnosed with that status (${why})`);
+
+  const reasonOnly = { type: 'result', subtype: 'success', is_error: true, terminal_reason: 'api_error', result: 'no transport status here' };
+  assert.equal(apiErrorReason(reasonOnly), null,
+    'and terminal_reason alone, with no status, is not one');
+});
+// ============================ END SYNTHETIC ============================
 
 // Captured with no overrides at all.
 test('a healthy frame and a 404 frame are indistinguishable by subtype', async () => {

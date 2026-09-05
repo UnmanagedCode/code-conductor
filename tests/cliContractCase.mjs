@@ -87,10 +87,19 @@ export function settingsJSON(url, { pre, post = [], deny, extra }) {
 // authenticated solely by `ANTHROPIC_API_KEY` (a configuration cc supports —
 // src/health.ts reads that key) from passing to 401 (card 2026-0321 §1i).
 //
-// `ANTHROPIC_DEFAULT_HAIKU_MODEL` is deliberately NOT scrubbed: an explicit
-// `--model` is not subject to the alias remap, so it diverts only the CLI's
-// session-title subquery, which logs one cosmetic `unrecognized_model` line on
-// stderr. Chasing that line is a dead end (card 2026-0321 §1b).
+// `ANTHROPIC_DEFAULT_HAIKU_MODEL` is deliberately NOT scrubbed: at CLI 2.1.258,
+// the one version this was measured against, an explicit `--model` is not
+// subject to the alias remap, so it diverts only the CLI's session-title
+// subquery, which logs one cosmetic `unrecognized_model` line. Chasing that
+// line is a dead end (card 2026-0321 §1b). That is a THIRD-PARTY invariant at a
+// single version and nothing in this repo reds if a release starts honouring
+// the alias for an explicit `--model` — which would silently re-break a
+// remapped reviewer, so re-take it before trusting it on a newer CLI.
+//
+// ORDER MATTERS: `extra` spreads LAST, so a per-call `env` naming one of the
+// three puts it straight back. That is deliberate — a case stating one of these
+// explicitly means it, and beats a session-level scrub — but it is also how an
+// editor opts out of this helper without noticing. No caller does today.
 //
 // ACCEPTED RESIDUAL (card 2026-0321 §2): a host whose ONLY route to a capable
 // model is that proxy — base URL set, no first-party credentials — goes from a
@@ -110,16 +119,25 @@ export function cliEnv(extra) {
 }
 
 // THE ONE DISCRIMINATOR that separates a CLI which never reached the API from
-// one that ran. Keyed on `api_error_status` and on NOTHING ELSE, because both
-// obvious alternatives are traps — measured on four captured frames, which are
-// committed under tests/fixtures/ and pinned by the case
-// `a healthy frame and a 404 frame are indistinguishable by subtype`
-// (card 2026-0321 §1e):
-//   * `subtype` is "success" on the healthy frame AND on the 404 frame.
-//   * `is_error` is true on a legitimate INTERRUPT — the stimulus the case
+// one that ran. Keyed on `api_error_status` and on NOTHING ELSE.
+//
+// The two fields an editor reaches for first both lie about it — measured on
+// the four frames committed under tests/fixtures/ (card 2026-0321 §1e), and
+// pinned by the cases `a healthy frame and a 404 frame are indistinguishable by
+// subtype` and `an interrupted turn is NOT an api error, though is_error is
+// true`:
+//   * `subtype` reads "success" on the healthy frame AND on the 404 frame.
+//   * `is_error` reads true on a legitimate INTERRUPT — the stimulus the case
 //     `an interrupt kills the forwarder and aborts its in-flight request`
 //     depends on succeeding, so an `is_error` guard would turn that green case
 //     red.
+//
+// `terminal_reason` is the third candidate, and on all four captured frames it
+// is EXTENSIONALLY IDENTICAL to this one — so no fixture can say which key is
+// being read. The case `the diagnosis reads api_error_status, not
+// terminal_reason` is what pins the choice, and it has to build its frames to
+// do it.
+//
 // `result` may be absent entirely (the interrupt frame carries no such key), so
 // the CLI's own words are relayed only when it said any.
 export function apiErrorReason(frame) {
@@ -174,12 +192,13 @@ export function runClaude(cwd, settings, prompt) {
 // The `system`/`init` frame's own `tools` list — what the session actually has,
 // stated by the CLI rather than inferred from what a model chose to reach for.
 //
-// DELIBERATELY UNGUARDED by apiErrorReason, unlike the two above. Every case
-// this helper serves resolves off the `system`/`init` frame, which the CLI
-// emits BEFORE it calls the API — measured arriving at 610-725 ms and passing
-// truthfully under a 404 (card 2026-0321 §1g). The rule: guard a launch helper
-// whose cases need the API to answer; leave unguarded one whose every case is
-// pre-API. Guarding here would make an always-truthful case always-red.
+// DELIBERATELY UNGUARDED by apiErrorReason, unlike the two above. The one case
+// it serves today — `a cc-shaped session can reach neither Glob nor Grep` —
+// resolves off the `system`/`init` frame, which the CLI emits BEFORE it calls
+// the API, and was measured passing truthfully under a 404 (card 2026-0321
+// §1g). The rule: guard a launch helper whose cases need the API to answer;
+// leave unguarded one whose every case is pre-API. Guarding here would make an
+// always-truthful case always-red.
 export function toolRegistry(cwd, settings) {
   return new Promise((resolve, reject) => {
     execFile('claude', claudeArgs(settings, 'Reply with the single word OK.', ['--output-format', 'stream-json', '--verbose']),
