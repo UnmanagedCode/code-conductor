@@ -63,7 +63,10 @@ describe('a handle retained across an argv swap', () => {
     assert.equal(await stale.readFile(path.join(rootA, 'marker.txt')), 'MACHINE-A\n');
 
     const genBefore = systemHandleGeneration();
+    // Pinned, not just captured: an "unchanged" count over a transcript nothing
+    // was ever written to would pass for the wrong reason.
     const hellosBefore = await hellos(recA);
+    assert.ok(hellosBefore > 0, 'the gen1 provider really was launched to serve the baseline');
 
     // THE PRODUCTION EVENT — Settings → Systems edits the provider command.
     await updateSystem('box', { launch: gen2 });
@@ -97,7 +100,10 @@ describe('a handle retained across an argv swap', () => {
     assert.equal(await stale.readFile(path.join(rootA, 'marker.txt')), 'MACHINE-A\n');
 
     const genBefore = systemHandleGeneration();
+    // Pinned, not just captured: an "unchanged" count over a transcript nothing
+    // was ever written to would pass for the wrong reason.
     const hellosBefore = await hellos(recA);
+    assert.ok(hellosBefore > 0, 'the gen1 provider really was launched to serve the baseline');
 
     await updateSystem('box', { launch: gen2 });
     assert.ok(systemHandleGeneration() > genBefore, 'the registry dropped the handle');
@@ -175,6 +181,7 @@ describe('a live session across an argv swap', () => {
     assert.match(before.stdout, /MACHINE-A/, 'baseline: the live session reaches MACHINE A');
 
     const hellosBefore = await hellos(recA);
+    assert.ok(hellosBefore > 0, 'the gen1 provider really was launched to serve the baseline');
     await updateSystem('box', { launch: gen2Launch() });
 
     const after = await inst._redirect.runForwarded('cat MARKER; echo PWD=$PWD');
@@ -202,6 +209,7 @@ describe('a live session across an argv swap', () => {
     assert.equal(held.remoteId, 'a', 'the retained handle is a bound VIEW, whose own dispose() is a no-op');
 
     const hellosBefore = await hellos(recA);
+    assert.ok(hellosBefore > 0, 'the gen1 provider really was launched to serve the baseline');
     disposeSystemHandles();   // the registry-wide shutdown
     held.dispose();           // and the retained handle's own dispose
 
