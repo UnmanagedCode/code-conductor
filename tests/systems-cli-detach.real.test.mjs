@@ -151,7 +151,13 @@ t('an interrupt kills the forwarder and aborts its in-flight request', async () 
   const cli = claudeSession({ cwd: dir, settings: settingsJSON(hooks.url, { pre: ['Bash'] }) });
   try {
     cli.prompt('Run the Bash command `probe` and report its output.');
-    for (let i = 0; i < 600 && !fwd.state.postAt; i++) await sleep(100);
+    // The ONE wait in this family that polls cc's own state rather than a CLI
+    // frame, so the harness's own rejection cannot reach it. Without the
+    // `apiError` term a CLI that never reached the API burns all 60s here on
+    // top of the previous case's 40s and the file is SIGKILLed at the hang
+    // guard's deadline having reported nothing (card 2026-0321 §5).
+    for (let i = 0; i < 600 && !fwd.state.postAt && !cli.apiError; i++) await sleep(100);
+    assert.equal(cli.apiError, null, `the CLI reached the API — ${cli.apiError}`);
     assert.ok(fwd.state.postAt, 'the forwarder reached cc');
     // Long enough that the request is unambiguously in flight and streaming.
     await sleep(2_000);
