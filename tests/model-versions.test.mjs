@@ -41,7 +41,7 @@ describe('catalog well-formedness', () => {
     // A mutated default (or a re-derived map) fails here, not just the
     // well-formedness check above.
     assert.deepEqual(DEFAULT_VERSIONS, {
-      fable: 'claude-fable-5',
+      fable: 'claude-fable-5-1',
       opus: 'claude-opus-4-8',
       sonnet: 'claude-sonnet-5',
       haiku: 'claude-haiku-4-5',
