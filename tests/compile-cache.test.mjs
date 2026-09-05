@@ -55,6 +55,11 @@ test('the default dir is wiped over the cap and kept under it', () => {
   // each survivable against one of them alone.
   const over = tmp();
   fill(path.join(over, COMPILE_CACHE_DIR_NAME), 5000);
+  // A sibling INSIDE repoRoot but OUTSIDE the cache dir, planted before the wipe
+  // fires. Asserted below — see the note there for why it is what makes this case
+  // about the wipe's TARGET and not merely its occurrence.
+  const bystander = path.join(over, 'not-the-cache');
+  fs.writeFileSync(bystander, 'do not delete me');
   const envOver = {};
   const resOver = enableCompileCache({ repoRoot: over, env: envOver, max: 1000 });
   assert.equal(resOver.reset, true);
@@ -73,6 +78,15 @@ test('the default dir is wiped over the cap and kept under it', () => {
   // The over-cap case must have emptied OUR dir, not the repo root around it.
   const overDir = path.join(over, COMPILE_CACHE_DIR_NAME);
   assert.equal(fs.existsSync(overDir), false, 'the cache dir is removed; Node recreates it lazily');
+  // THE TARGET, not just the occurrence. `reset === true` and "the cache dir is
+  // gone" are BOTH still true when the wipe takes the whole of repoRoot with it, so
+  // every assertion above survives an `rmSync(repoRoot)`. In production repoRoot is
+  // the checkout, so that mutation deletes the repository while reporting a
+  // successful cache reset. The bystander is the only thing here that tells the two
+  // apart. (The neighbouring test pins the same directory for the MEASUREMENT; this
+  // pins it for the DELETION, and no wipe fires there.)
+  assert.equal(fs.existsSync(bystander), true,
+    'the wipe removed the cache dir, not the repoRoot around it');
 });
 
 test('a cache sitting exactly ON the cap is kept', () => {
