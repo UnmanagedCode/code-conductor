@@ -97,6 +97,21 @@ export class ProviderConnection {
   // the real cause rather than a generic one.
   #lastTeardown: SystemError | null = null;
   #failures = 0;
+  // TERMINAL, and the reason it exists: `disposeSystemHandle`
+  // (src/systems/registry.ts) drops the registry's entry, but a live worker
+  // session RETAINS the handle it was created with (SessionRedirect's
+  // `#system`, src/systems/toolRedirect.ts) and that retention is out of the
+  // registry's reach. Without this flag `#teardown` leaves a deliberately-closed
+  // connection indistinguishable from one whose provider merely died —
+  // `#failures` was reset by the last successful connect, so there is no backoff
+  // window either — and the next `ensureUp()` SILENTLY RESPAWNS THE OLD ARGV,
+  // running a session's commands on the pre-swap machine and reporting exit 0
+  // (card 2026-0347).
+  //
+  // SET IN `dispose()`, NEVER IN `#teardown`: a crash must still reconnect,
+  // which is this class's whole supervision contract. Only cc closing the
+  // channel is terminal.
+  #disposed = false;
   #nextAttemptAt = 0;
   #idSeq = 0;
 
@@ -120,6 +135,15 @@ export class ProviderConnection {
   get handshake(): Handshake | null { return this.#hello; }
 
   async ensureUp(): Promise<Handshake> {
+    if (this.#disposed) {
+      throw new SystemError(
+        'ETRANSPORT',
+        `provider '${this.#launch.argv[0]}' was disposed when its system's registration changed — `
+        + `this handle is dead and is never reconnected. Start a NEW session on the project: `
+        + `respawn, rewind and prune all relaunch through this same session's retained handle `
+        + `and fail identically`,
+      );
+    }
     if (this.#hello) return this.#hello;
     if (this.#connecting) return this.#connecting;
     const now = this.#clock.now();
@@ -371,7 +395,12 @@ export class ProviderConnection {
 
   // Shut the provider down deliberately. In-flight operations are failed with
   // ETRANSPORT, same as a crash — the caller asked for the channel to go away.
+  // TERMINAL, unlike a crash: this connection is never reconnected afterwards.
   dispose(): void {
+    // SET FIRST AND UNCONDITIONALLY. A connection that is currently DOWN has no
+    // `#child` to tear down, and returning before the flag would leave exactly
+    // the handle this guard exists for: one that respawns on next use.
+    this.#disposed = true;
     const c = this.#child;
     if (!c) return;
     this.#teardown(c, new SystemError('ETRANSPORT', 'provider connection closed'));
