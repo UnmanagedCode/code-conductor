@@ -71,10 +71,14 @@ export interface HookRedirector {
   postToolUse(toolName: string, toolInput: Record<string, unknown>, toolResponse: unknown): Promise<string | null>;
 }
 
-// Tools the ask-mode card is for. It is a SUBSET of what a redirected session
-// hooks: a redirected `Read` reaches the broker so its bytes can be fetched,
-// and gating it would start prompting on reads that never prompted before.
-const ASK_GATED_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'Bash']);
+// Tools a REDIRECTED session hooks for a reason other than permission, and
+// which must therefore not raise an ask card. `Read` is here because its bytes
+// have to be fetched from the system before the CLI opens the file; gating it
+// would start prompting on reads that never prompted before. Scoped to
+// redirected sessions: a LOCAL session's ask gate covers every tool that
+// reaches it, and an entry here is a decision someone made, not a hole a new
+// tool falls through (card 2026-0339).
+const REDIRECT_UNGATED_TOOLS = new Set(['Read']);
 
 interface PendingCallback {
   res: Response;
@@ -156,20 +160,24 @@ export class HookBroker {
       }
       updatedInput = decision.updatedInput;
     }
-    this._decide(envelope, res, toolName, updatedInput);
+    this._decide(envelope, res, toolName, redirect !== null, updatedInput);
   }
 
-  // The ask-mode gate, unchanged in substance: auto-allow outside ask mode, else
-  // hold the response open behind a permission card.
+  // The ask-mode gate: auto-allow outside ask mode, else hold the response open
+  // behind a permission card. Unchanged in substance for a local session — every
+  // tool that reaches it gates, exactly as before redirection existed. The one
+  // deliberate difference is the redirect-scoped exemption above, which applies
+  // only when a redirector is attached.
   private _decide(
     envelope: HookEnvelope | null | undefined,
     res: Response,
     toolName: string,
+    redirected: boolean,
     updatedInput: Record<string, unknown> | undefined,
   ): void {
     const toolUseId = envelope?.tool_use_id;
     const mode = this._getMode();
-    if (mode !== 'ask' || !ASK_GATED_TOOLS.has(toolName)) {
+    if (mode !== 'ask' || (redirected && REDIRECT_UNGATED_TOOLS.has(toolName))) {
       respondAllow(res, updatedInput);
       return;
     }
