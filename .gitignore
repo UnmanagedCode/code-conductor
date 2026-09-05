@@ -5,3 +5,4 @@ server.log
 .mutation/
 harness/playwright/screenshots/
 __pycache__/
+.compile-cache/

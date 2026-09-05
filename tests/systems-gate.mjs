@@ -20,13 +20,17 @@
 // rather than given its own, and cleared on row 2 — and it does not exercise
 // `remoteDescriptors` at all.
 //
-//   * `remotes` is folded because a fourth pass costs a whole suite and buys the
-//     SAME field on the SAME frames. Measured: row 1 with `--remote` sends the
-//     identical 14,052 request frames it sends without it — 10,223 `exec`, 2,212
-//     `writeFile`, 1,617 `readFile` — differing only in carrying
-//     `remoteId: "gate"` instead of nothing. The fold costs ~0.4s of the ~73s
-//     pass; a separate pass would cost ~73s to re-run those frames unnamed,
-//     which row 2 already does.
+//   * `remotes` is folded because a separate pass costs a WHOLE SUITE and buys the
+//     same field on the same frames. Measured across the two rows: byte-for-byte
+//     identical request-frame counts — ~13,191 per row (9,890 `exec`, 2,314
+//     `writeFile`, 987 `readFile`), down to all 14 `signal` frames — differing only
+//     in +237KB of `remoteId` payload on 14.96MB, i.e. +1.6%. So an unfolded
+//     `remotes` row would re-send exactly those frames unnamed, which is what row 2
+//     already does.
+//     RE-MEASURING THAT COUNT IS WHERE IT GOES WRONG: a naive tally at
+//     ProviderConnection.send() reads ~23,529, because the suite's OWN `systems-*`
+//     tests spawn providers of their own — 40 such processes, ~10,338 frames. The
+//     seam figure is the difference.
 //   * `remoteDescriptors` is absent because a `--mirror` row is provably a
 //     no-op: `mirror()` is unreachable for the system id `local` whatever class
 //     backs it, since its only consumer is composeSessionRoot and both call
@@ -47,7 +51,7 @@
 // The fold is self-proving, which is why no test asserts the negotiation:
 // row 1's provider argv and its LOCAL_REMOTE_ENV binding cannot silently drift
 // apart in either direction, and both directions were measured LOUD with the
-// same signature — 1,286 failures against a green 4,062, and ~302s against ~73s.
+// same signature — 1,286 failures against a green 4,062, at ~4x the row's wall.
 // Argv without binding: every unnamed REQUEST frame is refused ENOREMOTE by the
 // provider's routing gate (which is on the requests only — a follow-on frame is
 // addressed by an id already bound to a target). Binding without argv: ProviderSystem's wire-level
@@ -75,6 +79,16 @@
 // such as `RUN_REAL_CLAUDE` and `RUN_DOCKER_SYSTEM` reach the same one-variable
 // lever and were not priced.
 //
+// THE TWO ROWS RUN CONCURRENTLY, and their live output interleaves. Each row's
+// lines are tagged `[1] `/`[2] ` (tests/rowPrefix.mjs), mapped to names by the
+// banners printed before either row starts; the closing block is printed by this
+// process after both rows resolve, so it is still last and still untagged, and a
+// `tail` reader still gets it whole. The tag is presentation ONLY — the scanner is
+// fed the raw chunk. `TEST_CONCURRENCY` is inherited by both rows and is the lever
+// on a constrained box; there is no knob of this file's own. The fake-claude
+// guardrail is scoped to each run's own descendants (card 2026-0344), which is
+// what makes two rows on one box possible at all.
+//
 // It is a separate command rather than part of `npm test` because it IS
 // `npm test`, once per row. The per-configuration protocol suites
 // (tests/systems-*.test.mjs) run inside the ordinary suite and cover the same
@@ -86,6 +100,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LOCAL_PROVIDER_ENV, LOCAL_REMOTE_ENV } from '../src/systems/registry.ts';
 import { createRowScanner, renderGateSummary } from './gateSummary.mjs';
+import { createRowPrefix } from './rowPrefix.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.join(__dirname, '..');
@@ -125,11 +140,15 @@ const CONFIGS = [
 // a chunk boundary through the middle of it would corrupt both the tee and the
 // scan. The decoder holds the partial sequence back instead.
 //
+// The row tag is a Transform IN that same chain (tests/rowPrefix.mjs), never a
+// write() loop, so a false write still pauses the child's stdout exactly as the
+// direct pipe did.
+//
 // Completeness is waited for explicitly: exit alone does not mean the pipes have
 // been drained, so this resolves only once BOTH streams have ended AND the child
 // has exited. `process.exit()` is not used anywhere below for the same reason —
 // it would discard whatever is still buffered in our own stdout, summary included.
-function run(argv, env) {
+function run(argv, env, tag = null) {
   const scanner = createRowScanner();
   return new Promise((resolve) => {
     const child = spawn(argv[0], argv.slice(1), {
@@ -146,16 +165,26 @@ function run(argv, env) {
     });
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.pipe(process.stdout, { end: false });
-    child.stderr.pipe(process.stderr, { end: false });
+    // THE SCANNER IS FED THE RAW CHUNK, before any tagging: the tag is
+    // presentation, and every pattern in tests/gateSummary.mjs anchors at the start
+    // of a line, so a scanner fed the tagged stream would find no failing test and
+    // no verdict while the row still reported its exit code. Pinned in
+    // tests/gate-row-tee.test.mjs.
     child.stdout.on('data', (chunk) => scanner.push(chunk));
+    const out = tag === null ? child.stdout : child.stdout.pipe(createRowPrefix(tag));
+    const err = tag === null ? child.stderr : child.stderr.pipe(createRowPrefix(tag));
+    out.pipe(process.stdout, { end: false });
+    err.pipe(process.stderr, { end: false });
     let code = null;
     let open = 2;
     const settle = () => {
       if (open === 0 && code !== null) resolve({ code, ...scanner.result() });
     };
-    child.stdout.on('end', () => { open--; settle(); });
-    child.stderr.on('end', () => { open--; settle(); });
+    // END is observed on the LAST stream in each chain, not on the child's own:
+    // with a prefixer in the path the flush of a trailing fragment happens after
+    // the child's stream has ended, and the closing block must still come after it.
+    out.on('end', () => { open--; settle(); });
+    err.on('end', () => { open--; settle(); });
     child.on('exit', (c, signal) => { code = signal ? 1 : c ?? 1; settle(); });
   });
 }
@@ -168,19 +197,35 @@ if (typecheck.code !== 0) {
   console.error('\ngate:systems FAILED — typecheck');
   process.exitCode = 1;
 } else {
-  const results = [];
-  for (const config of CONFIGS) {
-    const argv = JSON.stringify(['node', provider, ...config.flags]);
-    console.log(`\n=== suite over the reference provider: ${config.name} ===`);
-    console.log(`    ${LOCAL_PROVIDER_ENV}=${argv}`);
+  // THE ROWS RUN CONCURRENTLY (card 2026-0344). Measured 107.6s against 145.4s
+  // sequential, both green, and no gate claim moves — both rows still run the whole
+  // suite. Isolation is STRUCTURAL and needed no work: each row's tests/run.mjs
+  // mkdtemps its own safe root, mints its own CC_TEST_RUN_ID, binds ephemeral ports
+  // and pins its own git config, and its orphan sweep, residual check and (since
+  // card 2026-0344) fake-claude guardrail are all marker-scoped, so neither row can
+  // signal or mis-count the other's processes. The BOX is the shared resource:
+  // TEST_CONCURRENCY is inherited by both rows, so an operator on a constrained
+  // machine lowers it there rather than through a knob of this file's own.
+  //
+  // Promise.all preserves array order, so renderGateSummary still renders the rows
+  // in matrix order however they finish. Both rows always run to completion and
+  // both diagnoses are shown — a failing row never suppressed the other and must
+  // not start now.
+  const argvs = CONFIGS.map(config => JSON.stringify(['node', provider, ...config.flags]));
+  // Both banners BEFORE either row starts: once the rows interleave there is no
+  // moment that belongs to one of them, and `[1] `/`[2] ` is what maps a live line
+  // back to the name printed here.
+  for (const [i, config] of CONFIGS.entries()) {
+    console.log(`\n=== [${i + 1}] suite over the reference provider: ${config.name} ===`);
+    console.log(`    ${LOCAL_PROVIDER_ENV}=${argvs[i]}`);
     if (config.remoteId) console.log(`    ${LOCAL_REMOTE_ENV}=${config.remoteId}`);
-    const row = await run(['node', 'tests/run.mjs'], {
-      [LOCAL_PROVIDER_ENV]: argv,
-      [LOCAL_REMOTE_ENV]: config.remoteId ?? undefined,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=512`.trim(),
-    });
-    results.push({ ...config, ...row });
   }
+  const rows = await Promise.all(CONFIGS.map((config, i) => run(['node', 'tests/run.mjs'], {
+    [LOCAL_PROVIDER_ENV]: argvs[i],
+    [LOCAL_REMOTE_ENV]: config.remoteId ?? undefined,
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=512`.trim(),
+  }, `[${i + 1}] `)));
+  const results = CONFIGS.map((config, i) => ({ ...config, ...rows[i] }));
 
   console.log(`\n${renderGateSummary(results).join('\n')}`);
   const failed = results.filter(r => r.code !== 0);

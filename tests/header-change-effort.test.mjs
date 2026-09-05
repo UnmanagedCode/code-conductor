@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promises as fs } from 'node:fs';
 import { Window } from 'happy-dom';
+import { installFakeSocket } from './fakeSocket.mjs';
 import { assertNull } from './dom-assert.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -223,29 +224,6 @@ test('exactly one level is highlighted: the one the session is running at', asyn
 });
 
 // ── the click: what actually goes on the wire ──────────────────────────────
-
-// Minimal stand-in for the browser's WebSocket, enough for ws.js: connect()
-// constructs it and registers listeners, send() checks readyState against the
-// constructor's OPEN, and an immediate ack resolves the {ack:true} promise so
-// the handler's await settles instead of timing out into an alert().
-function installFakeSocket(sent) {
-  class FakeSocket extends EventTarget {
-    static OPEN = 1;
-    static CLOSED = 3;
-    constructor(url) { super(); this.url = url; this.readyState = FakeSocket.OPEN; }
-    send(raw) {
-      const msg = JSON.parse(raw);
-      sent.push(msg);
-      if (msg.reqId != null) {
-        const ev = new Event('message');
-        ev.data = JSON.stringify({ t: 'ack', reqId: msg.reqId, ok: true });
-        this.dispatchEvent(ev);
-      }
-    }
-    close() { this.readyState = FakeSocket.CLOSED; }
-  }
-  globalThis.WebSocket = FakeSocket;
-}
 
 async function clickSetup() {
   const sent = [];
