@@ -22,7 +22,7 @@
 // ensureSafeStoreEnv's early return) never removes it — its siblings are still
 // running against it.
 
-import { mkdtempSync, realpathSync, lstatSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, lstatSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -114,6 +114,49 @@ export function assertVerified() {
   }
 }
 
+// Pin git's GLOBAL config at a run-scoped file, so the run neither reads the
+// developer's ~/.gitconfig nor lets git start work nobody asked for.
+//
+// The load-bearing key is `maintenance.auto`. Without it, git spawns
+// `git maintenance run --auto --quiet --detach` after ordinary write commands —
+// measured 765 spawns per `npm test` on this host at fe610017. It is DETACHED, so
+// it outlives the command that spawned it and repacks whenever it lands: inside a
+// tree-snapshot window it shows up as a spurious diff and reds the run with no
+// defect in the diff under test (card 2026-0290 §3).
+//
+// GIT_CONFIG_GLOBAL, not GIT_CONFIG_COUNT/KEY/VALUE: git CLEARS the GIT_CONFIG_*
+// family for commands run against another repository (`local_repo_env`), so the
+// env form leaks on git's local transport. Measured on one local push, three
+// arms: no config at all -> 1 spawn, the GIT_CONFIG_* env form -> 1 spawn (it
+// does NOT bite), this form -> 0.
+//
+// `gc.auto` is a SECOND key for the same outcome, not a refinement of the first.
+// Measured on git 2.55 here, interleaved with no-change controls (3/3 controls
+// spawned): each key ALONE takes the ordinary-commit spawn to 0. It is kept for
+// git versions that reach the repack through `git gc --auto` rather than through
+// `maintenance` — that portability claim is the part this host cannot check,
+// having only git 2.55.
+//
+// Consequence for future tests: a test needing a global git setting must add it
+// HERE. Nothing in the run reads the developer's global config any more.
+//
+// The spawn counts above are a MEASUREMENT AT A COMMIT (fe610017, git 2.55), not
+// an invariant — re-take rather than trust them:
+//   GIT_TRACE2_EVENT=/tmp/t.jsonl npm test
+//   grep -c '"event":"child_start".*"maintenance","run","--auto"' /tmp/t.jsonl
+const GIT_CONFIG_BODY = '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n';
+
+// Idempotent: under run.mjs every child inherits an already-correct value and
+// this writes nothing. Only a process that minted its own root (a standalone
+// `node tests/foo.test.mjs`) actually creates the file.
+export function pinGitConfig(root) {
+  const file = path.join(root, 'gitconfig');
+  if (process.env.GIT_CONFIG_GLOBAL === file) return file;
+  writeFileSync(file, GIT_CONFIG_BODY);
+  process.env.GIT_CONFIG_GLOBAL = file;
+  return file;
+}
+
 // Roots THIS process minted via createSafeRoot(). Exact paths only — never a
 // readdir/glob of /tmp, and never a root that was merely INHERITED:
 // ensureSafeStoreEnv's early-return branch reuses a root the PARENT run owns, and
@@ -149,6 +192,7 @@ export function ensureSafeStoreEnv() {
     assertSafeTestRunRoot(process.env.PROJECTS_ROOT);
     const root = path.dirname(process.env.PROJECTS_ROOT);
     markRun(root);
+    pinGitConfig(root);
     return {
       root,
       projectsRoot: process.env.PROJECTS_ROOT,
@@ -160,6 +204,7 @@ export function ensureSafeStoreEnv() {
   process.env.PROJECTS_ROOT = safe.projectsRoot;
   process.env.CLAUDE_PROJECTS_ROOT = safe.claudeProjectsRoot;
   markRun(safe.root);
+  pinGitConfig(safe.root);
   return safe;
 }
 

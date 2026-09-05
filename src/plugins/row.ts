@@ -1,5 +1,5 @@
 import { headSha } from './supervisor.ts';
-import type { PluginManifest, ManifestSource } from './manifest.ts';
+import { claudePluginPaths, type PluginManifest, type ManifestSource } from './manifest.ts';
 
 // The PluginRow view-model: the projection GET /api/plugins serializes verbatim
 // and public/pluginManager.js + public/appSwitcher.js read field by field.
@@ -15,6 +15,13 @@ export interface PluginRow {
   id: string | null;
   name: string;
   project: string;
+  // The System the plugin's project lives on, and the named codes for the
+  // capabilities that stay LOCAL-ONLY when that is not `local`. Empty on a local
+  // plugin. The UI reads it to HIDE the affordance rather than offer a control
+  // that would refuse — see PLUGIN_BACKEND_LOCAL_ONLY in registry.ts's doStart
+  // and PLUGIN_DIR_LOCAL_ONLY in contributions.ts's claudePluginDirs.
+  system: string;
+  localOnly: string[];
   version: string | null;
   state: string;
   enabled: boolean;
@@ -42,6 +49,7 @@ export interface PluginRowInput {
     id: string | null;
     project: string;
     dir: string;
+    system: string;
     manifest: PluginManifest | null;
     manifestSource?: ManifestSource;
     discoveryState: 'ok' | 'invalid' | 'incompatible' | 'conflict';
@@ -76,10 +84,21 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
     const currentHead = await headSha(cwd);
     stale = !!currentHead && currentHead !== record.gitHead;
   }
+  // One code per local-only capability the manifest actually declares, so a
+  // plugin that declares both is told about both, and a conventions-only plugin
+  // — which works anywhere, its fragments being text read through the System —
+  // is told about neither.
+  const localOnly: string[] = [];
+  if (entry.system !== 'local') {
+    if (hasBackend) localOnly.push('PLUGIN_BACKEND_LOCAL_ONLY');
+    if (claudePluginPaths(entry.manifest ?? undefined).length > 0) localOnly.push('PLUGIN_DIR_LOCAL_ONLY');
+  }
   return {
     id,
     name: entry.manifest?.name ?? entry.project,
     project: entry.project,
+    system: entry.system,
+    localOnly,
     version: entry.manifest?.version ?? null,
     state,
     enabled: reg?.enabled === true,

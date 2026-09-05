@@ -11,6 +11,17 @@ import { lastActivityOf } from './sessionActivity.ts';
 import type { WorktreeMeta } from './worktrees.ts';
 import { httpError } from './httpError.ts';
 import { isSessionId } from './identifiers.ts';
+import {
+  CONDUCT_PROJECT_NAME, LOCAL_SYSTEM_ID, localSystem, placementOf, projectPlacement,
+  resolveSystem, systemById,
+} from './systems/registry.ts';
+import { writeFileAtomic } from './systems/localSystem.ts';
+import type { System } from './systems/system.ts';
+import type { ProjectPlacement } from './systems/registry.ts';
+
+// Re-exported from its implementation on the local system: the store is always
+// local, so cc's own atomic writes and the local System's are one operation.
+export { writeFileAtomic };
 
 // Default projects root = parent directory of the code-conductor repo,
 // resolved once at module load. Layout: <parent>/code-conductor/src/
@@ -94,8 +105,15 @@ export function projectStoreDir(name: string): string {
   return path.join(orchStoreRoot(), 'projects', name);
 }
 
+// Where a project's worktree REGISTRATIONS live. This directory is the
+// authoritative list — listWorktrees enumerates it rather than asking git, so a
+// registration survives a system cc cannot reach.
+export function worktreesStoreRoot(projectName: string): string {
+  return path.join(projectStoreDir(projectName), 'worktrees');
+}
+
 export function worktreeStoreDir(projectName: string, worktreeName: string): string {
-  return path.join(projectStoreDir(projectName), 'worktrees', worktreeName);
+  return path.join(worktreesStoreRoot(projectName), worktreeName);
 }
 
 export function claudeProjectsRoot(): string {
@@ -256,6 +274,22 @@ export interface ProjectInfo {
   // Adopted from outside the projects root — its record is a `.external/<name>`
   // symlink and its `path` is the target's REALPATH (see resolveProjectDir).
   external: boolean;
+  // The System the tree lives on, WHICH TARGET of it, and — only when that is
+  // not `local` — the path on it. All three come from placementOf(), so absence
+  // of the record field reads as `local` and the `.conduct` pin holds here too.
+  // Plain strings, not the System HANDLE: both REST and MCP spread this into a
+  // response body.
+  system: string;
+  remoteId: string | null;
+  systemPath: string | null;
+}
+
+// What the resolver hands back: where the project's tree is, how it is placed,
+// and — threaded through every operation on that tree — the System it lives on.
+export interface ResolvedProjectDir {
+  path: string;
+  external: boolean;
+  system: System;
 }
 
 // THE resolver every project path in the app comes from: an in-root directory,
@@ -268,14 +302,45 @@ export interface ProjectInfo {
 // every resume of an external project's session looks at the wrong directory.
 // Claude Code's `CLAUDE.md` upward walk follows the realpath for the same
 // reason, and neither has an env lever.
-export async function resolveProjectDir(name: string): Promise<{ path: string; external: boolean } | null> {
+export async function resolveProjectDir(name: string): Promise<ResolvedProjectDir | null> {
+  // THE HUB, and the third placement's whole answer.
+  //
+  // The PLACEMENT is read before the tree is touched, because it decides which
+  // machine to look on — and, for a non-local system, it also decides WHERE:
+  // a remote project's path comes from its record, not from the projects root.
+  // Reaching the local probes below with a remote placement would ask the
+  // remote system about a path under cc's own projects root, which is a
+  // question about the wrong machine.
+  //
+  // For a remote project THE RECORD IS THE REGISTRATION. There is no local
+  // artefact to find, so resolution does not depend on the tree still existing
+  // on the system — which is what lets an unreachable or deleted tree still be
+  // unregistered instead of reading as a project that never existed.
+  //
+  // In-root and `.external` are both LOCAL placements: a symlink under the
+  // projects root has no relationship to a remote system.
+  const placement = await projectPlacement(name);
+  if (placement.system !== LOCAL_SYSTEM_ID) {
+    if (!placement.systemPath) {
+      throw httpError(
+        500,
+        `project '${name}' is registered on system '${placement.system}' but its record has no `
+        + `systemPath — a system with no path on it is not a placement. Add one to `
+        + `${path.join(projectStoreDir(name), 'project.json')}, or delete the project to unregister it.`,
+      );
+    }
+    return {
+      path: placement.systemPath,
+      external: false,
+      system: await systemById(placement.system, placement.remoteId, `project '${name}'`),
+    };
+  }
+  const system = localSystem();
   const inRoot = path.join(projectsRoot(), name);
-  let inRootStat: Awaited<ReturnType<typeof fs.stat>> | null = null;
-  try { inRootStat = await fs.stat(inRoot); }
-  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+  const inRootStat = await system.stat(inRoot);
   if (inRootStat) {
-    if (!inRootStat.isDirectory()) throw httpError(404, `'${name}' is not a directory`);
-    return { path: inRoot, external: false };
+    if (inRootStat.kind !== 'dir') throw httpError(404, `'${name}' is not a directory`);
+    return { path: inRoot, external: false, system };
   }
   // A broken link, a link cycle, or no link at all: the name is simply unknown.
   // Anything else — EACCES on `.external/`, ENOTDIR because `.external` is a
@@ -291,12 +356,69 @@ export async function resolveProjectDir(name: string): Promise<{ path: string; e
     if (code === 'ENOENT' || code === 'ELOOP') return null;
     throw e;
   }
-  // realpath just resolved it, so an ENOENT here is a concurrent deletion.
-  let targetStat: Awaited<ReturnType<typeof fs.stat>>;
-  try { targetStat = await fs.stat(real); }
-  catch (e) { if (errCode(e) === 'ENOENT') return null; throw e; }
-  if (!targetStat.isDirectory()) return null; // a link to a file is not a project
-  return { path: real, external: true };
+  // realpath just resolved it, so an absent target here is a concurrent deletion.
+  const targetStat = await system.stat(real);
+  if (!targetStat) return null;
+  if (targetStat.kind !== 'dir') return null; // a link to a file is not a project
+  return { path: real, external: true, system };
+}
+
+// THE CHEAP LOCAL PREFIX OF resolveProjectDir, and a CACHE KEY rather than an
+// answer: a string that changes whenever a project's placement changes.
+//
+// For a non-local placement that is the record's whole tuple; for a local one it
+// is WHICH LOCAL ARTEFACT registers the project — the in-root directory, the
+// `.external/<name>` link (by realpath, so a re-adopt elsewhere moves the
+// token), or neither. Every mutation that moves a project changes it: a target
+// change rewrites the tuple, and all three `deleteProject` branches take the
+// artefact away (the remote branch by clearing the record, which makes the
+// placement read local-and-gone).
+//
+// IT NEVER REACHES A SYSTEM, and never throws. Its caller is the plugin
+// catalog's per-compose freshness check (src/plugins/contributions.ts), so a
+// version that resolved the system would throw on every compose while a box was
+// down and flip that catalog permanently degraded. Being lossy is safe here and
+// nowhere else: a wrong token only costs a recomputation, and the recomputation
+// is what runs the real, refusing resolution above.
+export async function placementToken(name: string): Promise<string> {
+  const p = await projectPlacement(name);
+  if (p.system !== LOCAL_SYSTEM_ID) return `${p.system}\0${p.remoteId ?? ''}\0${p.systemPath ?? ''}`;
+  return `${LOCAL_SYSTEM_ID}\0\0${await localArtefact(name)}`;
+}
+
+async function localArtefact(name: string): Promise<string> {
+  try {
+    const inRoot = await localSystem().stat(path.join(projectsRoot(), name));
+    if (inRoot?.kind === 'dir') return 'root';
+    return `ext:${await fs.realpath(externalLinkPath(name))}`;
+  } catch (e) {
+    const code = errCode(e);
+    return code === 'ENOENT' || code === 'ELOOP' ? 'gone' : 'unknown';
+  }
+}
+
+// resolveProjectDir for the LISTINGS, where a refusal is a VALUE rather than a
+// throw — the enrichment half of the promise listProjects already makes for its
+// own enumeration, that one bad entry never takes the page down.
+//
+// It resolves the whole PROJECT, not just its system, because "can these git
+// facts be measured?" is exactly "does this project resolve?": a record naming a
+// reachable system but carrying no path resolves its SYSTEM fine and still has
+// no tree to measure, and a row whose facts were quietly measured against an
+// empty path would be wrong rather than absent.
+//
+// It catches everything, not just the refusals: a listing that must render the
+// rest of the list has the same duty for an unexpected fault as for an expected
+// one.
+export async function tryResolveProject(
+  name: string,
+): Promise<{ system: System | null; unreachable: string | null }> {
+  try {
+    const resolved = await resolveProjectDir(name);
+    return { system: resolved?.system ?? localSystem(), unreachable: null };
+  } catch (e) {
+    return { system: null, unreachable: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // "Is this name usable?" — the shared existing-name test for the two creation
@@ -308,15 +430,28 @@ export async function resolveProjectDir(name: string): Promise<{ path: string; e
 // forever. createProject discards the text (its 409 wording is a fixed
 // contract); adoptProject surfaces it.
 async function heldNameReason(name: string): Promise<string | null> {
-  let held: { path: string; external: boolean } | null;
+  let held: ResolvedProjectDir | null;
   try { held = await resolveProjectDir(name); }
   catch (e) {
-    // resolveProjectDir throws exactly one refusal of its own — a 404 saying
-    // something is at the in-root path and is not a directory. Everything else
-    // it throws is a real fault it deliberately does NOT swallow (EACCES on
-    // `.external/`, a `.external` that is a file), and reporting one of those
-    // as "not a directory" would send the caller hunting a stray file that
-    // isn't there. Those propagate: a broken installation is not a refusal.
+    // A NAME PLACED ON A SYSTEM IS HELD, whatever went wrong resolving it. The
+    // record exists, so the name is taken; the repair is to unregister that
+    // project, not to hunt a stray local file or to fix a system the caller
+    // never named. Letting the refusal through here threw 501s out of
+    // adoptProject and createProject — a purely LOCAL adopt under such a name
+    // failed with a system error instead of the returned PROJECT_EXISTS both
+    // their contracts promise.
+    const { system } = await projectPlacement(name);
+    if (system !== LOCAL_SYSTEM_ID) {
+      return `project '${name}' already exists on system '${system}', which could not be resolved `
+        + `(${errMsg(e)}) — delete it to unregister the name, or pick another name.`;
+    }
+    // resolveProjectDir throws exactly one refusal of its own for a LOCAL
+    // project — a 404 saying something is at the in-root path and is not a
+    // directory. Everything else it throws is a real fault it deliberately does
+    // NOT swallow (EACCES on `.external/`, a `.external` that is a file), and
+    // reporting one of those as "not a directory" would send the caller hunting
+    // a stray file that isn't there. Those propagate: a broken installation is
+    // not a refusal.
     if ((e as { statusCode?: unknown }).statusCode !== 404) throw e;
     return `'${path.join(projectsRoot(), name)}' exists but is not a directory — remove it, or pick another name.`;
   }
@@ -326,11 +461,27 @@ async function heldNameReason(name: string): Promise<string | null> {
 export async function listProjects(): Promise<ProjectInfo[]> {
   const root = projectsRoot();
   await fs.mkdir(root, { recursive: true });
+  // THE UNION. The filesystem enumeration below is the LOCAL half — a remote
+  // project has no directory under the projects root and no `.external` link,
+  // so it is invisible to both. Its record IS its registration, and the
+  // store-derived half at the bottom is what lists it.
+  //
+  // The remote half is read FIRST because it also decides the local half: a
+  // name the record places on a system is that project, wherever a directory of
+  // the same name happens to sit, exactly as resolveProjectDir resolves it. One
+  // name is one project, and the two enumerations must not disagree about which.
+  //
+  // The bare `fs` calls below are deliberate and stay: the projects root is cc's
+  // own registry area, not a project tree — it is local by definition, and no
+  // remote project lives in it. Only a resolved project PATH goes through a
+  // System (see the target stat further down).
+  const remote = await remotePlacements();
   const entries = await fs.readdir(root, { withFileTypes: true });
   const worktreeDirs = await listAllWorktreeDirNames();
   const out: ProjectInfo[] = [];
   for (const e of entries) {
     if (!e.isDirectory()) continue;
+    if (remote.has(e.name)) continue;
     // Skip dotfile dirs — the central store itself sits at
     // `<root>/.code-conductor/` and would otherwise surface as a fake
     // project named ".code-conductor". `.external/` is covered by the same
@@ -341,7 +492,7 @@ export async function listProjects(): Promise<ProjectInfo[]> {
     if (worktreeDirs.has(e.name)) continue;
     const full = path.join(root, e.name);
     const meta = await readProjectMeta(e.name);
-    out.push({ name: e.name, path: full, workspace: meta.workspace, external: false });
+    out.push({ name: e.name, path: full, workspace: meta.workspace, external: false, ...placementOf(e.name, meta) });
   }
   // Adopted out-of-root projects. Only SYMLINKS are projects here — which is
   // also what excludes external projects' worktree dirs, real directories
@@ -351,17 +502,61 @@ export async function listProjects(): Promise<ProjectInfo[]> {
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
   for (const e of externals) {
     if (!e.isSymbolicLink()) continue;
+    if (remote.has(e.name)) continue;
     // A broken link (target unmounted, moved or deleted) is skipped, not fatal:
     // the rest of the project list must still render.
     let real: string;
     try { real = await fs.realpath(externalLinkPath(e.name)); }
     catch { continue; }
-    try { if (!(await fs.stat(real)).isDirectory()) continue; }
+    // The link is a local record, but its TARGET is the project tree — stat it
+    // through the project's system, never with a bare fs call.
+    try { if ((await (await resolveSystem(e.name)).stat(real))?.kind !== 'dir') continue; }
     catch { continue; }
     const meta = await readProjectMeta(e.name);
-    out.push({ name: e.name, path: real, workspace: meta.workspace, external: true });
+    out.push({ name: e.name, path: real, workspace: meta.workspace, external: true, ...placementOf(e.name, meta) });
+  }
+  // The store-derived half. A record with no `systemPath` is not a placement and
+  // resolveProjectDir refuses it — but it is still LISTED, with an empty `path`
+  // and its `systemPath` left null. Dropping it made it invisible as well as
+  // (then) undeletable, while it went on holding its system row at 409 with
+  // nothing on any page to explain why: exactly the disappearing row the
+  // degraded-listing contract exists to prevent. The enrichment layer resolves
+  // each row and attaches the refusal as its reason, so nothing here has to
+  // invent a path to keep the two consistent.
+  for (const [name, placement] of remote) {
+    out.push({
+      name,
+      path: placement.systemPath ?? '',
+      workspace: (await readProjectMeta(name)).workspace,
+      external: false,
+      ...placement,
+    });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+// Every project whose record places it on a NON-LOCAL system, by name.
+//
+// Walks the STORE, which is deliberately not how local projects are listed: the
+// store accumulates directories for projects that no longer exist, so it is not
+// a registry. It is sound HERE because it keys on the POSITIVE marker — a stale
+// directory is invisible unless its record actually names a system — and
+// because it goes through placementOf(), so `.conduct` cannot be placed onto a
+// system no matter what its record says.
+async function remotePlacements(): Promise<Map<string, ProjectPlacement>> {
+  const out = new Map<string, ProjectPlacement>();
+  const projectsDir = path.join(orchStoreRoot(), 'projects');
+  let names: string[];
+  try { names = await fs.readdir(projectsDir); }
+  catch (e) { if (errCode(e) === 'ENOENT') return out; throw e; }
+  for (const name of names.sort()) {
+    // A hand-made directory under an unusable name has no project behind it.
+    try { validateName(name); } catch { continue; }
+    const placement = placementOf(name, await readProjectMeta(name));
+    if (placement.system === LOCAL_SYSTEM_ID) continue;
+    out.set(name, placement);
+  }
   return out;
 }
 
@@ -375,8 +570,15 @@ export async function findSelfProject(selfDir: string = SELF_PROJECT_DIR): Promi
   let selfReal: string;
   try { selfReal = await fs.realpath(selfDir); } catch { return null; }
   for (const p of await listProjects()) {
+    // A row the resolver refuses carries no path (the listing keeps it visible
+    // with an empty one), so there is nothing to compare and nothing to ask a
+    // system about — probing it would send a relative path across the wire.
+    // Skipped explicitly rather than left to the catch below, which exists for a
+    // vanished target, not for a row that was never resolvable.
+    const { system } = await tryResolveProject(p.name);
+    if (!system || !p.path) continue;
     let real: string;
-    try { real = await fs.realpath(p.path); } catch { continue; }
+    try { real = await system.realpath(p.path); } catch { continue; }
     if (real === selfReal) return p;
   }
   return null;
@@ -415,29 +617,62 @@ export function validateWorkspace(workspace: unknown): string | null {
   return trimmed;
 }
 
+// The project record. `system`/`remoteId`/`systemPath` are read RAW here —
+// placementOf() (src/systems/registry.ts) is what turns them into a placement,
+// so the pin and the absence-means-local rule live in one place rather than in
+// every reader.
+export interface ProjectMeta {
+  workspace: string | null;
+  system: string | null;
+  remoteId: string | null;
+  systemPath: string | null;
+}
+
+const EMPTY_META: ProjectMeta = { workspace: null, system: null, remoteId: null, systemPath: null };
+
 // Read the project's optional metadata file from the central store.
-// Missing file or malformed JSON → {workspace: null}. The store dir may
+// Missing file or malformed JSON → every field null. The store dir may
 // not exist yet — that's fine.
-export async function readProjectMeta(name: string): Promise<{ workspace: string | null }> {
+//
+// It returns `system`/`systemPath` even though nothing in this module writes
+// them, and that is load-bearing: writeProjectMeta merges over what this
+// returns and drops empty fields, so a field this reader forgot would be
+// DELETED from the record by the next unrelated write (a workspace change).
+export async function readProjectMeta(name: string): Promise<ProjectMeta> {
   validateName(name);
   const file = path.join(projectStoreDir(name), 'project.json');
   try {
     const raw = await fs.readFile(file, 'utf8');
     const obj: unknown = JSON.parse(raw);
-    let workspace: string | null = null;
-    if (typeof obj === 'object' && obj !== null) {
-      const w = (obj as { workspace?: unknown }).workspace;
-      if (typeof w === 'string' && w.trim() !== '') workspace = w.trim();
-    }
-    return { workspace };
+    if (typeof obj !== 'object' || obj === null) return { ...EMPTY_META };
+    const rec = obj as { workspace?: unknown; system?: unknown; remoteId?: unknown; systemPath?: unknown };
+    const str = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+    return {
+      workspace: str(rec.workspace), system: str(rec.system),
+      remoteId: str(rec.remoteId), systemPath: str(rec.systemPath),
+    };
   } catch (e) {
-    if (errCode(e) === 'ENOENT') return { workspace: null };
+    if (errCode(e) === 'ENOENT') return { ...EMPTY_META };
     // Malformed JSON or unreadable — degrade to unassigned rather than
     // throwing. A single console.warn (not an error) so noisy systems
     // don't spam logs on every list.
     console.warn(`projects: failed to read ${file}: ${errMsg(e)}`);
-    return { workspace: null };
+    return { ...EMPTY_META };
   }
+}
+
+// Which projects name a NON-LOCAL system, grouped by system id — the
+// still-referenced check behind Settings → Systems' delete refusal.
+//
+// Each entry carries its TARGET as well as its name: one system can serve ten
+// containers, and "shipping" alone does not tell the reader which of them holds
+// the row open.
+export async function projectsBySystem(): Promise<Record<string, Array<{ name: string; remoteId: string | null }>>> {
+  const out: Record<string, Array<{ name: string; remoteId: string | null }>> = {};
+  for (const [name, { system, remoteId }] of await remotePlacements()) {
+    (out[system] ??= []).push({ name, remoteId });
+  }
+  return out;
 }
 
 // Write the project's metadata. Atomic rename to avoid torn reads if the
@@ -449,6 +684,18 @@ export async function writeProjectMeta(
 ): Promise<Record<string, string | null>> {
   validateName(name);
   await getProject(name);
+  return writeProjectRecord(name, patch);
+}
+
+// The record write WITHOUT the existence check — the shape the two creation
+// paths need, because for a remote project the record IS what brings the
+// project into existence and getProject() cannot succeed before it is written.
+// Every other caller goes through writeProjectMeta above, which keeps the
+// "don't write a record for a project that isn't there" guard.
+async function writeProjectRecord(
+  name: string,
+  patch: { workspace?: string | null; system?: string | null; remoteId?: string | null; systemPath?: string | null },
+): Promise<Record<string, string | null>> {
   const dir = projectStoreDir(name);
   const file = path.join(dir, 'project.json');
   const current = await readProjectMeta(name);
@@ -467,37 +714,6 @@ export async function writeProjectMeta(
   }
   await writeFileAtomic(file, JSON.stringify(next, null, 2) + '\n');
   return next;
-}
-
-// Shared mkdir-parent → write tmp(.pid.seq) → rename helper. Homed here
-// because projects.ts is the lowest module already imported by the other
-// call sites (appSettings.ts, conventionsImport.ts) — no import cycle.
-//
-// The tmp name must be unique per call: pid separates processes, the counter
-// separates concurrent calls within one process. A shared name let the
-// winner's rename delete the loser's still-in-flight source file (board
-// 2026-0156: two same-process writers to one target — e.g. a plugin stop's
-// awaited write racing its own fire-and-forget child-exit write — collided
-// on `${filePath}.${pid}.tmp` and the loser threw ENOENT on a file it wrote
-// itself). The `unlink` below is required *because* the name became unique
-// (with a shared name it would delete a sibling writer's tmp file, so it
-// couldn't have existed before) and is only safe for that same reason.
-//
-// Concurrent writers to one target are last-write-wins, not merged or
-// locked: this fixes writers destroying each other's tmp file, not the
-// lost-update where a stale payload's rename overwrites a newer one.
-let atomicWriteSeq = 0;
-
-export async function writeFileAtomic(filePath: string, data: string): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${atomicWriteSeq++}.tmp`;
-  try {
-    await fs.writeFile(tmp, data);
-    await fs.rename(tmp, filePath);
-  } catch (e) {
-    await fs.unlink(tmp).catch(() => {});
-    throw e;
-  }
 }
 
 // ── Workspace registry ────────────────────────────────────────────────
@@ -624,13 +840,50 @@ export async function renameWorkspace(oldName: string, newName: string): Promise
   return { renamed: true, name: newV, movedProjects: members };
 }
 
+// Why registering PROJECT `name` on `systemId` would put two places on one
+// session root, or null when it would not. Both creation paths ask, because a
+// name can be free and its key still taken: `--` is legal inside a project
+// name, so `p--p_worktree_w` computes the key worktree `p_worktree_w` of
+// project `p` computes (card 2026-0293 §10). createWorktree asks the same
+// predicate directly for the other half of the pair.
+//
+// Lazy import for the same projects.ts <-> systems/sessionRoot.ts circular edge
+// removeSessionRoot's callers sit on.
+async function projectKeyCollisionReason(systemId: string, name: string): Promise<string | null> {
+  const { sessionRootCollisionReason, sessionRootKey, sessionRootKeyCollision } =
+    await import('./systems/sessionRoot.ts');
+  const hit = await sessionRootKeyCollision(systemId, name, null);
+  return hit === null
+    ? null
+    : sessionRootCollisionReason(systemId, `project '${name}'`, sessionRootKey(name, null), hit);
+}
+
 export async function createProject(
   name: string,
-  { conventionsDoc = null }: { conventionsDoc?: string | null } = {},
-): Promise<{ name: string; path: string }> {
+  { conventionsDoc = null, system: systemId = null, remoteId = null, systemPath = null }: {
+    conventionsDoc?: string | null;
+    // The system to place the project on, and the path on it. Both or neither:
+    // a system with no path is not a placement, and a path with no system is a
+    // path on the wrong machine. Omitting them creates an in-root local project,
+    // which is what every existing caller does. Typed `unknown` because they
+    // arrive from a request body; validatePlacementInput is what narrows them.
+    system?: unknown;
+    // WHICH TARGET of that system, when it serves more than one. Optional even
+    // with a system: absence means the provider's own default target.
+    remoteId?: unknown;
+    systemPath?: unknown;
+  } = {},
+): Promise<{ name: string; path: string; system: string; remoteId: string | null }> {
   validateName(name);
-  const root = projectsRoot();
-  const full = path.join(root, name);
+  const placement = validatePlacementInput(systemId, remoteId, systemPath);
+  // THE THIRD BRANCH. On a non-local system the mkdir, `git init` and the seed
+  // files below all happen ON THE SYSTEM at the caller's path, rather than under
+  // the local projects root — and the record, not a directory here, is what
+  // registers the project.
+  const system = placement
+    ? await systemById(placement.system, placement.remoteId, `project '${name}'`)
+    : localSystem();
+  const full = placement ? placement.systemPath : path.join(projectsRoot(), name);
   // resolveProjectDir, not the mkdir alone: an ADOPTED project holds the name
   // too, and its `.external/` symlink is invisible to this mkdir — two records
   // for one name would share one store entry and one encoded session dir. The
@@ -638,13 +891,39 @@ export async function createProject(
   if (await heldNameReason(name)) {
     throw httpError(409, `project '${name}' already exists`);
   }
+  // A name is free and still unusable when its SESSION-ROOT KEY is already
+  // taken on this system. Only for a placement — a local project has no
+  // session root, so there is no key to take.
+  if (placement) {
+    const why = await projectKeyCollisionReason(placement.system, name);
+    if (why) throw httpError(409, why, { code: 'SESSION_ROOT_COLLISION' });
+  }
   try {
-    await fs.mkdir(full, { recursive: false });
+    await system.mkdir(full);
   } catch (e) {
     if (errCode(e) === 'EEXIST') {
-      throw httpError(409, `project '${name}' already exists`);
+      throw httpError(409, placement
+        ? `'${full}' already exists on ${describePlacement(placement)}`
+        : `project '${name}' already exists`);
+    }
+    // A failure caused by a REMOTE machine has to name that machine. A raw
+    // SystemError carries no statusCode, so this surfaced as a bare 500 reading
+    // `mkdir '<path>': provider exited` — which a reader takes for cc's own
+    // mkdir failing on cc's own disk. adoptProject's twin already answers "on
+    // system 's'"; this is the same sentence for the create path. A LOCAL create
+    // is left alone: there is no other machine to name.
+    if (placement) {
+      throw httpError(502, `could not create '${full}' on ${describePlacement(placement)}: ${errMsg(e)}`);
     }
     throw e;
+  }
+  // Registered only once the directory is ours: the mkdir above is what proves
+  // the path was not already someone else's tree, and a record written ahead of
+  // it would adopt whatever was there on a refusal.
+  if (placement) {
+    await writeProjectRecord(name, {
+      system: placement.system, remoteId: placement.remoteId, systemPath: placement.systemPath,
+    });
   }
   // Every project is a git repo from birth — worktrees, diffs and commits are
   // the whole workflow. The mkdir above proves the dir is brand new, so there
@@ -653,7 +932,7 @@ export async function createProject(
   // sits inside a repo, and skip the init. Dynamic import because worktrees.ts
   // statically imports this module (as with listWorktrees below).
   const { runGit } = await import('./worktrees.ts');
-  const init = await runGit(full, ['init', '-q']);
+  const init = await runGit(system, full, ['init', '-q']);
   if (init.code !== 0) {
     throw httpError(500, `git init failed in ${full}: ${init.stderr.trim() || init.stdout.trim()}`);
   }
@@ -666,14 +945,132 @@ export async function createProject(
   const importLine = '@CONVENTIONS.md\n';
   const claudeMdPath = path.join(full, 'CLAUDE.md');
   try {
-    await fs.writeFile(claudeMdPath, importLine, { flag: 'wx' });
+    await system.writeFile(claudeMdPath, importLine, { exclusive: true });
   } catch (e) {
     if (errCode(e) !== 'EEXIST') throw e;
   }
   if (conventionsDoc != null) {
-    await fs.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
+    await system.writeFile(path.join(full, 'CONVENTIONS.md'), conventionsDoc);
   }
-  return { name, path: full };
+  return { name, path: full, system: system.id, remoteId: system.remoteId };
+}
+
+// The (system, remoteId, systemPath) triple a creation path was given, or null
+// for a local project. Shared by createProject and adoptProject so the two
+// cannot drift on what a placement means.
+//
+// The path is required to be ABSOLUTE because a relative one would be resolved
+// against whatever working directory the provider process happens to have —
+// which is not a property of the system, and not one the caller can see.
+function validatePlacementInput(
+  systemId: unknown, remoteId: unknown, systemPath: unknown,
+): { system: string; remoteId: string | null; systemPath: string } | null {
+  const id = typeof systemId === 'string' ? systemId.trim() : '';
+  const p = typeof systemPath === 'string' ? systemPath.trim() : '';
+  const remote = validateRemoteId(remoteId);
+  if (!id || id === LOCAL_SYSTEM_ID) {
+    if (p) throw httpError(400, `systemPath '${p}' was given without a system — a path with no system is a path on cc's own machine, which is what omitting both already means`);
+    if (remote) throw httpError(400, `remoteId '${remote}' was given without a system — cc's own machine is one machine, so it has no named targets`);
+    return null;
+  }
+  if (!p) throw httpError(400, `system '${id}' was named without a systemPath — cc has no default location on another machine`);
+  if (!path.isAbsolute(p)) throw httpError(400, `systemPath must be absolute (got '${p}')`);
+  return { system: id, remoteId: remote, systemPath: p };
+}
+
+// The most a caller may name a target with. DELIBERATELY NOT `isSlug`: a remote
+// id is a container name, a hostname or a VM id, and those legitimately carry
+// `_` and `.`. What is refused is what cannot survive being a wire field or
+// cannot be told apart from a mistake — nothing, whitespace, a control
+// character, or a length no real identifier has.
+export const REMOTE_ID_MAX = 128;
+
+export function validateRemoteId(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'string') throw httpError(400, 'remoteId must be a string or null');
+  const t = v.trim();
+  if (t === '') return null;
+  if (t.length > REMOTE_ID_MAX) {
+    throw httpError(400, `remoteId is ${t.length} characters, above the ${REMOTE_ID_MAX}-character limit`);
+  }
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\u0000-\u001f\u007f]/.test(t)) {
+    throw httpError(400, `invalid remoteId ${JSON.stringify(v)} — whitespace and control characters are not allowed`);
+  }
+  return t;
+}
+
+// "system 's'", or "remote 'r' of system 's'" — one spelling of the placement
+// in a message, so a refusal about a multi-target system says WHICH target.
+function describePlacement(p: { system: string; remoteId: string | null }): string {
+  return p.remoteId === null ? `system '${p.system}'` : `remote '${p.remoteId}' of system '${p.system}'`;
+}
+
+// CHANGING WHICH TARGET A PROJECT IS ON — the one mutation path for `remoteId`,
+// so every surface inherits the same guard rather than each route carrying its
+// own copy.
+//
+// `liveInstanceIds` is REQUIRED and has no default. src/instances.ts imports
+// this module, so the reverse import would close a cycle and the manager cannot
+// be reached from here; a required, non-defaultable getter is what raises the
+// bar over a plain array, since a caller has to consciously supply a source
+// rather than pass `[]`. BE HONEST ABOUT WHAT THAT IS: a caller that supplies
+// `() => []` still defeats it, so the instance half is a CALLER CONTRACT. The
+// worktree half below is an INVARIANT — read inside this function, unreachable
+// by any caller — and it is the half the "a worktree only ever re-derives to
+// the target it was created against" property rests on (see WorktreeMeta).
+//
+// The refusal NAMES what must be cleared rather than clearing it: nothing the
+// user did not ask about is discarded. Same contract as removeSystem's 409.
+export async function setProjectRemote(
+  name: string,
+  remoteId: unknown,
+  { liveInstanceIds }: { liveInstanceIds: () => string[] },
+): Promise<{ name: string; system: string; remoteId: string | null; systemPath: string | null }> {
+  validateName(name);
+  const placement = await projectPlacement(name);
+  if (placement.system === LOCAL_SYSTEM_ID) {
+    throw httpError(400, `project '${name}' is on cc's own machine, which is one machine — it has no named targets. `
+      + `Register it on a system to give it one.`);
+  }
+  const next = validateRemoteId(remoteId);
+
+  // Dynamic, as elsewhere in this module: worktrees.ts statically imports it.
+  const { registeredWorktreeNames } = await import('./worktrees.ts');
+  const worktrees = await registeredWorktreeNames(name);
+  const instances = liveInstanceIds();
+  if (worktrees.length > 0 || instances.length > 0) {
+    const parts = [
+      instances.length > 0 ? `${instances.length} live session(s): ${instances.join(', ')}` : null,
+      worktrees.length > 0 ? `${worktrees.length} registered worktree(s): ${worktrees.join(', ')}` : null,
+    ].filter(Boolean);
+    throw httpError(
+      409,
+      `project '${name}' cannot change target while it has ${parts.join(' and ')}. `
+      + `A live session's shells and session root are coherent only against the target they were opened on, `
+      + `and a worktree re-derives its target from this project. Clear them first.`,
+      { code: 'PROJECT_PLACEMENT_IN_USE', systemRefusal: true, instances, worktrees },
+    );
+  }
+
+  // VERIFY BEFORE PERSIST, the same shape addSystem has: a target the provider
+  // does not serve refuses here, with nothing written.
+  await systemById(placement.system, next, `project '${name}'`);
+
+  // The session root was pulled from the OLD target. Removing it here is what
+  // stops the next spawn reading that target's CLAUDE.md, CONVENTIONS.md and
+  // cached content and pushing edits of them to the new one. composeSessionRoot
+  // re-checks the manifest anyway — belt and braces for a root left behind by a
+  // crash mid-change, or written before the field existed.
+  const { removeSessionRoot } = await import('./systems/sessionRoot.ts');
+  await removeSessionRoot(placement.system, name, null);
+  for (const wt of worktrees) await removeSessionRoot(placement.system, name, wt);
+
+  await writeProjectRecord(name, { remoteId: next });
+  // The cached git facts were measured on the target the project just left.
+  const { invalidate } = await import('./projectsCache.ts');
+  invalidate(name);
+  return { name, system: placement.system, remoteId: next, systemPath: placement.systemPath };
 }
 
 // Delete the entire project directory + the project's central-store
@@ -682,15 +1079,68 @@ export async function createProject(
 // src/routes.ts). Sessions under ~/.claude/projects/<encoded>/ are
 // deliberately left in place — they might still be referenced by
 // `claude --resume` outside the orchestrator.
-export async function deleteProject(name: string): Promise<{ name: string; path: string }> {
+// The project a DELETE addresses, resolved WITHOUT reaching its system.
+//
+// Unregistering needs the name and the placement, never the tree. `getProject`
+// resolves the system, so putting it in front of `deleteProject` made
+// deleteProject's remote branch — written precisely so a project on a system
+// that is down is never stranded — unreachable from the only surface a user
+// has, and turned that into a DEADLOCK: the project stayed registered, and
+// `removeSystem` then refused 409 because that project still named the system.
+//
+// A remote project EXISTS by virtue of its record, including when that record is
+// malformed (a `system` with no `systemPath`): deleting it is the repair for
+// exactly that state, so this must not refuse it. Only the local branch can 404,
+// and resolving a local project never consults a remote system.
+export async function getProjectForDelete(
+  name: string,
+): Promise<{ name: string; system: string; remoteId: string | null; external: boolean }> {
   validateName(name);
+  const placement = await projectPlacement(name);
+  if (placement.system !== LOCAL_SYSTEM_ID) {
+    return { name, system: placement.system, remoteId: placement.remoteId, external: false };
+  }
   const resolved = await resolveProjectDir(name);
+  if (!resolved) throw httpError(404, `project '${name}' not found`);
+  return { name, system: LOCAL_SYSTEM_ID, remoteId: null, external: resolved.external };
+}
+
+export async function deleteProject(name: string): Promise<{ name: string; path: string; system: string; remoteId: string | null }> {
+  validateName(name);
+  // D11 — THE THIRD BRANCH: DELETING A REMOTE PROJECT UNREGISTERS IT AND
+  // NOTHING ELSE. The remote tree is the user's own checkout on their own
+  // machine, exactly as an adopted project's target is, and the same rule
+  // applies: cc removes its record of it and never the tree. There is no
+  // destructive variant — the guard rail is what makes deletion safe by
+  // construction, and removing it needs its own design.
+  //
+  // For a remote project the record IS the registration, and the store entry
+  // below holds it, so clearing the store entry IS the unregistration — the
+  // same shape as unlinking the `.external` link. Nothing here resolves the
+  // SYSTEM: nothing needs to reach it, and a project on a system that is down
+  // must not be stranded in the registry for ever.
+  const placement = await projectPlacement(name);
+  if (placement.system !== LOCAL_SYSTEM_ID) {
+    // A record with no systemPath is not a placement and has no tree to name;
+    // unregistering it is the repair, so this path must not refuse it.
+    await removeProjectStoreDir(name);
+    return { name, path: placement.systemPath ?? '', system: placement.system, remoteId: placement.remoteId };
+  }
+  const resolved = await resolveProjectDir(name);
+  // A name that resolves to nothing has no tree: the `removeTree` below is a
+  // forced removal of a path that does not exist, i.e. a silent success. It
+  // stays for the LOCAL case only, where it is also how a half-created project
+  // (a store entry with no directory) is cleaned up.
+  const system = resolved?.system ?? localSystem();
   if (resolved?.external) {
     // DELETING AN EXTERNAL PROJECT UNREGISTERS IT. Do not "simplify" this back
-    // into the fs.rm below: `resolved.path` is the user's own repo (the
-    // realpath), and the realpath must never reach a removal call. fs.unlink
-    // can never follow a symlink; fs.rm's recursive path merely happens not to,
-    // and that is an implementation detail this must not depend on.
+    // into the removeTree below: `resolved.path` is the user's own repo (the
+    // realpath), and the realpath must never reach a removal call. What is
+    // removed here is the `.external/<name>` LINK — a local record under the
+    // projects root, not a path on any system — and it is removed with a
+    // single-entry unlink, which can never follow the symlink. `removeTree` is
+    // `rm -rf`: it merely happens not to follow one, and that is an
+    // implementation detail this must not depend on.
     try { await fs.unlink(externalLinkPath(name)); }
     catch (e) {
       if (errCode(e) !== 'ENOENT') throw httpError(500, `failed to unregister project '${name}': ${errMsg(e)}`);
@@ -698,23 +1148,40 @@ export async function deleteProject(name: string): Promise<{ name: string; path:
   } else {
     const full = path.join(projectsRoot(), name);
     try {
-      await fs.rm(full, { recursive: true, force: true });
+      await system.removeTree(full);
     } catch (e) {
       throw httpError(500, `failed to delete project '${name}': ${errMsg(e)}`);
     }
   }
-  // Central-store entry holds attachments, debug captures, worktree
-  // metadata — all of it goes with the project.
-  try { await fs.rm(projectStoreDir(name), { recursive: true, force: true }); }
-  catch { /* best-effort */ }
-  return { name, path: resolved?.path ?? path.join(projectsRoot(), name) };
+  await removeProjectStoreDir(name);
+  return { name, path: resolved?.path ?? path.join(projectsRoot(), name), system: LOCAL_SYSTEM_ID, remoteId: null };
 }
 
-export async function getProject(name: string): Promise<{ name: string; path: string; external: boolean }> {
+// The central-store entry holds attachments, debug captures and worktree
+// metadata — all of it cc-owned bookkeeping about a project cc no longer
+// tracks, so all of it goes with the project. Always LOCAL, on every branch:
+// the store is cc's own, wherever the tree lives.
+async function removeProjectStoreDir(name: string): Promise<void> {
+  try { await fs.rm(projectStoreDir(name), { recursive: true, force: true }); }
+  catch { /* best-effort */ }
+}
+
+// Carries the System handle so a caller that has the project has everything it
+// needs to operate on the tree. NOT the serialised project shape — that is
+// ProjectInfo, which stays a plain record (both REST and MCP spread it into a
+// response body).
+export interface ResolvedProject {
+  name: string;
+  path: string;
+  external: boolean;
+  system: System;
+}
+
+export async function getProject(name: string): Promise<ResolvedProject> {
   validateName(name);
   const resolved = await resolveProjectDir(name);
   if (!resolved) throw httpError(404, `project '${name}' not found`);
-  return { name, path: resolved.path, external: resolved.external };
+  return { name, path: resolved.path, external: resolved.external, system: resolved.system };
 }
 
 // Is `inner` the same directory as `outer`, or inside it? Decided with
@@ -734,7 +1201,10 @@ function isWithin(inner: string, outer: string): boolean {
 }
 
 export type AdoptResult =
-  | { ok: true; name: string; path: string; external: true }
+  // `external` is the LOCAL out-of-root placement (a `.external/<name>` symlink);
+  // a remote adopt is `external: false` with `system` naming the machine. The two
+  // are different placements that happen to share every validation step.
+  | { ok: true; name: string; path: string; external: boolean; system: string; remoteId: string | null }
   | { ok: false; code: string; reason: string };
 
 // Adopt a repo that already exists OUTSIDE the projects root as the project
@@ -744,7 +1214,21 @@ export type AdoptResult =
 //
 // Every check runs BEFORE any filesystem mutation; the mkdir + symlink are the
 // last two statements, so a refused adopt leaves no link behind.
-export async function adoptProject(name: unknown, target: unknown): Promise<AdoptResult> {
+// The refusal for a system that answered nothing. Separate from every code that
+// asserts something about the TREE: those are facts, and cc has none here.
+function unreachableDuring(systemId: string, what: string, e: unknown): AdoptResult {
+  return {
+    ok: false,
+    code: 'SYSTEM_UNREACHABLE',
+    reason: `could not ${what} on system '${systemId}': ${errMsg(e)}`,
+  };
+}
+
+export async function adoptProject(
+  name: unknown,
+  target: unknown,
+  { system: systemId = null, remoteId = null }: { system?: unknown; remoteId?: unknown } = {},
+): Promise<AdoptResult> {
   if (typeof name !== 'string' || !NAME_RE.test(name)) {
     return { ok: false, code: 'INVALID_NAME', reason: 'project name must match ^[a-zA-Z0-9._-]+$.' };
   }
@@ -758,14 +1242,61 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   if (typeof target !== 'string' || target.trim() === '' || !path.isAbsolute(target)) {
     return { ok: false, code: 'INVALID_TARGET_PATH', reason: 'path must be a non-empty absolute path.' };
   }
+  // THE THIRD BRANCH. Adoption has no record yet to read a system from, so the
+  // CALLER names it; absent, the project is local and `.external` is its
+  // placement (a symlink under the projects root, which has no relationship to
+  // any system).
+  //
+  // Every check below then runs ON THE NAMED SYSTEM — the realpath, the stat and
+  // the git-toplevel probe are all questions about the tree, and asking cc's own
+  // machine about a path on another one is the wrong-machine read this phase
+  // exists to close.
+  // `target` is already known to be a non-empty absolute path here, so the
+  // placement is decided by the system alone.
+  const namedSystem = typeof systemId === 'string' ? systemId.trim() : '';
+  let namedRemote: string | null;
+  try { namedRemote = validateRemoteId(remoteId); }
+  catch (e) { return { ok: false, code: 'INVALID_REMOTE_ID', reason: errMsg(e) }; }
+  if (namedRemote && (!namedSystem || namedSystem === LOCAL_SYSTEM_ID)) {
+    return {
+      ok: false, code: 'INVALID_REMOTE_ID',
+      reason: `remoteId '${namedRemote}' was given without a system — cc's own machine is one machine, so it has no named targets.`,
+    };
+  }
+  const placement = (!namedSystem || namedSystem === LOCAL_SYSTEM_ID)
+    ? null
+    : { system: namedSystem, remoteId: namedRemote, systemPath: target };
+  let system: System;
+  if (placement) {
+    try { system = await systemById(placement.system, placement.remoteId, `project '${name}'`); }
+    catch (e) { return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: errMsg(e) }; }
+  } else {
+    system = localSystem();
+  }
+  // TARGET_NOT_FOUND is a claim ABOUT THE TREE, so it is only made when the
+  // system actually answered "no such path". A transport that died mid-probe
+  // asserted a fact cc never got to ask about — and sent the user hunting for a
+  // missing directory that was there all along.
   let real: string;
-  try { real = await fs.realpath(target); }
-  catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot resolve '${target}': ${errMsg(e)}` }; }
-  try {
-    if (!(await fs.stat(real)).isDirectory()) {
-      return { ok: false, code: 'TARGET_NOT_A_DIRECTORY', reason: `'${real}' is not a directory.` };
-    }
-  } catch (e) { return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` }; }
+  try { real = await system.realpath(target); }
+  catch (e) {
+    if (errCode(e) !== 'ENOENT') return unreachableDuring(system.id, `resolve '${target}'`, e);
+    return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot resolve '${target}': ${errMsg(e)}` };
+  }
+  let targetStat;
+  try { targetStat = await system.stat(real); }
+  catch (e) {
+    if (errCode(e) !== 'ENOENT') return unreachableDuring(system.id, `stat '${real}'`, e);
+    return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': ${errMsg(e)}` };
+  }
+  // Absent after a successful realpath is a raced deletion, not a bad shape —
+  // same code the throwing form reported.
+  if (!targetStat) {
+    return { ok: false, code: 'TARGET_NOT_FOUND', reason: `cannot stat '${real}': no such file or directory` };
+  }
+  if (targetStat.kind !== 'dir') {
+    return { ok: false, code: 'TARGET_NOT_A_DIRECTORY', reason: `'${real}' is not a directory.` };
+  }
 
   // Already managed? One directory with two project identities would share one
   // encodeCwd session dir and hold two store entries. Tested in BOTH directions
@@ -774,17 +1305,31 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   // project, cc's own checkout and `.external/` itself in one "project" that
   // the conductor's hard boundary then forbids anyone from working inside — and
   // equality falls out of either test.
-  let rootReal = projectsRoot();
-  try { rootReal = await fs.realpath(rootReal); } catch { /* root may not exist yet */ }
-  if (isWithin(real, rootReal)) {
-    return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is the projects root or inside it — it is already managed by code-conductor.` };
+  //
+  // SKIPPED FOR A REMOTE ADOPT, and not as a shortcut: the projects root is a
+  // path on cc's OWN machine, so a path on another one neither is inside it nor
+  // contains it however the two strings compare. Running the test anyway would
+  // refuse a perfectly good remote tree for resembling a local one.
+  if (!placement) {
+    let rootReal = projectsRoot();
+    try { rootReal = await fs.realpath(rootReal); } catch { /* root may not exist yet */ }
+    if (isWithin(real, rootReal)) {
+      return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is the projects root or inside it — it is already managed by code-conductor.` };
+    }
+    if (isWithin(rootReal, real)) {
+      return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' contains the projects root '${rootReal}' — adopting it would put every managed project inside one project.` };
+    }
   }
-  if (isWithin(rootReal, real)) {
-    return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' contains the projects root '${rootReal}' — adopting it would put every managed project inside one project.` };
-  }
+  // A path identifies a tree only together with the machine it is on — and one
+  // registered system can BE many machines, so the machine is (system,
+  // remoteId). Two targets each hosting `/app` are two different trees, so the
+  // duplicate test compares the whole triple and not a path alone.
   for (const p of await listProjects()) {
-    if (p.external && p.path === real) {
-      return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is already adopted as project '${p.name}'.` };
+    const same = placement
+      ? p.system === placement.system && p.remoteId === placement.remoteId && p.path === real
+      : p.external && p.path === real;
+    if (same) {
+      return { ok: false, code: 'TARGET_ALREADY_MANAGED', reason: `'${real}' is already adopted as project '${p.name}'${placement ? ` on ${describePlacement(placement)}` : ''}.` };
     }
   }
 
@@ -794,18 +1339,36 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
   // creation and every diff the wrong toplevel. Dynamic import for the same
   // reason as createProject's — worktrees.ts statically imports this module.
   const { runGit } = await import('./worktrees.ts');
-  const top = await runGit(real, ['rev-parse', '--show-toplevel']);
+  const top = await runGit(system, real, ['rev-parse', '--show-toplevel']);
   if (top.code !== 0) {
     return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository.` };
   }
   let topReal = top.stdout.trim();
-  try { topReal = await fs.realpath(topReal); } catch { /* compare what git printed */ }
+  try { topReal = await system.realpath(topReal); } catch { /* compare what git printed */ }
   if (topReal !== real) {
     return { ok: false, code: 'TARGET_NOT_A_REPO', reason: `'${real}' is not a git repository ROOT — its toplevel is '${topReal}'. Adopt that instead.` };
   }
 
   const held = await heldNameReason(name);
   if (held) return { ok: false, code: 'PROJECT_EXISTS', reason: held };
+
+  // The same check createProject makes, in this path's RETURNED-refusal shape,
+  // and BEFORE writeProjectRecord below so a refused adopt writes nothing.
+  if (placement) {
+    const why = await projectKeyCollisionReason(placement.system, name);
+    if (why) return { ok: false, code: 'SESSION_ROOT_COLLISION', reason: why };
+  }
+
+  if (placement) {
+    // The RECORD is the registration for a remote project — there is no local
+    // artefact to write, and `.external` is not one: a symlink under cc's
+    // projects root cannot point at another machine.
+    await writeProjectRecord(name, {
+      system: placement.system, remoteId: placement.remoteId, systemPath: real,
+    });
+    await deliverAdoptedConventions(name, real);
+    return { ok: true, name, path: real, external: false, system: placement.system, remoteId: placement.remoteId };
+  }
 
   await fs.mkdir(externalDir(), { recursive: true });
   try { await fs.symlink(real, externalLinkPath(name)); }
@@ -822,18 +1385,23 @@ export async function adoptProject(name: unknown, target: unknown): Promise<Adop
     throw httpError(500, `failed to adopt '${name}': ${errMsg(e)}`);
   }
 
-  // Deliver the conventions into the adopted repo NOW — symmetric with
-  // createProject, which seeds both files at creation. Without this the first
-  // write into the user's tree would happen silently at some later boot sweep
-  // instead of inside the call they authorised. Non-fatal: the symlink IS the
-  // record, so the adoption stands and the next boot sweep retries.
+  await deliverAdoptedConventions(name, real);
+  return { ok: true, name, path: real, external: true, system: LOCAL_SYSTEM_ID, remoteId: null };
+}
+
+// Deliver the conventions into the adopted repo NOW — symmetric with
+// createProject, which seeds both files at creation. Without this the first
+// write into the user's tree would happen silently at some later boot sweep
+// instead of inside the call they authorised. Non-fatal: the RECORD (the
+// symlink, or the project.json placement) is what makes the adoption stand, so
+// a failure here leaves the project adopted and the next boot sweep retries.
+async function deliverAdoptedConventions(name: string, real: string): Promise<void> {
   try {
     const { ensureProjectConventionsMd } = await import('./projectClaudeMd.ts');
     await ensureProjectConventionsMd(name);
   } catch (e) {
     console.warn(`adoptProject: CONVENTIONS.md not written into '${real}': ${errMsg(e)}`);
   }
-  return { ok: true, name, path: real, external: true };
 }
 
 export async function readFirstPrompt(jsonlPath: string): Promise<string | null> {
@@ -1030,14 +1598,86 @@ async function loadWorktreesFor(projectName: string): Promise<WorktreeMeta[]> {
   return listWorktrees(projectName);
 }
 
+// ONE PLACE a session could have run: a project or one of its worktrees, with
+// every cwd that place admits. `primary` and `fallback` are the two PASSES of
+// findSessionLocation's probe, not two guesses at one path — see the precedence
+// rule on it.
+interface SessionPlace {
+  project: string;
+  worktreeName: string | null;
+  primary: string[];
+  fallback: string[];
+}
+
 // Look up which project (and optionally which worktree) owns a given
-// sessionId by probing the conventional `~/.claude/projects/<encoded-cwd>/
-// <sid>.jsonl` path against every known project + worktree. Returns
-// { project, worktreeName: string|null } on hit, null when nothing matches.
+// sessionId, and the cwd its transcript was actually found at, by probing the
+// conventional `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` path against
+// every cwd every known project + worktree admits. Returns
+// { project, worktreeName: string|null, cwd } on hit, null when nothing matches.
 // `encodeCwd` is one-way (lossy: '_' and '/' both collapse to '-'), so
 // we can't reverse-map a directory name back to a project — enumerating
 // known paths and probing is the only correct approach.
-export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null } | null> {
+//
+// `cwd` IS THE ANSWER, not a convenience: a caller that re-derives it from the
+// project's tree path lands on the OTHER MACHINE for a project on a system, and
+// then reads an empty transcript. It is REQUIRED for that reason — an optional
+// field invites `hit.cwd ?? proj.path`, which is precisely the bug this fixes
+// (card 2026-0292). It is NOT a public field: `GET /sessions/:id/locate`
+// projects the body explicitly so it stays in-process.
+//
+// WHICH CWDS A PLACE ADMITS depends on where its tree is. A LOCAL place admits
+// exactly its tree path — the CLI ran there. A place on a SYSTEM admits its
+// local SESSION ROOTS (`sessionRootCwds`): the CLI is always local, so a session
+// on another machine's tree still ran in a cc-owned directory here, and the
+// tree path names a directory on a host cc never had a cwd in.
+//
+// TWO PASSES, WITH GLOBAL PRECEDENCE. Pass 1 sweeps every place's `primary`
+// (local tree paths, remote session roots). Pass 2 sweeps only the remote
+// places' `fallback` — the raw path on the system, which is exactly the probe
+// this function ran before session roots existed.
+//   - Pass 2 is KEPT because the state it serves is REACHABLE: adopt a project
+//     locally at P, accrue sessions in that tree, unregister it, re-adopt it on
+//     a system whose path is also P. Those older transcripts are genuinely that
+//     project's and nothing else finds them. Its WORKTREE half serves no state
+//     cc's own operations produce — `deleteProject`'s cascade unregisters a
+//     project's worktrees and `setProjectRemote` refuses while any exist, so no
+//     supported sequence leaves a remote worktree registration whose tree once
+//     held local sessions — and is kept as defence in depth, uniformly with the
+//     project half rather than as a special case.
+//   - It is STRICTLY LAST, globally rather than per-project, because a remote
+//     place's tree path can collide (via encodeCwd, or by naming the same
+//     string) with a LOCAL project's real cwd — and there the raw answer is
+//     wrong while a session-root answer elsewhere is right. Demoting it below
+//     every primary everywhere cures that by precedence, deleting nothing.
+// A session-root answer must therefore never lose to a raw remote-tree-path
+// answer, for any id, under any project ordering. Local places contribute
+// nothing to pass 2, so a local project's set and order are what they were.
+//
+// WHAT THIS NEEDS FROM THE SYSTEM. THE ONE HOME for this contract — the sites
+// that care (`src/mcp/handlers.ts`'s disk branch, `docs/architecture.md`,
+// tests/systems-remote-session-location.test.mjs) point here instead of keeping
+// their own copy, because two comfortable summaries are both FALSE and a third
+// paraphrase is how the last two got written:
+//   NOT "it never touches the box" — `loadWorktreesFor` reaches for it.
+//   NOT "a box that is down cannot change what this returns" — it can.
+//
+// Almost every candidate cwd is computed from cc's own store and disk:
+// `listProjects` (store-derived for a remote row), `sessionRootPath`,
+// `mirrorOffsets`, a realpath of cc's own store — and the transcripts are on
+// cc's own disk. ONE INPUT IS NOT, the WORKTREE STORE. `loadWorktreesFor` is
+// `listWorktrees`, which runs `git worktree list` THROUGH the project's system
+// and then lets the answer PRUNE any registration the box no longer reports,
+// while SWALLOWING the box's refusal when it cannot answer (so every
+// registration lists). Consequences, both real:
+//   - A DOWN box SURFACES a worktree place a HEALTHY box PRUNES. The box's git
+//     answer is data this lookup consumes, and losing it changes the answer
+//     rather than only costing a swallowed failure.
+//   - A WEDGED box can stall this lookup up to DEFAULT_OP_TIMEOUT_MS
+//     (src/systems/providerSystem.ts) — one exec per project on that box,
+//     measured (card 2026-0299 §2). Bounded, not removed.
+// The lazy composition below is what keeps both off a lookup that a nearer
+// place already answers.
+export async function findSessionLocation(sessionId: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> {
   // Permissive validation: sessionIds are UUIDs in practice but we accept
   // anything that's safe to interpolate into a filename. The point is to
   // reject path-traversal payloads before they touch the filesystem.
@@ -1060,28 +1700,109 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
   const conductPath = path.join(projectsRoot(), '.conduct');
   try {
     const s = await fs.stat(conductPath);
-    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null, external: false });
+    if (s.isDirectory()) {
+      // Synthesized, not listed — and `.conduct` is pinned local, so its placement
+      // comes from the pin rather than from a record read that could not change it.
+      projects.push({ name: CONDUCT_PROJECT_NAME, path: conductPath, workspace: null, external: false, ...placementOf(CONDUCT_PROJECT_NAME, {}) });
+    }
   } catch { /* .conduct doesn't exist yet — skip */ }
 
-  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null } | null> => {
-    for (const proj of projects) {
-      const file = sessionFilePath(proj.path, id);
+  // Lazy import for the same projects.ts ↔ systems/sessionRoot.ts circular edge
+  // the two worktrees imports sit on — sessionRoot.ts imports orchStoreRoot from
+  // this module.
+  const { sessionRootCwds } = await import('./systems/sessionRoot.ts');
+
+  // One place, composed. `sysPath` is null for a listed remote row with no
+  // placement — which contributes no primary, only its fallback. A remote row's
+  // `path` IS its `systemPath` (listProjects), but `systemPath` is the field
+  // that NAMES the meaning, so the project's row is asked with that one.
+  const compose = async (
+    proj: ProjectInfo, worktreeName: string | null, treePath: string, sysPath: string | null,
+  ): Promise<SessionPlace> => {
+    if (proj.system === LOCAL_SYSTEM_ID) {
+      return { project: proj.name, worktreeName, primary: [treePath], fallback: [] };
+    }
+    return {
+      project: proj.name,
+      worktreeName,
+      primary: sysPath ? await sessionRootCwds(proj.system, proj.name, worktreeName, sysPath) : [],
+      fallback: [treePath],
+    };
+  };
+
+  // THE PLACE LIST IS COMPOSED LAZILY, IN PROBE ORDER, AND MEMOISED — and the
+  // laziness is load-bearing rather than a micro-optimisation. Composing a
+  // project's WORKTREE places calls `loadWorktreesFor` = `listWorktrees`, which
+  // resolves the project and runs `git worktree list` THROUGH ITS SYSTEM: for a
+  // project on a remote system that is a real `exec` over the provider wire. An
+  // eager list would therefore put every registered system's responsiveness on
+  // the critical path of a lookup that a nearer place already answers, so one
+  // wedged provider would stall every locate, transcript read, summary and bare
+  // resume up to the operation timeout. Pass 1 composes a place only when the
+  // sweep reaches it, exactly as the pre-session-root probe did.
+  //
+  // The memo means a place is composed AT MOST ONCE per lookup, so pass 2 and
+  // the read-tolerance loop do not re-walk. Nothing depends on that beyond
+  // cost: pass 2 runs only when pass 1 missed everywhere, which is precisely
+  // the case that has already composed every place.
+  const rootMemo: Array<SessionPlace | undefined> = new Array(projects.length);
+  const rootPlace = async (i: number): Promise<SessionPlace> => {
+    const cached = rootMemo[i];
+    if (cached) return cached;
+    const proj = projects[i];
+    const built = await compose(proj, null, proj.path, proj.systemPath);
+    rootMemo[i] = built;
+    return built;
+  };
+  const worktreeMemo: Array<SessionPlace[] | undefined> = new Array(projects.length);
+  const worktreePlaces = async (i: number): Promise<SessionPlace[]> => {
+    const cached = worktreeMemo[i];
+    if (cached) return cached;
+    const proj = projects[i];
+    let wts: WorktreeMeta[] = [];
+    try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
+    const built: SessionPlace[] = [];
+    // A worktree's offsets come from the WORKTREE's own path on the system, not
+    // its project's: the two differ under a mirror root wider than the project.
+    for (const wt of wts) built.push(await compose(proj, wt.worktreeName, wt.worktreePath, wt.worktreePath));
+    worktreeMemo[i] = built;
+    return built;
+  };
+
+  const probe = async (id: string): Promise<{ project: string; worktreeName: string | null; cwd: string } | null> => {
+    const holds = async (cwd: string): Promise<boolean> => {
       try {
-        const stat = await fs.stat(file);
-        if (stat.isFile()) return { project: proj.name, worktreeName: null };
+        return (await fs.stat(sessionFilePath(cwd, id))).isFile();
       } catch (e) {
         if (errCode(e) !== 'ENOENT') throw e;
+        return false;
       }
-      let wts: WorktreeMeta[] = [];
-      try { wts = await loadWorktreesFor(proj.name); } catch { /* project may not be a git repo, skip */ }
-      for (const wt of wts) {
-        const wtFile = sessionFilePath(wt.worktreePath, id);
-        try {
-          const stat = await fs.stat(wtFile);
-          if (stat.isFile()) return { project: proj.name, worktreeName: wt.worktreeName };
-        } catch (e) {
-          if (errCode(e) !== 'ENOENT') throw e;
-        }
+    };
+    const first = async (place: SessionPlace, cwds: string[]) => {
+      for (const cwd of cwds) {
+        if (await holds(cwd)) return { project: place.project, worktreeName: place.worktreeName, cwd };
+      }
+      return null;
+    };
+    for (let i = 0; i < projects.length; i++) {
+      // The project's own place BEFORE its worktrees, so a hit at a project root
+      // does not pay that project's OWN worktree walk either — the within-project
+      // half of the same invariant, and the half a per-project eager build would
+      // lose silently. Its observable consequence (no frame reaches that
+      // project's box) is pinned by T13 in
+      // tests/systems-remote-session-location.test.mjs.
+      const root = await rootPlace(i);
+      const atRoot = await first(root, root.primary);
+      if (atRoot) return atRoot;
+      for (const pl of await worktreePlaces(i)) {
+        const atWt = await first(pl, pl.primary);
+        if (atWt) return atWt;
+      }
+    }
+    for (let i = 0; i < projects.length; i++) {
+      for (const pl of [await rootPlace(i), ...await worktreePlaces(i)]) {
+        const hitHere = await first(pl, pl.fallback);
+        if (hitHere) return hitHere;
       }
     }
     return null;
@@ -1176,7 +1897,11 @@ export async function listArchivedGroupedByProject(): Promise<{ project: string;
   const conductPath = path.join(projectsRoot(), '.conduct');
   try {
     const s = await fs.stat(conductPath);
-    if (s.isDirectory()) projects.push({ name: '.conduct', path: conductPath, workspace: null, external: false });
+    if (s.isDirectory()) {
+      // Synthesized, not listed — and `.conduct` is pinned local, so its placement
+      // comes from the pin rather than from a record read that could not change it.
+      projects.push({ name: CONDUCT_PROJECT_NAME, path: conductPath, workspace: null, external: false, ...placementOf(CONDUCT_PROJECT_NAME, {}) });
+    }
   } catch { /* .conduct doesn't exist yet — skip */ }
 
   const groups: { project: string; sessions: ArchivedSessionRow[] }[] = [];

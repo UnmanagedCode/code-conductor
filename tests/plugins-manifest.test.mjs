@@ -5,6 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { validateManifest, readManifest, claudePluginPaths } from '../src/plugins/manifest.ts';
 import { readFixtureManifest } from './plugin-helpers.mjs';
+import { localSystem } from '../src/systems/registry.ts';
+
+// readManifest reads a plugin's checkout THROUGH the project's System — a
+// manifest is a file in a project tree. These fixtures are on cc's own machine,
+// so they read through the built-in `local` handle (which, under the systems
+// gate, is itself the wire protocol).
+const sys = () => localSystem();
 
 function base(overrides = {}) {
   return {
@@ -153,7 +160,7 @@ test('readManifest: missing convention fragment / scaffold file → invalid', as
     });
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(manifest));
     // Files do not exist yet → invalid, both refs reported.
-    let r = await readManifest(dir);
+    let r = await readManifest(sys(), dir);
     assert.ok(r.errors.some(e => e.includes("conventions 'g' file")), 'missing convention fragment is a load error');
     assert.ok(r.errors.some(e => e.includes("conventions 'g' scaffold file")), 'missing scaffold file is a load error');
     // Create them → valid.
@@ -161,7 +168,7 @@ test('readManifest: missing convention fragment / scaffold file → invalid', as
     await fs.writeFile(path.join(dir, 'conventions', 'g.md'), '## G\n');
     await fs.mkdir(path.join(dir, 'scaffold'), { recursive: true });
     await fs.writeFile(path.join(dir, 'scaffold', 'g.md'), 'do the thing\n');
-    r = await readManifest(dir);
+    r = await readManifest(sys(), dir);
     assert.equal(r.errors, undefined);
     assert.equal(r.manifest.conventions[0].slug, 'g');
     assert.deepEqual(r.manifest.conventions[0].scaffold, { file: 'scaffold/g.md' });
@@ -248,11 +255,11 @@ test('inputSchema subset: full validateArgs vocabulary accepted', () => {
 test('readManifest: absent → null, bad JSON → errors, invalid keeps id for display', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'manif-'));
   try {
-    assert.equal(await readManifest(dir), null);
+    assert.equal(await readManifest(sys(), dir), null);
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), '{nope');
-    assert.ok((await readManifest(dir)).errors[0].includes('not valid JSON'));
+    assert.ok((await readManifest(sys(), dir)).errors[0].includes('not valid JSON'));
     await fs.writeFile(path.join(dir, 'conductor.plugin.json'), JSON.stringify(base({ name: '' })));
-    const r = await readManifest(dir);
+    const r = await readManifest(sys(), dir);
     assert.ok(r.errors.length > 0);
     assert.equal(r.id, 'my-plugin');
   } finally {

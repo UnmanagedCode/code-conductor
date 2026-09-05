@@ -18,6 +18,8 @@ import {
   externalLinkPath, externalDir, EXTERNAL_DIRNAME,
 } from '../src/projects.ts';
 import { createWorktree, syncWorktree, mergeWorktreeIntoParent, removeWorktree } from '../src/worktrees.ts';
+import { localSystem } from '../src/systems/registry.ts';
+import { liveSystemProto } from './systemHandle.mjs';
 import { ensureProjectConventionsMd, regenerateAllProjectConventions } from '../src/projectClaudeMd.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -107,7 +109,10 @@ test('a session under encodeCwd(realpath) is located; one under encodeCwd(linkPa
   await fs.mkdir(realDir, { recursive: true });
   const sid = '11111111-2222-3333-4444-555555555555';
   await fs.copyFile(FIXTURE_JSONL, path.join(realDir, `${sid}.jsonl`));
-  assert.deepEqual(await findSessionLocation(sid), { project: 'ext', worktreeName: null });
+  // `cwd` is REQUIRED on the answer and is the directory the transcript was
+  // found in — for an external project that is the target's REALPATH, which is
+  // the same property this test is about (card 2026-0292).
+  assert.deepEqual(await findSessionLocation(sid), { project: 'ext', worktreeName: null, cwd: real });
 
   // The logical (symlink) path encodes to a different dir. The CLI never writes
   // there — it encodes from getcwd(), which is always the realpath — so a
@@ -326,9 +331,13 @@ test('a non-ENOENT stat failure on an already-resolved target rethrows, and ENOE
   const { repoPath, real } = await makeExternalRepo();
   assert.equal((await adoptProject('ext', repoPath)).ok, true);
 
-  const origStat = fs.stat;
+  // Injected at the SYSTEM seam, which is where resolveProjectDir's stat now
+  // lives — patching node's `fs` would miss it entirely whenever the handle is
+  // a ProviderSystem (tests/systemHandle.mjs).
+  const statProto = liveSystemProto(localSystem());
+  const origStat = statProto.stat;
   try {
-    fs.stat = async function (target, ...rest) {
+    statProto.stat = async function (target, ...rest) {
       if (String(target) === real) {
         throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
       }
@@ -337,22 +346,22 @@ test('a non-ENOENT stat failure on an already-resolved target rethrows, and ENOE
     await assert.rejects(() => getProject('ext'), (e) => e.code === 'EACCES',
       'a permissions fault on the resolved target must surface, not read as "no such project"');
   } finally {
-    fs.stat = origStat;
+    statProto.stat = origStat;
   }
 
-  // The ENOENT half of the same catch stays a miss: a target deleted between
-  // the realpath and the stat is a race, not a fault.
+  // The ABSENT half stays a miss: a target deleted between the realpath and the
+  // stat is a race, not a fault. Absence is the System contract's `null` — the
+  // ENOENT→null mapping itself belongs to the implementation and is pinned in
+  // tests/systems-local.test.mjs — so that is what is injected here.
   try {
-    fs.stat = async function (target, ...rest) {
-      if (String(target) === real) {
-        throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
-      }
+    statProto.stat = async function (target, ...rest) {
+      if (String(target) === real) return null;
       return origStat.call(this, target, ...rest);
     };
     await assert.rejects(() => getProject('ext'), /not found/,
       'a raced deletion is a 404, not a 500');
   } finally {
-    fs.stat = origStat;
+    statProto.stat = origStat;
   }
 
   // And the patch really is gone.
@@ -520,6 +529,67 @@ test('deleteProject on an external project unlinks the record and keeps the targ
   assert.equal(await fs.readFile(keeper, 'utf8'), 'kept\n', 'the target file survives deleteProject itself');
   assert.ok((await fs.stat(real)).isDirectory());
   await assert.rejects(() => fs.lstat(externalLinkPath('ext')));
+});
+
+// ---------- 7.6c the unlink-not-rm invariant, as a refactor guard ----------
+
+// The invariant at src/projects.ts's external branch is enforced by a COMMENT:
+// the adopted target is the user's own repo, so the realpath must never reach a
+// removal call. Routing project-scoped I/O through a System handle rewrites
+// exactly the lines that comment guards,
+// and the failure mode is invisible from the outside — `rm -rf` on a symlink
+// removes the link too, so "the target survived" passes for the wrong reason on
+// a machine where the link is a link. So this asserts on the CALLS, at both
+// layers a removal can be issued from: no recursive removal is ever handed the
+// link or anything under the target, and the link goes away by unlink.
+test('deleting an external project issues NO recursive removal against the link or the target', async () => {
+  const { repoPath, real } = await makeExternalRepo();
+  assert.equal((await adoptProject('ext', repoPath)).ok, true);
+  const link = externalLinkPath('ext');
+
+  const recursive = [];   // every recursive-removal call, whatever layer issued it
+  const unlinked = [];    // every single-entry unlink
+  const origRm = fs.rm, origRmdir = fs.rmdir, origUnlink = fs.unlink;
+  // The LIVE handle's prototype (tests/systemHandle.mjs): this test's core
+  // assertion is a NEGATIVE one, so a spy on a class the registry is not using
+  // would record nothing and pass for the wrong reason.
+  const sysProto = liveSystemProto(localSystem());
+  const origRemoveTree = sysProto.removeTree;
+  const origSysUnlink = sysProto.unlink;
+  try {
+    fs.rm = function (p, ...rest) { recursive.push(`fs.rm ${p}`); return origRm.call(this, p, ...rest); };
+    fs.rmdir = function (p, ...rest) { recursive.push(`fs.rmdir ${p}`); return origRmdir.call(this, p, ...rest); };
+    fs.unlink = function (p, ...rest) { unlinked.push(String(p)); return origUnlink.call(this, p, ...rest); };
+    sysProto.removeTree = function (p, ...rest) {
+      recursive.push(`system.removeTree ${p}`);
+      return origRemoveTree.call(this, p, ...rest);
+    };
+    sysProto.unlink = function (p, ...rest) {
+      unlinked.push(String(p));
+      return origSysUnlink.call(this, p, ...rest);
+    };
+
+    const res = await deleteProject('ext');
+    assert.equal(res.path, real);
+  } finally {
+    fs.rm = origRm; fs.rmdir = origRmdir; fs.unlink = origUnlink;
+    sysProto.removeTree = origRemoveTree;
+    sysProto.unlink = origSysUnlink;
+  }
+
+  const forbidden = recursive.filter((entry) => {
+    const p = entry.slice(entry.indexOf(' ') + 1);
+    return p === real || p.startsWith(real + path.sep) || p === link;
+  });
+  assert.deepEqual(forbidden, [],
+    `a recursive removal was issued against the adopted repo or its record:\n  ${forbidden.join('\n  ')}`);
+  assert.ok(unlinked.includes(link), `the record must be removed by unlink; unlinked: ${unlinked.join(', ')}`);
+
+  // And the store entry — which IS cc's own — still went, so the assertion
+  // above is about placement, not about deleteProject having stopped working.
+  assert.ok(recursive.some(e => e.includes(projectStoreDir('ext'))),
+    `the central-store entry must still be removed recursively: ${recursive.join(', ')}`);
+  assert.ok((await fs.stat(real)).isDirectory());
 });
 
 test('deleteProject on an in-root project still removes the directory', async () => {

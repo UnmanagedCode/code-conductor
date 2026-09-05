@@ -4,8 +4,6 @@
 
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { spawn } from 'node:child_process';
-import { killProcessGroup } from '../groupedCommand.ts';
 import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.ts';
 import {
   listProjects as fsListProjects,
@@ -14,6 +12,7 @@ import {
   summarizeSessions,
   createProject as fsCreateProject,
   adoptProject as fsAdoptProject,
+  setProjectRemote as fsSetProjectRemote,
   getProject,
   findSessionLocation,
   findOrphanedTranscript,
@@ -23,6 +22,7 @@ import {
   removeWorkspace as fsRemoveWorkspace,
   renameWorkspace as fsRenameWorkspace,
   writeProjectMeta,
+  tryResolveProject,
 } from '../projects.ts';
 import { CONDUCT_PROJECT_NAME } from '../conduct.ts';
 import {
@@ -34,13 +34,15 @@ import {
   type WorktreeMeta,
 } from '../worktrees.ts';
 import { DIFF_BYTE_CAP, assertValidBaseRef, parseNumstat, parseNameStatus } from '../gitDiff.ts';
+import { LOCAL_SYSTEM_ID, isSystemRefusal, resolveSystem } from '../systems/registry.ts';
+import type { ExecSpec, System } from '../systems/system.ts';
 import { buildApprovePrompt, buildRejectPrompt } from '../planApproval.ts';
 // DOM-free formatter shared with the UI question card (public/blocks.js
 // re-exports it) so an answer_question MCP answer is byte-identical to a UI
 // submit — one canonical function, no fork. See public/userQuestionAnswers.js.
 import { formatUserQuestionAnswers, type Question, type UserQuestionAnswer } from '../../public/userQuestionAnswers.js';
 import { getCatalog as getProjectConventionsCatalog, composeProjectScaffold } from '../projectConventions.ts';
-import { composeProjectConventionsDoc } from '../projectClaudeMd.ts';
+import { composeProjectConventionsDocWithMeta, placementDisclosure } from '../projectClaudeMd.ts';
 import { getCatalog as getConductorConventionsCatalog, getSelection as getConductorSelection } from '../conductorConventions.ts';
 import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID } from '../modelVersions.ts';
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
@@ -279,8 +281,17 @@ async function getInstOrDisk(instances: InstanceManagerLike | null | undefined, 
   if (hit) {
     const backingSessionId = await resolveToBackingId(sessionId);
     if (backingSessionId) {
-      const { cwd } = await resolveProjectCwd(hit.project, hit.worktreeName);
-      return { disk: { sessionId, backingSessionId, cwd } };
+      // The probe's OWN cwd, not a re-resolve of the project: for a project on
+      // a system, resolveProjectCwd answers with the tree path on that machine
+      // — a directory the CLI never had as a cwd, where this read would serve a
+      // successfully EMPTY page. It also cannot REFUSE for an unreachable
+      // system, which is right: the bytes this read wants are on cc's own disk
+      // under claudeProjectsRoot(), so a box that is down does not stop the
+      // READ. What the LOOKUP that produced `hit` needs from the box is a
+      // separate contract and is NOT "nothing" — findSessionLocation in
+      // ../projects.ts is its one home; do not paraphrase it here
+      // (card 2026-0292).
+      return { disk: { sessionId, backingSessionId, cwd: hit.cwd } };
     }
   }
 
@@ -306,18 +317,51 @@ function notLiveRefusal(sessionId: string): SoftRefusal {
 export async function listProjects(_args: McpArgs, { instances }: McpCtx) {
   const projects = await fsListProjects();
   const enriched = await Promise.all(projects.map(async (p) => {
+    // tryResolveProject, not resolveProjectDir: one project cc cannot resolve
+    // must degrade to its own row, not reject this Promise.all and take the
+    // whole listing down with it. The whole project, not just its system — a
+    // record naming a reachable system but carrying no path has no tree to
+    // measure, and measuring it against an empty path would be wrong rather
+    // than absent.
+    const { system, unreachable } = await tryResolveProject(p.name);
+    // Worktree registrations are store-derived and need no System, so they still
+    // list; only their git-measured divergence goes unknown.
     const worktrees = await fsListWorktrees(p.name).catch(() => []);
     const worktreesWithSessions = await Promise.all(worktrees.map(async (w) => ({
       ...w,
       sessions: await summarizeSessions(w.worktreePath).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
-      mergeStatus: await getWorktreeMergeStatus(w).catch(() => ({ ahead: null, behind: null })),
+      mergeStatus: system
+        ? await getWorktreeMergeStatus(system, w).catch(() => ({ ahead: null, behind: null }))
+        : { ahead: null, behind: null },
     })));
-    const projIsGitRepo = await isGitRepo(p.path);
+    // undefined, not false — "could not look" must not print as the claim
+    // `! not a git repo`. deviations() skips an absent field, and the
+    // `! system unreachable` line beside it says why it is absent.
+    // The try covers a system that dies DURING the listing rather than at
+    // resolution: one project's mid-listing death degrades its own row instead
+    // of rejecting the Promise.all and failing the tool for every project.
+    let projIsGitRepo: boolean | undefined;
+    let unborn = false;
+    let deadMidListing: string | null = null;
+    if (system) {
+      // BOTH probes inside one try. A death in the window between them used to
+      // invent `unbornHead: false` — a measured-looking fact — on a row that
+      // then carried no reason for its other facts being absent.
+      try {
+        projIsGitRepo = await isGitRepo(system, p.path);
+        if (projIsGitRepo) unborn = await hasUnbornHead(system, p.path);
+      } catch (e) {
+        if (!isSystemRefusal(e)) throw e;
+        deadMidListing = (e as Error).message;
+        projIsGitRepo = undefined;
+      }
+    }
     return {
       ...p,
       liveCount: instances ? instances.liveCountForProject(p.name) : 0,
+      systemUnreachable: unreachable ?? deadMidListing,
       isGitRepo: projIsGitRepo,
-      unbornHead: projIsGitRepo ? await hasUnbornHead(p.path) : false,
+      unbornHead: unborn,
       worktrees: worktreesWithSessions,
       sessions: await summarizeSessions(p.path).catch(() => ({ count: 0, archivedCount: 0, lastActivity: 0 })),
     };
@@ -370,11 +414,11 @@ async function sessionCwdsFor(p: { name: string; path: string }) {
 // remote upstream, a different question that renders `? ?` on every project
 // without one, and it cost three git subprocesses per project to say nothing.
 // `list_projects` still reports it for projects that do have an upstream.
-async function groupGit(dir: string, meta: WorktreeMeta | null) {
+async function groupGit(system: System, dir: string, meta: WorktreeMeta | null) {
   // A worktree's branch is already recorded in its metadata — only a main
   // checkout has to ask git, and only it can be on a branch we don't know.
-  if (meta) return { branch: meta.branch ?? null, mergeStatus: await getWorktreeMergeStatus(meta).catch(() => null) };
-  const headRef = await runGit(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => null);
+  if (meta) return { branch: meta.branch ?? null, mergeStatus: await getWorktreeMergeStatus(system, meta).catch(() => null) };
+  const headRef = await runGit(system, dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']).catch(() => null);
   return { branch: headRef?.code === 0 ? headRef.stdout.trim() || null : null, mergeStatus: null };
 }
 
@@ -474,7 +518,15 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
     // than as a missing project.
     const empty = !liveHere.length && !rows.length && !archivedCount;
     if (empty && project === null) return null;
-    const { branch, mergeStatus } = await groupGit(t.cwd, t.meta);
+    // Same rule as the project listing, and it matters more here: the UNFILTERED
+    // scope spans every project, so one unreachable record would have broken the
+    // tool a conductor uses to find its own sessions. groupGit's own vocabulary
+    // for "not measured" is `{branch: null, mergeStatus: null}`, which renders as
+    // `br —` with no divergence — so the group still lists its sessions.
+    const { system: groupSystem } = await tryResolveProject(t.project);
+    const { branch, mergeStatus } = groupSystem
+      ? await groupGit(groupSystem, t.cwd, t.meta)
+      : { branch: null, mergeStatus: null };
     const tracked = (sid: string) => (proj ? proj.bySession.get(sid) : undefined);
     return {
       project: t.project,
@@ -1513,15 +1565,16 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   }
   const wt = await getWorktree(project, worktree);
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
+  const system = await resolveSystem(project);
   // Resolve the worktree's current HEAD sha (the right edge of the diff).
-  const headR = await runGit(wt.worktreePath, ['rev-parse', 'HEAD']);
+  const headR = await runGit(system, wt.worktreePath, ['rev-parse', 'HEAD']);
   const head = headR.code === 0 ? headR.stdout.trim() : null;
   const ref = (typeof baseRef === 'string' && baseRef.trim()) ? baseRef.trim() : wt.baseBranch;
   if (typeof baseRef === 'string' && baseRef.trim()) assertValidBaseRef(ref);
   // Commit count ref..HEAD — computed directly against `ref` (not via
   // getWorktreeMergeStatus, which is pinned to the worktree's recorded
   // baseBranch and ignores a caller-supplied baseRef override).
-  const aheadR = await runGit(wt.worktreePath, ['rev-list', '--count', `${ref}..HEAD`]);
+  const aheadR = await runGit(system, wt.worktreePath, ['rev-list', '--count', `${ref}..HEAD`]);
   const ahead = aheadR.code === 0 ? Number.parseInt(aheadR.stdout.trim(), 10) : null;
   const ctx = Number.isInteger(contextLines) && contextLines >= 0 && contextLines <= 50 ? contextLines : 3;
   const pathArgs = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p.trim()) : [];
@@ -1535,8 +1588,8 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     const numArgs = ['diff', '--numstat', '-M', `${ref}...HEAD`, ...pathspec];
     const nsArgs = ['diff', '--name-status', '-M', `${ref}...HEAD`, ...pathspec];
     const [rn, rns] = await Promise.all([
-      runGit(wt.worktreePath, numArgs),
-      runGit(wt.worktreePath, nsArgs),
+      runGit(system, wt.worktreePath, numArgs),
+      runGit(system, wt.worktreePath, nsArgs),
     ]);
     if (rn.code !== 0) throw new Error(`git diff --numstat failed in ${wt.worktreePath}: ${rn.stderr.trim() || rn.stdout.trim()}`);
     if (rns.code !== 0) throw new Error(`git diff --name-status failed in ${wt.worktreePath}: ${rns.stderr.trim() || rns.stdout.trim()}`);
@@ -1556,16 +1609,30 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
     const result: {
       project: string; worktree: string; baseRef: string; head: string | null;
       summary: boolean; ahead: number | null; totals: typeof totals; files: DiffFileRow[];
-      uncommitted?: { totals: typeof totals; files: DiffFileRow[]; untracked: string[] };
+      uncommitted?:
+        | { totals: typeof totals; files: DiffFileRow[]; untracked: string[] }
+        // `unknown` instead of the shape above when the uncommitted diff could
+        // not be read: absent counts, not zeroed ones.
+        | { unknown: true; reason: string };
     } = { project, worktree: wt.worktreeName, baseRef: ref, head, summary: true, ahead, totals, files };
 
     // Staged + unstaged changes vs HEAD (does not include untracked files)
     const [rnu, rnsu] = await Promise.all([
-      runGit(wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
-      runGit(wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
+      runGit(system, wt.worktreePath, ['diff', '--numstat', 'HEAD', ...pathspec]),
+      runGit(system, wt.worktreePath, ['diff', '--name-status', 'HEAD', ...pathspec]),
     ]);
-    const uNums = rnu.code === 0 ? parseNumstat(rnu.stdout) : [];
-    const uStats = rnsu.code === 0 ? parseNameStatus(rnsu.stdout) : [];
+    // A diff that did NOT answer is reported as unknown, never as zero files.
+    // The committed half above THROWS on the same failure, so rendering this
+    // half as "no uncommitted changes" made one function give two different
+    // meanings to one unanswered git call — and the tool's own description
+    // names `hasUncommittedChanges` as the signal that nothing will land on a
+    // merge, which is exactly the decision a false zero corrupts.
+    if (rnu.code !== 0 || rnsu.code !== 0) {
+      result.uncommitted = { unknown: true, reason: (rnu.stderr || rnsu.stderr).trim() || 'git diff did not answer' };
+      return result;
+    }
+    const uNums = parseNumstat(rnu.stdout);
+    const uStats = parseNameStatus(rnsu.stdout);
     const uFiles = uStats.map((s, i): DiffFileRow => {
       const n = uNums[i] ?? { additions: 0, deletions: 0, binary: false };
       const entry: DiffFileRow = { path: s.path, status: s.status, additions: n.additions, deletions: n.deletions, binary: n.binary };
@@ -1577,7 +1644,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
       additions: uFiles.reduce((acc, f) => acc + f.additions, 0),
       deletions: uFiles.reduce((acc, f) => acc + f.deletions, 0),
     };
-    const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
+    const utR = await runGit(system, wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
     const untracked = utR.code === 0
       ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
@@ -1586,7 +1653,7 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
   }
 
   // ---- diff mode: full diff with line-based pagination ----
-  const r = await runGit(wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`, ...pathspec]);
+  const r = await runGit(system, wt.worktreePath, ['diff', `--unified=${ctx}`, `${ref}...HEAD`, ...pathspec]);
   if (r.code !== 0) {
     throw new Error(`git diff failed in ${wt.worktreePath}: ${r.stderr.trim() || r.stdout.trim()}`);
   }
@@ -1597,9 +1664,9 @@ export async function projectDiff({ project, worktree, baseRef, contextLines = 3
 
   // Staged + unstaged vs HEAD. git diff HEAD does NOT include untracked files,
   // so list those separately via ls-files --others.
-  const wu = await runGit(wt.worktreePath, ['diff', `--unified=${ctx}`, 'HEAD', ...pathspec]);
+  const wu = await runGit(system, wt.worktreePath, ['diff', `--unified=${ctx}`, 'HEAD', ...pathspec]);
   uncommittedDiff = wu.code === 0 ? (wu.stdout ?? '') : '';
-  const utR = await runGit(wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
+  const utR = await runGit(system, wt.worktreePath, ['ls-files', '--others', '--exclude-standard', ...lsPathspec]);
   untracked = utR.code === 0
     ? utR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
     : [];
@@ -1695,8 +1762,20 @@ export async function deleteWorktree({ project, worktree, force = false }: { pro
     const dependents = await listDependentWorktrees(project, wtName);
     if (dependents.length > 0) return dependentsRefusal(worktree, dependents, 'deleting');
     if (wt) {
-      const dirty = await worktreeDirtyLines(wt.worktreePath);
-      if (dirty.ok && dirty.lines.length > 0) {
+      const sys = await resolveSystem(project);
+      const dirty = await worktreeDirtyLines(sys, wt.worktreePath);
+      // A check that FAILED is not a check that passed — see removeWorktree's
+      // twin guard. Unknown refuses; force is still the deliberate override.
+      if (!dirty.ok) {
+        return {
+          ok: false,
+          code: 'WORKTREE_DIRTY_UNKNOWN',
+          reason: `could not check whether worktree '${worktree}' has uncommitted changes on system `
+            + `'${sys.id}' — refusing rather than deleting a worktree cc has not measured; `
+            + `pass force=true to delete it anyway`,
+        };
+      }
+      if (dirty.lines.length > 0) {
         return {
           ok: false,
           code: 'WORKTREE_DIRTY',
@@ -1720,7 +1799,16 @@ export async function syncWorktree({ project, worktree }: { project: string; wor
 }
 
 export async function mergeWorktree({ project, worktree, allowDirty }: { project: string; worktree: string; allowDirty?: boolean }) {
-  const wt = await getWorktree(project, worktree);
+  // The canonical-name lookup reads the project, so an unreachable system
+  // refuses HERE, before mergeWorktreeIntoParent can convert it. Converted the
+  // same way for the same reason: this tool answers with a structured refusal,
+  // and a conductor acts on the code.
+  let wt;
+  try { wt = await getWorktree(project, worktree); }
+  catch (e) {
+    if (!isSystemRefusal(e)) throw e;
+    return { ok: false, code: 'SYSTEM_UNREACHABLE', reason: e.message };
+  }
   if (!wt) throw new Error(`worktree '${worktree}' not found under project '${project}'`);
   // The behind-guard now lives inside mergeWorktreeIntoParent (shared with the
   // REST route); map its typed refusal to this surface's exact wording.
@@ -1778,32 +1866,118 @@ export async function setProjectWorkspace({ project, workspace }: { project: str
   return { project, workspace: meta.workspace ?? null };
 }
 
+// Change which TARGET of its system a project is on, or clear it back to the
+// provider's own default with remoteId:null (or "").
+//
+// The twin of the REST PUT, calling the same setProjectRemote — which is where
+// the guard lives, so neither surface can be built without it. `instances` is
+// the manager this module already holds for kill_instance/spawn_instance, and
+// supplying it is this caller's half of that guard's contract.
+export async function setProjectRemote(
+  { project, remoteId }: { project: string; remoteId?: string | null },
+  { instances }: McpCtx,
+) {
+  if (typeof project !== 'string' || !project) throw new Error('project required');
+  return fsSetProjectRemote(
+    project,
+    remoteId === '' || remoteId === undefined ? null : remoteId,
+    { liveInstanceIds: () => (instances ? instances.sessionIdsForProject(project) : []) },
+  );
+}
+
 // ---------- create / introspect ----------
 
-export async function createProject({ name, conventions = [] }: { name: string; conventions?: string[] }) {
-  const conventionsDoc = await composeProjectConventionsDoc(conventions);
+// The placement triple is typed `unknown`, matching `fsCreateProject` and
+// `placementDisclosure`: both surfaces take these straight off a request body
+// (`POST /api/projects` delegates here) and `validatePlacementInput` is what
+// narrows them — a `string | undefined` here would be a claim neither caller
+// can make.
+export async function createProject({ name, conventions = [], system, remoteId, systemPath }: {
+  name: string; conventions?: string[]; system?: unknown; remoteId?: unknown; systemPath?: unknown;
+}) {
+  const { text: conventionsDoc, degraded } = await composeProjectConventionsDocWithMeta(conventions, {
+    system: placementDisclosure(system, systemPath),
+  });
   const scaffold = await composeProjectScaffold(name, conventions);
-  const created = await fsCreateProject(name, { conventionsDoc });
+  const created = await fsCreateProject(name, { conventionsDoc, system, remoteId, systemPath });
+  // ONE line per creation, outside every loop, on the single flag — a per-entry
+  // line would be N lines per event, which is the class card 2026-0281 landed.
+  // AFTER the create succeeds, because the marker clause names an artifact only
+  // a successful create produces: a refusal from `fsCreateProject` (409
+  // duplicate, 502 unreachable placement) writes no `CONVENTIONS.md` at all, so
+  // a line naming "its CONVENTIONS.md marker" would send an operator looking for
+  // a file that does not exist.
+  // It names the PROJECT because that is the only identifier available: the
+  // flag carries no cause, and the lost plugin slug is unreachable from here
+  // (the catalog's extraProvider is opaque and never reports what failed).
+  // A `may`, because the flag fans out to every convention scope and so fires
+  // even when the project scope lost nothing (card 2026-0282 §2, the no-loss
+  // arm). No remedy, because the two degrade sources clear differently — a
+  // compose-sourced one by itself, a scan-sourced one only via Rescan or
+  // disabling the plugin — and the flag cannot tell them apart.
+  // Create-only on purpose: `ensureProjectConventionsMd`'s regeneration sweep
+  // reaches the same composition once per project and would emit a line for
+  // every project a degrade cannot possibly have touched.
+  if (degraded) {
+    console.warn(`createProject: project '${name}' composed over a DEGRADED convention catalog — a plugin's project conventions may be missing from its CONVENTIONS.md marker, and no later regeneration adds them back; a one-time scaffold directive may not have been emitted at all, and nothing reissues one`);
+  }
   // The scaffold directive is RETURNED, not persisted — fold it into your FIRST
   // send_prompt to the project's first worker (see conventions/conductor/core.md).
   return { ...created, ...(scaffold ? { scaffold } : {}) };
 }
 
-export async function adoptProject({ name, path: targetPath }: { name: string; path: string }) {
-  return fsAdoptProject(name, targetPath);
+export async function adoptProject({ name, path: targetPath, system, remoteId }: {
+  name: string; path: string; system?: string; remoteId?: string;
+}) {
+  return fsAdoptProject(name, targetPath, { system, remoteId });
 }
 
+// Both listings return an OBJECT, not the bare array, so the catalog's
+// `degraded` flag can ride along: `Array.prototype.map` does not carry an
+// array's own property, and neither does `JSON.stringify` — which is exactly
+// what the tools/call dispatcher applies to a non-text result
+// (src/mcp/server.ts). So the flag was dropped twice over, and a conductor read
+// a short list during an outage as the complete one (card 2026-0282).
+//
+// `incomplete` is PRESENT ONLY WHEN DEGRADED — its presence is the signal, so a
+// healthy result is the array it always was under one new key and the tool
+// descriptions (system-prompt text, paid every session) stay unchanged. The
+// `{conventions, …}` shape follows `list_playbooks`' `{playbooks, errors}`.
+//
+// ONE SENTENCE PER SURFACE, deliberately not a shared constant: the two are
+// independent messages, each read alone, and only one of them is about
+// something committed. `degraded === true` rather than a truthiness test
+// because getCatalog() always sets the property (src/fragmentCatalog.ts).
+//
+// Neither sentence may assert that anything IS missing: the flag fans out to
+// every convention scope and carries no cause, so it fires on this surface for
+// an outage that cost this surface nothing. A leading "may" is not enough — it
+// governs only the clause it opens — so the consequence clause is phrased
+// CONDITIONALLY on the loss ("whatever is missing here…"), which is vacuous in
+// the no-loss arm instead of false in it.
 export async function listProjectConventions() {
   const catalog = await getProjectConventionsCatalog();
-  return catalog.map(({ slug, name, description, builtin, scaffold }) => ({ slug, name, description, builtin, hasScaffold: !!scaffold }));
+  const conventions = catalog.map(({ slug, name, description, builtin, scaffold }) => ({ slug, name, description, builtin, hasScaffold: !!scaffold }));
+  return catalog.degraded === true
+    ? {
+      conventions,
+      incomplete: "May be incomplete — cc could not read a plugin's conventions and cannot tell those apart from conventions that are absent; whatever is missing here cannot appear in the line-1 CONVENTIONS.md marker of a project created from this list either, and no later regeneration adds it back.",
+    }
+    : { conventions };
 }
 
 export async function listConductorConventions() {
   const [catalog, enabled] = await Promise.all([getConductorConventionsCatalog(), getConductorSelection()]);
   const on = new Set(enabled);
-  return catalog.map(({ slug, name, description, builtin }) => ({
+  const conventions = catalog.map(({ slug, name, description, builtin }) => ({
     slug, name, description, builtin, enabled: on.has(slug),
   }));
+  return catalog.degraded === true
+    ? {
+      conventions,
+      incomplete: "May be incomplete — cc could not read a plugin's conventions and cannot tell those apart from conventions that are absent; nothing here is committed, because the conductor role document is recomposed from this catalog on every spawn.",
+    }
+    : { conventions };
 }
 
 // reconstructMessages / buildMessageFromRing / mergeRecentWithDisk /
@@ -2117,25 +2291,28 @@ export async function buildRecentMessages({ sessionId, count, includeToolCalls =
 
 // Resolve { project, worktree? } to an absolute cwd, throwing with a
 // useful message if either is missing.
-async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string }> {
+// Every project_* tool resolves its cwd here, which makes it the one place they
+// pick up the System that cwd lives on — a worktree is on the same system as
+// its parent project by construction.
+async function resolveProjectCwd(projectName: string, worktreeName?: string | null): Promise<{ cwd: string; worktreeMeta: WorktreeMeta | null; projectPath: string; system: System }> {
   const proj = await getProject(projectName);
   if (worktreeName) {
     const wt = await getWorktree(projectName, worktreeName);
     if (!wt) throw new Error(`worktree '${worktreeName}' not found under project '${projectName}'`);
-    return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path };
+    return { cwd: wt.worktreePath, worktreeMeta: wt, projectPath: proj.path, system: proj.system };
   }
-  return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path };
+  return { cwd: proj.path, worktreeMeta: null, projectPath: proj.path, system: proj.system };
 }
 
 // Read the top-level directory listing, hiding dotfiles by default.
 // Used by project_status for a quick "what's in this dir?" snapshot.
 // Errors return an empty list.
-async function listTopLevelEntries(cwd: string): Promise<Array<{ name: string; kind: string }>> {
+async function listTopLevelEntries(system: System, cwd: string): Promise<Array<{ name: string; kind: string }>> {
   try {
-    const entries = await fs.readdir(cwd, { withFileTypes: true });
+    const entries = await system.readDir(cwd);
     return entries
       .filter(e => !e.name.startsWith('.'))
-      .map(e => ({ name: e.name, kind: e.isDirectory() ? 'dir' : (e.isFile() ? 'file' : 'other') }))
+      .map(e => ({ name: e.name, kind: e.kind === 'dir' ? 'dir' : (e.kind === 'file' ? 'file' : 'other') }))
       .sort((a, b) => {
         if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
         return a.name.localeCompare(b.name);
@@ -2149,7 +2326,7 @@ async function listTopLevelEntries(cwd: string): Promise<Array<{ name: string; k
 // (branch + head + dirty + recent commits), top-level files, and — for
 // worktrees — the mergeStatus + a diff stat vs the base branch.
 export async function projectStatus({ project, worktree, logLimit = 20 }: { project: string; worktree?: string; logLimit?: number }) {
-  const { cwd, worktreeMeta } = await resolveProjectCwd(project, worktree);
+  const { cwd, worktreeMeta, system } = await resolveProjectCwd(project, worktree);
   const out: {
     project: string; worktree: string | null; cwd: string;
     files: Array<{ name: string; kind: string }>;
@@ -2158,6 +2335,9 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     branch?: string | null;
     head?: { sha: string | null; subject: string | null } | null;
     dirty?: string[];
+    // `git status` did not answer. Absent on every ordinary read, so its
+    // presence always means the dirty list below is missing rather than empty.
+    dirtyUnknown?: true;
     dirtyTotal?: number;
     dirtyTruncated?: boolean;
     recentCommits?: string[];
@@ -2169,20 +2349,20 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     project,
     worktree: worktreeMeta?.worktreeName ?? null,
     cwd,
-    files: await listTopLevelEntries(cwd),
+    files: await listTopLevelEntries(system, cwd),
     isGitRepo: false,
     unbornHead: false,
   };
-  if (!(await isGitRepo(cwd))) {
+  if (!(await isGitRepo(system, cwd))) {
     return textResult(renderProjectStatus(out));
   }
   out.isGitRepo = true;
-  out.unbornHead = await hasUnbornHead(cwd);
+  out.unbornHead = await hasUnbornHead(system, cwd);
   // Branch (may be null on detached HEAD).
-  const branchR = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
+  const branchR = await runGit(system, cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
   out.branch = branchR.code === 0 ? branchR.stdout.trim() || null : null;
   // HEAD sha + subject.
-  const headR = await runGit(cwd, ['log', '-1', '--pretty=%H%n%s']);
+  const headR = await runGit(system, cwd, ['log', '-1', '--pretty=%H%n%s']);
   if (headR.code === 0) {
     const [sha, ...subj] = headR.stdout.trim().split('\n');
     out.head = { sha: sha ?? null, subject: subj.join('\n') || null };
@@ -2190,14 +2370,20 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
     out.head = null;
   }
   // Dirty lines (porcelain). For worktrees, filter out our own dotdir.
+  //
+  // A status that did NOT answer is reported as unknown, never as an empty
+  // list: "nothing is dirty" is a positive claim about the tree, and rendering
+  // it for a check that failed is the same read-side defect as the guards that
+  // treated a failed check as a passed one. The realistic trigger is git's own
+  // output fence firing on a pathological tree — precisely the tree least safe
+  // to describe as clean.
   if (worktreeMeta) {
-    const d = await worktreeDirtyLines(cwd);
-    out.dirty = d.ok ? d.lines : [];
+    const d = await worktreeDirtyLines(system, cwd);
+    if (d.ok) out.dirty = d.lines; else out.dirtyUnknown = true;
   } else {
-    const d = await runGit(cwd, ['status', '--porcelain']);
-    out.dirty = d.code === 0
-      ? d.stdout.split('\n').map(s => s.trim()).filter(Boolean)
-      : [];
+    const d = await runGit(system, cwd, ['status', '--porcelain']);
+    if (d.code === 0) out.dirty = d.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+    else out.dirtyUnknown = true;
   }
   // Cap the dirty list so a pathological working tree can't blow up the
   // response (mirrors project_read / project_diff's bounded-output pattern).
@@ -2211,7 +2397,7 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
   }
   // Recent commits (oneline). Negative or 0 logLimit → skip.
   if (typeof logLimit === 'number' && Number.isInteger(logLimit) && logLimit > 0) {
-    const logR = await runGit(cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
+    const logR = await runGit(system, cwd, ['log', `-${logLimit}`, '--pretty=%h %s']);
     out.recentCommits = logR.code === 0
       ? logR.stdout.split('\n').map(s => s.trim()).filter(Boolean)
       : [];
@@ -2220,8 +2406,8 @@ export async function projectStatus({ project, worktree, logLimit = 20 }: { proj
   if (worktreeMeta) {
     out.baseBranch = worktreeMeta.baseBranch;
     out.baseSha = worktreeMeta.baseSha;
-    out.mergeStatus = await getWorktreeMergeStatus(worktreeMeta).catch(() => ({ ahead: null, behind: null }));
-    const diffR = await runGit(cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
+    out.mergeStatus = await getWorktreeMergeStatus(system, worktreeMeta).catch(() => ({ ahead: null, behind: null }));
+    const diffR = await runGit(system, cwd, ['diff', '--stat', `${worktreeMeta.baseBranch}...HEAD`]);
     out.diffStat = diffR.code === 0 ? diffR.stdout.trim() : '';
   }
   return textResult(renderProjectStatus(out));
@@ -2245,42 +2431,29 @@ export async function projectRead({ project, worktree, relativePath,
   if (path.isAbsolute(relativePath)) {
     throw new Error('relativePath must be project-relative (no absolute paths)');
   }
-  const { cwd } = await resolveProjectCwd(project, worktree);
+  const { cwd, system } = await resolveProjectCwd(project, worktree);
   const resolved = path.resolve(cwd, relativePath);
   // Path-traversal guard: resolved must stay under cwd.
   const rel = path.relative(cwd, resolved);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`relativePath escapes project root: ${relativePath}`);
   }
-  let stat;
-  try { stat = await fs.stat(resolved); }
-  catch (e) {
-    if (errCode(e) === 'ENOENT') {
-      throw httpError(404, `file not found: ${relativePath}`);
-    }
-    throw e;
+  const stat = await system.stat(resolved);
+  if (!stat) {
+    throw httpError(404, `file not found: ${relativePath}`);
   }
-  if (stat.isDirectory()) {
+  if (stat.kind === 'dir') {
     throw new Error(`'${relativePath}' is a directory — use project_status to list it`);
   }
-  if (!stat.isFile()) {
+  if (stat.kind !== 'file') {
     throw new Error(`'${relativePath}' is not a regular file`);
   }
   const cap = typeof maxBytes === 'number' && Number.isInteger(maxBytes) && maxBytes > 0 ? maxBytes : 256 * 1024;
 
   // Always read up to cap bytes first (preserves existing binary behaviour and
   // avoids loading huge files on the fast path).
-  const fh = await fs.open(resolved, 'r');
-  let buf: Buffer;
-  let truncatedByBytes: boolean;
-  try {
-    const len = Math.min(stat.size, cap);
-    buf = Buffer.alloc(len);
-    await fh.read(buf, 0, len, 0);
-    truncatedByBytes = stat.size > cap;
-  } finally {
-    await fh.close();
-  }
+  const buf = await system.readFileBytes(resolved, { length: Math.min(stat.size, cap) });
+  const truncatedByBytes = stat.size > cap;
 
   // Best-effort text detection: probe for NULs in the first 4 KB (unchanged).
   const probe = buf.slice(0, Math.min(4096, buf.length));
@@ -2311,7 +2484,7 @@ export async function projectRead({ project, worktree, relativePath,
 
   // Slow path: line params active — read the full file for accurate line ops.
   const fullText = truncatedByBytes
-    ? await fs.readFile(resolved, 'utf8')
+    ? await system.readFile(resolved)
     : buf.toString('utf8');
 
   const allLines = fullText.split('\n');
@@ -2382,6 +2555,16 @@ function shQuote(p: string): string {
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }
 
+// The command wrapped in claude's own restored shell environment, sourced with
+// the same shell that produced the bundle (bundleShellKind).
+async function claudeShellSpec(command: string): Promise<ExecSpec> {
+  const bundlePath = await getShellEnvBundlePath();
+  const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
+  return bundleShellKind(bundlePath) === 'zsh'
+    ? { argv: ['zsh', '--no-rcs', '-c', wrapped] }
+    : { argv: ['bash', '--noprofile', '--norc', '-c', wrapped] };
+}
+
 // Run a shell command inside a project/worktree cwd, in claude's own
 // restored shell environment (rg/find/grep shims + shell functions, via the
 // cached bundle from claudeShellEnv.ts). The bundle is sourced with the same
@@ -2396,86 +2579,54 @@ export async function bashProject({ project, worktree, command, timeout }: {
     throw new Error('project_bash requires a non-empty command string');
   }
   const timeoutMs = clampBashTimeoutMs(timeout);
-  const { cwd, worktreeMeta } = await resolveProjectCwd(project, worktree);
+  const { cwd, worktreeMeta, system } = await resolveProjectCwd(project, worktree);
   // Responses report the CANONICAL name, never the caller's spelling — see
   // docs/protocol.md → Input params. All three exit paths below echo it.
   const wtName = worktreeMeta?.worktreeName ?? null;
-  const bundlePath = await getShellEnvBundlePath();
-  const wrapped = `source ${shQuote(bundlePath)} >/dev/null 2>&1; ${command}`;
-  const shell = bundleShellKind(bundlePath);
-  const [spawnCmd, spawnArgs] = shell === 'zsh'
-    ? ['zsh', ['--no-rcs', '-c', wrapped]]
-    : ['bash', ['--noprofile', '--norc', '-c', wrapped]];
 
-  return new Promise((resolve) => {
-    const start = Date.now();
-    let timedOut = false;
-    let capped = false;
-    const chunks: Buffer[] = [];
-    let bytes = 0;
+  // BUCKET 3, and local-only BY CONSTRUCTION rather than by refusal: the bundle
+  // is a file on cc's own machine reconstructing the shims of the `claude`
+  // binary installed there, so sourcing it on another system would source a path
+  // that is not there (or, worse, someone else's file at the same path). On a
+  // non-local system the command runs in a plain login shell instead — which is
+  // where that system's own toolchain lives, so there is nothing to reconstruct.
+  const spec: ExecSpec = system.id === LOCAL_SYSTEM_ID
+    ? await claudeShellSpec(command)
+    : { shell: command };
 
-    let proc;
-    try {
-      proc = spawn(spawnCmd, spawnArgs, {
-        cwd,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
-    } catch (err) {
-      resolve(textPayload(
-        { project, worktree: wtName, cwd, exitCode: null,
-          durationMs: Date.now() - start, error: true },
-        errMsg(err),
-      ));
-      return;
-    }
-
-    const killGroup = (): void => killProcessGroup(proc.pid, {
-      graceMs: 100,
-      fallback: (sig) => proc.kill(sig),
-    });
-    // Keep draining both pipes to completion (avoids backpressure stalling
-    // the process) but stop RETAINING bytes past the cap — matches the
-    // built-in Bash tool's semantics (truncate what's *shown*, let the
-    // command run to completion). timeoutMs is the only hard kill.
-    const onData = (chunk: Buffer) => {
-      if (bytes >= BASH_OUTPUT_CAP) { capped = true; return; }
-      chunks.push(chunk);
-      bytes += chunk.length;
-      if (bytes >= BASH_OUTPUT_CAP) capped = true;
-    };
-    proc.stdout.on('data', onData);
-    proc.stderr.on('data', onData);
-
-    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
-
-    proc.on('close', (code) => {
-      clearTimeout(timer);
-      const durationMs = Date.now() - start;
-      const raw = Buffer.concat(chunks).toString('utf8');
-      const output = capped ? raw + '\n… [truncated at the output cap]' : raw;
-      const meta: {
-        project: string; worktree: string | null; cwd: string;
-        exitCode: number | null; durationMs: number; truncated?: boolean; timedOut?: boolean;
-      } = {
-        project, worktree: wtName, cwd,
-        exitCode: timedOut ? null : (code ?? null),
-        durationMs,
-      };
-      if (capped) meta.truncated = true;
-      if (timedOut) meta.timedOut = true;
-      resolve(textPayload(meta, output.trimEnd()));
-    });
-
-    proc.on('error', (err) => {
-      clearTimeout(timer);
-      resolve(textPayload(
-        { project, worktree: wtName, cwd, exitCode: null,
-          durationMs: Date.now() - start, error: true },
-        err.message,
-      ));
-    });
+  // One-shot exec on the project's system. `stdin: 'ignore'` is load-bearing:
+  // an interactive command would otherwise hang until the timeout. The HEAD cap
+  // keeps draining both streams to completion — truncate what is *shown*, let
+  // the command run — matching the built-in Bash tool's semantics.
+  const r = await system.exec(spec, {
+    cwd, timeoutMs, stdin: 'ignore', headCapBytes: BASH_OUTPUT_CAP,
   });
+
+  if (r.spawnError) {
+    return textPayload(
+      { project, worktree: wtName, cwd, exitCode: null, durationMs: r.durationMs, error: true },
+      r.spawnError,
+    );
+  }
+
+  const output = r.truncated ? r.output + '\n… [truncated at the output cap]' : r.output;
+  const meta: {
+    project: string; worktree: string | null; cwd: string;
+    exitCode: number | null; durationMs: number;
+    truncated?: boolean; timedOut?: boolean; descendantsMaySurvive?: true;
+  } = {
+    project, worktree: wtName, cwd,
+    exitCode: r.timedOut ? null : r.code,
+    durationMs: r.durationMs,
+  };
+  if (r.truncated) meta.truncated = true;
+  if (r.timedOut) meta.timedOut = true;
+  // The command was killed on a system whose provider cannot signal a process
+  // GROUP, so only the direct child was reached. Surfaced because the caller's
+  // next move depends on it: the tree it just timed out may still be holding a
+  // lock, a port or the CPU, and nothing else will ever say so.
+  if (r.descendantsMaySurvive) meta.descendantsMaySurvive = true;
+  return textPayload(meta, output.trimEnd());
 }
 
 // The `code` on a thrown Node error (e.g. 'ENOENT'), or undefined — the

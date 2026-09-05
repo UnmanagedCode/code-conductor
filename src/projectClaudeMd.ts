@@ -26,12 +26,12 @@
 // file, a non-marker first line, or a zero-slug marker is regenerated with the
 // workspace block and an empty project part.
 
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { listProjects } from './projects.ts';
-import { composeProjectConventionsBlock, getCatalog } from './projectConventions.ts';
+import { listProjects, resolveProjectDir } from './projects.ts';
+import { composeProjectConventionsBlockWithMeta, getCatalog } from './projectConventions.ts';
 import { composeCurrentWorkspace } from './workspaceConventions.ts';
 import { ensureConventionsImport } from './conventionsImport.ts';
+import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 
 const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 
@@ -39,6 +39,68 @@ const CONVENTIONS_FILENAME = 'CONVENTIONS.md';
 // fragments are bare H2s. Concatenated without this separator, project
 // conventions would read as workspace ones. Heading only — no prose.
 const PROJECT_HEADING = '# Project conventions';
+
+// THE TWO SENTENCES A REMOTE PROJECT ADDS TO EVERY WORKER'S SYSTEM PROMPT.
+//
+// It is here rather than in the workspace or conductor scope because it is a
+// fact about THIS project's placement, and it must arrive through the channel
+// that already reaches a worker on it: this file, imported by the project's
+// CLAUDE.md.
+//
+// Held to the workspace "System-prompt docs" rule — each sentence changes what
+// the agent does, and both were measured:
+//
+//   * The first pre-empts the coordinate divergence the worker meets the first
+//     time a command prints a path. Told, a worker did the task and remarked on
+//     nothing; untold, it took a system path from a stack trace, tried to read
+//     it, and spent a call recovering.
+//   * The second is a CORRECTION, twice over. An earlier wording said system
+//     paths "are the system's copies of what you see locally" and sent the model
+//     straight to `Read /app/greeting.py` — which cannot work, because the CLI
+//     reads on cc's machine. It has to say files are read and edited at their
+//     LOCAL paths. A later wording then said a system path "appears only in
+//     command output", which is FALSE: cc's own PostToolUse note puts one on a
+//     tool result ("Saved to /app/… on system '<id>'."). The prohibition is what
+//     carries the behaviour, so it says NEVER OPEN one — true wherever the path
+//     came from — rather than making a claim about where such paths can appear.
+// A THIRD SENTENCE WAS DELETED BY CARD 2026-0312 AND NOTHING REPLACED IT — a
+// per-session saving, recorded so it is not re-added by someone rediscovering
+// the problem it solved. It said shell state is PER AGENT, and it existed for an
+// ASYMMETRY: `export` persisted across an agent's own commands while a local
+// session persisted nothing, which invited the false generalisation that a
+// dispatched subagent inherited that state. That card deleted the long-lived
+// shell, so the asymmetry does not exist: nothing an agent's command sets
+// reaches ANY later command, its own included, exactly as locally. The
+// sentence's subject is gone.
+//
+// SPECIFICALLY NOT ADDED IN ITS PLACE: anything about each command starting at
+// the project root. That fact IS delivered — by cc's own notice on the one
+// command where it matters, the one whose `cd` was discarded
+// (src/systems/toolRedirect.ts) — and the workspace "push what nothing
+// volunteers" rule makes a channel that fires at the point of use beat a
+// sentence every session pays for.
+//
+// Nothing more. `Glob`/`Grep` being gone is volunteered by the tool registry; a
+// write outside the session root is named by its own refusal; a failed
+// write-back is named by the note on the tool result. Each of those is
+// delivered at the point of use by a channel the worker cannot miss, so
+// repeating it here would be a per-session cost for no change in behaviour.
+function systemDisclosure(system: { id: string; path: string }): string {
+  return `# System\n\n`
+    + `This project's tree is at \`${system.path}\` on system \`${system.id}\`, where \`Bash\` commands run. `
+    + `Read, write and edit files at their paths under this session's working directory — `
+    + `never at their \`${system.path}\` paths, which name the same files seen from the system.\n`;
+}
+
+// The disclosure argument for a project being CREATED on a system, from the two
+// request fields that name its placement. One helper rather than the same
+// `id === LOCAL_SYSTEM_ID ? null : …` ternary at each creation surface, which
+// is exactly the shape that drifts.
+export function placementDisclosure(system: unknown, systemPath: unknown): { id: string; path: string } | null {
+  if (typeof system !== 'string' || !system || system === LOCAL_SYSTEM_ID) return null;
+  if (typeof systemPath !== 'string' || !systemPath) return null;
+  return { id: system, path: systemPath };
+}
 
 // Line-1 marker: `<!-- cc:conventions a,b,c -->` (slugs are comma-safe — the
 // slug charset is [a-zA-Z0-9._-] plus plugin `<id>/<slug>`, never a comma).
@@ -82,19 +144,44 @@ export function parseMarker(firstLine: string | null | undefined): string[] | nu
 // `missing` (marker slugs that don't resolve here) is kept in the MARKER — so the
 // convention recovers verbatim if it returns — but contributes a visible note
 // instead of a body. Unknown slug outside `missing` → 400 (via
-// composeProjectConventionsBlock); callers at project creation rely on that.
+// composeProjectConventionsBlockWithMeta); callers at project creation rely on that.
 // With no project part at all (zero slugs, or none of them resolving to a body
 // or a note) the heading is omitted too and the document is marker + workspace.
-export async function composeProjectConventionsDoc(slugs: string[], missing: string[] = []): Promise<string> {
+// Also returns the project catalog's `degraded` flag, off the read the block
+// composition already makes — because degradedness is a property OF THIS
+// DOCUMENT and its consequences differ per caller (card 2026-0282). The create
+// path takes this shape and warns the operator; the regeneration path takes the
+// plain `composeProjectConventionsDoc` below and stays silent, because it
+// reaches this composition once per project per sweep and a project whose
+// marker names no unresolvable slug composes byte-identically to healthy.
+// The WORKSPACE block can never be the degraded one (no extraProvider — see
+// src/workspaceConventions.ts), so the flag comes from the project block alone.
+export async function composeProjectConventionsDocWithMeta(
+  slugs: string[],
+  { missing = [], system = null }: { missing?: string[]; system?: { id: string; path: string } | null } = {},
+): Promise<{ text: string; degraded: boolean }> {
   const marker = buildMarker(slugs);
   const workspace = await composeCurrentWorkspace();          // ends with '\n'
   const gone = new Set(missing);
-  const body = await composeProjectConventionsBlock(slugs.filter(s => !gone.has(s)));
+  const { text: body, degraded } = await composeProjectConventionsBlockWithMeta(slugs.filter(s => !gone.has(s)));
   const note = gone.size ? `${unresolvedNote(missing)}\n` : '';
   const project = (note || body)
     ? `\n${PROJECT_HEADING}\n${note ? `\n${note}` : ''}${body}`
     : '';
-  return `${marker}\n\n${workspace}${project}`;
+  // FIRST, above the conventions: it frames how every instruction below is
+  // carried out, and a worker that reads it late has already run a command.
+  const placement = system ? `${systemDisclosure(system)}\n` : '';
+  return { text: `${marker}\n\n${placement}${workspace}${project}`, degraded };
+}
+
+// The document alone. Every caller that has no policy for a degraded catalog
+// takes this one, and a caller that does takes the WithMeta form above rather
+// than reading the catalog a second time.
+export async function composeProjectConventionsDoc(
+  slugs: string[],
+  opts: { missing?: string[]; system?: { id: string; path: string } | null } = {},
+): Promise<string> {
+  return (await composeProjectConventionsDocWithMeta(slugs, opts)).text;
 }
 
 // Regenerate one project's CONVENTIONS.md: the workspace block always, plus
@@ -117,12 +204,25 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
   | { path: string; regenerated: true; missing: string[] }
 > {
   const projects = await listProjects();
-  const proj = projects.find(p => p.name === projectName);
-  if (!proj) return { skipped: 'no-project' };
-  const target = conventionsTargetPath(proj.path);
+  if (!projects.some(p => p.name === projectName)) return { skipped: 'no-project' };
+  // This is one of the only two places cc writes INSIDE a project tree, so it
+  // reads and writes through the project's system, never with a bare fs call.
+  //
+  // resolveProjectDir, NOT resolveSystem: this needs a PATH as much as a
+  // handle, and the two are not the same question. A record naming a reachable
+  // system with no `systemPath` resolves its system perfectly well and has no
+  // tree — and the listing row it comes from carries an empty path, so
+  // composing against it wrote `CLAUDE.md` and `CONVENTIONS.md` to a bare
+  // filename on the far side, landing wherever the provider ran and reporting
+  // success. Resolving the project refuses instead, and the sweep's
+  // per-project catch turns that into an error entry.
+  const resolved = await resolveProjectDir(projectName);
+  if (!resolved) return { skipped: 'no-project' };
+  const { path: projPath, system } = resolved;
+  const target = conventionsTargetPath(projPath);
 
   let existing: string | null = null;
-  try { existing = await fs.readFile(target, 'utf8'); }
+  try { existing = await system.readFile(target); }
   catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
 
   const slugs = (existing === null ? null : parseMarker(existing.split('\n', 1)[0])) ?? [];
@@ -151,9 +251,14 @@ export async function ensureProjectConventionsMd(projectName: string, { log }: {
     return { skipped: 'catalog-degraded', missing };
   }
 
-  await ensureConventionsImport(proj.path);
-  const content = await composeProjectConventionsDoc(slugs, missing);
-  await fs.writeFile(target, content);
+  await ensureConventionsImport(system, projPath);
+  const content = await composeProjectConventionsDoc(slugs, {
+    missing,
+    // `resolved.path` IS the path on the system for a remote project, and null
+    // placement for a local one — so a local project's document is unchanged.
+    system: system.id === LOCAL_SYSTEM_ID ? null : { id: system.id, path: projPath },
+  });
+  await system.writeFile(target, content);
   if (log?.log) {
     log.log(missing.length
       ? `CONVENTIONS.md regenerated without unresolvable ${missing.join(', ')}: ${target}`

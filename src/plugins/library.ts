@@ -5,6 +5,7 @@ import { httpError } from '../httpError.ts';
 import { getProjectUpstreamStatus } from '../worktrees.ts';
 import { runGitLive, fetchOriginBounded } from '../gitLive.ts';
 import { runGroupedCommand, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
+import { localSystem } from '../systems/registry.ts';
 
 // Plugin Library — a catalog of installable plugins (git repo URLs) offered
 // alongside the discovered-plugins list in Settings → Plugins. Installing
@@ -279,7 +280,8 @@ export function createPluginLibrary({ pluginHost = null, _cloneImpl = null, _pul
         // whatever was last fetched manually (see fetchOriginBounded in gitLive.ts).
         const target = path.join(projectsRoot(), name as string);
         await fetchOriginBounded(target);
-        const status = await getProjectUpstreamStatus(target);
+        // The library clone is cc's own, never a project on a system: always local.
+        const status = await getProjectUpstreamStatus(localSystem(), target);
         behind = status.behind;
         updateAvailable = typeof status.behind === 'number' && status.behind > 0;
       }

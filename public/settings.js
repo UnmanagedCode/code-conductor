@@ -1,6 +1,6 @@
 // Settings page — a full-page view inside #main, shown when the URL hash is
 // `#settings`. Built as a group-nav + content scaffold: Models, Backends,
-// Account (overage protection), Voice (Dictation + Speech grouping boxes),
+// Systems, Account (overage protection), Voice (Dictation + Speech grouping boxes),
 // Conventions (Conductor / Workspace / Project blocks, each a reusable
 // conventionsPanel), Plugins, Archived. Each adds a nav item + a panel.
 //
@@ -61,6 +61,17 @@ export function installSettings({
   const sbFormStatusEl = document.getElementById('sb-form-status');
   // null = add mode; a backend id = editing that row (mirrors conventionsPanel).
   let sbEditingId = null;
+  // Systems group elements (the system registry — Settings → Systems).
+  const syStatusEl = document.getElementById('sy-status');
+  const syListEl = document.getElementById('sy-list');
+  const syIdEl = document.getElementById('sy-id');
+  const syLabelEl = document.getElementById('sy-label');
+  const syLaunchEl = document.getElementById('sy-launch');
+  const sySaveEl = document.getElementById('sy-save');
+  const syCancelEl = document.getElementById('sy-cancel');
+  const syFormLegendEl = document.getElementById('sy-form-legend');
+  const syFormStatusEl = document.getElementById('sy-form-status');
+  let syEditingId = null;
   const smCompactWindowEnabledEl = document.getElementById('sm-compact-window-enabled');
   const smCompactWindowRowEl     = document.getElementById('sm-compact-window-row');
   const smCompactWindowSliderEl  = document.getElementById('sm-compact-window');
@@ -185,6 +196,7 @@ export function installSettings({
     clearOverageDirty(); // discard any un-applied edit from a prior open before refetching
     clearOverageStatus(); // discard any stale applied/failed message from a prior open
     loadModels();
+    loadSystems();
     loadDebugDefaultPref();
     loadTts();
     loadArchived();
@@ -538,6 +550,178 @@ export function installSettings({
 
   sbSaveEl?.addEventListener('click', onSaveBackend);
   sbCancelEl?.addEventListener('click', closeBackendForm);
+
+  // ── Systems group ───────────────────────────────────────────────────
+  // The system registry: one card per row, same shape as Backends above.
+  // `local` ("This machine") is code-owned — no edit affordance and no Remove,
+  // because the server refuses both. Removal of a user row is REFUSED with 409
+  // while any project record still names it; the message names those projects,
+  // so it goes straight into the status line.
+  //
+  // Unlike Backends this has its OWN loader: the registry is not part of any
+  // other settings payload.
+  async function loadSystems() {
+    if (!syListEl) return;
+    try {
+      const r = await fetch('/api/settings/systems', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      renderSystems(await r.json());
+    } catch (e) {
+      if (syStatusEl) syStatusEl.textContent = `Failed to load systems: ${e.message || e}`;
+    }
+  }
+
+  function renderSystems(data) {
+    const systems = data.systems || [];
+    if (syStatusEl) {
+      syStatusEl.textContent = `${systems.length} system${systems.length === 1 ? '' : 's'} — ${systems.filter(s => s.managed).length} built in.`;
+    }
+    if (!syListEl) return;
+    syListEl.innerHTML = '';
+    for (const sys of systems) {
+      const li = document.createElement('li');
+      li.className = 'sy-row';
+
+      const head = document.createElement('div');
+      head.className = 'sy-row-head';
+      const label = document.createElement('span');
+      label.className = 'sy-row-label';
+      label.textContent = sys.label;
+      head.appendChild(label);
+      const id = document.createElement('span');
+      id.className = 'sy-row-id';
+      id.textContent = sys.id;
+      head.appendChild(id);
+      if (sys.managed) {
+        const badge = document.createElement('span');
+        badge.className = 'sy-managed-badge';
+        badge.textContent = 'built in';
+        head.appendChild(badge);
+      }
+      const actions = document.createElement('div');
+      actions.className = 'sy-row-actions';
+      // The managed row is read-only — its id and label are both code-owned.
+      if (!sys.managed) {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'btn';
+        edit.textContent = 'Edit';
+        edit.addEventListener('click', () => openEditSystem(sys));
+        actions.appendChild(edit);
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'btn';
+        rm.textContent = 'Remove';
+        rm.addEventListener('click', () => onRemoveSystem(sys.id));
+        actions.appendChild(rm);
+      }
+      head.appendChild(actions);
+      li.appendChild(head);
+
+      // What cc runs to reach this system. Shown because it is the difference
+      // between a row a project can live on and a row that is only a name: a
+      // system with no command refuses at resolution, and this is where that is
+      // visible before a project is put on it. `local` is in-process and has
+      // nothing to show.
+      if (!sys.managed) {
+        const launch = document.createElement('div');
+        launch.className = 'sy-row-launch';
+        launch.textContent = Array.isArray(sys.launch) && sys.launch.length
+          ? sys.launch.join(' ')
+          : 'no provider command — projects on this system cannot be reached';
+        li.appendChild(launch);
+      }
+
+      // What still holds the row. Shown up front so the 409 is a surprise to
+      // nobody; absent for `local`, whose projects name no system at all.
+      //
+      // Each is named WITH its target when it has one: a system can serve many,
+      // and a bare project name would not say which to go and look at. A
+      // project with no target uses the provider's own, and reads as its name.
+      const projects = Array.isArray(sys.projects) ? sys.projects : [];
+      if (projects.length) {
+        const p = document.createElement('div');
+        p.className = 'sy-row-projects';
+        p.textContent = `projects: ${projects.map(
+          x => (x && x.remoteId ? `${x.name} (${x.remoteId})` : (x && x.name) || String(x)),
+        ).join(', ')}`;
+        li.appendChild(p);
+      }
+
+      syListEl.appendChild(li);
+    }
+  }
+
+  function closeSystemForm() {
+    syEditingId = null;
+    if (syIdEl) { syIdEl.value = ''; syIdEl.disabled = false; }
+    if (syLabelEl) { syLabelEl.value = ''; syLabelEl.disabled = false; }
+    if (syLaunchEl) syLaunchEl.value = '';
+    if (sySaveEl) sySaveEl.textContent = 'Add';
+    if (syCancelEl) syCancelEl.hidden = true;
+    if (syFormLegendEl) syFormLegendEl.textContent = 'Add a system';
+    if (syFormStatusEl) syFormStatusEl.textContent = '';
+  }
+
+  function openEditSystem(sys) {
+    syEditingId = sys.id;
+    if (syIdEl) { syIdEl.value = sys.id; syIdEl.disabled = true; }
+    if (syLabelEl) { syLabelEl.value = sys.label; syLabelEl.disabled = false; }
+    if (syLaunchEl) syLaunchEl.value = Array.isArray(sys.launch) ? sys.launch.join(' ') : '';
+    if (sySaveEl) sySaveEl.textContent = 'Save';
+    if (syCancelEl) syCancelEl.hidden = false;
+    if (syFormLegendEl) syFormLegendEl.textContent = `Edit ${sys.label}`;
+    if (syFormStatusEl) syFormStatusEl.textContent = '';
+  }
+
+  async function onSaveSystem() {
+    if (sySaveEl) sySaveEl.disabled = true;
+    try {
+      const label = syLabelEl?.value?.trim();
+      // argv, split on whitespace: the server spawns it WITHOUT a shell, so it
+      // stores a list and never a string to be re-parsed. An empty field is
+      // `null` — clear the command — and never `[]`, which the server refuses.
+      const parts = (syLaunchEl?.value ?? '').trim().split(/\s+/).filter(Boolean);
+      const launch = parts.length ? parts : null;
+      // Editing is only offered for user rows, so the id is fixed; the label and
+      // the provider command are what can move.
+      const r = syEditingId
+        ? await fetch(`/api/settings/systems/${encodeURIComponent(syEditingId)}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ label, launch }),
+          })
+        : await fetch('/api/settings/systems', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: syIdEl?.value?.trim(), label, launch }),
+          });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      closeSystemForm();
+      renderSystems(data);
+    } catch (e) {
+      if (syFormStatusEl) syFormStatusEl.textContent = `Save failed: ${e.message || e}`;
+    } finally {
+      if (sySaveEl) sySaveEl.disabled = false;
+    }
+  }
+
+  async function onRemoveSystem(id) {
+    try {
+      const r = await fetch(`/api/settings/systems/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await r.json();
+      // 409 names the projects still on the system — surface it verbatim.
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      if (syEditingId === id) closeSystemForm();
+      renderSystems(data);
+    } catch (e) {
+      if (syStatusEl) syStatusEl.textContent = `Remove failed: ${e.message || e}`;
+    }
+  }
+
+  sySaveEl?.addEventListener('click', onSaveSystem);
+  syCancelEl?.addEventListener('click', closeSystemForm);
 
   // ── Models group ────────────────────────────────────────────────────
   async function loadModels() {

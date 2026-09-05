@@ -95,11 +95,26 @@ function aheadBehind(v: unknown): string {
 
 const PROJECT_DEVIANT: DeviantSpec[] = [
   { key: 'workspace', default: null, label: 'workspace' },
+  // The project's System could not be resolved, so every git fact below is
+  // ABSENT rather than measured. It leads the block because it is the reason
+  // the rest is missing — and it is why `isGitRepo` is reported `undefined`
+  // (skipped) rather than `false` on such a row: "could not look" is not the
+  // claim "not a git repo".
+  { key: 'systemUnreachable', default: null, label: '! system unreachable' },
   { key: 'isGitRepo', default: true, label: '! not a git repo' },
   { key: 'unbornHead', default: false, label: '! no commits yet — a worktree needs a first commit' },
   // Adopted from outside the projects root. The real target path is already the
   // `▸ <name>  <path>` header, so this only has to say WHICH kind it is.
   { key: 'external', default: false, label: 'external' },
+  // The System the tree lives on. DEVIANT for the same reason `external` is:
+  // `local` is where every project is unless its record says otherwise, so the
+  // common listing stays short and a project on another machine says so — with
+  // the path on that machine, which the `▸` header does not carry.
+  { key: 'system', default: 'local', label: 'system' },
+  // WHICH TARGET of that system. Deviant on the same footing: absence is the
+  // provider's own target, so only a project that names one says so.
+  { key: 'remoteId', default: null, label: 'remoteId' },
+  { key: 'systemPath', default: null, label: 'systemPath' },
 ];
 
 export function renderProjects(projects: unknown): string {
@@ -369,11 +384,17 @@ export function renderProjectStatus(status: unknown): string {
   if (s.isGitRepo === false) return block(...parts);
 
   const dirty = Array.isArray(s.dirty) ? s.dirty as unknown[] : [];
+  // An unanswered status prints as UNKNOWN rather than as an empty DIRTY
+  // heading, which reads as the positive claim that the tree is clean.
+  if (s.dirtyUnknown) {
+    parts.push('DIRTY (unknown — git status did not answer)');
+  } else {
   parts.push('');
   parts.push(s.dirtyTruncated
     ? `DIRTY (${dirty.length} of ${dash(s.dirtyTotal)} — truncated)`
     : heading('DIRTY', dirty.length));
   parts.push(indent(dirty.map(String), 2));
+  }
 
   if (typeof s.diffStat === 'string') {
     parts.push('');

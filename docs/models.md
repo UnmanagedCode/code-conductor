@@ -112,8 +112,10 @@ The consequences of being a substitution backend:
   Live **"Change effort"** is *not* refused here: it repoints no endpoint — every
   backend runs the same inner Claude CLI, which handles `/effort` locally, and
   `--effort` is already passed unconditionally at spawn for all of them.
-- **`launch_failed`** is emitted when the subprocess dies on its own (binary
-  missing, daemon gone, cloud-auth 401) — see [protocol.md](protocol.md#websocket-protocol).
+- **`launch_failed`** is emitted when the subprocess terminates on its own — it
+  died (daemon gone, cloud-auth 401) **or never started at all** (wrapper binary
+  missing, where `stderr` is `null` and the reason is on the preceding
+  `spawn_error`) — see [protocol.md](protocol.md#websocket-protocol).
 - **Off-spec stream framing is coded for, not assumed away.** A gateway may frame a
   content block so its close never reaches the parser — `content_block_start` with no
   `content_block.type`, or a `type` of `"output_text"`: the block opens on its first

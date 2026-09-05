@@ -132,6 +132,43 @@ test('onChunk streams output as it arrives', async () => {
   assert.match(seen.join(''), /a[\s\S]*b/);
 });
 
+// PINS: a streaming consumer is told WHICH stream each chunk came from. The
+// redirected Bash forwards each to the worker's own stdout/stderr and cannot
+// recover the split from an interleaved callback; every other caller ignores it.
+test('onChunk names the stream each chunk came from', async () => {
+  const seen = [];
+  await runGroupedCommand({ shell: 'printf O; printf E >&2; printf O2' },
+    { cwd: os.tmpdir(), onChunk: (s, which) => seen.push([which, s]) });
+  const of = (w) => seen.filter(x => x[0] === w).map(x => x[1]).join('');
+  assert.equal(of('out'), 'OO2');
+  assert.equal(of('err'), 'E');
+});
+
+// PINS THE CAP ORDERING: onChunk fires only for output that is actually
+// RETAINED. A live consumer that saw bytes past a cap would show a tail the
+// buffered result does not contain — the streaming path disagreeing with the
+// buffered one about what the command printed.
+test('onChunk never emits past headCapBytes', async () => {
+  const seen = [];
+  const r = await runGroupedCommand({ shell: 'for i in $(seq 1 200); do printf "0123456789"; done' },
+    { cwd: os.tmpdir(), headCapBytes: 64, onChunk: (s) => seen.push(s) });
+  assert.equal(r.truncated, true, 'the cap really was hit');
+  assert.equal(seen.join(''), r.stdout, 'the stream carried exactly what was retained');
+});
+
+// PINS: past the maxBufferBytes FENCE nothing more is streamed either, and the
+// result is a reported FAILURE rather than a clipped success — a caller that
+// parses output whole must never read a truncated parse as the truth.
+test('onChunk stops at the maxBufferBytes fence, and the fence is still a failure', async () => {
+  const seen = [];
+  const r = await runGroupedCommand({ shell: 'for i in $(seq 1 500); do printf "0123456789"; done; sleep 0.2' },
+    { cwd: os.tmpdir(), maxBufferBytes: 64, onChunk: (s) => seen.push(s) });
+  assert.equal(r.code, 1, 'an overflow is a failure, not a truncated success');
+  assert.match(r.stderr, /exceeded the 64-byte limit/);
+  assert.ok(seen.join('').length <= 64, 'and nothing past the fence was streamed');
+  assert.ok(r.stdout.startsWith(seen.join('')), 'what was streamed is a prefix of what was kept');
+});
+
 test('GROUP_OUTPUT_CAP is the single owner of the 16K tail cap', () => {
   assert.equal(GROUP_OUTPUT_CAP, 16 * 1024);
 });

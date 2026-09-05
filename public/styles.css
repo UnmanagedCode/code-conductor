@@ -296,6 +296,57 @@ body { background: var(--bg); color: var(--text); overflow: hidden; }
 .worktree-row button { background: none; border: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
 .worktree-row button:hover { color: var(--text); }
 .worktree-row .wt-remove:hover { color: var(--red); }
+/* Names the system a project's tree lives on. Amber like its neighbours; RED
+   when cc could not reach that system, because the row's git facts are then
+   absent rather than measured and the pill is the only thing on the page that
+   says so. */
+/* Why a plugin row is missing a control: the local-only codes the server
+   returns for the capabilities that do not cross to another system. */
+.pl-local-only {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.system-pill {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  padding: 0 5px;
+  border: 1px solid var(--muted);
+  border-radius: 8px;
+  flex: 0 0 auto;
+  line-height: 1.4;
+}
+
+.system-pill-unreachable {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+/* The pill doubles as the change-target control, but ONLY when it carries
+   role="button" — sidebar.js sets that per render, and withholds it on a system
+   that cannot be reached, where the change could only refuse.
+   NO `display` here, deliberately: .system-pill matches an element that is
+   added and removed rather than hidden today, but an author `display` on any
+   selector that could ever match a `[hidden]` element outranks the UA's
+   `[hidden] { display: none }` — origin decides that, not specificity. See
+   tests/hidden-attribute-layout.test.mjs. */
+.system-pill[role="button"] { cursor: pointer; }
+.system-pill[role="button"]:hover { color: var(--text); border-color: var(--text); }
+
+/* The 409 from PUT /projects/:name/remote, rendered as the list of sessions and
+   worktrees to clear. Same rule as above: no `display`, so the UA's
+   `[hidden] { display: none }` governs it while the list is empty. */
+.pr-blockers {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--red);
+}
+
 .wt-unmerged, .no-commits-pill {
   font-family: ui-monospace, monospace;
   font-size: 10px;
@@ -1191,6 +1242,11 @@ body.lightbox-open { overflow: hidden; }
 .composer-attachments {
   display: flex; flex-wrap: wrap; gap: 6px;
 }
+/* Same trap as `dialog label` below: the author `display` above outranks the
+   UA's `[hidden] { display: none }`. Symptom-free only because composer.js
+   hides this exactly when it is empty and an empty flex box has no footprint —
+   a coincidence of two facts, not a guarantee. */
+.composer-attachments[hidden] { display: none; }
 .composer-attachment-chip {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 6px 4px 4px;
@@ -1238,6 +1294,10 @@ dialog {
 dialog::backdrop { background: rgba(0,0,0,.5); }
 dialog h3 { margin: 0 0 10px 0; }
 dialog label { display: block; margin-bottom: 10px; font-size: 12px; }
+/* The `display: block` above outranks the UA's `[hidden] { display: none }`, so
+   a conditionally-shown label (#np-system-path-row) renders regardless of its
+   `hidden` attribute. Restore the expected behaviour explicitly. */
+dialog label[hidden] { display: none; }
 dialog input, dialog select { width: 100%; margin-top: 4px; }
 dialog .hint { font-size: 11px; color: var(--muted); }
 dialog .error { color: var(--red); font-size: 12px; min-height: 1em; }
@@ -1733,28 +1793,30 @@ dialog menu { display: flex; gap: 8px; justify-content: flex-end; padding: 0; ma
 
 /* ── Settings → Backends group ────────────────────────────────────────────── */
 /* One card per registry row. Managed rows show their template as read-only text
-   and have no Remove control (the server refuses either way). */
-.sb-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.sb-row {
+   and have no Remove control (the server refuses either way). Shared by the two
+   registry panels — Settings → Backends (`sb-`) and Settings → Systems (`sy-`),
+   which are the same card/form shape with different fields. */
+.sb-list, .sy-list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sb-row, .sy-row {
   display: flex; flex-direction: column; gap: 4px;
   padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
 }
-.sb-row-head { display: flex; align-items: baseline; gap: 8px; }
-.sb-row-label { font-size: 13px; font-weight: 600; }
-.sb-row-id { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
-.sb-managed-badge {
+.sb-row-head, .sy-row-head { display: flex; align-items: baseline; gap: 8px; }
+.sb-row-label, .sy-row-label { font-size: 13px; font-weight: 600; }
+.sb-row-id, .sy-row-id { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+.sb-managed-badge, .sy-managed-badge {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
   color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0 5px;
 }
-.sb-row-actions { margin-left: auto; display: flex; gap: 6px; }
-.sb-row-template, .sb-row-env {
+.sb-row-actions, .sy-row-actions { margin-left: auto; display: flex; gap: 6px; }
+.sb-row-template, .sb-row-env, .sy-row-projects {
   font-size: 12px; color: var(--muted);
   font-family: ui-monospace, monospace; overflow-x: auto; white-space: pre;
 }
-.sb-form { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-.sb-form input, .sb-form textarea { min-width: 0; width: 100%; box-sizing: border-box; }
+.sb-form, .sy-form { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.sb-form input, .sb-form textarea, .sy-form input { min-width: 0; width: 100%; box-sizing: border-box; }
 .sb-form textarea { font-family: ui-monospace, monospace; font-size: 12px; resize: vertical; }
-.sb-form-actions { display: flex; gap: 8px; }
+.sb-form-actions, .sy-form-actions { display: flex; gap: 8px; }
 
 /* ── Review view ─────────────────────────────────────────────────────────── */
 /* Full-page diff browser, same pattern as settings. While open the instance-

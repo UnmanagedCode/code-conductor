@@ -8,9 +8,8 @@
 // prepend shape (built-ins only — see migrations/migrations.md); all three must
 // emit the identical line so a migrated install and a fresh ensure converge.
 
-import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { writeFileAtomic } from './projects.ts';
+import type { System } from './systems/system.ts';
 
 export const CONVENTIONS_IMPORT_LINE = '@CONVENTIONS.md';
 
@@ -25,20 +24,21 @@ export const CONVENTIONS_IMPORT_LINE = '@CONVENTIONS.md';
 //                          churn.
 // Detection is line-level, not substring: prose mentioning the filename must
 // not read as an import.
-export async function ensureConventionsImport(dir: string): Promise<void> {
+export async function ensureConventionsImport(system: System, dir: string): Promise<void> {
   const target = path.join(dir, 'CLAUDE.md');
   let existing: string | null = null;
   try {
-    // `wx` so a concurrent ensure can't clobber a file that appeared between a
-    // read and a write; EEXIST just means "someone got here first, re-read it".
-    await fs.writeFile(target, `${CONVENTIONS_IMPORT_LINE}\n`, { encoding: 'utf8', flag: 'wx' });
+    // Exclusive create so a concurrent ensure can't clobber a file that appeared
+    // between a read and a write; EEXIST just means "someone got here first,
+    // re-read it".
+    await system.writeFile(target, `${CONVENTIONS_IMPORT_LINE}\n`, { exclusive: true });
     return;
   } catch (e) {
     if (errCode(e) !== 'EEXIST') throw e;
-    existing = await fs.readFile(target, 'utf8');
+    existing = await system.readFile(target);
   }
   if (existing.split('\n').some(line => line.trim() === CONVENTIONS_IMPORT_LINE)) return;
-  await writeFileAtomic(target, `${CONVENTIONS_IMPORT_LINE}\n${existing}`);
+  await system.writeFile(target, `${CONVENTIONS_IMPORT_LINE}\n${existing}`, { atomic: true });
 }
 
 // The `code` on a thrown Node error (e.g. 'EEXIST'), or undefined — the

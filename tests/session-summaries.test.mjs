@@ -467,7 +467,7 @@ test('findSessionLocation resolves a session under the hidden .conduct project',
   ]);
 
   const hit = await findSessionLocation(sid);
-  assert.deepEqual(hit, { project: '.conduct', worktreeName: null });
+  assert.deepEqual(hit, { project: '.conduct', worktreeName: null, cwd: conductPath });
 });
 
 test('POST /api/sessions/:sid/summary succeeds for a .conduct session', async () => {

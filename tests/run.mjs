@@ -7,10 +7,11 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createSafeRoot, assertStoreIsolated, removeSafeRoot } from './safeStoreRoot.mjs';
-import { snapshot, countMatching, liveChildren, descendants, killTree, killDescendants, killPids,
+import { createSafeRoot, assertStoreIsolated, removeSafeRoot, pinGitConfig } from './safeStoreRoot.mjs';
+import { snapshot, censusMatching, liveChildren, descendants, killTree, killDescendants, killPids,
          processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
+import { enableCompileCache, COMPILE_CACHE_MAX_BYTES } from './compileCache.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,6 +35,32 @@ process.env.CLAUDE_PROJECTS_ROOT = safeRoot.claudeProjectsRoot;
 // the one exported here, so a value seen by a child is always its own run's.
 const RUN_MARKER = path.basename(safeRoot.root); // mkdtemp'd, so unique per run
 process.env.CC_TEST_RUN_ID = RUN_MARKER;
+
+// Pin git's global config at a run-scoped file, HERE — before any test file
+// forks — so no repo the run creates inherits the developer's ~/.gitconfig or
+// git's automatic detached repack. See pinGitConfig in tests/safeStoreRoot.mjs
+// for what it disables and why the GIT_CONFIG_* env form does not close it
+// (card 2026-0290 §3); tests/git-maintenance-isolation.test.mjs is its
+// regression test.
+pinGitConfig(safeRoot.root);
+
+// Warm-start the children. Every test file runs in its own process and re-pays V8
+// compile + type-stripping of the same `helpers.mjs -> server.ts -> src/*.ts`
+// graph; a shared on-disk compile cache turns that into a load. What it is worth,
+// and which per-child figure means what, are in tests/compileCache.mjs — one home,
+// because two numbers restated here would be two numbers to re-anchor. HERE, in
+// the same pre-fork block as the env above, because
+// run() below passes no `env` option — children inherit this process's env, so one
+// call covers `npm test`, both gate rows and every mutation-harness iteration with
+// no per-child wiring. tests/compileCache.mjs owns the directory choice, the size
+// bound and the CC_TEST_COMPILE_CACHE=0 opt-out.
+const compileCache = enableCompileCache({ repoRoot: path.join(__dirname, '..') });
+// Printed ONLY on a reset — that is the one surprising event. A run that simply
+// used its cache says nothing.
+if (compileCache.reset) {
+  console.log(`compile-cache: reset ${compileCache.dir} ` +
+    `(was ${Math.round(compileCache.bytes / 1e6)} MB, cap ${Math.round(COMPILE_CACHE_MAX_BYTES / 1e6)} MB)`);
+}
 
 // Backstop: abort loudly if the resolved store still points into the real
 // workspace (env forced above, so this validates the default and catches a
@@ -63,10 +90,13 @@ try {
 // Measured on a 16-core box, where both terms bind at once and every figure below
 // is therefore the literal output of this expression, not an extrapolation from a
 // different core count:
-//   * whole suite 67.3s at 4 -> 37.7s at 8. Not 16 (32.2s): it buys 5.5s for
-//     double the ambient load. Those two figures were taken while a single-file
-//     floor was what capped the gain — see the next bullet, which is why they are
-//     not comparable to a run taken today.
+//   * 16 SLOTS ARE MEASURED WORSE, which is the question this cap exists to answer
+//     and used to answer only by absence: 91.2s against 82.9s wall, for CPU up 54%
+//     (746.8s against 484.8s), with per-file walls roughly DOUBLED as the
+//     deadline-bound files starved. Raising the ceiling is a tried and rejected
+//     idea, not an untried one.
+//   * AND 8 IS ALREADY NEAR-SATURATED: summed file-time over wall runs 7.27-7.46 of
+//     the 8 slots, so there is no idle dispatcher for a ninth to fill.
 //   * THERE IS NO LONGER A SINGLE-FILE FLOOR, so more slots help again. There
 //     was: tests/idle-wake-ownership.test.mjs cost 48.9s of a 57.2s quiet run at
 //     44b0b60, DEADLINE-bound (bounded real wall-clock windows) rather than
@@ -82,7 +112,10 @@ try {
 //     aggregate-work-bound at concurrency 8, not bound by any one file.
 //   * contention does NOT argue for backing off: under 8 spinners, concurrency 8
 //     was both FASTER than 4 (79.2s vs 87.6s) and had a marginally BETTER per-file
-//     kill margin (3.00x vs 2.92x). Both runs green.
+//     kill margin (3.00x vs 2.92x). Both runs green. Nor does a whole SECOND suite
+//     run alongside: `gate:systems` runs its two rows concurrently (card 2026-0344)
+//     and the per-file walls did not move — the slowest file measured 16724/16681ms
+//     across sequential rows against 16569/16611ms across concurrent ones.
 //   * the fake-claude subprocess guardrail below stayed at peak 3-4 of a budget of
 //     12 at every concurrency measured (4/8/16, quiet and contended) — and the one
 //     reading above 3 at concurrency 4 was CONTENDED, i.e. the lower slot count, so
@@ -126,8 +159,18 @@ if (files.length === 0) {
 // subprocess (which the Android phantom-process killer punishes) or a new test
 // spawns real processes without opting in. /proc reads are safe on this host;
 // pkill/lsof are not — do not use them here.
+//
+// IT COUNTS THIS RUN'S DESCENDANTS, NOT THE BOX'S PROCESSES (card 2026-0344).
+// The budget is a claim about the suite's own behaviour, and a box-wide count
+// makes a sibling suite run on the same machine — another worktree, or the
+// gate's second row — fail a run that is green on every test. Measured before
+// the fix: two concurrent `node tests/run.mjs` on this box both reported `fail
+// 0` and both exited 1 at peaks of 14 and 15. censusMatching (tests/procTree.mjs)
+// narrows the cmdline match by CC_TEST_RUN_ID; `peakFakeClaudeSeen` keeps the
+// box-wide figure so the narrowing cannot go blind unnoticed.
 const FAKE_CLAUDE_BUDGET = 12;
-let peakFakeClaude = 0;
+let peakFakeClaude = 0;     // peak carrying THIS run's marker — the budgeted figure
+let peakFakeClaudeSeen = 0; // peak visible box-wide, whoever owns them
 let sampledProcs = false;   // at least one tick READ /proc successfully
 let samplerTicks = 0;       // ticks that ran at all
 
@@ -187,10 +230,11 @@ let nodeFinished = false;
 const procSampler = setInterval(() => {
   samplerTicks++;
   const snap = snapshot();
-  const n = countMatching('fake-claude.mjs', snap);
-  if (n >= 0) {
+  const census = censusMatching('fake-claude.mjs', RUN_MARKER, snap);
+  if (census.available) {
     sampledProcs = true;
-    if (n > peakFakeClaude) peakFakeClaude = n;
+    if (census.owned > peakFakeClaude) peakFakeClaude = census.owned;
+    if (census.seen > peakFakeClaudeSeen) peakFakeClaudeSeen = census.seen;
   }
   const now = Date.now();
   const live = new Set();
@@ -412,7 +456,8 @@ stream.on('test:summary', (d) => {
 // figure comparable to FILE_KILL_MS, which is a process-lifetime deadline.
 // MEASURED on a 16-core box at the default concurrency: summary.duration_ms runs
 // 31-297ms LOWER, never higher, across 90 file observations. SAMPLE: every 6th name
-// of the sorted tests/*.test.mjs list (45 of 266 files), skipping the files that
+// of the sorted tests/*.test.mjs list (45 of the 266 files then in the suite — the
+// live count is on the verdict line below), skipping the files that
 // spawn nested runners of their own (then hang-guard + summary-attribution; now the
 // five hang-guard-*.test.mjs + summary-attribution); two runs, one
 // idle and one under a concurrent mutation campaign, which agreed closely — so the
@@ -586,6 +631,29 @@ await removeSafeRoot(safeRoot.root);
 let guardrailFailed = false;
 if (sampledProcs) {
   console.log(`\nguardrail: peak concurrent fake-claude subprocesses = ${peakFakeClaude} (budget ${FAKE_CLAUDE_BUDGET})`);
+  // Only when the box held more than we own. It is not decoration: it is the one
+  // signal that would show this guard going BLIND. hasMarker fails closed, so a
+  // future test that spawns fake-claude with a curated env dropping CC_TEST_RUN_ID
+  // takes the counted figure to 0 while the box-wide one stays high — which reads
+  // as a clean run unless the two are printed together.
+  //
+  // THE MESSAGE MUST NOT ATTRIBUTE THE EXCESS, because nothing here can. `owned`
+  // is the count hasMarker said yes to; its complement is everything else, and
+  // that lumps together a concurrent run's children (harmless — they answer to ITS
+  // budget), a pid whose environ was unreadable, a stale pid from a dead run, and a
+  // fake-claude spawned with no marker at all. Only the last is a defect, and it is
+  // precisely the one this clause exists to expose, so narrating the gap as
+  // somebody else's run would talk the reader out of the case it was printed for.
+  if (peakFakeClaudeSeen > peakFakeClaude) {
+    console.log(
+      `guardrail: peak fake-claude visible box-wide = ${peakFakeClaudeSeen}, above the ` +
+      `${peakFakeClaude} this run accounts for (independent maxima, so the gap is not one tick\'s). ` +
+      'THE EXCESS IS UNATTRIBUTED and cannot be attributed from here: a concurrent suite run\'s ' +
+      'children read identically to a fake-claude carrying NO CC_TEST_RUN_ID — and that second case ' +
+      'is THIS GUARD BLIND to a real spawn, since hasMarker fails closed and the process is counted ' +
+      'nowhere. A counted figure near zero against a high box-wide one is not a clean run.',
+    );
+  }
   // RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.
   if (process.env.RUN_REAL_CLAUDE !== '1' && peakFakeClaude > FAKE_CLAUDE_BUDGET) {
     console.error(

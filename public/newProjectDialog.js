@@ -14,8 +14,25 @@
 // convention's directive is returned in the `scaffold` field.
 //
 // Injected interface:
+// A project can be created on a registered SYSTEM instead of under the projects
+// root, in which case the caller also names the absolute path on it. Only
+// systems cc can reach are offered — a row with no provider command would give a
+// project every later operation refuses — and the two conditions the server
+// enforces (a system needs a path; the path is absolute) are checked here too,
+// where the user is still looking at the field.
+//
+// One system can serve many named TARGETS, so a non-local system also offers a
+// `remoteId`. It is offered UNCONDITIONALLY there rather than gated on the
+// provider's `remotes` capability: cc cannot know that without connecting, and
+// the server's named refusal at create time (SYSTEM_NO_REMOTES /
+// REMOTE_NOT_FOUND, raised before anything is written) is what answers it. Blank
+// means the provider's own default target, so the field is omitted rather than
+// sent empty.
+//
+// Injected interface:
 //   - dom: { newProjectBtn, newProjectDialog, npName, npError, npPreview,
-//            npContributions, npForm, npConfirm, npScaffoldText } els.
+//            npContributions, npForm, npConfirm, npScaffoldText,
+//            npSystem, npSystemPath, npSystemPathRow, npRemote, npRemoteRow } els.
 //   - refreshProjects():      reloads the sidebar project list after a create.
 //   - closeSidebarOverflow(): dismisses the sidebar ⋮ menu.
 
@@ -62,6 +79,12 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
   async function buildContributions() {
     dom.npContributions.innerHTML = '';
     let conventions = [];
+    // The server does NOT send a degrade flag on this response — only the MCP
+    // `list_project_conventions` tool carries one (card 2026-0282). So a
+    // catalog missing an unreachable plugin's conventions arrives here looking
+    // complete, and the sections below render one heading fewer with nothing
+    // saying so. Anyone adding a banner has to make the route carry the flag
+    // first; it is carded separately.
     try {
       const r = await fetch('/api/settings/conventions/project');
       if (r.ok) conventions = (await r.json()).conventions ?? [];
@@ -97,26 +120,102 @@ export function installNewProjectDialog({ dom, refreshProjects, closeSidebarOver
     dom.npConfirm.hidden = true;
   }
 
+  const chosenSystem = () => {
+    const v = dom.npSystem?.value ?? '';
+    return v && v !== 'local' ? v : null;
+  };
+
+  // Blank IS an answer — the provider's own default target — so it reads as
+  // null rather than as an empty target name.
+  const chosenRemote = () => (dom.npRemote?.value ?? '').trim() || null;
+
+  // What the dialog says it is about to create — kept in step with both inputs,
+  // because a preview that lags the placement is a promise about the wrong
+  // machine.
+  function updatePreview() {
+    const name = dom.npName.value || '<name>';
+    const system = chosenSystem();
+    if (!system) { dom.npPreview.textContent = `~/project/${name}`; return; }
+    const remote = chosenRemote();
+    // Same vocabulary the server uses in its own refusals ("remote 'r' of system
+    // 's'"), so the preview and the error that may follow it name one thing.
+    const where = remote ? `remote '${remote}' of system '${system}'` : `system '${system}'`;
+    dom.npPreview.textContent = `${dom.npSystemPath?.value || '<path>'} on ${where}`;
+  }
+
+  async function buildSystems() {
+    if (!dom.npSystem) return;
+    dom.npSystem.innerHTML = '';
+    let systems = [{ id: 'local', label: 'This machine', managed: true }];
+    try {
+      const r = await fetch('/api/settings/systems');
+      if (r.ok) systems = (await r.json()).systems ?? systems;
+    } catch { /* offline — local is always available */ }
+    for (const sys of systems) {
+      // A row with no provider command cannot be reached, so a project put on
+      // it could never be opened. `local` is in-process and carries none.
+      if (!sys.managed && !(Array.isArray(sys.launch) && sys.launch.length)) continue;
+      const opt = document.createElement('option');
+      opt.value = sys.id;
+      opt.textContent = sys.managed ? sys.label : `${sys.label} (${sys.id})`;
+      dom.npSystem.appendChild(opt);
+    }
+    dom.npSystem.value = 'local';
+    syncSystemPathRow();
+  }
+
+  // Both extra fields belong to the same choice: a path and a target are only
+  // meaningful once the project is on a system.
+  function syncSystemPathRow() {
+    const on = !!chosenSystem();
+    if (dom.npSystemPathRow) dom.npSystemPathRow.hidden = !on;
+    if (dom.npRemoteRow) dom.npRemoteRow.hidden = !on;
+    updatePreview();
+  }
+
   dom.newProjectBtn.addEventListener('click', async () => {
     closeSidebarOverflow();
     dom.npName.value = '';
     dom.npError.textContent = '';
-    dom.npPreview.textContent = '~/project/<name>';
+    if (dom.npSystemPath) dom.npSystemPath.value = '';
+    if (dom.npRemote) dom.npRemote.value = '';
     showForm();
+    await buildSystems();
     await buildContributions();
     dom.newProjectDialog.showModal();
   });
-  dom.npName.addEventListener('input', () => {
-    dom.npPreview.textContent = `~/project/${dom.npName.value || '<name>'}`;
-  });
+  dom.npName.addEventListener('input', updatePreview);
+  dom.npSystem?.addEventListener('change', syncSystemPathRow);
+  dom.npSystemPath?.addEventListener('input', updatePreview);
+  dom.npRemote?.addEventListener('input', updatePreview);
   dom.newProjectDialog.addEventListener('close', async () => {
     if (dom.newProjectDialog.returnValue !== 'create') return; // cancel / confirmation Done
     const name = dom.npName.value.trim();
     if (!name) return;
     const conventions = [...dom.npContributions.querySelectorAll('input[data-kind="convention"]:checked')].map(cb => cb.value);
+    const system = chosenSystem();
+    const systemPath = (dom.npSystemPath?.value ?? '').trim();
+    // The server refuses both of these too; checking here is what keeps the
+    // dialog open on the field the user has to fix.
+    const placementError = !system ? null
+      : !systemPath ? `a path on '${system}' is required — cc has no default location on another machine`
+      : !systemPath.startsWith('/') ? `the path on '${system}' must be absolute`
+      : null;
+    if (placementError) {
+      dom.npError.textContent = placementError;
+      showForm();
+      dom.newProjectDialog.showModal();
+      return;
+    }
     try {
       const body = { name };
       if (conventions.length) body.conventions = conventions;
+      if (system) {
+        body.system = system;
+        body.systemPath = systemPath;
+        const remote = chosenRemote();
+        if (remote) body.remoteId = remote;
+      }
       const created = await apiFetch('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       await refreshProjects();
       // A returned scaffold directive is shown read-only so it isn't lost.

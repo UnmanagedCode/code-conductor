@@ -151,7 +151,7 @@ export class Sidebar {
     rootList, onSelectInstance, onCreateInstanceClick,
     onRemoveWorktree, onDeleteProject, onResumeSession, onLoadSessions,
     onDeleteSession, onEditWorkspace, onPromoteSession,
-    onReviewWorktree,
+    onReviewWorktree, onEditProjectRemote,
   }) {
     this.list = rootList;
     this.onSelectInstance = onSelectInstance;
@@ -164,6 +164,7 @@ export class Sidebar {
     this.onEditWorkspace = onEditWorkspace;
     this.onPromoteSession = onPromoteSession;
     this.onReviewWorktree = onReviewWorktree;
+    this.onEditProjectRemote = onEditProjectRemote;
     this.projects = [];
     this.instances = [];
     // Names of registered workspaces (from GET /api/workspaces). Render
@@ -649,36 +650,62 @@ export class Sidebar {
     let row = existing;
     if (!row) {
       row = el('div', { class: 'project-row' + (isConduct ? ' project-row-conduct' : '') });
+      const holder = { p };
       // Commit-log button goes first (left of the name) for git projects.
-      // Non-git projects and the Conduct row get an inert spacer of the same
-      // footprint so the name column stays aligned across all row kinds.
-      if (!isConduct && p.isGitRepo) {
-        row.appendChild(el('button', {
-          class: 'commit-log', title: 'commit history',
-          onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(p.name); },
-        }, '≡'));
-      } else {
-        // Spacer glyph + box model must stay in sync with .commit-log button or alignment breaks.
-        row.appendChild(el('span', {
-          class: 'commit-log-spacer', 'aria-hidden': 'true',
-        }, '≡'));
-      }
+      // Non-git projects, an UNMEASURABLE one (its system could not be reached,
+      // so `isGitRepo` is absent rather than false) and the Conduct row get an
+      // inert spacer of the same footprint so the name column stays aligned
+      // across all row kinds. Both are built once and swapped per render — the
+      // fact they depend on is live.
+      row._logBtn = el('button', {
+        class: 'commit-log', title: 'commit history',
+        onclick: (e) => { e.stopPropagation(); this.onShowCommits?.(holder.p.name); },
+      }, '≡');
+      // Spacer glyph + box model must stay in sync with .commit-log button or alignment breaks.
+      row._logSpacer = el('span', { class: 'commit-log-spacer', 'aria-hidden': 'true' }, '≡');
+      row.appendChild(row._logSpacer);
       const nameSpan = el('span', { class: 'project-name' }, isConduct ? '🎼 Conduct' : p.name);
       row.appendChild(nameSpan);
-      const holder = { p };
       // The synthetic Conduct row is read-only: no quick-spawn, no
       // new-session button, no delete. Spawning is via the top-level 🎼
       // button; deletion is blocked server-side.
       if (!isConduct) {
-        row.appendChild(el('button', {
+        // Attached per render: a session starts on the machine cc runs on, so
+        // this is not offered for a project whose tree is on another system —
+        // a button that can only refuse is worse than no button.
+        row._addBtn = el('button', {
           class: 'add-instance', title: 'new session',
-          onclick: () => this.onCreateInstanceClick(p.name),
-        }, '+'));
+          onclick: () => this.onCreateInstanceClick(holder.p.name),
+        }, '+');
         row.appendChild(el('button', {
           class: 'delete-project', title: 'delete project',
           onclick: (e) => { e.stopPropagation(); this.onDeleteProject(holder.p); },
         }, '×'));
       }
+      // Says which machine the project's tree is on, and — when cc could not
+      // reach it — that this is why the row carries no git facts. Without it the
+      // row degrades to something indistinguishable from a plain non-git
+      // project, which is a wrong answer wearing the shape of an answer.
+      // Clickable when — and only when — the target can actually be changed:
+      // the change verifies the new target on the system before persisting, so
+      // on an unreachable one it could only refuse, and the pill stays a REASON
+      // rather than becoming a control that fails. `role`/`tabindex` are set per
+      // render for the same reason, alongside the class.
+      row._systemPill = el('span', {
+        class: 'system-pill',
+        onclick: (e) => {
+          e.stopPropagation();
+          if (row._systemPill.getAttribute('role') !== 'button') return;
+          this.onEditProjectRemote?.(holder.p);
+        },
+        onkeydown: (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          if (row._systemPill.getAttribute('role') !== 'button') return;
+          e.preventDefault();
+          e.stopPropagation();
+          this.onEditProjectRemote?.(holder.p);
+        },
+      });
       row._nameSpan = nameSpan;
       row._pill = el('span', { class: 'wt-unmerged' });
       // Its own element, not a second mode of _pill: the two are independent
@@ -691,7 +718,15 @@ export class Sidebar {
       row._holder = holder;
     }
     row._holder.p = p;
-    const { _nameSpan: nameSpan, _pill: pill, _noCommitsPill: noCommits } = row;
+    const { _nameSpan: nameSpan, _pill: pill, _noCommitsPill: noCommits, _systemPill: systemPill } = row;
+    // Absence of `system` is the local answer, exactly as the record reads it.
+    const remote = !!p.system && p.system !== 'local';
+    const unreachable = p.systemUnreachable || null;
+    // The log needs measured git facts; an unreachable system has none, and
+    // `isGitRepo` is deliberately ABSENT there rather than false.
+    const showLog = !isConduct && p.isGitRepo === true;
+    const wantLog = showLog ? row._logBtn : row._logSpacer;
+    if (row.firstChild !== wantLog) row.replaceChild(wantLog, row.firstChild);
     const ms = p.mergeStatus;
     if (ms && ms.upstream && (ms.ahead > 0 || ms.behind > 0)) {
       const upstream = ms.upstream;
@@ -717,6 +752,45 @@ export class Sidebar {
       if (!noCommits.isConnected) (pill.isConnected ? pill : nameSpan).after(noCommits);
     } else if (noCommits.isConnected) {
       noCommits.remove();
+    }
+    if (remote || unreachable) {
+      // One system can serve many targets, so the pill names WHICH — a pill
+      // saying only the system would leave the row silent about which machine
+      // its facts came from.
+      const where = p.remoteId
+        ? `remote '${p.remoteId}' of system '${p.system}'`
+        : `system '${p.system}'`;
+      systemPill.textContent = p.remoteId ? `${p.system}/${p.remoteId}` : (p.system || 'unknown system');
+      systemPill.title = unreachable
+        ? unreachable
+        : `this project's tree, git repo and commands live on ${where} at ${p.systemPath}`
+          + ` — a worker session runs the claude CLI here and redirects its shell and file tools there.`
+          + ` Click to change which target it is on.`;
+      systemPill.classList.toggle('system-pill-unreachable', !!unreachable);
+      const clickable = remote && !unreachable && !!this.onEditProjectRemote;
+      if (clickable) {
+        systemPill.setAttribute('role', 'button');
+        systemPill.setAttribute('tabindex', '0');
+      } else {
+        systemPill.removeAttribute('role');
+        systemPill.removeAttribute('tabindex');
+      }
+      if (!systemPill.isConnected) {
+        (noCommits.isConnected ? noCommits : pill.isConnected ? pill : nameSpan).after(systemPill);
+      }
+    } else if (systemPill.isConnected) {
+      systemPill.remove();
+    }
+    // A worker session on a REMOTE project is real: the CLI runs here, in a
+    // cc-owned session root, and its shell and file tools reach the system. On
+    // an UNREACHABLE one it cannot start at all, so the button stays hidden
+    // rather than offered and then failing. Delete stays on both: unregistering
+    // is what a user can still do, and it never touches the tree.
+    const addBtn = row._addBtn;
+    if (addBtn) {
+      const showAdd = !unreachable;
+      if (showAdd && !addBtn.isConnected) row.querySelector('.delete-project').before(addBtn);
+      else if (!showAdd && addBtn.isConnected) addBtn.remove();
     }
     return row;
   }

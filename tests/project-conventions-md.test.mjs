@@ -20,9 +20,10 @@ import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { createProject } from '../src/projects.ts';
 import {
   addCustomConvention, deleteCustomConvention, composeProjectConventionsBlock, setPluginConventionsProvider,
+  getCatalog as getProjectConventionsCatalog,
 } from '../src/projectConventions.ts';
 import {
-  buildMarker, parseMarker, composeProjectConventionsDoc,
+  buildMarker, parseMarker, composeProjectConventionsDoc, composeProjectConventionsDocWithMeta,
   conventionsTargetPath, ensureProjectConventionsMd, regenerateAllProjectConventions,
 } from '../src/projectClaudeMd.ts';
 import { composeCurrentWorkspace } from '../src/workspaceConventions.ts';
@@ -508,4 +509,46 @@ test('deleting a custom convention that leaves a project all-unresolvable logs t
     lines.includes(`CONVENTIONS.md regenerated without unresolvable doomed3: ${target}`),
     `expected the regenerate log line to be emitted; got: ${JSON.stringify(lines)}`,
   );
+});
+
+// T9 (card 2026-0282) ────────────────────────────────────────────────────────
+// PINS: the two composition entry points are ONE composition. For the same
+// inputs `composeProjectConventionsDocWithMeta(…).text` equals
+// `composeProjectConventionsDoc(…)` byte for byte, and its `.degraded` mirrors
+// `getCatalog().degraded` — across a healthy provider, a throwing one, and no
+// provider at all. That is what lets the create path read the flag without a
+// second catalog read and without a second document shape.
+//
+// NOT CLAIMING that `composeProjectConventionsDoc` is IMPLEMENTED BY delegating
+// to the WithMeta form — a duplicated-but-correct body is indistinguishable from
+// a delegation by any test, so single-implementation here is a diff property and
+// is guarded by review, not by this assertion. Nor that `degraded` is reachable
+// from anything but the project catalog: the workspace block carries no
+// extraProvider and can never be the degraded one.
+test('composeProjectConventionsDocWithMeta returns the same document, plus the catalog flag', async () => {
+  const arms = [
+    ['no provider at all', null],
+    ['a healthy provider', async () => []],
+    ['a throwing provider', async () => { throw new Error('transient plugin host failure'); }],
+  ];
+  for (const [label, provider] of arms) {
+    setPluginConventionsProvider(provider);
+    try {
+      for (const slugs of [[], ['design-guidelines'], ['design-guidelines', 'testing-guidelines']]) {
+        const meta = await composeProjectConventionsDocWithMeta(slugs);
+        assert.equal(meta.text, await composeProjectConventionsDoc(slugs),
+          `${label}: the document is byte-identical for ${JSON.stringify(slugs)}`);
+        assert.equal(meta.degraded, (await getProjectConventionsCatalog()).degraded,
+          `${label}: the flag mirrors the catalog for ${JSON.stringify(slugs)}`);
+      }
+      // The `missing`/note branch and the placement branch compose through the
+      // same body, so they are checked on the same equality.
+      const opts = { missing: ['ghost'], system: { id: 'box', path: '/srv/p' } };
+      const metaOpts = await composeProjectConventionsDocWithMeta(['ghost', 'design-guidelines'], opts);
+      assert.equal(metaOpts.text, await composeProjectConventionsDoc(['ghost', 'design-guidelines'], opts),
+        `${label}: the note + placement branches compose identically too`);
+    } finally {
+      setPluginConventionsProvider(null);
+    }
+  }
 });

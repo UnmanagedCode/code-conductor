@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { orchStoreRoot, writeFileAtomic } from './projects.ts';
+import { orchStoreRoot, projectsBySystem, writeFileAtomic } from './projects.ts';
 import {
   CAPABILITY_TIERS, DEFAULT_TIER_BACKEND, isKnownTier, isKnownClaudeModel,
   ROLES, DEFAULT_ROLE_BINDING, isKnownRole, isKnownFamily, claudeContextWindowTokens,
@@ -21,6 +21,11 @@ import { OLLAMA_CLOUD_MODELS, isKnownOllamaCloudModel } from './ollamaCloudModel
 import { DEFAULT_EFFORT, INHERIT_EFFORT, isKnownEffort, type EffortLevel } from './effortLevels.ts';
 import { httpError } from './httpError.ts';
 import { isSlug, SLUG_RE, SLUG_MAX } from './identifiers.ts';
+import {
+  MANAGED_SYSTEMS, MANAGED_SYSTEM_IDS, disposeSystemHandle, probeSystemLaunch,
+  type SystemRecord,
+} from './systems/registry.ts';
+import { assertSessionRootsPlaceable } from './systems/sessionRoot.ts';
 
 // The on-disk settings document, typed loosely: every leaf is `unknown` because
 // the file is app-owned but pre-dates this module's conversion and can hold
@@ -46,6 +51,7 @@ interface StoredSettings {
     overageThresholdPct?: unknown;
   };
   spawn?: { debugByDefault?: unknown };
+  systems?: { registry?: unknown };
 }
 
 function settingsPath(): string {
@@ -451,6 +457,188 @@ export async function removeBackend(id: string): Promise<boolean> {
     );
   }
   await writeBackends(storedBackends().filter(b => b.id !== id));
+  return true;
+}
+
+// ── System registry ──────────────────────────────────────────────────────
+// Systems group: the user-manageable registry of execution environments a
+// project's tree can live on, persisted as `systems.registry: [{id, label}]`.
+// A row is REGISTRATION ONLY — it declares that a system exists and what to
+// call it. Nothing here connects to one.
+//
+// Same managed-row contract as the backend registry above: `local` is fully
+// CODE-authoritative (id + label from MANAGED_SYSTEMS), never persisted to the
+// store, never editable and never removable — so a fresh install with no
+// settings.json still has the system every project resolves to.
+
+// A stored `launch` is argv. A hand-edited row holding anything else has no
+// provider command at all — reading a malformed one as a command would spawn
+// whatever the first element stringifies to.
+function readLaunch(v: unknown): string[] | null {
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const argv = v.filter((x): x is string => typeof x === 'string' && x.trim() !== '');
+  return argv.length === v.length ? argv : null;
+}
+
+// The provider command as the API accepts it: absent/null clears it, an array
+// of non-empty strings sets it. Anything else is a 400 — a row whose command
+// cc cannot spawn is worse than a row with none, because it names a system that
+// looks reachable.
+function validateLaunch(v: unknown): string[] | null {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v) || v.length === 0 || v.some(x => typeof x !== 'string' || !x.trim())) {
+    throw httpError(400, 'launch must be a non-empty array of non-empty strings (argv, argv[0] is the executable)');
+  }
+  return (v as string[]).map(x => x.trim());
+}
+
+// Persist a row's provider command only after cc has PROVEN it reaches a
+// system: spawn the command, complete the handshake, throw it away. R9's
+// registration case — a system that cannot be reached is refused at save time
+// with the provider's own error text, rather than saved and discovered broken
+// by the first project put on it.
+//
+// The placement check runs alongside it because both are properties of "can
+// this system host work?", and both are only actionable while the user is
+// looking at this form.
+async function verifySystemLaunch(id: string, argv: string[]): Promise<void> {
+  await assertSessionRootsPlaceable(id);
+  try {
+    await probeSystemLaunch(argv);
+  } catch (e) {
+    throw httpError(
+      502,
+      `system '${id}' could not be reached with that command: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+export function getSystems(): SystemRecord[] {
+  const s = loadSync();
+  const stored = Array.isArray(s.systems?.registry) ? s.systems.registry : [];
+  const out: SystemRecord[] = MANAGED_SYSTEMS.map(m => ({ ...m }));
+  // An id identifies exactly one row. addSystem's 409 keeps a duplicate out of
+  // the store, so this only fires on a hand-edited settings.json — where FIRST
+  // WINS, matching what the store's own writers do (updateSystem rewrites the
+  // list filtered by id, so the surviving row is the one a later edit lands on).
+  const seen = new Set<string>(MANAGED_SYSTEM_IDS);
+  for (const e of stored) {
+    if (!e || typeof e !== 'object') continue;
+    const rec = e as { id?: unknown; label?: unknown; launch?: unknown };
+    if (typeof rec.id !== 'string' || !rec.id) continue;
+    if (seen.has(rec.id)) continue;
+    seen.add(rec.id);
+    const launch = readLaunch(rec.launch);
+    out.push({
+      id: rec.id,
+      label: typeof rec.label === 'string' && rec.label ? rec.label : rec.id,
+      managed: false,
+      ...(launch ? { launch } : {}),
+    });
+  }
+  return out;
+}
+
+export function getSystem(id: string): SystemRecord | null {
+  return getSystems().find(s => s.id === id) ?? null;
+}
+
+export function isKnownSystem(id: unknown): boolean {
+  return typeof id === 'string' && getSystems().some(s => s.id === id);
+}
+
+// Persist only the user's rows — the managed row is code-authoritative.
+async function writeSystems(list: Array<Record<string, unknown>>): Promise<void> {
+  const cur = loadSync();
+  const next = { ...cur, systems: { ...(cur.systems || {}), registry: list } };
+  await writeSettings(next);
+}
+
+function storedSystems(): Array<Record<string, unknown>> {
+  const s = loadSync();
+  const list = s.systems?.registry;
+  if (!Array.isArray(list)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const rec = e as Record<string, unknown>;
+    if (typeof rec.id === 'string' && rec.id) out.push(rec);
+  }
+  return out;
+}
+
+export async function addSystem(
+  input: { id?: unknown; label?: unknown; launch?: unknown } = {},
+): Promise<SystemRecord> {
+  const cleanId = String(input.id ?? '').trim();
+  if (!isSlug(cleanId)) {
+    throw httpError(400, `id must match ${SLUG_RE.source} (max ${SLUG_MAX} chars)`);
+  }
+  if (isKnownSystem(cleanId)) {
+    throw httpError(409, `system '${cleanId}' already exists`);
+  }
+  const label = String(input.label ?? '').trim();
+  if (!label) throw httpError(400, 'label is required');
+  const launch = validateLaunch(input.launch);
+  if (launch) await verifySystemLaunch(cleanId, launch);
+  await writeSystems([...storedSystems(), { id: cleanId, label, ...(launch ? { launch } : {}) }]);
+  return { id: cleanId, label, managed: false, ...(launch ? { launch } : {}) };
+}
+
+// The managed row has nothing editable: its id and label both come from code.
+export async function updateSystem(
+  id: string,
+  { label, launch }: { label?: unknown; launch?: unknown } = {},
+): Promise<SystemRecord | null> {
+  const existing = getSystem(id);
+  if (!existing) return null;
+  if (existing.managed) {
+    if (label !== undefined || launch !== undefined) {
+      throw httpError(400, `system '${id}' is built in — it cannot be edited`);
+    }
+    return getSystem(id); // no-op PATCH on a read-only row
+  }
+  const clean = label === undefined ? existing.label : String(label ?? '').trim();
+  if (!clean) throw httpError(400, 'label is required');
+  // An omitted `launch` keeps the current command; an explicit null clears it.
+  const next = launch === undefined ? (existing.launch ?? null) : validateLaunch(launch);
+  // Re-probed only when the command CHANGES: an unrelated relabel of a system
+  // that is currently down must not fail.
+  if (next && JSON.stringify(next) !== JSON.stringify(existing.launch ?? null)) {
+    await verifySystemLaunch(id, next);
+  }
+  // The live handle was built from the old command; a changed one must not keep
+  // being served by the process the old one started.
+  if (JSON.stringify(next) !== JSON.stringify(existing.launch ?? null)) disposeSystemHandle(id);
+  await writeSystems([...storedSystems().filter(s => s.id !== id), { id, label: clean, ...(next ? { launch: next } : {}) }]);
+  return getSystem(id);
+}
+
+// Removal NEVER cascades: a system still named by a project record is refused
+// with 409 NAMING the projects, because the alternative is a project whose
+// record points at a system that no longer exists — which resolves to nothing
+// and cannot be repaired without knowing which projects were affected.
+// projectsBySystem() keys on the record's `system` field, so `local` is never
+// "referenced" (its projects carry no field) and `.conduct` is never counted
+// onto any system (it is pinned local ahead of its record).
+export async function removeSystem(id: string): Promise<boolean> {
+  const existing = getSystem(id);
+  if (!existing) return false;
+  if (existing.managed) {
+    throw httpError(400, `system '${id}' is built in and cannot be removed`);
+  }
+  const refs = (await projectsBySystem())[id] ?? [];
+  if (refs.length) {
+    // Each referent is named WITH its target: on a system serving many, the
+    // project name alone does not say which one to go and look at.
+    const named = refs.map(r => (r.remoteId ? `${r.name} (${r.remoteId})` : r.name));
+    throw httpError(
+      409,
+      `system '${id}' is still named by ${refs.length} project${refs.length === 1 ? '' : 's'} (${named.join(', ')}) — move or remove ${refs.length === 1 ? 'it' : 'them'} first`,
+    );
+  }
+  disposeSystemHandle(id);
+  await writeSystems(storedSystems().filter(s => s.id !== id));
   return true;
 }
 

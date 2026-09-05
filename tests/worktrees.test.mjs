@@ -11,8 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   listWorktrees, getWorktree, getWorktreeMergeStatus, getHeadBranchAndSha, createWorktree, removeWorktree,
+  registeredWorktreeNames, removeAllWorktreesForProject, runGit, GIT_OUTPUT_LIMIT_BYTES,
 } from '../src/worktrees.ts';
 import { worktreeStoreDir } from '../src/projects.ts';
+import { localSystem } from '../src/systems/registry.ts';
+import { liveSystemProto } from './systemHandle.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -154,6 +157,61 @@ test('createWorktree refuses on a repo with no commits (unborn HEAD)', async () 
     `refusal leaked git's raw text: ${r.body.error}`);
 });
 
+// Every runGit caller parses git's output WHOLE, so the outcome that must never
+// happen is a short read reported as success. cc is also a single process
+// hosting every worker session, and git output is unbounded in the ordinary
+// case, so the fence has to be attached to EVERY call, not just the diff paths
+// someone remembered.
+test('runGit fences git output: the limit rides on every call, and crossing it fails', async () => {
+  const repoPath = await makeRealRepo('demo');
+  // The LIVE handle's prototype (tests/systemHandle.mjs): under the provider
+  // configuration the seam in use is ProviderSystem, and a spy on the wrong
+  // class would report zero calls.
+  const sysProto = liveSystemProto(localSystem());
+  const origExec = sysProto.exec;
+
+  const limits = [];
+  try {
+    sysProto.exec = function (spec, opts) {
+      limits.push(opts.maxBufferBytes);
+      return origExec.call(this, spec, opts);
+    };
+    const ok = await runGit(localSystem(), repoPath, ['rev-parse', 'HEAD']);
+    assert.equal(ok.code, 0);
+  } finally { sysProto.exec = origExec; }
+  assert.ok(limits.length > 0, 'the git call went through the System');
+  assert.deepEqual([...new Set(limits)], [GIT_OUTPUT_LIMIT_BYTES],
+    `every runGit exec must carry the fence; saw ${JSON.stringify(limits)}`);
+  assert.equal(GIT_OUTPUT_LIMIT_BYTES, 16 * 1024 * 1024,
+    'the fence is 16 MB — the bound execFile enforced before git became a System op');
+
+  // The boundary itself, end to end through real git. The ceiling is shrunk at
+  // the same seam rather than by producing 16 MB of git output in a test: what
+  // is under test is what runGit does when git crosses the fence, and that is
+  // identical at either value.
+  await fs.writeFile(path.join(repoPath, 'big.txt'), 'padding line for the diff\n'.repeat(4000));
+  await git(repoPath, 'add', '.');
+  await git(repoPath, 'commit', '-q', '-m', 'big');
+  try {
+    sysProto.exec = function (spec, opts) {
+      return origExec.call(this, spec, { ...opts, maxBufferBytes: 8192 });
+    };
+    const r = await runGit(localSystem(), repoPath, ['show', 'HEAD']);
+    assert.equal(r.code, 1, 'past the fence runGit FAILS — every caller already branches on a non-zero code');
+    assert.match(r.stderr, /exceeded the 8192-byte limit/,
+      'the diagnostic reaches the field callers build their error text from');
+    assert.ok(r.stdout.length > 0, 'the output that arrived first is kept, as the old maxBuffer error did');
+    assert.ok(r.stdout.length < 100_000,
+      `retention must stop at the fence, kept ${r.stdout.length} bytes of a ~100 KB diff`);
+  } finally { sysProto.exec = origExec; }
+
+  // And the same command under the real fence is an ordinary success — the
+  // fence must not be a cap that clips every large-ish diff.
+  const full = await runGit(localSystem(), repoPath, ['show', 'HEAD']);
+  assert.equal(full.code, 0);
+  assert.ok(full.stdout.includes('padding line for the diff'));
+});
+
 test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn', async () => {
   // getHeadBranchAndSha has callers that hand it a path nothing repo-validated
   // (createWorktree's baseWorktree, mergeWorktreeIntoParent's parentPath), so a
@@ -161,14 +219,14 @@ test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn'
   // an unborn HEAD. Only the unborn one may claim that cause; the others must
   // still carry git's own stderr, which names theirs.
   const unborn = await makeUnbornRepo('fresh');
-  await assert.rejects(getHeadBranchAndSha(unborn), (e) => {
+  await assert.rejects(getHeadBranchAndSha(localSystem(), unborn), (e) => {
     assert.match(e.message, /no commits yet/);
     assert.ok(!/unable to resolve HEAD/.test(e.message));
     return true;
   });
 
   const missing = path.join(projectsRoot, 'gone');
-  await assert.rejects(getHeadBranchAndSha(missing), (e) => {
+  await assert.rejects(getHeadBranchAndSha(localSystem(), missing), (e) => {
     assert.ok(!/no commits yet/.test(e.message),
       `a directory that does not exist must not be told to commit in it: ${e.message}`);
     assert.match(e.message, /unable to resolve HEAD/);
@@ -179,7 +237,7 @@ test('getHeadBranchAndSha only says "no commits yet" when HEAD is really unborn'
 
   const plain = path.join(projectsRoot, 'plain');
   await fs.mkdir(plain, { recursive: true });
-  await assert.rejects(getHeadBranchAndSha(plain), (e) => {
+  await assert.rejects(getHeadBranchAndSha(localSystem(), plain), (e) => {
     assert.ok(!/no commits yet/.test(e.message),
       `a non-repo must not be told to commit in it: ${e.message}`);
     assert.match(e.message, /unable to resolve HEAD/);
@@ -746,7 +804,7 @@ test('POST /merge fast-forwards the worktree branch so it is left at behind:0', 
   assert.equal(wtSha, r.body.newSha);
 
   const refreshed = await getWorktree('demo', wtName);
-  const status = await getWorktreeMergeStatus(refreshed);
+  const status = await getWorktreeMergeStatus(localSystem(), refreshed);
   assert.deepEqual(status, { ahead: 0, behind: 0 });
 });
 
@@ -1054,4 +1112,74 @@ test('DELETE worktree by bare slug still refuses (409) with a live instance atta
   assert.equal(await fs.access(wtPath).then(() => true, () => false), true,
     'the worktree directory must still exist');
   assert.ok(await getWorktree('demo', wtName), 'the record survives too');
+});
+
+// ── A stranded registration after the git removal (card 2026-0308) ─────
+//
+// `git worktree remove --force` succeeds, and then a later step raises a system
+// refusal — `runGit` throws when git could not be started or never answered.
+// Written after that step, cc's own store entry was left behind for a worktree
+// git had already forgotten, and the two listings then disagreed: `listWorktrees`
+// prunes by `git worktree list` and stopped showing it while
+// `registeredWorktreeNames` still counted it.
+//
+// THE INVARIANT PINNED BY BOTH TESTS BELOW: once `git worktree remove` reports
+// success, no git step that follows it can leave the store entry registered.
+// Scoped to the git steps deliberately; the bound on that is stated once, at
+// the `dropWorktreeStoreEntry` call site in `src/worktrees.ts`
+// (card 2026-0308 §G2, §G10).
+
+// An argv git cannot be spawned with, built entirely out of the store's own
+// `branch` field — which this path puts in the branch-delete argv and nowhere
+// else, since force:true skips the dependents and dirty checks. The kernel
+// really refuses the spawn (`spawn E2BIG`), `classifySpawnError` reads it as
+// `EUNKNOWN`, and `runGit` raises `GIT_DID_NOT_RUN`. Same route as the trigger
+// measured under real resource pressure (`spawn git EMFILE` on a host short of
+// fds), reached here by fixture data instead, so it is deterministic — an argv
+// limit, not exhaustion, and the route is what the two share. Product code is
+// untouched; the magnitude has only to exceed the argv limit
+// (card 2026-0308 §1.1 for the measurements, §G5 for the fixture, §G10 for the
+// scoping).
+async function makeBranchDeleteUnspawnable(project, worktreeName) {
+  const metaFile = path.join(worktreeStoreDir(project, worktreeName), 'worktree.json');
+  const meta = JSON.parse(await fs.readFile(metaFile, 'utf8'));
+  meta.branch = 'b'.repeat(3_000_000);
+  await fs.writeFile(metaFile, JSON.stringify(meta));
+}
+
+const dirExists = (p) => fs.access(p).then(() => true, () => false);
+
+test('a branch delete that could not be spawned leaves no registration behind', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'ghost' });
+  await makeBranchDeleteUnspawnable('demo', wt.worktreeName);
+
+  const err = await removeWorktree('demo', wt.worktreeName, { force: true }).then(() => null, e => e);
+  // Asserted first, and it holds before the fix too: it is what shows the run
+  // reached the branch delete rather than stopping at an earlier guard.
+  assert.ok(err, 'a git that could not be run is still raised, not swallowed');
+  assert.equal(err.statusCode, 502, err.message);
+  assert.equal(err.code, 'GIT_DID_NOT_RUN', err.message);
+  assert.equal(await dirExists(wt.worktreePath), false, 'the worktree directory is gone');
+
+  // The invariant.
+  assert.deepEqual(await registeredWorktreeNames('demo'), [],
+    'this removal left no store entry behind the directory git removed');
+  assert.deepEqual(await listWorktrees('demo'), [],
+    'so the two listings agree');
+});
+
+// The project-delete cascade swallows each removal's error, so a stranded
+// registration surfaced nothing at all there. `deleteProject` would erase the
+// whole project store dir immediately afterwards — but this asserts the cascade
+// itself strands nothing, without leaning on that backstop (card 2026-0308 §4.4).
+test('the project-delete cascade strands no registration when a branch delete could not be spawned', async () => {
+  await makeRealRepo('demo');
+  const wt = await createWorktree('demo', { name: 'cascade' });
+  await makeBranchDeleteUnspawnable('demo', wt.worktreeName);
+
+  await removeAllWorktreesForProject('demo');
+
+  assert.deepEqual(await registeredWorktreeNames('demo'), [],
+    'this cascade left nothing registered, before deleteProject runs');
 });

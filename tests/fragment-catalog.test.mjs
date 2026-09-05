@@ -138,3 +138,81 @@ test('a malformed rule in the store JSON is coerced, not concatenated into markd
     assert.equal(await catalog.compose(['x']), '');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+// composeWithMeta is the ONE implementation: compose() is its `.text`. The
+// degraded half is lifted off the same getCatalog() the compose already makes,
+// so it mirrors the catalog's own flag — the read the conductor role doc needs
+// to tell an established absence from an unvouchable one (card 2026-0277).
+//
+// PINS: text equality with compose() for the same slugs (so nothing about the
+// composed bytes moved), and `.degraded` equal to getCatalog().degraded across
+// all three provider shapes — healthy, throwing, absent — INCLUDING for an
+// empty slug list, which reports the catalog's real flag rather than a
+// hardcoded false. That last one is the point: an empty list is itself
+// something a degrade can CAUSE (every seed off, the only remaining slugs
+// contributed by a plugin whose project just went unreachable), so a flag that
+// short-circuits with the list is blind in exactly the arm that loses the most.
+//
+// The THIRD arm pins the other body-less return: an entry that resolves but
+// carries no markdown (the scaffold-only convention shape) composes to '' too,
+// and that return must report the flag just as the empty-list one does. A
+// selection whose only entries are scaffold-only conventions is the reachable
+// case — it composes '' during an outage, where a hardcoded false would say the
+// emptiness was established.
+//
+// NOT CLAIMING: that compose() is IMPLEMENTED BY delegation — a duplicated but
+// correct body is indistinguishable from here, and single-implementation is a
+// property of the diff, not of the behaviour.
+test('composeWithMeta returns compose()\'s exact text plus the catalog\'s degraded flag', async () => {
+  const { dir } = await mkFixture();
+  const seedDir = path.join(dir, 'seeds');
+  const mk = (extraProvider) => createFragmentCatalog({
+    seeds: [{ slug: 'foo', name: 'Foo', description: 'the foo' }],
+    seedDir,
+    storeFile: () => path.join(dir, `store-${Math.random().toString(36).slice(2)}.json`),
+    noun: 'thing',
+    extraProvider,
+  });
+  try {
+    for (const [label, extraProvider] of [
+      ['no provider at all', null],
+      ['a healthy provider', async () => [{ slug: 'p/x', name: 'X', description: 'd', body: '## X' }]],
+      ['a throwing provider', async () => { throw new Error('boom'); }],
+    ]) {
+      const catalog = mk(extraProvider);
+      const meta = await catalog.composeWithMeta(['foo']);
+      assert.equal(meta.text, await catalog.compose(['foo']), `${label}: text equals compose()`);
+      assert.equal(meta.text, '\n## Foo\n- foo body\n', `${label}: and it is the same byte shape as ever`);
+      assert.equal(meta.degraded, (await catalog.getCatalog()).degraded,
+        `${label}: degraded mirrors the catalog's own flag`);
+      // Both early returns carry the shape AND the flag, and the 400 still
+      // fires from here.
+      assert.deepEqual(await catalog.composeWithMeta([]),
+        { text: '', degraded: (await catalog.getCatalog()).degraded },
+        `${label}: an empty slug list reports the catalog's own flag, not a hardcoded false`);
+      await expectStatus(() => catalog.composeWithMeta(['nope']), 400);
+    }
+
+    // A resolvable entry with NO body — the scaffold-only convention shape,
+    // built the way the malformed-rule test above builds one: a store rule with
+    // the key absent. Both directions, so neither a hardcoded true nor a
+    // hardcoded false survives on this return.
+    const bodyless = (name, extraProvider) => {
+      const storeFile = path.join(dir, `${name}.json`);
+      return { storeFile, catalog: createFragmentCatalog({ seeds: [], seedDir, storeFile: () => storeFile, noun: 'thing', extraProvider }) };
+    };
+    for (const [label, extraProvider, expected] of [
+      ['a throwing provider', async () => { throw new Error('boom'); }, true],
+      ['no provider at all', null, false],
+    ]) {
+      const { storeFile, catalog } = bodyless(`bodyless-${expected}`, extraProvider);
+      await fs.writeFile(storeFile, JSON.stringify({ rules: [{ slug: 'scaffold-only', name: 'S', description: 'd' }] }));
+      const meta = await catalog.composeWithMeta(['scaffold-only']);
+      assert.equal(meta.text, '', `${label}: a body-less entry contributes no text`);
+      assert.equal(meta.text, await catalog.compose(['scaffold-only']), `${label}: and compose() agrees`);
+      assert.equal(meta.degraded, expected,
+        `${label}: a body-less compose still reports the catalog's own flag`);
+      assert.equal((await catalog.getCatalog()).degraded, expected, `${label}: which is the catalog's flag`);
+    }
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
