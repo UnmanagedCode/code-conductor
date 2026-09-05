@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSafeRoot, assertStoreIsolated, removeSafeRoot, pinGitConfig } from './safeStoreRoot.mjs';
-import { snapshot, countMatching, liveChildren, descendants, killTree, killDescendants, killPids,
+import { snapshot, censusMatching, liveChildren, descendants, killTree, killDescendants, killPids,
          processesWithMarker, settleResidual, reapResidual } from './procTree.mjs';
 import { FILE_KILL_MS, RUN_CAP_MS, ORPHAN_SWEEP_MS, RESIDUAL_SETTLE_MS } from './hangGuardConfig.mjs';
 
@@ -134,8 +134,18 @@ if (files.length === 0) {
 // subprocess (which the Android phantom-process killer punishes) or a new test
 // spawns real processes without opting in. /proc reads are safe on this host;
 // pkill/lsof are not — do not use them here.
+//
+// IT COUNTS THIS RUN'S DESCENDANTS, NOT THE BOX'S PROCESSES (card 2026-0344).
+// The budget is a claim about the suite's own behaviour, and a box-wide count
+// makes a sibling suite run on the same machine — another worktree, or the
+// gate's second row — fail a run that is green on every test. Measured before
+// the fix: two concurrent `node tests/run.mjs` on this box both reported `fail
+// 0` and both exited 1 at peaks of 14 and 15. censusMatching (tests/procTree.mjs)
+// narrows the cmdline match by CC_TEST_RUN_ID; `peakFakeClaudeSeen` keeps the
+// box-wide figure so the narrowing cannot go blind unnoticed.
 const FAKE_CLAUDE_BUDGET = 12;
-let peakFakeClaude = 0;
+let peakFakeClaude = 0;     // peak carrying THIS run's marker — the budgeted figure
+let peakFakeClaudeSeen = 0; // peak visible box-wide, whoever owns them
 let sampledProcs = false;   // at least one tick READ /proc successfully
 let samplerTicks = 0;       // ticks that ran at all
 
@@ -195,10 +205,11 @@ let nodeFinished = false;
 const procSampler = setInterval(() => {
   samplerTicks++;
   const snap = snapshot();
-  const n = countMatching('fake-claude.mjs', snap);
-  if (n >= 0) {
+  const census = censusMatching('fake-claude.mjs', RUN_MARKER, snap);
+  if (census.available) {
     sampledProcs = true;
-    if (n > peakFakeClaude) peakFakeClaude = n;
+    if (census.owned > peakFakeClaude) peakFakeClaude = census.owned;
+    if (census.seen > peakFakeClaudeSeen) peakFakeClaudeSeen = census.seen;
   }
   const now = Date.now();
   const live = new Set();
@@ -594,6 +605,18 @@ await removeSafeRoot(safeRoot.root);
 let guardrailFailed = false;
 if (sampledProcs) {
   console.log(`\nguardrail: peak concurrent fake-claude subprocesses = ${peakFakeClaude} (budget ${FAKE_CLAUDE_BUDGET})`);
+  // Only when the box held more than we own. It is not decoration: it is the one
+  // signal that would show this guard going BLIND. hasMarker fails closed, so a
+  // future test that spawns fake-claude with a curated env dropping CC_TEST_RUN_ID
+  // takes the counted figure to 0 while the box-wide one stays high — which reads
+  // as a clean run unless the two are printed together.
+  if (peakFakeClaudeSeen > peakFakeClaude) {
+    console.log(
+      `guardrail: peak visible box-wide = ${peakFakeClaudeSeen}; the excess carries another ` +
+      'CC_TEST_RUN_ID (a concurrent suite run) and is not this run\'s to answer for. A COUNTED ' +
+      'figure near zero against a high box-wide one is this guard blind, not a clean run.',
+    );
+  }
   // RUN_REAL_CLAUDE runs extra real-binary smoke tests; don't enforce there.
   if (process.env.RUN_REAL_CLAUDE !== '1' && peakFakeClaude > FAKE_CLAUDE_BUDGET) {
     console.error(

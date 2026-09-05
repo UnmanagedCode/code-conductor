@@ -5,7 +5,7 @@
 // /proc reads are safe on this host; `pkill` / `lsof` are NOT — do not add a
 // shell-based fallback here (see the note above the fake-claude budget in
 // tests/run.mjs). On a non-Linux host /proc is absent and every function below
-// degrades to "I can see nothing" (-1 / empty / `available:false`), never a
+// degrades to "I can see nothing" (empty / `available:false`), never a
 // throw: the guard failing must not become a new failure class. Callers that
 // report on the guard's own coverage MUST check `snapshot().available` — a
 // blind watchdog that claims the property is worse than one that says it
@@ -339,14 +339,43 @@ export function reapResidual(residual, { kill = killPids } = {}) {
   };
 }
 
-// How many processes anywhere on the box have `substr` in their cmdline.
-// Returns -1 when /proc is unavailable, which callers use to distinguish
-// "nothing running" from "cannot tell".
-export function countMatching(substr, snap = snapshot()) {
-  if (!snap.available) return -1;
-  let n = 0;
-  // Match against the raw NUL-separated command line: the caller is asking a
-  // substring question about the whole line, not about one argument.
-  for (const info of snap.byPid.values()) if (info.raw.includes(substr)) n++;
-  return n;
+// The fake-claude guardrail's census: of the processes whose RAW NUL-separated
+// cmdline contains `substr`, how many are THIS run's (`owned`) and how many exist
+// on the box at all (`seen`). `available:false` is the "cannot tell" verdict —
+// distinct from `owned === 0`, and what gates the caller's coverage claim.
+//
+// SCOPED BY MARKER, NOT BY LINEAGE. `owned` asks hasMarker, i.e. CC_TEST_RUN_ID in
+// /proc/<pid>/environ, so it survives `setsid`/reparenting for the same reason
+// processesWithMarker does — and, unlike a box-wide count, a CONCURRENT run of
+// this suite on the same box cannot inflate it. A NESTED tests/run.mjs mints its
+// own marker (tests/run.mjs's RUN_MARKER, via mkdtemp), so its descendants are
+// counted against ITS budget and not the outer run's.
+//
+// hasMarker FAILS CLOSED — a vanished pid or an unreadable environ answers false —
+// so `owned` can only ever UNDERCOUNT, which is the guard-WEAKENING direction.
+// That is what `seen` is for: it is the same tick's box-wide figure, so a counted
+// figure collapsing against a high `seen` reads as this guard going blind rather
+// than as a clean run.
+//
+// ONLY THE CMDLINE MATCHES GET AN ENVIRON READ, and that ordering is load-bearing,
+// not incidental. The alternative — processesWithMarker over
+// snapshot({environ:true}) — costs one extra /proc read per VISIBLE pid (~2700
+// here) on a sampler that ticks at 10 Hz; see the environ opt-in note in
+// snapshot(). Filtering on the already-loaded `raw` first bounds the extra reads to
+// the handful of matches. Pinned in tests/proc-census.test.mjs.
+//
+// `hasMarker` is injectable so the whole census — verdict AND read count — is
+// table-testable with no real processes.
+export function censusMatching(substr, marker, snap = snapshot(), { hasMarker: hasMarkerFn = hasMarker } = {}) {
+  if (!snap.available) return { available: false, owned: 0, seen: 0 };
+  let owned = 0;
+  let seen = 0;
+  for (const info of snap.byPid.values()) {
+    // The caller asks a substring question about the whole command line, not
+    // about one argument.
+    if (!info.raw.includes(substr)) continue;
+    seen++;
+    if (hasMarkerFn(info.pid, marker)) owned++;
+  }
+  return { available: true, owned, seen };
 }
