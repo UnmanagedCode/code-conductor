@@ -279,6 +279,16 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 //     that; closing it would mean waiting for the command to start, which is the
 //     collapse into `interrupting the in-flight command stops it on the
 //     system` that the next comment rules out.
+//   - DELIBERATELY NOT CAUGHT: a mutant deferring the kill by less than the
+//     budget survives here. Measured at 50 ms — it survives both changed tests
+//     and the four siblings, and it KILLS the no-delay form, which was
+//     therefore going red on a kill the contract permits. Restoring that
+//     sensitivity means restoring the flake; they are one property, not two.
+//     What stays pinned is that the kill HAPPENS (the no-relay mutant dies six
+//     ways) and that its latency is BOUNDED — ~400 ms here, 280 ms / 1500 ms at
+//     the siblings above — so an unboundedly slow kill is still caught. A real
+//     kill-latency SLO would be a new requirement carrying its own number
+//     (card 2026-0331 §G-9, §G-10).
 test('a cancelled call does not run to completion, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
