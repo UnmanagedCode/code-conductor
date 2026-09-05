@@ -72,13 +72,74 @@ export function settingsJSON(url, { pre, post = [], deny, extra }) {
   return JSON.stringify({ ...out, ...extra });
 }
 
+// THE CHILD'S ENV, and the one thing this family changes about it: a session
+// that repoints `ANTHROPIC_BASE_URL` at another backend cannot run these cases
+// at all. Measured (card 2026-0321 §1f): every model reachable over such a
+// proxy drove 0 of the four rewrite assertions, one of them completing green
+// with `is_error:false` having never called the tool. So when — and ONLY when —
+// a base URL is set, the child is launched off the host's STORED credentials
+// instead.
+//
+// The three keys are the measured minimal-and-sufficient set: dropping the base
+// URL alone leaves the proxy's key in place and yields a 401. Gating the whole
+// scrub on the base URL is what makes this a no-op BY CONSTRUCTION on an
+// ordinary host — an unconditional scrub was measured taking a host
+// authenticated solely by `ANTHROPIC_API_KEY` (a configuration cc supports —
+// src/health.ts reads that key) from passing to 401 (card 2026-0321 §1i).
+//
+// `ANTHROPIC_DEFAULT_HAIKU_MODEL` is deliberately NOT scrubbed: an explicit
+// `--model` is not subject to the alias remap, so it diverts only the CLI's
+// session-title subquery, which logs one cosmetic `unrecognized_model` line on
+// stderr. Chasing that line is a dead end (card 2026-0321 §1b).
+//
+// ACCEPTED RESIDUAL (card 2026-0321 §2): a host whose ONLY route to a capable
+// model is that proxy — base URL set, no first-party credentials — goes from a
+// couple of passing cases to a legible 401. Those passes were not worth what
+// they looked like; §1f is why.
+//
+// HARNESS-ONLY. cc's production spawn path scrubs nothing and shares none of
+// this: `grep -rn cliEnv src/` is empty.
+export function cliEnv(extra) {
+  const env = { ...process.env };
+  if (process.env.ANTHROPIC_BASE_URL) {
+    delete env.ANTHROPIC_BASE_URL;
+    delete env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_AUTH_TOKEN;
+  }
+  return { ...env, ...extra };
+}
+
+// THE ONE DISCRIMINATOR that separates a CLI which never reached the API from
+// one that ran. Keyed on `api_error_status` and on NOTHING ELSE, because both
+// obvious alternatives are traps — measured on four captured frames, which are
+// committed under tests/fixtures/ and pinned by the case
+// `a healthy frame and a 404 frame are indistinguishable by subtype`
+// (card 2026-0321 §1e):
+//   * `subtype` is "success" on the healthy frame AND on the 404 frame.
+//   * `is_error` is true on a legitimate INTERRUPT — the stimulus the case
+//     `an interrupt kills the forwarder and aborts its in-flight request`
+//     depends on succeeding, so an `is_error` guard would turn that green case
+//     red.
+// `result` may be absent entirely (the interrupt frame carries no such key), so
+// the CLI's own words are relayed only when it said any.
+export function apiErrorReason(frame) {
+  const status = frame?.api_error_status;
+  if (status == null) return null;
+  const said = typeof frame.result === 'string' ? frame.result : '';
+  return `the CLI never reached the API (api_error_status ${status})${said ? `: ${said}` : ''}`;
+}
+
 export function runClaudeEnv(cwd, settings, prompt, env) {
   return new Promise((resolve, reject) => {
     execFile('claude', claudeArgs(settings, prompt, ['--output-format', 'json']),
-      { cwd, env: { ...process.env, ...env }, timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
+      { cwd, env: cliEnv(env), timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 },
       (err, stdout) => {
         if (err && !stdout) { reject(err); return; }
-        try { resolve(JSON.parse(stdout)); } catch { reject(new Error(`unparseable CLI output: ${stdout.slice(0, 500)}`)); }
+        let frame;
+        try { frame = JSON.parse(stdout); } catch { reject(new Error(`unparseable CLI output: ${stdout.slice(0, 500)}`)); return; }
+        const why = apiErrorReason(frame);
+        if (why) { reject(new Error(why)); return; }
+        resolve(frame);
       });
   });
 }
@@ -99,19 +160,30 @@ export function claudeArgs(settings, prompt, format) {
 export function runClaude(cwd, settings, prompt) {
   return new Promise((resolve, reject) => {
     execFile('claude', claudeArgs(settings, prompt, ['--output-format', 'json']),
-      { cwd, timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+      { cwd, env: cliEnv(), timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
         if (err && !stdout) { reject(err); return; }
-        try { resolve(JSON.parse(stdout)); } catch { reject(new Error(`unparseable CLI output: ${stdout.slice(0, 500)}`)); }
+        let frame;
+        try { frame = JSON.parse(stdout); } catch { reject(new Error(`unparseable CLI output: ${stdout.slice(0, 500)}`)); return; }
+        const why = apiErrorReason(frame);
+        if (why) { reject(new Error(why)); return; }
+        resolve(frame);
       });
   });
 }
 
 // The `system`/`init` frame's own `tools` list — what the session actually has,
 // stated by the CLI rather than inferred from what a model chose to reach for.
+//
+// DELIBERATELY UNGUARDED by apiErrorReason, unlike the two above. Every case
+// this helper serves resolves off the `system`/`init` frame, which the CLI
+// emits BEFORE it calls the API — measured arriving at 610-725 ms and passing
+// truthfully under a 404 (card 2026-0321 §1g). The rule: guard a launch helper
+// whose cases need the API to answer; leave unguarded one whose every case is
+// pre-API. Guarding here would make an always-truthful case always-red.
 export function toolRegistry(cwd, settings) {
   return new Promise((resolve, reject) => {
     execFile('claude', claudeArgs(settings, 'Reply with the single word OK.', ['--output-format', 'stream-json', '--verbose']),
-      { cwd, timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
+      { cwd, env: cliEnv(), timeout: RUN_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
         if (err && !stdout) { reject(err); return; }
         for (const line of stdout.split('\n')) {
           if (!line.trim()) continue;
@@ -214,10 +286,19 @@ export function claudeSession({ cwd, settings }) {
     '--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions',
     '--permission-prompt-tool', 'stdio',
     '--settings', settings,
-  ], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+  ], { cwd, env: cliEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
 
   const events = [];
   const waiters = [];
+  // A CLI that could not reach the API emits its error `result` frame in well
+  // under a second and then STAYS ALIVE: stdin is held open on purpose here, so
+  // nothing exits and no watcher on the child's exit would fire. Left alone,
+  // every bounded wait below runs to its own full length and their SUM crosses
+  // the hang guard's per-file deadline — measured as a 90s SIGKILL with a
+  // leaked process and the file reporting nothing at all (card 2026-0321 §1d,
+  // §1k). Recording the diagnosis and failing every waiter with it turns that
+  // into an immediate, truthful red.
+  let apiError = null;
   let pending = '';
   child.stdout.on('data', (b) => {
     pending += b;
@@ -229,6 +310,10 @@ export function claudeSession({ cwd, settings }) {
       let f;
       try { f = JSON.parse(line); } catch { continue; }
       events.push(f);
+      if (f.type === 'result' && !apiError) {
+        apiError = apiErrorReason(f);
+        if (apiError) for (const w of waiters.splice(0)) w.reject(new Error(apiError));
+      }
       for (const w of waiters.slice()) {
         if (!w.match(f)) continue;
         waiters.splice(waiters.indexOf(w), 1);
@@ -240,14 +325,18 @@ export function claudeSession({ cwd, settings }) {
 
   return {
     events,
+    // For a case polling something OTHER than a frame — cc's forwarder state,
+    // say — which the rejection above cannot reach.
+    get apiError() { return apiError; },
     prompt: (text) => send({
       type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, parent_tool_use_id: null,
     }),
     // cc's real interrupt channel (src/instances.ts `_controlRequest`).
     interrupt: () => send({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } }),
     waitFor: (match, ms) => new Promise((resolve, reject) => {
+      if (apiError) { reject(new Error(apiError)); return; }
       for (const f of events) if (match(f)) { resolve(f); return; }
-      const w = { match, resolve };
+      const w = { match, resolve, reject };
       waiters.push(w);
       setTimeout(() => {
         const i = waiters.indexOf(w);
