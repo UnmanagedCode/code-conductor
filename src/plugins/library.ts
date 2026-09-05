@@ -89,6 +89,12 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     description: 'Runs a structured dialectic (thesis → antithesis → synthesis) between two Dialectician workers to stress-test an idea or decision.',
     repo: 'https://github.com/UnmanagedCode/code-dialectic',
   },
+  {
+    id: 'code-mutant',
+    name: 'Code Mutant',
+    description: 'Mutation-proves test-coverage claims during review: a prover runs real mutants and reports survivors as blocking findings.',
+    repo: 'https://github.com/UnmanagedCode/code-mutant',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
