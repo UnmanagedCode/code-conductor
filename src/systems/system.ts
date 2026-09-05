@@ -159,6 +159,17 @@ export interface ExecResult {
   // because the redirected shell has to turn it into its own named failure and
   // classifying it by message text is how that drifts.
   outputOverflowed?: true;
+  // HOW LONG cc WAITED before giving up on a provider that never reported the
+  // command's exit, in ms — and its PRESENCE is that fact. A RESULT field,
+  // produced and never consumed as an input: only ProviderSystem's abandon timer
+  // sets it, carrying its OWN computed bound (`timeoutMs + EXEC_TIMEOUT_SLACK_MS`),
+  // and LocalSystem never does because there is no provider to be silent.
+  //
+  // It exists because the number a worker is told has to be the wait it actually
+  // served. `timedOut` alone cannot say it: the same flag also carries a timeout
+  // the PROVIDER reported, which fired at the caller's own deadline instead
+  // (card 2026-0318 §5.3).
+  abandonedAfterMs?: number;
 }
 
 export type SystemEntryKind = 'file' | 'dir' | 'symlink' | 'other';

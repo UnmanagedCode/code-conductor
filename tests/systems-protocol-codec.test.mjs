@@ -219,6 +219,104 @@ test('the taxonomy is closed: every named code is recognised and nothing else is
   assert.equal(PROTOCOL_VERSION, 1);
 });
 
+// PINS §3's cc → provider table against the `ClientFrame` union in
+// src/systems/protocol.ts. In kind with the §8 pin below — and here for the same
+// reason that one gives: a test in the conformance suite that opens our docs is
+// broken for the third parties §10 sells that battery to, who clone it without
+// them.
+//
+// SOURCE BYTES ARE AN INPUT HERE, and that is what this pin costs. `ClientFrame`
+// is a TYPE, erased at runtime, so there is nothing to import; a runtime array
+// beside it would be a THIRD place to keep in sync and would leave this green
+// for a frame added to the union and not to the array. So the declaration is
+// read instead: `export type ClientFrame = … ;` for the members, and each
+// member's `type: '<literal>'` for the wire name. Renaming an interface is fine
+// (members resolve by name) and reflowing the union is fine (the whole `=`…`;`
+// block is read); deleting the `export` keyword, or writing a member's `type`
+// field as anything but a single-quoted literal, re-anchors this test.
+//
+// MEASURED separable, five CONSTRUCTED doc stimuli, one at a time, each RUN and
+// each observed dying at the named assertion rather than merely reddening:
+//   dropped row      → "missing from §3's table: detach"
+//   phantom row      → "in §3's table but not in the ClientFrame union: teleport"
+//   DUPLICATED row   → "§3 has 11 rows for 10 client frames" — the count check,
+//                      which the other two are blind to
+//   de-backticked    → "located the §3 block but parsed no frame rows"
+//   renamed heading  → "could not locate §3's cc → provider block"
+// It arrived GREEN — both inputs already agreed — so this stands in for a
+// red-proof. The SOURCE half is proved the other way, by the synthetic-input
+// test above, because perturbing the real declaration is off limits.
+// TAKES THE SOURCE AS AN ARGUMENT so the parse itself is drivable on synthetic
+// input — the only way to prove what it does with a malformed declaration
+// without perturbing the real file, which is off limits.
+function clientFrameTypes(src) {
+  const union = /export type ClientFrame =([^;]*);/.exec(src);
+  if (!union) return { members: [], types: [], unresolved: [] };
+  const members = [...union[1].matchAll(/\b(\w+Frame)\b/g)].map((m) => m[1]);
+  const types = [];
+  const unresolved = [];
+  for (const name of members) {
+    // BOUNDED TO THE INTERFACE'S OWN BODY. `[^{]*\{` stops at the first brace
+    // after the name, which is this declaration's; `[^}]*` then cannot leave it.
+    // Unbounded, the lazy match walks into the NEXT interface and hands back its
+    // literal, so a frame missing its own is reported as a doc-table mismatch
+    // naming an innocent neighbour.
+    const body = new RegExp(`export interface ${name}\\b[^{]*\\{([^}]*)\\}`).exec(src);
+    const decl = body && /\btype:\s*'([^']+)'/.exec(body[1]);
+    if (decl) types.push(decl[1]); else unresolved.push(name);
+  }
+  return { members, types, unresolved };
+}
+
+// PINS THE DIAGNOSIS, not just the red. A frame whose own declaration carries no
+// `type: '…'` must be REPORTED AS THAT — not silently resolved to the next
+// interface's literal, which reds the pin below as `extra: [<neighbour>]` and
+// blames the doc table, which is innocent. On a card whose whole subject is an
+// error message naming the wrong cause, a pin that names the wrong cause is the
+// same defect one layer up.
+test('the §3 pin resolves each frame to its OWN type literal, never a neighbour\'s', () => {
+  const src = [
+    'export interface AlphaFrame { id: string }',
+    "export interface BetaFrame { type: 'beta'; id: string }",
+    'export type ClientFrame = | AlphaFrame | BetaFrame;',
+  ].join('\n');
+  const got = clientFrameTypes(src);
+  assert.deepEqual(got.members, ['AlphaFrame', 'BetaFrame'], 'both union members were read');
+  assert.deepEqual(got.unresolved, ['AlphaFrame'],
+    'the frame with no literal of its own is named — not given its neighbour\'s');
+  assert.deepEqual(got.types, ['beta'], 'and no phantom type is invented for it');
+});
+
+test('§3 of docs/systems-protocol.md names exactly the ClientFrame union', () => {
+  const src = readFileSync(new URL('../src/systems/protocol.ts', import.meta.url), 'utf8');
+  const { members, types: declared, unresolved } = clientFrameTypes(src);
+  assert.ok(members.length > 0,
+    'could not read the `export type ClientFrame = … ;` members — re-anchor this test');
+  assert.deepEqual(unresolved, [],
+    `in the ClientFrame union but no \`type: '…'\` literal in their own declaration: ${unresolved.join(', ')}`);
+
+  const doc = readFileSync(new URL('../docs/systems-protocol.md', import.meta.url), 'utf8');
+  const start = doc.indexOf('### cc → provider');
+  // End at the next heading of any depth, exactly as the §8 pin bounds its own
+  // block, so a restructure reds here instead of swallowing the provider → cc
+  // table below.
+  const after = start === -1 ? -1 : doc.slice(start + 1).search(/\n#{2,} /);
+  const end = after === -1 ? -1 : start + 1 + after;
+  assert.ok(start !== -1 && end > start,
+    'could not locate §3\'s cc → provider block in docs/systems-protocol.md — re-anchor this test');
+  const listed = [...doc.slice(start, end).matchAll(/^\| `(\w+)`/gm)].map((m) => m[1]);
+  assert.ok(listed.length > 0, 'located the §3 block but parsed no frame rows — re-anchor the row regex');
+
+  const missing = declared.filter((t) => !listed.includes(t));
+  const extra = listed.filter((t) => !declared.includes(t));
+  assert.deepEqual(missing, [], `in the ClientFrame union but missing from §3's table: ${missing.join(', ')}`);
+  assert.deepEqual(extra, [], `in §3's table but not in the ClientFrame union: ${extra.join(', ')}`);
+  // LAST, for the reason the §8 pin gives: set equality holding while the counts
+  // differ means the table repeats a row, which the two diffs above are blind to.
+  assert.equal(listed.length, declared.length,
+    `§3 has ${listed.length} rows for ${declared.length} client frames, and names the right set — so a row repeats`);
+});
+
 // PINS §8's protocol-level table against PROTOCOL_ERROR_CODES. Doc bytes are an
 // INPUT here: §8's heading text and its `| `ECODE` |` row format are load-bearing,
 // and renaming or reformatting either reds this test. That is the accepted cost.

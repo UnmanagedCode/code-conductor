@@ -9,12 +9,25 @@
 // FAILURE MODES, all reachable and all tested:
 //   ETIMEDOUT   — the per-command ceiling expired: a command that legitimately
 //                 ran that long. The provider is what kills it, through the
-//                 `exec` frame's own `timeoutMs`.
+//                 `exec` frame's own `timeoutMs`. It also covers the OTHER
+//                 timeout — cc abandoning a provider that never reported the
+//                 command's exit — and the message says which, because the two
+//                 fire at different bounds (card 2026-0318 §5.3).
 //   ESHELLGONE  — the command destroyed its own framing (an `exit`, a syntax
 //                 error that takes the shell with it), so no sentinel arrived.
 //   ECANCELLED  — the caller went away (an interrupt, a tool timeout). PER
 //                 CALL: an unrelated command is untouched, because each command
 //                 is its own `exec` with its own never-reused id to signal.
+//
+// WHAT SETTLES A COMMAND is cc's OWN closing sentinel, not the provider's `exit`
+// frame. MEASURED (card 2026-0318 §1): a `cmd &` job inherits the command's
+// stdout pipe, so a provider that reports exit at stream-close — which the
+// reference one does, and which is the only way to report exit WITHOUT dropping
+// output — never reports it at all. Waiting for it turned a command that exited
+// 0 into a reported FAILURE with an EMPTY stdout, at cc's abandon timer. The
+// sentinel is where the output ends by construction, so cc settles there and
+// tells the provider to `detach`: the operation is over, the background job is
+// not, exactly as it is after a local Bash call.
 //
 // NOTHING SERIALISES. N commands of one session are N independent processes,
 // which is exactly what a local fan-out produces and is bounded by the same
@@ -30,7 +43,9 @@
 import {
   FS_ERROR_CODES, SystemError, classifySpawnError, type SystemErrorCode,
 } from './protocol.ts';
-import { FramedStreamFilter, frameCommand, newNonce, parseFramedStderr, parseFramedStdout } from './shellFraming.ts';
+import {
+  FramedStreamFilter, frameCommand, newNonce, parseFramedStderr, parseFramedStdout, sentinelFor,
+} from './shellFraming.ts';
 import type { ExecOptions, ExecResult, ExecSpec } from './system.ts';
 
 // Live output, per stream, as it arrives. A caller that passes these gets the
@@ -42,11 +57,29 @@ export interface ShellStreamSink {
   onErr?: (text: string) => void;
 }
 
+// What ONE COMMAND may say beyond what any `exec` may, and the reason it is
+// HERE and not on the shared `ExecOptions`.
+//
+// `completeMarker` changes WHAT SETTLES THE CALL: with it, the exec resolves the
+// moment the marker has been seen on both streams, whether or not the far side
+// ever reports the command's exit. On `ExecOptions` that option would also be
+// accepted — and silently ignored — by `LocalSystem.exec` and by every other
+// `exec` caller, so nobody could tell which semantics they got. `ShellHost` has
+// exactly one implementor (ProviderSystem), which makes ignoring it impossible
+// rather than merely unlikely (card 2026-0318 §5.2).
+export interface ShellExecOptions extends ExecOptions {
+  // A string whose appearance at the START of a COMPLETE line, on stdout AND on
+  // stderr, means the command's output is over. cc's own framing sentinel is
+  // the only value: it is an exact boundary, not a heuristic, so no grace timer
+  // is needed to decide the output has ended.
+  completeMarker?: string;
+}
+
 // What the shell needs from a system, and nothing more — so it can be driven by
 // a fake in tests without a provider process. ONE METHOD, and it is also what
 // toolRedirect.ts's `isRedirectable` duck-types on.
 export interface ShellHost {
-  execOneShot(spec: ExecSpec, opts: ExecOptions): Promise<ExecResult>;
+  execOneShot(spec: ExecSpec, opts: ShellExecOptions): Promise<ExecResult>;
 }
 
 export interface ShellResult {
@@ -180,6 +213,9 @@ export class ProviderShell {
         // NO `env`: the command runs in the environment of the machine it
         // runs on, exactly as a local Bash call runs in this machine's.
         cwd: this.#cwd, timeoutMs: deadline, stdin: 'ignore',
+        // WHERE THE COMMAND'S OUTPUT ENDS, and therefore where the call
+        // settles — see the header. The same value both parsers below read.
+        completeMarker: sentinelFor(nonce),
         // THE FENCE, through the accounting `exec` already owns
         // (ExecOutputCollector).
         ...(this.#maxOutputBytes === undefined ? {} : { maxBufferBytes: this.#maxOutputBytes }),
@@ -213,9 +249,18 @@ export class ProviderShell {
     }
     if (r.timedOut) {
       flushFilters(filters, sink);
-      // NOTHING IS RESET — the provider killed the command, and no state was
-      // shared for the next one to have lost.
-      throw new SystemError('ETIMEDOUT', `the command was still running after ${deadline}ms, cc's per-command ceiling`);
+      // NOTHING IS RESET — the command was killed, and no state was shared for
+      // the next one to have lost.
+      //
+      // TWO BOUNDS, AND THE MESSAGE NAMES THE ONE THAT FIRED. `deadline` is what
+      // the PROVIDER was given and is what it kills at; `abandonedAfterMs` is
+      // cc's own wait for a provider that reported nothing, which is LONGER by
+      // the slack. Naming the ceiling in both cases told a worker it had waited
+      // a time it had not (card 2026-0318 §5.3). Neither branch carries a
+      // literal — both read the value from whichever timer produced them.
+      throw new SystemError('ETIMEDOUT', r.abandonedAfterMs === undefined
+        ? `the command was still running after ${deadline}ms, cc's per-command ceiling`
+        : `cc gave up after ${r.abandonedAfterMs}ms: the system's provider never reported the command's exit`);
     }
     if (r.spawnError) {
       // The shell itself never started — a cwd deleted under the project is the

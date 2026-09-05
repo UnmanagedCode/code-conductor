@@ -228,6 +228,7 @@ export class ReferenceProvider {
       case 'exec': return this.#exec(f);
       case 'signal': return this.#signal(f);
       case 'close': return this.#close(f);
+      case 'detach': return this.#detach(f);
       case 'readFile': return void this.#readFile(f);
       case 'describeRemote': return this.#describeRemote(f);
       case 'writeFile': return this.#writeOpen(f);
@@ -350,6 +351,27 @@ export class ReferenceProvider {
       this.#terminate({ ...state, closed: false }, 'SIGKILL', true);
     }
     this.#writes.delete(id);
+  }
+
+  // THE COMMAND IS OVER; KILL NOTHING. Everything `#close` does except the
+  // terminate — and the difference is the whole frame (card 2026-0318 §5.1).
+  //
+  // THE 'data' LISTENERS STAY ATTACHED AND THE STREAMS STAY FLOWING, which is
+  // what makes this DRAIN AND DISCARD: `state.closed` stops the frames, not the
+  // reading. Measured (card 2026-0318 §3) against a survivor writing flat out —
+  // `pause()` blocks the writer and `destroy()` kills it with SIGPIPE, and both
+  // are divergences from what a LOCAL background job gets. The pipe fds go when
+  // the last holder exits, exactly as they do after a `close`.
+  //
+  // DELETING THE ENTRY is load-bearing beyond the timer: `shutdown()` group-kills
+  // every exec it still holds, so a detached command left in the map would be
+  // reaped when the provider's stdin closes.
+  #detach(f: AnyFrame): void {
+    const state = this.#execs.get(String(f.id));
+    if (!state) return;
+    state.closed = true;
+    if (state.timer) clearTimeout(state.timer);
+    this.#execs.delete(String(f.id));
   }
 
   // ── describeRemote ─────────────────────────────────────────────────

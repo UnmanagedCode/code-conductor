@@ -262,6 +262,28 @@ test('regenerating CONVENTIONS.md writes into the project tree only through the 
   assert.match(await fsp.readFile(path.join(target, 'CLAUDE.md'), 'utf8'), /@CONVENTIONS\.md/);
 });
 
+// A REGRESSION PIN, not a red-proof: this passes before card 2026-0318's fix
+// and must keep passing after it. It guards the SHAPE of that fix.
+//
+// The redirected shell settles on its own framing sentinel, which means
+// `execOneShot` takes an option (`completeMarker`) that changes what settles the
+// call. Put that option on the SHARED `ExecOptions` and `LocalSystem.exec` —
+// which takes the same type — would accept it and silently ignore it, so a
+// caller could not tell which semantics it got. It lives on `ShellHost` instead,
+// whose only implementor is `ProviderSystem`, and this pins the two structural
+// facts that make ignoring it impossible: `LocalSystem` exposes no `execOneShot`
+// at all, and `isRedirectable` therefore refuses it.
+test('the shell-only exec option cannot land on a System that would ignore it', async () => {
+  const { isRedirectable } = await import('../src/systems/toolRedirect.ts');
+  const ls = new mods.localSystem.LocalSystem();
+  assert.equal(typeof ls.exec, 'function', 'LocalSystem does implement the shared primitive');
+  assert.equal(typeof ls.execOneShot, 'undefined',
+    'and does NOT implement the shell surface — so it can never be handed a shell-only option');
+  assert.equal(isRedirectable(ls), false, 'which is exactly what the redirect probe refuses on');
+  assert.equal(typeof mods.providerSystem.ProviderSystem.prototype.execOneShot, 'function',
+    'the one implementor, so the option has exactly one place it can be read');
+});
+
 test('deleting the project reaches the tree only through the System', async () => {
   await drive('deleteProject', async () => {
     const r = await mods.projects.deleteProject('ext');

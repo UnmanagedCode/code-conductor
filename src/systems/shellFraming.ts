@@ -56,6 +56,27 @@ export function beginFor(nonce: string): string {
   return `__CC_${nonce}_BEGIN__`;
 }
 
+// WHAT FOLLOWS A CLOSING SENTINEL ON ITS OWN LINE, and the ONE definition of
+// it. stdout carries `$?` and the base64 `$PWD`; stderr carries nothing at all.
+// A line that starts with the sentinel and fails this is a FORGERY — the
+// command's own output — and ALL FOUR readers below keep scanning past it,
+// rather than stopping: a real frame may still be arriving behind one.
+//
+// FOUR READERS, SHARING IN TWO DIFFERENT WAYS, and the distinction is worth the
+// line because only one of them is a function call:
+//   * `parseFramedStderr`, `FramedStreamFilter` and ProviderSystem's settle-scan
+//     call `closingTailMatches`;
+//   * `parseFramedStdout` reads `CLOSING_STDOUT_TAIL` directly, because it needs
+//     the capture groups rather than a boolean. It shares the PATTERN, not the
+//     function — which is the whole of what could drift.
+// The settle-scan is the reader that made sharing necessary: a settle that
+// disagreed with a parse resolves a command and then fails it (card 2026-0318 §5.2).
+export const CLOSING_STDOUT_TAIL = /^ (\d+) (\S*)$/;
+
+export function closingTailMatches(kind: 'out' | 'err', tail: string): boolean {
+  return kind === 'out' ? CLOSING_STDOUT_TAIL.test(tail) : tail === '';
+}
+
 // Index just past the newline of the first line that IS `marker`, or -1.
 function afterMarkerLine(text: string, marker: string): number {
   let from = 0;
@@ -125,7 +146,7 @@ export function parseFramedStdout(text: string, nonce: string): FramedStdout | n
     const nl = body.indexOf('\n', at);
     if (nl === -1) return null; // the sentinel line is still arriving
     const line = body.slice(at + s.length, nl);
-    const m = /^ (\d+) (\S*)$/.exec(line);
+    const m = CLOSING_STDOUT_TAIL.exec(line);
     if (!m) { from = nl + 1; continue; }
     // Strip the one newline cc injected before the sentinel.
     const before = at > 0 && body[at - 1] === '\n' ? body.slice(0, at - 1) : body.slice(0, at);
@@ -152,7 +173,7 @@ export function parseFramedStderr(text: string, nonce: string): FramedStderr | n
     if (at !== 0 && body[at - 1] !== '\n') { from = at + s.length; continue; }
     const nl = body.indexOf('\n', at);
     if (nl === -1) return null;
-    if (body.slice(at + s.length, nl) !== '') { from = nl + 1; continue; }
+    if (!closingTailMatches('err', body.slice(at + s.length, nl))) { from = nl + 1; continue; }
     // Strip the one newline cc injected before the sentinel, exactly as the
     // stdout half does.
     const before = at > 0 && body[at - 1] === '\n' ? body.slice(0, at - 1) : body.slice(0, at);
@@ -277,7 +298,7 @@ export class FramedStreamFilter {
   }
 
   #matchesTail(tail: string): boolean {
-    return this.#kind === 'out' ? /^ (\d+) (\S*)$/.test(tail) : tail === '';
+    return closingTailMatches(this.#kind, tail);
   }
 
   #lineStartAt(at: number): boolean {

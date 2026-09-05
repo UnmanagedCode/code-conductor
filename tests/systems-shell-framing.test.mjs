@@ -21,7 +21,7 @@ import {
   FramedStreamFilter, beginFor, frameCommand, newNonce,
   parseFramedStderr, parseFramedStdout, sentinelFor,
 } from '../src/systems/shellFraming.ts';
-import { makeProviderSystem } from './referenceProviderHarness.mjs';
+import { CAPABILITY_CONFIGS, makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 import { waitFor } from './helpers.mjs';
 
@@ -31,13 +31,13 @@ import { waitFor } from './helpers.mjs';
 // parser test that omits it is testing a stream that could never occur.
 const B = (n) => `\n${beginFor(n)}\n`;
 
-async function withShell(fn, shellOpts = {}) {
+async function withShell(fn, shellOpts = {}, flags = []) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-shell-'));
   const cwd = await fs.realpath(dir);
-  const sys = makeProviderSystem();
+  const sys = makeProviderSystem(flags);
   try {
     await sys.connect();
-    return await fn(sys.shell({ cwd, ...shellOpts }), cwd);
+    return await fn(sys.shell({ cwd, ...shellOpts }), cwd, sys);
   } finally {
     sys.dispose();
     await rmrf(dir);
@@ -562,6 +562,197 @@ test(`output below the fence is untouched`, async () => {
     assert.equal(r.stdout.length, 4000);
     assert.equal(r.code, 0);
   }, { maxOutputBytes: 8192 });
+});
+
+// ── A backgrounded job does not hold the command open ────────────────
+//
+// MEASURED (card 2026-0318 §1): the reference provider emits its `exit` frame
+// from the child's `'close'`, which fires when the STREAMS close, not when the
+// process exits. A `cmd &` job inherits the command's stdout pipe and holds it
+// open for as long as it runs — so a command that exited 0 was reported to the
+// worker as a FAILURE with an EMPTY stdout, at cc's own abandon timer
+// (`timeoutMs + EXEC_TIMEOUT_SLACK_MS`), while the complete parsed answer had
+// been on the wire since ~154 ms.
+//
+// cc does not wait for `exit` on a redirected command any more: its OWN closing
+// sentinel, on both streams, is the exact end-of-output marker, and it needs no
+// heuristic and no grace timer to know it.
+
+for (const config of CAPABILITY_CONFIGS) {
+  const tag = `[${config.name}]`;
+
+  // THE POSITIVE CONTROL, in the same file, the same fixture and the same
+  // ceiling as the row below it: a harness that framed or ran nothing would
+  // fail HERE, so the row below cannot pass by not running.
+  test(`${tag} a plain command still settles on its sentinel with its own exit code`, async () => {
+    await withShell(async (sh) => {
+      // `(exit 3)` and not a bare `exit 3`: the framing runs the command inside
+      // braces, so a bare exit takes the shell with it (ESHELLGONE) and this
+      // would stop being a control for the row below.
+      const r = await sh.run('echo hi; echo boom >&2; (exit 3)');
+      assert.equal(r.stdout, 'hi\n');
+      assert.equal(r.stderr, 'boom\n');
+      assert.equal(r.code, 3, "the sentinel's code is the command's, not the settle's");
+    }, { commandTimeoutMs: 1_000 }, config.flags);
+  });
+
+  // PINS THE HEADLINE of card 2026-0318: a command that backgrounds a job and
+  // exits 0 is reported as exit 0 with the output it printed. Asserted on the
+  // CODE and the STDOUT, not on latency — the defect was never slowness, it was
+  // a succeeded command reported as a failure with its output dropped.
+  test(`${tag} a command that backgrounds a job reports its own exit code and output`, async () => {
+    await withShell(async (sh, cwd) => {
+      const pidFile = path.join(cwd, 'bg.pid');
+      let pid = 0;
+      try {
+        const r = await sh.run(`sleep 60 & echo $! > ${pidFile}; echo started`);
+        assert.equal(r.code, 0, 'the command exited 0 and is reported as exit 0');
+        assert.equal(r.stdout, 'started\n', 'and its stdout is what it printed, not empty');
+        assert.equal(r.stderr, '');
+        pid = Number((await fs.readFile(pidFile, 'utf8')).trim());
+      } finally {
+        if (pid > 0) { try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ } }
+      }
+    }, { commandTimeoutMs: 1_000 }, config.flags);
+  });
+}
+
+// ── The settle scan agrees with the parser, or it must not settle ────
+//
+// `completeMarker` settles an `exec` the moment the marker has been seen on both
+// streams (card 2026-0318 §5.2). A settle the PARSER then rejects is the worst
+// available outcome: `#runOneShot` throws `ESHELLGONE` on a command that
+// succeeded — the exact defect class this card exists to remove, reintroduced at
+// the seam that removed it. So the scan has to validate everything the parser
+// validates, the per-stream TAIL included: `<marker> <rc> <b64cwd>` on stdout,
+// and nothing at all after the marker on stderr.
+//
+// Driven through `execOneShot` with a marker of the test's own choosing rather
+// than through `run()`: the nonce a real command would have to forge is
+// unguessable by construction, so this is the only way to put a rejectable
+// candidate on the wire at all.
+//
+// THE DISCRIMINATOR IS THE EXIT CODE, and it is exact, not a race: a
+// marker-settle resolves `code: 0` unconditionally, while waiting for the `exit`
+// frame resolves the command's own code. The provider writes both stream frames
+// before the exit frame (the child's `'close'` fires after its last `'data'`),
+// so which one settled the call is readable off `code` alone.
+const REJECTABLE_TAILS = [
+  { name: 'stdout tail that is not `<rc> <cwd>`', out: ' not-a-frame', err: '' },
+  { name: 'stdout tail missing the cwd field', out: ' 0', err: '' },
+  { name: 'stderr tail that is not empty', out: ' 0 Lw==', err: ' 0 Lw==' },
+];
+
+for (const c of REJECTABLE_TAILS) {
+  test(`a settle candidate the parser would REJECT does not settle the exec (${c.name})`, async () => {
+    await withShell(async (_sh, cwd, sys) => {
+      const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+      const r = await sys.execOneShot(
+        { shell: `printf '\n${m}${c.out}\n'; printf '\n${m}${c.err}\n' >&2; exit 7` },
+        { cwd, timeoutMs: 4_000, completeMarker: m },
+      );
+      assert.equal(r.code, 7,
+        'the exec waited for the real exit frame — a scan-settle would have reported 0 '
+        + 'and left the parser to throw ESHELLGONE on a command that succeeded');
+    });
+  });
+}
+
+// THE POSITIVE CONTROL for the three rows above: the SAME shape with tails the
+// parser accepts DOES settle on the marker, before the exit frame. Without it,
+// a scan that never settled at all would pass all three.
+test('a settle candidate the parser ACCEPTS settles the exec, ahead of the exit frame', async () => {
+  await withShell(async (_sh, cwd, sys) => {
+    const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+    const r = await sys.execOneShot(
+      { shell: `printf '\n${m} 0 ${Buffer.from(cwd).toString('base64')}\n'; printf '\n${m}\n' >&2; exit 7` },
+      { cwd, timeoutMs: 4_000, completeMarker: m },
+    );
+    assert.equal(r.code, 0, 'the marker settled it, and `code` is the settle\'s rather than the command\'s');
+    assert.ok(r.stdout.includes(m), 'and the frame it settled on really is in the output it settled from');
+  });
+});
+
+// A FORGERY DOES NOT CONSUME THE BOUNDARY. The parser keeps scanning past a
+// sentinel line whose tail does not match (`shellFraming.ts`, FIRST MATCH WINS
+// applies to the first VALID one), so the scan must too — stopping at the
+// forgery would leave a real frame arriving afterwards unseen for ever.
+test('a rejected candidate does not blind the scan to the real frame behind it', async () => {
+  await withShell(async (_sh, cwd, sys) => {
+    const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+    const r = await sys.execOneShot(
+      {
+        shell: `printf '\n${m} not-a-frame\n'; printf '\n${m} 0 ${Buffer.from(cwd).toString('base64')}\n'; `
+          + `printf '\n${m} also-not\n' >&2; printf '\n${m}\n' >&2; exit 7`,
+      },
+      { cwd, timeoutMs: 4_000, completeMarker: m },
+    );
+    assert.equal(r.code, 0, 'the VALID frame behind the forgery still settled the exec');
+  });
+});
+
+// PINS THE RESUME INDEX of the settle-scan, which nothing else can tell apart.
+//
+// After rejecting a forgery the scan resumes AT its terminating newline, not
+// past it, because the scan's needle is `\n<marker>` — the newline is part of
+// what it searches for, which is what spares it the `#atLineStart` bookkeeping
+// `FramedStreamFilter` has to carry. Step one byte past and a real frame whose
+// ONLY opening newline is the forgery's terminator becomes invisible: the scan
+// never settles, and a command that succeeded ends at the abandon timer.
+//
+// THE PARSERS DO NOT NEED THIS and correctly resume at `nl + 1`: they search for
+// the BARE marker and check the preceding byte separately, so a shared newline
+// costs them nothing. The asymmetry is the needle, not a disagreement.
+//
+// WHY A HANDWRITTEN STREAM. Between two sentinels that cc's own framing emitted
+// the newline is always DOUBLED — `frameCommand` prefixes one to every sentinel
+// and the forgery carries its own terminator — so the two-`printf` shape the
+// test above uses cannot discriminate the resume index at all (a mutation prover
+// established that; the prediction that it hung was wrong). The glued shape is
+// still reachable through real framing, by a command whose output ends with an
+// unterminated line-start forgery: there the framing's single injected newline
+// is the only separator there is. That needs the nonce, so it is defence in
+// depth on the same footing as the tail checks above (shellFraming.ts's
+// out-of-scope note) — but it is a property of `frameCommand`, in another file,
+// and this is the only test that would notice it changing.
+test('a forgery whose terminating newline is ALSO the real frame\'s opener does not hide it', async () => {
+  await withShell(async (_sh, cwd, sys) => {
+    const m = `__CC_${'ab12cd34'.repeat(4)}__`;
+    const b64 = Buffer.from(cwd).toString('base64');
+    // Built once and used for BOTH the assertion and the command, so the two
+    // cannot drift into agreeing about a stream neither puts on the wire.
+    const fmt = { out: `\\n${m} not-a-frame\\n${m} 0 ${b64}\\n`, err: `\\n${m} also-junk\\n${m}\\n` };
+    for (const which of ['out', 'err']) {
+      const onTheWire = fmt[which].replaceAll('\\n', '\n');
+      assert.equal(onTheWire.split(`\n${m}`).length - 1, 2, `${which}: two candidates`);
+      assert.ok(!onTheWire.includes('\n\n'),
+        `${which}: the stream must be GLUED — one newline between the forgery and the real frame. `
+        + 'A doubled newline here makes this test blind to the resume index, which is exactly how '
+        + 'its two-printf predecessor came out toothless.');
+    }
+    const r = await sys.execOneShot(
+      { shell: `printf '${fmt.out}'; printf '${fmt.err}' >&2; exit 7` },
+      { cwd, timeoutMs: 4_000, completeMarker: m },
+    );
+    assert.equal(r.code, 0,
+      'the scan resumed ON the shared newline and found the real frame — resuming past it '
+      + 'would have missed the frame on BOTH streams and left the exit code to settle the call');
+  });
+});
+
+// THE CROSS-FILE HALF of the pin above, and the reason it is worth having: the
+// glued shape exists because `frameCommand` prefixes its closing sentinel with
+// exactly ONE newline, so a command whose own output does not end in one SHARES
+// it. If that ever became two, the shape would stop arising and the resume index
+// would stop being load-bearing — which is a thing to know deliberately rather
+// than to discover from a scan that quietly could not be broken.
+test('the closing stdout sentinel carries exactly one injected newline, which a command can share', () => {
+  const n = newNonce();
+  const framed = frameCommand(n, 'CMD');
+  assert.ok(framed.includes(`printf '\\n${sentinelFor(n)} %d %s\\n'`),
+    'one injected newline before the closing stdout sentinel, not two');
+  assert.ok(framed.includes(`printf '\\n${sentinelFor(n)}\\n' >&2`),
+    'and one before the closing stderr sentinel');
 });
 
 // ── Cancellation ───────────────────────────────────────────────────
