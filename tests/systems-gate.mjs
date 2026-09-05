@@ -63,6 +63,18 @@
 // lost its failing test name to exactly that (card 2026-0290 §5c). The block is
 // rendered by tests/gateSummary.mjs and tested by tests/systems-gate-summary.test.mjs.
 //
+// `RUN_CLI_CONTRACT` IS DELIBERATELY LEFT UNSET HERE. `run()` below spreads
+// `...process.env`, so an exported `RUN_CLI_CONTRACT=1` enables the gated
+// real-CLI family (tests/systems-cli-*.real.test.mjs) in BOTH rows with no code
+// change here — measured green, both rows. Leaving it unset is a decision, not
+// an oversight: the second row was measured buying no signal for its real-token
+// spend, and two of that family's cases turn on the model electing to act with
+// neither rate bounded. The pricing and the condition that would reopen it are
+// in docs/architecture.md -> the gated real-dependency suites (card 2026-0322
+// §2). This decides `RUN_CLI_CONTRACT` and nothing else: other gated families
+// such as `RUN_REAL_CLAUDE` and `RUN_DOCKER_SYSTEM` reach the same one-variable
+// lever and were not priced.
+//
 // It is a separate command rather than part of `npm test` because it IS
 // `npm test`, once per row. The per-configuration protocol suites
 // (tests/systems-*.test.mjs) run inside the ordinary suite and cover the same
