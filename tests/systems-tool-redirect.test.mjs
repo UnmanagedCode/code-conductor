@@ -251,21 +251,35 @@ test('a runaway command is refused by name instead of exhausting the orchestrato
 
 // PINS B1 AT THE REDIRECT LAYER: an interrupt cancels THAT call and nothing
 // else. The unrelated concurrent command completes normally, and the cancelled
-// one's write does not land on the system — its effects must not land when its
-// caller has gone away.
+// one does not run to completion on the system.
 //
 // RE-FRAMED, NOT RETIRED, on card 2026-0312: the cancelled call used to be one
 // waiting for its TURN on a shell, and there is no turn any more. WHAT IT PINS
 // IS THE EFFECT, not a call stopped short: instrumented, this test's
 // cancellation throws at the re-check AFTER `exec` returns, and the reference
 // provider is measured to have SPAWNED the `touch` and killed it before it ran
-// (card 2026-0328 §1, §5). The witness's absence below is that kill winning the
-// race, which card 2026-0331 tracks.
-test('a cancelled call\'s write does not land, and a concurrent one is untouched', async () => {
+// (card 2026-0328 §1, §5).
+//
+// THE WRITE THEREFORE SITS BEHIND A DELAY THE COMMAND MUST SURVIVE, and the
+// witness is read past it (card 2026-0331 §1b, §1e, §2):
+//   - Its absence below is the kill landing inside a 400 ms budget stated in the
+//     command text, rather than outrunning the ~10 ms a bare `touch` takes to
+//     start and run. That ~10 ms was the entire margin of the no-delay form, and
+//     is why it went red on the gate. 400 ms is a CHOICE, not a maximum: `:300`
+//     and systems-shell-framing's cancel test measure 280 ms, `:555` measures
+//     1500 ms. Raise it before suspecting the invariant.
+//   - Effects the command produced BEFORE the kill are CORRECT — cancellation is
+//     a kill, not a rollback — so the no-delay form asserted something the wire
+//     contract never promised. Not running to COMPLETION is what it promises.
+//   - RESIDUAL, bounded but not closed: the absence is still satisfiable by a
+//     command that never crossed at all. The spawn measurement above bounds
+//     that; closing it would mean waiting for the command to start, which is the
+//     collapse into `:300` that the next comment rules out.
+test('a cancelled call does not run to completion, and a concurrent one is untouched', async () => {
   const witness = onSystem('QUEUED_RAN');
   const inFlight = redirect.runForwarded('sleep 0.4; echo survivor', {});
   const ac = new AbortController();
-  const queued = redirect.runForwarded(`touch ${JSON.stringify(witness)}`, { signal: ac.signal });
+  const queued = redirect.runForwarded(`sleep 0.4; touch ${JSON.stringify(witness)}`, { signal: ac.signal });
   ac.abort();
 
   const cancelled = await queued;
@@ -273,7 +287,9 @@ test('a cancelled call\'s write does not land, and a concurrent one is untouched
   const survived = await inFlight;
   assert.equal(survived.code, 0, 'the unrelated in-flight command was untouched');
   assert.equal(survived.stdout, 'survivor\n');
-  await assert.rejects(fs.stat(witness), 'the cancelled command\'s write did not land on the system');
+  // Past when the command would have written it, had it survived the cancel.
+  await new Promise(r => setTimeout(r, 500));
+  await assert.rejects(fs.stat(witness), 'the cancelled command did not run to completion on the system');
 });
 
 // PINS B2: interrupting the IN-FLIGHT command stops it on the system — in both
@@ -322,7 +338,10 @@ test('interrupting the in-flight command stops it on the system', async () => {
 // `ProviderShell`'s pre-crossing check and its post-exec re-check throw the SAME
 // `cancelled()`, so the caller sees one indistinguishable failure whether the
 // call was stopped before it crossed or crossed and had its result thrown away
-// (card 2026-0327).
+// (card 2026-0327). B's write sits behind a delay it must survive for the reason
+// the RE-FRAMED test above carries in full: read immediately, its absence is a
+// ~10 ms race, and an effect landing before the kill would be correct anyway
+// (card 2026-0331 §1b, §1e, §2).
 test('cancelling one call leaves a live concurrent command untouched', async () => {
   const seen = [];
   const sink = { notice: (t) => seen.push(['notice', t]), out: () => {}, err: () => {} };
@@ -335,7 +354,7 @@ test('cancelling one call leaves a live concurrent command untouched', async () 
   await waitFor(() => streamed.join('').includes('A1'), { timeout: 5000 });
 
   const ac = new AbortController();
-  const cancelledCall = redirect.runForwarded('touch B_WITNESS', { signal: ac.signal, sink });
+  const cancelledCall = redirect.runForwarded('sleep 0.4; touch B_WITNESS', { signal: ac.signal, sink });
   ac.abort();
 
   const b = await cancelledCall;
@@ -346,9 +365,10 @@ test('cancelling one call leaves a live concurrent command untouched', async () 
   assert.equal(a.code, 0, `the unrelated in-flight command completed normally: ${a.stderr}`);
   assert.equal(a.stdout, 'A1\nA2\n', 'with ALL of its output, not a truncated prefix');
 
-  // The system's own account: A ran to completion, and B's write did not land.
+  // The system's own account: A ran to completion, and B did not. `await
+  // inFlight` above already cost ~1s, past B's would-be write at ~+0.4s.
   assert.ok(await fs.stat(onSystem('A_DONE')).catch(() => null), 'A finished on the system');
-  await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B\'s write did not land on the system');
+  await assert.rejects(fs.stat(onSystem('B_WITNESS')), 'B did not run to completion on the system');
 
   // And nothing was reset — the cancelled command's `exec` was killed and no
   // state was shared for anyone to lose — so a notice here would tell a worker

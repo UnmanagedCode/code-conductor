@@ -471,7 +471,9 @@ its output was flowing or silent. The command keeps running, bounded by this
 ceiling, which is why the ceiling sits **above** the documented max rather than
 at it. The CLI's **kill** of the forwarder, on an
 interrupt or a stopped background task, closes the socket, and that is cc's
-cancellation channel; it carries no number either.
+cancellation channel; it carries no number either. Cancellation is a **kill,
+not a rollback**: cc makes no claim about effects the command had already
+produced, and nothing in cc inspects or undoes them.
 
 ## 6. `readFile` and `writeFile`
 
