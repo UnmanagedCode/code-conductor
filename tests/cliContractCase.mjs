@@ -92,9 +92,10 @@ export function settingsJSON(url, { pre, post = [], deny, extra }) {
 // subject to the alias remap, so it diverts only the CLI's session-title
 // subquery, which logs one cosmetic `unrecognized_model` line. Chasing that
 // line is a dead end (card 2026-0321 §1b). That is a THIRD-PARTY invariant at a
-// single version and nothing in this repo reds if a release starts honouring
-// the alias for an explicit `--model` — which would silently re-break a
-// remapped reviewer, so re-take it before trusting it on a newer CLI.
+// single version and NO TEST PINS IT, so a release that started honouring the
+// alias for an explicit `--model` would surface either as a misleading gated
+// failure or not at all, while silently re-breaking a remapped reviewer.
+// Re-take it before trusting it on a newer CLI.
 //
 // ORDER MATTERS: `extra` spreads LAST, so a per-call `env` naming one of the
 // three puts it straight back. That is deliberate — a case stating one of these

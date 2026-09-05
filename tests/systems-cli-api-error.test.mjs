@@ -76,16 +76,19 @@ test('an interrupted turn is NOT an api error, though is_error is true', async (
 // therefore a claim about its producer; these two are not, and must never be
 // read as one.
 //
-// They exist because the captures cannot do this job. On all four of them
+// They exist because NO FRAME WE CAPTURED can do this job. On all four,
 // `api_error_status != null` and `terminal_reason === 'api_error'` agree
 // exactly — 404 and 401 carry `"api_error"`, the interrupt carries
 // `"aborted_streaming"`, the healthy one `"completed"`. Two different
-// implementations of `apiErrorReason` therefore pass every captured case
-// identically, and WHICH KEY IS READ is the whole invariant the guard rests on:
-// `terminal_reason` is CLI prose about how the turn ended, while
-// `api_error_status` is the transport answer, and only the second is what the
-// harness needs to know. So these frames are constructed to make the two
-// predicates disagree, in both directions, and nothing more.
+// implementations of `apiErrorReason` therefore pass every one of them
+// identically, and WHICH KEY IS READ is the whole invariant the guard rests on.
+// (A future capture could separate them — a real frame with a status but some
+// other terminal reason would do it. We have none, so these are built instead.)
+// The choice of key REASONS from the field names rather than from a measurement
+// of the vendor's schema: `terminal_reason` reads as the CLI's account of how
+// the turn ended, `api_error_status` as the transport's answer, and only the
+// second is what the harness needs to know. So these frames are constructed to
+// make the two predicates disagree, in both directions, and nothing more.
 test('the diagnosis reads api_error_status, not terminal_reason', () => {
   const statusOnly = { type: 'result', subtype: 'success', is_error: true, terminal_reason: 'completed', api_error_status: 503, result: 'upstream said no' };
   const why = apiErrorReason(statusOnly);
