@@ -42,8 +42,8 @@ Provider MUSTs:
    pipe (or dies) and the provider goes away. **A provider whose children are
    not its OS descendants must relay the kill itself** — a `docker exec` child
    is reparented inside the container and outlives the provider, so a docker
-   provider has to SIGKILL its in-flight `docker exec` processes on exit. cc has
-   no way to clean up after a provider that does not.
+   provider has to SIGKILL the `docker exec` processes of its **still-open**
+   operations on exit. cc has no way to clean up after a provider that does not.
 
    **SCOPED TO OPERATIONS THAT ARE STILL OPEN, and that scope is load-bearing.**
    An `exec` cc has ended with `detach` is closed, and its command — and anything
@@ -51,8 +51,10 @@ Provider MUSTs:
    here would undo the one thing `detach` exists to say, and would break the
    parity that motivates it: a background job started by a local shell outlives
    the session that started it, so one started by a redirected command must too.
-   A `close`d operation is likewise already dealt with — by a kill, in that
-   case.
+   A `close`d operation is likewise out of the reap: cc has already ASKED for
+   that command to be killed. Whether it was is the provider's business — §5's
+   rules say cc cannot tell — so there is nothing for exit to re-decide either
+   way.
 4. Interleave concurrent ids correctly (§4).
 5. **Answer every operation it accepts, or refuse it.** Each `id` cc opens
    terminates in a frame for that `id` — `exit`, `readFileResult` + `end`,
@@ -857,8 +859,11 @@ of them. **Three things it is not thin about**, worth knowing before starting on
 
 1. **Reaping.** MUST 3 does not come free: `docker exec` children live in the
    container and are not reparented to the provider, so stdin-EOF ends the
-   provider and leaves them running. The provider must SIGKILL its in-flight
-   `docker exec` processes on exit itself.
+   provider and leaves them running. The provider must SIGKILL the `docker exec`
+   processes of its **still-open** operations on exit itself — and only those.
+   MUST 3's scope is the carve-out: an exec cc ended with `detach` is closed, so
+   killing its `docker exec` here would breach MUST 3 rather than satisfy it,
+   and would reap a background job that is supposed to outlive its command.
 2. **`processGroupSignal: true` is work.** It needs `setsid` inside the
    container, discovery of the resulting pgid, and `kill -- -<pgid>` — not just
    a flag in the handshake. Advertising it without doing that is the one lie

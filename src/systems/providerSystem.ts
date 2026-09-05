@@ -705,8 +705,10 @@ export class ProviderSystem implements System, ShellHost {
 //   * the marker only counts at the START of a line — a command that echoes it
 //     mid-line is output, not a boundary;
 //   * only once that line has ENDED, because the tail decides what it is;
-//   * and only if that TAIL matches — `closingTailMatches`, shared with both
-//     parsers and with FramedStreamFilter so the four cannot drift
+//   * and only if that TAIL matches — `closingTailMatches`, the shared rule
+//     `parseFramedStderr` and `FramedStreamFilter` also call, over the same
+//     pattern constant `parseFramedStdout` reads for its capture groups, so the
+//     four readers of the rule cannot drift apart
 //     (src/systems/shellFraming.ts, card 2026-0318 §5.2).
 // A line that fails the tail is a forgery, so scanning CONTINUES past it exactly
 // as the parser's own loop does; stopping there would hide a real frame arriving
@@ -717,9 +719,17 @@ export class ProviderSystem implements System, ShellHost {
 //
 // MEMORY: bounded, but no longer by the needle alone — it holds a candidate
 // sentinel LINE while that line is still arriving, so the bound is the longest
-// line that begins with the marker rather than one needle. Everything before the
-// live candidate, and everything already ruled out, is dropped on every push, so
-// a command of any output size costs no more than that and is scanned once.
+// MARKER-OPENED line rather than one needle. Everything before the live
+// candidate, and everything already ruled out, is dropped on every push, and
+// each byte is scanned once, so total output size does not enter it.
+//
+// THAT LINE IS ITSELF UNBOUNDED IN THE ABSTRACT, and what bounds it is the
+// caller's `maxBufferBytes` fence, not this class: past the fence the collector
+// stops feeding `onChunk` at all. Every redirected command carries one
+// (src/systems/toolRedirect.ts), and ExecOutputCollector is retaining the same
+// bytes beside it regardless — so this adds no exposure a caller did not already
+// have. A caller that passes a marker and NO fence is unbounded here for the
+// same reason it is unbounded there.
 class ClosingLineScan {
   readonly #needle: string;
   readonly #kind: 'out' | 'err';

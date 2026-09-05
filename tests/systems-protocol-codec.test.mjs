@@ -235,24 +235,65 @@ test('the taxonomy is closed: every named code is recognised and nothing else is
 // block is read); deleting the `export` keyword, or writing a member's `type`
 // field as anything but a single-quoted literal, re-anchors this test.
 //
-// MEASURED separable, five CONSTRUCTED doc stimuli, one at a time: a dropped row
-// fails on `missing`; a row for a frame that does not exist fails on `extra`; a
-// DUPLICATED row reaches the count assertion and fails there ("11 rows for 10
-// client frames"), which is the one the other two are blind to; de-backticking
-// every row name locates the block and parses nothing, dying at `parsed no frame
-// rows`; and renaming the heading dies at the locate guard. It arrived GREEN —
-// both inputs already agreed — so this is what stands in for a red-proof.
+// MEASURED separable, five CONSTRUCTED doc stimuli, one at a time, each RUN and
+// each observed dying at the named assertion rather than merely reddening:
+//   dropped row      → "missing from §3's table: detach"
+//   phantom row      → "in §3's table but not in the ClientFrame union: teleport"
+//   DUPLICATED row   → "§3 has 11 rows for 10 client frames" — the count check,
+//                      which the other two are blind to
+//   de-backticked    → "located the §3 block but parsed no frame rows"
+//   renamed heading  → "could not locate §3's cc → provider block"
+// It arrived GREEN — both inputs already agreed — so this stands in for a
+// red-proof. The SOURCE half is proved the other way, by the synthetic-input
+// test above, because perturbing the real declaration is off limits.
+// TAKES THE SOURCE AS AN ARGUMENT so the parse itself is drivable on synthetic
+// input — the only way to prove what it does with a malformed declaration
+// without perturbing the real file, which is off limits.
+function clientFrameTypes(src) {
+  const union = /export type ClientFrame =([^;]*);/.exec(src);
+  if (!union) return { members: [], types: [], unresolved: [] };
+  const members = [...union[1].matchAll(/\b(\w+Frame)\b/g)].map((m) => m[1]);
+  const types = [];
+  const unresolved = [];
+  for (const name of members) {
+    // BOUNDED TO THE INTERFACE'S OWN BODY. `[^{]*\{` stops at the first brace
+    // after the name, which is this declaration's; `[^}]*` then cannot leave it.
+    // Unbounded, the lazy match walks into the NEXT interface and hands back its
+    // literal, so a frame missing its own is reported as a doc-table mismatch
+    // naming an innocent neighbour.
+    const body = new RegExp(`export interface ${name}\\b[^{]*\\{([^}]*)\\}`).exec(src);
+    const decl = body && /\btype:\s*'([^']+)'/.exec(body[1]);
+    if (decl) types.push(decl[1]); else unresolved.push(name);
+  }
+  return { members, types, unresolved };
+}
+
+// PINS THE DIAGNOSIS, not just the red. A frame whose own declaration carries no
+// `type: '…'` must be REPORTED AS THAT — not silently resolved to the next
+// interface's literal, which reds the pin below as `extra: [<neighbour>]` and
+// blames the doc table, which is innocent. On a card whose whole subject is an
+// error message naming the wrong cause, a pin that names the wrong cause is the
+// same defect one layer up.
+test('the §3 pin resolves each frame to its OWN type literal, never a neighbour\'s', () => {
+  const src = [
+    'export interface AlphaFrame { id: string }',
+    "export interface BetaFrame { type: 'beta'; id: string }",
+    'export type ClientFrame = | AlphaFrame | BetaFrame;',
+  ].join('\n');
+  const got = clientFrameTypes(src);
+  assert.deepEqual(got.members, ['AlphaFrame', 'BetaFrame'], 'both union members were read');
+  assert.deepEqual(got.unresolved, ['AlphaFrame'],
+    'the frame with no literal of its own is named — not given its neighbour\'s');
+  assert.deepEqual(got.types, ['beta'], 'and no phantom type is invented for it');
+});
+
 test('§3 of docs/systems-protocol.md names exactly the ClientFrame union', () => {
   const src = readFileSync(new URL('../src/systems/protocol.ts', import.meta.url), 'utf8');
-  const union = /export type ClientFrame =([^;]*);/.exec(src);
-  assert.ok(union, 'could not locate `export type ClientFrame = … ;` — re-anchor this test');
-  const members = [...union[1].matchAll(/\b(\w+Frame)\b/g)].map((m) => m[1]);
-  assert.ok(members.length > 0, 'located the ClientFrame union but parsed no members — re-anchor the member regex');
-  const declared = members.map((name) => {
-    const decl = new RegExp(`export interface ${name}\\b[^]*?\\btype:\\s*'([^']+)'`).exec(src);
-    assert.ok(decl, `${name} is in the ClientFrame union but no \`type: '…'\` literal was found for it`);
-    return decl[1];
-  });
+  const { members, types: declared, unresolved } = clientFrameTypes(src);
+  assert.ok(members.length > 0,
+    'could not read the `export type ClientFrame = … ;` members — re-anchor this test');
+  assert.deepEqual(unresolved, [],
+    `in the ClientFrame union but no \`type: '…'\` literal in their own declaration: ${unresolved.join(', ')}`);
 
   const doc = readFileSync(new URL('../docs/systems-protocol.md', import.meta.url), 'utf8');
   const start = doc.indexOf('### cc → provider');
