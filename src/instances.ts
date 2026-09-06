@@ -532,8 +532,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   claudePluginDirs: string[];
   // THE REDIRECTION, or null for a project on cc's own machine.
   //
-  // A worker on a remote system runs the CLI locally in a cc-owned session root
-  // and crosses the machine boundary tool by tool (src/systems/toolRedirect.ts).
+  // A worker on a remote system runs the CLI locally but INSIDE A CHROOT onto
+  // the union, at the project's own path there; what still crosses the machine
+  // boundary tool by tool is `Bash` (src/systems/toolRedirect.ts).
   // Its presence is what widens the injected hook surface, so it must be
   // attached before launch() — see attachRedirect.
   _redirect: SessionRedirect | null;
@@ -541,8 +542,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   // beside the redirect and for the same reason: spawn() reads it to wrap the
   // launch, and every teardown path reads it to unmount.
   _fuse: FuseSession | null;
-  // What a relaunch needs to re-pull the session root, since launch() runs long
-  // after create() resolved the system handle.
+  // What a relaunch needs — the system handle, the project's path on it — since
+  // launch() runs long after create() resolved them.
   _redirectPlacement: RedirectPlacement | null;
   // The mirror advertisement this session was created under, or null for a
   // local one. Compared on every relaunch; see attachRedirect and launch().
@@ -1683,7 +1684,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   // callers are async and return errors to REST/MCP.
   // Bind this session's redirection policy. Called by the manager right after
   // construction, BEFORE launch(): spawn() reads `_redirect` to decide whether
-  // the injected settings hook Read and PostToolUse and remove Glob/Grep, and a
+  // the injected settings drop Read, keep the PostToolUse seam and remove Glob/Grep, and a
   // session launched without that surface would answer file tools from cc's own
   // disk.
   attachRedirect(redirect: SessionRedirect, placement: RedirectPlacement): void {
@@ -2027,21 +2028,24 @@ export class Instance extends EventEmitter implements InstanceLike {
     //
     // A backgrounded Bash's tool result tells the worker, verbatim, to `Read`
     // the task file it names under that root — a path on THIS machine. The
-    // redirect refuses any file path outside the session root and cc's known
-    // local roots, so without this the worker cannot read its own command's
-    // interim output, and the refusal's advice ("use Bash") is wrong because the
-    // file is not on the system at all.
+    // THE PIN IS STILL RIGHT; ITS ORIGINAL REASON IS NOT, and saying so is the
+    // point — a correct pin whose stated reason is visibly false is what the
+    // next reader deletes.
     //
-    // Under the store, which is already a known local root — so the Read is
-    // allowed with no path special-casing. NOT inside the session root: that
-    // would make the task file a MAPPED path, and the pull would stat it on the
-    // system, find it absent, and delete the worker's own output.
+    // It was: the redirect refused any file path outside the session root, so a
+    // task file under the per-uid tmp root was unreadable and the refusal's
+    // advice ("use Bash") was wrong. No file tool is hooked any more, so no
+    // refusal is involved.
     //
-    // Per session, and 0700. The CLI validates the override's ownership and
-    // mode; the PER-SESSION half is enforced by the redirect's own path policy,
-    // which grants this session `sessionTmpDir(this.id)` and nothing else under
-    // `session-tmp` — so another session's task output is refused rather than
-    // merely hidden behind a uuid the orchestrator hands workers anyway.
+    // WHAT KEEPS IT: the CLI runs inside the chroot, and the per-uid default
+    // (`/tmp/claude-<uid>`) is not a host-pinned prefix — it would be served by
+    // the union's remote-first default tier, putting the worker's own task
+    // output on the wrong side of the boundary or nowhere at all. Under the
+    // store it is inside `projectsRoot()`, which IS host-pinned, so the path
+    // means the same thing to the CLI and to cc.
+    //
+    // Per session, and 0700, so one session's task output is not another's; the
+    // CLI validates the override's ownership and mode.
     if (this._redirect) {
       const tmpRoot = sessionTmpDir(this.id);
       // Sync, because spawn() is: the same reason the debug-capture directory
@@ -5516,9 +5520,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   }
 }
 
-// Everything a relaunch needs to re-pull a remote project's session root, and
-// everything the redirection policy needs to address the system. Held on the
-// Instance because launch() runs long after create() resolved the handle.
+// Everything the redirection policy needs to address the system, and everything
+// a relaunch needs to re-check the mirror advertisement. Held on the Instance
+// because launch() runs long after create() resolved the handle.
 export interface RedirectPlacement {
   system: RedirectableSystem;
   systemId: string;

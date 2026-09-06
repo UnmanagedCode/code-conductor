@@ -380,8 +380,10 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   // `bash` a path that exists only on THIS machine — an exit-127 wearing the
   // shape of a broken hook at best, and at worst whatever file happens to sit at
   // that spelling on the system running instead. Shipping the body across would
-  // need a cc-owned place to put a file on the system, which is the session-root
-  // machinery the next phase brings; until then this is a NAMED refusal, and it
+  // need a cc-owned place to put a file on the system. The session-root
+  // machinery that was once going to provide one is DELETED, not pending — a
+  // worker reads the project's tree through the union at its real path — so
+  // this refusal is the standing answer rather than a stopgap. It
   // is reported rather than silently skipped, because a hook that quietly does
   // nothing is the same defect restated. An IN-TREE hook is unaffected — it is
   // already on the system.

@@ -59,8 +59,8 @@ const PROJECT_HEADING = '# Project conventions';
 //     straight to `Read /app/greeting.py` — which cannot work, because the CLI
 //     reads on cc's machine. It has to say files are read and edited at their
 //     LOCAL paths. A later wording then said a system path "appears only in
-//     command output", which is FALSE: cc's own PostToolUse note puts one on a
-//     tool result ("Saved to /app/… on system '<id>'."). The prohibition is what
+//     command output", which is FALSE: a system path reaches a tool result by
+//     several routes that are not command output. The prohibition is what
 //     carries the behaviour, so it says NEVER OPEN one — true wherever the path
 //     came from — rather than making a claim about where such paths can appear.
 // A THIRD SENTENCE WAS DELETED BY CARD 2026-0312 AND NOTHING REPLACED IT — a

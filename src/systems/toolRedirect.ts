@@ -16,16 +16,18 @@
 //                   (src/systems/bashForwarder.ts). Nothing outlives a command,
 //                   so no command's state reaches any later one and there is
 //                   nothing to keep one agent's commands apart from another's.
-//   Read/Write/    — PULL-THEN-PUSH through src/systems/fileBridge.ts, at the
-//   Edit/Notebook    path the CLI is about to open. Never rewritten.
+//   Read/Write/    — NOT HOOKED AT ALL. The CLI runs inside a chroot onto the
+//   Edit/Notebook    union, so it opens the system's own bytes at the system's
+//                    own path: nothing to translate, fetch or write back, and
+//                    no second spelling for a path to have.
 //   Glob/Grep     — removed from the tool registry by the injected settings
-//                   (src/settings.ts), because a result cannot be substituted.
-// A file tool aimed anywhere else is refused unless the path is one cc KNOWS is
-// local (an attachment under the store, a plan under `~/.claude`).
+//                   (src/settings.ts) AND refused here by name. A marked CLI's
+//                   `Grep` spawns an UNMARKED `rg`, which the union routes as a
+//                   stranger — so it would search the wrong side and return
+//                   silently wrong results rather than failing.
 //
 // This module is composition and policy only. The shell framing lives in
-// src/systems/providerShell.ts, the file transfer in src/systems/fileBridge.ts,
-// and the deny surface below.
+// src/systems/providerShell.ts, and the deny surface below.
 
 import path from 'node:path';
 import { SystemError } from './protocol.ts';
@@ -395,17 +397,6 @@ export class SessionRedirect {
   }
 }
 
-// `@` followed by a path-ish token. Deliberately narrow: an email address or a
-// decorator is not a mention, and pulling for one costs a round trip and can
-// only ever miss.
-function parseMentions(text: string): string[] {
-  const out: string[] = [];
-  for (const m of text.matchAll(/(?:^|\s)@([^\s@]+)/g)) {
-    const spec = m[1].replace(/[.,;:)\]]+$/, '');
-    if (spec && !spec.startsWith('/') && !spec.startsWith('~')) out.push(spec);
-  }
-  return out;
-}
 
 // POSIX single-quoting: everything inside is literal, and the only character
 // that has to be escaped is the quote itself. The rewritten command is run by
@@ -415,10 +406,6 @@ function shQuote(s: string): string {
   return `'${s.split("'").join(`'\\''`)}'`;
 }
 
-function within(inner: string, outer: string): boolean {
-  const rel = path.relative(outer, inner);
-  return rel === '' || (!path.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`));
-}
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

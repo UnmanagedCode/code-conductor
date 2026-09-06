@@ -53,13 +53,6 @@ export function withinPosix(inner: string, outer: string): string | null {
   return rel;
 }
 
-// The same test in cc's OWN path space, for the local half of the prefix rule.
-export function within(inner: string, outer: string): string | null {
-  const rel = path.relative(outer, inner);
-  if (rel === '') return '';
-  if (path.isAbsolute(rel) || rel === '..' || rel.startsWith(`..${path.sep}`)) return null;
-  return rel;
-}
 
 
 // ── card 2026-0259 §2.4: what cc will and will not believe ───────────
@@ -84,7 +77,7 @@ function normalAbsolute(p: string): boolean {
   // that silently matches nothing, and the byte would ride verbatim into
   // refusal prose. There is no reading of it that is safely wrong.
   if (p.includes('\0')) return false;
-  // Bounded before it can reach the manifest, the path map and every refusal
+  // Bounded before it can reach the tier table, the mount plan and every refusal
   // string composed from it.
   if (p.length > MIRROR_PATH_MAX) return false;
   // `normalize` PRESERVES a trailing separator ('/app/' normalizes to itself),
@@ -164,9 +157,9 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
     // An exclude that COVERS OR EQUALS the project is fatal for a session on
     // it: no file in the project could be read or written at all. An exclude
     // strictly INSIDE the project is legal and stays active — it withholds that
-    // subtree from the bridge, and the allow-list walk filters its targets
-    // through the same predicate so an excluded config surface is never
-    // enumerated.
+    // subtree from the union's remote tier. What ENFORCES that per path is
+    // S2's — the tier table is the artifact, the hook consumer arrives with it
+    // (docs/architecture.md → what `fileBridge` carried).
     if (withinPosix(systemPath, e) !== null) {
       throw httpError(501,
         `project '${project}' is at '${systemPath}' on system '${systemId}', but that system advertises `

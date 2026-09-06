@@ -9,9 +9,12 @@
 // divergence. Those bytes exist nowhere else. So this MOVES THE TREE ASIDE and
 // says where it went, rather than reclaiming the space.
 //
-// Idempotent by construction: it acts only when the live `sessions` directory
-// exists, and the destination carries a timestamp so a second run cannot
-// collide with the first. The manifests (`<key>.manifest.json`) sit BESIDE the
+// IDEMPOTENT BECAUSE THE RENAME CONSUMES ITS OWN SOURCE: the probe is the LIVE
+// `sessions/` directory, which no longer exists once the move has happened, so
+// a second run finds nothing and applies nothing. The timestamp on the
+// destination is not what makes it idempotent — it is there so a tree left by a
+// PARTIAL earlier run cannot be landed on, and so an operator can tell two
+// retirements apart. The manifests (`<key>.manifest.json`) sit BESIDE the
 // roots inside `sessions/`, so moving the directory takes them with it.
 
 import { promises as fs } from 'node:fs';
