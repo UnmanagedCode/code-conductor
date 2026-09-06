@@ -238,11 +238,10 @@ export function buildTools(): Tool[] {
           resume: {
             type: 'string',
             description:
-              'Optional sessionId to resume (vs. spawning a fresh session). Must be a FULL sessionId — unlike ' +
-              'every other sessionId argument, this one is not prefix-resolved. When the session is ' +
+              'Optional sessionId to resume (vs. spawning a fresh session). When the session is ' +
               'playbook-tracked, its recorded playbook + stage are recovered too, alongside the project + ' +
               'worktree above: a resume re-attaches a worker where it already is, so it enters no stage and the ' +
-              'entered-stage checks (`needs`, `pin`, spawnability, capacity) do not apply. A resume with no ' +
+              'entered-stage checks (`needs`, spawnability, capacity) do not apply. A resume with no ' +
               '`model` comes back on the model it last ran.',
           },
           worktree: {

@@ -318,12 +318,16 @@ test('`provenance` alongside a tracked resume is refused, not silently ignored',
 
 test('the two PLAYBOOK_UNKNOWN reasons are distinguishable: untracked resume vs. bare run root', () => {
   // The card's requirement that the refusal say WHICH case it hit. The remedies
-  // differ: an untracked session needs a binding declared, a mistyped id needs the
-  // full id re-sent — so collapsing these onto one message loses real information.
+  // differ: an untracked session needs a binding declared, a mistyped id needs a
+  // good one re-sent — so collapsing these onto one message loses real information.
   const untracked = refusal(d('spawn_instance', { resume: 'w-nobody-01' }, RESUMABLE), 'PLAYBOOK_UNKNOWN');
   assert.match(untracked.reason, /is not playbook-tracked/);
-  assert.match(untracked.reason, /takes a complete sessionId; prefixes are not resolved here/);
   assert.match(untracked.reason, /must name a `playbook` and a `stage`/, 'it must still say what to pass');
+  // …and it makes no claim about how ANOTHER tool renders the same session. It
+  // once said list_sessions shows '—' for these; during the incident that tool
+  // rendered a playbook/stage for a session this refusal called untracked,
+  // because it reads the projection correctly while this lookup had missed.
+  assert.doesNotMatch(untracked.reason, /list_sessions/);
 
   const root = refusal(d('spawn_instance', { project: 'demo' }, RESUMABLE), 'PLAYBOOK_UNKNOWN');
   assert.doesNotMatch(root.reason, /is not playbook-tracked/,

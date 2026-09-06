@@ -264,8 +264,11 @@ export interface InstanceManagerLike {
   // MCP handler surface (src/mcp/handlers.ts).
   sessionIdsForProject(project: string): string[];
   liveCountForProject(project: string): number;
-  // MCP transport surface (src/mcp/server.ts): the sessionId-prefix resolver.
+  // MCP transport surface (src/mcp/server.ts): the sessionId-prefix resolvers.
+  // The deep one adds the lineage store to the candidate set — see
+  // InstanceManager.resolveSessionRefDeep for which argument needs it and why.
   resolveSessionRef(input: string): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
+  resolveSessionRefDeep(input: string): Promise<{ sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null>;
   list(): Array<InstanceSummary & { awaitingWake: boolean }>;
   liveForSession(sessionId: string): InstanceLike | null;
   // THE liveness authority for a public sessionId — see src/instances.ts. Every

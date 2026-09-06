@@ -24,6 +24,7 @@ import { WebSocket } from 'ws';
 import { bootServer, api, waitFor, instForSession, seedSessionJsonl } from './helpers.mjs';
 import { ledgerFile, readEvents, foldProjection } from '../src/playbookLedger.ts';
 import { orchStoreRoot } from '../src/projects.ts';
+import { listWorktrees } from '../src/worktrees.ts';
 // (foldProjection is used by the resume tests below to assert the un-retire.)
 import {
   DEFAULT_PLAYBOOK_ENFORCEMENT, DEFAULT_PLAYBOOK_ID, loadPlaybooks, isSpawnable,
@@ -1189,6 +1190,77 @@ test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker'
     assert.deepEqual(
       { playbook: state.worker.playbook, stage: state.worker.stage, live: state.worker.live },
       { playbook: 'gatelab', stage: 'loose', live: true });
+  } finally { await t.close(); }
+});
+
+// A killed worker bound to a stage whose `pin` CREATES a worktree — the shape
+// that turned the incident's resume into a fresh spawn at a brand-new cwd.
+// Returns the handle, the backing id (unreadable after the eviction), and the
+// cwd the worker actually ran in.
+async function killedPinnedWorker(t) {
+  const w = await t.spawnWorker({
+    project: 'demo', playbook: 'gatelab', stage: 'sealed', mode: 'bypassPermissions',
+  });
+  assert.ok(w.sessionId, `the bound spawn must succeed: ${JSON.stringify(w)}`);
+  const inst = instForSession(t.instances, w.sessionId);
+  const { backingSessionId, cwd } = inst;
+  assert.notEqual(cwd, path.join(t.projectsRoot, 'demo'),
+    'premise: the pinned stage really did put this worker in a worktree');
+  await seedSessionJsonl(t.claudeProjectsRoot, cwd, backingSessionId);
+  await t.call('kill_instance', { sessionId: w.sessionId });
+  await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
+  await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
+  return { ...w, backingSessionId, cwd };
+}
+
+test('enforce: a resume of a worker bound to a PINNED stage neither re-spawns nor creates a worktree', async () => {
+  // INVARIANT: the incident input — a bare resume by FULL BACKING id — reaches
+  // decideResume, so the stage's spawn-shape `pin` is never applied and the
+  // worker comes back where it was.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await killedPinnedWorker(t);
+    // Premise: the stage really does pin a worktree, so "none was created" is a
+    // claim about the resume path rather than about a stage with nothing to apply.
+    assert.equal(GATELAB.stages.sealed.tools.spawn_instance.pin.createWorktree, true);
+    const before = (await listWorktrees('demo')).map(x => x.worktreeName);
+    assert.equal(before.length, 1, 'premise: the pinned spawn created exactly one');
+
+    const back = await t.call('spawn_instance', { resume: w.backingSessionId });
+    assert.notEqual(back.ok, false,
+      `a bare resume by backing id must not be refused: ${JSON.stringify(back)}`);
+    assert.equal(back.sessionId, w.sessionId, 'the answer is the handle, never a ~/.claude UUID');
+
+    // THE KILLER: no second worktree, and the worker is back at its own cwd.
+    assert.deepEqual((await listWorktrees('demo')).map(x => x.worktreeName), before);
+    assert.equal(instForSession(t.instances, w.sessionId).cwd, w.cwd);
+
+    const evs = await t.events();
+    assert.equal(evs.filter(e => e.kind === 'resume' && e.sessionId === w.sessionId).length, 1);
+    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId).length, 1,
+      'no second spawn — a resume must not re-declare the binding');
+    assert.deepEqual(evs.filter(e => e.kind === 'refusal' && e.code === 'PLAYBOOK_UNKNOWN'), [],
+      "the bug's fingerprint: the resume must record no PLAYBOOK_UNKNOWN refusal");
+  } finally { await t.close(); }
+});
+
+test('enforce: worktree stays undefined through the gate, so the project/worktree recovery fires', async () => {
+  // INVARIANT: a resume that names its recorded binding still leaves `worktree`
+  // unset, which is the condition findSessionLocation's recovery is gated on —
+  // the documented "project is optional when resume is given" contract. An
+  // injected createWorktree:true skips it and throws 400 `project required`.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    const w = await killedPinnedWorker(t);
+    const before = (await listWorktrees('demo')).map(x => x.worktreeName);
+
+    const back = await t.call('spawn_instance',
+      { resume: w.backingSessionId, playbook: 'gatelab', stage: 'sealed' });
+    assert.notEqual(back.ok, false, `re-stating the recorded binding must work: ${JSON.stringify(back)}`);
+    assert.equal(back.sessionId, w.sessionId);
+    assert.equal(instForSession(t.instances, w.sessionId).cwd, w.cwd,
+      'recovered its own worktree, with neither project nor worktree supplied');
+    assert.deepEqual((await listWorktrees('demo')).map(x => x.worktreeName), before);
   } finally { await t.close(); }
 });
 

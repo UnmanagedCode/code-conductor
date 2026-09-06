@@ -821,12 +821,10 @@ function decideSpawn(
     // Reached only when `resume` names a session the ledger holds nothing for —
     // the tracked case returned above. Naming the case matters: the remedy for an
     // untracked session (declare a binding) is not the remedy for a mistyped id
-    // (re-send the full one), and `resume` is the one sessionId argument the
-    // transport does NOT prefix-resolve.
+    // (re-send a good one).
     return refuse('PLAYBOOK_UNKNOWN',
-      `session ${short(resumeId)} is not playbook-tracked — the ledger holds no playbook/stage for it ` +
-      "(list_sessions renders those as '—'), so resuming it starts a new run and must name a `playbook` and a " +
-      '`stage`. `resume` takes a complete sessionId; prefixes are not resolved here. ' +
+      `session ${short(resumeId)} is not playbook-tracked — the ledger holds no playbook/stage for it, ` +
+      'so resuming it starts a new run and must name a `playbook` and a `stage`. ' +
       `Known playbooks: ${knownPlaybooksHint(playbooks)}.`, noMoves);
   } else {
     return refuse('PLAYBOOK_UNKNOWN',

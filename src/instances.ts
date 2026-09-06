@@ -39,7 +39,7 @@ export async function sweepSessionTmpDirs(liveIds: Iterable<string>): Promise<vo
 }
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
-  trackLineageWrite,
+  trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
@@ -211,6 +211,31 @@ export type RotationMechanism = 'renew' | 'prune';
 // never throw. A real Instance always has the array (set in its constructor).
 function segmentsOf(i: Instance): string[] {
   return i._segments ?? [];
+}
+
+// What both session-ref resolvers answer. See InstanceManager.resolveSessionRef
+// for what each shape means to a caller.
+export type SessionRef = { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
+
+// The DECISION shared by both resolvers, over a `candidate → owning public id`
+// map: exact-beats-prefix, then the SESSION_PREFIX_MIN floor, then
+// one-owner-vs-many. Shared so the two universes cannot drift on the rule; the
+// only difference between them is what went into `owner`.
+//
+// Two segments of the SAME session sharing a prefix collapse to one answer, not
+// an ambiguity — the set here is of owning sessions, not of candidate strings.
+function decideSessionRef(owner: Map<string, string>, input: string): SessionRef {
+  const exact = owner.get(input);
+  if (exact !== undefined) return { sessionId: exact }; // exact match always wins
+  const sessions = new Set<string>();
+  for (const [candidate, publicId] of owner) {
+    if (candidate.startsWith(input)) sessions.add(publicId);
+  }
+  if (sessions.size === 0) return null;
+  const ambiguous = [...sessions];
+  if (input.length < SESSION_PREFIX_MIN) return { ambiguous, tooShort: true };
+  if (ambiguous.length === 1) return { sessionId: ambiguous[0] };
+  return { ambiguous, tooShort: false };
 }
 
 // Does this instance answer to `id`? True for its PERMANENT public id and for
@@ -4297,9 +4322,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //
   // `_resumingPublicIds` covers from THIS check onward — not the whole
   // create({resume}) call. `publicIdFor`/`resolveBacking` are awaited BEFORE
-  // the `.add` (`_doCreate`, below), so a short prefix is not covered; that
-  // prefix is unfixable by construction, since the public sessionId is not yet
-  // known until `publicIdFor` resolves it.
+  // the `.add` (`_doCreate`, below), so a caller naming a form this window has
+  // not resolved yet is not covered. An MCP `resume` no longer reaches that
+  // window unresolved (src/mcp/server.ts normalises it to the public id first);
+  // the REST spawn route still can.
   isSessionLive(sessionId: string): boolean {
     if (this._resumingPublicIds.has(sessionId)) return true;
     const inst = this.anyForSession(sessionId);
@@ -4320,12 +4346,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // shared with an exited session must refuse rather than mis-resolve): its public
   // id PLUS every backing id it has run under. Resolution is purely in-memory, so
   // this stays synchronous and store-free on the MCP hot path. Historical
-  // disk-only sessions are intentionally out of scope (still addressable by full
-  // id through the handlers' disk probe).
+  // disk-only sessions are intentionally out of scope here (still addressable by
+  // full id through the handlers' disk probe) — resolveSessionRefDeep below
+  // widens the universe for the one argument that needs them.
   //
   // Answers are ALWAYS public ids — a backing id must never reach a conductor,
-  // which is also why `ambiguous` can only ever list public ids.
-  // Returns one of:
+  // which is also why `ambiguous` can only ever list public ids. Both resolvers
+  // return one of:
   //   null                              → no match (caller leaves the arg untouched,
   //                                         so the handler's existing SESSION_UNKNOWN /
   //                                         SESSION_NOT_LIVE / disk-probe path runs)
@@ -4335,32 +4362,48 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //   { ambiguous:[publicIds], tooShort} → a prefix matching >1 SESSION, OR a
   //                                         too-short (< SESSION_PREFIX_MIN) prefix
   //                                         matching >= 1
-  //
-  // Two segments of the SAME session sharing a prefix collapse to one answer, not
-  // an ambiguity — the set below is of owning sessions, not of candidate strings.
-  resolveSessionRef(input: unknown): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null {
+  resolveSessionRef(input: unknown): SessionRef {
     if (typeof input !== 'string' || !input) return null;
-    // candidate → owning public id. Public ids are claimed FIRST so an exact match
-    // on a public id deterministically beats a segment of some other session.
+    return decideSessionRef(this._refOwners(null), input);
+  }
+  // The DEEP sibling of resolveSessionRef, for `spawn_instance`'s `resume`.
+  //
+  // `resume` names a session that is usually not running, and the ORDINARY one
+  // is not in `byId` at all: a conductor worker is temp, so it is evicted the
+  // moment its subprocess exits (below), and an orchestrator restart never
+  // re-enters a conducted worker (src/resumeRestart.ts) — it comes back looking
+  // like an ordinary, non-archived, resumable row that no in-memory resolver can
+  // see. So this one overlays the lineage store's ids onto the in-memory ones and
+  // decides ONE candidate set.
+  //
+  // The union is required for SOUNDNESS, not only coverage: consulting the store
+  // just when memory misses would answer confidently for a prefix that is unique
+  // in memory but shared with a cold session, where SESSION_AMBIGUOUS is correct.
+  //
+  // Never a `slice(0, 8)`: a public id is 13 chars (or the full id) after a
+  // collision, and for a rotated session it is a slice of the FIRST backing id
+  // only. The store is segment-aware; a slice is not. Cost is one JSON read per
+  // spawn_instance({resume}) — an agent-paced path — and resolveSessionRef stays
+  // synchronous and store-free for its three hot-path callers.
+  async resolveSessionRefDeep(input: unknown): Promise<SessionRef> {
+    if (typeof input !== 'string' || !input) return null;
+    return decideSessionRef(this._refOwners(await loadLineage()), input);
+  }
+  // candidate → owning public id. Public ids are claimed FIRST — from BOTH
+  // universes before either's segments — so an exact match on a public id
+  // deterministically beats a segment of some other session.
+  _refOwners(lineage: Lineage | null): Map<string, string> {
     const owner = new Map<string, string>();
     for (const i of this.byId.values()) {
       if (i.sessionId) owner.set(i.sessionId, i.sessionId);
     }
+    if (lineage) for (const publicId of lineage.byPublic.keys()) if (!owner.has(publicId)) owner.set(publicId, publicId);
     for (const i of this.byId.values()) {
       if (!i.sessionId) continue;
       for (const seg of segmentsOf(i)) if (!owner.has(seg)) owner.set(seg, i.sessionId);
     }
-    const exact = owner.get(input);
-    if (exact !== undefined) return { sessionId: exact }; // exact match always wins
-    const sessions = new Set<string>();
-    for (const [candidate, publicId] of owner) {
-      if (candidate.startsWith(input)) sessions.add(publicId);
-    }
-    if (sessions.size === 0) return null;
-    const ambiguous = [...sessions];
-    if (input.length < SESSION_PREFIX_MIN) return { ambiguous, tooShort: true };
-    if (ambiguous.length === 1) return { sessionId: ambiguous[0] };
-    return { ambiguous, tooShort: false };
+    if (lineage) for (const [seg, publicId] of lineage.byBacking) if (!owner.has(seg)) owner.set(seg, publicId);
+    return owner;
   }
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions

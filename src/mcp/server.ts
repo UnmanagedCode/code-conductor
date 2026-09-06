@@ -140,9 +140,11 @@ function hasSchemaProperty(schema: unknown, prop: string): boolean {
   return prop in props && !!props[prop];
 }
 
-// The SESSION_AMBIGUOUS soft refusal, shared by both prefix-resolution sites
-// (the top-level `sessionId` and each `provenance` value) so the wording has one
-// home. `where` names the argument the ambiguous prefix came from.
+// The SESSION_AMBIGUOUS soft refusal, shared by every prefix-resolution site
+// below so the wording has one home. `where` names the argument the ambiguous
+// prefix came from; `sessionId` echoes the input verbatim whatever argument that
+// was, and `matches` is always public ids, so the 8-char slice is correct even
+// for the cold sessions only the deep resolver can list.
 function ambiguousRefusal(
   ref: { ambiguous: string[]; tooShort: boolean }, input: string, where: string,
 ): Record<string, unknown> {
@@ -248,8 +250,7 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
         args = { ...args, provenance: resolved };
       }
       // `forward.sessionId` (send_prompt) is a worker handle too, nested one
-      // level deep — the trap `resume` fell into (it declares `resume`, not
-      // `sessionId`, so the top-level chokepoint above misses it). Mirrors the
+      // level deep, so the top-level chokepoint above misses it. Mirrors the
       // `provenance` loop; NOT generalised into one loop with it or the
       // top-level block — the three differ in shape (scalar vs map vs nested)
       // and the ordering comment above is load-bearing for `provenance`.
@@ -264,6 +265,28 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
           });
         }
         if (ref?.sessionId) args = { ...args, forward: { ...args.forward, sessionId: ref.sessionId } };
+      }
+      // `resume` (spawn_instance) is a worker handle too — it just declares
+      // `resume` rather than `sessionId`, so the top-level block above misses it.
+      // The ONE difference from the three above: it resolves through the DEEP
+      // resolver, over `byId` UNION the lineage store. `resume` names a session
+      // that is usually not running, and the ordinary one — a killed conductor
+      // worker, or any worker after an orchestrator restart — is not in `byId` at
+      // all (see InstanceManager.resolveSessionRefDeep). Async, which is free
+      // here: this arm already awaits the gate and the handler below.
+      if (ctx.instances?.resolveSessionRefDeep
+          && hasSchemaProperty(tool.inputSchema, 'resume')
+          && isJsonRecord(args)
+          && typeof args.resume === 'string' && args.resume) {
+        const ref = await ctx.instances.resolveSessionRefDeep(args.resume);
+        if (ref && 'ambiguous' in ref) {
+          return rpcResult(id, {
+            content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.resume, 'resume')) }],
+          });
+        }
+        if (ref?.sessionId && ref.sessionId !== args.resume) {
+          args = { ...args, resume: ref.sessionId };
+        }
       }
       // Playbook policy — the ONE enforcement point, deliberately AFTER
       // validateArgs and after both prefix-resolution passes, and BEFORE the

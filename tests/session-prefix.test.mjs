@@ -15,8 +15,11 @@ import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promises as fs } from 'node:fs';
 import { InstanceManager, SESSION_PREFIX_MIN } from '../src/instances.ts';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn } from './helpers.mjs';
+import { orchStoreRoot } from '../src/projects.ts';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, driveTurn,
+         seedSessionJsonl } from './helpers.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -173,7 +176,7 @@ function unwrap(result) {
   return JSON.parse(result.content[0].text);
 }
 
-let ctx, baseUrl, instances, home;
+let ctx, baseUrl, instances, home, claudeProjectsRoot;
 
 before(async () => {
   ctx = await bootServer({ scenarioPath: SCENARIO_WS });
@@ -181,7 +184,7 @@ before(async () => {
 });
 after(async () => { await ctx.close(); });
 beforeEach(async () => {
-  ({ home } = await freshProjectsRoot());
+  ({ home, claudeProjectsRoot } = await freshProjectsRoot());
 });
 afterEach(async () => {
   await instances.shutdown();
@@ -249,4 +252,149 @@ test('unknown prefix stays SESSION_UNKNOWN (unchanged behavior)', async () => {
   }));
   assert.equal(body.ok, false);
   assert.equal(body.code, 'SESSION_UNKNOWN');
+});
+
+// ---------------------------------------------------------------------------
+// C. `resume` (spawn_instance) — the same chokepoint, over a WIDER universe
+//
+// `resume` names a session that is usually NOT running, and the ordinary one is
+// not in `byId` at all: a conductor worker is temp, so it is evicted on exit
+// (src/instances.ts), and after an orchestrator restart a conducted worker is
+// never re-entered (src/resumeRestart.ts). So the resume site resolves over
+// `byId` UNION the lineage store, as one candidate set — see
+// InstanceManager.resolveSessionRefDeep.
+// ---------------------------------------------------------------------------
+
+// The project every case below spawns into.
+async function project(name = 'a') {
+  await api(baseUrl, 'POST', '/api/projects', { name });
+  return path.join(process.env.PROJECTS_ROOT, name);
+}
+
+// The transcript the fake engine never writes, at the cwd the CLI would have
+// derived — without it every resume below refuses SESSION_UNKNOWN and the case
+// proves nothing about resolution.
+async function seedTranscript(sessionId, cwd) {
+  await seedSessionJsonl(claudeProjectsRoot, cwd,
+    instForSession(instances, sessionId).backingSessionId);
+}
+
+// Hand-write a lineage row for a session this process never ran. That is the
+// shape a conducted worker has after an ORCHESTRATOR restart: transcript intact,
+// listed normally, never archived — and no `byId` entry at all.
+async function seedLineageRow(publicId, backingId) {
+  const file = path.join(orchStoreRoot(), 'session-lineage.json');
+  let sessions = {};
+  try { ({ sessions } = JSON.parse(await fs.readFile(file, 'utf8'))); } catch { /* first row */ }
+  sessions[publicId] = { current: backingId, segments: [{ id: backingId, reason: 'initial', at: '2026-09-06T00:00:00Z' }] };
+  await fs.mkdir(orchStoreRoot(), { recursive: true });
+  await fs.writeFile(file, JSON.stringify({ sessions }, null, 2) + '\n');
+}
+
+test('resume is prefix-resolved at the same chokepoint as sessionId', async () => {
+  // INVARIANT: `resume` is an ordinary worker handle — any unambiguous prefix of
+  // it addresses the session, exactly as for a top-level `sessionId`.
+  const cwd = await project();
+  // temp:false, so the instance survives its own exit and this case is the
+  // in-`byId` one; the evicted case is its own test below.
+  const spawned = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions', temp: false });
+  assert.equal(spawned.status, 201, JSON.stringify(spawned.body));
+  const full = spawned.body.sessionId;
+  await waitFor(() => instForSession(instances, full)?.status === 'idle');
+  await seedTranscript(full, cwd);
+  await instForSession(instances, full).kill();
+  await waitFor(() => !instForSession(instances, full)?.proc);
+  assert.ok(instForSession(instances, full), 'premise: a non-temp instance stays in byId after its exit');
+
+  const back = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: full.slice(0, 5) }));
+  assert.notEqual(back.ok, false, `a resume by prefix must not be refused: ${JSON.stringify(back)}`);
+  assert.equal(back.sessionId, full, 'the prefix resolved to the canonical public id');
+});
+
+test('an ambiguous resume prefix soft-refuses SESSION_AMBIGUOUS, naming `resume`', async () => {
+  // The `where` argument is what distinguishes this site from the three above it.
+  const full = await spawnLiveWorker();
+  const prefix = full.slice(0, 5);
+  const fakeSid = prefix + 'ffffffff-ffff-ffff-ffff-ffffffffffff'.slice(prefix.length);
+  instances.byId.set('fake-ambig', { id: 'fake-ambig', sessionId: fakeSid, kill: async () => {} });
+  try {
+    const body = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: prefix }));
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'SESSION_AMBIGUOUS');
+    assert.equal(body.isError, undefined, 'a soft refusal, serialized like every other');
+    assert.equal(body.matches.length, 2);
+    assert.match(body.reason, /\(resume\)/);
+  } finally {
+    instances.byId.delete('fake-ambig');
+  }
+});
+
+test('a backing id passed as resume is normalised to the handle before the gate sees it', async () => {
+  // Pins docs/protocol.md's "a public id or any backing id is fine" to behaviour.
+  const cwd = await project();
+  const full = await spawnLiveWorker();
+  const backing = instForSession(instances, full).backingSessionId;
+  assert.notEqual(backing, full, 'premise: the backing id must differ from the handle');
+  await seedTranscript(full, cwd);
+  await callTool(baseUrl, 'kill_instance', { sessionId: full });
+  await waitFor(() => !instForSession(instances, full));
+
+  const back = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: backing }));
+  assert.notEqual(back.ok, false, `a resume by backing id must not be refused: ${JSON.stringify(back)}`);
+  assert.equal(back.sessionId, full, 'the answer is always the handle, never a ~/.claude UUID');
+});
+
+test('a resume prefix resolves for a session that is NOT in byId', async () => {
+  // THE LOAD-BEARING CASE. A conductor worker is temp, so its exit evicts it —
+  // an in-memory-only or exact-only resolver misses the ordinary killed-worker
+  // resume entirely.
+  const cwd = await project();
+  const full = await spawnLiveWorker();
+  await seedTranscript(full, cwd);
+  await callTool(baseUrl, 'kill_instance', { sessionId: full });
+  // PREMISE GUARD: without this the case silently degrades into the in-byId one.
+  await waitFor(() => !instForSession(instances, full));
+  assert.equal(instForSession(instances, full), undefined,
+    'premise: the evicted worker must be outside the in-memory universe');
+
+  const back = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: full.slice(0, 5) }));
+  assert.notEqual(back.ok, false, `a resume by prefix must not be refused: ${JSON.stringify(back)}`);
+  assert.equal(back.sessionId, full);
+});
+
+test('a resume prefix resolves for a session this process never ran (the post-restart shape)', async () => {
+  // The second route out of `byId`: an orchestrator crash leaves a conducted
+  // worker un-archived and unrestored, so it looks entirely healthy from every
+  // tool surface while having no `byId` entry to resolve against. Reaching this
+  // state by eviction would not exercise it — the point is a session that never
+  // went through _handleExit at all.
+  const cwd = await project();
+  const publicId = 'ba5eba11';
+  const backing = 'ba5eba11-1111-4111-8111-111111111111';
+  await seedLineageRow(publicId, backing);
+  await seedSessionJsonl(claudeProjectsRoot, cwd, backing);
+  assert.equal(instances.anyForSession(publicId), null, 'premise: no byId entry for it');
+
+  const back = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: 'ba5eb' }));
+  assert.notEqual(back.ok, false, `a cold session must resume by prefix: ${JSON.stringify(back)}`);
+  assert.equal(back.sessionId, publicId);
+});
+
+test('a resume prefix unique in memory but shared with a COLD session is ambiguous, not a confident wrong answer', async () => {
+  // Pins the UNION candidate set specifically. A resolver that consults the store
+  // only when memory misses answers {sessionId} here — confidently, and wrongly.
+  await project();
+  instances.byId.set('fake-warm', { id: 'fake-warm', sessionId: 'c0ffee11', kill: async () => {} });
+  try {
+    await seedLineageRow('c0ffee22', 'c0ffee22-2222-4222-8222-222222222222');
+    assert.deepEqual(instances.resolveSessionRef('c0ffee'), { sessionId: 'c0ffee11' },
+      'premise: in memory alone the prefix resolves uniquely — that is the wrong answer');
+
+    const body = unwrap(await callTool(baseUrl, 'spawn_instance', { resume: 'c0ffee' }));
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'SESSION_AMBIGUOUS');
+    assert.deepEqual(body.matches.sort(), ['c0ffee11', 'c0ffee22']);
+  } finally {
+    instances.byId.delete('fake-warm');
+  }
 });
