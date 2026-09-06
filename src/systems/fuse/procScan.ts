@@ -107,19 +107,29 @@ function run(cmd: string, args: string[]): Promise<string | null> {
 
 export type RawScan = (opts: ScanOptions) => Promise<{ ok: boolean; raw: string }>;
 
+export type ScanRunner = (cmd: string, args: string[]) => Promise<string | null>;
+
 // Both uid passes, unioned by pid. `ok` is true only if BOTH ran: a missing
 // half is a blind spot, and a blind spot is not an empty result.
-export const realProcScan: RawScan = async ({ withEnviron = false } = {}) => {
-  const script = scanScript(withEnviron);
-  const [own, root] = await Promise.all([
-    run('/bin/sh', ['-c', script]),
-    run('sudo', ['-n', '/bin/sh', '-c', script]),
-  ]);
-  // BOTH passes must have enumerated. Exiting 0 is not enough (the canary), and
-  // a missing half is a blind spot rather than an empty result.
-  const ok = own !== null && root !== null && passEnumerated(own) && passEnumerated(root);
-  return { ok, raw: `${own ?? ''}\n${root ?? ''}` };
-};
+//
+// The runner is a parameter because this conjunction is what makes the whole
+// verdict fail closed, and every injected `RawScan` double replaces it wholesale
+// — leaving the one line that implements the requirement unobservable.
+export function makeProcScan(runner: ScanRunner): RawScan {
+  return async ({ withEnviron = false } = {}) => {
+    const script = scanScript(withEnviron);
+    const [own, root] = await Promise.all([
+      runner('/bin/sh', ['-c', script]),
+      runner('sudo', ['-n', '/bin/sh', '-c', script]),
+    ]);
+    // BOTH passes must have enumerated. Exiting 0 is not enough (the canary),
+    // and a missing half is a blind spot rather than an empty result.
+    const ok = own !== null && root !== null && passEnumerated(own) && passEnumerated(root);
+    return { ok, raw: `${own ?? ''}\n${root ?? ''}` };
+  };
+}
+
+export const realProcScan: RawScan = makeProcScan(run);
 
 export function parseScan(raw: string): ProcRow[] {
   const byPid = new Map<number, ProcRow>();

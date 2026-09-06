@@ -448,6 +448,14 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     || members.length > 0
     // Belt and braces behind the members fix above: a reclaim that reports it
     // did not kill is a wedge whatever the enumeration then says.
+    //
+    // Today this is redundant — every row the intent path scans is re-verified
+    // for liveness, so `members` fires on every state this fires on. THAT
+    // EQUIVALENCE IS CONTINGENT: it holds only because everything alive in the
+    // intent window (the anchor, the bootstrap) is root-owned and dumpable, and
+    // therefore scan-visible. Fork anything credential-changed from
+    // bootstrap.sh before its first record write and this disjunct stops being
+    // redundant and becomes the only cover.
     || report.markerReclaimed.some(r => !r.killed)
     || !report.enumerated
     || schemaViolation;

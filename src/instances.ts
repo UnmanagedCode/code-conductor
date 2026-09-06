@@ -65,7 +65,7 @@ import { FuseSession } from './systems/fuse/session.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
 import { ensureUnionBinary } from './systems/fuse/build.ts';
 import { wrapLaunch, type LaunchWrap } from './systems/fuse/wrap.ts';
-import { procStartSync } from './systems/fuse/driver.ts';
+import { pidIsAlive, procStartSync } from './systems/fuse/driver.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
 import {
@@ -5684,12 +5684,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       for (const inst of temps) {
         const victim = killablePid(inst);
         if (!victim) continue;
-        // ONLY ESRCH means gone. `kill(pid, 0)` also raises EPERM — reachable
-        // here, because a FUSE-wrapped worker is root until the bootstrap's
-        // setpriv runs — and a catch-all reads that as death and stops waiting
-        // for a process that is very much alive.
-        try { process.kill(victim, 0); allDead = false; break; }
-        catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') { allDead = false; break; } }
+        // ONLY ESRCH is death — see pidIsAlive. EPERM is reachable here,
+        // because a FUSE-wrapped worker is root until the bootstrap's setpriv
+        // runs, and reading it as death stops the wait on a live process.
+        if (pidIsAlive(victim)) { allDead = false; break; }
       }
       if (allDead) break;
       Atomics.wait(sab, 0, 0, 20);
@@ -5750,9 +5748,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       for (const inst of live) {
         const victim = killablePid(inst);
         if (!victim) continue;
-        // ESRCH only — see shutdownTempSync. EPERM is not death.
-        try { process.kill(victim, 0); allDead = false; break; }
-        catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') { allDead = false; break; } }
+        // ESRCH only — see pidIsAlive. EPERM is not death.
+        if (pidIsAlive(victim)) { allDead = false; break; }
       }
       if (allDead) break;
       Atomics.wait(sab, 0, 0, 20);

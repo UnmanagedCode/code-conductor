@@ -1429,3 +1429,42 @@ describe('the boot sweep', () => {
     } finally { process.env.PROJECTS_ROOT = saved; }
   });
 });
+
+describe('the two seams the mutation prover could not reach', () => {
+  // PINS: `ok` is false when EITHER uid pass fails. This is the requirement the
+  // whole fail-closed verdict rests on, and every injected RawScan double
+  // bypasses the line that implements it — so it was unobservable in npm test.
+  // Injected one level lower, at the command runner.
+  const CANARY = (pid) => `${pid}\t111\tmnt:[1]\t\t\ncanary\t${pid}\n`;
+  const cases = [
+    ['both passes enumerate', CANARY(11), CANARY(12), true],
+    ['the unprivileged pass fails', null, CANARY(12), false],
+    ['the privileged pass fails — no sudo', CANARY(11), null, false],
+    ['neither pass runs', null, null, false],
+    ['a pass exits 0 having enumerated nothing', CANARY(11), '', false],
+  ];
+  for (const [name, own, root, expected] of cases) {
+    test(`realProcScan: ${name} → ok=${expected}`, async () => {
+      const { makeProcScan } = await import('../src/systems/fuse/procScan.ts');
+      const seen = [];
+      const scan = makeProcScan(async (cmd) => { seen.push(cmd); return cmd === 'sudo' ? root : own; });
+      const { ok } = await scan({ withEnviron: false });
+      assert.equal(ok, expected);
+      assert.deepEqual(seen.sort(), ['/bin/sh', 'sudo'], 'both uid passes must be attempted');
+    });
+  }
+
+  // PINS: EPERM means ALIVE. This is the bug that bit arm 5 for real — an
+  // unprivileged `kill(pid, 0)` at a root-owned process raises EPERM, and a
+  // catch-all reads it as death and stops waiting for a live process. The two
+  // synchronous shutdown paths in instances.ts are the callers.
+  test('pidIsAlive: only ESRCH is death', async () => {
+    const { pidIsAlive } = await import('../src/systems/fuse/driver.ts');
+    const raise = (code) => () => { const e = new Error(code); e.code = code; throw e; };
+    assert.equal(pidIsAlive(4242, () => {}), true, 'a signal that lands means alive');
+    assert.equal(pidIsAlive(4242, raise('ESRCH')), false, 'ESRCH is the only death');
+    assert.equal(pidIsAlive(4242, raise('EPERM')), true, 'EPERM is a live process cc may not signal');
+    assert.equal(pidIsAlive(4242, raise('EINVAL')), true, 'an unknown errno is not evidence of death');
+    assert.equal(pidIsAlive(4242, () => { throw new Error('no code at all'); }), true);
+  });
+});
