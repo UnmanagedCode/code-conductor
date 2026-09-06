@@ -1,0 +1,109 @@
+// A MIRROR ROOT WIDER THAN THE PROJECT, after the FUSE-union geometry.
+//
+// This file replaces two whose subject was deleted with the file bridge, and it
+// carries their surviving claims rather than dropping them:
+//
+//   * `systems-mirror-instance.test.mjs` asked whether a live session works "one
+//     level inside the image" — the CLI's cwd was `imageRoot + offset` under a
+//     wide advertisement. There is no image and no offset; the surviving claim
+//     is that a wide advertisement does not move the session, which is asserted
+//     below and again in systems-mirror-geometry-cold-resume.
+//   * `systems-mirror-bridge.test.mjs` asked whether an out-of-project path was
+//     pulled, edited and pushed back over the bridge, and whether two system
+//     paths could collide on one local path. Both questions presuppose a local
+//     image; the surviving claim is that the wider slice is REACHABLE, which is
+//     now decided by the union's tier table rather than by a path map.
+//     fileBridge's two carried semantics — mode preservation and sticky
+//     divergence — are recorded in docs/architecture.md as S3's specification.
+//
+// WHAT IS ACTUALLY NEW HERE: `mirrorRoot` is the boundary of the union's REMOTE
+// tier. Widening it moves what is served from the system rather than what is
+// copied to cc, and the project keeps its own narrower entry inside it.
+
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { seedRepo } from './remoteSystem.mjs';
+import { mkdtemp } from './tmpRegistry.mjs';
+import { adoptProject, orchStoreRoot } from '../src/projects.ts';
+import { addSystem } from '../src/appSettings.ts';
+import { disposeSystemHandles } from '../src/systems/registry.ts';
+import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURE = path.join(HERE, 'fixtures', 'mirrorFixtureProvider.mjs');
+const SCENARIO = path.join(HERE, 'fixtures', 'scenario-no-turn.json');
+
+const tierOf = (entries, p) => {
+  let best = null;
+  for (const e of entries) {
+    if ((p === e.prefix || p.startsWith(e.prefix.endsWith('/') ? e.prefix : e.prefix + '/'))
+      && (best === null || e.prefix.length > best.prefix.length)) best = e;
+  }
+  return best?.tier ?? null;
+};
+
+describe('a mirror root wider than the project', () => {
+  let ctx, baseUrl, instances, home, n = 0;
+
+  before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO }); ({ baseUrl, instances } = ctx); });
+  after(async () => { if (ctx) await ctx.close(); });
+  beforeEach(async () => { ({ home } = await freshProjectsRoot()); });
+  afterEach(async () => { await instances.shutdown(); disposeSystemHandles(); await rmrf(home); });
+
+  // PINS: a wide advertisement does not move the session, and composes no local
+  // image for it to be moved into. The old behaviour — cwd = imageRoot + offset,
+  // with the project one level inside — is exactly what criterion 8 removed.
+  test('the session still runs at the project path, and nothing is composed', async () => {
+    const id = `wide${++n}`;
+    const box = await fs.realpath(await mkdtemp('cc-wide-'));
+    const tree = await seedRepo(path.join(box, 'nest', 'app'));
+    await fs.writeFile(path.join(box, 'OUT-OF-PROJECT.txt'), 'outside\n');
+    const mirrorFile = path.join(box, '.mirror');
+    await fs.writeFile(mirrorFile, box);          // the WIDE root
+    await addSystem({ id, label: id, launch: ['node', FIXTURE, '--mirror-file', mirrorFile] });
+    assert.equal((await adoptProject('app', tree, { system: id })).ok, true);
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle');
+
+    assert.equal(inst.cwd, tree, 'a wide mirror root moved the CLI off the project');
+    assert.equal(inst._mirrorScope.mirrorRoot, box, 'the wide root was not pinned for the session');
+    assert.equal(await fs.stat(path.join(orchStoreRoot(), 'systems', id, 'sessions'))
+      .then(() => true, () => false), false, 'a local image was composed');
+    // The shell still runs at the project, not at the mirror root — widening
+    // decides what is REACHABLE, never where a command starts.
+    assert.equal(inst._redirect.systemPath, tree);
+  });
+
+  // PINS: the wider slice is reachable because the TIER TABLE says so, and the
+  // project keeps its own narrower entry inside it. Both are `project` tier —
+  // remote only, no host fallback — so a path between the two is served from the
+  // system rather than quietly from the orchestrator.
+  test('the advertised root becomes the remote tier boundary, with the project inside it', () => {
+    const entries = buildTierTable({
+      localRoots: [], claudeCommand: '', execPath: '/usr/bin/node',
+      selfProjectDir: '/repo', projectsRoot: '/projects', homeDir: '/home/u',
+      runDir: '/projects/.code-conductor/systems/fuse/run/i1',
+      systemPath: '/box/nest/app', mirrorRoot: '/box',
+    });
+    assert.equal(tierOf(entries, '/box/nest/app/src/main.js'), 'project');
+    assert.equal(tierOf(entries, '/box/OUT-OF-PROJECT.txt'), 'project',
+      'a path inside the advertised root but outside the project is not served from the system');
+    // A NARROW advertisement is the control: the same out-of-project path then
+    // belongs to no tier at all.
+    const narrow = buildTierTable({
+      localRoots: [], claudeCommand: '', execPath: '/usr/bin/node',
+      selfProjectDir: '/repo', projectsRoot: '/projects', homeDir: '/home/u',
+      runDir: '/projects/.code-conductor/systems/fuse/run/i1',
+      systemPath: '/box/nest/app', mirrorRoot: '/box/nest/app',
+    });
+    assert.equal(tierOf(narrow, '/box/nest/app/src/main.js'), 'project');
+    assert.equal(tierOf(narrow, '/box/OUT-OF-PROJECT.txt'), null);
+  });
+});
