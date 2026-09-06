@@ -260,3 +260,37 @@ test('a resume never creates a worktree, even when the caller asks for one', asy
     await ctx.close();
   }
 });
+
+test('the surfaced SESSION_UNKNOWN names the cwd it probed and leaks no backing id', async () => {
+  // INVARIANT (the negative half is the valuable one): the refusal says WHERE it
+  // looked — without it, a resume refused at the wrong cwd is indistinguishable
+  // from a bad id, which is what made the incident read as a mistype for hours —
+  // and it still echoes the caller's own handle, never the ~/.claude UUID that
+  // `resume` has been rebound to by the time the throw happens.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const projectPath = path.join(ctx.projectsRoot, 'demo');
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
+
+    // A real session, so its public id and backing id differ — and NO transcript
+    // seeded, so resuming it refuses at a cwd that genuinely holds nothing.
+    const fresh = await spawnInstance({ project: 'demo', mode: 'bypassPermissions' }, { instances: ctx.instances });
+    const handle = fresh.sessionId;
+    await waitFor(() => ctx.instances.anyForSession(handle)?.status === 'idle');
+    const backing = ctx.instances.anyForSession(handle).backingSessionId;
+    assert.notEqual(backing, handle, 'premise: the two ids must differ, or the leak assertion is vacuous');
+    await ctx.instances.remove(ctx.instances.anyForSession(handle).id);
+
+    const res = await spawnInstance({ resume: handle, project: 'demo', mode: 'bypassPermissions' }, { instances: ctx.instances });
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'SESSION_UNKNOWN');
+    assert.equal(res.sessionId, handle, 'the refusal echoes the handle the caller passed');
+    assert.ok(res.reason.includes(projectPath),
+      `the refusal must name the cwd it probed; got: ${res.reason}`);
+    assert.ok(!res.reason.includes(backing),
+      `the refusal must not surface the backing id; got: ${res.reason}`);
+  } finally {
+    await ctx.close();
+  }
+});

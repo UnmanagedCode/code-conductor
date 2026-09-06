@@ -4766,9 +4766,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
           root: composed.root, cwd, backingId: resume, publicId,
         });
       if (!followed) {
+        // `cwd` rides as a PROPERTY, not just interpolated into the message:
+        // spawnInstance (src/mcp/handlers.ts) rebuilds the conductor-facing
+        // reason from scratch rather than surfacing this message, because by here
+        // `resume` is the backing id and printing it would hand a conductor a
+        // ~/.claude UUID (docs/protocol.md → Public vs backing id). Without the
+        // property the surfaced refusal loses WHERE it looked, which is what made
+        // a wrong-cwd resume read as a bad id.
         throw Object.assign(
           new Error(`no resumable conversation for session ${resume} in ${cwd}`),
-          { statusCode: 404, code: 'SESSION_UNKNOWN' },
+          { statusCode: 404, code: 'SESSION_UNKNOWN', cwd },
         );
       }
     }
