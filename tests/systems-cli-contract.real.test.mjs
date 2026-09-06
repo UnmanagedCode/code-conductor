@@ -218,36 +218,72 @@ t('two cwds differing only in `_` vs `.` share ONE transcript directory', async 
   const listing = async () => {
     try { return new Set(await fs.readdir(projects)); } catch { return new Set(); }
   };
+  // THE ONLY WAY A NAME EVER ENTERS THE REMOVAL SET. Computed against the
+  // PRE-snapshot, so nothing that was already on this host can be selected —
+  // `~/.claude/projects` carries transcripts from every other run on this
+  // machine, and a cleanup that could reach one of those would be worse than
+  // any leak this probe could cause.
   const before = await listing();
-  const created = new Set();
+  const delta = async () => [...await listing()].filter(d => !before.has(d));
+
+  let assertionsRan = false;
+  const cwds = {};
   try {
     // Three real cwds. The first two differ ONLY in the character under test.
-    const cwds = {};
     for (const name of ['a_b', 'a.b', 'zz']) {
       cwds[name] = path.join(dir, name);
       await fs.mkdir(cwds[name], { recursive: true });
       await runClaude(cwds[name], settings, 'Reply with the single word OK.');
     }
-    for (const d of await listing()) if (!before.has(d)) created.add(d);
+    const created = await delta();
 
-    // The claim cc's guard encodes, stated over the binary's own output.
-    const dirFor = (name) => [...created].filter(d => d === encodeCwd(cwds[name]));
-    assert.equal(dirFor('a_b').length, 1, `no transcript directory for a_b; created: ${[...created]}`);
+    // THE MEASUREMENT, printed rather than merely asserted: the convention is
+    // the finding, and a green tick does not show it.
+    console.log(`cli-contract: ~/.claude/projects ${before.size} → ${before.size + created.length}`
+      + ` (delta ${created.length})`);
+    for (const name of ['a_b', 'a.b', 'zz']) {
+      console.log(`cli-contract:   cwd ${cwds[name]}`);
+      console.log(`cli-contract:     cc encodeCwd → ${encodeCwd(cwds[name])}`);
+      console.log(`cli-contract:     CLI produced → ${created.filter(d => d === encodeCwd(cwds[name])).join(', ') || '(none by that name)'}`);
+    }
+    console.log(`cli-contract:   all new directories: ${created.join(', ')}`);
+
+    assertionsRan = true;
+    // cc's own function first, so a premise that moved on THIS side is named as
+    // that rather than blamed on the binary.
     assert.equal(encodeCwd(cwds['a_b']), encodeCwd(cwds['a.b']),
-      "cc's own encodeCwd no longer collapses `_` and `.` alike — the premise moved");
+      "cc's own encodeCwd no longer collapses `_` and `.` alike — the premise moved on cc's side");
 
-    // DIRECTION 1: one directory for the pair. If the CLI preserved `.`, two
-    // distinct names would be here and cc's guard would be over-refusing.
-    assert.equal(created.size, 2,
-      `three cwds, two of which encode alike, must produce exactly 2 directories; got ${[...created]}`);
+    // DIRECTION 1: ONE directory for the pair. If the CLI preserved `.`, two
+    // distinct names would be here — and cc's guard would be over-refusing
+    // genuine non-collisions, which is a lockout. The guard would be wrong, not
+    // this assertion.
+    assert.equal(created.length, 2,
+      `three cwds, two of which encode alike, must produce exactly 2 directories; got ${created.join(', ')}`);
+    assert.ok(created.includes(encodeCwd(cwds['a_b'])),
+      `neither cwd of the pair produced ${encodeCwd(cwds['a_b'])}; got ${created.join(', ')}`);
 
-    // DIRECTION 2: the distinct cwd got its OWN directory — so "2" above is one
-    // shared plus one separate, not two arbitrary names.
-    assert.equal(dirFor('zz').length, 1, `no separate directory for zz; created: ${[...created]}`);
+    // DIRECTION 2: the distinct cwd got its OWN directory — so "2" is one shared
+    // plus one separate, not two arbitrary names.
+    assert.ok(created.includes(encodeCwd(cwds['zz'])),
+      `no separate directory for zz; got ${created.join(', ')}`);
     assert.notEqual(encodeCwd(cwds['zz']), encodeCwd(cwds['a_b']));
   } finally {
-    // Only what this probe created, identified by the delta.
-    for (const d of created) await fs.rm(path.join(projects, d), { recursive: true, force: true });
+    const left = await delta();
+    if (assertionsRan) {
+      for (const d of left) {
+        // Belt and braces behind the delta: a name present before this probe
+        // ran is never removable, whatever the delta computed.
+        if (before.has(d)) continue;
+        await fs.rm(path.join(projects, d), { recursive: true, force: true });
+      }
+    } else if (left.length) {
+      // A MID-RUN FAILURE REPORTS RATHER THAN FORCE-CLEANS. The run broke before
+      // the measurement was complete, so what these directories are is exactly
+      // what is no longer known — removing them on that basis is the wrong risk.
+      console.log(`cli-contract: LEFT BEHIND, not removed (the run failed before it measured): `
+        + left.map(d => path.join(projects, d)).join(', '));
+    }
     await clean();
   }
 });
