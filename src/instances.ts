@@ -15,6 +15,22 @@ export function sessionTmpDir(instanceId: string): string {
   return path.join(orchStoreRoot(), 'session-tmp', instanceId);
 }
 
+// The pid a SYNCHRONOUS shutdown path may signal for one instance.
+//
+// `inst.pid` is the process cc spawned, which under the FUSE wrap is SUDO — a
+// forking, waiting parent that cannot forward SIGKILL. The pid that matters is
+// the inner one the bootstrap recorded, and it is returned ONLY while
+// /proc/<pid>/stat field 22 still matches what was recorded: a recycled pid
+// wears the number but is a stranger, and this is the last thing between the
+// number and a SIGKILL.
+function killablePid(inst: Instance): number | null {
+  const rec = inst._fuse?.record;
+  if (rec?.bootstrapPid && rec.bootstrapStart) {
+    return procStartSync(rec.bootstrapPid) === rec.bootstrapStart ? rec.bootstrapPid : null;
+  }
+  return inst.pid ?? null;
+}
+
 // Reclaim every session-tmp directory no live session owns.
 //
 // THE TEARDOWN PATHS ARE NOT ENOUGH ON THEIR OWN. remove(), removeAllForProject()
@@ -43,6 +59,13 @@ import {
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
+import { BOOT_ID } from './bootId.ts';
+import { buildFusePlan, fuseWorkersEnabled, resolveMirrorStandIn } from './systems/fuse/plan.ts';
+import { FuseSession } from './systems/fuse/session.ts';
+import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
+import { ensureUnionBinary } from './systems/fuse/build.ts';
+import { wrapLaunch, type LaunchWrap } from './systems/fuse/wrap.ts';
+import { procStartSync } from './systems/fuse/driver.ts';
 import { getTitle as getSessionTitle, setTitle as setSessionTitle, deleteTitle as deleteSessionTitle } from './sessionTitles.ts';
 import { getSessionBackend, markSessionBackend, unmarkSessionBackend, type SessionBackendRecord } from './sessionBackends.ts';
 import {
@@ -118,7 +141,11 @@ interface LaunchedProc {
 }
 
 interface LauncherLike {
-  launch(input: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv }): LaunchedProc;
+  // `wrap` is OPTIONAL on the seam, not on the production launcher: the
+  // in-process launcher tests inject runs the CLI inside cc's own process,
+  // where there is no subprocess to put in a mount namespace, so it ignores the
+  // field rather than implementing it.
+  launch(input: { command: string; args: string[]; cwd: string; env: NodeJS.ProcessEnv; wrap?: LaunchWrap }): LaunchedProc;
 }
 
 // A held-open control_request (see Instance._controlRequest): the promise
@@ -498,6 +525,10 @@ export class Instance extends EventEmitter implements InstanceLike {
   // Its presence is what widens the injected hook surface, so it must be
   // attached before launch() — see attachRedirect.
   _redirect: SessionRedirect | null;
+  // The FUSE-union chroot this session's CLI runs inside, or null. Attached
+  // beside the redirect and for the same reason: spawn() reads it to wrap the
+  // launch, and every teardown path reads it to unmount.
+  _fuse: FuseSession | null;
   // What a relaunch needs to re-pull the session root, since launch() runs long
   // after create() resolved the system handle.
   _redirectPlacement: RedirectPlacement | null;
@@ -686,6 +717,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this.hookCallbackUrl = hookCallbackUrl;
     this.mcpServerUrl = mcpServerUrl;
     this._redirect = null;
+    this._fuse = null;
     this._redirectPlacement = null;
     // Absolute Claude Code plugin roots (each directly containing
     // `.claude-plugin/plugin.json`) contributed by enabled cc plugins whose
@@ -1643,6 +1675,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._redirectPlacement = placement;
   }
 
+  // Same contract as attachRedirect: called by the manager right after
+  // construction, BEFORE launch(). launch() runs the preflight and the mount
+  // handshake around spawn(), and spawn() hands the session's wrap to the
+  // launcher.
+  attachFuse(fuse: FuseSession): void {
+    this._fuse = fuse;
+  }
+
   // Re-pull the session root's config surface. Runs on every (re)launch — the
   // CLI reads CLAUDE.md, CONVENTIONS.md and `.claude/**` once at startup and
   // fires no hook for any of it, so a resume that skipped this would run against
@@ -1872,7 +1912,37 @@ export class Instance extends EventEmitter implements InstanceLike {
     // remote project's session prompt is built from is pulled here, before the
     // process that reads it starts.
     await this._refreshSessionRoot();
+    // The FUSE preflight is the LAST thing before spawn and the first thing
+    // that can refuse: criterion 9 wants a host that cannot mount to refuse the
+    // spawn by name, and only a check on this side of spawn() reaches the
+    // caller as an HTTP/MCP error rather than as a dead subprocess.
+    if (this._fuse) {
+      await assertFuseAvailable({ ...realProbes, ensureBinary: ensureUnionBinary });
+      this._fuse.unionBinary = await ensureUnionBinary();
+      await this._fuse.prepare();
+    }
     this.spawn({ resume });
+    if (this._fuse) await this._awaitFuseMount();
+  }
+
+  // The bootstrap's handshake. Absence past the deadline is fatal to the
+  // launch, and the two shapes get different messages because they have
+  // different repairs: a LIVE process that never wrote mount.json is a mount
+  // that did not come up, while a dead one has already put the bootstrap's own
+  // named refusal on stderr (captured as `system/stderr` events).
+  async _awaitFuseMount(): Promise<void> {
+    const fuse = this._fuse;
+    if (!fuse) return;
+    const rec = await fuse.awaitHandshake(() => this.proc !== null);
+    if (rec) return;
+    const stderr = this._stderr.trim();
+    // Tear the half-built session down before throwing, or its mount and its
+    // daemon outlive the launch that created them.
+    await fuse.teardown(() => { try { this.proc?.stdin?.end(); } catch { /* gone */ } }).catch(() => {});
+    throw httpError(500, this.proc
+      ? `FUSE_MOUNT_FAILED: the union did not mount for session ${this.id} within the handshake deadline${stderr ? `: ${stderr}` : ''}`
+      : `FUSE_MOUNT_FAILED: the mount bootstrap for session ${this.id} exited before mounting${stderr ? `: ${stderr}` : ''}`,
+      { code: 'FUSE_MOUNT_FAILED' });
   }
 
   // Await every durable lineage write kicked so far, and RETHROW the first
@@ -2202,7 +2272,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._openDebugStreams(this._spawnArgv);
 
     this._spawnEnv = spawnEnv;
-    this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv });
+    // The FUSE wrap, when this session has one. `spawn()` is synchronous, so
+    // everything the wrap needs — the compiled union binary, the run directory,
+    // the pins file, intent.json — was resolved and written by launch() before
+    // it got here.
+    this.proc = this._launcher.launch({ command, args, cwd: this.cwd, env: spawnEnv, wrap: this._fuse?.wrap });
     this.pid = this.proc.pid ?? null;
 
     const outRl = readline.createInterface({ input: this.proc.stdout as NodeJS.ReadableStream, crlfDelay: Infinity });
@@ -2674,6 +2748,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // system. Each is a process on someone else's machine keyed to a session
     // that no longer exists, with nobody left to read its result.
     void this._redirect?.close();
+    // And the mount namespace this session's CLI ran inside. THIS is the
+    // `kill -9` path: the terminal latch fires on exit/close however the
+    // process died, and nothing else would unmount or stop the root-owned
+    // daemon, which is not a child of cc and would outlive the session.
+    void this._fuse?.teardown();
     this._closeDebugStreams();
     // `_suppressTempDelete` is set by the resume-restart path
     // (shutdownForResumeSync): there we SIGKILL temp subprocesses but must
@@ -3520,6 +3599,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     const t2 = setTimeout(() => {
       try { proc.kill('SIGKILL'); } catch { /* ignore */ }
     }, graceMs + 3000);
+    // UNDER THE FUSE WRAP `proc` IS SUDO, NOT THE CLI. sudo forks and waits, and
+    // cannot forward SIGKILL, so the ladder above reaps the wrapper while the
+    // worker — and the root-owned daemon, which is not cc's child at all —
+    // would survive it. The recorded inner pid is signalled by the teardown
+    // state machine, which also unmounts; the ladder above stays as the
+    // backstop that guarantees `ended` resolves.
+    const teardown = this._fuse?.teardown(() => { try { proc.stdin?.end(); } catch { /* gone */ } });
+    if (teardown) await teardown.catch(() => {});
     // `finally`, NOT a second listener: the clear must not key on any event, or a
     // kill that settles via 'close' leaves a live SIGKILL timer holding the loop
     // open in the very path whose job is to let the process go.
@@ -4834,6 +4921,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // wrong-machine failure this whole module exists to prevent.
       if (composedMirror === null) throw new Error('cc: a remote placement reached attachRedirect with no composed session root');
       const composed: ComposedSessionRoot = composedMirror;
+      const localRoots = [
+        attachmentsDir(project, worktreeMeta?.worktreeName ?? null),
+        sessionTmpDir(id),
+        path.join(os.homedir(), '.claude'),
+        claudeProjectsRoot(),
+        ...claudePluginDirs,
+      ];
       inst.attachRedirect(new SessionRedirect({
         system: redirectPlacement.system,
         systemId: redirectPlacement.systemId,
@@ -4864,15 +4958,30 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         //     makes the guarantee stated there true rather than asserted.
         //   * the CLI's own home (plans, user settings) and the transcript root.
         //   * cc-managed Claude Code plugin roots (S22).
-        localRoots: [
-          attachmentsDir(project, worktreeMeta?.worktreeName ?? null),
-          sessionTmpDir(id),
-          path.join(os.homedir(), '.claude'),
-          claudeProjectsRoot(),
-          ...claudePluginDirs,
-        ],
+        localRoots,
         emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
       }), redirectPlacement);
+      // The FUSE-union chroot, attached in the same block and gated on the same
+      // `remote` boolean, so a session cannot end up with one and not the other.
+      //
+      // `fuseWorkersEnabled()` is the S1 stage boundary, not a feature flag —
+      // see its comment. The tier table reads `localRoots` (the array above)
+      // rather than restating it, so the paths a file tool may name and the
+      // paths the daemon serves from the host cannot disagree.
+      if (fuseWorkersEnabled()) {
+        inst.attachFuse(new FuseSession({
+          plan: buildFusePlan({
+            instanceId: id,
+            cwdInside: cwd,
+            systemPath: redirectPlacement.systemPath,
+            standInSource: resolveMirrorStandIn(redirectPlacement.systemPath),
+            localRoots,
+            claudeCommand: resolveClaudeBin().command,
+          }),
+          ccBootId: BOOT_ID,
+          emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
+        }));
+      }
     }
 
     inst.on('event', (ev: UiEvent) => this.emit('event', { id, ev }));
@@ -5554,8 +5663,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     for (const inst of this.byId.values()) {
       if (!inst.temp) continue;
       temps.push(inst);
-      if (inst.proc && inst.pid) {
-        try { process.kill(inst.pid, 'SIGKILL'); } catch { /* gone */ }
+      // `inst.pid` is SUDO's under the FUSE wrap, and sudo cannot forward
+      // SIGKILL — so the recorded inner pid is the one to signal, re-verified
+      // by starttime immediately before signalling. NEITHER sync shutdown path
+      // can run the mount teardown (it is async and this is called immediately
+      // before process.exit); the boot sweep — sweepFuseSessions() in
+      // server.ts — is what covers both.
+      const victim = killablePid(inst);
+      if (inst.proc && victim) {
+        try { process.kill(victim, 'SIGKILL'); } catch { /* gone */ }
       }
     }
 
@@ -5566,8 +5682,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     while (Date.now() < deadline) {
       let allDead = true;
       for (const inst of temps) {
-        if (!inst.pid) continue;
-        try { process.kill(inst.pid, 0); allDead = false; break; }
+        const victim = killablePid(inst);
+        if (!victim) continue;
+        try { process.kill(victim, 0); allDead = false; break; }
         catch { /* ESRCH = gone */ }
       }
       if (allDead) break;
@@ -5615,7 +5732,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // waits for all-idle), so the session JSONL is fully flushed.
       try { inst.proc.stdin?.end(); } catch { /* gone */ }
     }
-    // Bounded sync wait for processes to exit after stdin close.
+    // Bounded sync wait for processes to exit after stdin close. As in
+    // shutdownTempSync, the pid polled is the recorded inner one under the FUSE
+    // wrap, and this path CANNOT run the mount teardown — it is async and
+    // process.exit follows immediately. sweepFuseSessions() at the next boot is
+    // what unmounts and reaps the daemon.
     // 2 s gives the CLI enough time to handle the EOF and exit cleanly.
     // Atomics.wait is Node's only non-spinning sync sleep primitive.
     const sab = new Int32Array(new SharedArrayBuffer(4));
@@ -5623,8 +5744,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     while (Date.now() < deadline) {
       let allDead = true;
       for (const inst of live) {
-        if (!inst.pid) continue;
-        try { process.kill(inst.pid, 0); allDead = false; break; }
+        const victim = killablePid(inst);
+        if (!victim) continue;
+        try { process.kill(victim, 0); allDead = false; break; }
         catch { /* ESRCH = gone */ }
       }
       if (allDead) break;

@@ -7,6 +7,7 @@ import type { RealClaudeLauncher } from './src/claudeLauncher.ts';
 import { buildRoutes } from './src/routes.ts';
 import { buildMcpRouter } from './src/mcp/server.ts';
 import { InstanceManager, sweepSessionTmpDirs } from './src/instances.ts';
+import { sweepFuseSessions } from './src/systems/fuse/sweep.ts';
 import { attachWsHub } from './src/wsHub.ts';
 import { initCostTracking } from './src/costTracking.ts';
 import { projectsRoot, orchStoreRoot, ensureSelfProjectWorkspace } from './src/projects.ts';
@@ -172,6 +173,15 @@ export async function start({ port = 8787, host = '127.0.0.1' } = {}) {
   // yet, so every entry is dead by construction.
   try { await sweepSessionTmpDirs([]); }
   catch (e) { console.warn('session-tmp sweep failed:', e); }
+  // And every FUSE-union mount a previous process left behind, for the same
+  // reason and by the same argument: an instance id is a fresh uuid per
+  // process, so every record under systems/fuse/run/ is dead by construction.
+  // This one is LOAD-BEARING rather than belt-and-braces — the restart path
+  // exits ~50 ms after firing shutdown(), and neither synchronous shutdown path
+  // can run the (async) mount teardown at all, so a mount and a root-owned
+  // daemon would otherwise survive the orchestrator that created them.
+  try { await sweepFuseSessions(); }
+  catch (e) { console.warn('fuse sweep failed:', e); }
   const { server, instances, wss, pluginHost } = createServer();
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
