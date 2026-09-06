@@ -1136,14 +1136,17 @@ async function killedBoundWorker(t) {
   // `loose` pins nothing, so the worker sits in the project root with no worktree
   // — which is also the cwd the resume's `project`/`worktree` recovery resolves to.
   // The transcript is named by the BACKING id; the resume below deliberately uses
-  // the public id, which is the only handle a conductor ever had.
-  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'),
-    instForSession(t.instances, w.sessionId).backingSessionId);
+  // the public id, which is the only handle a conductor ever had. The backing id
+  // is captured here because the kill evicts the (temp) instance from byId, so it
+  // is unreadable afterwards — which is itself why the ordinary resume target is
+  // a session the in-memory prefix universe no longer holds.
+  const backingSessionId = instForSession(t.instances, w.sessionId).backingSessionId;
+  await seedSessionJsonl(t.claudeProjectsRoot, path.join(t.projectsRoot, 'demo'), backingSessionId);
   await t.call('kill_instance', { sessionId: w.sessionId });
   await waitFor(() => !instForSession(t.instances, w.sessionId)?.proc);
   // The retire lands off the status stream, asynchronously from the kill's reply.
   await waitFor(async () => (await t.events()).some(e => e.kind === 'retire' && e.sessionId === w.sessionId));
-  return w;
+  return { ...w, backingSessionId };
 }
 
 test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker', async () => {
@@ -1186,6 +1189,54 @@ test('enforce: a BARE spawn_instance({resume}) recovers a playbook-bound worker'
     assert.deepEqual(
       { playbook: state.worker.playbook, stage: state.worker.stage, live: state.worker.live },
       { playbook: 'gatelab', stage: 'loose', live: true });
+  } finally { await t.close(); }
+});
+
+// A pin-free second graph, so a resume can name a binding that DIFFERS from the
+// recorded one without the difference being masked by a pin refusal. Its entry
+// stage deliberately pins nothing: the corruption under test is a ledger write,
+// and a stage that also pinned `createWorktree` would refuse the call before it
+// ever got there.
+const OTHERPB = {
+  id: 'otherpb', name: 'Otherpb', description: 'A second graph whose entry stage pins nothing.',
+  entryStages: ['alt'],
+  stages: { alt: { description: 'Ungated entry.', tools: { spawn_instance: 'allow' } } },
+  transitions: [],
+};
+
+test('enforce: a resume never re-declares a binding, however the caller spelled the id', async () => {
+  // INVARIANT: a `spawn` ledger event never overwrites an existing binding.
+  // The incident input — a FULL BACKING id, the form the schema used to demand —
+  // is one the projection is keyed against public ids for, so the decision layer
+  // reads a tracked worker as a fresh run root and (with an explicit
+  // playbook+stage) authorises a spawn. The write must still refuse to clobber.
+  const t = await setup({ enforcement: 'enforce' });
+  try {
+    await t.writeUserPlaybook('otherpb', OTHERPB);
+    const w = await killedBoundWorker(t);
+
+    // Premise: the graph named below really is loaded and really is enterable, so
+    // a refusal here would be about the ledger rather than about a bad fixture.
+    const listed = await t.call('list_playbooks', {});
+    const other = listed.playbooks.find(p => p.id === 'otherpb');
+    assert.ok(other?.spawnableStages?.includes('alt'),
+      `premise: otherpb/alt must be a spawnable stage; got ${JSON.stringify(listed.playbooks)}`);
+    assert.notEqual(w.backingSessionId, w.sessionId,
+      'premise: the backing id must DIFFER from the handle, or this is just a public-id resume');
+
+    await t.call('spawn_instance', { resume: w.backingSessionId, playbook: 'otherpb', stage: 'alt' });
+
+    // commit()/refusal appends are awaited inside dispatch(), so the ledger has
+    // already settled by the time the call returns.
+    const evs = await t.events();
+    assert.ok(evs.length > 0, 'the ledger read must be non-empty');
+    assert.equal(evs.filter(e => e.kind === 'spawn' && e.sessionId === w.sessionId).length, 1,
+      'the original binding spawn, and no second one');
+    const st = foldProjection(evs).bySession.get(w.sessionId);
+    assert.deepEqual(
+      { playbook: st.playbook, stage: st.stage, history: st.stageHistory },
+      { playbook: 'gatelab', stage: 'loose', history: ['loose'] },
+      'the recorded binding survives a resume that named a different one');
   } finally { await t.close(); }
 });
 

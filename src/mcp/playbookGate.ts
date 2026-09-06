@@ -318,6 +318,16 @@ export function createPlaybookGate(
       const view = asRecord(result);
       const sessionId = typeof view.sessionId === 'string' ? view.sessionId : '';
       if (!sessionId) return;
+      // THE SAME RULE AS THE ARM ABOVE, enforced against the authoritative id
+      // rather than against the decision layer's classification. A `spawn` for a
+      // session that ALREADY has a row is never a new declaration — decide() was
+      // handed an id it could not place (a ledger/lineage divergence), and the
+      // worker that came back is one it already governs. Folding a spawn here
+      // would reset its stage, stageHistory and provenance.
+      if (ledger.projection().bySession.has(sessionId)) {
+        await append({ kind: 'resume', sessionId });
+        return;
+      }
       const worktree = asRecord(view.worktree).worktreeName;
       await append({
         kind: 'spawn',
