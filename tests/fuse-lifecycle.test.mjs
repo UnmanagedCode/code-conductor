@@ -20,7 +20,9 @@ import { buildTierTable, renderPinsFile, binaryPins, BIND_MOUNTS } from '../src/
 import { wrapLaunch } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
 import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
-import { parseOrphanScan, reclaimOrphanProcesses } from '../src/systems/fuse/orphans.ts';
+import { reclaimOrphanProcesses } from '../src/systems/fuse/orphans.ts';
+import { parseScan, membersOf, orphansUnder } from '../src/systems/fuse/procScan.ts';
+import { FuseSession } from '../src/systems/fuse/session.ts';
 
 // ── the fake driver ─────────────────────────────────────────────────────────
 //
@@ -32,7 +34,12 @@ import { parseOrphanScan, reclaimOrphanProcesses } from '../src/systems/fuse/orp
 // it — modelling it per-pid would let a fixture disagree with itself about
 // which pid teardown happens to enter through, and that choice is exactly what
 // the anchor changed. `hostMounts` is pid 1's and cc's own.
-function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, conns = [], umountFails = new Set(), abortOk = true, undead = new Set() } = {}) {
+// `umountFails` fails BOTH plain and lazy; `lazyOnly` fails plain and succeeds
+// lazily, which is the only way to reach the lazy-success branch — without it
+// that branch can be deleted and the whole suite stays green.
+function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, conns = [],
+  umountFails = new Set(), lazyOnly = new Set(), abortOk = true, undead = new Set(),
+  nsMntId = NS, scanOk = true } = {}) {
   let clock = 0;
   const calls = [];
   const rec = (op, ...args) => calls.push([op, ...args]);
@@ -55,8 +62,8 @@ function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, c
     },
     async umountIn(nsPid, mp, { lazy }) {
       rec('umount', mp, lazy ? 'lazy' : 'plain');
-      if (umountFails.has(mp) && !lazy) return false;
-      if (umountFails.has(mp) && lazy) return false;
+      if (umountFails.has(mp)) return false;                 // neither works
+      if (lazyOnly.has(mp) && !lazy) return false;            // plain fails, lazy will do
       for (const list of [nsMounts, hostMounts, ...Object.values(mounts)]) {
         const i = list.indexOf(mp);
         if (i >= 0) list.splice(i, 1);
@@ -75,6 +82,18 @@ function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, c
     now() { return clock; },
     async sleep(ms) { clock += ms; },
     advance(ms) { clock += ms; },
+    // The /proc enumeration seam. One row per LIVE process, so a fixture that
+    // kills something also removes it from the namespace — which is what the
+    // clean verdict is taken from.
+    scan: async ({ withEnviron = false } = {}) => {
+      if (!scanOk) return { ok: false, raw: '' };
+      const rows = Object.entries(procs).map(([pid, p]) => [
+        pid, p.starttime, p.ns ?? nsMntId,
+        withEnviron ? (p.instanceId ?? '') : '',
+        withEnviron ? (p.rundir ?? '') : '',
+      ].join('\t'));
+      return { ok: true, raw: rows.join('\n') };
+    },
   };
   return d;
 }
@@ -84,6 +103,9 @@ function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, c
 const WORKER = 4242, WORKER_START = '111111';
 const DAEMON = 4243, DAEMON_START = '222222';
 const ANCHOR = 4244, ANCHOR_START = '333333';
+// The session's mount namespace. Membership in it — not the recorded pid set —
+// is what every clean verdict below is taken from.
+const NS = 'mnt:[4026533000]';
 
 async function seedRun(overrides = {}, { intentOnly = false, noRecords = false } = {}) {
   const rundir = await mkdtemp('cc-fuse-run-');
@@ -136,7 +158,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
-    await runTeardown({ rundir, driver, log: { warn() {} } });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
 
     const abortAt = driver.calls.findIndex(c => c[0] === 'abort');
     assert.ok(abortAt >= 0, 'the abort was issued');
@@ -166,7 +188,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const procs = liveBoth();
     delete procs[WORKER];
     const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([DAEMON]) });
-    await runTeardown({ rundir, driver, log: { warn() {} } });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     const seq = driver.calls.filter(c => c[0] === 'umount' || c[0] === 'abort');
     const abortAt = seq.findIndex(c => c[0] === 'abort');
     const fusectlAt = seq.findIndex(c => c[0] === 'umount' && c[1] === record.fusectl);
@@ -179,7 +201,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   test('aborts the minor captured at mount time', async () => {
     const { rundir, record } = await seedRun({ minor: '91' });
     const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['91', '12'] });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [['abort', '91']]);
     assert.equal(report.abort, 'aborted');
     assert.equal(report.minor, '91');
@@ -192,7 +214,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const procs = liveBoth();
     procs[WORKER].state = 'D';
     const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([WORKER]) });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.workerStopped, false);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal' && c[1] === WORKER).map(c => c[2]), ['SIGTERM', 'SIGKILL']);
     assert.ok(driver.calls.some(c => c[0] === 'umount'), 'no unmount was issued past the undead worker');
@@ -211,7 +233,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
       // The daemon is `undead`: the point of the case is what the machine
       // REPORTS about a process that outlives its SIGKILL, not that it dies.
       const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([DAEMON]) });
-      const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+      const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
       assert.ok(report.terminalState.startsWith(expected), `${threads.length} thread(s) → ${report.terminalState}`);
       if (expected === 'WEDGED') assert.match(report.terminalState, /threads=2 states=/);
     }
@@ -227,7 +249,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
       nsMounts: healthyMounts(record),
       conns: ['77'],
     });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), [], 'a recycled pid was signalled');
     assert.equal(report.terminalState, 'GONE');
     assert.ok(report.notes.some(n => n.includes(`worker pid ${WORKER}`) && n.includes('starttime mismatch')));
@@ -251,7 +273,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     });
     const emitted = [], warned = [];
     const report = await runTeardown({
-      rundir, driver, emit: ev => emitted.push(ev), log: { warn: (...a) => warned.push(a.join(' ')) },
+      rundir, driver, scan: driver.scan, emit: ev => emitted.push(ev), log: { warn: (...a) => warned.push(a.join(' ')) },
     });
 
     assert.equal(report.wedged, true);
@@ -276,7 +298,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const procs = liveBoth();
     delete procs[WORKER];
     const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.wedged, false);
     assert.equal(report.removedRunDir, true);
     await assert.rejects(() => fs.stat(rundir));
@@ -287,14 +309,14 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   test('mount.json absent falls back to intent.json; both absent is NO-RECORD, and neither signals', async () => {
     const only = await seedRun({}, { intentOnly: true });
     const d1 = fakeDriver({ procs: liveBoth(), nsMounts: [] });
-    const r1 = await runTeardown({ rundir: only.rundir, driver: d1, log: { warn() {} } });
+    const r1 = await runTeardown({ rundir: only.rundir, driver: d1, scan: d1.scan, log: { warn() {} } });
     assert.equal(r1.source, 'intent.json');
     assert.deepEqual(d1.calls.filter(c => c[0] === 'signal'), []);
     assert.deepEqual(d1.calls.filter(c => c[0] === 'abort'), []);
 
     const none = await seedRun({}, { noRecords: true });
     const d2 = fakeDriver({ procs: liveBoth(), nsMounts: [] });
-    const r2 = await runTeardown({ rundir: none.rundir, driver: d2, log: { warn() {} } });
+    const r2 = await runTeardown({ rundir: none.rundir, driver: d2, scan: d2.scan, log: { warn() {} } });
     assert.equal(r2.source, 'NO-RECORD');
     assert.equal(r2.terminalState, 'NO-PID');
     assert.deepEqual(d2.calls, []);
@@ -307,7 +329,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const procs = liveBoth();
     delete procs[WORKER];
     const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56', '59', '77'] });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.strayConnections, 2);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [['abort', '77']]);
   });
@@ -319,7 +341,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const procs = liveBoth();
     delete procs[WORKER];
     const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56'] });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.abort, 'ABORT-UNAVAILABLE');
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), []);
     assert.ok(driver.calls.some(c => c[0] === 'signal' && c[1] === DAEMON), 'the daemon ladder did not run');
@@ -333,7 +355,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   test('the root-owned processes are signalled privileged and the worker is not', async () => {
     const { rundir, record } = await seedRun();
     const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['77'] });
-    await runTeardown({ rundir, driver, log: { warn() {} } });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     const sigs = driver.calls.filter(c => c[0] === 'signal');
     for (const [, pid, , mode] of sigs) {
       assert.equal(mode, (pid === DAEMON || pid === ANCHOR) ? 'sudo' : 'direct', `pid ${pid} signalled ${mode}`);
@@ -359,7 +381,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
         procs, nsMounts: healthyMounts(record),
         conns: ['77'], undead: new Set([record[survivor]]),
       });
-      const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+      const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
 
       assert.deepEqual(report.residualMounts, [], `${survivor}: the fixture left mounts, so this would pass for the wrong reason`);
       assert.equal(report.wedged, true, `${survivor} survived and the teardown still called itself clean`);
@@ -377,7 +399,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   test('the anchor is killed, and killed after the daemon', async () => {
     const { rundir, record } = await seedRun();
     const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['77'] });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     const sigs = driver.calls.filter(c => c[0] === 'signal').map(c => c[1]);
     assert.ok(sigs.includes(record.anchorPid), 'the anchor was never signalled');
     assert.ok(sigs.lastIndexOf(record.anchorPid) > sigs.lastIndexOf(DAEMON), `order was ${sigs.join(',')}`);
@@ -391,7 +413,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   test('a stage:starting record is still torn down', async () => {
     const { rundir, record } = await seedRun({ stage: 'starting', minor: '', mountedAt: 0 });
     const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: [] });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.abort, 'no-minor');
     const sigs = driver.calls.filter(c => c[0] === 'signal').map(c => c[1]);
     for (const pid of [record.daemonPid, record.anchorPid]) assert.ok(sigs.includes(pid), `pid ${pid} not signalled`);
@@ -407,7 +429,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     delete procs[WORKER];
     const escaped = path.join(record.root, 'sys');
     const driver = fakeDriver({ procs, nsMounts: [], hostMounts: [escaped], conns: ['77'] });
-    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
     assert.equal(report.wedged, true);
     assert.deepEqual(report.residualMounts, [escaped]);
   });
@@ -529,6 +551,10 @@ describe('the tier table', () => {
   test('the bind-mount set is not in the table, and no input changes it', () => {
     const t = buildTierTable(input);
     for (const b of BIND_MOUNTS) assert.equal(tierOf(t, b), undefined, `${b} appears as a tier`);
+    // A TRIPWIRE, not coverage: this literal exists so that changing the bind
+    // set is a deliberate two-place edit rather than a silent one, and so a
+    // later reader who merges it with the tier table has to delete an assertion
+    // that says not to. It proves nothing about behaviour by itself.
     assert.deepEqual([...BIND_MOUNTS], ['/proc', '/sys', '/dev']);
     // A provider that excludes nothing, and one that excludes something odd,
     // leave the bind set identical — it is a constant, not a derivation.
@@ -570,6 +596,7 @@ describe('the criterion-9 refusal', () => {
   const ok = {
     devFuseIsCharDevice: async () => true,
     sudoNonInteractive: async () => true,
+    sudoPreservesEnv: async () => true,
     hasBinary: async () => true,
     hasFusectl: async () => true,
     hasFuse3Dev: async () => true,
@@ -586,6 +613,10 @@ describe('the criterion-9 refusal', () => {
   const cases = [
     ['devFuseIsCharDevice', /\/dev\/fuse/, { devFuseIsCharDevice: async () => false }],
     ['sudo', /sudo -n true/, { sudoNonInteractive: async () => false }],
+    // The host that passes every other probe and then dies inside sudo:
+    // NOPASSWD without SETENV. Probed by the exact form the launch uses,
+    // because the whole mount plan rides in CC_FUSE_* environment variables.
+    ['sudo without SETENV', /sudo -n -E.*SETENV/s, { sudoPreservesEnv: async () => false }],
     ['a binary', /unshare/, { hasBinary: async (n) => n !== 'unshare' }],
     ['fusectl', /fusectl/, { hasFusectl: async () => false }],
     ['gcc', /gcc/, { hasBinary: async (n) => n !== 'gcc' }],
@@ -608,6 +639,7 @@ describe('the criterion-9 refusal', () => {
   test('names the FIRST failure when several are missing', async () => {
     await assert.rejects(() => assertFuseAvailable({
       devFuseIsCharDevice: async () => false, sudoNonInteractive: async () => false,
+      sudoPreservesEnv: async () => false,
       hasBinary: async () => false, hasFusectl: async () => false, hasFuse3Dev: async () => false,
       ensureBinary: async () => { throw new Error('never reached'); },
     }), /\/dev\/fuse/);
@@ -675,63 +707,357 @@ describe('deadlines', () => {
   });
 });
 
+
+describe('the clean verdict comes from namespace membership, not the recorded set', () => {
+  // PINS THE PRINCIPLE. A live process in the session's mount namespace that NO
+  // record names — routine, because Bash is a real subprocess family and there
+  // is deliberately no process-group kill on this path — holds mounts open. The
+  // recorded set is empty, every recorded pid is confirmed dead, and the old
+  // verdict called that clean and deleted the record over a live namespace.
+  test('an unrecorded namespace member is a wedge, and keeps the record', async () => {
+    const { rundir, record } = await seedRun();
+    const procs = liveBoth();
+    const CHILD = 5555;
+    procs[CHILD] = { starttime: '555555', state: 'S' };   // in NS, named by no record
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+
+    assert.deepEqual(report.survivingPids, [], 'a recorded pid survived, so this would pass for the wrong reason');
+    assert.deepEqual(report.namespaceMembers, [CHILD]);
+    assert.equal(report.wedged, true, 'a live namespace member did not make it a wedge');
+    assert.equal(report.removedRunDir, false, 'the record was destroyed over a live namespace');
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'signal').map(c => c[1]).includes(CHILD), false,
+      'the unrecorded member was signalled — teardown may only signal pids it recorded');
+  });
+
+  // PINS: anything cc cannot enumerate is a wedge, not a pass. A scan that
+  // cannot run returns no rows, and an empty result read as "nothing is there"
+  // is exactly how the leaked anchor stayed invisible.
+  test('a scan that cannot run is a wedge, not a clean pass', async () => {
+    const { rundir, record } = await seedRun();
+    const procs = liveBoth();
+    for (const pid of [WORKER, DAEMON, ANCHOR]) delete procs[pid];   // everything really is gone
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], scanOk: false });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+
+    assert.equal(report.enumerated, false);
+    assert.deepEqual(report.survivingPids, []);
+    assert.deepEqual(report.residualMounts, []);
+    assert.equal(report.wedged, true, 'an unenumerable namespace was declared clean');
+    assert.equal(report.removedRunDir, false);
+    void record;
+  });
+
+  // The control for the case above: the SAME fixture with a working scan is
+  // clean, so the wedge above is the scan failing and nothing else.
+  test('…and the same state with a working scan is clean', async () => {
+    const { rundir } = await seedRun();
+    const procs = liveBoth();
+    for (const pid of [WORKER, DAEMON, ANCHOR]) delete procs[pid];
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [] });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.equal(report.enumerated, true);
+    assert.equal(report.wedged, false);
+    assert.equal(report.removedRunDir, true);
+  });
+
+  // PINS B2: the intent-only path — a bootstrap that died, or is still
+  // mid-handshake — has processes behind it, and used to signal NOBODY and then
+  // delete the directory. The handle that survives having no record is the
+  // marker the bootstrap's own execve put in their environments.
+  test('an intent-only run directory reclaims its processes by marker', async () => {
+    const { rundir } = await seedRun({}, { intentOnly: true });
+    const BOOTSTRAP = 6001, ANCHOR2 = 6002;
+    const procs = {
+      [BOOTSTRAP]: { starttime: '600100', state: 'S', instanceId: path.basename(rundir), rundir },
+      [ANCHOR2]: { starttime: '600200', state: 'S', instanceId: path.basename(rundir), rundir },
+    };
+    const driver = fakeDriver({ procs, nsMounts: [path.join(rundir, 'root')], conns: [] });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+
+    assert.equal(report.source, 'intent.json');
+    assert.deepEqual(report.markerReclaimed.map(r => r.pid).sort(), [BOOTSTRAP, ANCHOR2].sort());
+    for (const r of report.markerReclaimed) assert.equal(r.killed, true, JSON.stringify(r));
+    // Unmounted through the process before it was signalled — it is the handle.
+    const ops = driver.calls.map(c => c[0]);
+    assert.ok(ops.indexOf('umount') >= 0 && ops.indexOf('signal') > ops.indexOf('umount'), ops.join(','));
+    assert.equal(report.wedged, false);
+    assert.equal(report.removedRunDir, true);
+  });
+
+  // PINS the other half of B2: a record that appears WHILE teardown runs means
+  // the bootstrap completed its handshake mid-teardown. Deleting over it would
+  // strand whatever it names.
+  test('a mount.json appearing mid-teardown is never deleted over', async () => {
+    const { rundir, record } = await seedRun({}, { intentOnly: true });
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    // The bootstrap finishes its handshake at the moment teardown scans.
+    const scan = async (opts) => {
+      await fs.writeFile(path.join(rundir, 'mount.json'), JSON.stringify({ ...record, stage: 'mounted' }));
+      return driver.scan(opts);
+    };
+    const report = await runTeardown({ rundir, driver, scan, log: { warn() {} } });
+    assert.equal(report.wedged, true);
+    assert.equal(report.removedRunDir, false);
+    assert.ok(report.notes.some(n => n.includes('appeared during teardown')), report.notes.join(' | '));
+    await fs.stat(path.join(rundir, 'mount.json'));   // still there for the sweep
+  });
+
+  // PINS F2: a record whose root-executed fields violate the schema is a
+  // REPORTED wedge. The failure mode being closed is the no-adversary one — a
+  // malformed field reaching execFile throws mid-machine, the caller swallows
+  // the rejection, and everything survives with no report at all.
+  test('a schema-violating fusectl or minor is refused and reported, never used', async () => {
+    for (const [field, bad] of [['fusectl', '/etc'], ['minor', '77; rm -rf /']]) {
+      const { rundir, record } = await seedRun({ [field]: bad });
+      const procs = liveBoth();
+      const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
+      const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+      assert.equal(report.wedged, true, `${field}: not reported`);
+      assert.equal(report.removedRunDir, false, `${field}: reclaimed anyway`);
+      assert.ok(report.notes.some(n => n.startsWith('SCHEMA:')), report.notes.join(' | '));
+      if (field === 'fusectl') {
+        assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [], 'aborted through an unvalidated fusectl path');
+      } else {
+        assert.equal(report.abort, 'no-minor');
+        assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [], 'aborted with a non-numeric minor');
+      }
+    }
+  });
+
+  // PINS: the machine never rejects. A driver that throws must still produce a
+  // wedge report — both callers swallow a rejection, so a throw would be a
+  // silent survival of the daemon, the mounts and the record.
+  test('a throwing driver is contained into a wedge report, not a rejection', async () => {
+    const { rundir, record } = await seedRun();
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['77'] });
+    driver.umountIn = async () => { throw new Error('execFile: ENOENT'); };
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.equal(report.wedged, true);
+    assert.equal(report.removedRunDir, false);
+    assert.ok(report.notes.some(n => n.includes('threw and was contained')), report.notes.join(' | '));
+  });
+
+  // T1 — PINS the lazy-unmount SUCCESS path. The old fixture failed plain and
+  // lazy alike, so this branch was unreachable and deleting it kept the suite
+  // green.
+  test('a mount that refuses a plain unmount is unmounted lazily, and recorded as such', async () => {
+    const { rundir, record } = await seedRun();
+    const procs = liveBoth();
+    delete procs[WORKER];
+    const stubborn = path.join(record.root, 'proc');
+    const driver = fakeDriver({
+      procs, nsMounts: healthyMounts(record), conns: ['77'], lazyOnly: new Set([stubborn]),
+    });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.deepEqual(report.lazyUnmounted, [stubborn]);
+    assert.ok(report.unmounted.includes(stubborn), 'a lazily-unmounted path is still an unmount');
+    // Plain was tried FIRST and only then lazy — a lazy-first implementation
+    // detaches mounts it could have removed properly.
+    const tries = driver.calls.filter(c => c[0] === 'umount' && c[1] === stubborn).map(c => c[2]);
+    assert.deepEqual(tries, ['plain', 'lazy']);
+    assert.equal(report.wedged, false);
+  });
+
+  // T4 — PINS the abort-failed branch: the write to `abort` is refused. The
+  // fixture has carried the knob for it since the beginning and no case set it.
+  test('a refused abort is reported as abort-failed and does not stop the machine', async () => {
+    const { rundir, record } = await seedRun();
+    const procs = liveBoth();
+    delete procs[WORKER];
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], abortOk: false });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.equal(report.abort, 'abort-failed');
+    assert.ok(report.notes.some(n => n.includes('/abort failed')), report.notes.join(' | '));
+    assert.ok(driver.calls.some(c => c[0] === 'signal' && c[1] === DAEMON), 'the daemon ladder did not run past a failed abort');
+  });
+});
+
+describe('FuseSession lifecycle', () => {
+  const plan = (rundir) => ({
+    instanceId: path.basename(rundir), rundir,
+    root: path.join(rundir, 'root'), mirror: path.join(rundir, 'mirror'),
+    fusectl: path.join(rundir, 'fusectl'), pinsPath: path.join(rundir, 'pins.txt'),
+    intentPath: path.join(rundir, 'intent.json'), recordPath: path.join(rundir, 'mount.json'),
+    daemonLog: path.join(rundir, 'daemon.log'),
+    cwdInside: '/srv/app', mountOpts: 'o', tiers: [], pinsText: '# pins\n',
+    uid: 1000, gid: 1000, standInSource: null, standInAt: null,
+  });
+
+  // T3 / B1 — PINS: the teardown latch is released by a successful prepare().
+  // Rewind and prune tear a session down and relaunch it into the SAME run
+  // directory (instances.ts rewindToUserMessage / pruneSession), and a latch
+  // that never reset made the second kill() a no-op: no unmounts, no abort, no
+  // signals, and a root daemon plus a private mount surviving until restart.
+  test('prepare() releases the teardown latch, so a relaunched session tears down again', async () => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const p = plan(rundir);
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: p, ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+
+    await s.prepare();
+    const first = await s.teardown();
+    assert.ok(first && 'wedged' in first, 'the first teardown did not run');
+
+    // The second lifecycle: same session object, same run directory.
+    await s.prepare();
+    const second = await s.teardown();
+    assert.ok(second && 'wedged' in second, 'the second lifecycle was silently skipped — this is the rewind/prune leak');
+  });
+
+  // T3 — PINS: "already torn down" is DISTINGUISHABLE from "nothing to do". A
+  // caller that cannot tell them apart cannot tell a no-op from a leak.
+  test('a repeated teardown reports that it was already torn down', async () => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: plan(rundir), ccBootId: 'b', driver: d, scan: d.scan });
+    await s.prepare();
+    assert.ok('wedged' in (await s.teardown()));
+    assert.deepEqual(await s.teardown(), { alreadyTornDown: true });
+  });
+
+  // T3 — PINS the handshake deadline's two arms, which differ in what the
+  // caller must do: a LIVE process that never wrote the record is a mount that
+  // did not come up, a DEAD one has already put its own named refusal on stderr.
+  test('awaitHandshake gives up at the deadline while alive, and immediately once dead', async () => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const driver = fakeDriver();
+    const s = new FuseSession({ plan: plan(rundir), ccBootId: 'b', driver, scan: driver.scan, deadlines: { handshakeMs: 500, pollMs: 50 } });
+    await s.prepare();
+
+    const t0 = driver.now();
+    assert.equal(await s.awaitHandshake(() => true), null);
+    assert.ok(driver.now() - t0 >= 500, `gave up after ${driver.now() - t0}ms of a 500ms deadline`);
+
+    const t1 = driver.now();
+    assert.equal(await s.awaitHandshake(() => false), null);
+    assert.equal(driver.now() - t1, 0, 'waited out the deadline on a process already known to be dead');
+  });
+
+  // PINS: the handshake waits for `stage: mounted`. The record exists from the
+  // moment the bootstrap has a pid to name, so its mere presence would report a
+  // mount that is not up.
+  test('awaitHandshake ignores a stage:starting record and takes the mounted one', async () => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const p = plan(rundir);
+    const driver = fakeDriver();
+    const s = new FuseSession({ plan: p, ccBootId: 'b', driver, scan: driver.scan, deadlines: { handshakeMs: 300, pollMs: 50 } });
+    await s.prepare();
+    await fs.writeFile(p.recordPath, JSON.stringify({ stage: 'starting', anchorPid: 7, daemonPid: 0 }));
+    assert.equal(await s.awaitHandshake(() => true), null);
+    // …but it is REMEMBERED, so a caller tearing the failed launch down still
+    // has the pids the bootstrap had already recorded.
+    assert.equal(s.record.anchorPid, 7);
+
+    await fs.writeFile(p.recordPath, JSON.stringify({ stage: 'mounted', anchorPid: 7, daemonPid: 8 }));
+    const rec = await s.awaitHandshake(() => true);
+    assert.equal(rec.daemonPid, 8);
+  });
+
+  // PINS: relaunching into a run directory whose previous teardown WEDGED is
+  // refused rather than silently mounting a second session over the handle to
+  // the first.
+  test('prepare() refuses to reuse a run directory whose last teardown wedged', async () => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const p = plan(rundir);
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: p, ccBootId: 'b', driver: d, scan: d.scan });
+    await s.prepare();
+    await fs.writeFile(p.recordPath, JSON.stringify({ stage: 'mounted', wedged: true, terminalState: 'WEDGED(threads=2 states=DD)' }));
+    await assert.rejects(() => s.prepare(), (e) => {
+      assert.equal(e.code, 'FUSE_PREVIOUS_TEARDOWN_WEDGED');
+      return true;
+    });
+  });
+});
+
 describe('the record-independent orphan backstop', () => {
   const RUN_ROOT = '/store/.code-conductor/systems/fuse/run';
-  const row = (pid, start, id, rundir) => `${pid}\t${start}\t${id}\t${rundir}`;
+  const row = (pid, start, ns, id, rundir) => `${pid}\t${start}\t${ns}\t${id}\t${rundir}`;
+  const scanOf = (...rows) => async () => ({ ok: true, raw: rows.join('\n') });
 
   // PINS: attribution is on an identity the process CARRIES, and every missing
-  // or foreign field fails CLOSED. A scan that returned a pid it should not
-  // have would be a SIGKILL at a stranger.
-  test('attributes only complete rows inside this store\'s run root', () => {
-    const raw = [
-      row(100, '111', 'a', `${RUN_ROOT}/a`),                       // ours
-      row(101, '222', 'b', '/other/store/systems/fuse/run/b'),     // another install
-      row(102, '333', '', `${RUN_ROOT}/c`),                        // no instance id
-      row(103, '', 'd', `${RUN_ROOT}/d`),                          // no starttime
-      row(104, '444', 'e', ''),                                    // no rundir
-      row(1, '555', 'f', `${RUN_ROOT}/f`),                         // pid 1 is never ours
-      row('nope', '666', 'g', `${RUN_ROOT}/g`),                    // unparsable pid
-      `${RUN_ROOT}-sibling/h`,                                     // garbage line
-      row(105, '777', 'h', `${RUN_ROOT}-notours/h`),               // prefix that is not a path prefix
+  // or foreign field fails CLOSED. A row that got through wrongly is a SIGKILL
+  // at a stranger.
+  test('parses and attributes only complete rows inside this store\'s run root', () => {
+    const rows = parseScan([
+      row(100, '111', 'mnt:[1]', 'a', `${RUN_ROOT}/a`),                    // ours
+      row(101, '222', 'mnt:[1]', 'b', '/other/store/systems/fuse/run/b'),  // another install
+      row(102, '333', 'mnt:[1]', '', `${RUN_ROOT}/c`),                     // no instance id
+      row(103, '', 'mnt:[1]', 'd', `${RUN_ROOT}/d`),                       // no starttime
+      row(104, '444', 'mnt:[1]', 'e', ''),                                 // no rundir
+      row(1, '555', 'mnt:[1]', 'f', `${RUN_ROOT}/f`),                      // pid 1 is never ours
+      row('nope', '666', 'mnt:[1]', 'g', `${RUN_ROOT}/g`),                 // unparsable pid
+      row(105, '777', 'mnt:[1]', 'h', `${RUN_ROOT}-notours/h`),            // prefix, not a path prefix
+      'garbage',
       '',
-    ].join('\n');
-    assert.deepEqual(parseOrphanScan(raw, RUN_ROOT), [
-      { pid: 100, starttime: '111', instanceId: 'a', rundir: `${RUN_ROOT}/a` },
-    ]);
+    ].join('\n'));
+    assert.deepEqual(orphansUnder(rows, RUN_ROOT).map(r => r.pid), [100]);
   });
 
-  test('an empty scan — the case where sudo is unavailable — attributes nothing', () => {
-    assert.deepEqual(parseOrphanScan('', RUN_ROOT), []);
+  // PINS the union of the two uid passes: the pass that could read a field wins
+  // over the one that could not, so a process readable by only one of them is
+  // still fully described. Without this the anchor (root-readable) and the
+  // worker (cc-readable) can never appear in one enumeration.
+  test('unions the two uid passes by pid, field by field', () => {
+    const rows = parseScan([
+      row(200, '111', '', '', ''),                        // the pass that could not read it
+      row(200, '111', 'mnt:[9]', 'x', `${RUN_ROOT}/x`),   // the pass that could
+    ].join('\n'));
+    assert.equal(rows.length, 1);
+    assert.deepEqual(rows[0], { pid: 200, starttime: '111', nsMnt: 'mnt:[9]', instanceId: 'x', rundir: `${RUN_ROOT}/x` });
   });
 
-  // PINS: the backstop unmounts through the orphan BEFORE killing it (it is the
-  // handle), re-verifies its identity immediately before signalling, and skips
-  // anything a record still covers.
+  // PINS: membership by EITHER identity — the namespace id when there is a
+  // record, the run directory when there is not.
+  test('membership accepts the namespace id or the run directory, and nothing else', () => {
+    const rows = parseScan([
+      row(300, '1', 'mnt:[9]', '', ''),                   // in the namespace
+      row(301, '1', 'mnt:[8]', 'y', `${RUN_ROOT}/y`),     // elsewhere, but ours by rundir
+      row(302, '1', 'mnt:[8]', 'z', `${RUN_ROOT}/z`),     // neither
+    ].join('\n'));
+    assert.deepEqual(membersOf(rows, { nsMntId: 'mnt:[9]', rundir: `${RUN_ROOT}/y` }).map(r => r.pid), [300, 301]);
+    assert.deepEqual(membersOf(rows, {}).map(r => r.pid), [], 'membership with no identity to compare must match nothing');
+  });
+
+  test('a scan that could not run reports enumerated:false and signals nothing', async () => {
+    const driver = fakeDriver({ procs: { 900: { starttime: '999', state: 'S' } } });
+    const out = await reclaimOrphanProcesses(RUN_ROOT, {
+      driver, log: { warn() {} }, scan: async () => ({ ok: false, raw: '' }),
+    });
+    assert.equal(out.enumerated, false);
+    assert.deepEqual(out.reclaimed, []);
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
+  });
+
   test('reclaims a record-less orphan: unmount first, then kill, identity re-checked', async () => {
     const rundir = await mkdtemp('cc-fuse-orphan-');
     const runRoot = path.dirname(rundir);
-    const procs = { 900: { starttime: '999', state: 'S' } };
-    const driver = fakeDriver({ procs, mounts: { 900: [path.join(rundir, 'root'), path.join(rundir, 'root', 'proc')] } });
-    const out = await reclaimOrphanProcesses(runRoot, {
-      driver, log: { warn() {} },
-      scan: async () => row(900, '999', path.basename(rundir), rundir),
+    const driver = fakeDriver({
+      procs: { 900: { starttime: '999', state: 'S' } },
+      mounts: { 900: [path.join(rundir, 'root'), path.join(rundir, 'root', 'proc')] },
     });
-    assert.equal(out.length, 1);
-    assert.equal(out[0].killed, true);
-    assert.deepEqual(out[0].unmounted, [path.join(rundir, 'root', 'proc'), path.join(rundir, 'root')]);
+    const out = await reclaimOrphanProcesses(runRoot, {
+      driver, log: { warn() {} }, scan: scanOf(row(900, '999', 'mnt:[9]', path.basename(rundir), rundir)),
+    });
+    assert.equal(out.enumerated, true);
+    assert.equal(out.reclaimed[0].killed, true);
+    assert.deepEqual(out.reclaimed[0].unmounted, [path.join(rundir, 'root', 'proc'), path.join(rundir, 'root')]);
     const ops = driver.calls.map(c => c[0]);
     assert.ok(ops.indexOf('signal') > ops.lastIndexOf('umount'), `order was ${ops.join(',')}`);
+    // Privileged: an orphan may be the root-owned anchor or bootstrap, and an
+    // unprivileged signal at one is EPERM, which reads as "already gone".
+    assert.equal(driver.calls.find(c => c[0] === 'signal')[3], 'sudo');
   });
 
   test('a pid whose starttime moved since the scan is NOT signalled', async () => {
     const rundir = await mkdtemp('cc-fuse-orphan-');
     const driver = fakeDriver({ procs: { 901: { starttime: 'DIFFERENT', state: 'S' } }, mounts: { 901: [] } });
     const out = await reclaimOrphanProcesses(path.dirname(rundir), {
-      driver, log: { warn() {} },
-      scan: async () => row(901, '999', path.basename(rundir), rundir),
+      driver, log: { warn() {} }, scan: scanOf(row(901, '999', 'mnt:[9]', path.basename(rundir), rundir)),
     });
-    assert.equal(out[0].killed, false);
-    assert.match(out[0].note, /recycled/);
+    assert.equal(out.reclaimed[0].killed, false);
+    assert.match(out.reclaimed[0].note, /recycled/);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
   });
 
@@ -740,10 +1066,9 @@ describe('the record-independent orphan backstop', () => {
     await fs.writeFile(path.join(rundir, 'mount.json'), '{}');
     const driver = fakeDriver({ procs: { 902: { starttime: '999', state: 'S' } }, mounts: { 902: [] } });
     const out = await reclaimOrphanProcesses(path.dirname(rundir), {
-      driver, log: { warn() {} },
-      scan: async () => row(902, '999', path.basename(rundir), rundir),
+      driver, log: { warn() {} }, scan: scanOf(row(902, '999', 'mnt:[9]', path.basename(rundir), rundir)),
     });
-    assert.deepEqual(out, []);
+    assert.deepEqual(out.reclaimed, []);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
   });
 
@@ -752,10 +1077,49 @@ describe('the record-independent orphan backstop', () => {
     const id = path.basename(rundir);
     const driver = fakeDriver({ procs: { 903: { starttime: '999', state: 'S' } }, mounts: { 903: [] } });
     const out = await reclaimOrphanProcesses(path.dirname(rundir), {
-      driver, log: { warn() {} }, liveIds: [id],
-      scan: async () => row(903, '999', id, rundir),
+      driver, log: { warn() {} }, liveIds: [id], scan: scanOf(row(903, '999', 'mnt:[9]', id, rundir)),
     });
-    assert.deepEqual(out, []);
+    assert.deepEqual(out.reclaimed, []);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
+  });
+});
+
+describe('two teardowns of the same run directory at once', () => {
+  // T5 — the boot sweep and an instance can reach the SAME run directory
+  // concurrently: `#tornDown` is per-FuseSession and says nothing about a sweep
+  // running in this process (or, at boot, in another one). Neither pass may
+  // reject, neither may signal a pid that has stopped being ours, and the
+  // directory must end up gone exactly once rather than resurrected.
+  test('neither rejects, no stranger is signalled, and the directory ends up gone', async () => {
+    const { rundir, record } = await seedRun();
+    const procs = liveBoth();
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
+    const both = await Promise.all([
+      runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } }),
+      runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } }),
+    ]);
+    for (const r of both) assert.equal(r.wedged, false, JSON.stringify(r.notes));
+    assert.ok(both.some(r => r.removedRunDir), 'neither pass reclaimed the directory');
+    await assert.rejects(() => fs.stat(rundir), 'the run directory survived, or was resurrected');
+    // Every signal went at one of the three recorded pids, each of which was
+    // starttime-verified immediately before. A second pass finding a pid
+    // already dead must not signal the number again.
+    for (const [, pid] of driver.calls.filter(c => c[0] === 'signal')) {
+      assert.ok([WORKER, DAEMON, ANCHOR].includes(pid), `signalled ${pid}, which this session never recorded`);
+    }
+  });
+
+  // PINS the resurrection half on its own: a wedge verdict reached after the
+  // directory is already gone must not recreate it, because writeJsonAtomic
+  // mkdir -p's its parent.
+  test('a wedge verdict does not recreate a directory another pass reclaimed', async () => {
+    const { rundir, record } = await seedRun();
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([DAEMON]) });
+    // The concurrent pass reclaims the directory just as this one starts
+    // deciding — modelled by removing it during the enumeration.
+    const scan = async (opts) => { await fs.rm(rundir, { recursive: true, force: true }); return driver.scan(opts); };
+    const report = await runTeardown({ rundir, driver, scan, log: { warn() {} } });
+    assert.equal(report.wedged, true, 'the undead daemon should still be a wedge');
+    await assert.rejects(() => fs.stat(rundir), 'the wedge write resurrected the reclaimed directory');
   });
 });

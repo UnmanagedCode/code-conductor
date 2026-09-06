@@ -40,7 +40,7 @@ import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { fuseRunDir, fuseRunRoot } from '../src/systems/fuse/plan.ts';
-import { findOrphanProcesses } from '../src/systems/fuse/orphans.ts';
+import { scanProcesses, orphansUnder } from '../src/systems/fuse/procScan.ts';
 import { assertFuseAvailable } from '../src/systems/fuse/preflight.ts';
 
 const ENABLED = process.env.RUN_FUSE_LIFECYCLE === '1';
@@ -158,7 +158,11 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // CC_FUSE_RUNDIR in /proc/<pid>/environ, scoped to THIS run's run root — never
   // on comm or cmdline. `sleep infinity` is as generic a needle as exists here.
   async function attributableProcesses() {
-    return findOrphanProcesses(runRoot);
+    const { ok, rows } = await scanProcesses({ withEnviron: true });
+    // A scan that could not run is a FAILURE, not an empty result — that
+    // distinction is the whole point of the control in arm 4.
+    assert.equal(ok, true, 'the process scan could not run; no emptiness below is evidence');
+    return orphansUnder(rows, runRoot);
   }
 
   after(async () => {
@@ -316,6 +320,16 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assert.ok(alive(record.anchorPid, record.anchorStart), 'the anchor did not survive the restart shutdown');
     assert.ok(mountsUnder(record.anchorPid, runRoot).includes(record.root), 'the union was already unmounted');
 
+    // THE POSITIVE CONTROL FOR ARM 7. That arm asserts ZERO rows from a scan
+    // that fails closed at every step, so a `hidepid` mount option, a sudoers
+    // change or a broken privileged pass would blind it and it would pass for
+    // ever. Here the anchor is KNOWN to be alive, so the scan must see it —
+    // and arm 7's emptiness is only evidence because this ran first.
+    const seen = await attributableProcesses();
+    assert.ok(seen.some(r => r.pid === record.anchorPid),
+      `the process scan cannot see a live anchor (pid ${record.anchorPid}); arm 7's zero is not evidence: ${JSON.stringify(seen)}`);
+    console.log(`fuse gate [arm 4 control] the scan sees ${seen.length} live process(es) of this session, including the anchor`);
+
     const sweeper = await sh(process.execPath, ['--experimental-strip-types',
       path.join(HERE, 'fixtures', 'fuseSweepProbe.mjs'), fuseRunRoot()]);
     assert.ok(sweeper.ok, `the sweep probe failed: ${sweeper.stderr}`);
@@ -350,7 +364,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // CONFIGURATION time (plan.ts, FUSE_MIRROR_CONTAINS_MOUNT). So the deadlock's
   // classification is pinned by the deterministic suite's fake driver and by
   // S3's own measurement of the abort, not here.
-  test('arm 5 — a mount that will not unmount in place is torn down bounded, with no residue', async () => {
+  test('arm 5 — a live unrecorded namespace member is a bounded, reported wedge the sweep then clears', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
     const record = await readRecord(inst.id);
@@ -362,7 +376,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // A process whose cwd is inside the union: `umount <root>` is EBUSY while
       // it lives. Its pid is ours — this test started it — and it is the only
       // thing this arm ever signals.
-      const started = await sh('sudo', ['-n', 'nsenter', ns, '--', '/bin/sh', '-c',
+      // UID 1000, not root — which is both what a real Bash-forwarder child is
+      // and what lets this test signal it without sudo. A root-owned holder
+      // gives cc EPERM on `kill`, and killPids swallows that as "already gone".
+      const started = await sh('sudo', ['-n', 'nsenter', ns, '--',
+        'setpriv', `--reuid=${process.getuid()}`, `--regid=${process.getgid()}`, '--init-groups', '--',
+        '/bin/sh', '-c',
         // stdio detached, or `sudo` waits on the backgrounded process's
         // inherited stdout for the whole 300 s.
         'cd "$1" && { sleep 300 </dev/null >/dev/null 2>&1 & echo $!; }', 'sh', path.join(record.root, 'srv')]);
@@ -384,21 +403,34 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.ok(elapsed < 120_000, `teardown took ${elapsed}ms`);
       console.log(`fuse gate: busy-mount teardown took ${elapsed}ms`);
     } finally {
-      if (holderPid && holderStart) killPids([{ pid: holderPid, ident: holderStart }], { identOf: startOf });
+      if (holderPid && holderStart) {
+        killPids([{ pid: holderPid, ident: holderStart }], { identOf: startOf });
+        // A causal barrier, not politeness: SIGKILL is asynchronous, and the
+        // sweep below must run against a namespace the holder has actually
+        // left — otherwise it correctly re-wedges and the assertion that it
+        // clears the record is testing the race, not the sweep.
+        await waitFor(() => !alive(holderPid, holderStart), { timeout: 15_000 });
+      }
       if (instances.byId.has(inst.id)) await instances.remove(inst.id).catch(() => {});
     }
 
-    // Either outcome is acceptable and both must be TRUE: a clean teardown, or
-    // a wedge whose record says so and which the sweep then clears.
+    // THE VERDICT IS TAKEN FROM NAMESPACE MEMBERSHIP, and here that is the
+    // whole point: the holder is alive in the session's namespace at teardown
+    // time and NO record names it, so a verdict taken from the recorded pid set
+    // would have called this clean and destroyed the record over a live
+    // namespace. It must be a reported wedge whose record survives.
     const kept = await readRecord(inst.id);
-    console.log(`fuse gate: busy-mount arm → ${kept ? `record kept, terminalState=${kept.terminalState}, residual=${JSON.stringify(kept.residualMounts)}` : 'teardown finished clean'}`);
-    if (kept) {
-      assert.equal(kept.wedged, true, 'a kept record must say it is wedged');
-      assert.ok(typeof kept.terminalState === 'string' && kept.terminalState.length > 0);
-      const sweeper = await sh(process.execPath, ['--experimental-strip-types',
-        path.join(HERE, 'fixtures', 'fuseSweepProbe.mjs'), fuseRunRoot()]);
-      assert.ok(sweeper.ok, sweeper.stderr);
-    }
+    console.log(`fuse gate: busy-mount arm → ${kept ? `record kept, terminalState=${kept.terminalState}, survivingPids=${JSON.stringify(kept.survivingPids)}, residual=${JSON.stringify(kept.residualMounts)}` : 'teardown finished clean'}`);
+    assert.ok(kept, 'a live unrecorded namespace member did not keep the record');
+    assert.equal(kept.wedged, true, 'a kept record must say it is wedged');
+    assert.deepEqual(kept.survivingPids, [], 'a RECORDED pid survived, so this arm would pass for the wrong reason');
+    assert.ok(typeof kept.terminalState === 'string' && kept.terminalState.length > 0);
+
+    // …and the follow-up sweep, with the holder now dead, clears it.
+    const sweeper = await sh(process.execPath, ['--experimental-strip-types',
+      path.join(HERE, 'fixtures', 'fuseSweepProbe.mjs'), fuseRunRoot()]);
+    assert.ok(sweeper.ok, sweeper.stderr);
+    await assert.rejects(() => fs.stat(fuseRunDir(inst.id)), 'the sweep did not clear the wedged record');
     assertNoResidue(before, runRoot, record, 'arm 5');
   });
 

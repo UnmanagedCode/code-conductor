@@ -25,6 +25,12 @@ die() { echo "cc-fuse-bootstrap: REFUSED — $*" >&2; exit 78; }
 for b in mount umount chroot setpriv; do
 	command -v "$b" >/dev/null 2>&1 || die "\`$b\` is not on PATH"
 done
+# RESOLVED HERE, ABSOLUTELY, and exec'd by these paths at step 10. That step
+# restores a CALLER-SUPPLIED PATH immediately before exec'ing as uid 0, so a
+# bare name there would be resolved against it. This probe already ran; capture
+# what it found rather than looking again through a different PATH.
+CHROOT_BIN=$(command -v chroot)
+SETPRIV_BIN=$(command -v setpriv)
 grep -q '[[:space:]]fusectl$' /proc/filesystems || die "fusectl is not in /proc/filesystems"
 [ -x "$CC_FUSE_BIN" ] || die "union binary $CC_FUSE_BIN is missing or not executable"
 [ -r "$CC_FUSE_PINS" ] || die "pins file $CC_FUSE_PINS is unreadable"
@@ -189,9 +195,9 @@ mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chr
 #        `bootstrapPid` — as the CLI's own.
 PATH="${CC_FUSE_PATH:-$PATH}"
 export PATH
-exec chroot "$CC_FUSE_ROOT" /bin/sh -c '
-	cd "$1" || { echo "cc-fuse-bootstrap: REFUSED — cwd $1 does not exist inside the chroot" >&2; exit 78; }
-	u=$2; g=$3
-	shift 3
-	exec setpriv --reuid="$u" --regid="$g" --init-groups -- "$@"
-' sh "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$@"
+exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c '
+	cd "$2" || { echo "cc-fuse-bootstrap: REFUSED — cwd $2 does not exist inside the chroot" >&2; exit 78; }
+	sp=$1; u=$3; g=$4
+	shift 4
+	exec "$sp" --reuid="$u" --regid="$g" --init-groups -- "$@"
+' sh "$SETPRIV_BIN" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$@"

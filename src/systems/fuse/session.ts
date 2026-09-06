@@ -27,7 +27,10 @@ import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
 import { RECORD_SCHEMA } from './plan.ts';
+import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
+import { scanProcesses, membersOf, type ProcRow, type RawScan } from './procScan.ts';
+import { reclaimProcess, type OrphanReclaim } from './orphans.ts';
 
 export interface Deadlines {
   // Per-step bounds. Every one of them is a BOUND, not a wait: a step that
@@ -64,6 +67,15 @@ export interface TeardownReport {
   // is a wedge by definition: the record may not be destroyed while a process
   // it names is running.
   survivingPids: string[];
+  // Processes still in this session's MOUNT NAMESPACE — the enumeration the
+  // clean verdict is actually taken from, which is wider than the recorded set
+  // (a Bash forwarder's children are in it and no record names them).
+  namespaceMembers: number[];
+  // false ⇒ the process scan could not run, so an empty membership proves
+  // NOTHING. Anything cc cannot enumerate is a wedge, not a pass.
+  enumerated: boolean;
+  // What the intent-only path (no mount.json) found and reclaimed by marker.
+  markerReclaimed: OrphanReclaim[];
   // GONE | ZOMBIE-ORPHAN | NO-PID | WEDGED(threads=n states=…)
   terminalState: string;
   // In the order the unmounts were ISSUED — deepest-first is an ordering claim,
@@ -90,6 +102,10 @@ interface Sinks {
 export interface TeardownInput extends Sinks {
   rundir: string;
   driver?: MountDriver;
+  // The /proc enumeration seam (procScan.ts). Injected so the clean verdict —
+  // including the case where it CANNOT be established — is testable without
+  // sudo and without real processes.
+  scan?: RawScan;
   deadlines?: Partial<Deadlines>;
   // Called once, before the signalling ladder — the Instance's stdin EOF. A
   // graceful close is the cheapest way for the CLI to go, and it costs nothing
@@ -172,6 +188,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     instanceId: path.basename(rundir),
     source: 'NO-RECORD',
     workerPid: null, workerStopped: false, daemonPid: null, anchorPid: null, survivingPids: [],
+    namespaceMembers: [], enumerated: false, markerReclaimed: [],
     terminalState: 'NO-PID',
     unmounted: [], lazyUnmounted: [],
     abort: 'skipped', minor: null,
@@ -179,14 +196,48 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     wedged: false, removedRunDir: false, notes,
   };
 
+  // THE MACHINE NEVER REJECTS. Every step below is bounded and has a failure
+  // branch, but an UNEXPECTED throw — a malformed record reaching execFile, a
+  // driver that raises — would otherwise reject the whole call, and both
+  // callers swallow that (`kill()` catches, `_handleExit` fires it with
+  // `void`). The daemon, the mounts and the record would all survive with no
+  // wedge report at all. So a throw is caught here and converted into the
+  // loudest verdict the machine has.
+  let record: FuseMountRecord | null = null;
+  let schemaViolation = false;
+  try {
+
   // ── 0. the record, and the pid re-verification ─────────────────────────
-  const record = await readJson<FuseMountRecord>(recordPath);
+  record = await readJson<FuseMountRecord>(recordPath);
   const intent = record ?? await readJson<FuseIntent>(path.join(rundir, 'intent.json'));
   if (record) report.source = 'mount.json';
   else if (intent) { report.source = 'intent.json'; notes.push('NO-RECORD: no mount.json — the bootstrap never completed its handshake'); }
   else notes.push('NO-RECORD: neither mount.json nor intent.json is readable; nothing signalled');
   if (intent) report.instanceId = intent.instanceId ?? report.instanceId;
   report.minor = record?.minor ?? null;
+
+  // ── 0b. SCHEMA VALIDATION of the two fields that reach a root-executed
+  //        command line. This is about ROBUSTNESS, not a threat model — the
+  //        epic already accepts the chroot is not a security boundary here.
+  //        What is unacceptable is the no-adversary variant: a malformed record
+  //        makes `execFile` throw mid-state-machine, `runTeardown` rejects, the
+  //        kill path swallows it, and the daemon, the mounts and the record all
+  //        survive WITH NO WEDGE REPORT. A schema-violating record is a
+  //        reported wedge, never a mid-machine throw.
+  //
+  //        `fusectl` by EXACT equality with the path cc itself chose, not by
+  //        prefix; `minor` digits only, on top of the `includes` check the
+  //        abort already makes.
+  const fusectlOk = record?.fusectl === path.join(rundir, 'fusectl');
+  const minorOk = typeof record?.minor === 'string' && /^\d+$/.test(record.minor);
+  if (record && !fusectlOk) {
+    schemaViolation = true;
+    notes.push(`SCHEMA: fusectl '${record.fusectl}' is not ${path.join(rundir, 'fusectl')} — not used`);
+  }
+  if (record && record.minor !== '' && !minorOk) {
+    schemaViolation = true;
+    notes.push(`SCHEMA: minor '${record.minor}' is not a decimal number — not used`);
+  }
 
   const workerLive = await stillOurs(driver, record?.bootstrapPid, record?.bootstrapStart);
   const daemonLive0 = await stillOurs(driver, record?.daemonPid, record?.daemonStart);
@@ -216,17 +267,46 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     report.workerStopped = true;
   }
 
-  // The namespace is reachable through whichever of the two is still alive; if
-  // neither is, the namespace is gone and its mounts went with it.
+  // ── 1b. THE INTENT-ONLY PATH. No mount.json means one of two things, and
+  //        BOTH have processes behind them: the bootstrap died after starting
+  //        the anchor or the daemon, or it is still mid-handshake — which is
+  //        reachable in production every time `_awaitFuseMount` times out and
+  //        tears the launch down. This path used to signal nobody and then
+  //        delete the run directory, which destroyed the only handle on
+  //        whatever was running.
+  //
+  //        The handle that survives having no record is the marker the
+  //        bootstrap's own `execve` put in the environment of everything it
+  //        started — including the BOOTSTRAP ITSELF, which is what stops a
+  //        mid-handshake write rather than racing it.
+  if (!record) {
+    const scanned = await scanProcesses({ withEnviron: true }, input.scan);
+    report.enumerated = scanned.ok;
+    if (!scanned.ok) {
+      notes.push('could not enumerate processes — this run directory cannot be declared clean');
+    } else {
+      for (const row of membersOf(scanned.rows, { rundir })) {
+        report.markerReclaimed.push(await reclaimProcess(row, rundir, driver));
+      }
+      if (report.markerReclaimed.length) {
+        notes.push(`reclaimed ${report.markerReclaimed.length} process(es) by marker, with no record naming them`);
+      }
+    }
+  }
+
+  // The namespace is reachable through whichever recorded pid is still alive;
+  // if none is, its mounts are reached through any surviving MEMBER instead
+  // (step 7), and if there is no member either the namespace is gone.
   const nsPid = await pickNsPid(driver, record);
-  if (record && nsPid === null) notes.push('neither recorded pid is alive — the mount namespace is gone and its mounts with it');
+  if (record && nsPid === null) notes.push('no recorded pid is alive — the mount namespace is reachable only through an unrecorded member, if any');
 
   // ── 2. unmount DEEPEST-FIRST, and BEFORE the abort. The fusectl mount is
   //       held back deliberately: step 3 needs it, and unmounting it here is
   //       what would make the abort a silent no-op.
   if (record && nsPid !== null) {
+    const rec = record;
     const mounts = (await driver.readMounts(nsPid)) ?? [];
-    const targets = mounts.filter(mp => under(mp, rundir) && mp !== record.fusectl)
+    const targets = mounts.filter(mp => under(mp, rundir) && !(fusectlOk && mp === rec.fusectl))
       .sort((a, b) => b.length - a.length);
     for (const mp of targets) {
       if (await driver.umountIn(nsPid, mp, { lazy: false })) { report.unmounted.push(mp); continue; }
@@ -238,13 +318,14 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   // ── 3. abort the FUSE connection BY THE MINOR CAPTURED AT MOUNT TIME.
   //       Only ever a minor this session recorded.
   const nsPid3 = await pickNsPid(driver, record);
-  if (record && nsPid3 !== null) {
-    const conns = await driver.listConnections(nsPid3, record.fusectl);
-    report.strayConnections = conns.filter(c => c !== record.minor).length;
-    if (!record.minor) { report.abort = 'no-minor'; notes.push('no connection minor was recorded at mount time — nothing to abort'); }
-    else if (!conns.includes(record.minor)) { report.abort = 'ABORT-UNAVAILABLE'; notes.push(`no fusectl entry for connection ${record.minor}`); }
-    else if (await driver.abortMinor(nsPid3, record.fusectl, record.minor)) report.abort = 'aborted';
-    else { report.abort = 'abort-failed'; notes.push(`the write to ${record.fusectl}/${record.minor}/abort failed`); }
+  if (record && nsPid3 !== null && fusectlOk) {
+    const rec = record;
+    const conns = await driver.listConnections(nsPid3, rec.fusectl);
+    report.strayConnections = conns.filter(c => c !== rec.minor).length;
+    if (!rec.minor || !minorOk) { report.abort = 'no-minor'; notes.push('no usable connection minor was recorded at mount time — nothing to abort'); }
+    else if (!conns.includes(rec.minor)) { report.abort = 'ABORT-UNAVAILABLE'; notes.push(`no fusectl entry for connection ${rec.minor}`); }
+    else if (await driver.abortMinor(nsPid3, rec.fusectl, rec.minor)) report.abort = 'aborted';
+    else { report.abort = 'abort-failed'; notes.push(`the write to ${rec.fusectl}/${rec.minor}/abort failed`); }
   }
 
   // ── 4. and only now the daemon. ────────────────────────────────────────
@@ -262,7 +343,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
 
   // The fusectl mount, held back for step 3, goes last.
   const nsPid5 = await pickNsPid(driver, record);
-  if (record && nsPid5 !== null) {
+  if (record && nsPid5 !== null && fusectlOk) {
     const mounts = (await driver.readMounts(nsPid5)) ?? [];
     if (mounts.includes(record.fusectl)) {
       if (await driver.umountIn(nsPid5, record.fusectl, { lazy: false })) report.unmounted.push(record.fusectl);
@@ -297,9 +378,26 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //       old leak check could see it — its namespace is private so it can
   //       never appear in /proc/1/mounts, and its record was gone so it was in
   //       no recorded set to re-verify.
+  //
+  //       AND IT IS TAKEN FROM NAMESPACE MEMBERSHIP, NOT FROM THE RECORDED PID
+  //       SET. The recorded set is what the bootstrap wrote down; the namespace
+  //       is what is actually there, and the two differ in the ordinary case —
+  //       Bash is a real subprocess family and there is deliberately no
+  //       process-group kill on this path, so a live worker child holds mounts
+  //       open while naming nothing cc recorded. Anything cc cannot enumerate
+  //       is a wedge, not a pass.
+  const scanned = record ? await scanProcesses({ withEnviron: true }, input.scan) : { ok: report.enumerated, rows: [] as ProcRow[] };
+  if (record) report.enumerated = scanned.ok;
+  const members = membersOf(scanned.rows, { nsMntId: record?.nsMntId, rundir });
+  report.namespaceMembers = members.map(m => m.pid);
+
+  // Mounts are read through every reachable vantage point: cc's own table, pid
+  // 1's (the one that says whether anything escaped the private namespace at
+  // all), any live recorded pid, and any member the recorded set never named.
   const nsPid6 = await pickNsPid(driver, record);
+  const vantage = [process.pid, 1, ...(nsPid6 === null ? [] : [nsPid6]), ...members.map(m => m.pid)];
   const residual = new Set<string>();
-  for (const pid of [process.pid, 1, ...(nsPid6 === null ? [] : [nsPid6])]) {
+  for (const pid of vantage) {
     for (const mp of (await driver.readMounts(pid)) ?? []) if (under(mp, rundir)) residual.add(mp);
   }
   report.residualMounts = [...residual].sort();
@@ -312,9 +410,28 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
       if (await stillOurs(driver, pid, start)) report.survivingPids.push(`${what} pid ${pid}`);
     }
   }
+  if (members.length) notes.push(`mount namespace still has ${members.length} member(s): ${report.namespaceMembers.join(', ')}`);
+
+  // A record that appeared WHILE this ran means the bootstrap completed its
+  // handshake mid-teardown. Never delete over a record that has not been acted
+  // on; the sweep converges on the pids it names.
+  if (!record && await readJson<FuseMountRecord>(recordPath)) {
+    notes.push('mount.json appeared during teardown — the bootstrap finished its handshake; leaving it for the sweep');
+    schemaViolation = true; // reuse the force-wedge path; the note says why
+  }
+
   report.wedged = report.residualMounts.length > 0
     || report.terminalState.startsWith('WEDGED')
-    || report.survivingPids.length > 0;
+    || report.survivingPids.length > 0
+    || members.length > 0
+    || !report.enumerated
+    || schemaViolation;
+
+  } catch (e) {
+    notes.push(`teardown threw and was contained: ${(e as Error).message}`);
+    report.wedged = true;
+    report.enumerated = false;
+  }
 
   // ── 8. reclaim, or KEEP THE RECORD so the next boot sweep re-reports the
   //       wedge rather than silently rediscovering it.
@@ -322,23 +439,30 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     const line = `cc-fuse: session ${report.instanceId} did not tear down cleanly — ${report.terminalState}`
       + `, daemon pid ${report.daemonPid ?? '?'}, minor ${report.minor ?? '?'}`
       + (report.survivingPids.length ? `, still alive: ${report.survivingPids.join(', ')}` : '')
+      + (report.namespaceMembers.length ? `, namespace members still running: ${report.namespaceMembers.join(', ')}` : '')
+      + (report.enumerated ? '' : ', AND THE PROCESS SCAN COULD NOT RUN — this verdict is "unknown", not "clean"')
       + (report.residualMounts.length ? `, mounts still present: ${report.residualMounts.join(' ')}` : '');
     // Both surfaces on purpose: the event stream is what an operator watching
     // this session is already looking at, and console.warn survives the
     // session's death and lands in the orchestrator log.
     try { input.emit?.({ kind: 'system', subtype: 'stderr', data: { line } }); } catch { /* the session may already be gone */ }
     (input.log ?? console).warn(line);
-    if (record) {
+    // Only if the run directory is STILL THERE. writeJsonAtomic mkdir -p's its
+    // parent, so a wedge verdict reached after a concurrent pass (the boot
+    // sweep, or the instance's own crash path) already reclaimed the directory
+    // would RESURRECT it — an orphan record for a session that no longer
+    // exists, which the next sweep then has to process.
+    if (record && await fsp.stat(rundir).then(() => true, () => false)) {
       await writeJsonAtomic(recordPath, {
         ...record, wedged: true, terminalState: report.terminalState,
         residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
       }).catch(() => {});
     }
   } else {
-    // Safe to destroy the record ONLY because of the invariant bootstrap.sh
-    // step 2a enforces: nothing it starts precedes the record that names it. So
-    // an intent-only run directory (no mount.json at all) means the bootstrap
-    // died before it started anything, and there is nothing here to orphan.
+    // Reached only when the namespace enumeration RAN and came back empty, no
+    // recorded pid survives, no mount is left at any vantage point, and no
+    // record appeared mid-teardown. That is the whole precondition for
+    // destroying the only handle cc has on this session.
     try { await fsp.rm(rundir, { recursive: true, force: true }); report.removedRunDir = true; }
     catch (e) { notes.push(`could not reclaim ${rundir}: ${(e as Error).message}`); }
   }
@@ -364,10 +488,16 @@ async function pickNsPid(driver: MountDriver, record: FuseMountRecord | null): P
 }
 
 // ── the per-instance handle ─────────────────────────────────────────────────
+// Returned instead of a report when teardown has already run for THIS
+// lifecycle. Distinguishable on purpose: a caller that cannot tell "already
+// torn down" from "there was nothing to do" cannot tell a no-op from a leak.
+export interface AlreadyTornDown { alreadyTornDown: true }
+
 export class FuseSession {
   readonly plan: FusePlan;
   readonly #ccBootId: string;
   readonly #driver: MountDriver;
+  readonly #scan: RawScan | undefined;
   readonly #sinks: Sinks;
   readonly #deadlines: Deadlines;
   #tornDown = false;
@@ -376,10 +506,11 @@ export class FuseSession {
   // spawn() is not.
   unionBinary: string | null = null;
 
-  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; deadlines?: Partial<Deadlines> } & Sinks) {
+  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines> } & Sinks) {
     this.plan = opts.plan;
     this.#ccBootId = opts.ccBootId;
     this.#driver = opts.driver ?? realMountDriver;
+    this.#scan = opts.scan;
     this.#sinks = { emit: opts.emit, log: opts.log };
     this.#deadlines = { ...DEFAULT_DEADLINES, ...opts.deadlines };
   }
@@ -405,6 +536,26 @@ export class FuseSession {
   // name: the directory exists and intent.json says whose it is.
   async prepare(): Promise<void> {
     const p = this.plan;
+    // A RELAUNCH INTO THE SAME RUN DIRECTORY IS ORDINARY: rewind and prune both
+    // kill the subprocess and call launch() again on the same Instance, so this
+    // runs once per lifecycle, not once per session.
+    //
+    // Two things therefore have to be reset here, and the first was the whole
+    // of a leak: the teardown latch, which otherwise made the SECOND kill() a
+    // silent no-op — no unmounts, no abort, no signals, and a root daemon plus
+    // a private mount surviving until the next orchestrator restart. And the
+    // previous lifecycle's record, or awaitHandshake would return it and cc
+    // would tear down a mount that no longer exists while the new one runs.
+    const stale = await readJson<FuseMountRecord>(p.recordPath);
+    if (stale?.wedged) {
+      // Mounting a second session over the handle to a wedged first one loses
+      // that handle. Fail loudly instead; the run directory is the operator's
+      // (and the next boot sweep's) evidence.
+      throw httpError(500, `FUSE_PREVIOUS_TEARDOWN_WEDGED: ${p.rundir} still records an unfinished teardown (${stale.terminalState ?? 'wedged'}); refusing to reuse it`, { code: 'FUSE_PREVIOUS_TEARDOWN_WEDGED' });
+    }
+    await fsp.rm(p.recordPath, { force: true }).catch(() => {});
+    this.record = null;
+    this.#tornDown = false;
     await fsp.mkdir(p.root, { recursive: true });
     await fsp.mkdir(p.mirror, { recursive: true });
     await fsp.mkdir(p.fusectl, { recursive: true });
@@ -446,12 +597,13 @@ export class FuseSession {
 
   // Idempotent: the crash path (_handleExit) and the commanded path (kill())
   // both reach it, and on a normal kill_instance both fire.
-  async teardown(closeStdin?: () => void): Promise<TeardownReport | null> {
-    if (this.#tornDown) return null;
+  async teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
+    if (this.#tornDown) return { alreadyTornDown: true };
     this.#tornDown = true;
     return runTeardown({
       rundir: this.plan.rundir,
       driver: this.#driver,
+      scan: this.#scan,
       deadlines: this.#deadlines,
       closeStdin,
       ...this.#sinks,

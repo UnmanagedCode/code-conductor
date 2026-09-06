@@ -116,7 +116,11 @@ export const realMountDriver: MountDriver = {
   },
   async signal(pid, sig, { privileged }) {
     if (privileged) { await run('sudo', ['-n', 'kill', `-${sig.slice(3)}`, String(pid)], 10_000); return; }
-    try { process.kill(pid, sig); } catch { /* already gone */ }
+    // Swallowed deliberately, and NOT read as death: EPERM lands here too (a
+    // FUSE worker is root until the bootstrap's setpriv runs). Nothing here
+    // concludes anything from the throw — every caller re-verifies the pid
+    // positively afterwards, which is what makes that safe.
+    try { process.kill(pid, sig); } catch { /* gone, or not ours to signal */ }
   },
   now() { return Date.now(); },
   sleep(ms) { return new Promise(r => setTimeout(r, ms)); },

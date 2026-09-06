@@ -70,6 +70,22 @@ const LOADER_PINS = [
   '/usr/lib/x86_64-linux-gnu/gconv',
 ];
 
+// THE INTERPRETER CHAIN `bootstrap.sh`'S LAST STEP EXECS **INSIDE** THE UNION,
+// as root and before the privilege drop: `chroot $ROOT /bin/sh -c '... exec
+// setpriv ...'`. Unpinned, those paths take the remote-first `default:` arm
+// (union.c:940), so which side answers depends on the remote's contents. Nearly
+// unreachable with S1's narrow fixture and load-bearing the moment S2 widens
+// `mirrorRoot` to `/` — pinned while the table is being born rather than left
+// for S2 to discover that root's pre-drop interpreter was remote-served.
+//
+// Both spellings of each, because which one exists is a distribution choice and
+// a pin that matches nothing costs nothing. `chroot` itself is NOT here: it runs
+// on the host, before the union is entered.
+const BOOTSTRAP_CHAIN = [
+  '/bin/sh', '/usr/bin/sh', '/bin/dash', '/usr/bin/dash', '/bin/bash', '/usr/bin/bash',
+  '/usr/bin/setpriv', '/bin/setpriv',
+];
+
 export interface TierTableInput {
   // The host-local paths a redirected session may legitimately reach. cc
   // already owns this set (see Instance create → SessionRedirect.localRoots);
@@ -160,6 +176,7 @@ export function buildTierTable(input: TierTableInput): TierEntry[] {
   // EXDEV, because renameat2 cannot cross backing stores.
   add('host', input.homeDir, "the CLI's own state — the whole home dir, because its config update straddles it");
   for (const r of input.localRoots) add('host', r, 'a local root this session\'s file tools may name');
+  for (const b of BOOTSTRAP_CHAIN) for (const p of binaryPins(b)) add('host', p, "the bootstrap's interpreter chain, exec'd inside the union as root");
   for (const p of ETC_PINS) add('host', p, 'identity, name resolution, TLS trust, managed settings');
   for (const p of LOADER_PINS) add('host', p, "the loader's NEEDED set and glibc's dlopen closure");
   // Longest prefix wins, so this overrides the store/projects-root host pins

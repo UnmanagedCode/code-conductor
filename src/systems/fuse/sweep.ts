@@ -16,13 +16,15 @@ import path from 'node:path';
 import { fuseRunRoot } from './plan.ts';
 import { runTeardown, type TeardownReport } from './session.ts';
 import type { MountDriver } from './driver.ts';
-import { reclaimOrphanProcesses, type OrphanScan } from './orphans.ts';
+import { reclaimOrphanProcesses } from './orphans.ts';
+import type { RawScan } from './procScan.ts';
 
 export interface SweepOptions {
   driver?: MountDriver;
-  // The record-independent backstop's /proc pass (see orphans.ts). Injected so
-  // the fail-closed attribution is testable without sudo.
-  scan?: OrphanScan;
+  // The /proc enumeration seam (procScan.ts), shared by the record pass's clean
+  // verdict and the record-independent backstop. Injected so the fail-closed
+  // attribution is testable without sudo.
+  scan?: RawScan;
   log?: { warn: (...args: unknown[]) => void };
   // Present for symmetry with sweepSessionTmpDirs; at boot there are no live
   // sessions, and the sweep is only ever called there.
@@ -43,7 +45,7 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
   for (const name of entries) {
     if (keep.has(name)) continue;
     try {
-      const report = await runTeardown({ rundir: path.join(root, name), driver: opts.driver, log });
+      const report = await runTeardown({ rundir: path.join(root, name), driver: opts.driver, scan: opts.scan, log });
       reports.push(report);
       // Every non-GONE terminal state is reported. A wedged record is LEFT IN
       // PLACE by runTeardown, so the next boot re-reports it rather than
@@ -71,7 +73,9 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
   // argument, and so a leak whose record was destroyed is discoverable at all —
   // a private namespace never appears in /proc/1/mounts, and a destroyed record
   // is in no set to re-verify.
-  try { await reclaimOrphanProcesses(root, { driver: opts.driver, scan: opts.scan, liveIds: keep, log }); }
-  catch (e) { log.warn(`cc-fuse sweep: the orphan-process backstop failed: ${(e as Error).message}`); }
+  try {
+    const backstop = await reclaimOrphanProcesses(root, { driver: opts.driver, scan: opts.scan, liveIds: keep, log });
+    if (!backstop.enumerated) log.warn('cc-fuse sweep: could not enumerate processes — this boot cannot claim the store is clean');
+  } catch (e) { log.warn(`cc-fuse sweep: the orphan-process backstop failed: ${(e as Error).message}`); }
   return reports;
 }

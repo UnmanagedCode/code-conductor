@@ -26,6 +26,13 @@ export interface PreflightProbes {
   devFuseIsCharDevice(): Promise<boolean>;
   // `sudo -n true` exits 0 — uid 0 is reachable without a password prompt.
   sudoNonInteractive(): Promise<boolean>;
+  // `sudo -n -E` PRESERVES the environment. Probed separately and by the exact
+  // form the launch uses, because the two are independently configurable:
+  // sudoers can grant NOPASSWD without the SETENV tag, and such a host passes
+  // every other probe here and then dies inside sudo — turning criterion 9's
+  // named refusal into an undiagnosed failure on exactly the hosts that need
+  // diagnosing. The whole plan rides in CC_FUSE_* environment variables.
+  sudoPreservesEnv(): Promise<boolean>;
   // A binary resolvable on PATH.
   hasBinary(name: string): Promise<boolean>;
   // `fusectl` listed in /proc/filesystems.
@@ -40,12 +47,15 @@ function refuse(detail: string): Error {
   return httpError(501, `FUSE_UNAVAILABLE: ${detail}`, { code: FUSE_UNAVAILABLE });
 }
 
-function run(cmd: string, args: string[]): Promise<boolean> {
+function run(cmd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = execFile(cmd, args, { timeout: 10_000 }, (err) => resolve(!err));
+    const child = execFile(cmd, args, { timeout: 10_000, ...(env ? { env } : {}) }, (err) => resolve(!err));
     child.on('error', () => resolve(false));
   });
 }
+
+// The sentinel the -E probe looks for on the far side of sudo.
+export const SUDO_ENV_SENTINEL = 'CC_FUSE_PREFLIGHT';
 
 export const realProbes: Omit<PreflightProbes, 'ensureBinary'> = {
   async devFuseIsCharDevice() {
@@ -53,6 +63,10 @@ export const realProbes: Omit<PreflightProbes, 'ensureBinary'> = {
     catch { return false; }
   },
   sudoNonInteractive() { return run('sudo', ['-n', 'true']); },
+  sudoPreservesEnv() {
+    return run('sudo', ['-n', '-E', '/bin/sh', '-c', `[ "$${SUDO_ENV_SENTINEL}" = ok ]`],
+      { ...process.env, [SUDO_ENV_SENTINEL]: 'ok' });
+  },
   hasBinary(name: string) { return run('sh', ['-c', `command -v ${name}`]); },
   async hasFusectl() {
     try { return /(^|\s)fusectl$/m.test(await fsp.readFile('/proc/filesystems', 'utf8')); }
@@ -70,6 +84,9 @@ export async function assertFuseAvailable(probes: PreflightProbes): Promise<void
   }
   if (!(await probes.sudoNonInteractive())) {
     throw refuse('`sudo -n true` failed — cc needs passwordless uid 0 to enter a private mount namespace and mount the union. Grant NOPASSWD sudo to the user running cc.');
+  }
+  if (!(await probes.sudoPreservesEnv())) {
+    throw refuse('`sudo -n -E` did not carry the environment through — cc hands the whole mount plan to the bootstrap in CC_FUSE_* variables, so a sudoers rule with NOPASSWD but no SETENV cannot launch a worker. Add the `SETENV:` tag to the NOPASSWD rule (or drop `env_reset` for this user).');
   }
   for (const bin of REQUIRED_BINARIES) {
     if (!(await probes.hasBinary(bin))) {
