@@ -86,10 +86,10 @@ A **System** is a third placement for a project: its tree, git repo and shell co
 |---|---|
 | the `claude` CLI, cc's store, `~/.claude/` | **cc's host**, always |
 | the project tree, its git repo, `Bash` | **the system** |
-| `Read` / `Write` / `Edit` / `NotebookEdit` | at their **local paths** — cc fetches the file from the system before the tool runs and pushes the result back after |
+| `Read` / `Write` / `Edit` / `NotebookEdit` | **not hooked at all** — the CLI runs inside a chroot onto the union, so it opens the system's own bytes at the system's own path |
 | `Glob` / `Grep` | **neither** — removed and refused; `find` / `grep` through `Bash` answer about the right machine |
 
-A file tool aimed outside that boundary is refused by name, and a failed push back to the system is a hard failure that sticks until the file is read again. The rest — one fresh shell per command and what that means for `cd`, the output fence, the pull manifest, and the named refusals for a system that is unreachable or serves no targets — is in [docs/features.md](docs/features.md) → Projects on a system / Worker sessions on a system.
+The rest — one fresh shell per command and what that means for `cd`, the output fence, and the named refusals for a system that is unreachable, serves no targets, or cannot mount the union — is in [docs/features.md](docs/features.md) → Projects on a system / Worker sessions on a system.
 
 ### Technical
 
