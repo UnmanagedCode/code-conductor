@@ -606,8 +606,13 @@ test('describe_session renders a LIVE worker as the same block list_sessions pri
   assert.match(out, /^ {4}project a {3}worktree —$/m);
   assert.match(out, /^ {4}mode bypassPermissions {3}effort high {3}thinking \S+ {3}model \S+\/\S+$/m);
   // The same row list_sessions prints — asserted against it, not restated.
+  // The header is describe_session's own (list_sessions has no such line), so it
+  // is pinned exactly HERE rather than sliced off: an index-based slice would
+  // hide any line inserted between the header and the block.
+  const [header, ...rest] = out.split('\n');
+  assert.equal(header, `SESSION ${spawn.sessionId}   live`);
   const listed = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
-  for (const line of out.split('\n').slice(2).filter(l => l.trim())) {
+  for (const line of rest.filter(l => l.trim())) {
     assert.ok(listed.includes(line.trim()), `list_sessions does not carry: ${line.trim()}`);
   }
 });
@@ -641,6 +646,31 @@ test('describe_session describes a RETIRED session and carries no runtime fields
     assert.ok(!out.includes(f), `a retired session has no process to read '${f.trim()}' off`);
   }
   assert.ok(!out.includes('archived'), 'a non-temp kill archives nothing');
+});
+
+test('describe_session never calls a session the orchestrator still holds UNKNOWN', async () => {
+  // A non-temp worker is RETAINED in byId after it exits. If its transcript
+  // never landed, steps 3 and 4 of the ladder both come up empty — and
+  // SESSION_UNKNOWN there would deny a session the orchestrator is looking at.
+  // Same fixture as the retired test, minus the seeded jsonl, which is the one
+  // variable.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const inst = instances.get(created.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const sid = inst.sessionId;
+  await inst.kill({ graceMs: 200 });
+  await waitFor(() => isDeadStatus(inst.status));
+  assert.ok(instances.idsForSession(sid).length > 0, 'precondition: the orchestrator still holds it');
+
+  const res = unwrap(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'SESSION_NOT_LIVE', `must not be SESSION_UNKNOWN: ${JSON.stringify(res)}`);
+  // The shared notLiveRefusal wording, so this says the same thing every other
+  // tool says about the same session.
+  assert.match(res.reason, /has no running process/);
+  assert.ok(!res.reason.includes('is known to the orchestrator'),
+    'the orchestrator is holding this session — it must not be reported as unknown');
 });
 
 test('describe_session still describes an ARCHIVED session', async () => {

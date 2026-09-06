@@ -20,6 +20,7 @@ import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_INSTANCE = path.join(__dirname, 'fixtures', 'scenario-instance.json');
 const TOOLS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'tools.ts');
+const HANDLERS_SRC = path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts');
 
 let ctx, baseUrl, instances, home;
 before(async () => { ctx = await bootServer({ scenarioPath: SCENARIO_INSTANCE }); ({ baseUrl, instances } = ctx); });
@@ -162,6 +163,135 @@ test('respawn_instance returns exactly the allowlist over the wire', async () =>
     'respawn_instance must emit exactly the allowlist, same as spawn_instance');
 });
 
+// Reduce a TS source to its CODE SKELETON: comments removed, and the CONTENTS of
+// string / template / regex literals emptied (delimiters and `${}` braces stay,
+// so nesting is preserved). Every scrape below reads this rather than the raw
+// text, because a scrape of raw text is satisfiable by a COMMENT — a handler
+// could hand-roll a projection and still match `conductorRowView(` from a
+// comment mentioning it, which is not a hypothetical: it was demonstrated
+// against the previous version of this test.
+function codeSkeleton(src) {
+  let out = '';
+  // Frames, so `${ … }` inside a template returns to template state at ITS
+  // closing brace and not at an object literal's.
+  const stack = [{ template: false, depth: 0 }];
+  const prevSignificant = () => {
+    for (let k = out.length - 1; k >= 0; k--) if (!/\s/.test(out[k])) return out[k];
+    return '';
+  };
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i], d = src[i + 1];
+    const top = stack[stack.length - 1];
+    if (top.template) {
+      if (c === '\\') { i += 2; continue; }
+      if (c === '`') { out += '`'; stack.pop(); i++; continue; }
+      if (c === '$' && d === '{') { out += '${'; stack.push({ template: false, depth: 0 }); i += 2; continue; }
+      i++; continue;                                   // template TEXT is dropped
+    }
+    if (c === '/' && d === '/') { while (i < src.length && src[i] !== '\n') i++; continue; }
+    if (c === '/' && d === '*') { i += 2; while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue; }
+    if (c === "'" || c === '"') {
+      out += c; i++;
+      while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
+      out += c; i++; continue;                         // string CONTENTS dropped
+    }
+    if (c === '`') { out += '`'; stack.push({ template: false, depth: 0 }); stack[stack.length - 1].template = true; i++; continue; }
+    // Regex vs division, decided by the token before the slash.
+    if (c === '/' && '(,=:[!&|?;+-*%<>~^'.includes(prevSignificant() || '(')) {
+      i++;
+      while (i < src.length && src[i] !== '/') {
+        if (src[i] === '\\') i++;
+        else if (src[i] === '[') { while (i < src.length && src[i] !== ']') i += src[i] === '\\' ? 2 : 1; }
+        i++;
+      }
+      i++; continue;
+    }
+    if (c === '{') { top.depth++; out += c; i++; continue; }
+    if (c === '}') {
+      if (top.depth === 0 && stack.length > 1) { out += '}'; stack.pop(); i++; continue; }
+      top.depth--; out += c; i++; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+// The skeleton is what every gate below stands on, so it is pinned itself:
+// a stripper that quietly returned its input would make all of them vacuous.
+test('codeSkeleton drops comments and literal contents but keeps the code', () => {
+  const sk = codeSkeleton([
+    "const a = 'toConductorView(';        // conductorRowView(",
+    '/* toConductorView( */',
+    'function real() { return toConductorView(x); }',
+    'const t = `text conductorRowView( ${ inner(1) } more`;',
+    "const r = s.replace(/'/g, 'x');",
+  ].join('\n'));
+  assert.ok(sk.includes('function real() { return toConductorView(x); }'), 'code survives');
+  assert.ok(sk.includes('inner(1)'), 'a template EXPRESSION is code and survives');
+  assert.equal(sk.split('toConductorView(').length - 1, 1,
+    'the comment, the block comment and the string mention are all gone');
+  assert.ok(!sk.includes('conductorRowView'),
+    'a comment or template-text mention must not survive');
+  assert.equal((sk.match(/\{/g) || []).length, (sk.match(/\}/g) || []).length,
+    'brace nesting is preserved, so body extraction below is safe');
+});
+
+// The body of `name`, by brace matching on the skeleton (where no brace can
+// hide in a comment or a string).
+function bodyOf(skeleton, signature) {
+  const at = skeleton.indexOf(signature);
+  assert.ok(at >= 0, `not found: ${signature}`);
+  // Walk past the PARAMETER list first — every handler here destructures its
+  // args, so the first `{` after the name opens a parameter pattern, not a body.
+  let i = at + signature.length;   // signature ends with the opening paren
+  for (let depth = 1; depth > 0; i++) {
+    assert.ok(i < skeleton.length, `unterminated parameter list for ${signature}`);
+    if (skeleton[i] === '(') depth++;
+    else if (skeleton[i] === ')') depth--;
+  }
+  const open = skeleton.indexOf('{', i);
+  assert.ok(open > 0, `no body for ${signature}`);
+  let depth = 0;
+  for (let i = open; i < skeleton.length; i++) {
+    if (skeleton[i] === '{') depth++;
+    else if (skeleton[i] === '}' && --depth === 0) return skeleton.slice(open, i + 1);
+  }
+  assert.fail(`unterminated body for ${signature}`);
+}
+
+// The three checks, as a function, so the vacuity guard below can run the SAME
+// gate against sources that deliberately bypass the projection.
+function assertRoutesThroughProjection(src) {
+  // listSessions and describeSession project through `conductorRowView` — the
+  // ONE list-row projection, which is itself built on toConductorView, so the
+  // invariant holds through exactly one extra hop. Either name counts; a
+  // hand-rolled projection contains neither, which is the polarity that matters.
+  for (const fn of ['listSessions', 'describeSession', 'spawnInstance', 'respawnInstance']) {
+    const body = bodyOf(src, `export async function ${fn}(`);
+    assert.match(body, /toConductorView\(|conductorRowView\(/,
+      `${fn} must project through the shared projection`);
+  }
+  // The extra hop is only safe while it IS a hop: conductorRowView must itself
+  // call toConductorView. Without this, rewriting it to project independently
+  // leaves every other gate here green.
+  assert.match(bodyOf(src, 'function conductorRowView('), /toConductorView\(/,
+    'conductorRowView must build ON toConductorView, not beside it');
+
+  // …and there is exactly one definition of each.
+  assert.equal(src.split('function toConductorView(').length - 1, 1);
+  assert.equal(src.split('function conductorRowView(').length - 1, 1);
+
+  // The strongest form of the same invariant, and the one that does not depend
+  // on a bypass being spelled with either helper's name: the allowlist is READ
+  // in exactly one place in the module — inside toConductorView. Any second
+  // projection driven by CONDUCTOR_VIEW_KEYS, anywhere, fails here.
+  assert.equal(src.split('CONDUCTOR_VIEW_KEYS').length - 1, 2,
+    'CONDUCTOR_VIEW_KEYS must appear exactly twice: its declaration and its one read');
+  assert.equal(bodyOf(src, 'function toConductorView(').split('CONDUCTOR_VIEW_KEYS').length - 1, 1,
+    'that one read must be the one inside toConductorView');
+}
+
 test('every worker-summary handler routes through the single projection', async () => {
   // Defense-in-depth behind the wire checks above (spawn_instance and
   // respawn_instance both have one now). This scrape pins what a key-set check
@@ -169,21 +299,59 @@ test('every worker-summary handler routes through the single projection', async 
   // projection. A handler that hand-rolled its own projection emitting exactly
   // CONDUCTOR_VIEW_KEYS would pass its wire check but fail here — a second
   // projection is exactly how a field escapes the documented list.
-  const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts'), 'utf8');
-  // listSessions and describeSession project through `conductorRowView` — the
-  // ONE list-row projection, which is itself built on toConductorView, so the
-  // invariant holds through exactly one extra hop. Either name counts; a
-  // hand-rolled projection contains neither, which is the polarity that matters.
-  for (const fn of ['listSessions', 'describeSession', 'spawnInstance', 'respawnInstance']) {
-    const at = src.indexOf(`export async function ${fn}(`);
-    assert.ok(at >= 0, `handler ${fn} not found`);
-    const body = src.slice(at, src.indexOf('\nexport ', at + 1));
-    assert.match(body, /toConductorView\(|conductorRowView\(/,
-      `${fn} must project through the shared projection`);
-  }
-  // …and there is exactly one definition of each.
-  assert.equal(src.split('function toConductorView(').length - 1, 1);
-  assert.equal(src.split('function conductorRowView(').length - 1, 1);
+  const src = codeSkeleton(await fs.readFile(HANDLERS_SRC, 'utf8'));
+  // Vacuity: the skeleton is still the module, and is no longer its comments.
+  assert.ok(src.includes('export const CONDUCTOR_VIEW_KEYS'), 'the skeleton is still handlers.ts');
+  assert.ok(!src.includes('Never hand-roll a second one'), 'the skeleton still carries comment prose');
+  assertRoutesThroughProjection(src);
+});
+
+// Built as in-memory sources — nothing on disk is touched. Each is a bypass that
+// the PREVIOUS version of this gate accepted, so this is the proof that the gate
+// above is fail-by-default rather than true-by-accident.
+const fakeModule = ({ rowView, listBody } = {}) => `
+export const CONDUCTOR_VIEW_KEYS = ['project', 'sessionId'];
+function toConductorView(summary) {
+  const out = {};
+  for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];
+  return out;
+}
+function conductorRowView(row, proj) {
+  ${rowView ?? 'return { ...toConductorView(row), awaitingWake: row.awaitingWake };'}
+}
+export async function listSessions(args, { instances }) {
+  ${listBody ?? 'return instances.list().map(r => conductorRowView(r, null));'}
+}
+export async function describeSession({ sessionId }, { instances }) {
+  return conductorRowView(instances.list()[0], null);
+}
+export async function spawnInstance(args, { instances }) {
+  return toConductorView(instances.create(args).summary());
+}
+export async function respawnInstance({ sessionId }, { instances }) {
+  return toConductorView(instances.respawn(sessionId).summary());
+}
+`;
+
+test('the projection gate actually fails on a bypass (vacuity guard)', () => {
+  // Positive control first: the shape itself must PASS, or the two negatives
+  // below would prove nothing about the bypasses specifically.
+  assertRoutesThroughProjection(codeSkeleton(fakeModule()));
+
+  // HOLE 1 — a handler hand-rolls a projection while a COMMENT mentioning
+  // conductorRowView( satisfies a raw-text scrape.
+  assert.throws(() => assertRoutesThroughProjection(codeSkeleton(fakeModule({
+    listBody: '// rows come from conductorRowView( upstream\n'
+      + "    return instances.list().map(r => ({ project: r.project, sessionId: r.sessionId }));",
+  }))), /must project through the shared projection/);
+
+  // HOLE 2 — conductorRowView keeps its name and its call sites, but stops
+  // routing through toConductorView and projects the allowlist itself.
+  assert.throws(() => assertRoutesThroughProjection(codeSkeleton(fakeModule({
+    rowView: 'const out = {};\n'
+      + '  for (const k of CONDUCTOR_VIEW_KEYS) out[k] = row[k];\n'
+      + '  return out;',
+  }))), /conductorRowView must build ON toConductorView/);
 });
 
 test('the projection publishes contextWindowTokens and withholds sonnetWindow / instance ids', async () => {

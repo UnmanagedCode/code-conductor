@@ -840,6 +840,14 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
     return { ok: false, code: 'SESSION_UNLOCATABLE', sessionId,
       reason: `session ${sessionId} has a transcript under ${path.dirname(orphan)} but no registered project or worktree owns that directory, so there is no location to report — re-register that worktree and retry.` };
   }
+  // Step 5 — nothing on disk, but the orchestrator may still be HOLDING this
+  // session: a non-temp worker is retained in byId after it exits, and if its
+  // transcript never landed (or has since gone) steps 3 and 4 both come up
+  // empty. Answering SESSION_UNKNOWN there would deny a session the
+  // orchestrator is looking at. SESSION_NOT_LIVE is the existing code for
+  // "known, nothing running", shared with getInst/getInstOrDisk through
+  // notLiveRefusal so the wording a conductor acts on cannot drift.
+  if (instances?.anyForSession(sessionId)) return notLiveRefusal(sessionId);
   return { ok: false, code: 'SESSION_UNKNOWN', sessionId,
     reason: `no session ${sessionId} is known to the orchestrator.` };
 }
