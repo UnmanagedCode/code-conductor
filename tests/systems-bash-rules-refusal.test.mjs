@@ -27,6 +27,21 @@ let dir;
 beforeEach(async () => { dir = await mkdtemp('cc-bashrules-'); });
 afterEach(async () => { await rmrf(dir); });
 
+// The project pair are read THROUGH the project's System handle now — they live
+// on the system, and there is no local copy of them to stat. This fake answers
+// from the same temp tree the host-scope reads use, so a test can still write a
+// file and see it scanned, and it RECORDS what was asked of it so the scope
+// routing is observable rather than assumed.
+function fakeSystem() {
+  const asked = [];
+  return {
+    asked,
+    async readFileBytes(p) { asked.push(p); return await fs.readFile(p); },
+  };
+}
+
+const proj = (p) => ({ path: p, scope: 'project' });
+
 const write = async (name, obj) => {
   const p = path.join(dir, name);
   await fs.mkdir(path.dirname(p), { recursive: true });
@@ -40,7 +55,7 @@ test('a Bash rule in deny or ask is found and attributed to its file', async () 
   const a = await write('.claude/settings.json', { permissions: { deny: ['Bash(rm:*)', 'Read(./secrets/**)'] } });
   const b = await write('user/settings.json', { permissions: { ask: ['Bash(git push:*)'] } });
 
-  const found = await findUnenforceableBashRules([a, b]);
+  const found = await findUnenforceableBashRules([proj(a), proj(b)], fakeSystem());
   assert.deepEqual(found, [
     { rule: 'Bash(rm:*)', source: a },
     { rule: 'Bash(git push:*)', source: b },
@@ -54,7 +69,7 @@ test('rules for other tools, and a bare Bash allow, do not trigger the refusal',
   const p = await write('.claude/settings.json', {
     permissions: { deny: ['Read(./secrets/**)', 'WebFetch'], allow: ['Bash(npm test:*)'] },
   });
-  assert.deepEqual(await findUnenforceableBashRules([p]), []);
+  assert.deepEqual(await findUnenforceableBashRules([proj(p)], fakeSystem()), []);
 });
 
 // PINS: a bare `Bash` deny — the whole tool, not a pattern — is NOT a
@@ -62,7 +77,7 @@ test('rules for other tools, and a bare Bash allow, do not trigger the refusal',
 // the tool outright rather than matching a command against it.
 test('a bare Bash deny is not affected and does not trigger the refusal', async () => {
   const p = await write('.claude/settings.json', { permissions: { deny: ['Bash'] } });
-  assert.deepEqual(await findUnenforceableBashRules([p]), []);
+  assert.deepEqual(await findUnenforceableBashRules([proj(p)], fakeSystem()), []);
 });
 
 // PINS: a missing or malformed settings file is not a refusal. Most installs
@@ -71,16 +86,21 @@ test('a bare Bash deny is not affected and does not trigger the refusal', async 
 test('absent and unparseable settings files are skipped', async () => {
   const bad = path.join(dir, 'broken.json');
   await fs.writeFile(bad, '{ not json');
-  assert.deepEqual(await findUnenforceableBashRules([path.join(dir, 'nope.json'), bad]), []);
+  assert.deepEqual(await findUnenforceableBashRules([proj(path.join(dir, 'nope.json')), proj(bad)], fakeSystem()), []);
 });
 
 // PINS: the user-level file is one of the sources. A global rule is exactly the
 // one most likely to exist and least likely to be noticed going quiet.
 test('the user settings path is included in the default source list', async () => {
-  const sources = bashRuleSources('/session/root');
-  assert.ok(sources.includes(path.join(os.homedir(), '.claude', 'settings.json')));
-  assert.ok(sources.includes(path.join('/session/root', '.claude', 'settings.json')));
-  assert.ok(sources.includes(path.join('/session/root', '.claude', 'settings.local.json')));
+  const sources = bashRuleSources('/srv/app');
+  const at = (p) => sources.find(s => s.path === p);
+  assert.equal(at(path.join(os.homedir(), '.claude', 'settings.json'))?.scope, 'host');
+  // THE PROJECT PAIR ARE ON THE SYSTEM. Scoped, not merely listed: a project
+  // file marked `host` would be read off the orchestrator's disk at the
+  // project's remote path — a path that does not exist here — and the scan
+  // would go silently empty.
+  assert.equal(at(path.join('/srv/app', '.claude', 'settings.json'))?.scope, 'project');
+  assert.equal(at(path.join('/srv/app', '.claude', 'settings.local.json'))?.scope, 'project');
 });
 
 // PINS T1: the MANAGED-POLICY file is one of the sources. It is the CLI's most
@@ -89,11 +109,26 @@ test('the user settings path is included in the default source list', async () =
 // test can write `/etc`, so the shape of the source list is the only place it
 // can be held. Dropping it from `bashRuleSources` left the whole suite green.
 test('the managed-policy file is one of the sources both scans read', () => {
-  const sources = bashRuleSources('/session/root');
-  assert.ok(sources.includes('/etc/claude-code/managed-settings.json'),
-    `the managed-policy layer is scanned (got ${JSON.stringify(sources)})`);
+  const sources = bashRuleSources('/srv/app');
+  const managed = sources.find(s => s.path === '/etc/claude-code/managed-settings.json');
+  assert.ok(managed, `the managed-policy layer is scanned (got ${JSON.stringify(sources)})`);
+  assert.equal(managed.scope, 'host', 'the managed policy is the ORCHESTRATOR\'s, never the system\'s');
   // Last, matching the CLI's own precedence order — it is the layer that wins.
-  assert.equal(sources.at(-1), '/etc/claude-code/managed-settings.json');
+  assert.equal(sources.at(-1).path, '/etc/claude-code/managed-settings.json');
+});
+
+// PINS: a `project`-scoped source is read through the SYSTEM HANDLE and a
+// `host`-scoped one is not. The whole point of the scope field: reading the
+// project pair locally would stat a remote path on the orchestrator's disk and
+// find nothing, so both scans would go quietly empty instead of refusing.
+test('project sources are read through the system, host sources are not', async () => {
+  const onSystem = await write('.claude/settings.json', { disableAllHooks: true });
+  const onHost = await write('user/settings.json', { disableAllHooks: true });
+  const sys = fakeSystem();
+  const found = await findDisabledHooks(
+    [{ path: onSystem, scope: 'project' }, { path: onHost, scope: 'host' }], sys);
+  assert.deepEqual(found, [onSystem, onHost], 'both layers are still scanned');
+  assert.deepEqual(sys.asked, [onSystem], 'the host layer went through the system handle');
 });
 
 // ── B4: the one key that turns the whole redirect off ────────────────
@@ -120,7 +155,7 @@ test('the managed-policy file is one of the sources both scans read', () => {
 test('disableAllHooks is found and attributed to its file', async () => {
   const a = await write('.claude/settings.json', { disableAllHooks: true });
   const b = await write('user/settings.json', { permissions: { deny: [] } });
-  assert.deepEqual(await findDisabledHooks([a, b]), [a]);
+  assert.deepEqual(await findDisabledHooks([proj(a), proj(b)], fakeSystem()), [a]);
 });
 
 // PINS: only the value that actually disables hooks counts. Refusing on a
@@ -129,7 +164,7 @@ test('disableAllHooks is found and attributed to its file', async () => {
 test('only a true disableAllHooks refuses', async () => {
   const off = await write('.claude/settings.json', { disableAllHooks: false });
   const absent = await write('user/settings.json', { permissions: {} });
-  assert.deepEqual(await findDisabledHooks([off, absent]), []);
+  assert.deepEqual(await findDisabledHooks([proj(off), proj(absent)], fakeSystem()), []);
 });
 
 // PINS: the refusal names the file and says what would have happened. "cc
@@ -171,6 +206,6 @@ test('the refusal names the settings layer, and says so for an admin-owned one',
 // added for one must be read by the other.
 test('both scans read the same files', async () => {
   const p = await write('.claude/settings.json', { disableAllHooks: true, permissions: { deny: ['Bash(rm:*)'] } });
-  assert.deepEqual(await findDisabledHooks([p]), [p]);
-  assert.deepEqual((await findUnenforceableBashRules([p])).map(f => f.source), [p]);
+  assert.deepEqual(await findDisabledHooks([proj(p)], fakeSystem()), [p]);
+  assert.deepEqual((await findUnenforceableBashRules([proj(p)], fakeSystem())).map(f => f.source), [p]);
 });

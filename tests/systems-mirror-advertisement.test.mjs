@@ -26,7 +26,7 @@ import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import { MIRROR_EXCLUDE_MAX, MIRROR_PATH_MAX } from '../src/systems/protocol.ts';
 import {
-  noMirror, resolveMirrorScope, validateAdvertisement, isExcluded, withinPosix, mirrorOffsets,
+  noMirror, resolveMirrorScope, validateAdvertisement, withinPosix,
 } from '../src/systems/mirror.ts';
 import { encodeCwd } from '../src/projects.ts';
 
@@ -167,15 +167,15 @@ describe('the mirror advertisement', () => {
   //
   // NOT CLAIMING: which HTTP status a route ends up surfacing. It asserts the
   // code, and that nothing is narrowed to fit.
-  test('the mirror root fixes the offset, and a root that excludes the project refuses', () => {
+  test('the mirror root is taken as advertised, and a root that excludes the project refuses', () => {
     const scope = (mirrorRoot, systemPath, exclude = []) => resolveMirrorScope({
       systemId: 'prod-box', project: 'api', systemPath, advertisement: { mirrorRoot, exclude },
     });
 
-    assert.deepEqual(scope('/app', '/app').scope, { mirrorRoot: '/app', exclude: [], offset: '' });
-    assert.deepEqual(scope('/', '/app').scope, { mirrorRoot: '/', exclude: [], offset: 'app' });
-    assert.deepEqual(scope('/srv', '/srv/thing').scope, { mirrorRoot: '/srv', exclude: [], offset: 'thing' });
-    assert.deepEqual(scope('/', '/').scope, { mirrorRoot: '/', exclude: [], offset: '' });
+    assert.deepEqual(scope('/app', '/app').scope, { mirrorRoot: '/app', exclude: [] });
+    assert.deepEqual(scope('/', '/app').scope, { mirrorRoot: '/', exclude: [] });
+    assert.deepEqual(scope('/srv', '/srv/thing').scope, { mirrorRoot: '/srv', exclude: [] });
+    assert.deepEqual(scope('/', '/').scope, { mirrorRoot: '/', exclude: [] });
 
     for (const [root, project] of [['/srv/other', '/srv/thing'], ['/app', '/app-backup'], ['/app2', '/app']]) {
       let err = null;
@@ -219,7 +219,7 @@ describe('the mirror advertisement', () => {
     assert.deepEqual(inside.inert, []);
     // Outside the mirror root entirely: inert.
     const r = scope(['/proc']);
-    assert.deepEqual(r.scope, { mirrorRoot: '/srv', exclude: ['/proc'], offset: 'thing' });
+    assert.deepEqual(r.scope, { mirrorRoot: '/srv', exclude: ['/proc'] });
     assert.equal(r.inert.length, 1, 'and it is reported as inert');
     assert.ok(r.inert[0].includes('/proc'), r.inert[0]);
     // A sibling INSIDE the mirror root but outside the project is neither.
@@ -234,8 +234,8 @@ describe('the mirror advertisement', () => {
   //
   // NOT CLAIMING: that the composed session root is then identical to today's;
   // tests/systems-mirror-fallback.test.mjs owns that.
-  test('no advertisement resolves to the project path, offset zero', () => {
-    assert.deepEqual(noMirror('/srv/thing'), { mirrorRoot: '/srv/thing', exclude: [], offset: '' });
+  test('no advertisement resolves to the NARROWEST mirror root — the project path', () => {
+    assert.deepEqual(noMirror('/srv/thing'), { mirrorRoot: '/srv/thing', exclude: [] });
     const r = resolveMirrorScope({
       systemId: 'b', project: 'api', systemPath: '/srv/thing',
       advertisement: { mirrorRoot: null, exclude: [] },
@@ -243,161 +243,6 @@ describe('the mirror advertisement', () => {
     assert.deepEqual(r.scope, noMirror('/srv/thing'));
     assert.deepEqual(r.inert, []);
   });
-
-  // ── card 2026-0287: the offsets one project can occupy ──────────────
-
-  // The NORMAL-FORM systemPaths the two tests below run over: depth 1, depth 8,
-  // one whose segments carry `_`, `-`, `.` and a space, and the filesystem root.
-  const GEOMETRIES = [
-    '/',
-    '/srv',
-    '/a/b/c/d/e/f/g/proj',
-    '/srv/my_app-v1.2/deep dir/proj',
-  ];
-
-  // And the non-normal ones. `validatePlacementInput` (src/projects.ts) requires
-  // only that a systemPath be ABSOLUTE, so these are legal project paths on a
-  // system, and `mirrorOffsets` enumerates the raw segment-suffixes of whatever
-  // it is given.
-  const NON_NORMAL = ['/a/./b/proj', '/a/../b/proj'];
-
-  // Every ancestor of `p`, deepest first — the mirror roots a provider could
-  // legally advertise for a project at `p`.
-  const ancestors = (p) => {
-    const out = [];
-    for (let d = p; ; d = path.posix.dirname(d)) { out.push(d); if (d === '/') break; }
-    return out;
-  };
-
-  const IMAGE_ROOT = '/store/systems/sys/sessions/api';
-
-  // Every cwd a provider could put a session at, taken through the PRODUCTION
-  // resolver rather than re-derived, so the two cannot agree by sharing a
-  // mistake.
-  const reachableCwds = (systemPath) => {
-    const offs = new Set(ancestors(systemPath)
-      .map(mirrorRoot => {
-        try {
-          return resolveMirrorScope({
-            systemId: 'prod-box', project: 'api', systemPath,
-            advertisement: { mirrorRoot, exclude: [] },
-          }).scope.offset;
-        } catch { return null; } // MIRROR_ROOT_EXCLUDES_PROJECT: not a legal root here
-      })
-      .filter(o => o !== null));
-    // A provider that advertises nothing: `noMirror`, offset ''.
-    offs.add(resolveMirrorScope({
-      systemId: 'prod-box', project: 'api', systemPath,
-      advertisement: { mirrorRoot: null, exclude: [] },
-    }).scope.offset);
-    return new Set([...offs].map(o => path.join(IMAGE_ROOT, o)));
-  };
-
-  // PINS COMPLETENESS, which is the one property the create path's candidate
-  // scan rests on: every cwd `resolveMirrorScope` can produce for a systemPath
-  // is `path.join(imageRoot, o)` for some `o` in `mirrorOffsets(systemPath)` —
-  // so no legal advertisement can put a session at a cwd the scan does not
-  // probe. Asserted on the JOINED cwds, not the raw offset strings, because
-  // that is the form the scan actually uses.
-  //
-  // PINS THE LIMIT TOO: over a NORMAL-FORM systemPath the two sets are equal,
-  // and over a non-normal one the candidate set is a strict SUPERSET —
-  // `/a/../b/proj` yields a candidate outside the image root. Complete is the
-  // contract; exact is not.
-  //
-  // NOT CLAIMING that a provider would advertise any of these roots, nor
-  // anything about a root OUTSIDE the ancestor chain: that is refused
-  // MIRROR_ROOT_EXCLUDES_PROJECT by the test above, which is what makes the
-  // chain exhaustive.
-  test('every cwd resolveMirrorScope can produce is one the offsets cover', () => {
-    for (const systemPath of [...GEOMETRIES, ...NON_NORMAL]) {
-      const reachable = reachableCwds(systemPath);
-      const candidates = new Set(mirrorOffsets(systemPath).map(o => path.join(IMAGE_ROOT, o)));
-      for (const cwd of reachable) {
-        assert.equal(candidates.has(cwd), true,
-          `${systemPath}: a reachable cwd ${cwd} is not in the candidate set`);
-      }
-    }
-    // Normal form ⇒ exact.
-    for (const systemPath of GEOMETRIES) {
-      assert.deepEqual(
-        [...new Set(mirrorOffsets(systemPath).map(o => path.join(IMAGE_ROOT, o)))].sort(),
-        [...reachableCwds(systemPath)].sort(),
-        `the candidate set is not the reachable set for ${systemPath}`,
-      );
-    }
-    // Non-normal ⇒ a strict superset, and one member is outside the image root.
-    const extra = [...new Set(mirrorOffsets('/a/../b/proj').map(o => path.join(IMAGE_ROOT, o)))]
-      .filter(c => !reachableCwds('/a/../b/proj').has(c));
-    assert.deepEqual(extra, [path.join(path.dirname(IMAGE_ROOT), 'b', 'proj')],
-      'the non-normal candidate set no longer carries the out-of-root extra this test documents');
-  });
-
-  // PINS WHAT THE `break` DOES NOT REST ON, which is the point of this arm. The
-  // create path's scan stops at its first hit, and the licence for that is NOT
-  // that the candidates are pairwise distinct — it is that one session ran at
-  // one cwd, so every candidate a probe for its id answers YES for resolves to
-  // that one encoded directory. This test therefore pins the distinctness only
-  // where it actually holds, and pins the non-normal case COLLAPSING rather
-  // than diverging: two offsets that differ as strings join to the SAME
-  // directory, which is one place probed twice and not a second answer.
-  //
-  // The count assertion is what stops the distinctness checks holding vacuously
-  // on a set of one.
-  //
-  // NOT CLAIMING that no two candidates ever coincide — `/a/./b/proj` is the
-  // arm where two do. NOT CLAIMING that two DIFFERENT image roots cannot
-  // collide: that is a property of `sessionRootPath`'s key, not of this set,
-  // and the scan is confined to one image root. That half is only PARTLY
-  // answered elsewhere: `sessionRootKeyCollision` refuses a colliding KEY at
-  // creation (card 2026-0293 §10), but an offset contributes characters the key
-  // comparison never sees, so two different image roots CAN still name one
-  // transcript directory. It stays an OPEN non-claim (card 2026-0304).
-  test('the offsets of a normal-form systemPath never name one transcript directory', () => {
-    for (const systemPath of GEOMETRIES) {
-      const offs = mirrorOffsets(systemPath);
-      assert.equal(offs.length, systemPath.split('/').filter(Boolean).length + 1,
-        `one offset per ancestor, '' included, for ${systemPath}`);
-      const dirs = offs.map(off => encodeCwd(path.join(IMAGE_ROOT, off)));
-      assert.equal(new Set(dirs).size, offs.length, `two candidates encode alike for ${systemPath}`);
-      assert.equal(new Set(dirs.map(d => d.length)).size, offs.length,
-        `two candidates have one length for ${systemPath}`);
-    }
-    // A non-normal systemPath: two offsets, ONE directory. `path.join`
-    // normalises, so the duplicate is the same place rather than a rival hit.
-    const offs = mirrorOffsets('/a/./b/proj');
-    assert.equal(offs.includes('b/proj') && offs.includes('./b/proj'), true,
-      `both spellings should be enumerated, got ${JSON.stringify(offs)}`);
-    assert.equal(
-      encodeCwd(path.join(IMAGE_ROOT, 'b/proj')),
-      encodeCwd(path.join(IMAGE_ROOT, './b/proj')),
-      'the two spellings do not collapse onto one transcript directory',
-    );
-  });
-
-  // PINS: exclusion is containment, not a string prefix — `/proc` must not
-  // claim `/procfs/x` — and the matching PREFIX is what comes back, so a
-  // refusal can name the rule rather than only the path.
-  //
-  // NOT CLAIMING: anything about which tool consults it.
-  test('an exclude matches by containment and reports the prefix that matched', () => {
-    const ex = ['/proc', '/dev'];
-    assert.equal(isExcluded('/proc', ex), '/proc');
-    assert.equal(isExcluded('/proc/1/status', ex), '/proc');
-    assert.equal(isExcluded('/dev/null', ex), '/dev');
-    assert.equal(isExcluded('/procfs/x', ex), null, 'a prefix-SHARING sibling is not inside');
-    assert.equal(isExcluded('/proc-backup', ex), null);
-    assert.equal(isExcluded('/srv/app/x', ex), null);
-    // `/` as an exclude covers everything, which is the degenerate case the
-    // project-relative check refuses before it can bite.
-    assert.equal(isExcluded('/anything', ['/']), '/');
-    // The shared predicate, exercised directly: '' when equal, null when out.
-    assert.equal(withinPosix('/a/b', '/a'), 'b');
-    assert.equal(withinPosix('/a', '/a'), '');
-    assert.equal(withinPosix('/a-backup', '/a'), null);
-  });
-
-  // ── The round trip ──────────────────────────────────────────────────
 
   // PINS: `describeRemote` costs ONE frame per connection generation however
   // many times the mirror is resolved, and a provider restart re-asks — the

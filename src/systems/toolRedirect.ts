@@ -28,7 +28,6 @@
 // and the deny surface below.
 
 import path from 'node:path';
-import { excludedRefusal } from './mirror.ts';
 import { SystemError } from './protocol.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
 import type { System } from './system.ts';
