@@ -1,6 +1,6 @@
 // Per-tool plain-text renderers for the MCP tools whose whole result is text:
-// the four recon read tools (list_projects, list_worktrees, list_sessions,
-// project_status) plus describe_playbook.
+// the five recon read tools (list_projects, list_worktrees, list_sessions,
+// describe_session, project_status) plus describe_playbook.
 //
 // The rendering is the tool's ENTIRE result — there is no JSON channel beside
 // it (src/mcp/content.ts textResult). So the bar is: every fact a conductor acts
@@ -36,6 +36,13 @@
 //                  mode fact that matters off-process is "would resuming this
 //                  come up hot", which is a DEVIANT flag (resumes-hot).
 //   both           firstPrompt when a title exists — the title supersedes it.
+//   describe_session
+//                  on the RETIRED branch, the same runtime fields list_sessions
+//                  drops from an inactive row, for the same reason — there is no
+//                  process to read a mode/effort/model off. The LIVE branch drops
+//                  nothing list_sessions does not: it renders the identical block.
+//                  Location is rendered on the RETIRED branch ONLY — see
+//                  renderSession for why the asymmetry is deliberate.
 //
 // Handles stay full-length: sessionIds, absolute paths, branch names. A baseSha
 // is informational context, not something pasted back into a call, so it is
@@ -318,6 +325,35 @@ export function renderSessions(
     }
   }
   return block(...parts).trimEnd();
+}
+
+// ---------- describe_session ----------
+
+// One session, live or retired. Both branches REUSE list_sessions' own row
+// renderers verbatim (instanceRows / inactiveRows), so the two tools cannot
+// drift on what a row says — which is the whole value of the tool: the same row
+// list_sessions prints, addressable by handle.
+//
+// The location block is on the RETIRED branch only, deliberately: instanceRows
+// already renders project / worktree / cwd, so hoisting them into the header
+// would print them twice, while inactiveRows carries no location at all (in
+// list_sessions that is the group header's job, and describe_session has no
+// group). Same shape as renderWorktrees below, which hoists the row-invariant
+// parentProject into its header and drops it from the rows.
+export function renderSession(session: unknown): string {
+  const s = asRow(session);
+  const live = s.live ? asRow(s.live) : null;
+  const head = `SESSION ${dash(s.sessionId)}   ${live ? 'live' : 'retired'}`;
+  if (live) return block(head, '', ...instanceRows([live]));
+  return block(
+    head,
+    indent([
+      `project ${dash(s.project)}   worktree ${worktreeName(s.worktree)}`,
+      `path ${dash(s.path)}`,
+    ], 4),
+    '',
+    s.retired ? inactiveRows([asRow(s.retired)]) : null,
+  );
 }
 
 // ---------- list_worktrees ----------

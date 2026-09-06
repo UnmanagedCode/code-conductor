@@ -134,20 +134,25 @@ export function buildTools(): Tool[] {
       annotations: { readOnlyHint: true },
     },
     {
-      name: 'locate_session',
+      name: 'describe_session',
       description:
-        'Find which project (and optionally which worktree) owns a given sessionId, by ' +
-        'probing the conventional ~/.claude/projects/<encoded-cwd>/<sid>.jsonl path against ' +
-        'every cwd every known project + worktree could have run in. Returns {project, worktree: string|null}. ' +
-        'Errors with "session not found" when nothing matches.',
+        'One session\'s row as PLAIN TEXT (this tool returns no JSON): the same row list_sessions ' +
+        'prints for it, plus the project and worktree that own it. ' +
+        'A RETIRED session renders the single session line instead of the worker block, and carries ' +
+        'no mode/effort/model — there is no process to read them off; `resumes-hot` is the one mode ' +
+        'fact available off-process. ' +
+        '`sessionId` takes the handle only: a backing/segment id soft-refuses SESSION_NOT_A_HANDLE ' +
+        'naming the handle that owns it. ' +
+        'SESSION_UNLOCATABLE means the transcript exists but no registered project or worktree owns ' +
+        'its directory, so there is no location to report — re-register that worktree.',
       inputSchema: {
         type: 'object',
         properties: {
-          sessionId: { type: 'string', description: 'Session UUID to locate.' },
+          sessionId: { type: 'string', description: 'The session handle.' },
         },
         required: ['sessionId'],
       },
-      handler: h.locateSession,
+      handler: h.describeSession,
       annotations: { readOnlyHint: true },
     },
     {

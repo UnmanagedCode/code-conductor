@@ -417,11 +417,18 @@ const RENDERED_TOOLS = [
   { name: 'project_status', args: { project: 'demo' }, head: /^demo$/m },
   // Loads from playbooks/*.json, so it needs no repo fixture.
   { name: 'describe_playbook', args: { id: 'solo' }, head: /^PLAYBOOK solo$/m },
+  // Needs a session to describe, so its args are resolved inside the test from
+  // the worker spawned there.
+  { name: 'describe_session', args: env => ({ sessionId: env.sessionId }), head: /^SESSION \S+ {3}live$/m },
 ];
 
 test('every plain-text tool returns one text block and nothing else', async () => {
   await makeRealRepo('demo');
-  for (const { name, args, head } of RENDERED_TOOLS) {
+  const spawn = meta(await callTool('spawn_instance', { project: 'demo', mode: 'bypassPermissions' }));
+  await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
+  const env = { sessionId: spawn.sessionId };
+  for (const { name, args: argSpec, head } of RENDERED_TOOLS) {
+    const args = typeof argSpec === 'function' ? argSpec(env) : argSpec;
     const r = await callTool(name, args);
     assert.equal(r.content.length, 1, `${name}: one block, no metadata block`);
     assert.equal(r.content[0].type, 'text');

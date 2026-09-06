@@ -1,5 +1,5 @@
 // Plain-text rendering layer for the MCP tools whose whole result is text: the
-// four recon read tools plus describe_playbook.
+// five recon read tools plus describe_playbook.
 //
 // Pure tests — no server boot, no I/O: hand-built payloads in, exact strings
 // out, mirroring tests/mcp-recent-turn-bond.test.mjs. The rendering is the
@@ -13,7 +13,7 @@ import {
   bytes, dash, deviations, heading, indent, table, trunc, ts, block, DASH,
 } from '../src/mcp/textRender.ts';
 import {
-  renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
+  renderProjects, renderWorktrees, renderSessions, renderSession, renderProjectStatus,
   renderPlaybook,
 } from '../src/mcp/readRenderers.ts';
 import { CONDUCTOR_VIEW_KEYS, LIST_ONLY_KEYS } from '../src/mcp/handlers.ts';
@@ -553,6 +553,73 @@ describe('renderSessions — the resumes-hot safety flag', () => {
   });
 });
 
+describe('renderSession (describe_session)', () => {
+  // Both branches reuse list_sessions' own row renderers, so what is pinned
+  // here is the WRAPPER: the header, which branch renders which row shape, and
+  // where the location block goes.
+  test('a live session is the same LIVE worker block, under a live header', () => {
+    assert.equal(renderSession({ sessionId: SID_A, live: INSTANCE }), [
+      `SESSION ${SID_A}   live`,
+      '',
+      `[1] LIVE ${SID_A}`,
+      '    status idle   display running   agents 2   queued 0   awaiting-wake yes',
+      '    project code-conductor   worktree code-conductor_worktree_dcd22e',
+      '    cwd /w/cc-projects/code-conductor_worktree_dcd22e',
+      '    mode code   effort high   thinking adaptive   model claude/claude-opus-5',
+      '    playbook solo / implement',
+      '    title Recon read tools plain-text rendering',
+      '    last 2026-08-06 07:23Z',
+    ].join('\n'));
+  });
+
+  test('a retired session is the single session line, under the location block', () => {
+    assert.equal(renderSession({
+      sessionId: SID_B,
+      project: 'code-conductor',
+      worktree: 'code-conductor_worktree_dcd22e',
+      path: '/w/cc-projects/code-conductor_worktree_dcd22e',
+      retired: stoppedRow({ playbook: 'relay', stage: 'implement', conducted: true, temp: true,
+        resumeMode: 'bypassPermissions' }),
+    }), [
+      `SESSION ${SID_B}   retired`,
+      '    project code-conductor   worktree code-conductor_worktree_dcd22e',
+      '    path /w/cc-projects/code-conductor_worktree_dcd22e',
+      '',
+      `${SID_B}  2026-08-06 07:23Z  relay/implement  conducted,temp,resumes-hot  Draft release notes`,
+    ].join('\n'));
+  });
+
+  test('an archived session is still described, and says so', () => {
+    const out = renderSession({
+      sessionId: SID_B, project: 'code-conductor', worktree: null, path: '/w/cc-projects/code-conductor',
+      retired: stoppedRow({ archived: true }),
+    });
+    assert.equal(out, [
+      `SESSION ${SID_B}   retired`,
+      '    project code-conductor   worktree —',
+      '    path /w/cc-projects/code-conductor',
+      '',
+      `${SID_B}  2026-08-06 07:23Z  —  archived  Draft release notes`,
+    ].join('\n'));
+  });
+
+  test('the location block is on the retired branch only — the live block already carries it', () => {
+    // Hoisting project/worktree/cwd into the live header would print them
+    // twice; leaving them off the retired branch would drop them entirely,
+    // since inactiveRows has no location columns and there is no group header.
+    const live = renderSession({ sessionId: SID_A, live: INSTANCE });
+    assert.equal(live.split('\n').filter(l => /^ +project /.test(l)).length, 1,
+      'the live worker block carries the one and only project/worktree line');
+    assert.ok(!/^ +path /m.test(live),
+      'the retired branch\'s `path` line must not appear on the live branch, which renders `cwd`');
+    assert.match(live, /^ {4}cwd \/w\/cc-projects\/code-conductor_worktree_dcd22e$/m);
+    const retired = renderSession({ sessionId: SID_B, project: 'p', worktree: null, path: '/p',
+      retired: stoppedRow() });
+    assert.match(retired, /^ {4}project p {3}worktree —$/m);
+    assert.match(retired, /^ {4}path \/p$/m);
+  });
+});
+
 describe('renderWorktrees', () => {
   // parentProject is row-invariant (a worktree records the ROOT project even when
   // based on another worktree) so it heads the block. parentPath is NOT — see the
@@ -809,18 +876,32 @@ describe('list_sessions renders every allowlisted field', () => {
     assert.ok(BY_VALUE.length >= 20, `only ${BY_VALUE.length} keys checked by value`);
   });
 
-  test('every non-exempt allowlisted field reaches the text', () => {
-    const out = liveOnly([sentinelRow()]);
-    const missing = BY_VALUE.filter(k => !out.includes(sentinel(k)));
-    assert.deepEqual(missing, [],
-      'these allowlisted fields are never rendered — add them to renderSessions, '
-      + `or to DROPPED with a justification in readRenderers.ts:\n${out}`);
+  // TWO surfaces, one binding: list_sessions' rendering and describe_session's
+  // LIVE branch, which reuses instanceRows verbatim. The binding is therefore
+  // structural — but naming the second target is what makes it FAIL-BY-DEFAULT
+  // for describe_session too, rather than merely true today.
+  const SURFACES = [
+    ['renderSessions (list_sessions)', rows => liveOnly(rows)],
+    ['renderSession (describe_session, live)',
+      rows => renderSession({ sessionId: rows[0].sessionId, live: rows[0] })],
+  ];
+
+  test('every non-exempt allowlisted field reaches the text, on both live surfaces', () => {
+    for (const [label, render] of SURFACES) {
+      const out = render([sentinelRow()]);
+      const missing = BY_VALUE.filter(k => !out.includes(sentinel(k)));
+      assert.deepEqual(missing, [],
+        `${label}: these allowlisted fields are never rendered — render them, `
+        + `or add them to DROPPED with a justification in readRenderers.ts:\n${out}`);
+    }
   });
 
-  test('every deliberately-dropped field stays out of the text', () => {
-    const out = liveOnly([sentinelRow()]);
-    const leaked = DROPPED.filter(k => out.includes(sentinel(k)));
-    assert.deepEqual(leaked, [], 'a field listed as dropped is being rendered');
+  test('every deliberately-dropped field stays out of the text, on both live surfaces', () => {
+    for (const [label, render] of SURFACES) {
+      const out = render([sentinelRow()]);
+      const leaked = DROPPED.filter(k => out.includes(sentinel(k)));
+      assert.deepEqual(leaked, [], `${label}: a field listed as dropped is being rendered`);
+    }
   });
 
   test('awaitingWake renders as a label, both ways', () => {

@@ -60,7 +60,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 
 **Discover**
 - `list_projects` — every project, with git status, worktrees, and a live-worker count. Every path it lists is absolute — use those instead of guessing.
-- `list_sessions` — live workers and the stopped sessions you could resume, grouped by checkout (a project's `project` argument covers its worktrees too) · `list_worktrees` (orchestrator-owned worktrees) · `locate_session` (which project/worktree owns a sessionId).
+- `list_sessions` — live workers and the stopped sessions you could resume, grouped by checkout (a project's `project` argument covers its worktrees too) · `list_worktrees` (orchestrator-owned worktrees) · `describe_session` (one session's row, live or retired, plus which project/worktree owns it).
 - `project_status` — branch, HEAD, dirty lines, recent commits; diff-stat vs base for worktrees.
 - `project_read` · `project_bash` — inspect a project/worktree tree.
 - `project_diff` — unified diff of `<base>...HEAD` **plus** the working tree's uncommitted changes and untracked files, always — judge a worker's output on the full result, not just committed hunks. `summary:true` for a cheap per-file stat; large diffs paginate via `nextOffset`.
@@ -79,7 +79,7 @@ Schemas are deferred — load them via `ToolSearch` before first use. Before you
 - `set_mode` — switch the worker's permission mode at runtime (see the mode enum on `set_mode`/`spawn_instance`). After `approve_plan` the worker is in `bypassPermissions` — for a substantial follow-up you want to review, `set_mode({sessionId, mode:'plan'})` first; for a small one, let it code.
 - `interrupt_turn` — a second heartbeat after a soft interrupt is your signal to escalate to `force:true`. · `kill_instance` · `respawn_instance` (resume a just-exited instance).
 
-**`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning, **except the calls that only READ a session** (`get_recent_messages`, `get_transcript`, `send_prompt`'s `forward` source), which serve a retired worker if you name it by its **full** sessionId. Otherwise: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`, or `respawn_instance` if it only just exited); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
+**`sessionId` is the only worker handle** (stable across respawn/restart) — never an `instanceId`. Resolution is strict-live and soft-erroring, never auto-respawning, **except the calls that only READ a session** (`get_recent_messages`, `get_transcript`, `describe_session`, `send_prompt`'s `forward` source), which serve a retired worker if you name it by its **exact** sessionId rather than a prefix. Otherwise: no running process → `{ok:false, code:'SESSION_NOT_LIVE'}` (bring it back with `spawn_instance({resume: sessionId})`, or `respawn_instance` if it only just exited); unknown → `{ok:false, code:'SESSION_UNKNOWN'}`. Both are normal results — branch on `code`.
 
 **Plan handling**
 - `approve_plan({sessionId, feedback?})` — flips mode to `bypassPermissions` and sends the approval prompt; use it rather than hand-rolling `set_mode` + `send_prompt`.

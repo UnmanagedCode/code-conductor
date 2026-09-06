@@ -8,8 +8,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn } from './helpers.mjs';
+import { bootServer, api, waitFor, instForSession, freshProjectsRoot, rmrf, stripMessageBoundaryHeader, driveTurn, seedSessionJsonl } from './helpers.mjs';
 import { setTierBackend, setTierEnabled, setDebugByDefault, setDefaultSpawnTier, setTierEffort } from '../src/appSettings.ts';
+import { isDeadStatus } from '../src/instances.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO_WS = path.join(__dirname, 'fixtures', 'scenario-ws.json');
@@ -166,14 +167,13 @@ test('tools/list returns the full expected tool catalog', async () => {
     'approve_plan',
     'create_project', 'create_workspace', 'create_worktree',
     'delete_workspace', 'delete_worktree',
-    'describe_playbook',
+    'describe_playbook', 'describe_session',
     'get_recent_messages', 'get_transcript',
     'interrupt_turn',
     'kill_instance',
     'list_conductor_conventions',
     'list_playbooks', 'list_project_conventions', 'list_projects', 'list_sessions',
     'list_workspaces', 'list_worktrees',
-    'locate_session',
     'merge_worktree',
     'playbook_state',
     'prune_session',
@@ -547,7 +547,7 @@ test('argument validation rejects a missing required field via isError', async (
   // list_sessions takes no required argument any more (omitting `project`
   // means "everything"), so the machinery is pinned on a tool that does.
   const { body } = await rpc(baseUrl, 'tools/call', {
-    name: 'locate_session', arguments: {},
+    name: 'describe_session', arguments: {},
   });
   assert.equal(body.result.isError, true);
   assert.match(body.result.content[0].text, /missing required argument: sessionId/);
@@ -559,28 +559,266 @@ test('list_sessions narrowed to a worktree needs the project it belongs to', asy
   assert.equal(out.code, 'PROJECT_REQUIRED');
 });
 
-test('locate_session finds an on-disk session by id, 404s when missing', async () => {
+// ---------- describe_session ----------
+//
+// One session's row keyed on the orchestrator handle: the same row list_sessions
+// prints for it, plus the project and worktree that own it as a location block.
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+
+// The row-less fixture: a transcript with NO lineage row under a registered
+// project. Its public id IS its 36-char filename — the store's base case.
+async function seedRowlessSession(project, sid) {
   const { encodeCwd } = await import('../src/projects.ts');
   const FIXTURE_JSONL = path.join(__dirname, 'fixtures', 'session-sample.jsonl');
-  await api(baseUrl, 'POST', '/api/projects', { name: 'host' });
-  const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'host')));
+  await api(baseUrl, 'POST', '/api/projects', { name: project });
+  const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, project)));
   await fs.mkdir(dir, { recursive: true });
-  const sid = 'cccccccc-1111-2222-3333-444444444444';
   await fs.copyFile(FIXTURE_JSONL, path.join(dir, `${sid}.jsonl`));
+  return dir;
+}
 
-  const hit = unwrap(await callTool(baseUrl, 'locate_session', { sessionId: sid }));
-  assert.deepEqual(hit, { project: 'host', worktree: null });
+test('describe_session accepts a ROW-LESS session whose handle is a full 36-char UUID', async () => {
+  // The base case, and the test a length/shape check fails: this session has no
+  // lineage row, so its public id == its backing id and that 36-char string is
+  // the only handle it has. publicIdFor returns an unknown id unchanged, which
+  // is what lets it through.
+  const sid = 'cccccccc-1111-2222-3333-444444444444';
+  await seedRowlessSession('host', sid);
 
-  const { body: miss } = await rpc(baseUrl, 'tools/call', {
-    name: 'locate_session', arguments: { sessionId: '00000000-0000-0000-0000-000000000000' },
-  });
-  assert.equal(miss.result.isError, true);
-  assert.match(miss.result.content[0].text, /session not found/);
+  const out = text(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.match(out, new RegExp(`^SESSION ${sid} {3}retired$`, 'm'));
+  assert.match(out, /^ {4}project host {3}worktree —$/m, 'the folded-in location');
+  assert.match(out, new RegExp(`^${sid} `, 'm'), 'the session line itself');
+});
 
-  const { body: bad } = await rpc(baseUrl, 'tools/call', {
-    name: 'locate_session', arguments: {},
-  });
-  assert.equal(bad.result.isError, true);
+test('describe_session renders a LIVE worker as the same block list_sessions prints', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', {
+    project: 'a', mode: 'bypassPermissions', effort: 'high',
+  }));
+  await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
+
+  const out = text(await callTool(baseUrl, 'describe_session', { sessionId: spawn.sessionId }));
+  assert.match(out, new RegExp(`^SESSION ${spawn.sessionId} {3}live$`, 'm'));
+  assert.match(out, new RegExp(`^\\[1\\] LIVE ${spawn.sessionId}$`, 'm'));
+  assert.match(out, /^ {4}status idle {3}display idle {3}agents 0 {3}queued 0 {3}awaiting-wake no$/m);
+  assert.match(out, /^ {4}project a {3}worktree —$/m);
+  assert.match(out, /^ {4}mode bypassPermissions {3}effort high {3}thinking \S+ {3}model \S+\/\S+$/m);
+  // The same row list_sessions prints — asserted against it, not restated.
+  // The header is describe_session's own (list_sessions has no such line), so it
+  // is pinned exactly HERE rather than sliced off: an index-based slice would
+  // hide any line inserted between the header and the block.
+  const [header, ...rest] = out.split('\n');
+  assert.equal(header, `SESSION ${spawn.sessionId}   live`);
+  const listed = text(await callTool(baseUrl, 'list_sessions', { project: 'a' }));
+  for (const line of rest.filter(l => l.trim())) {
+    assert.ok(listed.includes(line.trim()), `list_sessions does not carry: ${line.trim()}`);
+  }
+});
+
+test('describe_session describes a RETIRED session and carries no runtime fields', async () => {
+  // A non-temp worker: killing it leaves a dead instance in byId (never
+  // archived), so this covers the retired branch WITHOUT the archived flag —
+  // and proves the isDeadStatus split, since a dead byId row must not render as
+  // a live worker.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  assert.equal(created.status, 201);
+  const inst = instances.get(created.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const sid = inst.sessionId;
+  await seedSessionJsonl(claudeProjectsRoot, path.join(projectsRoot, 'a'), inst.backingSessionId);
+  // Kill the SUBPROCESS, not the registration: both `kill_instance` and
+  // DELETE /api/instances/:id call instances.remove(), and what this test needs
+  // is the dead row a non-temp exit RETAINS in byId.
+  await inst.kill({ graceMs: 200 });
+  await waitFor(() => isDeadStatus(inst.status));
+  assert.ok(instances.idsForSession(sid).length > 0, 'precondition: the dead instance is still in byId');
+
+  const out = text(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.match(out, new RegExp(`^SESSION ${sid} {3}retired$`, 'm'));
+  assert.match(out, /^ {4}project a {3}worktree —$/m);
+  assert.match(out, /^ {4}path /m);
+  assert.ok(!out.includes('LIVE '), 'a dead byId instance must not render as a live worker');
+  // The documented limitation, asserted rather than assumed.
+  for (const f of ['mode ', 'effort ', 'model ', 'status ', 'display ']) {
+    assert.ok(!out.includes(f), `a retired session has no process to read '${f.trim()}' off`);
+  }
+  assert.ok(!out.includes('archived'), 'a non-temp kill archives nothing');
+});
+
+test('describe_session never calls a session the orchestrator still holds UNKNOWN', async () => {
+  // A non-temp worker is RETAINED in byId after it exits. If its transcript
+  // never landed, steps 3 and 4 of the ladder both come up empty — and
+  // SESSION_UNKNOWN there would deny a session the orchestrator is looking at.
+  // Same fixture as the retired test, minus the seeded jsonl, which is the one
+  // variable.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const inst = instances.get(created.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const sid = inst.sessionId;
+  await inst.kill({ graceMs: 200 });
+  await waitFor(() => isDeadStatus(inst.status));
+  assert.ok(instances.idsForSession(sid).length > 0, 'precondition: the orchestrator still holds it');
+
+  const res = unwrap(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'SESSION_NOT_LIVE', `must not be SESSION_UNKNOWN: ${JSON.stringify(res)}`);
+  // The shared notLiveRefusal wording, so this says the same thing every other
+  // tool says about the same session.
+  assert.match(res.reason, /has no running process/);
+  assert.ok(!res.reason.includes('is known to the orchestrator'),
+    'the orchestrator is holding this session — it must not be reported as unknown');
+});
+
+test('describe_session still describes an ARCHIVED session', async () => {
+  // A killed TEMP worker is archived on exit and dropped from byId, so this is
+  // the includeArchived:true at ladder step 3: without it the row is invisible
+  // and the tool would refuse a session it can see.
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+  const sid = spawn.sessionId;
+  await waitFor(() => instForSession(instances, sid)?.status === 'idle');
+  await seedSessionJsonl(claudeProjectsRoot, path.join(projectsRoot, 'a'),
+    instForSession(instances, sid).backingSessionId);
+  const backingId = instForSession(instances, sid).backingSessionId;
+  unwrap(await callTool(baseUrl, 'kill_instance', { sessionId: sid }));
+  await waitFor(() => instances.idsForSession(sid).length === 0);
+  // _archiveTempSession is fire-and-forget off the exit path.
+  const { isArchived } = await import('../src/archivedSessions.ts');
+  await waitFor(() => isArchived(backingId));
+
+  const out = text(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.match(out, new RegExp(`^SESSION ${sid} {3}retired$`, 'm'));
+  assert.match(out, /archived/, 'the archived flag is news, so it renders');
+});
+
+test('describe_session refuses a backing/segment id and names the handle that owns it', async () => {
+  // HANDLE-ONLY, enforced. The instance is never in byId, so the dispatch
+  // chokepoint cannot normalise the segment id to its public id before the
+  // handler runs — which is the only state in which this refusal can fire.
+  const { recordRotation } = await import('../src/sessionLineage.ts');
+  const { encodeCwd } = await import('../src/projects.ts');
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const dir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'a')));
+  await fs.mkdir(dir, { recursive: true });
+  const publicId = 'ab12cd34';
+  const first = 'ab12cd34-0000-4000-8000-000000000001';
+  const current = 'cc33cd34-0000-4000-8000-000000000002';
+  for (const id of [first, current]) {
+    await fs.writeFile(path.join(dir, `${id}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+  }
+  await recordRotation(publicId, first, 'initial');
+  await recordRotation(publicId, current, 'renew');
+
+  for (const segment of [first, current]) {
+    const res = unwrap(await callTool(baseUrl, 'describe_session', { sessionId: segment }));
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'SESSION_NOT_A_HANDLE');
+    assert.equal(res.handle, publicId, 'the refusal names the owning handle');
+    const whole = JSON.stringify(res);
+    assert.ok(!UUID_RE.test(whole), `the refusal emitted a backing id: ${whole}`);
+    assert.ok(whole.includes(publicId));
+  }
+  // …and the handle itself is described, so the refusal is about the identifier
+  // and not about the session being unreachable.
+  assert.match(text(await callTool(baseUrl, 'describe_session', { sessionId: publicId })),
+    new RegExp(`^SESSION ${publicId} {3}retired$`, 'm'));
+});
+
+test('describe_session soft-refuses SESSION_UNLOCATABLE for a transcript in an unregistered place', async () => {
+  const { encodeCwd } = await import('../src/projects.ts');
+  const orphanCwd = path.join(projectsRoot, 'gone_worktree_ff00');
+  const dir = path.join(claudeProjectsRoot, encodeCwd(orphanCwd));
+  await fs.mkdir(dir, { recursive: true });
+  const sid = 'dddddddd-1111-2222-3333-444444444444';
+  await fs.writeFile(path.join(dir, `${sid}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  const res = unwrap(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'SESSION_UNLOCATABLE');
+  assert.ok(res.reason.includes(dir), `the refusal must name the directory: ${res.reason}`);
+  assert.ok(!res.reason.includes(`${sid}.jsonl`),
+    'the <backingId>.jsonl filename would leak a backing id onto this surface');
+  assert.match(res.reason, /re-register that worktree/);
+});
+
+test('an orphaned transcript outranks the retained-in-byId refusal', async () => {
+  // The state that makes step 5's PLACEMENT observable: this session is BOTH
+  // still held in byId AND owns a transcript in a directory no registered
+  // project or worktree claims. Either branch can answer it, so only the order
+  // decides — and SESSION_UNLOCATABLE must win, because it names a recoverable
+  // cause (re-register that worktree) while SESSION_NOT_LIVE would send the
+  // conductor to resume a session whose transcript cc cannot reach.
+  // Without this fixture, moving the byId branch above the orphan probe is a
+  // pure reorder that no test can see.
+  const { encodeCwd } = await import('../src/projects.ts');
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const inst = instances.get(created.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const sid = inst.sessionId;
+  const backingId = inst.backingSessionId;
+  await inst.kill({ graceMs: 200 });
+  await waitFor(() => isDeadStatus(inst.status));
+
+  // The transcript exists, but ONLY under a directory nothing owns — so
+  // findSessionLocation misses it and findOrphanedTranscript finds it.
+  const orphanDir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'a_worktree_dead')));
+  await fs.mkdir(orphanDir, { recursive: true });
+  await fs.writeFile(path.join(orphanDir, `${backingId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  assert.ok(instances.idsForSession(sid).length > 0, 'precondition: still held in byId');
+  const res = unwrap(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'SESSION_UNLOCATABLE',
+    `the orphan probe must be consulted before the byId fallback: ${JSON.stringify(res)}`);
+  assert.ok(res.reason.includes(orphanDir), 'and it still names the directory');
+});
+
+test('describe_session soft-refuses SESSION_UNKNOWN for an id nothing answers to', async () => {
+  const res = unwrap(await callTool(baseUrl, 'describe_session', {
+    sessionId: '00000000-0000-0000-0000-000000000000',
+  }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'SESSION_UNKNOWN');
+  assert.match(res.reason, /is known to the orchestrator/);
+});
+
+test('describe_session sits on the shared prefix-resolution chokepoint', async () => {
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const spawn = unwrap(await callTool(baseUrl, 'spawn_instance', { project: 'a', mode: 'bypassPermissions' }));
+  await waitFor(() => instForSession(instances, spawn.sessionId)?.status === 'idle');
+
+  // An unambiguous prefix resolves — which it only can because the tool
+  // declares `sessionId`.
+  const out = text(await callTool(baseUrl, 'describe_session', { sessionId: spawn.sessionId.slice(0, 5) }));
+  assert.match(out, new RegExp(`^SESSION ${spawn.sessionId} {3}live$`, 'm'));
+
+  // Shorter than SESSION_PREFIX_MIN — the chokepoint's own refusal, not the
+  // handler's.
+  const amb = unwrap(await callTool(baseUrl, 'describe_session', { sessionId: spawn.sessionId.slice(0, 3) }));
+  assert.equal(amb.ok, false);
+  assert.equal(amb.code, 'SESSION_AMBIGUOUS');
+});
+
+test('describe_session never materialises the playbook ledger it reads', async () => {
+  const { ledgerFile } = await import('../src/playbookLedger.ts');
+  const sid = 'cccccccc-1111-2222-3333-444444444444';
+  await seedRowlessSession('host', sid);
+  text(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  unwrap(await callTool(baseUrl, 'describe_session', { sessionId: '00000000-0000-0000-0000-000000000000' }));
+
+  // Give any deferred write real chances to land rather than reading once and
+  // racing it.
+  await assert.rejects(
+    () => waitFor(async () => {
+      try { await fs.access(ledgerFile()); return true; } catch { return false; }
+    }, { timeout: 1000, interval: 20 }),
+    /timeout/,
+    'a read tool must never materialise the ledger it reads');
 });
 
 test('create_worktree + list_worktrees + delete_worktree against a real git repo', async () => {
