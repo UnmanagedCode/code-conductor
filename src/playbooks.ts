@@ -883,22 +883,36 @@ function decideSpawn(
   return applyPin({
     stage, stageName, playbook, toolName: 'spawn_instance', args,
     move: { kind: 'spawn', to: stageName, playbook: playbook.id },
+    // ADOPTION — `resume` naming a session the ledger holds nothing for. It
+    // genuinely declares a new binding (hence the `spawn` move), but it creates
+    // no process, so the spawn-shape half of the pin has no subject. Same rule as
+    // decideResume's, stated there.
+    ...(resumeId ? { skipPins: SPAWN_SHAPE_PINS } : {}),
   });
 }
 
 // spawn_instance({resume}) where the resumed session IS playbook-tracked.
 //
 // A RESUME IS NOT A STAGE ENTRY — one principle, and it decides every check at
-// once: no spawnability, no `needs`, no capacity count, no `pin`. The worker is
-// already bound to this stage and already belongs to this run; it is coming back
-// to where it was, not arriving. Two of those follow necessarily rather than as a
-// preference:
-//   • `pin` — relay's `plan` stage pins createWorktree/mode, so patching a resume
-//     would hand a resumed session a brand-new worktree.
-//   • spawnability — a worker that transitioned into a transition-only stage (say
-//     solo's `implement`) and then died must still be resumable, and isSpawnable
-//     is false for exactly those stages.
-// So `patchedArgs` is the caller's `args` UNCHANGED — the same object, not a copy.
+// once: no spawnability, no `needs`, no capacity count. The worker is already
+// bound to this stage and already belongs to this run; it is coming back to where
+// it was, not arriving. One of those follows necessarily rather than as a
+// preference: spawnability — a worker that transitioned into a transition-only
+// stage (say solo's `implement`) and then died must still be resumable, and
+// isSpawnable is false for exactly those stages.
+//
+// `pin` SPLITS, and it is the one check a resume does not skip wholesale:
+//   • SPAWN-SHAPE keys (SPAWN_SHAPE_PINS, above applyPin) are dropped. relay's
+//     `plan` pins createWorktree, and injecting it would hand a resumed session a
+//     brand-new worktree — a cwd that by construction holds none of its history.
+//   • POLICY keys — `mode`, above all — still apply, filled or refused exactly as
+//     on a spawn. Skipping them would be a WIDENING, not a simplification: with
+//     no pinned mode and none supplied, _doCreateResolved falls back to
+//     effectiveResumeMode(null) = DEFAULT_RESUME_MODE, i.e. bypassPermissions
+//     (src/sessionModes.ts) — inside a stage that asked for something narrower.
+//     A resume never grants; it re-asserts what the stage declared.
+// So `patchedArgs` is the caller's own `args` object whenever the policy
+// remainder is empty, which is the common case.
 //
 // The binding therefore comes off the record, and a supplied one is checked
 // against it rather than applied: MATCH-OR-REFUSE, the same rule (and the same
@@ -945,11 +959,16 @@ function decideResume(
       'its binding from the session record — omit `playbook`/`stage`, or name the recorded pair.', moves);
   }
 
-  return {
-    ok: true,
-    patchedArgs: args,
-    move: { kind: 'resume', to: recorded.stage, playbook: recorded.playbook },
-  };
+  const move: Move = { kind: 'resume', to: recorded.stage, playbook: recorded.playbook };
+  // A recorded stage that no longer exists is deliberately not an error here (see
+  // the header) — and with no stage object there is simply no pin to read. The
+  // resume goes through; the next send_prompt reports STAGE_UNKNOWN.
+  const stage = playbook.stages[recorded.stage];
+  if (!stage) return { ok: true, patchedArgs: args, move };
+  return applyPin({
+    stage, stageName: recorded.stage, playbook, toolName: 'spawn_instance', args, move,
+    skipPins: SPAWN_SHAPE_PINS,
+  });
 }
 
 function decideTargeted(
@@ -1183,20 +1202,38 @@ function checkForwardSource(
     legalMovesFrom(targetPlaybook, subject?.stage ?? null));
 }
 
+// The pinned args a RESUME drops: every one describes how to CREATE a process,
+// and a resume's subject already exists. `createWorktree` is the damaging one —
+// injecting it hands a resumed session a brand-new worktree, at a cwd that by
+// construction holds none of its history — and `model` is merely moot, since
+// readLastSessionModel recovers it.
+//
+// ENUMERATING WHAT TO STRIP, not what to keep, is the fail-safe direction: a
+// future pinned key stays enforced by default rather than being silently
+// dropped. Everything not listed is POLICY and still applies — see decideResume.
+const SPAWN_SHAPE_PINS: ReadonlySet<string> = new Set(['createWorktree', 'baseWorktree', 'name', 'model']);
+
 // `pin` — ARGUMENT VALUES (not worker provenance; that is `needs`). Omitted
 // by the caller ⇒ filled in; supplied and mismatched ⇒ refused. A hard
 // constraint, never an overridable default.
+//
+// `skipPins` names keys to leave alone entirely — neither filled nor checked.
+// Only the resume paths pass it, and only SPAWN_SHAPE_PINS.
 function applyPin(
-  { stage, stageName, playbook, toolName, args, move }:
+  { stage, stageName, playbook, toolName, args, move, skipPins }:
   { stage: Stage; stageName: string; playbook: Playbook; toolName: string;
-    args: Record<string, unknown>; move: Move },
+    args: Record<string, unknown>; move: Move; skipPins?: ReadonlySet<string> },
 ): Decision {
   const policy = resolvePolicy(stage, toolName);
   if (typeof policy === 'string') return { ok: true, patchedArgs: args, move };
-  const patched: Record<string, unknown> = { ...args };
+  // Copied only if something is actually filled in, so a call with nothing left
+  // to pin hands back the caller's OWN object — which is what makes "a resume's
+  // args pass through unchanged" an identity claim rather than a deep-equal one.
+  let patched: Record<string, unknown> | null = null;
   for (const [arg, want] of Object.entries(policy.pin)) {
+    if (skipPins?.has(arg)) continue;
     if (!(arg in args) || args[arg] === undefined) {
-      patched[arg] = want;
+      (patched ??= { ...args })[arg] = want;
       continue;
     }
     if (args[arg] !== want) {
@@ -1207,7 +1244,7 @@ function applyPin(
         legalMovesFrom(playbook, stageName));
     }
   }
-  return { ok: true, patchedArgs: patched, move };
+  return { ok: true, patchedArgs: patched ?? args, move };
 }
 
 function refuse(code: RefusalCode, reason: string, legalMoves: LegalMoves): Decision {

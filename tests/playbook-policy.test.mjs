@@ -254,7 +254,7 @@ test('a bare resume inherits the RECORDED stage, and spawnability is never consu
     'the fixture is only meaningful while `build` is NOT an entry stage');
 });
 
-test('a resume does NOT apply the entered-stage `pin` — the args pass through untouched', () => {
+test('a resume does NOT apply the entered-stage SPAWN-SHAPE `pin` — those args pass through untouched', () => {
   // The highest-value case in this section: `sealed` pins createWorktree:true, so
   // routing a resume through applyPin would silently hand a resumed session a
   // brand-new worktree, which no other assertion here would notice.
@@ -268,6 +268,57 @@ test('a resume does NOT apply the entered-stage `pin` — the args pass through 
   // Guard the premise: `sealed` really does pin, so this test is about the resume
   // path skipping it rather than about a stage with nothing to apply.
   assert.equal(allowed(d('spawn_instance', { playbook: 'gatelab', stage: 'sealed' })).patchedArgs.createWorktree, true);
+});
+
+test('a resume keeps a stage\'s POLICY pin while dropping its SPAWN-SHAPE pins', () => {
+  // INVARIANT: the split is by KIND, not all-or-nothing. `mode` is policy — a
+  // stage that pins it chose it — while createWorktree describes how to CREATE a
+  // process, whose subject already exists on a resume. Dropping the whole pin
+  // would let an adopted session with no recorded mode land in
+  // DEFAULT_RESUME_MODE (bypassPermissions, src/sessionModes.ts) inside a stage
+  // that asked for something narrower.
+  const draftPin = GATELAB_PB.stages.draft.tools.spawn_instance.pin;
+  assert.deepEqual(draftPin, { mode: 'ask', createWorktree: true },
+    'premise: `draft` must pin one of each kind, or this test proves nothing');
+
+  // ADOPTION — an untracked resume declaring a binding.
+  const adopted = allowed(d('spawn_instance',
+    { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'draft' }, RESUMABLE));
+  assert.equal(adopted.patchedArgs.mode, 'ask');
+  assert.equal('createWorktree' in adopted.patchedArgs, false);
+
+  // …and the TRACKED resume, which reaches the pin by the other path. One rule,
+  // not two — a mutant that narrows only decideSpawn survives without this arm.
+  const events = [{ kind: 'spawn', sessionId: 'w-draft-p1', playbook: 'gatelab', stage: 'draft' }];
+  const tracked = allowed(d('spawn_instance', { resume: 'w-draft-p1' }, events));
+  assert.equal(tracked.move.kind, 'resume');
+  assert.equal(tracked.patchedArgs.mode, 'ask');
+  assert.equal('createWorktree' in tracked.patchedArgs, false);
+});
+
+test('a resume that contradicts a stage\'s POLICY pin is still ARG_PIN_CONFLICT', () => {
+  // The policy half is a hard constraint, not a default a resume can talk past.
+  const res = refusal(d('spawn_instance',
+    { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'draft', mode: 'bypassPermissions' },
+    RESUMABLE), 'ARG_PIN_CONFLICT');
+  assert.match(res.reason, /mode="ask"/);
+});
+
+test('a resume with NOTHING left to pin gets its own args object back, not a copy', () => {
+  // `sealed` pins only spawn-shape, so its policy remainder is empty. Identity,
+  // not deep-equal: "unchanged" is the contract, and deep-equal would still pass
+  // on a defensive copy a later edit could start mutating.
+  const args = { resume: 'w-nobody-01', playbook: 'gatelab', stage: 'sealed' };
+  const res = allowed(d('spawn_instance', args, RESUMABLE));
+  assert.equal(res.patchedArgs, args, 'patchedArgs must be the caller\'s own args object');
+  assert.deepEqual(Object.keys(res.patchedArgs), ['resume', 'playbook', 'stage']);
+  // An ADOPTION still enters the stage — it declares a binding for a session that
+  // had none, so the spawn event that creates it is right.
+  assert.deepEqual(res.move, { kind: 'spawn', to: 'sealed', playbook: 'gatelab' });
+  // Premise guard: the same call WITHOUT `resume` is still patched, so this is
+  // about the resume path and not about a pin that was deleted outright.
+  assert.equal(allowed(d('spawn_instance', { playbook: 'gatelab', stage: 'sealed' })).patchedArgs.createWorktree,
+    true);
 });
 
 test('an explicit binding EQUAL to the record is accepted, and is still a resume', () => {
