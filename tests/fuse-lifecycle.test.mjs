@@ -12,7 +12,7 @@
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { promises as fs } from 'node:fs';
+import { promises as fs, rmSync } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { runTeardown, DEFAULT_DEADLINES } from '../src/systems/fuse/session.ts';
@@ -571,6 +571,36 @@ describe('the tier table', () => {
     assert.equal(tierOf(t, '/home/node'), 'host');
   });
 
+  // PINS: the interpreter chain bootstrap.sh execs INSIDE the union as root,
+  // before the privilege drop. Deleting the loop that adds these leaves every
+  // other assertion in this file green.
+  test("the bootstrap's interpreter chain is host-pinned, in every spelling", () => {
+    const t = buildTierTable(input);
+    for (const p of ['/bin/sh', '/usr/bin/sh', '/bin/dash', '/usr/bin/dash',
+      '/bin/bash', '/usr/bin/bash', '/usr/bin/setpriv', '/bin/setpriv']) {
+      assert.equal(tierOf(t, p), 'host', p);
+    }
+  });
+
+  // PINS one layer further down: the ELF interpreter baked into those binaries
+  // and setpriv's own NEEDED set. On a merged-usr host `/lib` and `/lib64` are
+  // symlinks to `/usr/lib` and `/usr/lib64`, but the table matches PATH
+  // STRINGS — so the `/lib64` spelling the ELF header actually requests has to
+  // be named, not merely implied by the `/usr/lib64` one.
+  test('the loader is pinned in the spelling the ELF header requests', () => {
+    const t = buildTierTable(input);
+    for (const p of [
+      '/lib64/ld-linux-x86-64.so.2',            // the requested program interpreter
+      '/usr/lib64/ld-linux-x86-64.so.2',
+      '/lib/x86_64-linux-gnu/libc.so.6',
+      '/usr/lib/x86_64-linux-gnu/libc.so.6',
+      '/lib/x86_64-linux-gnu/libcap-ng.so.0',   // setpriv's, and in no earlier list
+      '/usr/lib/x86_64-linux-gnu/libcap-ng.so.0',
+    ]) {
+      assert.equal(tierOf(t, p), 'host', p);
+    }
+  });
+
   // PINS: the npm-global chain. Pinning the leaves alone left every parent
   // directory in the chain falling back on a getattr.
   test('a binary pins its install prefix, not just the leaf', () => {
@@ -1121,5 +1151,281 @@ describe('two teardowns of the same run directory at once', () => {
     const report = await runTeardown({ rundir, driver, scan, log: { warn() {} } });
     assert.equal(report.wedged, true, 'the undead daemon should still be a wedge');
     await assert.rejects(() => fs.stat(rundir), 'the wedge write resurrected the reclaimed directory');
+  });
+});
+
+describe('round-2: the verdict observes rather than trusts', () => {
+  // PINS: on the intent path, a marker process that SURVIVES its SIGKILL is a
+  // namespace member and therefore a wedge. `killed:false` is the shape a
+  // bootstrap wedged in `D` inside a hung mount syscall has — SIGKILL cannot
+  // touch `D` — and reporting clean there deletes the run directory over a live
+  // process still holding the namespace.
+  test('an intent-path process that survives its kill is a member, and a wedge', async () => {
+    const { rundir } = await seedRun({}, { intentOnly: true });
+    const UNDEAD = 6100;
+    const procs = { [UNDEAD]: { starttime: '610000', state: 'D', instanceId: path.basename(rundir), rundir } };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([UNDEAD]) });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+
+    assert.equal(report.markerReclaimed.length, 1);
+    assert.equal(report.markerReclaimed[0].killed, false, 'the fixture did not produce an undead marker process');
+    assert.deepEqual(report.namespaceMembers, [UNDEAD], 'the intent path threw its own scan rows away');
+    assert.equal(report.wedged, true, 'reported clean over a live process holding the namespace');
+    assert.equal(report.removedRunDir, false);
+    await fs.stat(rundir);
+  });
+
+  // The control: the same intent path with the process actually dying is clean
+  // and reclaims, so the wedge above is the survival and nothing else.
+  test('…and an intent path whose processes really die is still clean', async () => {
+    const { rundir } = await seedRun({}, { intentOnly: true });
+    const procs = { 6101: { starttime: '610100', state: 'S', instanceId: path.basename(rundir), rundir } };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [] });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    assert.equal(report.markerReclaimed[0].killed, true);
+    assert.deepEqual(report.namespaceMembers, []);
+    assert.equal(report.wedged, false);
+    assert.equal(report.removedRunDir, true);
+  });
+
+  // PINS: `ok` must mean "this pass enumerated", not "the command exited 0".
+  // On a host missing awk/sed/tr every row is skipped and the shell still exits
+  // 0 — zero rows would read as a clean namespace with everything alive. The
+  // scanning shell is itself a process in /proc, so a pass that cannot see its
+  // OWN pid saw nothing.
+  test('realProcScan requires its own pid in its own output', async () => {
+    const { passEnumerated } = await import('../src/systems/fuse/procScan.ts');
+    assert.equal(passEnumerated('canary\t4242\n4242\t111\tmnt:[1]\t\t\n'), true);
+    assert.equal(passEnumerated('canary\t4242\n'), false, 'no data row for the canary pid');
+    assert.equal(passEnumerated('4242\t111\tmnt:[1]\t\t\n'), false, 'no canary at all');
+    assert.equal(passEnumerated(''), false);
+  });
+
+  // PINS: the mid-teardown record re-read happens immediately before the
+  // delete, not ~750 ms of scanning earlier. A record written during that
+  // window would otherwise be deleted over.
+  test('a mount.json appearing after the scan is still not deleted over', async () => {
+    const { rundir, record } = await seedRun({}, { intentOnly: true });
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    // The bootstrap finishes its handshake LATE — after the enumeration, during
+    // the mount-vantage reads.
+    let armed = false;
+    const orig = driver.readMounts;
+    driver.readMounts = async (pid) => {
+      if (armed) { armed = false; await fs.writeFile(path.join(rundir, 'mount.json'), JSON.stringify({ ...record, stage: 'mounted' })); }
+      return orig(pid);
+    };
+    const scan = async (opts) => { armed = true; return driver.scan(opts); };
+    const report = await runTeardown({ rundir, driver, scan, log: { warn() {} } });
+    assert.equal(report.removedRunDir, false, 'deleted over a record that appeared after the scan');
+    await fs.stat(path.join(rundir, 'mount.json'));
+  });
+
+  // PINS: the wedge write may not CREATE the run directory. `writeJsonAtomic`
+  // mkdir -p's its parent, so a concurrent clean pass's rm landing between the
+  // existence check and the write resurrects an orphan record — narrowing that
+  // window is not closing it.
+  test('a wedge write into a vanished run directory fails rather than recreating it', async () => {
+    const { rundir, record } = await seedRun();
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: [], conns: ['77'], undead: new Set([DAEMON]) });
+    // Vanishes at the last possible moment: after the verdict, as the wedge is
+    // being reported.
+    const report = await runTeardown({
+      rundir, driver, scan: driver.scan,
+      log: { warn() { rmSync(rundir, { recursive: true, force: true }); } },
+    });
+    void record;
+    assert.equal(report.wedged, true);
+    await assert.rejects(() => fs.stat(rundir), 'the wedge write resurrected the reclaimed directory');
+  });
+
+  // PINS: `survivingPids` ALONE. No fixture reached it while the fake scan
+  // enumerated every live process, because a survivor was always also a member.
+  // The anchor isolates it: a live DAEMON necessarily also fires terminalState,
+  // so it can never be the sole satisfier.
+  test('a surviving scan-invisible anchor is a wedge on survivingPids alone', async () => {
+    const { rundir } = await seedRun();
+    const procs = liveBoth();
+    delete procs[WORKER]; delete procs[DAEMON];
+    // Alive and recorded, but outside the session's namespace as far as the
+    // scan can tell.
+    procs[ANCHOR] = { starttime: ANCHOR_START, state: 'S', ns: 'mnt:[elsewhere]' };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([ANCHOR]) });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+
+    assert.deepEqual(report.namespaceMembers, [], 'the anchor was visible as a member, so this is not isolated');
+    assert.deepEqual(report.residualMounts, []);
+    assert.equal(report.enumerated, true);
+    assert.equal(report.terminalState, 'GONE', 'terminalState also fired');
+    assert.deepEqual(report.markerReclaimed, []);
+    assert.deepEqual(report.survivingPids, [`anchor pid ${ANCHOR}`]);
+    assert.equal(report.wedged, true);
+    assert.equal(report.removedRunDir, false);
+  });
+
+  // PINS the production configuration the fake otherwise cannot model: the
+  // union daemon is invisible to BOTH scan passes (setfsuid makes it
+  // non-dumpable and it never execs afterwards), so a live one is caught only
+  // by the recorded-pid check.
+  test('a live daemon invisible to the scan is still caught', async () => {
+    const { rundir } = await seedRun();
+    const procs = liveBoth();
+    delete procs[WORKER]; delete procs[ANCHOR];
+    procs[DAEMON] = { starttime: DAEMON_START, state: 'S', threads: ['1', '2'], ns: 'mnt:[invisible]' };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([DAEMON]) });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+
+    assert.deepEqual(report.namespaceMembers, [], 'the scan saw it, so this does not model the real daemon');
+    assert.deepEqual(report.survivingPids, [`daemon pid ${DAEMON}`]);
+    assert.equal(report.wedged, true);
+    assert.equal(report.removedRunDir, false);
+  });
+
+  // PINS: `terminalState` ALONE — the daemon outlives the reap deadline and
+  // then dies, which is the interleaving where nothing else fires.
+  test('a daemon that outlives its reap deadline and then dies is a wedge on terminalState alone', async () => {
+    const { rundir } = await seedRun();
+    const procs = liveBoth();
+    delete procs[WORKER]; delete procs[ANCHOR];
+    procs[DAEMON] = { starttime: DAEMON_START, state: 'S', threads: ['1', '2'], ns: 'mnt:[elsewhere]' };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([DAEMON]) });
+    // Step 7's scan runs after reapBounded has already returned WEDGED; the
+    // daemon finally dies there, so survivingPids is empty.
+    const scan = async (opts) => { delete procs[DAEMON]; return driver.scan(opts); };
+    const report = await runTeardown({ rundir, driver, scan, log: { warn() {} } });
+
+    assert.match(report.terminalState, /^WEDGED\(threads=2/);
+    assert.deepEqual(report.survivingPids, [], 'the daemon was still recorded-alive, so this is not isolated');
+    assert.deepEqual(report.namespaceMembers, []);
+    assert.deepEqual(report.residualMounts, []);
+    assert.equal(report.wedged, true);
+    assert.equal(report.removedRunDir, false);
+  });
+
+  // PINS: the machine truly never rejects — including through a throwing
+  // logger, which sits on the wedge-reporting path after the verdict.
+  test('a throwing logger does not reject the machine', async () => {
+    const { rundir } = await seedRun();
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: [], conns: ['77'], undead: new Set([DAEMON]) });
+    const report = await runTeardown({
+      rundir, driver, scan: driver.scan,
+      log: { warn() { throw new Error('the operator log is full'); } },
+    });
+    assert.equal(report.wedged, true);
+    assert.equal(report.removedRunDir, false);
+  });
+});
+
+describe('the boot sweep', () => {
+  // The sweep is the backstop for every hard-crash path in this design — the
+  // restart, the killed orchestrator, the two synchronous shutdowns that cannot
+  // run an async teardown. Its own branches were reached only through the real
+  // gate's happy path.
+  let prev, runRoot;
+  before(async () => {
+    prev = process.env.PROJECTS_ROOT;
+    process.env.PROJECTS_ROOT = path.join(await mkdtemp('cc-fuse-sweep-'), 'projects');
+    const { fuseRunRoot } = await import('../src/systems/fuse/plan.ts');
+    runRoot = fuseRunRoot();
+  });
+  after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
+
+  const seedEntry = async (id, record) => {
+    const dir = path.join(runRoot, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'mount.json'), JSON.stringify({
+      schema: 1, stage: 'mounted', instanceId: id, ccBootId: 'old', rundir: dir,
+      root: path.join(dir, 'root'), mirror: path.join(dir, 'mirror'), fusectl: path.join(dir, 'fusectl'),
+      nsMntId: NS, bootstrapPid: 0, bootstrapStart: '', anchorPid: 0, anchorStart: '',
+      daemonPid: 0, daemonStart: '', minor: '', spawnedAt: 1, mountedAt: 2, ...record,
+    }));
+    return dir;
+  };
+  const emptyScan = async () => ({ ok: true, raw: '' });
+
+  // PINS: a dead entry is reclaimed and reported. An instance id is a fresh
+  // uuid per process, so everything here at boot is dead by construction.
+  test('reclaims a dead record and says what it did', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const dir = await seedEntry('dead-1');
+    const warned = [];
+    const reports = await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => warned.push(a.join(' ')) } });
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].instanceId, 'dead-1');
+    assert.equal(reports[0].removedRunDir, true);
+    await assert.rejects(() => fs.stat(dir));
+    assert.ok(warned.some(w => w.includes('reclaimed dead-1')), warned.join(' | '));
+  });
+
+  // PINS: a LIVE session's directory is not touched. The sweep runs at boot
+  // where there are none, but the parameter exists and a sweep that ignored it
+  // would tear down a running worker.
+  test('skips a live session id entirely', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const dir = await seedEntry('live-1');
+    const driver = fakeDriver();
+    const reports = await sweepFuseSessions({ driver, scan: emptyScan, liveIds: ['live-1'], log: { warn() {} } });
+    assert.deepEqual(reports, []);
+    await fs.stat(path.join(dir, 'mount.json'));
+    assert.deepEqual(driver.calls, [], 'a live session was touched');
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  // PINS: a wedged entry is REPORTED and its record KEPT, so the next boot
+  // re-reports it rather than silently rediscovering it.
+  test('reports a wedged entry and leaves its record in place', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const dir = await seedEntry('wedged-1', { daemonPid: 7001, daemonStart: '700100', minor: '5' });
+    const procs = { 7001: { starttime: '700100', state: 'S', threads: ['1', '2'], ns: 'mnt:[elsewhere]' } };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([7001]) });
+    const warned = [];
+    const reports = await sweepFuseSessions({ driver, scan: driver.scan, log: { warn: (...a) => warned.push(a.join(' ')) } });
+    assert.equal(reports[0].wedged, true);
+    assert.equal(reports[0].removedRunDir, false);
+    const kept = JSON.parse(await fs.readFile(path.join(dir, 'mount.json'), 'utf8'));
+    assert.equal(kept.wedged, true);
+    assert.ok(warned.some(w => w.includes('wedged-1') && w.includes('WEDGED')), warned.join(' | '));
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  // PINS: one entry's outcome does not stop the others. The sweep must never
+  // let a directory it cannot reclaim cost a boot.
+  test('a wedged entry does not stop a clean one beside it', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const bad = await seedEntry('stuck-2', { daemonPid: 7002, daemonStart: '700200' });
+    const good = await seedEntry('clean-2');
+    const procs = { 7002: { starttime: '700200', state: 'S', threads: ['1', '2'], ns: 'mnt:[elsewhere]' } };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([7002]) });
+    const reports = await sweepFuseSessions({ driver, scan: driver.scan, log: { warn() {} } });
+    assert.equal(reports.length, 2);
+    assert.equal(reports.find(r => r.instanceId === 'clean-2').removedRunDir, true);
+    await assert.rejects(() => fs.stat(good));
+    await fs.stat(path.join(bad, 'mount.json'));
+    await fs.rm(bad, { recursive: true, force: true });
+  });
+
+  // PINS: a boot that could not enumerate says so. Silence here is the
+  // "clean because nothing was seen" that this whole round is about.
+  test('an unenumerable boot warns that it cannot claim the store is clean', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const warned = [];
+    await sweepFuseSessions({
+      driver: fakeDriver(), scan: async () => ({ ok: false, raw: '' }),
+      log: { warn: (...a) => warned.push(a.join(' ')) },
+    });
+    assert.ok(warned.some(w => w.includes('cannot claim the store is clean')), warned.join(' | '));
+  });
+
+  // PINS: no run root at all — an install that has never spawned a FUSE worker
+  // — is not an error and not a warning.
+  test('a store with no run root sweeps to nothing, quietly', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const saved = process.env.PROJECTS_ROOT;
+    process.env.PROJECTS_ROOT = path.join(await mkdtemp('cc-fuse-noroot-'), 'nothing-here');
+    const warned = [];
+    try {
+      assert.deepEqual(await sweepFuseSessions({ driver: fakeDriver(), log: { warn: (...a) => warned.push(a.join(' ')) } }), []);
+      assert.deepEqual(warned, []);
+    } finally { process.env.PROJECTS_ROOT = saved; }
   });
 });

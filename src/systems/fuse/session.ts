@@ -118,9 +118,13 @@ async function readJson<T>(file: string): Promise<T | null> {
   catch { return null; }
 }
 
+// Deliberately does NOT create the parent directory. It used to, and that made
+// the wedge write able to RESURRECT a run directory a concurrent clean pass had
+// just reclaimed — an orphan record for a session that no longer exists. The
+// only other caller, prepare(), has already created the directory. Absence is
+// now an ENOENT the caller decides about, rather than a silent mkdir.
 export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   const tmp = `${file}.tmp.${process.pid}`;
-  await fsp.mkdir(path.dirname(file), { recursive: true });
   await fsp.writeFile(tmp, JSON.stringify(value, null, 2));
   await fsp.rename(tmp, file);
 }
@@ -205,6 +209,9 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   // loudest verdict the machine has.
   let record: FuseMountRecord | null = null;
   let schemaViolation = false;
+  // The intent path's own enumeration, carried forward to step 7 rather than
+  // thrown away — it is the same scan, already paid for.
+  const intentRows: ProcRow[] = [];
   try {
 
   // ── 0. the record, and the pid re-verification ─────────────────────────
@@ -291,6 +298,21 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
       if (report.markerReclaimed.length) {
         notes.push(`reclaimed ${report.markerReclaimed.length} process(es) by marker, with no record naming them`);
       }
+    }
+    // KEPT, not discarded, and RE-VERIFIED rather than trusted. Step 7 re-scans
+    // when there IS a record; on this path it has nothing to compare against
+    // and used to substitute an empty row set — which made `members` vacuous
+    // exactly where the marker reclaim is the only thing that acted. A marker
+    // process that SURVIVED its SIGKILL (`killed: false` — the shape of a
+    // bootstrap wedged in `D` inside a hung mount syscall, which SIGKILL cannot
+    // touch) then left no trace in the verdict at all, and the machine deleted
+    // the run directory over it.
+    //
+    // The rows are filtered by a fresh liveness check rather than by the
+    // reclaim's return value, so the verdict rests on an observation. One
+    // /proc/<pid>/stat read each, against a scan already paid for.
+    for (const row of scanned.rows) {
+      if (await stillOurs(driver, row.pid, row.starttime)) intentRows.push(row);
     }
   }
 
@@ -386,7 +408,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //       process-group kill on this path, so a live worker child holds mounts
   //       open while naming nothing cc recorded. Anything cc cannot enumerate
   //       is a wedge, not a pass.
-  const scanned = record ? await scanProcesses({ withEnviron: true }, input.scan) : { ok: report.enumerated, rows: [] as ProcRow[] };
+  const scanned = record ? await scanProcesses({ withEnviron: true }, input.scan) : { ok: report.enumerated, rows: intentRows };
   if (record) report.enumerated = scanned.ok;
   const members = membersOf(scanned.rows, { nsMntId: record?.nsMntId, rundir });
   report.namespaceMembers = members.map(m => m.pid);
@@ -424,6 +446,9 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     || report.terminalState.startsWith('WEDGED')
     || report.survivingPids.length > 0
     || members.length > 0
+    // Belt and braces behind the members fix above: a reclaim that reports it
+    // did not kill is a wedge whatever the enumeration then says.
+    || report.markerReclaimed.some(r => !r.killed)
     || !report.enumerated
     || schemaViolation;
 
@@ -445,26 +470,40 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     // Both surfaces on purpose: the event stream is what an operator watching
     // this session is already looking at, and console.warn survives the
     // session's death and lands in the orchestrator log.
+    // BOTH surfaces are guarded, and the second one is not politeness: the
+    // machine's contract is that it never rejects, and a custom logger that
+    // throws here would reject it AFTER the verdict was computed — which is
+    // precisely the class of "a comment asserting an invariant the code does
+    // not hold" that has cost this ticket the most.
     try { input.emit?.({ kind: 'system', subtype: 'stderr', data: { line } }); } catch { /* the session may already be gone */ }
-    (input.log ?? console).warn(line);
-    // Only if the run directory is STILL THERE. writeJsonAtomic mkdir -p's its
-    // parent, so a wedge verdict reached after a concurrent pass (the boot
-    // sweep, or the instance's own crash path) already reclaimed the directory
-    // would RESURRECT it — an orphan record for a session that no longer
-    // exists, which the next sweep then has to process.
+    try { (input.log ?? console).warn(line); } catch { /* the operator log is not a reason to fail a teardown */ }
+    // The existence check is an optimisation, not the guarantee: writeJsonAtomic
+    // no longer creates the parent, so a concurrent clean pass's `rm -rf`
+    // landing between the two simply makes the write ENOENT rather than
+    // resurrecting the directory. The window is closed by the mechanism, not
+    // narrowed by the check.
     if (record && await fsp.stat(rundir).then(() => true, () => false)) {
       await writeJsonAtomic(recordPath, {
         ...record, wedged: true, terminalState: report.terminalState,
         residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
-      }).catch(() => {});
+      }).catch((e: Error) => notes.push(`the wedge record could not be written: ${e.message}`));
     }
   } else {
     // Reached only when the namespace enumeration RAN and came back empty, no
     // recorded pid survives, no mount is left at any vantage point, and no
     // record appeared mid-teardown. That is the whole precondition for
     // destroying the only handle cc has on this session.
-    try { await fsp.rm(rundir, { recursive: true, force: true }); report.removedRunDir = true; }
-    catch (e) { notes.push(`could not reclaim ${rundir}: ${(e as Error).message}`); }
+    // ONE LAST LOOK, immediately before the irreversible step. The check at the
+    // top of step 7 feeds the verdict; this one guards the delete itself, so
+    // that any await point a later edit inserts between them cannot reopen the
+    // window. Cheap: one stat on a path already in the page cache.
+    if (!record && await readJson<FuseMountRecord>(recordPath)) {
+      notes.push('mount.json appeared between the verdict and the delete; leaving it for the sweep');
+      report.wedged = true;
+    } else {
+      try { await fsp.rm(rundir, { recursive: true, force: true }); report.removedRunDir = true; }
+      catch (e) { notes.push(`could not reclaim ${rundir}: ${(e as Error).message}`); }
+    }
   }
   return report;
 }

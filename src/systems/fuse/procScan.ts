@@ -77,7 +77,24 @@ ${withEnviron ? `  if [ -r "$d/environ" ]; then
   fi` : ''}
   printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "\${d#/proc/}" "$st" "$ns" "$id" "$rd"
 done
+printf 'canary\\t%s\\n' "$$"
 `;
+}
+
+// THE CANARY. `ok` must mean "this pass enumerated", not "the command exited
+// 0". On a host missing `awk`, `sed` or `tr` every row is skipped by the
+// `[ -n "$st" ] || continue` guard, the shell still exits 0, and zero rows
+// would read as an empty namespace with everything in it still alive — the
+// same "clean because nothing was seen" that this ticket has produced five
+// times. The scanning shell is itself a process in /proc, so a pass that
+// cannot see its OWN pid saw nothing.
+export function passEnumerated(raw: string): boolean {
+  let canary: number | null = null;
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('canary\t')) canary = Number(line.slice(7).trim());
+  }
+  if (canary === null || !Number.isInteger(canary)) return false;
+  return parseScan(raw).some(r => r.pid === canary);
 }
 
 function run(cmd: string, args: string[]): Promise<string | null> {
@@ -98,8 +115,10 @@ export const realProcScan: RawScan = async ({ withEnviron = false } = {}) => {
     run('/bin/sh', ['-c', script]),
     run('sudo', ['-n', '/bin/sh', '-c', script]),
   ]);
-  if (own === null && root === null) return { ok: false, raw: '' };
-  return { ok: own !== null && root !== null, raw: `${own ?? ''}\n${root ?? ''}` };
+  // BOTH passes must have enumerated. Exiting 0 is not enough (the canary), and
+  // a missing half is a blind spot rather than an empty result.
+  const ok = own !== null && root !== null && passEnumerated(own) && passEnumerated(root);
+  return { ok, raw: `${own ?? ''}\n${root ?? ''}` };
 };
 
 export function parseScan(raw: string): ProcRow[] {

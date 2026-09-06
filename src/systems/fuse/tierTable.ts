@@ -50,12 +50,14 @@ const ETC_PINS = [
   '/etc/claude-code',
 ];
 
-// The six NEEDED objects in BOTH spellings (both are looked up at startup, so
-// both are named — S1 §5.1) plus glibc's dlopen closure, which is in neither
-// `ldd` nor the brief and was found only by running the thing. A host libc that
-// dlopens the REMOTE's NSS or gconv modules is a version mismatch waiting to
-// happen.
-const LOADER_PINS = [
+// The six NEEDED objects (S1 §5.1) plus glibc's dlopen closure, which is in
+// neither `ldd` nor the brief and was found only by running the thing. A host
+// libc that dlopens the REMOTE's NSS or gconv modules is a version mismatch
+// waiting to happen.
+//
+// `libcap-ng.so.0` is `setpriv`'s, from `ldd` on this host — one layer below
+// the interpreter chain above, and covered by no other entry here.
+const LOADER_OBJECTS = [
   '/usr/lib64/ld-linux-x86-64.so.2',
   '/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2',
   '/usr/lib/x86_64-linux-gnu/libc.so.6',
@@ -63,6 +65,7 @@ const LOADER_PINS = [
   '/usr/lib/x86_64-linux-gnu/libdl.so.2',
   '/usr/lib/x86_64-linux-gnu/librt.so.1',
   '/usr/lib/x86_64-linux-gnu/libpthread.so.0',
+  '/usr/lib/x86_64-linux-gnu/libcap-ng.so.0',
   '/usr/lib/x86_64-linux-gnu/libnss_compat.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_dns.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_files.so.2',
@@ -70,17 +73,28 @@ const LOADER_PINS = [
   '/usr/lib/x86_64-linux-gnu/gconv',
 ];
 
+// BOTH SPELLINGS OF EVERY ONE OF THEM, derived rather than hand-doubled so the
+// two lists cannot drift. On a merged-usr host `/lib` and `/lib64` are symlinks
+// to `/usr/lib` and `/usr/lib64` — but the tier table matches PATH STRINGS, and
+// the ELF header of every binary here requests `/lib64/ld-linux-x86-64.so.2`
+// literally, which the `/usr/lib64` spelling does not match. Same class as the
+// interpreter chain, one layer down.
+const LOADER_PINS = [...new Set([
+  ...LOADER_OBJECTS,
+  ...LOADER_OBJECTS.map(p => p.startsWith('/usr/') ? p.slice(4) : p),
+])];
+
 // THE INTERPRETER CHAIN `bootstrap.sh`'S LAST STEP EXECS **INSIDE** THE UNION,
 // as root and before the privilege drop: `chroot $ROOT /bin/sh -c '... exec
 // setpriv ...'`. Unpinned, those paths take the remote-first `default:` arm
 // (union.c:940), so which side answers depends on the remote's contents. Nearly
 // unreachable with S1's narrow fixture and load-bearing the moment S2 widens
-// `mirrorRoot` to `/` — pinned while the table is being born rather than left
-// for S2 to discover that root's pre-drop interpreter was remote-served.
+// `mirrorRoot` to `/`.
 //
 // Both spellings of each, because which one exists is a distribution choice and
 // a pin that matches nothing costs nothing. `chroot` itself is NOT here: it runs
-// on the host, before the union is entered.
+// on the host, before the union is entered. What these binaries in turn need —
+// the ELF interpreter and `libcap-ng` — is in LOADER_PINS above.
 const BOOTSTRAP_CHAIN = [
   '/bin/sh', '/usr/bin/sh', '/bin/dash', '/usr/bin/dash', '/bin/bash', '/usr/bin/bash',
   '/usr/bin/setpriv', '/bin/setpriv',

@@ -50,12 +50,16 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
       // Every non-GONE terminal state is reported. A wedged record is LEFT IN
       // PLACE by runTeardown, so the next boot re-reports it rather than
       // silently rediscovering it.
-      if (report.terminalState !== 'GONE' || report.wedged || report.residualMounts.length > 0) {
+      // KEYED ON THE VERDICT, not on the terminal state. `wedged` already means
+      // "something is still there"; `terminalState` describes the daemon alone,
+      // and `NO-PID` — a record that never named one — is an ordinary clean
+      // reclaim rather than an anomaly worth alarming an operator about.
+      if (report.wedged) {
         log.warn(`cc-fuse sweep: ${name} → ${report.terminalState}`
           + `${report.residualMounts.length ? `, mounts still present: ${report.residualMounts.join(' ')}` : ''}`
           + `${report.notes.length ? ` — ${report.notes.join('; ')}` : ''}`);
       } else {
-        log.warn(`cc-fuse sweep: reclaimed ${name} (daemon ${report.daemonPid ?? '?'} ${report.terminalState}, unmounted ${report.unmounted.length})`);
+        log.warn(`cc-fuse sweep: reclaimed ${name} (daemon ${report.daemonPid ?? '?'} ${report.terminalState}, unmounted ${report.unmounted.length}, reclaimed by marker ${report.markerReclaimed.length})`);
       }
       // Reported, NEVER acted on: S3 §A5 measured stale minors (56, 59) that
       // freed nothing, survived abort and were inert. A count of fusectl
