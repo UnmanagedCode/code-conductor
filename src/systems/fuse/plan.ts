@@ -64,6 +64,11 @@ export interface FuseMountRecord extends FuseIntent {
   nsMntId: string;
   bootstrapPid: number;
   bootstrapStart: string;
+  // The namespace anchor — a credential-stable process whose
+  // /proc/<pid>/ns/mnt stays openable. See bootstrap.sh step 2b for why the
+  // daemon's and the worker's do not.
+  anchorPid: number;
+  anchorStart: string;
   daemonPid: number;
   daemonStart: string;
   minor: string;

@@ -59,6 +59,7 @@ export interface TeardownReport {
   workerPid: number | null;
   workerStopped: boolean;
   daemonPid: number | null;
+  anchorPid: number | null;
   // GONE | ZOMBIE-ORPHAN | NO-PID | WEDGED(threads=n states=…)
   terminalState: string;
   // In the order the unmounts were ISSUED — deepest-first is an ordering claim,
@@ -166,7 +167,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   const report: TeardownReport = {
     instanceId: path.basename(rundir),
     source: 'NO-RECORD',
-    workerPid: null, workerStopped: false, daemonPid: null,
+    workerPid: null, workerStopped: false, daemonPid: null, anchorPid: null,
     terminalState: 'NO-PID',
     unmounted: [], lazyUnmounted: [],
     abort: 'skipped', minor: null,
@@ -188,6 +189,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   if (record) {
     report.workerPid = record.bootstrapPid ?? null;
     report.daemonPid = record.daemonPid ?? null;
+    report.anchorPid = record.anchorPid ?? null;
     if (record.bootstrapPid && !workerLive) notes.push(`worker pid ${record.bootstrapPid} is gone or recycled (starttime mismatch) — not signalled`);
     if (record.daemonPid && !daemonLive0) notes.push(`daemon pid ${record.daemonPid} is gone or recycled (starttime mismatch) — not signalled`);
   }
@@ -264,16 +266,30 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     }
   }
 
-  // ── 6. assert clean, in BOTH tables. /proc/1/mounts is the one that says
+  // ── 6. the anchor goes LAST. It is the only thing still holding the mount
+  //       namespace open, and a namespace whose last process has gone takes
+  //       every mount in it with it — which is the second, independent
+  //       guarantee behind step 2: a mount cc could not unmount still cannot
+  //       survive this.
+  if (record && await stillOurs(driver, record.anchorPid, record.anchorStart)) {
+    await driver.signal(record.anchorPid, 'SIGKILL', { privileged: true });
+    await waitGone(driver, record.anchorPid, record.anchorStart, d.workerKillMs, d.pollMs);
+    if (await stillOurs(driver, record.anchorPid, record.anchorStart)) {
+      notes.push(`namespace anchor pid ${record.anchorPid} survived SIGKILL — the mount namespace is still open`);
+    }
+  }
+
+  // ── 7. assert clean, in BOTH tables. /proc/1/mounts is the one that says
   //       whether anything escaped the private namespace at all.
+  const nsPid6 = await pickNsPid(driver, record);
   const residual = new Set<string>();
-  for (const pid of [process.pid, 1, ...(nsPid5 === null ? [] : [nsPid5])]) {
+  for (const pid of [process.pid, 1, ...(nsPid6 === null ? [] : [nsPid6])]) {
     for (const mp of (await driver.readMounts(pid)) ?? []) if (under(mp, rundir)) residual.add(mp);
   }
   report.residualMounts = [...residual].sort();
   report.wedged = report.residualMounts.length > 0 || report.terminalState.startsWith('WEDGED');
 
-  // ── 7. reclaim, or KEEP THE RECORD so the next boot sweep re-reports the
+  // ── 8. reclaim, or KEEP THE RECORD so the next boot sweep re-reports the
   //       wedge rather than silently rediscovering it.
   if (report.wedged) {
     const line = `cc-fuse: session ${report.instanceId} did not tear down cleanly — ${report.terminalState}`
@@ -297,8 +313,19 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   return report;
 }
 
+// The pid whose /proc/<pid>/ns/mnt cc enters the namespace through.
+//
+// THE ANCHOR FIRST, and that ordering is a measured requirement rather than a
+// preference: the daemon calls setfsuid per request and the worker is
+// setpriv'd, so both are non-dumpable within milliseconds of the mount coming
+// up, and opening a non-dumpable process's ns/* needs CAP_SYS_PTRACE, which is
+// not in this container's bounding set even for uid 0 (bootstrap.sh step 2b).
+// The other two are kept as fallbacks because they are correct wherever that
+// capability IS available, and because a record from a run whose anchor died
+// early still has somewhere to point.
 async function pickNsPid(driver: MountDriver, record: FuseMountRecord | null): Promise<number | null> {
   if (!record) return null;
+  if (await stillOurs(driver, record.anchorPid, record.anchorStart)) return record.anchorPid;
   if (await stillOurs(driver, record.daemonPid, record.daemonStart)) return record.daemonPid;
   if (await stillOurs(driver, record.bootstrapPid, record.bootstrapStart)) return record.bootstrapPid;
   return null;

@@ -34,6 +34,26 @@ grep -q '[[:space:]]fusectl$' /proc/filesystems || die "fusectl is not in /proc/
 #       a safety net for a partial one, never the primary creator.
 mkdir -p "$CC_FUSE_ROOT" "$CC_FUSE_MIRROR" "$CC_FUSE_FUSECTL"
 
+# ── 2b. THE NAMESPACE ANCHOR, and it is a measured necessity rather than a
+#        convenience. cc reaches this namespace with
+#        `nsenter --mount=/proc/<pid>/ns/mnt`, and that open is governed by
+#        ptrace_may_access: a process that has changed credentials is
+#        non-dumpable (this host: /proc/sys/fs/suid_dumpable = 2), and opening a
+#        non-dumpable process's ns/* then needs CAP_SYS_PTRACE — which is NOT in
+#        this container's bounding set, so not even uid 0 has it. The daemon
+#        calls setfsuid per request and the worker is setpriv'd, so BOTH become
+#        unreachable within milliseconds of the mount coming up. Measured: the
+#        first nsenter after the handshake succeeds and every later one fails
+#        `cannot open /proc/<pid>/ns/mnt: Permission denied`.
+#
+#        The anchor is a process that never changes credentials, so it stays
+#        dumpable and its ns/mnt stays openable by root for the life of the
+#        namespace. It is NOT a supervisor: it holds no state, watches nothing,
+#        and cannot restart anything — it is a handle. cc's teardown kills it
+#        last, and the boot sweep kills one cc crashed before reaching.
+setsid sleep infinity </dev/null >/dev/null 2>&1 &
+ANCHOR_PID=$!
+
 # ── 3. THE S1 STAND-IN, and it is labelled one. There is no transport and no
 #       control channel in S1: the daemon's remote tier is a plain local
 #       directory, and this bind is what puts real bytes behind it at the
@@ -103,6 +123,8 @@ cat > "$CC_FUSE_RECORD.tmp" <<JSON
   "nsMntId": "$NS_MNT",
   "bootstrapPid": $$,
   "bootstrapStart": "$(procstart $$)",
+  "anchorPid": $ANCHOR_PID,
+  "anchorStart": "$(procstart "$ANCHOR_PID")",
   "daemonPid": $DAEMON_PID,
   "daemonStart": "$(procstart "$DAEMON_PID")",
   "minor": "$MINOR",
