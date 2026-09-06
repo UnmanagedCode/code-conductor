@@ -54,13 +54,15 @@ test('a non-redirected session gets the settings it always got', () => {
   assert.equal(s.permissions, undefined);
 });
 
-// PINS: a redirected session hooks Read as well (its bytes have to be fetched
-// before the CLI opens the file), hooks PostToolUse (the write-back), and
-// REMOVES Glob and Grep — a tool result cannot be substituted, so a search that
-// answered from the session root would be answering about the wrong machine.
-test('a redirected session hooks Read and PostToolUse and removes Glob/Grep', () => {
+// PINS: a redirected session does NOT hook Read — its bytes used to have to be
+// fetched before the CLI opened the file, and the union puts them there — still
+// registers PostToolUse (no consumer today; S3's write-back needs the seam),
+// and REMOVES Glob and Grep, because a marked CLI's Grep spawns an unmarked
+// `rg` that would search the wrong side and return silently wrong results.
+test('a redirected session drops Read, keeps PostToolUse, and removes Glob/Grep', () => {
   const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h', redirect: true }));
-  assert.match(s.hooks.PreToolUse[0].matcher, /\bRead\b/);
+  assert.doesNotMatch(s.hooks.PreToolUse[0].matcher, /\bRead\b/,
+    'Read is still hooked — the PreToolUse pull it existed for is gone');
   assert.match(s.hooks.PreToolUse[0].matcher, /\bBash\b/);
   assert.equal(s.hooks.PostToolUse[0].hooks[0].url, 'http://h');
   assert.deepEqual(s.permissions.deny, ['Glob', 'Grep']);
@@ -71,10 +73,11 @@ test('a redirected session hooks Read and PostToolUse and removes Glob/Grep', ()
 });
 
 // PINS S3: a redirected session asks the CLI NOT to inject its dynamic git
-// instructions. The CLI derives them from its own cwd, which for a redirected
-// session is cc's session root — a directory holding the project's config
-// surface and nothing else — so the guidance it produces describes the wrong
-// repository. Measured against 2.1.250, whose own logic is
+// instructions. The CLI shells out to run that git itself — unmarked, and
+// outside cc's remote-forwarded Bash tool — and the union's project tier has no
+// host side by design, so an unmarked caller there gets the remote's copy or
+// -ENOENT, never a usable working tree. Guidance derived from that is worse
+// than none. Measured against 2.1.250, whose own logic is
 // `settings.includeGitInstructions ?? true`.
 //
 // Chosen over the CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS env var deliberately:
