@@ -48,7 +48,7 @@ import { isKnownFamily, isKnownTier, defaultVersion, familyOf, CLAUDE_BACKEND_ID
 import { getTierBackend, resolveRoleBackend, isResolvableRole, backendForModel, defaultSpawnBinding, getDefaultSpawnTier } from '../appSettings.ts';
 import { textPayload, textResult } from './content.ts';
 import {
-  renderProjects, renderWorktrees, renderSessions, renderProjectStatus,
+  renderProjects, renderWorktrees, renderSessions, renderSession, renderProjectStatus,
   renderPlaybook,
 } from './readRenderers.ts';
 import { pageInstanceEvents, pagePersistedEvents } from '../eventArchive.ts';
@@ -62,6 +62,10 @@ import { loadPlaybooks, isSpawnable, legalMovesFrom, decide, type Playbook } fro
 import { runMembers, type Projection } from '../playbookLedger.ts';
 import { conductProjectPath, isConductorInstance } from '../conduct.ts';
 import { isDeadStatus } from '../instances.ts';
+// The handle check describe_session enforces. Static import is safe here:
+// sessionLineage.ts imports orchStoreRoot from projects.ts, and nothing imports
+// this module.
+import { publicIdFor } from '../sessionLineage.ts';
 import { buildRenewRequest, renewalDeferredBy } from '../sessionRenew.ts';
 import type { PlaybookGate } from './playbookGate.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
@@ -192,6 +196,29 @@ function toConductorView(summary: InstanceSummary): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of CONDUCTOR_VIEW_KEYS) out[k] = summary[k];
   return out;
+}
+
+// ONE list-row projection, two surfaces: `list_sessions`' rows and
+// `describe_session`'s live branch. It is the shared conductor view plus the
+// three LIST_ONLY_KEYS, so the two tools cannot drift on what a live worker's
+// row contains. Never hand-roll a second one — a projection that emitted
+// exactly CONDUCTOR_VIEW_KEYS would pass every key-set check and still be the
+// way a field escapes the documented list (tests/mcp-conductor-view.test.mjs
+// pins both this and toConductorView to a single definition each).
+function conductorRowView(
+  row: InstanceSummary & { awaitingWake: boolean },
+  proj: Projection | null,
+): Record<string, unknown> {
+  const tracked = proj && typeof row.sessionId === 'string'
+    ? proj.bySession.get(row.sessionId) : undefined;
+  return {
+    ...toConductorView(row),
+    awaitingWake: row.awaitingWake,
+    // null (not absent) for an untracked worker, so a caller can tell "not in a
+    // playbook" from "this build does not report it".
+    playbook: tracked?.playbook ?? null,
+    stage: tracked?.stage ?? null,
+  };
 }
 
 // The only public worker lookup that ADDRESSES a worker — every tool that
@@ -453,25 +480,13 @@ export async function listSessions(args: McpArgs, { instances, playbookGate }: M
   }
   // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
   const proj = playbookGate ? await playbookGate.readProjection() : null;
-  const view = (row: InstanceSummary & { awaitingWake: boolean }): Record<string, unknown> => {
-    const tracked = proj && typeof row.sessionId === 'string'
-      ? proj.bySession.get(row.sessionId) : undefined;
-    return {
-      ...toConductorView(row),
-      awaitingWake: row.awaitingWake,
-      // null (not absent) for an untracked worker, so a caller can tell "not in a
-      // playbook" from "this build does not report it".
-      playbook: tracked?.playbook ?? null,
-      stage: tracked?.stage ?? null,
-    };
-  };
   // A dead instance retained in byId (non-temp exits are never dropped) is not a
   // live worker: it fails isDeadStatus, so it is excluded here AND left out of
   // the exclusion set below, which is what lets it reappear as an inactive row
   // off its own transcript. Live and inactive are disjoint by construction.
   const live = (instances ? instances.list() : []).filter(r => !isDeadStatus(r.status))
     .filter(r => project === null || r.project === project)
-    .map(view)
+    .map(r => conductorRowView(r, proj))
     .sort(compareInstanceRows);
   // NOT built from `live` above: those rows carry PUBLIC ids, and the exclusion
   // set below is matched against transcript filenames (backing ids). Resolved
@@ -752,19 +767,81 @@ export async function listWorktrees({ project }: { project: string }) {
   return textResult(renderWorktrees(wts));
 }
 
-export async function locateSession({ sessionId }: { sessionId?: string }) {
+// One session's row, keyed on the orchestrator handle, with the owning project
+// + worktree folded into it. Composes four existing functions rather than
+// adding a resolver — deliberately NOT getInstOrDisk,
+// which is tuned for a session's bytes and answers with a backing id this
+// surface must not emit.
+//
+// HANDLE-ONLY, AND ENFORCED. The conductor must never see or use a ~/.claude
+// session UUID, so a backing/segment id is refused rather than resolved. The
+// test is `publicIdFor(input) !== input` and is NEVER a length or shape test: a
+// session with no lineage row has public id == backing id (docs/protocol.md →
+// Public vs backing id, the store's base case), so a full 36-char UUID may be
+// the only handle that session has. publicIdFor is exact for all three cases —
+// a known segment maps to its owner (refuse), a known public id maps to itself
+// (accept), an unknown id comes back unchanged (accept, the row-less base case).
+//
+// The refusal CANNOT fire for a session still in `byId`: the dispatch
+// chokepoint (src/mcp/server.ts) treats an exact match on any backing segment
+// of an in-memory instance as a hit and rewrites it to that session's public id
+// before this handler runs. That is expected — do not try to defeat the
+// chokepoint. It fires for a segment id whose session is not in memory, i.e.
+// the archived/retired rows that still surface raw backing ids (card 2026-0352).
+export async function describeSession({ sessionId }: { sessionId?: string }, { instances, playbookGate }: McpCtx) {
   if (typeof sessionId !== 'string' || !sessionId) {
     throw new Error('sessionId required');
   }
-  // findSessionLocation resolves a public id / any segment / a row-less full UUID
-  // itself, and returns null (never throws) for an id nothing on disk answers to —
-  // so this stays a clean 404 rather than surfacing an assertion as a 500.
-  const hit = await findSessionLocation(sessionId);
-  if (!hit) {
-    throw httpError(404, `session not found: ${sessionId}`);
+  // Step 1 runs FIRST: the point is to refuse the identifier, not to answer with it.
+  const owner = await publicIdFor(sessionId);
+  if (owner !== sessionId) {
+    // Echoes the OWNING HANDLE, never the id passed in — this surface emits no
+    // backing id, which is the whole reason the check exists.
+    return { ok: false, code: 'SESSION_NOT_A_HANDLE', handle: owner,
+      reason: `that id is a backing/segment id, not a session handle — call describe_session({sessionId:"${owner}"}), the handle that owns it.` };
   }
-  // {project, worktreeName} → {project, worktree} (MCP contract).
-  return { project: hit.project, worktree: hit.worktreeName ?? null };
+  // Read-only, and folds nothing into being: absent ledger ⇒ empty projection.
+  const proj = playbookGate ? await playbookGate.readProjection() : null;
+
+  // Step 2 — LIVE. Same isDeadStatus split list_sessions uses, so a dead
+  // instance retained in byId falls through to its own on-disk row below
+  // instead of rendering as a live worker.
+  const live = (instances ? instances.list() : [])
+    .find(r => r.sessionId === sessionId && !isDeadStatus(r.status));
+  if (live) return textResult(renderSession({ sessionId, live: conductorRowView(live, proj) }));
+
+  // Step 3 — RETIRED. includeArchived so an archived session is still
+  // describable; the row is picked by sessionId because the listing projects
+  // each transcript filename to its public id.
+  const hit = await findSessionLocation(sessionId).catch(() => null);
+  if (hit) {
+    const { rows } = await listSessionsForCwdWithCounts(hit.cwd, null, { includeArchived: true });
+    const row = rows.find(r => r.sessionId === sessionId);
+    if (row) {
+      const tracked = proj?.bySession.get(sessionId);
+      return textResult(renderSession({
+        sessionId,
+        project: hit.project,
+        worktree: hit.worktreeName ?? null,
+        path: hit.cwd,
+        retired: { ...row, playbook: tracked?.playbook ?? null, stage: tracked?.stage ?? null },
+      }));
+    }
+    // Located but not listed (the transcript went away under us) — fall through
+    // to the orphan probe, which answers with the degraded outcome or with
+    // SESSION_UNKNOWN if the file really is gone.
+  }
+
+  // Step 4 — the unregistered-place hole, given a defined outcome instead of a
+  // bare SESSION_UNKNOWN. Names the DIRECTORY only: the `<backingId>.jsonl`
+  // filename would leak a backing id onto this surface.
+  const orphan = await findOrphanedTranscript(sessionId).catch(() => null);
+  if (orphan) {
+    return { ok: false, code: 'SESSION_UNLOCATABLE', sessionId,
+      reason: `session ${sessionId} has a transcript under ${path.dirname(orphan)} but no registered project or worktree owns that directory, so there is no location to report — re-register that worktree and retry.` };
+  }
+  return { ok: false, code: 'SESSION_UNKNOWN', sessionId,
+    reason: `no session ${sessionId} is known to the orchestrator.` };
 }
 
 // Disk-backed event paging. RING-FIRST: pageInstanceEvents serves from the

@@ -200,7 +200,7 @@ test('governable tools are derived from buildTools(): sessionId-taking tools plu
   // conductor-requested renewal). Membership follows the schema, with no
   // carve-out for a tool that is only sometimes targeted.
   for (const t of ['send_prompt', 'set_mode', 'approve_plan',
-                   'kill_instance', 'get_transcript', 'locate_session', 'spawn_instance',
+                   'kill_instance', 'get_transcript', 'describe_session', 'spawn_instance',
                    'renew_session']) {
     assert.ok(names.includes(t), `${t} should be governable`);
   }

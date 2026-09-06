@@ -170,14 +170,20 @@ test('every worker-summary handler routes through the single projection', async 
   // CONDUCTOR_VIEW_KEYS would pass its wire check but fail here — a second
   // projection is exactly how a field escapes the documented list.
   const src = await fs.readFile(path.join(__dirname, '..', 'src', 'mcp', 'handlers.ts'), 'utf8');
-  for (const fn of ['listSessions', 'spawnInstance', 'respawnInstance']) {
+  // listSessions and describeSession project through `conductorRowView` — the
+  // ONE list-row projection, which is itself built on toConductorView, so the
+  // invariant holds through exactly one extra hop. Either name counts; a
+  // hand-rolled projection contains neither, which is the polarity that matters.
+  for (const fn of ['listSessions', 'describeSession', 'spawnInstance', 'respawnInstance']) {
     const at = src.indexOf(`export async function ${fn}(`);
     assert.ok(at >= 0, `handler ${fn} not found`);
     const body = src.slice(at, src.indexOf('\nexport ', at + 1));
-    assert.ok(body.includes('toConductorView('), `${fn} must project through toConductorView`);
+    assert.match(body, /toConductorView\(|conductorRowView\(/,
+      `${fn} must project through the shared projection`);
   }
-  // …and there is exactly one definition of it.
+  // …and there is exactly one definition of each.
   assert.equal(src.split('function toConductorView(').length - 1, 1);
+  assert.equal(src.split('function conductorRowView(').length - 1, 1);
 });
 
 test('the projection publishes contextWindowTokens and withholds sonnetWindow / instance ids', async () => {
