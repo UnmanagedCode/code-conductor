@@ -63,7 +63,6 @@ import { _resetForTest as resetProjectsCache } from '../src/projectsCache.ts';
 import { getWorktree, createWorktree } from '../src/worktrees.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 import { setSummary } from '../src/sessionSummaries.ts';
 import { recordRotation } from '../src/sessionLineage.ts';
 
@@ -155,10 +154,11 @@ describe('a session on a project on a system', () => {
     assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
 
     const a = await retiredSession({ project: 'app' });
-    // Resolved from the module, not read off the instance: a cwd composed
-    // against the project instead of the image root would differ here.
-    const imageRoot = await fs.realpath(sessionRootPath(remote.id, 'app', null));
-    assert.equal(a.cwd, imageRoot, 'the session ran in the image root (offset "")');
+    // The project's own path ON THE SYSTEM — resolved from the fixture rather
+    // than read off the instance, so a cwd composed anywhere else would differ
+    // here instead of agreeing by construction.
+    const imageRoot = tree;
+    assert.equal(a.cwd, imageRoot, "the session ran at the project's path on its system");
 
     const rest = await api(baseUrl, 'POST', '/api/instances', { resume: a.sessionId });
     assert.equal(rest.status, 201, JSON.stringify(rest.body));
@@ -172,19 +172,16 @@ describe('a session on a project on a system', () => {
   });
 
   // ── T2 ──────────────────────────────────────────────────────────────
-  // PINS: the mirror OFFSET is part of the answer — under a mirror root wider
-  // than the project the session ran at `root + offset`, and the bare resume
-  // still recovers it.
-  // NOT claiming any particular offset is chosen: only that the enumerated
-  // candidate set contains the one the session actually ran at.
-  test('T2: a wider mirror root puts the session at root + offset, and it still resolves', async () => {
+  // PINS: a WIDER mirror root does not move the session. It used to — the cwd
+  // was the local image root plus the project's offset inside it, so the
+  // advertisement decided the answer. The cwd is now the project's own path,
+  // which no advertisement addresses, and the locator has one candidate.
+  test('T2: a wider mirror root leaves the session at the project path, and it still resolves', async () => {
     const w = await wideSystem(path.join('nest', 'app'));
     assert.equal((await adoptProject('app', w.tree, { system: w.id })).ok, true);
 
     const s = await retiredSession({ project: 'app' });
-    const imageRoot = await fs.realpath(sessionRootPath(w.id, 'app', null));
-    assert.equal(s.cwd, path.join(imageRoot, 'nest', 'app'), 'offset is non-empty');
-    assert.notEqual(s.cwd, imageRoot);
+    assert.equal(s.cwd, w.tree, 'a wide mirror root moved the cwd');
 
     const hit = await findSessionLocation(s.sessionId);
     assert.deepEqual(hit, { project: 'app', worktreeName: null, cwd: s.cwd });
@@ -195,24 +192,18 @@ describe('a session on a project on a system', () => {
 
   // ── T3 ──────────────────────────────────────────────────────────────
   // PINS: a session on a remote project's WORKTREE resolves with worktreeName
-  // recovered, at that worktree's own image root plus THAT WORKTREE'S offset —
-  // which under a wide mirror is not the project's offset.
-  // NOT claiming anything about creating a worktree while a target change is
-  // pending; the fixture only needs the worktree to exist.
-  test('T3: a remote worktree session recovers its worktree and its own offset', async () => {
+  // recovered, at THAT WORKTREE'S own path on the system — which is a sibling of
+  // the project's, not a path under it, so an answer built from the project's
+  // path alone could not produce it.
+  test('T3: a remote worktree session recovers its worktree and its own path', async () => {
     const w = await wideSystem(path.join('nest', 'app'));
     assert.equal((await adoptProject('app', w.tree, { system: w.id })).ok, true);
     const wt = await createWorktree('app', { name: 'wt1' });
     const wtName = wt.worktreeName;
-    // The project's offset and the worktree's differ, so a candidate set built
-    // from the PROJECT's path could not answer here.
-    const projOffset = path.relative(w.box, w.tree);
-    const wtOffset = path.relative(w.box, wt.worktreePath);
-    assert.notEqual(projOffset, wtOffset);
+    assert.notEqual(wt.worktreePath, w.tree);
 
     const s = await retiredSession({ project: 'app', worktree: wtName });
-    const wtImageRoot = await fs.realpath(sessionRootPath(w.id, 'app', wtName));
-    assert.equal(s.cwd, path.join(wtImageRoot, wtOffset));
+    assert.equal(s.cwd, wt.worktreePath);
 
     assert.deepEqual(await findSessionLocation(s.sessionId),
       { project: 'app', worktreeName: wtName, cwd: s.cwd });
@@ -221,85 +212,7 @@ describe('a session on a project on a system', () => {
     assert.equal(instances.get(r.body.id).cwd, s.cwd);
   });
 
-  // ── T4 ──────────────────────────────────────────────────────────────
-  // PINS: the image root is REALPATHed. `projectsRoot()` is `PROJECTS_ROOT`
-  // verbatim while the CLI keys its transcript directory off getcwd(), so a
-  // store reached through a symlink gives two spellings of one session dir and
-  // a candidate built from the raw path misses every session in it.
-  // NOT claiming any other store path is realpath-safe.
-  test('T4: a PROJECTS_ROOT reached through a symlink still resolves', async () => {
-    const real = process.env.PROJECTS_ROOT;
-    await fs.mkdir(real, { recursive: true });
-    const link = path.join(home, 'link-root');
-    await fs.symlink(real, link);
-    process.env.PROJECTS_ROOT = link;
-    resetProjectsCache(0);
 
-    const remote = await bindRemoteSystem({ id: 'symbox' });
-    const tree = await seedRepo(path.join(remote.root, 'app'));
-    assert.equal((await adoptProject('app', tree, { system: 'symbox' })).ok, true);
-    // The raw path goes through the link; the CLI's cwd is its realpath. The
-    // fixture is only honest if those two really are different strings.
-    const raw = sessionRootPath('symbox', 'app', null);
-    assert.ok(raw.startsWith(link), raw);
-
-    const s = await retiredSession({ project: 'app' });
-    assert.equal(s.cwd, await fs.realpath(raw));
-    assert.notEqual(s.cwd, raw);
-
-
-    assert.deepEqual(await findSessionLocation(s.sessionId),
-      { project: 'app', worktreeName: null, cwd: s.cwd });
-    const r = await api(baseUrl, 'POST', '/api/instances', { resume: s.sessionId });
-    assert.equal(r.status, 201, JSON.stringify(r.body));
-  });
-
-  // ── T5 ──────────────────────────────────────────────────────────────
-  // PINS: GLOBAL precedence — no raw remote-tree answer outranks any session-
-  // root answer, whatever order the projects come in. Arms (a)/(b) run with the
-  // REMOTE place sorting first, which is where the pre-fix code misattributed a
-  // local project's own session to the remote project. Arm (c) is the SAME
-  // fixture with the names swapped so the LOCAL place sorts first, and it is
-  // NOT a green-on-arrival control: its first assertion holds on the shipped
-  // code (the local place already sorted first there) but its second is
-  // behaviourally red — the remote session resolved to `null`. Both arms carry
-  // the same invariant, that the answer does not depend on the ordering, and
-  // neither is redundant: with the passes inverted, arm (c)'s first assertion
-  // returns `zzz` instead of `aaa`.
-  // NOT claiming project ordering is stable or specified, and NOT a general fix
-  // for encodeCwd collisions (two local, or two remote, places that collide
-  // still resolve by listProjects() order).
-  test('T5: a session-root answer never loses to a raw remote-tree answer, either ordering', async () => {
-    const remote = await bindRemoteSystem();
-
-    // (a)+(b): 'app' (remote) sorts before 'twin' (local), and both name the
-    // same path — the remote's systemPath IS twin's real tree.
-    const tree = await seedRepo(path.join(remote.root, 'app'));
-    assert.equal((await adoptProject('app', tree, { system: remote.id })).ok, true);
-    assert.equal((await adoptProject('twin', tree, {})).ok, true);
-    assert.equal((await getProject('twin')).path, tree, 'twin really is at the remote place\'s path');
-
-    const localSid = '99999999-8888-4777-8666-555555555555';
-    await seedSessionJsonl(claudeProjectsRoot, tree, localSid);
-    assert.deepEqual(await findSessionLocation(localSid),
-      { project: 'twin', worktreeName: null, cwd: tree }, 'a: the local owner wins');
-
-    const s = await retiredSession({ project: 'app' });
-    assert.deepEqual(await findSessionLocation(s.sessionId),
-      { project: 'app', worktreeName: null, cwd: s.cwd }, 'b: the remote session still resolves');
-
-    // (c) the other ordering: 'aaa' (local) sorts before 'zzz' (remote).
-    const tree2 = await seedRepo(path.join(remote.root, 'other'));
-    assert.equal((await adoptProject('zzz', tree2, { system: remote.id })).ok, true);
-    assert.equal((await adoptProject('aaa', tree2, {})).ok, true);
-    const localSid2 = '77777777-6666-4555-8444-333333333333';
-    await seedSessionJsonl(claudeProjectsRoot, tree2, localSid2);
-    assert.deepEqual(await findSessionLocation(localSid2),
-      { project: 'aaa', worktreeName: null, cwd: tree2 }, 'c: same answer with the local place first');
-    const s2 = await retiredSession({ project: 'zzz' });
-    assert.deepEqual(await findSessionLocation(s2.sessionId),
-      { project: 'zzz', worktreeName: null, cwd: s2.cwd }, 'c: and the remote session still resolves');
-  });
 
   // ── T6 ──────────────────────────────────────────────────────────────
   // PINS: the RE-PLACEMENT state survives — a project adopted locally at P that
@@ -426,9 +339,9 @@ describe('a session on a project on a system', () => {
     const dir = projectStoreDir('beta');
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, 'project.json'), JSON.stringify({ system: 'prod-box', systemPath: '/app' }));
-    const imageRoot = sessionRootPath('prod-box', 'beta', null);
-    await fs.mkdir(imageRoot, { recursive: true });
-    const cwd = await fs.realpath(imageRoot);
+    // The record's OWN systemPath is the cwd now — no local image to compose,
+    // and no registry row needed to derive it.
+    const cwd = '/app';
     const sid = '11111111-2222-4333-8444-555555555555';
     await seedSessionJsonl(claudeProjectsRoot, cwd, sid);
 
@@ -440,11 +353,14 @@ describe('a session on a project on a system', () => {
     assert.equal(t2.source, 'disk', JSON.stringify(t2));
     assert.ok(t2.events.length >= 1, `expected >= 1 event, got ${t2.events.length}`);
 
-    // (d) the THIRD refusal shape: a registered row whose provider ANSWERS the
-    // handshake and then dies on its first operation. The resume gets past
-    // resolution and refuses inside the session-root compose, so the refusal is
-    // 502 rather than 501 — and it has to NAME the system, because a reader with
-    // several registered cannot act on "the system". The read still works.
+    // (d) A ROW WHOSE PROVIDER ANSWERS THE HANDSHAKE AND THEN DIES ON ITS FIRST
+    // OPERATION, and this arm CHANGED SHAPE with the geometry. It used to refuse
+    // 502 at create, because composing the session root was the first thing that
+    // touched the box. Nothing touches it at create any more — there is no
+    // session root to compose and the mirror advertisement is capability-gated —
+    // so the create SUCCEEDS and the box's death surfaces at the first operation
+    // that needs it. The read still works either way, which is what this arm has
+    // always really been about.
     const dead = await bindRemoteSystem({ id: 'deadbox' });
     const deadTree = await seedRepo(path.join(dead.root, 'gamma'));
     assert.equal((await adoptProject('gamma', deadTree, { system: 'deadbox' })).ok, true);
@@ -456,8 +372,10 @@ describe('a session on a project on a system', () => {
     disposeSystemHandles();
 
     const r3 = await api(baseUrl, 'POST', '/api/instances', { resume: g.sessionId });
-    assert.equal(r3.status, 502, JSON.stringify(r3.body));
-    assert.match(String(r3.body.error), /deadbox/);
+    assert.equal(r3.status, 201, JSON.stringify(r3.body));
+    // The resume resolved to the project's own path on the dead box — the
+    // resolution never needed the box, which is why it still answers.
+    assert.equal(instances.get(r3.body.id).cwd, deadTree);
     const t3 = unwrap(await callTool('get_transcript', { sessionId: g.sessionId }));
     assert.equal(t3.source, 'disk', JSON.stringify(t3));
     assert.ok(t3.events.length >= 1, `expected >= 1 event, got ${t3.events.length}`);
@@ -476,7 +394,10 @@ describe('a session on a project on a system', () => {
 
     const hit = await findSessionLocation(s.sessionId);
     assert.equal(hit.cwd, s.cwd);
-    assert.notEqual(hit.cwd, (await getProject('app')).path);
+    // And that cwd IS the project's registered path — the two used to differ
+    // (the session ran in a local image of the tree), and their agreeing is
+    // criterion 8 read off the locator.
+    assert.equal(hit.cwd, (await getProject('app')).path);
   });
 
   // ── T10 ─────────────────────────────────────────────────────────────
@@ -544,75 +465,4 @@ describe('a session on a project on a system', () => {
     assert.deepEqual(r.body, { project: 'app', worktreeName: null, archived: false });
   });
 
-  // ── T13 ─────────────────────────────────────────────────────────────
-  // PINS: a pass-1 hit CONTACTS NO SYSTEM ordered after it — measured ON THE
-  // WIRE, because a frame cc must not send has no other honest evidence.
-  // Composing a project's worktree places calls listWorktrees, which resolves
-  // the project and runs `git worktree list` THROUGH its system, so an
-  // eagerly-built place list contacts every registered remote system on every
-  // lookup — and `runGit` passes no `timeoutMs`, so one wedged provider would
-  // stall every locate, transcript read, summary and bare resume up to the
-  // provider operation timeout.
-  // BOTH HALVES of "ordered after" are covered, because the hit project has a
-  // registered remote worktree of its own: arm (a)'s empty transcript rules out
-  // the hit project's OWN worktree walk as well as the later project entirely.
-  // Both systems record to ONE file so the assertion is a single zero; arm (b)
-  // is what makes that zero evidence rather than a dead fixture, and it asserts
-  // BOTH trees appear on a miss, so neither half's absence in (a) is vacuous.
-  // NOT a claim of "no work": the wire cannot see composition, only contact —
-  // composing a project's ROOT place is wire-free by construction, so nothing
-  // here pins that. NOT a timing claim either.
-  test('T13: a pass-1 hit contacts no system ordered after it, measured on the wire', async () => {
-    // 'aaa' answers at its own root, and it has a registered remote WORKTREE
-    // whose place is ordered after that root; 'zzz' sorts after 'aaa' entirely.
-    // BOTH systems are the recorder and BOTH write to ONE file, so "no contact
-    // for anything ordered after the answer" is a single empty transcript.
-    const box = await mkdtemp('cc-0292-box-');
-    const rec = path.join(await mkdtemp('cc-0292-rec-'), 'frames.jsonl');
-    await addSystem({ id: 'aaabox', label: 'aaabox', launch: ['node', RECORDER, '--record', rec] });
-    await addSystem({ id: 'zzzbox', label: 'zzzbox', launch: ['node', RECORDER, '--record', rec] });
-
-    const hitTree = await seedRepo(path.join(box, 'aaa'));
-    assert.equal((await adoptProject('aaa', hitTree, { system: 'aaabox' })).ok, true);
-    const wt = await createWorktree('aaa', { name: 'wt1' });
-    const laterTree = await seedRepo(path.join(box, 'zzz'));
-    assert.equal((await adoptProject('zzz', laterTree, { system: 'zzzbox' })).ok, true);
-    // The worktree place ordered after 'aaa's root really EXISTS — otherwise
-    // arm (a) would be vacuous in the "there was nothing after it" sense.
-    assert.ok(await getWorktree('aaa', wt.worktreeName));
-
-    // Seed the session directly at 'aaa's session root rather than through the
-    // spawn route: a route call broadcasts, and plugin discovery resolves every
-    // project off that broadcast, which would put frames on the wire this test
-    // cannot attribute.
-    const imageRoot = sessionRootPath('aaabox', 'aaa', null);
-    await fs.mkdir(imageRoot, { recursive: true });
-    const cwd = await fs.realpath(imageRoot);
-    const sid = 'eeeeeeee-1111-4111-8111-aaaaaaaaaaaa';
-    await seedSessionJsonl(claudeProjectsRoot, cwd, sid);
-
-    // Everything above has already talked to both boxes. Start the recording
-    // from empty, so what follows is attributable to the lookup alone.
-    await fs.writeFile(rec, '');
-
-    // (a) the hit is at 'aaa's own root — the first place in probe order.
-    assert.deepEqual(await findSessionLocation(sid), { project: 'aaa', worktreeName: null, cwd });
-    assert.deepEqual(await wireFrames(rec), [],
-      'a pass-1 hit must contact no system ordered after it — not the hit project\'s own '
-      + 'worktree walk, and not a later project at all');
-
-    // (b) a MISS enumerates everything, so BOTH the hit project's worktree walk
-    // and the later project reach their boxes. Asserting each shows up SEPARATELY
-    // is what makes each half of (a)'s zero evidence rather than a dead fixture.
-    // The frame's `cwd` is the attributable field: `listWorktrees` runs git in
-    // the PROJECT's directory (the worktree paths come back in the response, so
-    // they are never in a request frame), which is exactly why the walk is
-    // attributable to the project whose tree it names.
-    assert.equal(await findSessionLocation(UNKNOWN_ID), null);
-    const cwds = new Set((await wireFrames(rec)).map(f => f.cwd));
-    assert.ok(cwds.has(hitTree),
-      `a full miss walks the HIT project's worktrees on its own box; cwds: ${[...cwds]}`);
-    assert.ok(cwds.has(laterTree),
-      `a full miss composes the LATER project too; cwds: ${[...cwds]}`);
-  });
 });
