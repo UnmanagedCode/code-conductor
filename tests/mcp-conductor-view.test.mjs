@@ -169,7 +169,15 @@ test('respawn_instance returns exactly the allowlist over the wire', async () =>
 // text, because a scrape of raw text is satisfiable by a COMMENT — a handler
 // could hand-roll a projection and still match `conductorRowView(` from a
 // comment mentioning it, which is not a hypothetical: it was demonstrated
-// against the previous version of this test.
+// against an earlier version of this test.
+//
+// ESCAPES: every branch that scans to a closing delimiter treats `\` as
+// escaping the next character, so an escaped quote / backtick / `]` / `/` never
+// ends its literal early. Each of those four branches has its own fixture
+// below; a one-character regression in any of them is otherwise invisible,
+// because a mis-parse degrades this file into a green suite that checks
+// nothing. The two comment branches need no escape handling — JS has no
+// escapes in comments.
 function codeSkeleton(src) {
   let out = '';
   // Frames, so `${ … }` inside a template returns to template state at ITS
@@ -184,7 +192,7 @@ function codeSkeleton(src) {
     const c = src[i], d = src[i + 1];
     const top = stack[stack.length - 1];
     if (top.template) {
-      if (c === '\\') { i += 2; continue; }
+      if (c === '\\') { i += 2; continue; }             // escaped ` does not close
       if (c === '`') { out += '`'; stack.pop(); i++; continue; }
       if (c === '$' && d === '{') { out += '${'; stack.push({ template: false, depth: 0 }); i += 2; continue; }
       i++; continue;                                   // template TEXT is dropped
@@ -196,13 +204,20 @@ function codeSkeleton(src) {
       while (i < src.length && src[i] !== c) i += src[i] === '\\' ? 2 : 1;
       out += c; i++; continue;                         // string CONTENTS dropped
     }
-    if (c === '`') { out += '`'; stack.push({ template: false, depth: 0 }); stack[stack.length - 1].template = true; i++; continue; }
-    // Regex vs division, decided by the token before the slash.
-    if (c === '/' && '(,=:[!&|?;+-*%<>~^'.includes(prevSignificant() || '(')) {
+    if (c === '`') { out += '`'; stack.push({ template: true, depth: 0 }); i++; continue; }
+    // Regex vs division, decided by the token before the slash. `{` is in the
+    // set because of `${/re/.test(x)}` and `{ /re/.test(x) }` — leaving it out
+    // is not a near-miss: the slash is then emitted as division, the pattern
+    // leaks into the skeleton as code, and any brace inside it unbalances the
+    // walk for everything that follows.
+    if (c === '/' && '(,=:[!&|?;+-*%<>~^{}'.includes(prevSignificant() || '(')) {
       i++;
       while (i < src.length && src[i] !== '/') {
-        if (src[i] === '\\') i++;
-        else if (src[i] === '[') { while (i < src.length && src[i] !== ']') i += src[i] === '\\' ? 2 : 1; }
+        if (src[i] === '\\') i++;                      // escaped / does not close
+        else if (src[i] === '[') {                     // a class may hold an unescaped /
+          i++;
+          while (i < src.length && src[i] !== ']') i += src[i] === '\\' ? 2 : 1;
+        }
         i++;
       }
       i++; continue;
@@ -215,6 +230,21 @@ function codeSkeleton(src) {
     out += c; i++;
   }
   return out;
+}
+
+// A mis-parse must be LOUD. Every gate below extracts function bodies by brace
+// matching, so a skeleton whose delimiters do not balance is not a weaker gate
+// — it is a gate reading the wrong text while passing. This runs on every
+// skeleton the gate consumes, real or synthetic, so no future literal can
+// quietly degrade the file into a suite that checks nothing.
+function assertWellFormedSkeleton(sk, label) {
+  const count = (re) => (sk.match(re) || []).length;
+  for (const [open, close, name] of [[/\{/g, /\}/g, 'brace'], [/\(/g, /\)/g, 'paren'], [/\[/g, /\]/g, 'bracket']]) {
+    assert.equal(count(open), count(close), `${label}: ${name}s do not balance — codeSkeleton mis-parsed a literal`);
+  }
+  for (const [re, name] of [[/'/g, 'single-quote'], [/"/g, 'double-quote'], [/`/g, 'backtick']]) {
+    assert.equal(count(re) % 2, 0, `${label}: odd number of ${name} delimiters — codeSkeleton mis-parsed a literal`);
+  }
 }
 
 // The skeleton is what every gate below stands on, so it is pinned itself:
@@ -233,8 +263,41 @@ test('codeSkeleton drops comments and literal contents but keeps the code', () =
     'the comment, the block comment and the string mention are all gone');
   assert.ok(!sk.includes('conductorRowView'),
     'a comment or template-text mention must not survive');
-  assert.equal((sk.match(/\{/g) || []).length, (sk.match(/\}/g) || []).length,
-    'brace nesting is preserved, so body extraction below is safe');
+  assertWellFormedSkeleton(sk, 'mixed fixture');
+});
+
+test('codeSkeleton honours a backslash escape in every branch that has one', () => {
+  // One fixture per escape-bearing branch, each built so that MIS-handling the
+  // backslash ends the literal early and leaks the hidden mention as code.
+  // Without these, a one-character `i += 2` → `i += 1` regression is invisible.
+  const hidden = (sk, where) => assert.ok(!sk.includes('conductorRowView'),
+    `${where}: an escaped delimiter ended the literal early and leaked its contents`);
+
+  // 1. STRING: an escaped quote must not close the string.
+  hidden(codeSkeleton("const s = 'a \\' conductorRowView( b'; const k = 1;"), 'string');
+  // 2. TEMPLATE: an escaped backtick must not close the template.
+  hidden(codeSkeleton('const t = `a \\` conductorRowView( b`; const k = 1;'), 'template');
+  // 3. REGEX: an escaped slash must not close the pattern.
+  hidden(codeSkeleton('const r = /a\\/ conductorRowView( b/; const k = 1;'), 'regex');
+  // 4. REGEX CHARACTER CLASS: an escaped `]` must not close the class, which
+  //    would hand the rest of the class back to the outer scan and end the
+  //    regex at the next `/`.
+  const cls = codeSkeleton('const r = /[\\]/] conductorRowView( x/; const k = 1;');
+  hidden(cls, 'regex class');
+  assert.ok(cls.includes('const k = 1;'), 'the code after the literal must survive');
+
+  // The regex-start decision, which is where the one real defect was: after `${`
+  // and after `{`, a slash begins a PATTERN, not a division. Get it wrong and
+  // the pattern leaks into the skeleton as code — brackets and braces and all.
+  // Each fixture is written so that the leak is DELIMITER-BEARING, since a
+  // pattern that leaked but happened to balance would prove nothing.
+  for (const [sk, where] of [
+    [codeSkeleton('const t = `a ${/[/]/.test(v)} b`; function f(){ return 1; }'), 'inside ${…}'],
+    [codeSkeleton('function f(){ /x{2/.test(v); return 1; }'), 'at the head of a block'],
+  ]) {
+    assertWellFormedSkeleton(sk, `regex ${where}`);
+    assert.ok(!sk.includes('/'), `${where}: a pattern leaked into the skeleton: ${sk}`);
+  }
 });
 
 // The body of `name`, by brace matching on the skeleton (where no brace can
@@ -263,14 +326,29 @@ function bodyOf(skeleton, signature) {
 // The three checks, as a function, so the vacuity guard below can run the SAME
 // gate against sources that deliberately bypass the projection.
 function assertRoutesThroughProjection(src) {
+  // Before anything reads it: a skeleton whose delimiters do not balance means
+  // codeSkeleton mis-parsed a literal, and every bodyOf below would be slicing
+  // at the wrong offsets while passing.
+  assertWellFormedSkeleton(src, 'handlers skeleton');
   // listSessions and describeSession project through `conductorRowView` — the
   // ONE list-row projection, which is itself built on toConductorView, so the
   // invariant holds through exactly one extra hop. Either name counts; a
-  // hand-rolled projection contains neither, which is the polarity that matters.
+  // hand-rolled projection names neither, which is the polarity that matters.
+  //
+  // WHAT THIS ENFORCES, EXACTLY: that each handler CALLS a shared projection —
+  // not that the call's value is what it returns. `void conductorRowView(r);
+  // return {…}` passes here. That gap is deliberate and bounded, not an
+  // oversight: closing it needs value-flow analysis, which a text scrape cannot
+  // do and which a determined author defeats anyway. What actually reaches a
+  // conductor is pinned two layers down — `instanceRows` renders a fixed field
+  // list (so a smuggled key never reaches the text) and tests/mcp-contract
+  // asserts the shape over the wire. Read this gate as "no handler quietly
+  // stops naming the shared projection", which is the drift it exists to catch.
   for (const fn of ['listSessions', 'describeSession', 'spawnInstance', 'respawnInstance']) {
     const body = bodyOf(src, `export async function ${fn}(`);
     assert.match(body, /toConductorView\(|conductorRowView\(/,
-      `${fn} must project through the shared projection`);
+      `${fn} must CALL a shared projection (toConductorView / conductorRowView) — `
+      + 'this checks the call is there, not that its value is what the handler returns');
   }
   // The extra hop is only safe while it IS a hop: conductorRowView must itself
   // call toConductorView. Without this, rewriting it to project independently
@@ -343,7 +421,7 @@ test('the projection gate actually fails on a bypass (vacuity guard)', () => {
   assert.throws(() => assertRoutesThroughProjection(codeSkeleton(fakeModule({
     listBody: '// rows come from conductorRowView( upstream\n'
       + "    return instances.list().map(r => ({ project: r.project, sessionId: r.sessionId }));",
-  }))), /must project through the shared projection/);
+  }))), /must CALL a shared projection/);
 
   // HOLE 2 — conductorRowView keeps its name and its call sites, but stops
   // routing through toConductorView and projects the allowlist itself.
@@ -352,6 +430,17 @@ test('the projection gate actually fails on a bypass (vacuity guard)', () => {
       + '  for (const k of CONDUCTOR_VIEW_KEYS) out[k] = row[k];\n'
       + '  return out;',
   }))), /conductorRowView must build ON toConductorView/);
+
+  // HOLE 3 — the allowlist-read check, which is the one that does not depend on
+  // a bypass being spelled with either helper's name. Here every other check is
+  // satisfied — both helpers exist, both are called, the hop is intact — and a
+  // SECOND projection is driven off CONDUCTOR_VIEW_KEYS beside them.
+  assert.throws(() => assertRoutesThroughProjection(codeSkeleton(fakeModule({
+    listBody: 'const rows = instances.list().map(r => conductorRowView(r, null));\n'
+      + '  const extra = {};\n'
+      + '  for (const k of CONDUCTOR_VIEW_KEYS) extra[k] = args[k];\n'
+      + '  return rows.concat(extra);',
+  }))), /exactly twice: its declaration and its one read/);
 });
 
 test('the projection publishes contextWindowTokens and withholds sonnetWindow / instance ids', async () => {

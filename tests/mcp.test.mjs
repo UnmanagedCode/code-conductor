@@ -745,6 +745,39 @@ test('describe_session soft-refuses SESSION_UNLOCATABLE for a transcript in an u
   assert.match(res.reason, /re-register that worktree/);
 });
 
+test('an orphaned transcript outranks the retained-in-byId refusal', async () => {
+  // The state that makes step 5's PLACEMENT observable: this session is BOTH
+  // still held in byId AND owns a transcript in a directory no registered
+  // project or worktree claims. Either branch can answer it, so only the order
+  // decides — and SESSION_UNLOCATABLE must win, because it names a recoverable
+  // cause (re-register that worktree) while SESSION_NOT_LIVE would send the
+  // conductor to resume a session whose transcript cc cannot reach.
+  // Without this fixture, moving the byId branch above the orphan probe is a
+  // pure reorder that no test can see.
+  const { encodeCwd } = await import('../src/projects.ts');
+  await api(baseUrl, 'POST', '/api/projects', { name: 'a' });
+  const created = await api(baseUrl, 'POST', '/api/instances', { project: 'a', mode: 'bypassPermissions' });
+  const inst = instances.get(created.body.id);
+  await waitFor(() => inst.status === 'idle' && inst.sessionId);
+  const sid = inst.sessionId;
+  const backingId = inst.backingSessionId;
+  await inst.kill({ graceMs: 200 });
+  await waitFor(() => isDeadStatus(inst.status));
+
+  // The transcript exists, but ONLY under a directory nothing owns — so
+  // findSessionLocation misses it and findOrphanedTranscript finds it.
+  const orphanDir = path.join(claudeProjectsRoot, encodeCwd(path.join(projectsRoot, 'a_worktree_dead')));
+  await fs.mkdir(orphanDir, { recursive: true });
+  await fs.writeFile(path.join(orphanDir, `${backingId}.jsonl`), '{"type":"user","uuid":"u1"}\n');
+
+  assert.ok(instances.idsForSession(sid).length > 0, 'precondition: still held in byId');
+  const res = unwrap(await callTool(baseUrl, 'describe_session', { sessionId: sid }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'SESSION_UNLOCATABLE',
+    `the orphan probe must be consulted before the byId fallback: ${JSON.stringify(res)}`);
+  assert.ok(res.reason.includes(orphanDir), 'and it still names the directory');
+});
+
 test('describe_session soft-refuses SESSION_UNKNOWN for an id nothing answers to', async () => {
   const res = unwrap(await callTool(baseUrl, 'describe_session', {
     sessionId: '00000000-0000-0000-0000-000000000000',
