@@ -24,7 +24,7 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { adoptProject, createProject, encodeCwd, projectsRoot } from '../src/projects.ts';
+import { adoptProject, createProject, encodeCwd, normalizeSystemPath, projectsRoot } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import {
@@ -110,6 +110,49 @@ describe('the transcript-directory collision guard', () => {
       { project: 'held', worktree: null, system: 'local', cwd: '/srv/app' },
     ]);
     assert.equal(hit?.worktree, null);
+  });
+
+  // T6b PINS THE NORMALISATION HOLE, which was a real guard bypass: the stored
+  // `systemPath` was trimmed but never normalised, so `/srv/app/` and `/srv/app`
+  // — one directory — encoded differently and did NOT collide. Two projects
+  // could take one transcript directory.
+  test('T6b: two spellings of one directory collide, and report samePath', async () => {
+    for (const spelling of ['/srv/app/', '/srv/./app', '/srv/x/../app']) {
+      const hit = await transcriptCwdCollision(place({ cwd: normalizeSystemPath(spelling) }), [
+        { project: 'held', worktree: null, system: 'local', cwd: '/srv/app' },
+      ]);
+      assert.equal(hit?.project, 'held', spelling);
+      // AND `samePath`, not the encode-only branch: they ARE one directory, and
+      // the encode-only refusal's "the two directories stay separate" would be
+      // false — sending a user to the remedy for the wrong shape.
+      assert.equal(hit.samePath, true, spelling);
+    }
+  });
+
+  // T6c PINS: `samePath` is derived from the NORMALISED comparison even when the
+  // stored strings differ, and a genuinely encode-only pair still reports false.
+  // Both directions, because a predicate that always answered `true` would pass
+  // the first half alone.
+  test('T6c: samePath follows the normalised paths, in both directions', async () => {
+    const one = await transcriptCwdCollision(place({ cwd: '/srv/app' }), [
+      { project: 'held', worktree: null, system: 'local', cwd: '/srv/app/' },
+    ]);
+    assert.equal(one.samePath, true, 'one directory, two spellings');
+    const two = await transcriptCwdCollision(place({ cwd: '/srv/a_b' }), [
+      { project: 'held', worktree: null, system: 'local', cwd: '/srv/a.b' },
+    ]);
+    assert.equal(two.samePath, false, 'genuinely two directories');
+  });
+
+  // T6d PINS THE WRITE PATH: a systemPath is normalised BEFORE it is stored, so
+  // the record, the guard and the adopt duplicate check all see one spelling.
+  test('T6d: validatePlacementInput normalises what it stores', () => {
+    assert.equal(normalizeSystemPath('/srv/app/'), '/srv/app');
+    assert.equal(normalizeSystemPath('/srv/./app'), '/srv/app');
+    assert.equal(normalizeSystemPath('/srv/x/../app'), '/srv/app');
+    assert.equal(normalizeSystemPath('/srv/app'), '/srv/app');
+    // The one path where stripping a trailing slash is wrong.
+    assert.equal(normalizeSystemPath('/'), '/');
   });
 
   // ── the refusal sentence ────────────────────────────────────────────

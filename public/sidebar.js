@@ -781,8 +781,9 @@ export class Sidebar {
     } else if (systemPill.isConnected) {
       systemPill.remove();
     }
-    // A worker session on a REMOTE project is real: the CLI runs here, in a
-    // cc-owned session root, and its shell and file tools reach the system. On
+    // A worker session on a REMOTE project is real: the CLI runs here, but
+    // inside a chroot onto the system's own filesystem, so its files and its
+    // shell both land there. On
     // an UNREACHABLE one it cannot start at all, so the button stays hidden
     // rather than offered and then failing. Delete stays on both: unregistering
     // is what a user can still do, and it never touches the tree.

@@ -975,7 +975,26 @@ function validatePlacementInput(
   }
   if (!p) throw httpError(400, `system '${id}' was named without a systemPath — cc has no default location on another machine`);
   if (!path.isAbsolute(p)) throw httpError(400, `systemPath must be absolute (got '${p}')`);
-  return { system: id, remoteId: remote, systemPath: p };
+  // NORMALISED, NOT MERELY TRIMMED, and this is a correctness fix rather than
+  // tidiness. The value is stored verbatim and is the candidate the transcript
+  // guard compares, so `/srv/app/` and `/srv/app` — one directory — encoded
+  // differently and did NOT collide: two projects could take one CLI transcript
+  // directory and interleave their sessions in it. It is also what the adopt
+  // duplicate check compares against a realpath'd string.
+  //
+  // POSIX, always: this is a path on the SYSTEM's filesystem, which A4 fixes at
+  // `/`, so `path.posix` and not the host's `path` — a Windows-hosted cc must
+  // not fold `/srv/app` into `\srv\app`. The trailing slash is stripped after
+  // normalising (`normalize` keeps it), except at the root itself.
+  return { system: id, remoteId: remote, systemPath: normalizeSystemPath(p) };
+}
+
+// ONE spelling per directory, in the system's own path space. Exported because
+// migrations/0034 closes already-stored records with the same rule, and the
+// transcript guard derives `samePath` from it.
+export function normalizeSystemPath(p: string): string {
+  const n = path.posix.normalize(p);
+  return n.length > 1 && n.endsWith('/') ? n.slice(0, -1) : n;
 }
 
 // The most a caller may name a target with. DELIBERATELY NOT `isSlug`: a remote

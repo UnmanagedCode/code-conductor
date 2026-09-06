@@ -21,7 +21,7 @@
 // directory — and `~/.claude` is host-pinned, so it lands on the host's real
 // disk.
 
-import { encodeCwd } from '../projects.ts';
+import { encodeCwd, normalizeSystemPath } from '../projects.ts';
 
 export interface TranscriptPlace {
   project: string;
@@ -33,10 +33,14 @@ export interface TranscriptPlace {
 }
 
 export interface TranscriptCollision extends TranscriptPlace {
-  // Byte-equal cwds (literally one directory on one machine), versus cwds that
-  // merely encode alike. The refusal says which, because they are different
-  // harms and a reader picking a new name needs to know which characters
-  // matter.
+  // ONE DIRECTORY (however it is spelled) versus two directories that merely
+  // encode alike. The refusal says which, because they are different harms and
+  // a reader picking a new name needs to know which characters matter.
+  //
+  // DERIVED FROM THE NORMALISED PATHS, not from raw string equality: `/srv/app`
+  // and `/srv/app/` are one directory, and calling them two would send a user
+  // to the encode-only branch, whose "the two directories stay separate" is
+  // then simply false.
   samePath: boolean;
 }
 
@@ -77,7 +81,9 @@ export async function transcriptCwdCollision(
   const encoded = encodeCwd(candidate.cwd);
   for (const held of places ?? await registeredPlaces()) {
     if (held.project === candidate.project && held.worktree === candidate.worktree) continue;
-    if (encodeCwd(held.cwd) === encoded) return { ...held, samePath: held.cwd === candidate.cwd };
+    if (encodeCwd(held.cwd) === encoded) {
+      return { ...held, samePath: normalizeSystemPath(held.cwd) === normalizeSystemPath(candidate.cwd) };
+    }
   }
   return null;
 }
