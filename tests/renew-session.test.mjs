@@ -304,11 +304,11 @@ async function materializeBothSegments(claudeProjectsRoot, cwd, firstBacking) {
 // THE POINT OF NO RETURN IS THE CALL'S FIRST LINEAGE READ, and that is a seam
 // that moves: it used to be `_doCreate`'s `publicIdFor` (marked by `_resuming`,
 // which create() populates before that first await), and since the transport
-// resolves `resume` through `resolveSessionRefDeep` (src/mcp/server.ts) it is
-// now one layer above create() — with the write held, `_resuming` is never
-// reached at all. So the probe watches BOTH seams. The deep-read flag is set on
-// entry and waitFor only observes it on a later poll, by which point the read is
-// parked on the barrier.
+// resolves `resume` through `resolveResumeRef` (src/mcp/server.ts) it is now one
+// layer above create() — with the write held, `_resuming` is never reached at
+// all. So the probe watches BOTH seams. The deep-read flag is set on entry and
+// waitFor only observes it on a later poll, by which point the read is parked on
+// the barrier.
 //
 // `settledBeforeRelease` is captured in the promise's own continuation, so the
 // ordering claim is a recorded fact rather than a timer. The release is
@@ -319,8 +319,8 @@ async function resumeAcrossRelease(srv, publicId, releaseWrite) {
   const note = () => { if (settledBeforeRelease === null) settledBeforeRelease = !released; };
   const before = new Set(srv.instances.byId.keys());
   let deepReadEntered = false;
-  const realDeep = srv.instances.resolveSessionRefDeep.bind(srv.instances);
-  srv.instances.resolveSessionRefDeep = (input) => { deepReadEntered = true; return realDeep(input); };
+  const realDeep = srv.instances.resolveResumeRef.bind(srv.instances);
+  srv.instances.resolveResumeRef = (input) => { deepReadEntered = true; return realDeep(input); };
   try {
     const resumeP = callTool(srv.baseUrl, 'spawn_instance', { resume: publicId })
       .then((v) => { note(); return v; }, (e) => { note(); throw e; });
@@ -332,7 +332,7 @@ async function resumeAcrossRelease(srv, publicId, releaseWrite) {
     releaseWrite();
     await resumeP;
   } finally {
-    srv.instances.resolveSessionRefDeep = realDeep;
+    srv.instances.resolveResumeRef = realDeep;
   }
   const inst2 = [...srv.instances.byId.values()].find((i) => !before.has(i.id));
   assert.ok(inst2, 'the resume registered a new instance');

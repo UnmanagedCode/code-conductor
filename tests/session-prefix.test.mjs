@@ -262,7 +262,7 @@ test('unknown prefix stays SESSION_UNKNOWN (unchanged behavior)', async () => {
 // (src/instances.ts), and after an orchestrator restart a conducted worker is
 // never re-entered (src/resumeRestart.ts). So the resume site resolves over
 // `byId` UNION the lineage store, as one candidate set — see
-// InstanceManager.resolveSessionRefDeep.
+// InstanceManager.resolveResumeRef.
 // ---------------------------------------------------------------------------
 
 // The project every case below spawns into.
@@ -281,12 +281,18 @@ async function seedTranscript(sessionId, cwd) {
 
 // Hand-write a lineage row for a session this process never ran. That is the
 // shape a conducted worker has after an ORCHESTRATOR restart: transcript intact,
-// listed normally, never archived — and no `byId` entry at all.
-async function seedLineageRow(publicId, backingId) {
+// listed normally, never archived — and no `byId` entry at all. More than one
+// `backingIds` entry makes it a ROTATED session, where `current` is the last and
+// the earlier ones are still individually addressable.
+async function seedLineageRow(publicId, ...backingIds) {
   const file = path.join(orchStoreRoot(), 'session-lineage.json');
   let sessions = {};
   try { ({ sessions } = JSON.parse(await fs.readFile(file, 'utf8'))); } catch { /* first row */ }
-  sessions[publicId] = { current: backingId, segments: [{ id: backingId, reason: 'initial', at: '2026-09-06T00:00:00Z' }] };
+  sessions[publicId] = {
+    current: backingIds[backingIds.length - 1],
+    segments: backingIds.map((id, i) => (
+      { id, reason: i === 0 ? 'initial' : 'renew', at: `2026-09-0${6 + i}T00:00:00Z` })),
+  };
   await fs.mkdir(orchStoreRoot(), { recursive: true });
   await fs.writeFile(file, JSON.stringify({ sessions }, null, 2) + '\n');
 }
@@ -396,5 +402,70 @@ test('a resume prefix unique in memory but shared with a COLD session is ambiguo
     assert.deepEqual(body.matches.sort(), ['c0ffee11', 'c0ffee22']);
   } finally {
     instances.byId.delete('fake-warm');
+  }
+});
+
+test('a resume naming a NON-CURRENT segment opens THAT segment, not the newest — MCP and REST alike', async () => {
+  // INVARIANT: the transport may normalise `resume` for the policy gate, but it
+  // must not destroy the only copy of the segment the caller named. `resolveBacking`
+  // returns a named segment verbatim and `current` only for a public id
+  // (src/sessionLineage.ts), so rewriting a segment to its public id upstream
+  // silently redirects the resume to the newest transcript — the same class of
+  // wrong-transcript landing this card exists to close. Both surfaces must agree:
+  // REST does not go through the transport chokepoint at all.
+  const cwd = await project();
+  const publicId = 'deadbeef';
+  const older = 'deadbeef-1111-4111-8111-111111111111';
+  const current = 'deadbeef-2222-4222-8222-222222222222';
+  await seedLineageRow(publicId, older, current);
+  await seedSessionJsonl(claudeProjectsRoot, cwd, older);
+  await seedSessionJsonl(claudeProjectsRoot, cwd, current);
+
+  // One resume at a time: two live instances on one public id is a 409 by design.
+  async function resumeVia(fn) {
+    const out = await fn();
+    await waitFor(() => instForSession(instances, publicId));
+    const inst = instForSession(instances, publicId);
+    const backing = inst.backingSessionId;
+    await instances.remove(inst.id);
+    return { out, backing };
+  }
+
+  // PREMISE GUARD: the public id resolves to `current`, so "landed on `older`"
+  // below is a real distinction and not an identity.
+  const byHandle = await resumeVia(() => callTool(baseUrl, 'spawn_instance', { resume: publicId }));
+  assert.equal(byHandle.backing, current, 'premise: the handle opens the newest segment');
+  assert.notEqual(older, current);
+
+  const mcp = await resumeVia(() => callTool(baseUrl, 'spawn_instance', { resume: older }));
+  assert.equal(unwrap(mcp.out).sessionId, publicId, 'the answer is still the handle');
+  assert.equal(mcp.backing, older, 'MCP: a named segment must open the transcript it names');
+
+  const rest = await resumeVia(() => api(baseUrl, 'POST', '/api/instances',
+    { project: 'a', resume: older, mode: 'bypassPermissions' }));
+  assert.equal(rest.out.status, 201, JSON.stringify(rest.out.body));
+  assert.equal(rest.backing, older, 'REST: the same input must resolve the same way');
+});
+
+test('SESSION_AMBIGUOUS lists FULL public ids, so collision-minted candidates stay distinguishable', async () => {
+  // INVARIANT: the candidate list must be actionable. A public id is 8 chars
+  // normally but 13 on a mint-time collision (PUBLIC_ID_LEN_EXTENDED,
+  // src/sessionLineage.ts), and two of those share their first 8 — truncating
+  // the list renders them as the same string, so the refusal tells the caller to
+  // "pass more characters" while showing two identical candidates to choose from.
+  await spawnLiveWorker();
+  const a = 'aabbccdd-1111';
+  const b = 'aabbccdd-2222';
+  assert.equal(a.length, 13);
+  assert.notEqual(a.slice(0, 8), a, 'premise: these ids are longer than the 8-char form');
+  instances.byId.set('fake-x1', { id: 'fake-x1', sessionId: a, kill: async () => {} });
+  instances.byId.set('fake-x2', { id: 'fake-x2', sessionId: b, kill: async () => {} });
+  try {
+    const body = unwrap(await callTool(baseUrl, 'send_prompt', { sessionId: 'aabbccdd', text: 'go' }));
+    assert.equal(body.code, 'SESSION_AMBIGUOUS');
+    assert.deepEqual(body.matches.sort(), [a, b], 'both candidates, in full');
+  } finally {
+    instances.byId.delete('fake-x1');
+    instances.byId.delete('fake-x2');
   }
 });

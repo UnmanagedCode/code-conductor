@@ -674,6 +674,13 @@ export interface DecideInput {
   // defaulted: a default reading the projection would be the second liveness
   // authority this module exists to eliminate. Every call site must supply one.
   isLive: (sessionId: string) => boolean;
+  // spawn_instance({resume})'s PUBLIC id, when the caller reached us through the
+  // MCP transport. `args.resume` is deliberately NOT it: the transport leaves an
+  // exact segment id there so create() opens the transcript the caller named
+  // (InstanceManager.resolveResumeRef), while `bySession` is keyed by public id.
+  // Absent ⇒ fall back to `args.resume`, which is right for every caller that
+  // already holds a handle (the REST route, and this module's own tests).
+  resumeHandle?: string;
 }
 
 export function legalMovesFrom(playbook: Playbook | null, stage: string | null): LegalMoves {
@@ -758,10 +765,12 @@ export function resolveMove(
   return { currentStage, resultingStage: currentStage, kind: 'none' };
 }
 
-export function decide({ toolName: rawToolName, args, projection, playbooks, isLive }: DecideInput): Decision {
+export function decide(
+  { toolName: rawToolName, args, projection, playbooks, isLive, resumeHandle }: DecideInput,
+): Decision {
   const toolName = normalizeToolName(rawToolName);
   return toolName === 'spawn_instance'
-    ? decideSpawn({ args, projection, playbooks, isLive })
+    ? decideSpawn({ args, projection, playbooks, isLive, resumeHandle })
     : decideTargeted({ toolName, args, projection, playbooks, isLive });
 }
 
@@ -769,9 +778,9 @@ export function decide({ toolName: rawToolName, args, projection, playbooks, isL
 // worker (the conductor itself is in no stage), so that one stage supplies both
 // the permission (is it spawnable?) and the entry conditions (needs, pin).
 function decideSpawn(
-  { args, projection, playbooks, isLive }:
+  { args, projection, playbooks, isLive, resumeHandle }:
   { args: Record<string, unknown>; projection: Projection; playbooks: Map<string, Playbook>;
-    isLive: (sessionId: string) => boolean },
+    isLive: (sessionId: string) => boolean; resumeHandle?: string },
 ): Decision {
   const provenanceArg = isRecord(args.provenance) ? args.provenance : {};
   const suppliedProvenance: Record<string, string> = {};
@@ -786,7 +795,12 @@ function decideSpawn(
   // names actually work. A `resume` naming no tracked worker falls through to the
   // run-root logic below, so adopting a loose session by naming playbook + stage
   // is unchanged.
-  const resumeId = typeof args.resume === 'string' ? args.resume : '';
+  // THE HANDLE, not necessarily the string create() will be handed: `bySession`
+  // is keyed by public id, and the transport leaves an exact SEGMENT id in
+  // `args.resume` untouched so the resume opens the transcript it names (see
+  // DecideInput.resumeHandle). Every id this function prints or looks up is the
+  // handle — a segment's first 8 chars would read like a public id and be none.
+  const resumeId = resumeHandle || (typeof args.resume === 'string' ? args.resume : '');
   const recorded = resumeId ? projection.bySession.get(resumeId) : undefined;
   if (recorded) return decideResume({ args, resumeId, recorded, playbooks });
 

@@ -66,7 +66,11 @@ export type GateOutcome =
   | { refusal: GateRefusal };
 
 export interface PlaybookGate {
-  check(input: { toolName: unknown; args: unknown; callerId: string | null }): Promise<GateOutcome>;
+  // `resumeHandle` is spawn_instance({resume})'s PUBLIC id, resolved by the
+  // transport. It rides beside `args.resume` rather than replacing it, because
+  // the projection is keyed by public id while create() must keep the segment
+  // the caller named — see InstanceManager.resolveResumeRef.
+  check(input: { toolName: unknown; args: unknown; callerId: string | null; resumeHandle?: string }): Promise<GateOutcome>;
   // READ SURFACE for the introspection tools (src/mcp/handlers.ts). Named methods
   // rather than handing out the ledger, so a read tool never reaches through the
   // test seam below, and so there is exactly one projection in the process — a
@@ -94,6 +98,11 @@ export interface PlaybookGate {
 // recording an event in a store other than the one it was decided against. First
 // resolution happens on the first governed call, by which point the environment
 // is settled.
+// The event shape `append` below takes. Also its THUNK form: an event whose
+// shape depends on the projection must be built inside the serialized chain,
+// after every earlier append has folded.
+type PendingEvent = Parameters<PlaybookLedger['append']>[0];
+
 function pinnedLedger(): PlaybookLedger {
   let resolved: string | null = null;
   return createPlaybookLedger({ file: () => (resolved ??= ledgerFile()) });
@@ -141,13 +150,20 @@ export function createPlaybookGate(
   // fires independently of the tools/call path.
   let appendChain: Promise<unknown> = Promise.resolve();
 
-  function append(ev: Parameters<PlaybookLedger['append']>[0]): Promise<unknown> {
-    appendChain = appendChain.then(() => ledger.append(ev)).catch(e => {
+  function append(ev: PendingEvent | (() => PendingEvent)): Promise<unknown> {
+    // A thunk is resolved INSIDE the chain, so it reads a projection every
+    // earlier append has already folded into. Captured so the warn below can
+    // still name the kind.
+    let resolved: PendingEvent | null = null;
+    appendChain = appendChain.then(() => {
+      resolved = typeof ev === 'function' ? ev() : ev;
+      return ledger.append(resolved);
+    }).catch(e => {
       // The ledger is the audit trail, not the authority for THIS call's
       // outcome. A failed append must never turn a successful tool call into an
       // error reply, so it warns and the call stands — and the chain is caught
       // here so one failure cannot poison every later append.
-      console.warn(`playbookLedger: append failed (${ev.kind}): ${errMsg(e)}`);
+      console.warn(`playbookLedger: append failed (${resolved?.kind ?? 'unresolved'}): ${errMsg(e)}`);
     });
     return appendChain;
   }
@@ -219,7 +235,8 @@ export function createPlaybookGate(
   // ── the checkpoint ──
 
   async function check(
-    { toolName, args, callerId }: { toolName: unknown; args: unknown; callerId: string | null },
+    { toolName, args, callerId, resumeHandle }:
+    { toolName: unknown; args: unknown; callerId: string | null; resumeHandle?: string },
   ): Promise<GateOutcome> {
     const pass: GateOutcome = { args };
     if (!instances || !callerId || typeof toolName !== 'string' || !isRecord(args)) return pass;
@@ -239,7 +256,7 @@ export function createPlaybookGate(
 
     await ensureLoaded();
     const playbooks = await definitions();
-    const decision = decide({ toolName: name, args, projection: ledger.projection(), playbooks, isLive });
+    const decision = decide({ toolName: name, args, projection: ledger.projection(), playbooks, isLive, resumeHandle });
 
     if (!decision.ok) {
       // Recorded under BOTH warn and enforce — under warn the call proceeds
@@ -318,28 +335,33 @@ export function createPlaybookGate(
       const view = asRecord(result);
       const sessionId = typeof view.sessionId === 'string' ? view.sessionId : '';
       if (!sessionId) return;
+      const worktree = asRecord(view.worktree).worktreeName;
+      const playbook = move.playbook;
+      const stage = move.to;
       // THE SAME RULE AS THE ARM ABOVE, enforced against the authoritative id
       // rather than against the decision layer's classification. A `spawn` for a
       // session that ALREADY has a row is never a new declaration — decide() was
       // handed an id it could not place (a ledger/lineage divergence), and the
       // worker that came back is one it already governs. Folding a spawn here
       // would reset its stage, stageHistory and provenance.
-      if (ledger.projection().bySession.has(sessionId)) {
-        await append({ kind: 'resume', sessionId });
-        return;
-      }
-      const worktree = asRecord(view.worktree).worktreeName;
-      await append({
-        kind: 'spawn',
-        sessionId,
-        playbook: move.playbook,
-        stage: move.to,
-        // Absent `provenance` ⇒ a run root. Keep it off the event entirely rather
-        // than writing `{}`, so the fold can tell the two apart.
-        ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
-        ...(typeof view.project === 'string' ? { project: view.project } : {}),
-        ...(typeof worktree === 'string' ? { worktree } : {}),
-      });
+      //
+      // DECIDED IN THE CHAIN (hence the thunk): the projection is read at append
+      // time, so an earlier commit racing this one has already folded. Read out
+      // here instead, two concurrent commits on one sessionId both see "unbound"
+      // and the second spawn resets the binding the first just created.
+      await append((): PendingEvent => (ledger.projection().bySession.has(sessionId)
+        ? { kind: 'resume', sessionId }
+        : {
+          kind: 'spawn',
+          sessionId,
+          playbook,
+          stage,
+          // Absent `provenance` ⇒ a run root. Keep it off the event entirely
+          // rather than writing `{}`, so the fold can tell the two apart.
+          ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
+          ...(typeof view.project === 'string' ? { project: view.project } : {}),
+          ...(typeof worktree === 'string' ? { worktree } : {}),
+        }));
       return;
     }
 

@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.ts';
-import { listWorktrees } from '../src/worktrees.ts';
+import { listWorktrees, createWorktree } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -290,6 +290,59 @@ test('the surfaced SESSION_UNKNOWN names the cwd it probed and leaks no backing 
       `the refusal must name the cwd it probed; got: ${res.reason}`);
     assert.ok(!res.reason.includes(backing),
       `the refusal must not surface the backing id; got: ${res.reason}`);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('a resume into a worktree the session did not run in is refused; its OWN worktree still resumes', async () => {
+  // INVARIANT: an explicit `worktree:"<name>"` skips the `worktree === undefined`
+  // recovery, so it is taken on faith — and a resume landing at the wrong cwd is
+  // this card's whole failure mode. Verify the supplied name against where the
+  // session actually ran. Refusing ALL strings would be wrong: naming the
+  // session's own worktree (in either spelling) is the legitimate, common call.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await commitProject(path.join(ctx.projectsRoot, 'demo'));
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
+
+    // A session that really ran in worktree `own`.
+    const w = await spawnInstance(
+      { project: 'demo', createWorktree: true, name: 'own', mode: 'bypassPermissions' },
+      { instances: ctx.instances });
+    assert.ok(w.sessionId, JSON.stringify(w));
+    const inst = ctx.instances.anyForSession(w.sessionId);
+    const own = (await listWorktrees('demo'))[0].worktreeName;
+    await seedJsonl(ctx.claudeProjectsRoot, inst.cwd, inst.backingSessionId);
+    await ctx.instances.remove(inst.id);
+
+    // …and a second worktree it has nothing to do with.
+    const other = (await createWorktree('demo', { name: 'other' })).worktreeName;
+    assert.notEqual(other, own, 'premise: two distinct worktrees');
+
+    await assert.rejects(
+      () => spawnInstance({ resume: w.sessionId, project: 'demo', worktree: other, mode: 'bypassPermissions' },
+        { instances: ctx.instances }),
+      (e) => e.statusCode === 400 && e.code === 'RESUME_WORKTREE_MISMATCH' && e.message.includes(own),
+      'a mismatched worktree must be refused, naming where the session actually ran');
+
+    // The legitimate call, in BOTH accepted spellings — the canonical dir name…
+    const back = await spawnInstance(
+      { resume: w.sessionId, project: 'demo', worktree: own, mode: 'bypassPermissions' },
+      { instances: ctx.instances });
+    assert.notEqual(back.ok, false, `naming its own worktree must work: ${JSON.stringify(back)}`);
+    assert.equal(ctx.instances.anyForSession(w.sessionId).cwd, inst.cwd);
+    await ctx.instances.remove(ctx.instances.anyForSession(w.sessionId).id);
+
+    // …and the bare slug, which resolveWorktreeName aliases to the same record.
+    // A guard comparing raw strings would false-positive here.
+    const slug = own.replace('demo_worktree_', '');
+    assert.notEqual(slug, own, 'premise: the two spellings differ');
+    const bySlug = await spawnInstance(
+      { resume: w.sessionId, project: 'demo', worktree: slug, mode: 'bypassPermissions' },
+      { instances: ctx.instances });
+    assert.notEqual(bySlug.ok, false, `the bare slug must work too: ${JSON.stringify(bySlug)}`);
   } finally {
     await ctx.close();
   }

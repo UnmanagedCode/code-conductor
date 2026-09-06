@@ -115,3 +115,25 @@ test('the same `spawn` move whose RESULT names an UNBOUND session still writes a
       { playbook: 'gatelab', stage: 'loose', history: ['loose'], project: 'demo' });
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+test('two CONCURRENT commits naming the same session write one `spawn` and one `resume`', async () => {
+  // INVARIANT: the "already bound?" question is answered INSIDE the serialized
+  // append chain, not before it. Asked outside, two commits racing on one
+  // sessionId both read "unbound" and both append a `spawn` — and the second one
+  // resets the binding the first just created, which is the exact corruption the
+  // backstop exists to make impossible.
+  const { dir, file, gate } = await tmpLedger(BOUND);
+  try {
+    const a = await spawnDecision(gate);
+    const b = await spawnDecision(gate);
+    // Invoked in the same tick, so neither can observe the other's append unless
+    // the check is chained behind it.
+    await Promise.all([a.commit({ sessionId: 'w2', project: 'demo' }), b.commit({ sessionId: 'w2', project: 'demo' })]);
+
+    const evs = await readEvents(file);
+    assert.deepEqual(evs.map(e => e.kind), ['spawn', 'transition', 'spawn', 'resume'],
+      'the second commit must fold as a resume, not a second spawn');
+    const st = foldProjection(evs).bySession.get('w2');
+    assert.deepEqual({ stage: st.stage, history: st.stageHistory }, { stage: 'loose', history: ['loose'] });
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});

@@ -143,12 +143,18 @@ function hasSchemaProperty(schema: unknown, prop: string): boolean {
 // The SESSION_AMBIGUOUS soft refusal, shared by every prefix-resolution site
 // below so the wording has one home. `where` names the argument the ambiguous
 // prefix came from; `sessionId` echoes the input verbatim whatever argument that
-// was, and `matches` is always public ids, so the 8-char slice is correct even
-// for the cold sessions only the deep resolver can list.
+// was.
+//
+// `matches` carries public ids WHOLE, never a slice. A public id is 8 chars only
+// until a mint-time collision extends it to 13 or to the full backing id
+// (PUBLIC_ID_LEN_EXTENDED, src/sessionLineage.ts) — and two 13-char ids share
+// their first 8, so slicing would print the same candidate twice and tell the
+// caller to disambiguate between two identical strings. For the ordinary 8-char
+// id this is byte-identical to what a slice produced.
 function ambiguousRefusal(
   ref: { ambiguous: string[]; tooShort: boolean }, input: string, where: string,
 ): Record<string, unknown> {
-  const matches = ref.ambiguous.map(s => s.slice(0, 8));
+  const matches = ref.ambiguous;
   const reason = ref.tooShort
     ? `session prefix "${input}" (${where}) is too short — pass at least ${SESSION_PREFIX_MIN} characters or a full sessionId. Candidates: ${matches.join(', ')}.`
     : `session prefix "${input}" (${where}) matches ${ref.ambiguous.length} sessions — pass more characters or a full sessionId. Candidates: ${matches.join(', ')}.`;
@@ -251,9 +257,10 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
       }
       // `forward.sessionId` (send_prompt) is a worker handle too, nested one
       // level deep, so the top-level chokepoint above misses it. Mirrors the
-      // `provenance` loop; NOT generalised into one loop with it or the
-      // top-level block — the three differ in shape (scalar vs map vs nested)
-      // and the ordering comment above is load-bearing for `provenance`.
+      // `provenance` loop; NOT generalised into one loop with the others — the
+      // four sites differ in shape (scalar, map, nested, and `resume`'s
+      // two-answer resolver) and the ordering comment above is load-bearing for
+      // `provenance`.
       if (ctx.instances?.resolveSessionRef
           && hasSchemaProperty(tool.inputSchema, 'forward')
           && isJsonRecord(args) && isJsonRecord(args.forward)
@@ -268,31 +275,39 @@ async function dispatch(msg: unknown, ctx: McpCtx): Promise<JsonRpcResponse | nu
       }
       // `resume` (spawn_instance) is a worker handle too — it just declares
       // `resume` rather than `sessionId`, so the top-level block above misses it.
-      // The ONE difference from the three above: it resolves through the DEEP
-      // resolver, over `byId` UNION the lineage store. `resume` names a session
-      // that is usually not running, and the ordinary one — a killed conductor
-      // worker, or any worker after an orchestrator restart — is not in `byId` at
-      // all (see InstanceManager.resolveSessionRefDeep). Async, which is free
-      // here: this arm already awaits the gate and the handler below.
-      if (ctx.instances?.resolveSessionRefDeep
+      // TWO differences from the three sites above, both explained at
+      // InstanceManager.resolveResumeRef:
+      //   • it resolves over `byId` UNION the lineage store, because the ordinary
+      //     resume target — a killed conductor worker, or any worker after an
+      //     orchestrator restart — is not in `byId` at all;
+      //   • it REWRITES THE ARG ONLY FOR A PREFIX. An exact segment id is left
+      //     verbatim, because `resume` feeds create(), and create() opens the
+      //     segment it is named; the public id the policy gate needs travels
+      //     BESIDE it (`resumeHandle`) rather than in its place. Overwriting it
+      //     would silently redirect the resume to the session's newest transcript.
+      // Async, which is free here: this arm already awaits the gate and the
+      // handler below.
+      let resumeHandle: string | undefined;
+      if (ctx.instances?.resolveResumeRef
           && hasSchemaProperty(tool.inputSchema, 'resume')
           && isJsonRecord(args)
           && typeof args.resume === 'string' && args.resume) {
-        const ref = await ctx.instances.resolveSessionRefDeep(args.resume);
+        const ref = await ctx.instances.resolveResumeRef(args.resume);
         if (ref && 'ambiguous' in ref) {
           return rpcResult(id, {
             content: [{ type: 'text', text: JSON.stringify(ambiguousRefusal(ref, args.resume, 'resume')) }],
           });
         }
-        if (ref?.sessionId && ref.sessionId !== args.resume) {
-          args = { ...args, resume: ref.sessionId };
+        if (ref) {
+          resumeHandle = ref.handle;
+          if (ref.resume !== args.resume) args = { ...args, resume: ref.resume };
         }
       }
       // Playbook policy — the ONE enforcement point, deliberately AFTER
-      // validateArgs and after both prefix-resolution passes, and BEFORE the
-      // handler. Inert unless the caller is a conductor with enforcement on;
+      // validateArgs and after EVERY prefix-resolution pass above, and BEFORE
+      // the handler. Inert unless the caller is a conductor with enforcement on;
       // see src/mcp/playbookGate.ts.
-      const gate = await ctx.playbookGate.check({ toolName: name, args, callerId: ctx.callerId });
+      const gate = await ctx.playbookGate.check({ toolName: name, args, callerId: ctx.callerId, resumeHandle });
       if ('refusal' in gate) {
         return rpcResult(id, { content: [{ type: 'text', text: JSON.stringify(gate.refusal) }] });
       }
