@@ -148,18 +148,28 @@ test('the ask card carries the pre-rewrite input, and the allow still rewrites',
   assert.deepEqual(res.body.hookSpecificOutput.updatedInput, { command: "node fwd -- 'npm test'" });
 });
 
-// PINS: a Read is hooked for its bytes, not for permission. It must not start
-// prompting the user on a remote project when it never did on a local one.
-test('Read is redirected without becoming an ask-gated tool', async () => {
+// PINS: THERE IS NO REDIRECT EXEMPTION FROM THE ASK GATE any more. One existed
+// for `Read`, because a redirected session hooked it purely to fetch bytes
+// before the CLI opened the file — gating that would have started prompting on
+// reads that never prompted. `Read` is no longer hooked at all (the union serves
+// it), so there is nothing left to exempt, and a hooked tool that does reach the
+// broker gates like any other. A surviving exemption would be a hole: it keyed
+// on `redirected`, so it silently allowed for exactly the sessions whose tools
+// run on another machine.
+test('a redirected session has no exemption from the ask gate', async () => {
   const { b, events } = broker({ mode: 'ask', redirect: {
     preToolUse: async () => ({ decision: 'allow' }),
     postToolUse: async () => null,
   } });
   const res = fakeRes();
   b.handle(envelope({ tool_name: 'Read', tool_input: { file_path: '/x' } }), res);
-  await settled(res);
-  assert.equal(res.body.hookSpecificOutput.permissionDecision, 'allow');
-  assert.equal(events.length, 0);
+  // It GATES: the request is held and a permission event is raised, rather than
+  // being answered `allow` on the spot.
+  // A gated call is HELD — the response is not sent — and a permission event is
+  // raised instead. Polled rather than slept on, to a bound.
+  for (let i = 0; i < 200 && events.length === 0; i++) await new Promise(r => setTimeout(r, 1));
+  assert.equal(events.length, 1, 'the call was allowed without asking');
+  assert.equal(res.headersSent, false, 'the response was sent without a decision');
 });
 
 // PINS: PostToolUse answers with the note as `additionalContext` — the only

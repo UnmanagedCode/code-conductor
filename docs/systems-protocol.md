@@ -191,14 +191,14 @@ a user-visible difference, **and a test that runs the fallback**.
 | `exec`, `readFile`, `writeFile` | **1 — MUST** | Registration fails; there is no cc without them | — | — |
 | **`processGroupSignal`** | **2 — OPTIONAL** | A `signal` frame reaches the **direct child only** | On a timeout or an interrupt, grandchildren may survive; every result cc or the provider terminated carries **`descendantsMaySurvive: true`** | `tests/systems-protocol-conformance.test.mjs` → "process-group signalling", run with `--no-process-group-signal` |
 | **`remotes`** | **2 — OPTIONAL** | The endpoint serves exactly ONE target. A project that names a `remoteId` on it is refused `SYSTEM_NO_REMOTES` (501) at registration and at every resolution, and **the field is never put on the wire** | The Remote field is refused at create/change time with a message naming the system's provider. A project that names no remote is byte-identical to before the capability existed | ABSENT-behaviour: `tests/systems-remote-id.test.mjs` — the reference provider with no `--remote` flags: a project naming a remote refuses by name and no frame carries the field, one that names none is unchanged. Which is also the whole suite under configurations 2-3 of `npm run gate:systems`. PRESENT-behaviour: configuration 1 of that gate, whose provider carries `--remote` and whose `local` handle is bound to it, so every frame the application emits in that pass is target-bound |
-| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The session root is the local image of the project root exactly as before, `mirrorRoot = systemPath`, `offset = ""`, and no path is excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry, same walk | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, `offset === ''`, `cwd === root`, the exclude list is empty. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
+| **`remoteDescriptors`** | **2 — OPTIONAL** | cc **never sends `describeRemote`**. The answer is the NARROWEST mirror root — `mirrorRoot = systemPath`, nothing excluded | None. A session on such a system is byte-identical to one before the capability existed — same wire traffic, same geometry | `tests/systems-mirror-fallback.test.mjs` — the recording provider with no `--mirror` flag: no `describeRemote` frame is on the wire, and the resolved scope is `{mirrorRoot: systemPath, exclude: []}` with no local image composed for it. Plus the `remoteDescriptors:false` row asserted in every configuration of `tests/systems-protocol-conformance.test.mjs`. `npm run gate:systems` does NOT exercise the present-behaviour, on purpose: `mirror()` is unreachable for the system id `local` whatever class backs it, and a `--mirror` gate configuration was measured receiving zero `describeRemote` frames across the whole suite |
 | `pty` | **3 — NOT SUPPORTED** | Absent from the protocol | No cc feature requests a TTY, so there is no affordance to hide and nothing to refuse. A future TTY feature is a version bump with a fallback designed then | — |
 | `watch` | **3 — NOT SUPPORTED** | Absent from the protocol | cc has no filesystem watching to replace | — |
 | `rename`, `symlink` | **not in the protocol** | — | cc issues neither: nothing on the `System` interface renames or symlinks on a system, so a provider is never asked to | — |
 
 ### 2.1 The mirror advertisement
 
-**How much of a target's filesystem cc's session root is the local image of,**
+**How much of a target's filesystem the union's remote tier serves,**
 and which prefixes cc must not carry across. One request/response pair, gated on
 `remoteDescriptors`, resolved **per target**:
 
@@ -260,14 +260,14 @@ Containment throughout is `path.posix.relative`, never a string prefix, so
 prefix for path arithmetic and is never opened, so a non-directory root fails at
 whatever operation touches it, carrying the far side's own reason.
 
-**What it changes locally.** The session root becomes the image of the mirror
-root and the CLI's cwd moves to the project's place inside it
-(`root + offset`, `offset = ""` when the two are equal). The **allow-list walk
-does not move**: it stays anchored at the project over its fixed targets
-whatever the mirror root is (`src/systems/sessionRoot.ts`). The `exec` frames a
-composition sends are identical for `mirrorRoot: "/"` and
-`mirrorRoot: <project>`, pinned differentially in
-`tests/systems-session-root.test.mjs`.
+**What it changes locally.** The advertised root becomes the boundary of the
+union's **remote tier** — the slice of the system served from the system rather
+than from the orchestrator (`src/systems/fuse/tierTable.ts`). The **CLI's cwd
+does not move**: it is the project's own path on the system whatever the mirror
+root is, which is why an advertisement that changes under a live session is
+refused rather than followed (`MIRROR_ADVERTISEMENT_CHANGED`). Pinned in
+`tests/systems-mirror-wide.test.mjs`; the absence of any local image, and of the
+allow-list walk that used to fill one, in `tests/systems-session-root.test.mjs`.
 
 ## 3. Frames
 
