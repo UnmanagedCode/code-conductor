@@ -2037,12 +2037,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // advice ("use Bash") was wrong. No file tool is hooked any more, so no
     // refusal is involved.
     //
-    // WHAT KEEPS IT: the CLI runs inside the chroot, and the per-uid default
-    // (`/tmp/claude-<uid>`) is not a host-pinned prefix — it would be served by
-    // the union's remote-first default tier, putting the worker's own task
-    // output on the wrong side of the boundary or nowhere at all. Under the
-    // store it is inside `projectsRoot()`, which IS host-pinned, so the path
-    // means the same thing to the CLI and to cc.
+    // WHAT KEEPS IT: `sessionTmpDir(id)` is in the `localRoots` array below,
+    // which seeds the union's HOST tier (tierTable.ts, `localRoots` → `add
+    // ('host', …)`). So this exact directory is served from the orchestrator's
+    // own filesystem inside the chroot, and the worker's task output means the
+    // same thing to the CLI and to cc. The per-uid default the CLI would
+    // otherwise use is not in that array.
+    //
+    // I have NOT established what the union does with an unpinned path here,
+    // and this comment deliberately does not guess: the pin is load-bearing
+    // because it is what puts the path in the host tier, and that is the whole
+    // claim. Its FORMER justification — the redirect refused any file path
+    // outside the session root — died with the geometry.
     //
     // Per session, and 0700, so one session's task output is not another's; the
     // CLI validates the override's ownership and mode.

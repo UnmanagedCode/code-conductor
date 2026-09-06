@@ -24,7 +24,7 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { adoptProject, createProject, encodeCwd, normalizeSystemPath, projectsRoot } from '../src/projects.ts';
+import { adoptProject, createProject, encodeCwd, listProjects, normalizeSystemPath, projectsRoot } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import {
@@ -153,6 +153,29 @@ describe('the transcript-directory collision guard', () => {
     assert.equal(normalizeSystemPath('/srv/app'), '/srv/app');
     // The one path where stripping a trailing slash is wrong.
     assert.equal(normalizeSystemPath('/'), '/');
+  });
+
+  // T6e PINS THE CALL SITE, which T6d does not: T6d exercises the helper alone,
+  // so deleting the `normalizeSystemPath(...)` at validatePlacementInput's
+  // return leaves it green while every new row regresses and the adopt-side
+  // duplicate check reopens. This one adopts with a trailing slash and reads
+  // the STORED record back.
+  test('T6e: a systemPath is normalised before it is stored', async () => {
+    const remote = await bindRemoteSystem();
+    const tree = await seedRepo(path.join(remote.root, 'app'));
+    assert.equal((await adoptProject('withslash', `${tree}/`, { system: remote.id })).ok, true);
+
+    const stored = (await listProjects()).find(p => p.name === 'withslash');
+    assert.ok(stored, 'the project was not registered');
+    assert.equal(stored.path, tree, 'the trailing slash reached the record');
+
+    // AND THE GUARD READS THAT SPELLING: a candidate at the un-slashed path
+    // collides against the REGISTERED places, which is the consequence of
+    // storing one spelling rather than the caller's.
+    const hit = await transcriptCwdCollision(
+      { project: 'other', worktree: null, system: remote.id, cwd: tree });
+    assert.equal(hit?.project, 'withslash');
+    assert.equal(hit.samePath, true);
   });
 
   // ── the refusal sentence ────────────────────────────────────────────

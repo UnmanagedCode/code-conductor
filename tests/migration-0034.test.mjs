@@ -88,15 +88,53 @@ describe('migration 0034: normalize stored systemPaths', () => {
     assert.equal((await run({ root, log: (l) => logs.push(l) })).summary.sharing, 1);
   });
 
-  // PINS: two systems at one path are NOT reported here. They do collide in the
-  // live guard, but this migration only reads records and cannot tell which
-  // system a row's transcript directory belongs to beyond the id it carries —
-  // over-reporting would send operators chasing a pair the guard will name
-  // properly at the next registration.
-  test('the same path on two different systems is not reported by this migration', async () => {
+  // PINS THE CASE THE WIDENING EXISTS FOR, and it is the one an upgrading user
+  // ALREADY has: the transcript directory is keyed on the working directory and
+  // nothing else, so `/srv/app` on two different systems is one directory from
+  // the first spawn after the upgrade. Keying the detector by system put these
+  // in separate buckets and never named them — leaving the migration silent
+  // about active sharing while making only FUTURE registrations detectable.
+  test('the same path on two DIFFERENT systems is reported, naming both sides', async () => {
     await seed('one', { system: 'boxA', systemPath: '/srv/app' });
     await seed('two', { system: 'boxB', systemPath: '/srv/app' });
-    assert.deepEqual(await run({ root, log: () => {} }), { applied: false });
+    const logs = [];
+    const r = await run({ root, log: (l) => logs.push(l) });
+    assert.equal(r.applied, true);
+    assert.equal(r.summary.sharing, 1);
+    const line = logs.find(l => l.includes('transcript directory'));
+    assert.ok(line, logs.join(' | '));
+    // NAMING BOTH SIDES is the point: "two projects collide" is unactionable,
+    // and which system each is on is what tells the operator where to look.
+    assert.match(line, /one \(on 'boxA'\)/);
+    assert.match(line, /two \(on 'boxB'\)/);
+  });
+
+  // PINS: two TARGETS of one system at one path are reported too — the case the
+  // README calls out by name. Same directory, same reasoning.
+  test('two targets of one system at one path are reported', async () => {
+    await seed('one', { system: 'box', remoteId: 'a', systemPath: '/srv/app' });
+    await seed('two', { system: 'box', remoteId: 'b', systemPath: '/srv/app' });
+    assert.equal((await run({ root, log: () => {} })).summary.sharing, 1);
+  });
+
+  // PINS ITEM 1 — THE BOOT-LOOP GUARD, the same shape 0033 pins: a record that
+  // cannot be written is NAMED and the sweep continues. A throw here does not
+  // fail one project, it stops cc from starting at all (runMigrations has no
+  // try/catch and server.ts awaits it unguarded).
+  test('a record that cannot be rewritten is reported, not thrown', async () => {
+    await seed('blocked', { system: 'box', systemPath: '/srv/blocked/' });
+    await seed('fine', { system: 'box', systemPath: '/srv/fine/' });
+    await fs.chmod(path.join(dir(), 'blocked'), 0o500);
+    const logs = [];
+    try {
+      const r = await run({ root, log: (l) => logs.push(l) });
+      assert.equal(r.applied, true, 'the writable record was still normalised');
+      assert.equal((await read('fine')).systemPath, '/srv/fine');
+      assert.equal((await read('blocked')).systemPath, '/srv/blocked/', 'the blocked row kept its spelling');
+      assert.ok(logs.some(l => l.includes('could not normalise') && l.includes('blocked')), logs.join(' | '));
+    } finally {
+      await fs.chmod(path.join(dir(), 'blocked'), 0o700);
+    }
   });
 
   // PINS IDEMPOTENCE: a second run over normalised records applies nothing.
