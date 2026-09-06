@@ -24,6 +24,8 @@
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { encodeCwd } from '../src/projects.ts';
 import { allow, fixture, hookServer, runClaude, settingsJSON, t, toolRegistry } from './cliContractCase.mjs';
 
 // PINS: `PreToolUse` `updatedInput` still replaces the tool input, and the
@@ -187,4 +189,65 @@ t('a subagent PreToolUse payload carries agent_id and the main agent does not', 
     assert.ok(bash.slice(1).some(e => typeof e.agent_id === 'string' && e.agent_id.length > 0),
       'and a later call — the dispatched subagent\'s — carries one');
   } finally { await hooks.close(); await clean(); }
+});
+
+// THE PREMISE THE TRANSCRIPT-COLLISION GUARD RESTS ON, asserted against the
+// installed binary rather than against cc's own function.
+//
+// cc refuses to register two places whose working directories `encodeCwd` alike
+// — `_` and `.` both collapsing to `-` — because the CLI would then name ONE
+// `~/.claude/projects/<...>` directory for both and their sessions would
+// interleave in it. `src/projects.ts`'s `encodeCwd` is tested only against
+// itself, which proves nothing about the CLI: if the binary preserved `.`, the
+// guard would be over-refusing genuine non-collisions, and that is a lockout.
+//
+// BOTH DIRECTIONS, because either alone is satisfiable by accident: two cwds
+// differing only in `_` vs `.` land in ONE directory, and a genuinely distinct
+// pair lands in TWO.
+//
+// Asserted as a DELTA against `~/.claude/projects` — the CLI writes to the real
+// HOME, and this host has transcripts from every other run — so what the probe
+// created is distinguished from what it inherited, and only what it created is
+// cleaned up.
+t('two cwds differing only in `_` vs `.` share ONE transcript directory', async () => {
+  const { dir, clean } = await fixture();
+  const settings = path.join(dir, 'settings.json');
+  await fs.writeFile(settings, '{}');
+  const projects = path.join(os.homedir(), '.claude', 'projects');
+
+  const listing = async () => {
+    try { return new Set(await fs.readdir(projects)); } catch { return new Set(); }
+  };
+  const before = await listing();
+  const created = new Set();
+  try {
+    // Three real cwds. The first two differ ONLY in the character under test.
+    const cwds = {};
+    for (const name of ['a_b', 'a.b', 'zz']) {
+      cwds[name] = path.join(dir, name);
+      await fs.mkdir(cwds[name], { recursive: true });
+      await runClaude(cwds[name], settings, 'Reply with the single word OK.');
+    }
+    for (const d of await listing()) if (!before.has(d)) created.add(d);
+
+    // The claim cc's guard encodes, stated over the binary's own output.
+    const dirFor = (name) => [...created].filter(d => d === encodeCwd(cwds[name]));
+    assert.equal(dirFor('a_b').length, 1, `no transcript directory for a_b; created: ${[...created]}`);
+    assert.equal(encodeCwd(cwds['a_b']), encodeCwd(cwds['a.b']),
+      "cc's own encodeCwd no longer collapses `_` and `.` alike — the premise moved");
+
+    // DIRECTION 1: one directory for the pair. If the CLI preserved `.`, two
+    // distinct names would be here and cc's guard would be over-refusing.
+    assert.equal(created.size, 2,
+      `three cwds, two of which encode alike, must produce exactly 2 directories; got ${[...created]}`);
+
+    // DIRECTION 2: the distinct cwd got its OWN directory — so "2" above is one
+    // shared plus one separate, not two arbitrary names.
+    assert.equal(dirFor('zz').length, 1, `no separate directory for zz; created: ${[...created]}`);
+    assert.notEqual(encodeCwd(cwds['zz']), encodeCwd(cwds['a_b']));
+  } finally {
+    // Only what this probe created, identified by the delta.
+    for (const d of created) await fs.rm(path.join(projects, d), { recursive: true, force: true });
+    await clean();
+  }
 });

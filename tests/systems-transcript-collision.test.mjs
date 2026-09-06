@@ -118,7 +118,7 @@ describe('the transcript-directory collision guard', () => {
   // could take one transcript directory.
   test('T6b: two spellings of one directory collide, and report samePath', async () => {
     for (const spelling of ['/srv/app/', '/srv/./app', '/srv/x/../app']) {
-      const hit = await transcriptCwdCollision(place({ cwd: normalizeSystemPath(spelling) }), [
+      const hit = await transcriptCwdCollision(place({ cwd: spelling }), [
         { project: 'held', worktree: null, system: 'local', cwd: '/srv/app' },
       ]);
       assert.equal(hit?.project, 'held', spelling);

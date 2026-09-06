@@ -381,6 +381,67 @@ describe('a session on a project on a system', () => {
     assert.ok(t3.events.length >= 1, `expected >= 1 event, got ${t3.events.length}`);
   });
 
+  // ── T13 ─────────────────────────────────────────────────────────────
+  // PINS: THE LOOKUP STOPS CONTACTING SYSTEMS ONCE IT HAS A HIT. That laziness
+  // is live in `findSessionLocation` and is not a micro-optimisation — composing
+  // a project's worktree places runs `git worktree list` THROUGH its system, so
+  // an eager sweep would stall on a wedged provider and change its answer on a
+  // down one, for a session it had already located.
+  //
+  // Restored after the geometry retirement: the pass-1/pass-2 precedence this
+  // arm once shared a file with is genuinely gone, but this claim is not, and it
+  // had lost its only guard.
+  //
+  // Measured ON THE WIRE, because "no contact" is not observable any other way.
+  test('T13: a hit contacts no system ordered after it, measured on the wire', async () => {
+    // 'aaa' answers at its own path and has a registered remote WORKTREE whose
+    // place is ordered after that root; 'zzz' sorts after 'aaa' entirely. BOTH
+    // systems are the recorder and BOTH write to ONE file, so "no contact for
+    // anything ordered after the answer" is a single empty transcript.
+    const box = await mkdtemp('cc-0292-box-');
+    const rec = path.join(await mkdtemp('cc-0292-rec-'), 'frames.jsonl');
+    await addSystem({ id: 'aaabox', label: 'aaabox', launch: ['node', RECORDER, '--record', rec] });
+    await addSystem({ id: 'zzzbox', label: 'zzzbox', launch: ['node', RECORDER, '--record', rec] });
+
+    const hitTree = await seedRepo(path.join(box, 'aaa'));
+    assert.equal((await adoptProject('aaa', hitTree, { system: 'aaabox' })).ok, true);
+    const wt = await createWorktree('aaa', { name: 'wt1' });
+    const laterTree = await seedRepo(path.join(box, 'zzz'));
+    assert.equal((await adoptProject('zzz', laterTree, { system: 'zzzbox' })).ok, true);
+    // The worktree place ordered after 'aaa's root really EXISTS — otherwise
+    // arm (a) would be vacuous in the "there was nothing after it" sense.
+    assert.ok(await getWorktree('aaa', wt.worktreeName));
+
+    // Seeded directly at 'aaa's cwd rather than through the spawn route: a route
+    // call broadcasts, and plugin discovery resolves every project off that
+    // broadcast, putting frames on the wire this test cannot attribute.
+    const cwd = hitTree;
+    const sid = 'eeeeeeee-1111-4111-8111-aaaaaaaaaaaa';
+    await seedSessionJsonl(claudeProjectsRoot, cwd, sid);
+
+    // Everything above has already talked to both boxes. Start the recording
+    // from empty, so what follows is attributable to the lookup alone.
+    await fs.writeFile(rec, '');
+
+    // (a) the hit is at 'aaa's own path — the first place in probe order.
+    assert.deepEqual(await findSessionLocation(sid), { project: 'aaa', worktreeName: null, cwd });
+    assert.deepEqual(await wireFrames(rec), [],
+      "a hit must contact no system ordered after it — not the hit project's own "
+      + 'worktree walk, and not a later project at all');
+
+    // (b) THE CONTROL. A miss enumerates everything, so BOTH the hit project's
+    // worktree walk and the later project reach their boxes. Asserting each
+    // shows up SEPARATELY is what makes each half of (a)'s zero evidence rather
+    // than a dead fixture. `cwd` is the attributable field: `listWorktrees` runs
+    // git in the PROJECT's directory.
+    assert.equal(await findSessionLocation(UNKNOWN_ID), null);
+    const cwds = new Set((await wireFrames(rec)).map(f => f.cwd));
+    assert.ok(cwds.has(hitTree),
+      `a full miss walks the HIT project's worktrees on its own box; cwds: ${[...cwds]}`);
+    assert.ok(cwds.has(laterTree),
+      `a full miss composes the LATER project too; cwds: ${[...cwds]}`);
+  });
+
   // ── T9 ──────────────────────────────────────────────────────────────
   // PINS: the answer carries the cwd the transcript was ACTUALLY found at, not
   // a re-derivation — for a remote session that is the instance's own cwd,

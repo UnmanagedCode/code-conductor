@@ -78,12 +78,17 @@ export async function transcriptCwdCollision(
   candidate: TranscriptPlace,
   places?: readonly TranscriptPlace[],
 ): Promise<TranscriptCollision | null> {
-  const encoded = encodeCwd(candidate.cwd);
+  // NORMALISED BEFORE ENCODING, on BOTH sides. The write path stores a
+  // normalised `systemPath`, but the predicate must not depend on that: an
+  // un-normalised spelling reaching here would encode differently — `/srv/app/`
+  // is `-srv-app-` and `/srv/app` is `-srv-app` — and one directory would pass
+  // the guard as two, which is the bypass this closes.
+  const mine = normalizeSystemPath(candidate.cwd);
+  const encoded = encodeCwd(mine);
   for (const held of places ?? await registeredPlaces()) {
     if (held.project === candidate.project && held.worktree === candidate.worktree) continue;
-    if (encodeCwd(held.cwd) === encoded) {
-      return { ...held, samePath: normalizeSystemPath(held.cwd) === normalizeSystemPath(candidate.cwd) };
-    }
+    const theirs = normalizeSystemPath(held.cwd);
+    if (encodeCwd(theirs) === encoded) return { ...held, samePath: theirs === mine };
   }
   return null;
 }
