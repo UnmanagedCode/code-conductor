@@ -10,9 +10,11 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.ts';
+import { listWorktrees } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -193,6 +195,67 @@ test('spawn_instance({resume:<bogus>}) with NO project still throws the existing
       () => spawnInstance({ resume: 'ffffffff-1111-2222-3333-444444444444', mode: 'bypassPermissions' }, { instances: ctx.instances }),
       (e) => e.statusCode === 400 && /project required/.test(e.message),
     );
+  } finally {
+    await ctx.close();
+  }
+});
+
+// --- The stranded-worktree leak (card 2026-0358, fix 3) ---
+
+function git(cwd, ...args) {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout) => {
+      if (err) reject(err); else resolve(stdout);
+    });
+  });
+}
+
+// `POST /api/projects` git-inits but never commits, and `git worktree add`
+// needs a branch HEAD — so a project with no commit could not grow a worktree
+// at all, and "the count did not change" would be true for the wrong reason.
+async function commitProject(projectPath) {
+  await git(projectPath, 'config', 'user.email', 'test@example.com');
+  await git(projectPath, 'config', 'user.name', 'test');
+  await git(projectPath, 'config', 'commit.gpgsign', 'false');
+  await git(projectPath, 'add', '-A');
+  await git(projectPath, 'commit', '-q', '-m', 'initial');
+}
+
+test('a resume never creates a worktree, even when the caller asks for one', async () => {
+  // INVARIANT: `resume` + `worktree:true` is refused BEFORE createWorktree()
+  // runs, so a resume that cannot proceed strands nothing. A fresh worktree is a
+  // fresh cwd and ~/.claude/projects/<encoded-cwd>/ is keyed on that path, so the
+  // combination can never hold the resumed transcript — it is contradictory, not
+  // unlucky.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await commitProject(path.join(ctx.projectsRoot, 'demo'));
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
+
+    // PREMISE GUARD: this project really can grow a worktree, so the
+    // count-unchanged assertion below is about the refusal and not about a
+    // createWorktree() that would have failed anyway.
+    const fresh = await spawnInstance(
+      { project: 'demo', createWorktree: true, mode: 'bypassPermissions' }, { instances: ctx.instances });
+    assert.ok(fresh.sessionId, `the premise spawn must succeed: ${JSON.stringify(fresh)}`);
+    const before = (await listWorktrees('demo')).map(w => w.worktreeName);
+    assert.equal(before.length, 1, 'premise: createWorktree:true does create one here');
+
+    const bogus = 'e171ceb7-949a-4470-b470-bdea99458950';
+    let threw = null;
+    try {
+      await spawnInstance(
+        { resume: bogus, project: 'demo', createWorktree: true, mode: 'bypassPermissions' },
+        { instances: ctx.instances });
+    } catch (e) { threw = e; }
+
+    // The load-bearing assertion: nothing was stranded on disk or in the store.
+    assert.deepEqual((await listWorktrees('demo')).map(w => w.worktreeName), before,
+      'a resume that asks for a worktree must strand none');
+    assert.ok(threw, 'the contradictory combination must be refused, not silently honoured');
+    assert.equal(threw.statusCode, 400);
+    assert.match(threw.message, /resume/);
   } finally {
     await ctx.close();
   }

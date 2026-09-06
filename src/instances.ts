@@ -4610,6 +4610,25 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         { statusCode: 400 },
       );
     }
+    // A resume that also asks for a FRESH worktree is contradictory, not merely
+    // unlucky: `~/.claude/projects/<encodeCwd(path)>/` is keyed purely on the
+    // absolute path (src/projects.ts), so a brand-new worktree is a brand-new
+    // cwd that can hold no transcript for `resume`. Refused HERE — the same
+    // "refuse rather than ignore" shape as the guard above, and deliberately
+    // BEFORE createWorktree() below, because the resume pre-flight that would
+    // otherwise catch it runs after the worktree already exists and would strand
+    // it. The one way the combination can succeed is a worktree deleted and
+    // recreated under the same name (removeWorktree leaves the transcript dir
+    // behind), which resumes a session's history onto a branch freshly cut from
+    // HEAD — a bug that happens not to throw, so it is refused too.
+    if (resume && worktree === true) {
+      throw Object.assign(
+        new Error(`session ${publicId ?? resume} cannot be resumed into a fresh worktree — a new worktree is a new cwd, `
+          + `which holds none of its history. Drop createWorktree (MCP) / worktree:true to resume it where it is, `
+          + `or omit \`resume\` to spawn a new worker in a new worktree.`),
+        { statusCode: 400, code: 'RESUME_TAKES_NO_WORKTREE' },
+      );
+    }
     if (worktree === true) {
       worktreeMeta = await createWorktree(project, { baseWorktree, name });
       cwd = worktreeMeta.worktreePath;
