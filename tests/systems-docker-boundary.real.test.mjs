@@ -37,7 +37,6 @@ import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs
 import { addSystem } from '../src/appSettings.ts';
 import { adoptProject } from '../src/projects.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
-import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 
 const ENABLED = process.env.RUN_DOCKER_SYSTEM === '1';
 const IMAGE = process.env.CC_DOCKER_IMAGE ?? 'node:24-slim';
@@ -150,7 +149,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     instId = r.body.id;
-    root = sessionRootPath('ctrbox', 'app', null);
+    root = '/app';
     await waitFor(() => instances.get(instId).status === 'idle');
   });
 
@@ -521,8 +520,8 @@ describe('a worker whose session mirrors the whole container filesystem', { skip
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'wide', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     instId = r.body.id;
-    root = sessionRootPath('widebox', 'wide', null);
-    cwd = path.join(root, 'app');
+    root = '/app';
+    cwd = root;
     await waitFor(() => instances.get(instId).status === 'idle');
   });
 
