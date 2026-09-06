@@ -27,7 +27,7 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import {
-  adoptProject, createProject, getProject, projectStoreDir, resolveProjectDir, setProjectRemote,
+  adoptProject, createProject, listProjects, projectStoreDir, resolveProjectDir, setProjectRemote,
   orchStoreRoot,
 } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
@@ -215,7 +215,7 @@ describe('changing a project target', () => {
     await setProjectRemote('app', 'b', NO_INSTANCES);
 
     assert.equal(await exists(sessionsDir), false, 'the change created one');
-    assert.equal((await getProject('app')).remoteId, 'b', 'the change did not take');
+    assert.equal((await listProjects()).find(p => p.name === 'app')?.remoteId, 'b', 'the change did not take');
   });
 
   // PINS: the git-facts cache is invalidated, so the next read measures the new
