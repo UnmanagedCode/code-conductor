@@ -4355,18 +4355,24 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // full id through the handlers' disk probe) — resolveResumeRef below widens the
   // universe for the one argument that needs them.
   //
-  // Answers are ALWAYS public ids — a backing id must never reach a conductor,
-  // which is also why `ambiguous` can only ever list public ids. Both resolvers
-  // return one of:
+  // The two resolvers DECIDE alike (one shared tail, decideSessionRef) and differ
+  // only in their candidate set and in what they hand back. Every id either
+  // reports is a PUBLIC id — a backing id must never reach a conductor, which is
+  // also why `ambiguous` can only ever list public ids. The three outcomes:
   //   null                              → no match (caller leaves the arg untouched,
   //                                         so the handler's existing SESSION_UNKNOWN /
   //                                         SESSION_NOT_LIVE / disk-probe path runs)
-  //   { sessionId }                     → exact match on any candidate (always
-  //                                         wins), or a prefix >= SESSION_PREFIX_MIN
-  //                                         chars matching exactly ONE session
   //   { ambiguous:[publicIds], tooShort} → a prefix matching >1 SESSION, OR a
   //                                         too-short (< SESSION_PREFIX_MIN) prefix
   //                                         matching >= 1
+  //   resolved                          → exact match on any candidate (always
+  //                                         wins), or a prefix >= SESSION_PREFIX_MIN
+  //                                         chars matching exactly ONE session.
+  //                                         resolveSessionRef reports it as
+  //                                         `{ sessionId }`; resolveResumeRef as
+  //                                         `{ handle, resume }`, because its one
+  //                                         caller needs the caller's own spelling
+  //                                         as well — see there.
   resolveSessionRef(input: unknown): SessionRef {
     if (typeof input !== 'string' || !input) return null;
     return decideSessionRef(this._refOwners(null), input);

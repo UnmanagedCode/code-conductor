@@ -1075,10 +1075,15 @@ export async function spawnInstance(args: SpawnArgs, { instances, callerId }: Mc
     // spawn error — mirrors respawnInstance's SESSION_NOT_LIVE shape so the
     // conductor gets an actionable hint instead of a crashed worker.
     if (errCode(e) === 'SESSION_UNKNOWN') {
-      // `args.resume` — the caller's own handle — never the thrown message's id,
-      // which create() has rebound to the backing id by then. The cwd rides as a
-      // property for exactly that reason (see the throw in src/instances.ts), and
-      // it is the half that distinguishes "wrong place" from "wrong id".
+      // `args.resume` — the caller's own SPELLING, echoed back untouched: a
+      // prefix the transport already resolved to the handle, or an exact id
+      // verbatim, which for a named segment is deliberately NOT the handle
+      // (src/mcp/server.ts leaves it so create() opens the transcript the caller
+      // named). Do not "correct" this to the rebound id: by here create() has
+      // rebound `resume` to the BACKING id, and surfacing that would hand a
+      // conductor a ~/.claude UUID it never held. The cwd rides as a property for
+      // exactly that reason (see the throw in src/instances.ts), and it is the
+      // half that distinguishes "wrong place" from "wrong id".
       const { cwd } = e as { cwd?: unknown };
       return {
         ok: false,
