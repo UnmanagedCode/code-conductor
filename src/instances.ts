@@ -61,7 +61,7 @@ import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './wor
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
-import { buildFusePlan, fuseWorkersEnabled, resolveMirrorStandIn } from './systems/fuse/plan.ts';
+import { buildFusePlan, resolveMirrorStandIn } from './systems/fuse/plan.ts';
 import { FuseSession } from './systems/fuse/session.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
 import { ensureUnionBinary } from './systems/fuse/build.ts';
@@ -140,6 +140,19 @@ interface LaunchedProc {
 }
 
 interface LauncherLike {
+  // WHETHER THIS LAUNCHER RUNS THE CLI INSIDE CC'S OWN PROCESS.
+  //
+  // It is the ONE exemption from the union, and it is structural rather than an
+  // operator's to set: there is no subprocess to put in a mount namespace, so a
+  // mandatory wrap would leave a mount handshake that can never arrive. Only
+  // the in-process launcher tests inject is exempt, and it cannot be selected
+  // in production.
+  //
+  // OPTIONAL, AND ABSENCE MEANS "spawns a process" — the fail-closed direction.
+  // A launcher that forgets to declare itself gets the union and, if it cannot
+  // mount, a named refusal; the alternative default would silently run a remote
+  // worker with no union under it.
+  readonly inProcess?: boolean;
   // `wrap` is OPTIONAL on the seam, not on the production launcher: the
   // in-process launcher tests inject runs the CLI inside cc's own process,
   // where there is no subprocess to put in a mount namespace, so it ignores the
@@ -4661,11 +4674,21 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // The FUSE-union chroot, attached in the same block and gated on the same
       // `remote` boolean, so a session cannot end up with one and not the other.
       //
-      // `fuseWorkersEnabled()` is the S1 stage boundary, not a feature flag —
-      // see its comment. The tier table reads `localRoots` (the array above)
-      // rather than restating it, so the paths a file tool may name and the
-      // paths the daemon serves from the host cannot disagree.
-      if (fuseWorkersEnabled()) {
+      // MANDATORY FOR A REMOTE-BACKED WORKER, with one structural exemption.
+      // The CLI's cwd is now the project's path ON ITS SYSTEM, so without a
+      // union under it the worker would be working at a path that need not
+      // exist on this machine — correct only where the system shares cc's
+      // filesystem, which is not the case this epic exists for. A host that
+      // cannot mount refuses the spawn by name (criterion 9) rather than
+      // running somewhere wrong.
+      //
+      // The exemption is `inProcess`: a launcher that runs the CLI inside cc's
+      // own process has no subprocess to put in a namespace. See LauncherLike.
+      //
+      // The tier table reads `localRoots` (the array above) rather than
+      // restating it, so the paths a file tool may name and the paths the
+      // daemon serves from the host cannot disagree.
+      if (!inst._launcher.inProcess) {
         inst.attachFuse(new FuseSession({
           plan: buildFusePlan({
             instanceId: id,

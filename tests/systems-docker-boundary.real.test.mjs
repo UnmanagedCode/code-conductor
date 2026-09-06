@@ -25,6 +25,15 @@
 // ENVIRONMENT. Nothing here is measured about SSH, about a genuinely remote
 // host, about latency, or about a foreign libc or toolchain — no assertion or
 // comment in this file may be read as covering any of them.
+//
+// DOUBLY OPT-IN SINCE THE FUSE-UNION GEOMETRY. This suite needs `RUN_DOCKER_SYSTEM=1`
+// AND a host that can mount the union — `sudo -n`, `/dev/fuse`, `fusectl`, gcc and
+// libfuse3 headers, the same set `tests/fuse-lifecycle.real.test.mjs` asserts. The
+// union is mandatory for a remote-backed worker, and this is the ONE suite that
+// crosses a real machine boundary: a worker here runs at the project's path
+// INSIDE the container, which does not exist on the host, so a run that bypassed
+// the union would be asserting the wrong geometry rather than testing the right
+// one. A host without FUSE gets the criterion-9 refusal, by name.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';

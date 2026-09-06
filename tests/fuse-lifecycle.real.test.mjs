@@ -112,7 +112,7 @@ function assertNoResidue(before, runRoot, record, label) {
 }
 
 describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENABLED }, () => {
-  let ctx, baseUrl, instances, home, box, prevFuse, runRoot;
+  let ctx, baseUrl, instances, home, box, runRoot;
   // Reported, not asserted on: the wall time of a spawn and of one turn, inside
   // the chroot and outside it. S3's "Not measured" section names the cost of
   // attr_timeout=0/entry_timeout=0 as the more important of its two unmeasured
@@ -128,8 +128,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const { realProbes } = await import('../src/systems/fuse/preflight.ts');
     await assertFuseAvailable({ ...realProbes, ensureBinary: ensureUnionBinary });
 
-    prevFuse = process.env.CC_FUSE_WORKERS;
-    process.env.CC_FUSE_WORKERS = '1';
+    // No switch to set: `bootServer({realProcess:true})` injects the REAL
+    // launcher, and the union is mandatory for a remote-backed worker on it.
     ctx = await bootServer({ realProcess: true, scenarioPath: SCENARIO });
     ({ baseUrl, instances } = ctx);
     ({ home } = await freshProjectsRoot());
@@ -177,7 +177,6 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     }
     if (ctx) await ctx.instances.shutdown();
     disposeSystemHandles();
-    if (prevFuse === undefined) delete process.env.CC_FUSE_WORKERS; else process.env.CC_FUSE_WORKERS = prevFuse;
     if (home) await rmrf(home);
     if (ctx) await ctx.close();
   });
@@ -436,18 +435,27 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
   // ── THE CONTROL MEASUREMENT ──────────────────────────────────────────────
   // Not an assertion. The same project, the same provider and the same fake CLI
-  // with the chroot turned OFF, so the only variable between the two rows
+  // with the chroot disengaged, so the only variable between the two rows
   // printed by `after` is the union and its zero-caching mount options.
+  //
+  // Disengaged through the LAUNCHER's own exemption rather than an environment
+  // switch, because there is no longer a switch: the union is mandatory for a
+  // remote-backed worker on a launcher that spawns a process. The stand-in
+  // still spawns a real child — it is the production launcher with the one
+  // marker flipped — so the comparison stays like-for-like.
   test('control — the same turn with the chroot disengaged, for the cost comparison', async () => {
-    delete process.env.CC_FUSE_WORKERS;
-    let inst;
+    const real = instances._claudeLauncher;
+    instances._claudeLauncher = {
+      inProcess: true,
+      launch: (spec) => real.launch(spec),
+    };
     try {
       for (let i = 0; i < 3; i++) {
-        inst = await spawnWorker('control');
+        const inst = await spawnWorker('control');
         assert.equal(inst._fuse, null, 'the control worker was wrapped after all');
         await instances.remove(inst.id);
       }
-    } finally { process.env.CC_FUSE_WORKERS = '1'; }
+    } finally { instances._claudeLauncher = real; }
   });
 
   // ── ARM 6 ────────────────────────────────────────────────────────────────

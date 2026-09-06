@@ -10,6 +10,11 @@ import type { LaunchWrap } from './systems/fuse/wrap.ts';
 // while tests inject an in-process implementation that runs the fake-claude
 // scenario engine on the event loop (no OS process — see tests/inProcessLauncher.mjs).
 export class RealClaudeLauncher {
+  // THE PRODUCTION LAUNCHER SPAWNS AN OS PROCESS, which is what makes a mount
+  // namespace possible at all. Read by Instance create to decide whether a
+  // remote-backed session gets a union — see `inProcess` on LauncherLike.
+  readonly inProcess = false;
+
   // `wrap` is THE documented seam for launching the CLI somewhere other than
   // this machine's root filesystem: a pure transform of {command,args,cwd,env}
   // applied immediately before spawn (src/systems/fuse/wrap.ts wraps the launch

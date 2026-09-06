@@ -207,25 +207,3 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   };
 }
 
-// ── THE ENGAGEMENT SWITCH, and what Phase B changed about it ────────────────
-//
-// Off by default, and this is now a KNOWN HOLE rather than a stage boundary.
-//
-// It was introduced in S1 because the session-root geometry and the chroot were
-// both live and something had to select between them. Phase B retired the
-// geometry, so there is no second mode left — and a remote worker with this OFF
-// now runs the CLI at the project's path ON ITS SYSTEM with no union under it.
-// That is correct ONLY when the system shares the orchestrator's filesystem,
-// which is exactly the configuration the reference provider (and therefore most
-// of the test suite) is in, and is NOT true of a genuinely remote one.
-//
-// It cannot simply be deleted yet: the in-process launcher the suite injects
-// runs the CLI inside cc's own process, where there is no subprocess to put in
-// a mount namespace, so making the wrap unconditional would leave every remote
-// test waiting on a mount handshake that can never arrive. Closing this needs
-// either an in-process launcher that can be given a union, or a remote-worker
-// path that refuses when it cannot mount — an S2/S4 decision, filed rather than
-// improvised here.
-export function fuseWorkersEnabled(): boolean {
-  return process.env.CC_FUSE_WORKERS === '1';
-}
