@@ -20,6 +20,7 @@ import { buildTierTable, renderPinsFile, binaryPins, BIND_MOUNTS } from '../src/
 import { wrapLaunch } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
 import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
+import { parseOrphanScan, reclaimOrphanProcesses } from '../src/systems/fuse/orphans.ts';
 
 // ── the fake driver ─────────────────────────────────────────────────────────
 //
@@ -27,7 +28,11 @@ import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts'
 // is gone. `mounts` maps pid → the mountpoints in that pid's namespace.
 // Everything is recorded in `calls` in issue order, which is what lets the
 // ORDERING claims below be assertions rather than set comparisons.
-function fakeDriver({ procs = {}, mounts = {}, conns = [], umountFails = new Set(), abortOk = true, undead = new Set() } = {}) {
+// `nsMounts` is the PRIVATE NAMESPACE's mount table, shared by every process in
+// it — modelling it per-pid would let a fixture disagree with itself about
+// which pid teardown happens to enter through, and that choice is exactly what
+// the anchor changed. `hostMounts` is pid 1's and cc's own.
+function fakeDriver({ procs = {}, nsMounts = [], hostMounts = [], mounts = {}, conns = [], umountFails = new Set(), abortOk = true, undead = new Set() } = {}) {
   let clock = 0;
   const calls = [];
   const rec = (op, ...args) => calls.push([op, ...args]);
@@ -35,9 +40,11 @@ function fakeDriver({ procs = {}, mounts = {}, conns = [], umountFails = new Set
     calls,
     procs,
     mounts,
-    // Keyed on the mount table, not on liveness: pid 1's table is readable
-    // whether or not pid 1 is in the process fixture.
-    async readMounts(pid) { return mounts[pid] ?? null; },
+    async readMounts(pid) {
+      if (mounts[pid]) return mounts[pid];                 // an explicit per-pid override
+      if (pid === 1 || pid === process.pid) return hostMounts;
+      return procs[pid] ? nsMounts : null;                 // gone ⇒ no table at all
+    },
     async readProcStat(pid) {
       const p = procs[pid];
       return p ? { starttime: p.starttime, state: p.state } : null;
@@ -50,7 +57,7 @@ function fakeDriver({ procs = {}, mounts = {}, conns = [], umountFails = new Set
       rec('umount', mp, lazy ? 'lazy' : 'plain');
       if (umountFails.has(mp) && !lazy) return false;
       if (umountFails.has(mp) && lazy) return false;
-      for (const list of Object.values(mounts)) {
+      for (const list of [nsMounts, hostMounts, ...Object.values(mounts)]) {
         const i = list.indexOf(mp);
         if (i >= 0) list.splice(i, 1);
       }
@@ -76,6 +83,7 @@ function fakeDriver({ procs = {}, mounts = {}, conns = [], umountFails = new Set
 // mismatch is unambiguous.
 const WORKER = 4242, WORKER_START = '111111';
 const DAEMON = 4243, DAEMON_START = '222222';
+const ANCHOR = 4244, ANCHOR_START = '333333';
 
 async function seedRun(overrides = {}, { intentOnly = false, noRecords = false } = {}) {
   const rundir = await mkdtemp('cc-fuse-run-');
@@ -86,7 +94,8 @@ async function seedRun(overrides = {}, { intentOnly = false, noRecords = false }
     nsMntId: 'mnt:[4026533000]',
     bootstrapPid: WORKER, bootstrapStart: WORKER_START,
     daemonPid: DAEMON, daemonStart: DAEMON_START,
-    minor: '77', spawnedAt: 1, mountedAt: 2,
+    anchorPid: ANCHOR, anchorStart: ANCHOR_START,
+    stage: 'mounted', minor: '77', spawnedAt: 1, mountedAt: 2,
     ...overrides,
   };
   if (!noRecords) {
@@ -112,9 +121,11 @@ function healthyMounts(record) {
   ];
 }
 
+// The three recorded processes of a healthy session, all alive.
 const liveBoth = () => ({
   [WORKER]: { starttime: WORKER_START, state: 'S' },
   [DAEMON]: { starttime: DAEMON_START, state: 'S', threads: ['1', '2'] },
+  [ANCHOR]: { starttime: ANCHOR_START, state: 'S' },
 });
 
 describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
@@ -124,7 +135,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   test('unmounts deepest-first, and all of them before the abort', async () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
-    const driver = fakeDriver({ procs, mounts: { [DAEMON]: healthyMounts(record), [WORKER]: [], 1: [] }, conns: ['77'] });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
     await runTeardown({ rundir, driver, log: { warn() {} } });
 
     const abortAt = driver.calls.findIndex(c => c[0] === 'abort');
@@ -154,7 +165,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, mounts: { [DAEMON]: healthyMounts(record), 1: [] }, conns: ['77'], undead: new Set([DAEMON]) });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([DAEMON]) });
     await runTeardown({ rundir, driver, log: { warn() {} } });
     const seq = driver.calls.filter(c => c[0] === 'umount' || c[0] === 'abort');
     const abortAt = seq.findIndex(c => c[0] === 'abort');
@@ -167,7 +178,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   // already gone by then.
   test('aborts the minor captured at mount time', async () => {
     const { rundir, record } = await seedRun({ minor: '91' });
-    const driver = fakeDriver({ procs: liveBoth(), mounts: { [DAEMON]: healthyMounts(record), 1: [] }, conns: ['91', '12'] });
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['91', '12'] });
     const report = await runTeardown({ rundir, driver, log: { warn() {} } });
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [['abort', '91']]);
     assert.equal(report.abort, 'aborted');
@@ -180,7 +191,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     procs[WORKER].state = 'D';
-    const driver = fakeDriver({ procs, mounts: { [DAEMON]: healthyMounts(record), [WORKER]: [], 1: [] }, conns: ['77'], undead: new Set([WORKER]) });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([WORKER]) });
     const report = await runTeardown({ rundir, driver, log: { warn() {} } });
     assert.equal(report.workerStopped, false);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal' && c[1] === WORKER).map(c => c[2]), ['SIGTERM', 'SIGKILL']);
@@ -199,7 +210,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
       procs[DAEMON] = { starttime: DAEMON_START, state: 'Z', threads };
       // The daemon is `undead`: the point of the case is what the machine
       // REPORTS about a process that outlives its SIGKILL, not that it dies.
-      const driver = fakeDriver({ procs, mounts: { [DAEMON]: healthyMounts(record), 1: [] }, conns: ['77'], undead: new Set([DAEMON]) });
+      const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'], undead: new Set([DAEMON]) });
       const report = await runTeardown({ rundir, driver, log: { warn() {} } });
       assert.ok(report.terminalState.startsWith(expected), `${threads.length} thread(s) → ${report.terminalState}`);
       if (expected === 'WEDGED') assert.match(report.terminalState, /threads=2 states=/);
@@ -213,7 +224,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const driver = fakeDriver({
       // Both numbers are live — but as different processes.
       procs: { [WORKER]: { starttime: '999999', state: 'S' }, [DAEMON]: { starttime: '888888', state: 'S' } },
-      mounts: { [WORKER]: healthyMounts(record), [DAEMON]: healthyMounts(record), 1: [] },
+      nsMounts: healthyMounts(record),
       conns: ['77'],
     });
     const report = await runTeardown({ rundir, driver, log: { warn() {} } });
@@ -231,7 +242,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const procs = liveBoth();
     delete procs[WORKER];
     const driver = fakeDriver({
-      procs, mounts: { [DAEMON]: healthyMounts(record), 1: [] }, conns: ['77'],
+      procs, nsMounts: healthyMounts(record), conns: ['77'],
       // The daemon outlives its SIGKILL, which is what keeps the mount
       // namespace — and therefore the stuck mount — in existence. A namespace
       // whose last process has gone takes its mounts with it, so a wedge with
@@ -264,7 +275,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, mounts: { [DAEMON]: healthyMounts(record), 1: [] }, conns: ['77'] });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['77'] });
     const report = await runTeardown({ rundir, driver, log: { warn() {} } });
     assert.equal(report.wedged, false);
     assert.equal(report.removedRunDir, true);
@@ -275,14 +286,14 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
   // no verified pid there is nothing it would be safe to signal.
   test('mount.json absent falls back to intent.json; both absent is NO-RECORD, and neither signals', async () => {
     const only = await seedRun({}, { intentOnly: true });
-    const d1 = fakeDriver({ procs: liveBoth(), mounts: { 1: [] } });
+    const d1 = fakeDriver({ procs: liveBoth(), nsMounts: [] });
     const r1 = await runTeardown({ rundir: only.rundir, driver: d1, log: { warn() {} } });
     assert.equal(r1.source, 'intent.json');
     assert.deepEqual(d1.calls.filter(c => c[0] === 'signal'), []);
     assert.deepEqual(d1.calls.filter(c => c[0] === 'abort'), []);
 
     const none = await seedRun({}, { noRecords: true });
-    const d2 = fakeDriver({ procs: liveBoth(), mounts: { 1: [] } });
+    const d2 = fakeDriver({ procs: liveBoth(), nsMounts: [] });
     const r2 = await runTeardown({ rundir: none.rundir, driver: d2, log: { warn() {} } });
     assert.equal(r2.source, 'NO-RECORD');
     assert.equal(r2.terminalState, 'NO-PID');
@@ -295,7 +306,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, mounts: { [DAEMON]: healthyMounts(record), 1: [] }, conns: ['56', '59', '77'] });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56', '59', '77'] });
     const report = await runTeardown({ rundir, driver, log: { warn() {} } });
     assert.equal(report.strayConnections, 2);
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), [['abort', '77']]);
@@ -307,25 +318,85 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const { rundir, record } = await seedRun();
     const procs = liveBoth();
     delete procs[WORKER];
-    const driver = fakeDriver({ procs, mounts: { [DAEMON]: healthyMounts(record), 1: [] }, conns: ['56'] });
+    const driver = fakeDriver({ procs, nsMounts: healthyMounts(record), conns: ['56'] });
     const report = await runTeardown({ rundir, driver, log: { warn() {} } });
     assert.equal(report.abort, 'ABORT-UNAVAILABLE');
     assert.deepEqual(driver.calls.filter(c => c[0] === 'abort'), []);
     assert.ok(driver.calls.some(c => c[0] === 'signal' && c[1] === DAEMON), 'the daemon ladder did not run');
   });
 
-  // PINS: the daemon is signalled through sudo (it is root-owned and is not
-  // cc's child); the worker is signalled directly (privilege was dropped back
-  // to cc's uid before the CLI was exec'd).
-  test('the daemon is signalled privileged and the worker is not', async () => {
+  // PINS: the ROOT-OWNED processes — the daemon and the namespace anchor — are
+  // signalled through sudo; the worker is signalled directly, because setpriv
+  // dropped it back to cc's own uid before exec'ing the CLI. Getting this
+  // backwards is silent: an unprivileged signal at a root process is EPERM,
+  // which `process.kill` throws and every caller here swallows as "gone".
+  test('the root-owned processes are signalled privileged and the worker is not', async () => {
     const { rundir, record } = await seedRun();
-    const driver = fakeDriver({ procs: liveBoth(), mounts: { [DAEMON]: healthyMounts(record), [WORKER]: [], 1: [] }, conns: ['77'] });
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['77'] });
     await runTeardown({ rundir, driver, log: { warn() {} } });
     const sigs = driver.calls.filter(c => c[0] === 'signal');
     for (const [, pid, , mode] of sigs) {
-      assert.equal(mode, pid === DAEMON ? 'sudo' : 'direct', `pid ${pid} signalled ${mode}`);
+      assert.equal(mode, (pid === DAEMON || pid === ANCHOR) ? 'sudo' : 'direct', `pid ${pid} signalled ${mode}`);
     }
-    assert.ok(sigs.some(c => c[1] === DAEMON), 'the daemon was never signalled');
+    for (const pid of [WORKER, DAEMON, ANCHOR]) {
+      assert.ok(sigs.some(c => c[1] === pid), `pid ${pid} was never signalled`);
+    }
+  });
+
+
+  // PINS THE LEAKED-ANCHOR DEFECT: the record may not be destroyed while a pid
+  // it names is still alive. The old machine derived `wedged` from mounts and
+  // the daemon poll ONLY, so a surviving anchor — whose namespace is private
+  // and therefore can never show in /proc/1/mounts — deleted its own record and
+  // became permanently unreclaimable by name.
+  test('a surviving recorded pid keeps the record, whatever the mounts say', async () => {
+    for (const survivor of ['bootstrapPid', 'daemonPid', 'anchorPid']) {
+      const { rundir, record } = await seedRun();
+      const procs = liveBoth();
+      // Everything unmounts and everything dies EXCEPT the one under test, so
+      // the only thing that can keep the record is the death confirmation.
+      const driver = fakeDriver({
+        procs, nsMounts: healthyMounts(record),
+        conns: ['77'], undead: new Set([record[survivor]]),
+      });
+      const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+
+      assert.deepEqual(report.residualMounts, [], `${survivor}: the fixture left mounts, so this would pass for the wrong reason`);
+      assert.equal(report.wedged, true, `${survivor} survived and the teardown still called itself clean`);
+      assert.equal(report.removedRunDir, false, `${survivor}: the record was destroyed while it was alive`);
+      assert.equal(report.survivingPids.length, 1, JSON.stringify(report.survivingPids));
+      assert.match(report.survivingPids[0], new RegExp(`pid ${record[survivor]}$`));
+      const written = JSON.parse(await fs.readFile(path.join(rundir, 'mount.json'), 'utf8'));
+      assert.equal(written.wedged, true);
+      assert.deepEqual(written.survivingPids, report.survivingPids);
+    }
+  });
+
+  // PINS the other half: the anchor is signalled at all, and LAST — after the
+  // daemon's terminal poll, because it is the handle everything before it needs.
+  test('the anchor is killed, and killed after the daemon', async () => {
+    const { rundir, record } = await seedRun();
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['77'] });
+    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    const sigs = driver.calls.filter(c => c[0] === 'signal').map(c => c[1]);
+    assert.ok(sigs.includes(record.anchorPid), 'the anchor was never signalled');
+    assert.ok(sigs.lastIndexOf(record.anchorPid) > sigs.lastIndexOf(DAEMON), `order was ${sigs.join(',')}`);
+    assert.deepEqual(report.survivingPids, []);
+    assert.equal(report.removedRunDir, true);
+  });
+
+  // PINS: a record whose bootstrap never finished mounting still names the pids
+  // it had already started, and teardown acts on them. This is the shape a
+  // failed launch leaves, and the one that used to signal nothing at all.
+  test('a stage:starting record is still torn down', async () => {
+    const { rundir, record } = await seedRun({ stage: 'starting', minor: '', mountedAt: 0 });
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: [] });
+    const report = await runTeardown({ rundir, driver, log: { warn() {} } });
+    assert.equal(report.abort, 'no-minor');
+    const sigs = driver.calls.filter(c => c[0] === 'signal').map(c => c[1]);
+    for (const pid of [record.daemonPid, record.anchorPid]) assert.ok(sigs.includes(pid), `pid ${pid} not signalled`);
+    assert.deepEqual(report.survivingPids, []);
+    assert.equal(report.removedRunDir, true);
   });
 
   // PINS: /proc/1/mounts is checked, not just the namespace's own table — it is
@@ -335,7 +406,7 @@ describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
     const procs = liveBoth();
     delete procs[WORKER];
     const escaped = path.join(record.root, 'sys');
-    const driver = fakeDriver({ procs, mounts: { [DAEMON]: [], 1: [escaped] }, conns: ['77'] });
+    const driver = fakeDriver({ procs, nsMounts: [], hostMounts: [escaped], conns: ['77'] });
     const report = await runTeardown({ rundir, driver, log: { warn() {} } });
     assert.equal(report.wedged, true);
     assert.deepEqual(report.residualMounts, [escaped]);
@@ -601,5 +672,90 @@ describe('deadlines', () => {
     for (const [k, v] of Object.entries(DEFAULT_DEADLINES)) {
       assert.ok(Number.isFinite(v) && v > 0, `${k} = ${v}`);
     }
+  });
+});
+
+describe('the record-independent orphan backstop', () => {
+  const RUN_ROOT = '/store/.code-conductor/systems/fuse/run';
+  const row = (pid, start, id, rundir) => `${pid}\t${start}\t${id}\t${rundir}`;
+
+  // PINS: attribution is on an identity the process CARRIES, and every missing
+  // or foreign field fails CLOSED. A scan that returned a pid it should not
+  // have would be a SIGKILL at a stranger.
+  test('attributes only complete rows inside this store\'s run root', () => {
+    const raw = [
+      row(100, '111', 'a', `${RUN_ROOT}/a`),                       // ours
+      row(101, '222', 'b', '/other/store/systems/fuse/run/b'),     // another install
+      row(102, '333', '', `${RUN_ROOT}/c`),                        // no instance id
+      row(103, '', 'd', `${RUN_ROOT}/d`),                          // no starttime
+      row(104, '444', 'e', ''),                                    // no rundir
+      row(1, '555', 'f', `${RUN_ROOT}/f`),                         // pid 1 is never ours
+      row('nope', '666', 'g', `${RUN_ROOT}/g`),                    // unparsable pid
+      `${RUN_ROOT}-sibling/h`,                                     // garbage line
+      row(105, '777', 'h', `${RUN_ROOT}-notours/h`),               // prefix that is not a path prefix
+      '',
+    ].join('\n');
+    assert.deepEqual(parseOrphanScan(raw, RUN_ROOT), [
+      { pid: 100, starttime: '111', instanceId: 'a', rundir: `${RUN_ROOT}/a` },
+    ]);
+  });
+
+  test('an empty scan — the case where sudo is unavailable — attributes nothing', () => {
+    assert.deepEqual(parseOrphanScan('', RUN_ROOT), []);
+  });
+
+  // PINS: the backstop unmounts through the orphan BEFORE killing it (it is the
+  // handle), re-verifies its identity immediately before signalling, and skips
+  // anything a record still covers.
+  test('reclaims a record-less orphan: unmount first, then kill, identity re-checked', async () => {
+    const rundir = await mkdtemp('cc-fuse-orphan-');
+    const runRoot = path.dirname(rundir);
+    const procs = { 900: { starttime: '999', state: 'S' } };
+    const driver = fakeDriver({ procs, mounts: { 900: [path.join(rundir, 'root'), path.join(rundir, 'root', 'proc')] } });
+    const out = await reclaimOrphanProcesses(runRoot, {
+      driver, log: { warn() {} },
+      scan: async () => row(900, '999', path.basename(rundir), rundir),
+    });
+    assert.equal(out.length, 1);
+    assert.equal(out[0].killed, true);
+    assert.deepEqual(out[0].unmounted, [path.join(rundir, 'root', 'proc'), path.join(rundir, 'root')]);
+    const ops = driver.calls.map(c => c[0]);
+    assert.ok(ops.indexOf('signal') > ops.lastIndexOf('umount'), `order was ${ops.join(',')}`);
+  });
+
+  test('a pid whose starttime moved since the scan is NOT signalled', async () => {
+    const rundir = await mkdtemp('cc-fuse-orphan-');
+    const driver = fakeDriver({ procs: { 901: { starttime: 'DIFFERENT', state: 'S' } }, mounts: { 901: [] } });
+    const out = await reclaimOrphanProcesses(path.dirname(rundir), {
+      driver, log: { warn() {} },
+      scan: async () => row(901, '999', path.basename(rundir), rundir),
+    });
+    assert.equal(out[0].killed, false);
+    assert.match(out[0].note, /recycled/);
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
+  });
+
+  test('an orphan whose run directory still has a record is left to the record pass', async () => {
+    const rundir = await mkdtemp('cc-fuse-orphan-');
+    await fs.writeFile(path.join(rundir, 'mount.json'), '{}');
+    const driver = fakeDriver({ procs: { 902: { starttime: '999', state: 'S' } }, mounts: { 902: [] } });
+    const out = await reclaimOrphanProcesses(path.dirname(rundir), {
+      driver, log: { warn() {} },
+      scan: async () => row(902, '999', path.basename(rundir), rundir),
+    });
+    assert.deepEqual(out, []);
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
+  });
+
+  test('a live session id is never signalled', async () => {
+    const rundir = await mkdtemp('cc-fuse-orphan-');
+    const id = path.basename(rundir);
+    const driver = fakeDriver({ procs: { 903: { starttime: '999', state: 'S' } }, mounts: { 903: [] } });
+    const out = await reclaimOrphanProcesses(path.dirname(rundir), {
+      driver, log: { warn() {} }, liveIds: [id],
+      scan: async () => row(903, '999', id, rundir),
+    });
+    assert.deepEqual(out, []);
+    assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
   });
 });

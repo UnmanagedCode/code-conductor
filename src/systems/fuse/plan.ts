@@ -61,6 +61,11 @@ export interface FuseIntent {
 // helper silently no-ops when called after an unmount — which is exactly when
 // teardown calls it (S3 §A4 step 1).
 export interface FuseMountRecord extends FuseIntent {
+  // `starting` — the bootstrap has started processes but the mount is not up
+  // yet; `mounted` — the handshake is complete. cc's awaitHandshake waits for
+  // `mounted`; TEARDOWN acts on either, which is the whole point of writing the
+  // record three times (bootstrap.sh step 2a).
+  stage?: 'starting' | 'mounted';
   nsMntId: string;
   bootstrapPid: number;
   bootstrapStart: string;
@@ -79,6 +84,7 @@ export interface FuseMountRecord extends FuseIntent {
   wedged?: boolean;
   terminalState?: string;
   residualMounts?: string[];
+  survivingPids?: string[];
   at?: number;
 }
 

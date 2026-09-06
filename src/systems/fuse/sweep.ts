@@ -16,9 +16,13 @@ import path from 'node:path';
 import { fuseRunRoot } from './plan.ts';
 import { runTeardown, type TeardownReport } from './session.ts';
 import type { MountDriver } from './driver.ts';
+import { reclaimOrphanProcesses, type OrphanScan } from './orphans.ts';
 
 export interface SweepOptions {
   driver?: MountDriver;
+  // The record-independent backstop's /proc pass (see orphans.ts). Injected so
+  // the fail-closed attribution is testable without sudo.
+  scan?: OrphanScan;
   log?: { warn: (...args: unknown[]) => void };
   // Present for symmetry with sweepSessionTmpDirs; at boot there are no live
   // sessions, and the sweep is only ever called there.
@@ -32,6 +36,8 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
   let entries: string[];
   try { entries = await fsp.readdir(root); }
   catch { return []; } // never created on an install with no FUSE-backed workers
+  // Records first, orphans second — an orphan whose run directory still exists
+  // is this pass's business, and the backstop skips it rather than racing it.
 
   const reports: TeardownReport[] = [];
   for (const name of entries) {
@@ -60,5 +66,12 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
       log.warn(`cc-fuse sweep: ${name} could not be swept: ${(e as Error).message}`);
     }
   }
+  // THE RECORD-INDEPENDENT BACKSTOP. The ordering guarantees above should leave
+  // nothing for it; it runs so that "nothing was left" is a check rather than an
+  // argument, and so a leak whose record was destroyed is discoverable at all —
+  // a private namespace never appears in /proc/1/mounts, and a destroyed record
+  // is in no set to re-verify.
+  try { await reclaimOrphanProcesses(root, { driver: opts.driver, scan: opts.scan, liveIds: keep, log }); }
+  catch (e) { log.warn(`cc-fuse sweep: the orphan-process backstop failed: ${(e as Error).message}`); }
   return reports;
 }

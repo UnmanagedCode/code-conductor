@@ -40,6 +40,7 @@ import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { fuseRunDir, fuseRunRoot } from '../src/systems/fuse/plan.ts';
+import { findOrphanProcesses } from '../src/systems/fuse/orphans.ts';
 import { assertFuseAvailable } from '../src/systems/fuse/preflight.ts';
 
 const ENABLED = process.env.RUN_FUSE_LIFECYCLE === '1';
@@ -147,7 +148,24 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assert.equal((await adoptProject('app', path.join(box, 'app'), { system: 'fusebox' })).ok, true);
   });
 
+  // THE LEAK CHECK THAT DOES NOT READ A RECORD, and the reason there is one: a
+  // /proc/1/mounts delta cannot see a private namespace, and re-verifying the
+  // pids in mount.json cannot see a leak whose record was deleted. Both halves
+  // of the original check were blind to a leaked anchor by construction, and
+  // one leaked.
+  //
+  // Attribution is on an identity the process CARRIES — CC_FUSE_INSTANCE_ID and
+  // CC_FUSE_RUNDIR in /proc/<pid>/environ, scoped to THIS run's run root — never
+  // on comm or cmdline. `sleep infinity` is as generic a needle as exists here.
+  async function attributableProcesses() {
+    return findOrphanProcesses(runRoot);
+  }
+
   after(async () => {
+    // Runs before the shutdown below, so a process this suite leaked is still
+    // there to be found rather than reaped by it.
+    const leaked = await attributableProcesses().catch(() => []);
+    if (leaked.length) console.log(`fuse gate: LEAKED ${JSON.stringify(leaked)}`);
     for (const [where, rows] of Object.entries(timings)) {
       if (!rows.length) continue;
       const f = (k) => rows.map(r => r[k]).join('/');
@@ -428,5 +446,14 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const runDirsAfter = (await fs.readdir(runRoot).catch(() => [])).sort();
     assert.deepEqual(runDirsAfter, runDirsBefore,
       `the refused spawn created ${JSON.stringify(runDirsAfter.filter(d => !runDirsBefore.includes(d)))}`);
+  });
+  // ── ARM 7 ────────────────────────────────────────────────────────────────
+  // PINS: nothing this run started is still running, established WITHOUT
+  // reading mount.json. Ordered last in the file so it sees every earlier arm's
+  // residue; node:test runs the tests in a file sequentially.
+  test('arm 7 — no process attributable to this run survives it (record-independent)', async () => {
+    const leaked = await attributableProcesses();
+    console.log(`fuse gate [arm 7] processes carrying CC_FUSE_RUNDIR under ${runRoot}: ${leaked.length}`);
+    assert.deepEqual(leaked, [], `this run leaked ${JSON.stringify(leaked)}`);
   });
 });

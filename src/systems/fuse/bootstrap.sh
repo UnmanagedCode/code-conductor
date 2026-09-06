@@ -34,6 +34,58 @@ grep -q '[[:space:]]fusectl$' /proc/filesystems || die "fusectl is not in /proc/
 #       a safety net for a partial one, never the primary creator.
 mkdir -p "$CC_FUSE_ROOT" "$CC_FUSE_MIRROR" "$CC_FUSE_FUSECTL"
 
+# ── 2a. THE RECORD WRITER, and THE INVARIANT IT ENFORCES:
+#
+#        NOTHING THIS SCRIPT STARTS MAY PRECEDE THE RECORD THAT NAMES IT.
+#
+#        cc's teardown and its boot sweep both iterate RECORDS. A process
+#        started before the record that names it — and there were two, the
+#        anchor and the daemon, both started long before the single write at
+#        step 7 — is unreclaimable by name if this script then dies: cc reads
+#        intent.json, finds no pid to signal, and reclaims the run directory,
+#        destroying the only handle on a process that is still running.
+#        Measured as a real leak (a root `sleep infinity` holding a live private
+#        mount namespace, orphaned to pid 1, with its record already deleted).
+#
+#        So the record is written THREE times — after the anchor, after the
+#        daemon, and once the mount is up — each write atomic (tmp + rename) and
+#        each naming everything known so far. `stage` is what cc's handshake
+#        waits for: `starting` means "processes exist, tear them down if you
+#        must", `mounted` means "and the mount is up".
+procstart() { awk '{ p = index($0, ")"); split(substr($0, p + 2), f, " "); print f[20] }' "/proc/$1/stat" 2>/dev/null; }
+
+ANCHOR_PID=0
+DAEMON_PID=0
+MINOR=""
+NS_MNT=""
+MOUNTED_AT=0
+write_record() { # write_record <stage>
+	cat > "$CC_FUSE_RECORD.tmp" <<JSON
+{
+  "schema": 1,
+  "stage": "$1",
+  "instanceId": "$CC_FUSE_INSTANCE_ID",
+  "ccBootId": "$CC_FUSE_BOOT_ID",
+  "rundir": "$CC_FUSE_RUNDIR",
+  "root": "$CC_FUSE_ROOT",
+  "mirror": "$CC_FUSE_MIRROR",
+  "fusectl": "$CC_FUSE_FUSECTL",
+  "nsMntId": "$NS_MNT",
+  "bootstrapPid": $$,
+  "bootstrapStart": "$(procstart $$)",
+  "anchorPid": $ANCHOR_PID,
+  "anchorStart": "$(procstart "$ANCHOR_PID")",
+  "daemonPid": $DAEMON_PID,
+  "daemonStart": "$(procstart "$DAEMON_PID")",
+  "minor": "$MINOR",
+  "spawnedAt": ${CC_FUSE_SPAWNED_AT:-0},
+  "mountedAt": $MOUNTED_AT
+}
+JSON
+	mv -f "$CC_FUSE_RECORD.tmp" "$CC_FUSE_RECORD"
+	chown "$CC_FUSE_UID:$CC_FUSE_GID" "$CC_FUSE_RECORD" 2>/dev/null || true
+}
+
 # ── 2b. THE NAMESPACE ANCHOR, and it is a measured necessity rather than a
 #        convenience. cc reaches this namespace with
 #        `nsenter --mount=/proc/<pid>/ns/mnt`, and that open is governed by
@@ -53,6 +105,7 @@ mkdir -p "$CC_FUSE_ROOT" "$CC_FUSE_MIRROR" "$CC_FUSE_FUSECTL"
 #        last, and the boot sweep kills one cc crashed before reaching.
 setsid sleep infinity </dev/null >/dev/null 2>&1 &
 ANCHOR_PID=$!
+write_record starting
 
 # ── 3. THE S1 STAND-IN, and it is labelled one. There is no transport and no
 #       control channel in S1: the daemon's remote tier is a plain local
@@ -77,6 +130,7 @@ FUSE_S3_MNT="$CC_FUSE_ROOT" \
 	"$CC_FUSE_BIN" -f -o "$CC_FUSE_MOUNT_OPTS" "$CC_FUSE_ROOT" \
 	>"$CC_FUSE_DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
+write_record starting
 
 # ── 5. wait for the mount, via /proc/self/mounts and NEVER `mountpoint -q`:
 #       mountpoint stat()s the path, and reports "not mounted" for exactly the
@@ -103,37 +157,14 @@ MINOR=$(awk -v p="$CC_FUSE_ROOT" '$5 == p { print $3; exit }' /proc/self/mountin
 MINOR=${MINOR#*:}
 [ -n "$MINOR" ] || die "could not capture the connection minor for $CC_FUSE_ROOT"
 
+# ── 7. the handshake, which is the THIRD write of the record rather than its
+#       first (see step 2a). `stage: mounted` is what cc's awaitHandshake waits
+#       for; the two earlier writes already made every process reclaimable.
+#       Every pid carries its /proc/<pid>/stat field 22 starttime, so "still
+#       there" can never be satisfied by a recycled pid wearing the number.
 NS_MNT=$(readlink /proc/self/ns/mnt 2>/dev/null || echo "")
-procstart() { awk '{ p = index($0, ")"); split(substr($0, p + 2), f, " "); print f[20] }' "/proc/$1/stat" 2>/dev/null; }
-
-# ── 7. the handshake record, atomically (tmp + rename — the pattern
-#       resumeManifest.ts already uses) and chowned back to cc, which rewrites
-#       it in place when teardown wedges. Every pid carries its
-#       /proc/<pid>/stat field 22 starttime, so "still there" can never be
-#       satisfied by a recycled pid wearing the number.
-cat > "$CC_FUSE_RECORD.tmp" <<JSON
-{
-  "schema": 1,
-  "instanceId": "$CC_FUSE_INSTANCE_ID",
-  "ccBootId": "$CC_FUSE_BOOT_ID",
-  "rundir": "$CC_FUSE_RUNDIR",
-  "root": "$CC_FUSE_ROOT",
-  "mirror": "$CC_FUSE_MIRROR",
-  "fusectl": "$CC_FUSE_FUSECTL",
-  "nsMntId": "$NS_MNT",
-  "bootstrapPid": $$,
-  "bootstrapStart": "$(procstart $$)",
-  "anchorPid": $ANCHOR_PID,
-  "anchorStart": "$(procstart "$ANCHOR_PID")",
-  "daemonPid": $DAEMON_PID,
-  "daemonStart": "$(procstart "$DAEMON_PID")",
-  "minor": "$MINOR",
-  "spawnedAt": ${CC_FUSE_SPAWNED_AT:-0},
-  "mountedAt": $(date +%s%3N)
-}
-JSON
-mv -f "$CC_FUSE_RECORD.tmp" "$CC_FUSE_RECORD"
-chown "$CC_FUSE_UID:$CC_FUSE_GID" "$CC_FUSE_RECORD" 2>/dev/null || true
+MOUNTED_AT=$(date +%s%3N)
+write_record mounted
 
 # ── 8. fusectl at a PRIVATE path, not /sys/fs/fuse/connections. A read-only
 #       /sys can be mounted over (S3 §A1 rung 2) — this declines to, because

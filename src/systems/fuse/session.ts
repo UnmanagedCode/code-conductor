@@ -60,6 +60,10 @@ export interface TeardownReport {
   workerStopped: boolean;
   daemonPid: number | null;
   anchorPid: number | null;
+  // Recorded pids still alive and still OURS when teardown finished. Non-empty
+  // is a wedge by definition: the record may not be destroyed while a process
+  // it names is running.
+  survivingPids: string[];
   // GONE | ZOMBIE-ORPHAN | NO-PID | WEDGED(threads=n states=…)
   terminalState: string;
   // In the order the unmounts were ISSUED — deepest-first is an ordering claim,
@@ -167,7 +171,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   const report: TeardownReport = {
     instanceId: path.basename(rundir),
     source: 'NO-RECORD',
-    workerPid: null, workerStopped: false, daemonPid: null, anchorPid: null,
+    workerPid: null, workerStopped: false, daemonPid: null, anchorPid: null, survivingPids: [],
     terminalState: 'NO-PID',
     unmounted: [], lazyUnmounted: [],
     abort: 'skipped', minor: null,
@@ -279,21 +283,45 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     }
   }
 
-  // ── 7. assert clean, in BOTH tables. /proc/1/mounts is the one that says
-  //       whether anything escaped the private namespace at all.
+  // ── 7. CONFIRM DEATH, POSITIVELY, and assert clean in BOTH tables.
+  //       /proc/1/mounts is the one that says whether anything escaped the
+  //       private namespace at all.
+  //
+  //       THE RECORD IS THE LAST THING DESTROYED, AND ONLY ONCE EVERY PID IT
+  //       NAMES IS CONFIRMED GONE BY A POSITIVE CHECK — never by having issued a
+  //       signal. cc's teardown and its boot sweep both iterate RECORDS, so a
+  //       record deleted while a process it names is alive makes that process
+  //       permanently unreclaimable by name. Measured as a real leak: a root
+  //       `sleep infinity` holding a live private mount namespace, orphaned to
+  //       pid 1, with its run directory already removed. Neither half of the
+  //       old leak check could see it — its namespace is private so it can
+  //       never appear in /proc/1/mounts, and its record was gone so it was in
+  //       no recorded set to re-verify.
   const nsPid6 = await pickNsPid(driver, record);
   const residual = new Set<string>();
   for (const pid of [process.pid, 1, ...(nsPid6 === null ? [] : [nsPid6])]) {
     for (const mp of (await driver.readMounts(pid)) ?? []) if (under(mp, rundir)) residual.add(mp);
   }
   report.residualMounts = [...residual].sort();
-  report.wedged = report.residualMounts.length > 0 || report.terminalState.startsWith('WEDGED');
+  if (record) {
+    for (const [what, pid, start] of [
+      ['worker', record.bootstrapPid, record.bootstrapStart],
+      ['daemon', record.daemonPid, record.daemonStart],
+      ['anchor', record.anchorPid, record.anchorStart],
+    ] as const) {
+      if (await stillOurs(driver, pid, start)) report.survivingPids.push(`${what} pid ${pid}`);
+    }
+  }
+  report.wedged = report.residualMounts.length > 0
+    || report.terminalState.startsWith('WEDGED')
+    || report.survivingPids.length > 0;
 
   // ── 8. reclaim, or KEEP THE RECORD so the next boot sweep re-reports the
   //       wedge rather than silently rediscovering it.
   if (report.wedged) {
     const line = `cc-fuse: session ${report.instanceId} did not tear down cleanly — ${report.terminalState}`
       + `, daemon pid ${report.daemonPid ?? '?'}, minor ${report.minor ?? '?'}`
+      + (report.survivingPids.length ? `, still alive: ${report.survivingPids.join(', ')}` : '')
       + (report.residualMounts.length ? `, mounts still present: ${report.residualMounts.join(' ')}` : '');
     // Both surfaces on purpose: the event stream is what an operator watching
     // this session is already looking at, and console.warn survives the
@@ -303,10 +331,14 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     if (record) {
       await writeJsonAtomic(recordPath, {
         ...record, wedged: true, terminalState: report.terminalState,
-        residualMounts: report.residualMounts, at: Date.now(),
+        residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
       }).catch(() => {});
     }
   } else {
+    // Safe to destroy the record ONLY because of the invariant bootstrap.sh
+    // step 2a enforces: nothing it starts precedes the record that names it. So
+    // an intent-only run directory (no mount.json at all) means the bootstrap
+    // died before it started anything, and there is nothing here to orphan.
     try { await fsp.rm(rundir, { recursive: true, force: true }); report.removedRunDir = true; }
     catch (e) { notes.push(`could not reclaim ${rundir}: ${(e as Error).message}`); }
   }
@@ -398,8 +430,14 @@ export class FuseSession {
   async awaitHandshake(isAlive: () => boolean): Promise<FuseMountRecord | null> {
     const deadline = this.#driver.now() + this.#deadlines.handshakeMs;
     for (;;) {
+      // `stage: 'mounted'` and not merely "the file exists": the record is
+      // written from the moment the bootstrap has a pid to name (step 2a), so
+      // its presence says processes exist, not that the union is up.
       const rec = await readJson<FuseMountRecord>(this.plan.recordPath);
-      if (rec) { this.record = rec; return rec; }
+      if (rec?.stage === 'mounted') { this.record = rec; return rec; }
+      // Kept even when incomplete, so a caller that has to tear the failed
+      // launch down has the pids the bootstrap already recorded.
+      if (rec) this.record = rec;
       if (!isAlive()) return null;
       if (this.#driver.now() >= deadline) return null;
       await this.#driver.sleep(this.#deadlines.pollMs);
