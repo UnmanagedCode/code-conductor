@@ -374,6 +374,16 @@ Only the SYMLINKS in `.external/` are listed as projects, which is what keeps th
 
 Orchestrator state stays in the central store; the only cc-written file inside a project tree is every project's tracked, app-regenerated `CONVENTIONS.md` (`src/projectClaudeMd.ts`) — imported by its `CLAUDE.md` and committed with the project (its line-1 marker is the self-describing source of truth). That holds for an adopted repo too: it is written at adopt time and on every sweep, and lands as an uncommitted change in the user's own tree. Creation also makes the tree a git repo (`git init`, no commit) — that `.git/` is git's own, not cc-written state. No per-project `.gitignore` plumbing.
 
+## What `fileBridge` carried, and where it has to land again
+
+`src/systems/fileBridge.ts` is **deleted** in the FUSE-union geometry: the filesystem decides which bytes appear at a path, so there is no pull in `PreToolUse` and no push in `PostToolUse`. Two of its semantics were not incidental, are not reproduced by a passthrough mount, and are S3's specification for the daemon's write path. They are recorded here because the file that held them is gone.
+
+**Mode preservation.** The bridge remembered the system-side `st.mode` at pull time and passed it back on push (`fileBridge.ts` `#modes`). The reason is `atomic: true`: an atomic write ends in a `rename`, and a rename hands the replacement file *fresh* permissions — so an edited shell script silently loses its executable bit. Any write-back that renames must carry the original mode across, or re-`chmod` after it.
+
+**A failed push is loud and sticky.** On a push failure the bridge marked the local path diverged (`#diverged`) and the layer above **refused every later write to that path** until a pull resynced it. The reason is that the local file then holds content the system does not, and the worker has no way to see that: without the sticky refusal the divergence surfaces as a wrong belief rather than as an error. A write-back that can fail needs the same property — a failed `release` must poison the path, not just log.
+
+Two more of its rules are the *reason the geometry is being retired* rather than things to carry: the 1 MiB whole-file cap (`SESSION_FILE_CAP_BYTES`) and the refusal of binary files existed because every file op carried a whole file over a control channel. A union mount reads and writes ranges, so neither applies.
+
 ## FUSE teardown
 
 One implementation — `runTeardown` in `src/systems/fuse/session.ts` — reached from four places: `Instance.kill()` (the commanded path, which **awaits** it), `Instance._handleExit()` (the crash path, fire-and-forget beside `_redirect.close()`), and `sweepFuseSessions()` at boot. `bootstrap.sh` owns none of it: it `exec`s into the CLI and ceases to exist as a supervisor, and a shell trap cannot survive `SIGKILL`.

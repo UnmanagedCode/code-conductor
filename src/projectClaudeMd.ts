@@ -81,7 +81,7 @@ const PROJECT_HEADING = '# Project conventions';
 // sentence every session pays for.
 //
 // Nothing more. `Glob`/`Grep` being gone is volunteered by the tool registry; a
-// write outside the session root is named by its own refusal; a failed
+// write outside the project tree is named by its own refusal; a failed
 // write-back is named by the note on the tool result. Each of those is
 // delivered at the point of use by a channel the worker cannot miss, so
 // repeating it here would be a per-session cost for no change in behaviour.

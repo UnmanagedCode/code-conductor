@@ -145,6 +145,7 @@ export interface FusePlanInput {
   instanceId: string;
   cwdInside: string;
   systemPath: string;
+  mirrorRoot: string;
   standInSource: string | null;
   localRoots: readonly string[];
   claudeCommand: string;
@@ -181,6 +182,7 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     homeDir: os.homedir(),
     runDir: rundir,
     systemPath: input.systemPath,
+    mirrorRoot: input.mirrorRoot,
     ...input.tierOverrides,
   });
 

@@ -60,6 +60,7 @@ import {
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
+import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
 import { buildFusePlan, fuseWorkersEnabled, resolveMirrorStandIn } from './systems/fuse/plan.ts';
 import { FuseSession } from './systems/fuse/session.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
@@ -89,8 +90,6 @@ import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from '.
 import { getOnOverageAction, getOverageThreshold, getConductorCompactWindow, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
-import { composeSessionRoot, composedRootWasDiscarded, type ComposedSessionRoot } from './systems/sessionRoot.ts';
-import { mirrorOffsets } from './systems/mirror.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
 import { loadPersistedTranscript, writeSessionMetadata, readLastSessionModel, hasResumableConversation,
   relocateSessionTranscripts, TranscriptRelocationError } from './transcript.ts';
@@ -532,6 +531,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // What a relaunch needs to re-pull the session root, since launch() runs long
   // after create() resolved the system handle.
   _redirectPlacement: RedirectPlacement | null;
+  // The mirror advertisement this session was created under, or null for a
+  // local one. Compared on every relaunch; see attachRedirect and launch().
+  _mirrorScope: MirrorScope | null;
   worktree: (WorktreeMeta & { postWorktreeCreate?: unknown }) | null;
   temp: boolean;
   conducted: boolean;
@@ -719,6 +721,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._redirect = null;
     this._fuse = null;
     this._redirectPlacement = null;
+    this._mirrorScope = null;
     // Absolute Claude Code plugin roots (each directly containing
     // `.claude-plugin/plugin.json`) contributed by enabled cc plugins whose
     // manifest declares `claudePlugin`. Resolved + validated once at create()
@@ -1683,205 +1686,6 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._fuse = fuse;
   }
 
-  // Re-pull the session root's config surface. Runs on every (re)launch — the
-  // CLI reads CLAUDE.md, CONVENTIONS.md and `.claude/**` once at startup and
-  // fires no hook for any of it, so a resume that skipped this would run against
-  // whatever the system had at the last spawn. The manifest makes an unchanged
-  // surface one `find` and no transfers.
-  //
-  // A failure is SURFACED, not fatal: the config surface is not the session, and
-  // a system that is briefly unreachable should cost a warning rather than a
-  // worker that cannot start. Every tool call still refuses honestly.
-  //
-  // ONE EXCEPTION, and it is the case where there is nothing left to be honest
-  // WITH: when the compose failed after the target check discarded the prior
-  // root, the last-good root a warning would fall back on no longer exists, and
-  // the worker would start with none of its project's implicit config surface.
-  // That REFUSES. Keyed on the CHECK and never on the failure: with the check
-  // HOLDING, no failure reaches the manifest (the pull writes it last), so the
-  // root that survives is still this project's own target's and warning is the
-  // right answer there (card 2026-0273).
-  async _refreshSessionRoot(): Promise<void> {
-    const placement = this._redirectPlacement;
-    if (!placement) return;
-    let composed: ComposedSessionRoot;
-    try {
-      composed = await composeSessionRoot(placement);
-      for (const s of composed.skipped) {
-        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: session root skipped ${s.path} — ${s.reason}` } });
-      }
-      for (const note of composed.notes) {
-        this._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${note}` } });
-      }
-    } catch (e) {
-      this._emitUi({ kind: 'system', subtype: 'stderr', data: {
-        line: `systems: could not refresh the session root from '${placement.systemId}': ${(e as Error).message}`,
-      } });
-      // THE ONE REFRESH FAILURE THAT IS FATAL — and the line above still runs
-      // for it: the event stream is where an operator watching this session is
-      // looking, and the throw only reaches whoever called the relaunch.
-      //
-      // NO REMEDY CLAUSE, deliberately. This fires for failures that clear on
-      // their own (a dropped transport) and for failures that will refuse
-      // identically forever until something moves on the system (a listing past
-      // the fence, a command the far side will not start), and it cannot tell
-      // them apart — that is the whole point of keying on the check. Wording
-      // advice per failure kind would put the classification back. `Cause:`
-      // carries whatever guidance the underlying refusal already wrote.
-      if (composedRootWasDiscarded(e)) {
-        throw httpError(
-          502,
-          `cannot relaunch this session: composing its session root from '${placement.systemId}' failed `
-          + `after the target check had already discarded whatever earlier compose was there, so cc has no `
-          + `complete config surface for this project at ${this.cwd} and will not start a worker on a `
-          + `partial one. Cause: ${(e as Error).message}`,
-          { code: 'SESSION_ROOT_DISCARDED' },
-        );
-      }
-      return;
-    }
-    // THE GEOMETRY MOVED UNDER A LIVE SESSION, and cc FOLLOWS IT. `this.cwd`
-    // and the redirect's path map were both fixed at create, so a provider that
-    // changed its mirror advertisement between spawn and relaunch has just had
-    // the config surface re-pulled somewhere this session would not look.
-    // Measured, that leaves two states, and UNFOLLOWED neither is survivable:
-    // with the prior offset empty, this cwd still exists and holds no config
-    // surface; with it non-empty — WIDENING OR NARROWING ALIKE, the direction is
-    // not the discriminator — this cwd does not exist at all, and a relaunch
-    // that ignored the move would reach spawn with a deleted cwd and fail ENOENT
-    // against the CLI BINARY's own path. The line below is what stops both; the
-    // cwd states are still what the compose produces, the dead relaunch is not.
-    //
-    // OUTSIDE the try above, and that is load-bearing: that catch exists to make
-    // a compose failure a warning rather than a dead session, and a refusal to
-    // move must not be swallowed by it.
-    //
-    // Moving is possible HERE and nowhere else: this runs inside launch() before
-    // spawn(), so there is no CLI to rebuild a redirect underneath — which is
-    // what card 2026-0259 read as impossible. Its warn-don't-refuse is
-    // SUPERSEDED BY A THIRD ANSWER, not overturned into a refusal
-    // (card 2026-0279).
-    if (composed.cwd !== this.cwd) await this._followGeometry(placement.systemId, composed);
-  }
-
-  // Follow a mirror advertisement that moved: relocate this session's
-  // transcripts, move its cwd, and retarget its path map — IN THAT ORDER, so a
-  // relocation that cannot complete leaves the instance untouched and the
-  // relaunch refused rather than a worker started at either location.
-  //
-  // ONE REFUSAL, and it is not the compose's: card 2026-0273's
-  // SESSION_ROOT_DISCARDED fires when the compose FAILED past the target check.
-  // This fires when the compose SUCCEEDED and cc cannot carry the session to
-  // what it produced.
-  //
-  // `this.cwd`'s SECOND assignment site — the constructor is the first, and
-  // there are no others. Every reader of it is a live read at call time
-  // (summary, the transcript helpers, spawn's cwd, liveBackingIdsForCwd,
-  // tempSessionIdsForCwd, tempCleanupSnapshot), so none is desynchronised by
-  // this write: nothing in cc keys a structure on a cwd captured at insert time.
-  // The one transient is the await below: for the length of the rename the
-  // transcript is already at the new cwd while `this.cwd` still names the old
-  // one, so the two disagree for that window. The ordering is deliberate —
-  // relocating FIRST is what makes the refusal's "nothing was moved" true — and
-  // it is recorded here rather than argued away, so whoever adds a reader that
-  // can observe both at once knows the window is there to reason about.
-  private async _followGeometry(systemId: string, composed: ComposedSessionRoot): Promise<void> {
-    const from = this.cwd;
-    // The redirect and the placement are attached together (see attachRedirect's
-    // caller), so a placement without one is a cc bug, not a state to tolerate.
-    const redirect = this._redirect;
-    if (!redirect) throw new Error('cc: a remote placement reached _followGeometry with no redirect');
-    const ids = [...new Set([...this._segments, this.backingSessionId].filter((x): x is string => !!x))];
-    try {
-      await relocateSessionTranscripts({ from, to: composed.cwd, sessionIds: ids });
-    } catch (e) {
-      // THE CLAIM IS DERIVED, never asserted: what cc says about this session's
-      // history comes from what the rollback actually achieved, not from what
-      // the move intended.
-      //
-      // ONE CLASSIFICATION, AND IT IS COMPLETENESS — not cause, and not remedy.
-      // `stranded` and the errno together answer exactly one question: is the
-      // history still whole at `from`? That is what the three branches below
-      // vary on. They still say NOTHING about WHY the rename failed or what to
-      // do about it — the code cannot tell a blocker that clears itself from one
-      // that will refuse identically forever, and `Cause:` carries whatever
-      // guidance the underlying error already wrote. SESSION_ROOT_DISCARDED
-      // below writes no remedy either, but for a reason that does NOT transfer:
-      // it keys on the compose check and genuinely cannot classify its failures
-      // at all. The no-remedy rule is shared; the justification is not.
-      const failure = e instanceof TranscriptRelocationError ? e : null;
-      const stranded = failure?.stranded ?? [];
-      // THREE STATES, and the completeness claim is the only one that varies —
-      // no worker was started, `this.cwd` is untouched and the instance is still
-      // respawnable in all three, because the assignment below never ran.
-      //
-      // The ENOENT branch is REASONED, NOT MEASURED: a source deleted between
-      // the existence scan and its own rename throws without ever entering the
-      // rollback's `done` list, so `stranded` stays empty while a file really
-      // has gone. `_archiveTempSession`'s fire-and-forget subagent-dir `rm` and
-      // rewind's session-file `rm` are the reachable deleters. The scan-to-
-      // rename gap is microseconds and cannot be widened without perturbing the
-      // primitive, so this branch is unkillable by construction — the same class
-      // as the non-empty-`stranded` branch beside it, and it exists for the same
-      // reason: so the refusal cannot claim a completeness it did not verify.
-      const detail = stranded.length > 0
-        ? `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
-          + `${from} and ${composed.cwd}, and its working directory is unchanged at ${from}.`
-        : failure?.code === 'ENOENT'
-          ? `A source file disappeared while cc was moving it, so this session's history may no longer be `
-            + `complete at ${from}. Everything cc did move was put back, and its working directory is `
-            + `unchanged.`
-          : `Nothing was moved: this session's history is still complete at ${from} and its working `
-            + `directory is unchanged.`;
-      throw httpError(
-        502,
-        `cannot relaunch this session: '${systemId}' now mirrors this project at ${composed.cwd}, so cc `
-        + `must move this session there, and relocating its transcript out of ${from} failed. `
-        + detail
-        + ` Cause: ${(e as Error).message}`,
-        { code: 'SESSION_MOVE_FAILED' },
-      );
-    }
-    this.cwd = composed.cwd;
-    redirect.retarget(composed.root, composed.mirror);
-    // WHAT THIS LINE DELIBERATELY DOES NOT CLAIM.
-    //  * Not that any OTHER session moved. The image root is shared per
-    //    (system, project, worktree), so a peer live session keeps its old
-    //    working directory — and this card's original defect — until its OWN
-    //    next relaunch. Convergence is per-relaunch, not instant, and the last
-    //    clause says so rather than leaving it to be inferred.
-    //  * Not that the far-side shell moved or was reset. It runs at the project
-    //    path, which did not move.
-    //  * Not that files the worker had pulled on demand survived: resetRoot
-    //    deleted the image root, and the bridge pulls before every op.
-    //  * Not that the advertisement is right. A session that follows a wrong
-    //    advertisement follows it CONSISTENTLY, so a path the far side no longer
-    //    serves fails there, with its reason.
-    //  * Not anything about paths OUTSIDE the project: the new geometry may
-    //    widen or narrow the addressable space, and a path reachable before may
-    //    now be refused.
-    //  * Not a claim about the real `claude` binary — what is pinned is where
-    //    every input it reads now is.
-    //  * Not that this session HAD a transcript. Both transcript clauses are
-    //    hedged ("any transcript it had", "whatever history it had") because a
-    //    worker killed before its first turn has none at either cwd, the
-    //    relocation is then a no-op, and `history_replayed` is never emitted —
-    //    measured. Asserting a transcript here would break the same rule the
-    //    paragraph below states about files.
-    //
-    // AND IT NAMES NO FILE. The allow-list is what a config surface CAN hold,
-    // not what this project has: enumerating it here would assert the existence
-    // of files nobody looked for.
-    this._emitUi({ kind: 'system', subtype: 'stderr', data: {
-      line: `systems: '${systemId}' now mirrors this project at ${composed.cwd}, so cc has MOVED this `
-        + `session there from ${from}: its config surface was re-pulled to the new location, any `
-        + `transcript it had moved with it, and its file tools now address the project through the `
-        + `new geometry. The worker restarts in the new directory and whatever history it had is `
-        + `replayed there. Any OTHER session still running on this project keeps its old working `
-        + `directory until its own next relaunch.`,
-    } });
-  }
-
   async launch({ resume }: { resume?: string } = {}): Promise<void> {
     // THE one mint site in the codebase. It lives here rather than in spawn()
     // because minting is async (it persists the lineage row under the store
@@ -1908,10 +1712,31 @@ export class Instance extends EventEmitter implements InstanceLike {
     // propagates deliberately: a role-less conductor is worse than a surfaced
     // error, and every caller is async and returns errors to REST/MCP.
     if (isConductorInstance(this)) await materializeCurrentConduct();
-    // The same point in the sequence, for the same reason: the config surface a
-    // remote project's session prompt is built from is pulled here, before the
-    // process that reads it starts.
-    await this._refreshSessionRoot();
+    // A RE-ADVERTISEMENT IS SESSION-FATAL, and reported by name. `launch()` is
+    // the only path every relaunch funnels through — rewind, respawn, resume
+    // after a restart — so it is where a provider that changed its mirror root
+    // or its excludes under a live session gets caught. Refusing is the whole
+    // response: the retarget machinery this replaces rebuilt a local image at a
+    // new geometry, and there is no local image any more.
+    const placement = this._redirectPlacement;
+    const pinned = this._mirrorScope;
+    if (placement && pinned) {
+      const { scope } = resolveMirrorScope({
+        systemId: placement.systemId, project: placement.project,
+        systemPath: placement.systemPath, advertisement: await placement.system.mirror(),
+      });
+      if (scope.mirrorRoot !== pinned.mirrorRoot
+        || scope.exclude.join('\u0000') !== pinned.exclude.join('\u0000')) {
+        throw Object.assign(
+          new Error(`system '${placement.systemId}' changed its mirror advertisement under this session: `
+            + `root '${pinned.mirrorRoot}' → '${scope.mirrorRoot}', excludes [${pinned.exclude.join(', ')}] `
+            + `→ [${scope.exclude.join(', ')}]. The session cannot continue at a geometry it did not start `
+            + `under; start a new one.`),
+          { statusCode: 501, code: 'MIRROR_ADVERTISEMENT_CHANGED', systemRefusal: true },
+        );
+      }
+    }
+
     // The FUSE preflight is the LAST thing before spawn and the first thing
     // that can refuse: criterion 9 wants a host that cannot mount to refuse the
     // spawn by name, and only a check on this side of spawn() reaches the
@@ -2925,13 +2750,10 @@ export class Instance extends EventEmitter implements InstanceLike {
       throw new Error('prompt requires non-empty text or at least one valid attachment');
     }
 
-    // `@path` PRE-HYDRATION. The CLI expands a mention itself and fires no hook
-    // for it — measured — so on a remote project a mentioned file that is not
-    // already in the session root is simply absent from the turn. cc owns the
-    // one site a prompt is written from, so it fetches them here, before the
-    // text goes to stdin. Best effort: a mention that names nothing is the
-    // CLI's to report, not a reason to refuse the turn.
-    if (this._redirect) await this._redirect.hydrateMentions(safeText);
+    // NO `@path` PRE-HYDRATION any more. The CLI expands a mention itself and
+    // fires no hook for it — measured — which used to mean a remote file was
+    // simply absent from the turn unless cc had pulled it first. Under the
+    // chroot the mention resolves through the union like any other path.
     // A real prompt is a genuine turn boundary — any Skill invocation still
     // awaiting its content injection is stale (see parser.ts:attachSkillLoad).
     this.parser.expirePendingSkillLoads();
@@ -3962,111 +3784,6 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 }
 
-// A COLD RESUME FOLLOWING A MIRROR ADVERTISEMENT THAT MOVED WHILE THIS SESSION
-// WAS NOT RUNNING — the create path's half of card 2026-0279.
-//
-// 0279 moves a session at RELAUNCH IN PLACE, where an Instance already exists
-// and its `cwd` is the thing that is wrong (`Instance._followGeometry`). Here
-// there is no instance: `cwd` comes from the compose in the caller and is
-// already right, and what is in the wrong place is the TRANSCRIPT — the CLI
-// keys its transcript directory off `getcwd()`. So this assigns nothing,
-// retargets nothing and rebuilds nothing. It moves files and reports whether it
-// did (card 2026-0287).
-//
-// THE PRIOR CWD IS DERIVED PER SESSION, NEVER FROM THE MANIFEST. The
-// `.manifest.json` sidecar is shared by every session on one
-// `(system, project, worktree)` and the first create after a move rewrites it,
-// so a manifest-derived prior cwd recovers the FIRST session on an image root
-// and leaves every later one permanently un-resumable — measured, two sessions
-// on one root restore 1 of 2 that way and 2 of 2 this way
-// (tests/systems-mirror-geometry-cold-resume.test.mjs). It is also why nothing
-// here reads the manifest at all, so deleting it changes no outcome.
-//
-// THE CANDIDATE SET IS COMPLETE, and the loop below may stop at its first hit
-// whatever order the candidates come in — because at most one candidate answers
-// the probe for one id. That is a CONDITIONAL state invariant, not a property of
-// the set: it rests on cc relocating a whole lineage out of a single source, and
-// on the 404 gate this whole function sits behind keeping the scan out of the
-// one violating state that would cost a live transcript. Both facts, both
-// halves and their limits are on `mirrorOffsets`; the gate arm in
-// tests/systems-mirror-geometry-cold-resume.test.mjs is what catches a widening
-// of the gate.
-//
-// THE GEOMETRY CLASS IS NOT A DISCRIMINATOR HERE, unlike on 0279's path: the
-// transcripts live under `claudeProjectsRoot()`, which `resetRoot` never
-// touches, so whether the prior cwd still exists makes no difference to what
-// this has to find or move.
-async function followGeometryOnResume({ systemId, systemPath, root, cwd, backingId, publicId }: {
-  systemId: string; systemPath: string; root: string; cwd: string;
-  backingId: string; publicId: string | null;
-}): Promise<boolean> {
-  let from: string | null = null;
-  for (const offset of mirrorOffsets(systemPath)) {
-    const candidate = path.join(root, offset);
-    // NO same-destination guard, and it is unreachable rather than omitted: the
-    // caller reached here BECAUSE `cwd` holds no resumable conversation for this
-    // id, and `cwd` is itself one of these candidates — so the hit can never be
-    // `cwd` and `from === to` cannot arise. (`relocateSessionTranscripts` omits
-    // the equivalent guard as unreachable too, but by ITS own argument about two
-    // composed cwds — not by this one, which is the gate.)
-    if (await hasResumableConversation({ cwd: candidate, sessionId: backingId })) { from = candidate; break; }
-  }
-  if (from === null) return false;
-  // THE WHOLE LINEAGE, not just the id the resume resolved to: a renewed
-  // session's history is spread across its segments, and moving only the
-  // current one leaves an older segment at the geometry the session no longer
-  // runs at. Same rule `_followGeometry` applies to `this._segments`.
-  const ids = publicId === null
-    ? [backingId]
-    : [...new Set([...(await segmentsFor(publicId)).map(s => s.id), backingId])];
-  try {
-    await relocateSessionTranscripts({ from, to: cwd, sessionIds: ids });
-  } catch (e) {
-    // THE COMPLETENESS CLAIM IS DERIVED, never asserted — the same three
-    // branches, for the same reason, as `_followGeometry`'s refusal: what cc
-    // says about this session's history comes from what the rollback achieved.
-    // What is UNCONDITIONAL is the other half: this runs before the Instance
-    // constructor, so no worker was started and no session was registered, and
-    // a caller's follow-up sees exactly the state it saw before the call.
-    const failure = e instanceof TranscriptRelocationError ? e : null;
-    const stranded = failure?.stranded ?? [];
-    const detail = stranded.length > 0
-      ? `cc could not put back ${stranded.join(', ')} — this session's history is now split between `
-        + `${from} and ${cwd}.`
-      : failure?.code === 'ENOENT'
-        ? `A source file disappeared while cc was moving it, so this session's history may no longer be `
-          + `complete at ${from}. Everything cc did move was put back.`
-        : `Nothing was moved: this session's history is still complete at ${from}.`;
-    throw httpError(
-      502,
-      `cannot resume this session: '${systemId}' now mirrors this project at ${cwd}, so cc must move `
-      + `this session's transcript there from ${from}, and that failed. ${detail} No worker was started `
-      + `and no session was registered. Cause: ${(e as Error).message}`,
-      { code: 'SESSION_MOVE_FAILED' },
-    );
-  }
-  // WHAT THE `true` MEANS: this session is resumable at `cwd` — VERIFIED, not
-  // inferred from having called the relocation. `relocateSessionTranscripts`
-  // treats a source that is not there as success and writes nothing, so a
-  // transcript deleted between the probe above and its own existence re-check
-  // would otherwise have this claim a move it did not make, and the caller
-  // launch a worker with no conversation instead of refusing. Re-asking the
-  // caller's own question is what turns that into the caller's own 404, and it
-  // closes a CLASS rather than one race: any reason the relocation silently
-  // moves nothing now degrades honestly.
-  //
-  // UNKILLABLE BY CONSTRUCTION from outside this function — the same class as
-  // `_followGeometry`'s ENOENT wording branch, and for the same reason:
-  // reaching it needs a source deleted inside the microseconds between the
-  // probe hit and the rename's own scan, and that gap cannot be widened without
-  // perturbing the primitive.
-  //
-  // AND IT DOES NOT CLAIM THAT NOTHING MOVED. An older segment still present at
-  // `from` can have been relocated before the current one was found missing, so
-  // a `false` from here says only what the call tests: whether `cwd` now
-  // answers to this id.
-  return await hasResumableConversation({ cwd, sessionId: backingId });
-}
 
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
@@ -4708,52 +4425,58 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       cwd = worktreeMeta.worktreePath;
     }
 
-    // THE SESSION ROOT, and the point `cwd` stops meaning "the project's
-    // directory" for a remote project.
+    // A REMOTE PROJECT'S `cwd` IS ITS PATH ON ITS OWN SYSTEM, and that is the
+    // whole of criterion 8: one spelling per path, whichever tool names it.
     //
-    // Everything downstream of here reads `cwd` as the CLI's working directory:
-    // the resume pre-flight, the transcript path, the model recovery, the
-    // subprocess launch. On a remote project the project's directory is on
-    // another machine, so the CLI's cwd is a cc-owned local session root
-    // holding only the config surface the CLI reads implicitly. `systemCwd`
-    // keeps the other half — the tree the shell and the file bridge address.
+    // It used to be a cc-owned local session root holding a pulled copy of the
+    // config surface the CLI reads implicitly, with `systemCwd` keeping the
+    // other half. Under the FUSE-union chroot the CLI runs INSIDE the project's
+    // real tree, so `cwd` and the shell's cwd are the same string and there is
+    // no second coordinate system to keep.
     let redirectPlacement: RedirectPlacement | null = null;
-    let composedMirror: ComposedSessionRoot | null = null;
+    let mirrorScopeForSession: MirrorScope | null = null;
+    let mirrorInert: string[] = [];
     if (remote) {
-      const systemCwd = cwd;
       redirectPlacement = {
         system: proj.system as RedirectableSystem,
         systemId: proj.system.id,
-        systemPath: systemCwd,
+        systemPath: cwd,
         project,
         worktree: worktreeMeta?.worktreeName ?? null,
       };
-      // Composed BEFORE the refusal below, because the rules that refusal reads
-      // are the project's own `.claude/settings*.json` — which only exist
-      // locally once they have been pulled.
+      // THE MIRROR ADVERTISEMENT, resolved here because its answer may be
+      // "there should not be a session here at all" — and because
+      // `composeSessionRoot`, which used to ask, is gone. What it decides has
+      // changed shape but not job: `mirrorRoot` is no longer the far end of a
+      // prefix rule over a local image, it is the boundary of the union's
+      // REMOTE TIER, and `exclude` is what that tier must not serve.
       //
-      // launch() composes again, and that is not redundant to remove: this call
-      // is the only one on the CREATE path that can still refuse, and launch()
-      // is the only one that covers a relaunch (rewind, respawn, resume after a
-      // restart) which never comes back through here. The second pass is a
-      // manifest hit — one `find`, no transfers.
-      // `.cwd`, NOT `.root`: the CLI works in the project's place inside the
-      // image, which is the image root itself unless the provider advertises a
-      // mirror wider than the project.
-      composedMirror = await composeSessionRoot(redirectPlacement);
-      cwd = composedMirror.cwd;
+      // ONE round trip per connection generation (ProviderSystem memoises it),
+      // and NONE AT ALL for a provider that does not advertise the capability —
+      // whose absent-behaviour now means "the narrowest mirror root", the
+      // project's own path.
+      const { scope: mirrorScope, inert: mirrorNotes } = resolveMirrorScope({
+        systemId: proj.system.id, project, systemPath: cwd,
+        advertisement: await proj.system.mirror(),
+      });
+      mirrorScopeForSession = mirrorScope;
+      mirrorInert = mirrorNotes;
+
+      // READ THROUGH THE PROJECT'S SYSTEM HANDLE. These are the project's own
+      // `.claude/settings*.json`, and they live on the system — there is no
+      // local copy to stat any more.
       const sources = bashRuleSources(cwd);
       // FIRST, because it is the bigger failure: `disableAllHooks` turns the
       // entire redirect off, and a session that ran with it would execute the
       // worker's own commands on THIS machine while reporting the system.
-      const hooksOff = await findDisabledHooks(sources);
+      const hooksOff = await findDisabledHooks(sources, proj.system);
       if (hooksOff.length > 0) {
         throw Object.assign(
           new Error(hooksDisabledRefusal(proj.system.id, hooksOff)),
           { statusCode: 501, code: 'REDIRECT_HOOKS_DISABLED' },
         );
       }
-      const unenforceable = await findUnenforceableBashRules(sources);
+      const unenforceable = await findUnenforceableBashRules(sources, proj.system);
       if (unenforceable.length > 0) {
         throw Object.assign(
           new Error(bashRulesRefusal(proj.system.id, unenforceable)),
@@ -4772,25 +4495,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // crash, repeatably. Bailing here means no phantom crashed Instance is
     // registered, so a follow-up respawn_instance also soft-refuses cleanly.
     if (resume && !(await hasResumableConversation({ cwd, sessionId: resume }))) {
-      // BEFORE REFUSING, and on a remote project only. The gate above tested
-      // exactly one thing — that `cwd` holds no resumable conversation for this
-      // id — and a mirror advertisement that MOVED while this session was not
-      // running is one reason for that answer, alongside a bogus id and a
-      // session that has no conversation yet. So look for this session at the
-      // other cwds its geometry could have produced before refusing: that is
-      // what makes a cold resume — after an orchestrator restart, or of a
-      // session that is simply no longer running — survive a move the live
-      // relaunch path already survives (card 2026-0279 → card 2026-0287).
-      // Finding nothing leaves this refusal, and its message, exactly as they
-      // were.
-      const placement = redirectPlacement;
-      const composed = composedMirror;
-      const followed = placement !== null && composed !== null
-        && await followGeometryOnResume({
-          systemId: placement.systemId, systemPath: placement.systemPath,
-          root: composed.root, cwd, backingId: resume, publicId,
-        });
-      if (!followed) {
+      // NO GEOMETRY FOLLOW any more, and nothing to follow to. A remote
+      // session's cwd is the project's path on its system, which is fixed for
+      // the life of the registration — so the search space a moved mirror
+      // advertisement used to create is empty, and this refusal is the whole
+      // answer again.
+      {
         throw Object.assign(
           new Error(`no resumable conversation for session ${resume} in ${cwd}`),
           { statusCode: 404, code: 'SESSION_UNKNOWN' },
@@ -4915,12 +4625,20 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // Attached BEFORE launch(): spawn() reads it to widen the injected hook
     // surface, and the hook broker reads it on every tool call.
     if (redirectPlacement) {
-      // Set in the same block as the placement, twenty lines up. A hard throw
-      // rather than a cast: a redirect attached without the composed geometry
-      // would map every path against the wrong root, which is the silent
-      // wrong-machine failure this whole module exists to prevent.
-      if (composedMirror === null) throw new Error('cc: a remote placement reached attachRedirect with no composed session root');
-      const composed: ComposedSessionRoot = composedMirror;
+      // Diagnostics that are not refusals — an advertised exclude that sits
+      // outside the mirror root has no effect, and an operator who wrote it
+      // should hear so. They surface on the session's own stream because that
+      // is where the rest of this subsystem's non-fatal news goes.
+      for (const line of mirrorInert) {
+        inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line: `systems: ${line}` } });
+      }
+      // PINNED FOR THE SESSION. The advertisement is read once, at create, and
+      // a relaunch re-reads it only to refuse when it MOVED — see launch(). The
+      // machinery that used to follow a moved advertisement to a new local
+      // geometry is deleted rather than ported: there is no local geometry to
+      // move to any more, and a session whose remote tier silently changed
+      // shape mid-life is a worse outcome than a named refusal.
+      inst._mirrorScope = mirrorScopeForSession;
       const localRoots = [
         attachmentsDir(project, worktreeMeta?.worktreeName ?? null),
         sessionTmpDir(id),
@@ -4932,33 +4650,12 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         system: redirectPlacement.system,
         systemId: redirectPlacement.systemId,
         systemPath: redirectPlacement.systemPath,
-        // The IMAGE root, which is what the prefix rule is anchored on;
-        // `inst.cwd` is the project's directory inside it and the redirect
-        // derives that itself from the offset.
-        sessionRoot: composed.root,
-        mirror: composed.mirror,
         forwarderUrl: this.bashForwardUrl(id) ?? '',
-        // The LOCAL paths a file tool may legitimately name on a remote
-        // project. Anything else outside the session root is refused, because a
-        // file written there lands on the orchestrator's machine where no
-        // command on the system can ever see it.
-        //
-        // SPECIFIC PATHS, NEVER THE STORE ROOT. Granting `orchStoreRoot()`
-        // granted a worker read AND write over cc's entire store: `settings.json`,
-        // `conventions/*.json`, every other project's `project.json` and pulled
-        // session roots, every session sidecar, `shell-env` bundles, plugin
-        // manifests, and other sessions' task output. Each entry below is one a
-        // session needs BY NAME:
-        //   * this project's (or worktree's) attachments dir — a local file the
-        //     user handed this session, referenced by absolute path in the prompt
-        //     (S24). Scoped to the owner, so one project's attachments are not
-        //     another's.
-        //   * this session's own tmp root — where its backgrounded commands'
-        //     task output lands (see spawn()). Per instance id, which is what
-        //     makes the guarantee stated there true rather than asserted.
-        //   * the CLI's own home (plans, user settings) and the transcript root.
-        //   * cc-managed Claude Code plugin roots (S22).
-        localRoots,
+        // NO `localRoots` any more: they were the local paths a FILE TOOL could
+        // legitimately name on a remote project, and no file tool is hooked. The
+        // same list still exists — it seeds the union's host tier (see
+        // `localRoots` above and src/systems/fuse/tierTable.ts), which is where
+        // "these specific paths are the orchestrator's" now gets decided.
         emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
       }), redirectPlacement);
       // The FUSE-union chroot, attached in the same block and gated on the same
@@ -4974,6 +4671,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
             instanceId: id,
             cwdInside: cwd,
             systemPath: redirectPlacement.systemPath,
+            mirrorRoot: mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath,
             standInSource: resolveMirrorStandIn(redirectPlacement.systemPath),
             localRoots,
             claudeCommand: resolveClaudeBin().command,

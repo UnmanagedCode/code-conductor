@@ -1,4 +1,4 @@
-// THE MIRROR SCOPE: how much of a system's filesystem the session root is the
+// THE MIRROR SCOPE: how much of a system's filesystem the union's remote tier is the
 // local image of, and which parts of it cc will not carry.
 //
 // A provider ADVERTISES `{mirrorRoot, exclude}` per target (`describeRemote`,
@@ -10,7 +10,7 @@
 // own reason rather than one cc invented.
 //
 // ONE CONTAINMENT PREDICATE serves the map, the exclude list and the validation
-// (`withinPosix`), and it lives here rather than in sessionRoot.ts because all
+// (`withinPosix`), and it lives here rather than in the tier table because all
 // three readers are about the mirror. Containment is decided with
 // path.relative, never a string prefix: a prefix test claims a merely
 // prefix-SHARING sibling (`/app-backup` under `/app`) is inside.
@@ -29,19 +29,19 @@ export interface MirrorAdvertisement {
 
 export const NO_ADVERTISEMENT: MirrorAdvertisement = { mirrorRoot: null, exclude: [] };
 
-// The resolved geometry for one session. `offset` is the project's place INSIDE
-// the mirror root — '' when the two are equal, which is the whole of the
-// no-advertisement fallback.
+// The resolved geometry for one session. There is no `offset` any more: it was
+// the project's place inside a LOCAL image of the mirror root, and the union
+// serves the system's own paths, so the project is at its own path and nowhere
+// else.
 export interface MirrorScope {
   mirrorRoot: string;
   exclude: string[];
-  offset: string;
 }
 
 // The scope a project gets when nothing was advertised. Named, and the only
 // spelling of it, so the fallback cannot drift into two forms.
 export function noMirror(systemPath: string): MirrorScope {
-  return { mirrorRoot: systemPath, exclude: [], offset: '' };
+  return { mirrorRoot: systemPath, exclude: [] };
 }
 
 // '' when equal, the relative path when inside, null when outside — in the
@@ -158,8 +158,9 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
   if (advertisement.mirrorRoot === null) return { scope: noMirror(systemPath), inert: [] };
   const mirrorRoot = advertisement.mirrorRoot;
 
-  const offset = withinPosix(systemPath, mirrorRoot);
-  if (offset === null) {
+  // Containment, not an offset: what the project needs from the advertised
+  // root is that the root CONTAINS it, and where inside no longer matters.
+  if (withinPosix(systemPath, mirrorRoot) === null) {
     throw httpError(501,
       `project '${project}' is at '${systemPath}' on system '${systemId}', but that system advertises `
       + `'${mirrorRoot}' as its mirror root, which does not contain the project. cc will not narrow the `
@@ -189,65 +190,9 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
       inert.push(`system '${systemId}' excludes '${e}', which is outside its mirror root '${mirrorRoot}' — no effect`);
     }
   }
-  return { scope: { mirrorRoot, exclude: advertisement.exclude, offset }, inert };
+  return { scope: { mirrorRoot, exclude: advertisement.exclude }, inert };
 }
 
-// EVERY OFFSET a project at `systemPath` can occupy inside its session-root
-// image — one per mirror root a provider could legally advertise for it.
-//
-// COMPLETE, which is what makes it usable as a SEARCH SPACE rather than a
-// guess: the legal roots for a fixed `systemPath` are exactly its ANCESTOR
-// CHAIN, because `resolveMirrorScope` above refuses 501
-// MIRROR_ROOT_EXCLUDES_PROJECT for any root that does not contain the project,
-// and a provider that advertises nothing gets `noMirror(systemPath)` — offset
-// ''. So no advertisement can put a session at a cwd outside
-// `path.join(<image root>, <one of these>)` — measured, including for the
-// non-normal `systemPath`s below (round-tripped against `resolveMirrorScope` in
-// tests/systems-mirror-advertisement.test.mjs).
-//
-// COMPLETE, NOT EXACT, and only the first is a contract. These are the raw
-// segment-suffixes of `systemPath` AS GIVEN, while `resolveMirrorScope` returns
-// `path.posix.relative`'s NORMALISED answer — and a `systemPath` is not
-// required to be in normal form (`validatePlacementInput`, src/projects.ts,
-// checks only that it is absolute). So for `/a/./b/proj` this yields both
-// `b/proj` and `./b/proj`, which `path.join` collapses onto ONE directory, and
-// for `/a/../b/proj` it yields `../b/proj`, which joins to a directory OUTSIDE
-// the image root. Neither is a defect for a caller that only PROBES: a
-// duplicate is one place looked at twice, and a cwd no advertisement can
-// produce is one no session can have run in, so it cannot answer.
-//
-// ORDER IS ARBITRARY — '' comes out FIRST, since `i === segs.length` slices the
-// empty suffix — AND CALLERS MAY NOT DEPEND ON EITHER FACT. But what licenses a
-// scan over these to STOP AT ITS FIRST HIT (the create path's does) is not the
-// candidates being distinct either — `encodeCwd` maps `_` and `/` alike to `-`,
-// so distinct paths do not imply distinct transcript directories. It is a STATE
-// INVARIANT, and it is CONDITIONAL: at most one candidate answers a
-// `hasResumableConversation` probe for one id, so whichever the scan stops at,
-// `sessionFilePath(candidate, id)` is the same file.
-//
-// TWO THINGS HOLD THAT INVARIANT UP, and an editor needs both.
-//  1. cc relocates a whole LINEAGE OUT OF A SINGLE SOURCE cwd — both movers
-//     (`Instance._followGeometry` and the create path's recovery), so nothing cc
-//     does leaves one id answering at two candidates. This is the load-bearing
-//     half: given it, the licence holds outright.
-//  2. THE PRE-FLIGHT GATE, which is defence in depth rather than the
-//     complementary half: the create path's scan runs only where `cwd` itself
-//     does NOT answer. That does not exclude every two-candidate state, but it
-//     does exclude the one that costs a live transcript — a stale copy at a
-//     shallower candidate while `cwd` holds the live one, where stopping at the
-//     first hit renames the stale copy over it. Measured, with the gate removed.
-//
-// So: add a candidate that could name a DIFFERENT directory answering to one
-// id, or move a scan out of that gate, and the `break` becomes order-dependent.
-// The gate arm in tests/systems-mirror-geometry-cold-resume.test.mjs plants the
-// violating state and is what catches the second of those; nothing else in this
-// file would say so (card 2026-0287).
-export function mirrorOffsets(systemPath: string): string[] {
-  const segs = systemPath.split(path.posix.sep).filter(Boolean);
-  const out: string[] = [];
-  for (let i = segs.length; i >= 0; i--) out.push(segs.slice(i).join(path.posix.sep));
-  return out;
-}
 
 // ── The refusal a worker reads mid-task ──────────────────────────────
 

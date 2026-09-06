@@ -139,8 +139,15 @@ export interface TierTableInput {
   // This session's scaffolding — hidden, so the union never serves its own
   // backing store through the host fallback.
   runDir: string;
-  // The project's real path ON ITS SYSTEM. Remote only, no fallback.
+  // The project's real path ON ITS SYSTEM.
   systemPath: string;
+  // THE REMOTE TIER'S BOUNDARY — how much of the system this session may see
+  // served from the system rather than from the host. It is the project's own
+  // path whenever the provider advertises nothing, which is the common case and
+  // the narrowest answer; a provider that advertises a wider `mirrorRoot` moves
+  // this outwards. Remote only, no host fallback, which is why it is the
+  // advertisement's job to be right about it (src/systems/mirror.ts).
+  mirrorRoot: string;
 }
 
 // The common ancestor of two absolute paths, or null when they share nothing
@@ -196,6 +203,11 @@ export function buildTierTable(input: TierTableInput): TierEntry[] {
   // Longest prefix wins, so this overrides the store/projects-root host pins
   // above and the union never serves its own scaffolding.
   add('hide', input.runDir, "this session's own mount scaffolding");
+  // THE REMOTE TIER'S BOUNDARY first, the project inside it second. Both are
+  // `project`, and longest-prefix means the project's own entry wins where they
+  // differ; naming both keeps a wider advertised root remote-only rather than
+  // letting the space between it and the project fall to the host.
+  add('project', input.mirrorRoot, "the system's advertised mirror root — remote only, no host fallback");
   add('project', input.systemPath, 'the project tree at its real remote path');
 
   // First occurrence of a prefix wins: a duplicate is a second spelling of an

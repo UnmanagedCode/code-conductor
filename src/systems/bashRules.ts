@@ -2,7 +2,7 @@
 // refusals that keep either from happening quietly.
 //
 // Both are read from the SAME files at the SAME moment — before the CLI is
-// launched, after the session root has been composed — because both are
+// launched — because both are
 // questions about settings the CLI is about to obey and cc cannot override.
 //
 //   1. A `Bash(...)` permission rule, which the forwarder rewrite makes
@@ -11,7 +11,7 @@
 //
 // THE SECOND IS THE WORSE ONE. Measured against 2.1.250 with cc's exact settings
 // shape: with the key present the PreToolUse hook fires zero times and the
-// WORKER'S OWN command runs — on the orchestrator's machine, in the session root
+// WORKER'S OWN command runs — on the orchestrator's machine, in the CLI's cwd
 // — while every result tells the worker it ran on the system. The write-back
 // dies with it. And it does NOT disable `permissions.*`, so cc's injected denies
 // still fire and nothing anywhere fails loudly: the session silently diverges,
@@ -51,6 +51,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { System } from './system.ts';
 
 export interface UnenforceableRule { rule: string; source: string }
 
@@ -74,20 +75,25 @@ const BASH_PATTERN_RULE = /^Bash\(.*\)$/;
 // absent file.
 const MANAGED_POLICY_PATH = '/etc/claude-code/managed-settings.json';
 
+// Which machine a settings file lives on. The project pair are on the SYSTEM —
+// there is no local copy of them any more, so they are read through the
+// project's System handle; the user and managed layers are the orchestrator's
+// own, and are read locally.
+export type SettingsScope = 'project' | 'host';
+export interface SettingsSource { path: string; scope: SettingsScope }
+
 // The settings files cc can see for a redirected session, in the CLI's own
-// precedence order. The project pair are the copies cc PULLED from the system
-// into the session root, so they are the project's real rules rather than a
-// guess.
+// precedence order.
 //
 // `flagSettings` — the CLI's own `--settings` argument — is deliberately absent:
 // that one is cc's, built by src/settings.ts, and cc does not put Bash rules or
 // `disableAllHooks` in it.
-export function bashRuleSources(sessionRoot: string): string[] {
+export function bashRuleSources(projectDir: string): SettingsSource[] {
   return [
-    path.join(sessionRoot, '.claude', 'settings.local.json'),
-    path.join(sessionRoot, '.claude', 'settings.json'),
-    path.join(os.homedir(), '.claude', 'settings.json'),
-    MANAGED_POLICY_PATH,
+    { path: path.join(projectDir, '.claude', 'settings.local.json'), scope: 'project' },
+    { path: path.join(projectDir, '.claude', 'settings.json'), scope: 'project' },
+    { path: path.join(os.homedir(), '.claude', 'settings.json'), scope: 'host' },
+    { path: MANAGED_POLICY_PATH, scope: 'host' },
   ];
 }
 
@@ -96,9 +102,12 @@ export function bashRuleSources(sessionRoot: string): string[] {
 // project settings at all, and a file cc cannot parse is the CLI's to complain
 // about — blocking a session over it would refuse for a fault that is not this
 // one.
-async function readSettings(source: string): Promise<Record<string, unknown> | null> {
+async function readSettings(source: SettingsSource, system: System): Promise<Record<string, unknown> | null> {
   try {
-    const parsed = JSON.parse(await fs.readFile(source, 'utf8')) as unknown;
+    const raw = source.scope === 'project'
+      ? (await system.readFileBytes(source.path)).toString('utf8')
+      : await fs.readFile(source.path, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
     return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
   } catch { return null; }
 }
@@ -106,11 +115,11 @@ async function readSettings(source: string): Promise<Record<string, unknown> | n
 // Every scanned file that turns hooks off outright. Only `true` counts: the key
 // present-and-false says hooks are ON, and refusing on it would block a session
 // whose settings agree with cc.
-export async function findDisabledHooks(sources: string[]): Promise<string[]> {
+export async function findDisabledHooks(sources: SettingsSource[], system: System): Promise<string[]> {
   const out: string[] = [];
   for (const source of sources) {
-    const parsed = await readSettings(source);
-    if (parsed?.disableAllHooks === true) out.push(source);
+    const parsed = await readSettings(source, system);
+    if (parsed?.disableAllHooks === true) out.push(source.path);
   }
   return out;
 }
@@ -118,13 +127,13 @@ export async function findDisabledHooks(sources: string[]): Promise<string[]> {
 // Which of the CLI's settings layers a source is, in words. The path alone does
 // not say: `/etc/claude-code/managed-settings.json` is ADMIN-OWNED, so "remove
 // the setting" is advice the operator reading the refusal may have no power to
-// act on, and the two project files are copies cc pulled off the system rather
-// than anything on this machine.
+// act on, and the two project files live on the SYSTEM rather than on this
+// machine.
 function layerLabel(source: string, systemId: string): string {
   if (source === MANAGED_POLICY_PATH) return 'managed policy — admin-owned, so an administrator has to change it';
   if (source.startsWith(path.join(os.homedir(), '.claude') + path.sep)) return 'your user settings';
-  if (source.endsWith('settings.local.json')) return `project local settings, pulled from '${systemId}'`;
-  return `project settings, pulled from '${systemId}'`;
+  if (source.endsWith('settings.local.json')) return `project local settings, on '${systemId}'`;
+  return `project settings, on '${systemId}'`;
 }
 
 // One line per offending file: the path, because the repair is to edit it, and
@@ -152,17 +161,17 @@ export function hooksDisabledRefusal(systemId: string, sources: string[]): strin
 // installs have no project settings at all, and a file cc cannot read is the
 // CLI's to complain about — refusing a spawn over it would block sessions for a
 // fault that is not this one.
-export async function findUnenforceableBashRules(sources: string[]): Promise<UnenforceableRule[]> {
+export async function findUnenforceableBashRules(sources: SettingsSource[], system: System): Promise<UnenforceableRule[]> {
   const out: UnenforceableRule[] = [];
   for (const source of sources) {
-    const parsed = await readSettings(source);
+    const parsed = await readSettings(source, system);
     const perms = parsed?.permissions;
     if (!perms || typeof perms !== 'object') continue;
     for (const bucket of ['deny', 'ask'] as const) {
       const list = (perms as Record<string, unknown>)[bucket];
       if (!Array.isArray(list)) continue;
       for (const rule of list) {
-        if (typeof rule === 'string' && BASH_PATTERN_RULE.test(rule)) out.push({ rule, source });
+        if (typeof rule === 'string' && BASH_PATTERN_RULE.test(rule)) out.push({ rule, source: source.path });
       }
     }
   }

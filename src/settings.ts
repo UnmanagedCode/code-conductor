@@ -30,20 +30,23 @@ export const AWAITING_INPUT_MESSAGE =
 // so the model can explore freely without a prompt per call.
 const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 
-// A session on a REMOTE system hooks three tools more. `Read` is not ask-gated
-// — the broker keeps that distinction — but its bytes have to be fetched from
-// the system before the CLI opens the file, which only a PreToolUse hook can
-// do. `Glob` and `Grep` are here as the SECOND guard described below.
-const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Read|Glob|Grep`;
+// A session on a REMOTE system hooks two tools more, and NOT `Read`: its bytes
+// used to have to be fetched from the system before the CLI opened the file,
+// and under the union mount they are simply there. `Glob` and `Grep` are here
+// as the SECOND guard described below.
+const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Glob|Grep`;
 
-// The write-back and the output annotation. cc has never injected a PostToolUse
-// hook before: it is what carries an Edit's local result back to the system and
-// what attaches the note saying where it landed.
+// REGISTERED WITH NO CONSUMER TODAY, AND DELIBERATELY SO — do not delete it as
+// dead. It used to carry an Edit's local result back to the system. The union
+// writes through, so there is nothing to carry; but S3's lazy per-open mirror
+// pushes at `release`, which can fail AFTER the tool has already returned
+// success, and this is the only seam that can put that failure in front of the
+// worker in band. `SessionRedirect.postToolUse` says the same at its end.
 const REDIRECT_POST_TOOL_MATCHER = ASK_GATED_TOOL_MATCHER;
 
 // The two tools that read the filesystem and CANNOT be redirected: a PreToolUse
 // hook rewrites input, and there is no channel to substitute a result, so a
-// Glob or a Grep would answer about cc's session root — a directory holding the
+// Glob or a Grep would answer about the orchestrator's own filesystem — the
 // project's config surface and nothing else. Answering about the wrong machine
 // is the leak that costs a worker its trust in every other tool result; the
 // model falls back to `find`/`grep` through the redirected Bash unprompted,
@@ -90,15 +93,15 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
   if (redirect) out.permissions = { deny: REDIRECT_DENIED_TOOLS };
   // THE CLI'S DYNAMIC GIT INSTRUCTIONS, off for a redirected session.
   //
-  // The CLI derives them from its OWN cwd, which for a redirected session is
-  // cc's session root — a cc-owned directory holding the project's config
-  // surface and nothing else. The guidance it produces therefore describes the
-  // wrong repository, and if the store happens to sit inside a git repo it
-  // describes cc's repo to a worker whose project is on another machine.
+  // The original reason no longer holds: the CLI's cwd was a cc-owned session
+  // root, so the guidance described the wrong repository. Under the chroot the
+  // cwd IS the project's tree, with its real `.git`.
   //
-  // Per session, which is the point: cc's only other defence is
-  // assertSessionRootsPlaceable, and that refuses at REGISTRATION — a store
-  // moved under a repo afterwards would poison every later session.
+  // IT STAYS OFF, on a different reason. The CLI shells out to run that git
+  // itself, unmarked and outside cc's remote-forwarded Bash tool — and the
+  // union's project tier has NO host side by design (union.c:903-909), so an
+  // unmarked caller there gets the remote's copy or `-ENOENT`, never a usable
+  // working tree. Guidance derived from that is worse than none.
   //
   // Chosen over CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: 2.1.250 reads that var as
   // `e !== undefined ? !e : settings.includeGitInstructions ?? true`, so "0"
