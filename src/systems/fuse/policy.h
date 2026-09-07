@@ -572,14 +572,26 @@ static inline int policy_is_marked_tid(pid_t tid)
  * able to invalidate it. What a hit removes is the control ROUND TRIP; the
  * local fstatat a hit still performs is the cheap half.
  *
- * THE KEY IS (tgid, path) AND THE tgid IS LOAD-BEARING. The cache is consulted
- * BEFORE the mark check, so it is the tgid in the key — and nothing else — that
- * stops an unmarked caller being served a marked caller's resolution. Drop it
- * and criterion 6 is defeated by a cache rather than by any routing change.
+ * WHAT MAKES IT SAFE IS THE MARK CHECK IN FRONT OF IT, NOT THE KEY. `mark_of`
+ * re-reads /proc field 22 on every call and evicts a thread group whose start
+ * time has moved, so it is the only thing in this file that can tell a marked
+ * process from the pid that replaced it — and it touches no cache entry when it
+ * does. A lookup placed ahead of it therefore serves a recycled tgid the mark
+ * it no longer holds, which is criterion 6 defeated by a cache. The mark check
+ * runs first, unconditionally, on every op.
  *
- * FILLED ONLY FOR MARKED CALLERS: the fill happens past the mark check, so an
- * unmarked caller's denial is never written back and the mark's arrival is
- * visible on the next op rather than one TTL later.
+ * WHAT THE HIT THEN SAVES IS THE CONTROL ROUND TRIP, which is the expensive
+ * half; the /proc read the mark check costs was never what the cache was for.
+ *
+ * THE tgid STAYS IN THE KEY, and what it buys is narrower than it looks: past
+ * the mark check every caller that reaches the lookup is marked, and cc's
+ * handler is caller-blind, so two marked callers get the same answer anyway.
+ * It keeps an entry from outliving the thread group it was resolved for, and it
+ * costs one hash mix. It is NOT what stops an unmarked caller being served.
+ *
+ * FILLED ONLY FOR MARKED CALLERS, for the same reason: an unmarked caller's
+ * denial is never written back, so the mark's arrival is visible on the next op
+ * rather than one TTL later.
  *
  * FETCH NEVER CONSULTS IT — an open always revalidates, so freshness at open is
  * exact and S3's per-open revalidate inherits an exact contract rather than a
@@ -897,21 +909,29 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 	pid_t tgid = policy_proc.tgid(tid);
 	int cached = 0, rc;
 
-	if (fop != (uint8_t)CCU_FETCH && cache_get(tgid, path, &cached))
-		return cached;
-
+	/*
+	 * FIRST, AND ON EVERY OP. `mark_of` re-reads field 22 and evicts a thread
+	 * group whose start time has moved, so this is the only step that can
+	 * tell the marked process from the pid that replaced it. Behind a cache
+	 * lookup it would be skipped on a hit and a recycled tgid would be served
+	 * the mark it no longer holds.
+	 */
 	if (!mark_of(tgid)) {
 		policy_refuse(op, path, "unmarked-project-denied");
 		return -ENOENT;
 	}
+
+	if (fop != (uint8_t)CCU_FETCH && cache_get(tgid, path, &cached))
+		return cached;
 
 	rc = fop ? ccu_call(fop, flags, path) : 0;
 	if (fop == (uint8_t)CCU_FETCH)
 		/*
 		 * A FETCH IS ALSO THE INVALIDATION, and it is the only one the
 		 * mutating ops need: every op that can change a file routes with
-		 * FETCH, and `cache_invalidate` clears the path AND its parent
-		 * across every tgid.
+		 * FETCH — including `setxattr` and `removexattr`, which look like
+		 * metadata reads and are not — and `cache_invalidate` clears the
+		 * path AND its parent across every tgid.
 		 *
 		 * It also closes a `stat`-says-no/`cat`-says-yes window that a
 		 * consult-skipping FETCH would otherwise leave open: a cached

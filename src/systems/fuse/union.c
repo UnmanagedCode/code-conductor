@@ -740,11 +740,34 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		if (strcmp(de->d_name, ".") != 0 && strcmp(de->d_name, "..") != 0) {
 			snprintf(child, sizeof(child), "%s%s%s",
 				 strcmp(path, "/") == 0 ? "" : path, "/", de->d_name);
-			/* the mountpoint and the union's own scaffolding. Without
-			 * this the union lists its own backing store, and a
-			 * dirent that cannot be stat'd is its own tell. */
-			if (tier_of(child) == T_HIDE)
-				continue;
+			/*
+			 * WHAT A REAL DIRECTORY MAY NOT LIST, and both halves
+			 * are the same rule policy_synth_children applies to a
+			 * synthetic one:
+			 *   T_HIDE  the mountpoint and the union's own
+			 *           scaffolding. Without this the union lists
+			 *           its own backing store, and a dirent that
+			 *           cannot be stat'd is its own tell.
+			 *   T_FAIL  a name whose every op answers -ENOENT.
+			 *           Listing it would put `ls` and `cat` in
+			 *           disagreement about whether a file exists,
+			 *           from one caller — the defect this
+			 *           filesystem exists to remove.
+			 *
+			 * THE SECOND ONE IS BELT AND BRACES, and is stated as
+			 * such rather than claimed as the guard: cc's control
+			 * server filters an excluded child out of `LIST` before
+			 * shaping it (control.ts `#servable`), so the mirror
+			 * does not hold one for this loop to find. It is here
+			 * because the tier table is the daemon's own answer to
+			 * "may this name be seen", and a directory it serves
+			 * should not depend on cc having filtered first.
+			 */
+			{
+				enum tier ct = resolve_class(child);
+				if (ct == T_HIDE || ct == T_FAIL)
+					continue;
+			}
 		}
 		memset(&st, 0, sizeof(st));
 		st.st_ino  = de->d_ino;
@@ -1070,7 +1093,13 @@ static off_t pt_lseek(const char *path, off_t off, int whence,
 /* xattr: reported through the routed tier, so a caller that consults them sees
  * the real answer of the tier that owns the file rather than a synthetic
  * ENOTSUP -- and never the other tier's. A synthetic node has no xattrs of its
- * own and must not borrow the host directory's. */
+ * own and must not borrow the host directory's.
+ *
+ * THE TWO THAT MUTATE ROUTE WITH `FETCH`, NOT `STAT`, and that is not
+ * symmetry for its own sake: `FETCH` is where the resolution cache is
+ * invalidated, and the rule "every op that can change a file passes that
+ * point" is asserted as an ENUMERATION. `setxattr` and `removexattr` read like
+ * metadata queries and change the file; `getxattr` and `listxattr` do not. */
 static void abspath(const struct route *r, const char *path, char *out, size_t n)
 {
 	const char *root = (r->fd == remote_fd) ? remote_root : host_root;
@@ -1080,7 +1109,7 @@ static void abspath(const struct route *r, const char *path, char *out, size_t n
 static int pt_setxattr(const char *path, const char *name, const char *value,
 		       size_t size, int flags)
 {
-	ROUTE("setxattr", path, 0, CCU_STAT);
+	ROUTE("setxattr", path, 0, CCU_FETCH);
 	(void)rp;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
 	char abs[PATH_MAX];
@@ -1112,7 +1141,7 @@ static int pt_listxattr(const char *path, char *list, size_t size)
 
 static int pt_removexattr(const char *path, const char *name)
 {
-	ROUTE("removexattr", path, 0, CCU_STAT);
+	ROUTE("removexattr", path, 0, CCU_FETCH);
 	(void)rp;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
 	char abs[PATH_MAX];

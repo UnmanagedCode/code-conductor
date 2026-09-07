@@ -334,13 +334,13 @@ static void b10_cache_key(void)
 	CHECK(policy_project_route("getattr", "/srv/app/f", 1000, CCU_STAT, 0) == 0, "A again");
 	CHECK(xport_calls == 1, "A's second op was a cache HIT — no second control call");
 
-	/* THE CRITERION, not just the key: B is unmarked, and the cache is
-	 * consulted BEFORE the mark check, so only the tgid in the key stops B
-	 * being handed A's warmed resolution. */
+	/* THE CRITERION: B is unmarked and there is a warm entry for the very
+	 * path it asks about. */
 	CHECK(policy_project_route("getattr", "/srv/app/f", 2000, CCU_STAT, 0) == -ENOENT,
 	      "B is denied despite A's warm entry for the same path");
 
-	/* The raw key, so the mechanism is pinned as well as its consequence. */
+	/* The raw key. It keeps an entry from outliving the thread group it was
+	 * resolved for; it is NOT what stops an unmarked caller being served. */
 	{
 		int err = -1;
 		CHECK(cache_get(1000, "/srv/app/f", &err) == 1, "A's entry is in the cache");
@@ -361,6 +361,27 @@ static void b10_cache_key(void)
 	/* …and it invalidates, so a stat cannot answer from before the fetch. */
 	CHECK(policy_project_route("getattr", "/srv/app/f", 1000, CCU_STAT, 0) == 0, "the next stat");
 	CHECK(xport_calls == 4, "re-asks, because the FETCH invalidated the entry");
+
+	/*
+	 * AND THE CASE THE KEY CANNOT COVER, which is what puts the mark check in
+	 * FRONT of the lookup: A's pid is RECYCLED while A's own entry is still
+	 * warm. The successor has A's tgid, so it matches the key exactly; only
+	 * `mark_of`'s field-22 re-read can tell it apart, and only if it runs
+	 * first. Dies the moment the lookup is moved ahead of the mark check.
+	 */
+	{
+		int e = -1;
+		CHECK(cache_get(1000, "/srv/app/f", &e) == 1, "A's entry is still warm");
+		proc_set(1000, 1000, 999);        /* pid 1000 is now a different process */
+		CHECK(policy_project_route("getattr", "/srv/app/f", 1000, CCU_STAT, 0) == -ENOENT,
+		      "a RECYCLED tgid was served the mark's warm entry");
+		CHECK(cache_get(1000, "/srv/app/f", &e) == 1,
+		      "and the entry is untouched — the mark check, not eviction, is what refused it");
+		/* The eviction is permanent for this tgid, which is why this arm
+		 * is last: a re-mark would be a different measurement. */
+		CHECK(policy_is_marked_tid(1000) == 0, "and the mark itself is gone, once");
+	}
+
 }
 
 /* ── B11: the frame codec ───────────────────────────────────────────────── */
@@ -461,6 +482,59 @@ static void b12_errno(void)
 	CHECK(ccu_call(CCU_STAT, 0, "/srv/app/f") == -EIO, "and so is no transport at all");
 }
 
+/*
+ * ── B14: the control failures each name themselves in the refusal log ─────
+ *
+ * R4 asserts the ABSENCE of `control-unavailable` and `control-refused` after a
+ * real turn, which is vacuously true if neither is ever written. These are the
+ * matching presence assertions, and they also pin that the THREE cases are
+ * distinguished: the pin list is derived from this log, and "the remote does
+ * not have it" is a different finding from "cc would not carry it" and from
+ * "cc could not be reached".
+ */
+static void b14_control_reasons(void)
+{
+	char tmpl[] = "/tmp/cc-policy-ctlreasonsXXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[512];
+	int n_absent = 0, n_refused = 0, n_unavail = 0, n_unmarked = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	refusal_fp = fdopen(fd, "w+");
+	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+
+	pin("project\t/srv/app");
+	anc_build();
+	proc_set(4000, 4000, 77);
+	policy_mark_tid(4000);
+
+	canned_reply(CCU_ABSENT, 0);
+	CHECK(policy_project_route("getattr", "/srv/app/a", 4000, CCU_STAT, 0) == -ENOENT, "ABSENT denies");
+	canned_reply(CCU_REFUSED, 0);
+	CHECK(policy_project_route("getattr", "/srv/app/b", 4000, CCU_STAT, 0) == -EACCES, "REFUSED denies");
+	xport_fail = 1;
+	CHECK(policy_project_route("getattr", "/srv/app/c", 4000, CCU_STAT, 0) == -EIO, "a dead channel denies");
+	xport_fail = 0;
+	/* And the unmarked denial, whose reason R2 reads at the real gate. */
+	proc_set(5000, 5000, 88);
+	CHECK(policy_project_route("getattr", "/srv/app/d", 5000, CCU_STAT, 0) == -ENOENT, "unmarked denies");
+
+	rewind(refusal_fp);
+	while (fgets(line, sizeof(line), refusal_fp)) {
+		if (strstr(line, "\tremote-absent\n"))            n_absent++;
+		if (strstr(line, "\tcontrol-refused\n"))          n_refused++;
+		if (strstr(line, "\tcontrol-unavailable\n"))      n_unavail++;
+		if (strstr(line, "\tunmarked-project-denied\n"))  n_unmarked++;
+	}
+	CHECK(n_absent == 1, "ABSENT is logged as remote-absent (%d)", n_absent);
+	CHECK(n_refused == 1, "REFUSED is logged as control-refused (%d)", n_refused);
+	CHECK(n_unavail == 1, "a dead channel is logged as control-unavailable (%d)", n_unavail);
+	CHECK(n_unmarked == 1, "an unmarked caller is logged as unmarked-project-denied (%d)", n_unmarked);
+	fclose(refusal_fp);
+	refusal_fp = NULL;
+	unlink(tmpl);
+}
+
 /* ── B13: the refusal log records each (path, reason) exactly once ───────── */
 static void b13_refusals(void)
 {
@@ -549,6 +623,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b11-codec"))     b11_codec();
 	else if (!strcmp(c, "b12-errno"))     b12_errno();
 	else if (!strcmp(c, "b13-refusals"))  b13_refusals();
+	else if (!strcmp(c, "b14-reasons"))   b14_control_reasons();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
 
