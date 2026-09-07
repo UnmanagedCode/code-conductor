@@ -1077,9 +1077,24 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // NOT in the refusal log while the two paths under it are.
       const trace = await fs.readFile(tracePath, 'utf8').catch(() => '');
       const rows = trace.split('\n').filter(Boolean);
+      // THE TWO WAYS THIS CAN GO RED ARE DIFFERENT FINDINGS, so they are
+      // distinguished rather than collapsed. Nothing in the product turns the
+      // trace on, and it reaches the daemon only because `sudo -n -E` (wrap.ts
+      // → bootstrap.sh) PRESERVES CC_UNION_TRACE — a sudoers `env_reset`
+      // without a matching `env_keep` strips it, and the arm would then be
+      // reporting the host's configuration as a defect in the union. It is
+      // still an assertion and never a skip: a guard that skips when its
+      // instrument is missing is not a guard.
+      assert.ok(rows.length > 0,
+        'THE TRACE INSTRUMENT DID NOT RUN — CC_UNION_TRACE never reached the daemon, so this '
+        + 'assertion could not be made. This is a finding against the HOST, not the union: the '
+        + 'variable rides wrapLaunch\'s env through `sudo -n -E`, and sudoers may be stripping it '
+        + `(env_reset without env_keep). Expected rows at ${tracePath}.`);
       const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       assert.ok(rows.some(l => new RegExp(`^getattr\t${esc(proj)}\ttier=cwd .*\\bmark=0\\b`).test(l)),
-        `no unmarked tier=cwd row for ${proj}: ${rows.filter(l => l.includes(proj)).slice(-8).join(' | ')}`);
+        `THE DAEMON RAN AND EMITTED NO unmarked tier=cwd ROW for ${proj} — the exemption did not `
+        + `fire, or route() assigned another tier (${rows.length} rows traced): `
+        + rows.filter(l => l.includes(proj)).slice(-8).join(' | '));
       const refusals = await refusalsOf(inst.id);
       assert.deepEqual(refusals.filter(r => r[1] === proj && r[2] === 'unmarked-project-denied'), [],
         'the project root was refused to the unmarked caller after all');
@@ -1088,9 +1103,15 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
           `no unmarked-project-denied for ${denied}: ${JSON.stringify(refusals)}`);
       }
     } finally {
-      if (inst) await instances.remove(inst.id);
-      if (prevTrace === undefined) delete process.env.CC_UNION_TRACE;
-      else process.env.CC_UNION_TRACE = prevTrace;
+      // NESTED, so a throw from `remove` cannot leave CC_UNION_TRACE set for
+      // every arm after this one. Cross-arm env leakage is how a flake gets
+      // manufactured later.
+      try {
+        if (inst) await instances.remove(inst.id);
+      } finally {
+        if (prevTrace === undefined) delete process.env.CC_UNION_TRACE;
+        else process.env.CC_UNION_TRACE = prevTrace;
+      }
     }
     assertNoResidue(before, runRoot, null, 'R8');
   });

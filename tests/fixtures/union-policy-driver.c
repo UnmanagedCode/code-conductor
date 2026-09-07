@@ -815,9 +815,45 @@ static void b17_cwd_exempt(int argc, char **argv)
 	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + 2, "and its own pin's inode");
 	CHECK(policy_cwd_exempt("getattr", "/zzz-no-such-root-on-this-host/app", 500) == 1,
 	      "and it is exempt without the path existing");
+	CHECK(policy_cwd_getattr("/nowhere/at/all", &st) == -ENOENT,
+	      "a path carrying NO pin at all gets no cwd node either");
+	CHECK(policy_cwd_exempt("getattr", "/nowhere/at/all", 500) == 0,
+	      "and an unmarked caller is not exempted at one");
 	CHECK(xport_calls == calls,
-	      "NO FRAME AND NO CACHE ENTRY for any unmarked op: a mark arriving later "
-	      "is visible on the very next op (%d)", xport_calls);
+	      "NO CONTROL FRAME for any unmarked op (%d)", xport_calls);
+
+	/* AND NO CACHE ENTRY, ASSERTED RATHER THAN ASSUMED. `cache_put` is pure
+	 * in-process memory and never touches the transport, so `xport_calls`
+	 * alone cannot see one — an exemption implemented by routing through
+	 * ccu_call/cache_put would satisfy every check above.
+	 *
+	 * THE CACHE'S OWN KEY IS THE INSTRUMENT: it is (tgid, path), and
+	 * `policy_project_route` consults it for any op but FETCH. So an entry
+	 * written by an UNMARKED exempted getattr would be found by that SAME
+	 * thread group once marked, and would serve it with no round trip. One
+	 * tgid, one path, across the mark transition: FLAT means an entry
+	 * existed, +1 means none did. It is also why an unmarked denial is never
+	 * written back — a mark arriving later must be visible on the very next
+	 * op rather than one TTL after it. */
+	proc_set(700, 700, 333);
+	CHECK(policy_cwd_exempt("getattr", "/srv/app", 700) == 1,
+	      "a second unmarked thread group is exempted too");
+	policy_mark_tid(700);
+	CHECK(policy_project_route("getattr", "/srv/app", 700, CCU_STAT, 0) == 0,
+	      "and once MARKED it gets the routed answer");
+	CHECK(xport_calls == calls + 1,
+	      "which cost a control round trip — so the exemption wrote NO CACHE ENTRY "
+	      "the mark could then be served from (%d, expected %d)", xport_calls, calls + 1);
+	calls = xport_calls;
+	/* THE POSITIVE CONTROL, and without it the assertion above is a claim
+	 * about a mechanism that might not exist: an entry at (700, "/srv/app")
+	 * really does suppress the round trip. So the +1 is evidence there was
+	 * no entry, rather than evidence the cache never serves anything. */
+	CHECK(policy_project_route("getattr", "/srv/app", 700, CCU_STAT, 0) == 0,
+	      "the SAME marked route again is answered");
+	CHECK(xport_calls == calls,
+	      "from the cache, with no second round trip — which is what an entry "
+	      "written by the exemption would have done to the call above (%d)", xport_calls);
 
 	/* THE REFUSAL LOG: the two paths under the root are refused BY NAME, and
 	 * the root itself is not refused at all. */
@@ -847,7 +883,7 @@ static void b17_cwd_exempt(int argc, char **argv)
  * ruling's words are exact — every project-tier directory that is not the root
  * stays denied — so this is not widened here. It is a pre-existing gap in a
  * configuration the defect was never measured in (the default deduplicates to
- * one pin) and it has a follow-up card of its own.
+ * one pin), and it is tracked by card 2026-0375.
  */
 static void b18_cwd_wide_mirror(void)
 {

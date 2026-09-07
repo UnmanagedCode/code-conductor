@@ -246,6 +246,28 @@ describe('the compiled policy driver', { skip }, () => {
     assert.ok(routed.length > 20, `union.c's ops were not parsed: ${routed.length}`);
     assert.deepEqual([...new Set(routed)].sort(), [...NOT_EXEMPT_OPS, 'getattr'].sort(),
       'an op union.c routes is classified neither exempt nor not-exempt');
+
+    // AND THE DERIVATION CANNOT BE EVADED. The set above is read off LITERAL
+    // `ROUTE("…")` / `route("…")` call sites, so an op routed through a
+    // VARIABLE would be invisible to it and would join the allow-list's blind
+    // spot silently. Every non-literal call site is therefore enumerated here
+    // — the three structural ones — and a fourth FAILS, rather than a comment
+    // asking a future author to keep to the convention.
+    const STRUCTURAL = [
+      /^const char \*op, const char \*path, uint8_t cflags,/,   // route()'s own definition
+      /^op, p, cflags, fop\)/,                                  // the ROUTE macro's parameter list
+      /^op, p, cflags, fop, &r\);/,                             // and its body's forwarding call
+    ];
+    // The lookbehind keeps `policy_project_route(` and friends out: `_` is a
+    // word character, so there is no word boundary before `route` in them.
+    const sites = [...src.matchAll(/(?<![\w])(?:ROUTE|route)\((.{0,60})/gs)].map(m => m[1]);
+    assert.ok(sites.length > routed.length, `route() call sites were not parsed: ${sites.length}`);
+    const nonLiteral = sites.filter(t => !t.startsWith('"'));
+    for (const t of nonLiteral)
+      assert.ok(STRUCTURAL.some(re => re.test(t)),
+        `union.c routes an op through a NON-LITERAL name, so the allow-list cannot see it: route(${t}`);
+    assert.equal(nonLiteral.length, STRUCTURAL.length,
+      `expected exactly ${STRUCTURAL.length} structural route( sites, got ${nonLiteral.length}`);
     // …and every one of them is actually refused by the predicate.
     const r = await run(bin, ['b17-cwd-exempt', ...NOT_EXEMPT_OPS]);
     assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
@@ -264,23 +286,34 @@ describe('the compiled policy driver', { skip }, () => {
   test('route() asks the exemption and pt_getattr dispatches T_CWD before SYNTHETIC', async () => {
     const src = await fs.readFile(UNION_C, 'utf8');
     assert.match(src, /policy_cwd_exempt\(op, path, \(pid_t\)fuse_get_context\(\)->pid\)\)\s*\{\s*\n\s*r->tier = T_CWD;/,
-      'route() does not ask the exemption, or does not assign T_CWD');
+      'INVARIANT: route() asks policy_cwd_exempt with the CALLING THREAD id and assigns T_CWD — '
+      + 'the call site is missing, takes a different id, or assigns another tier');
     const body = bodyOfIn(src, 'getattr');
     const dispatch = body.search(/if \(r\.tier == T_CWD\)\s*\n?\s*return policy_cwd_getattr\(path, st\);/);
     const synthetic = body.search(/if \(SYNTHETIC\(r\.tier\)\)/);
-    assert.ok(dispatch > 0, 'pt_getattr does not dispatch T_CWD to policy_cwd_getattr');
-    assert.ok(synthetic > 0, 'pt_getattr lost its SYNTHETIC branch');
+    assert.ok(dispatch > 0,
+      'INVARIANT: pt_getattr dispatches T_CWD to policy_cwd_getattr — that branch is gone');
+    assert.ok(synthetic > 0,
+      'INVARIANT: pt_getattr keeps its SYNTHETIC branch — the ordering below compares two LIVE branches');
     // BEFORE the synthetic branch: T_CWD is not in the ancestor table, so
     // `policy_synth_getattr` would answer -ENOENT for it.
     assert.ok(dispatch < synthetic,
-      'the T_CWD branch is after SYNTHETIC(), where policy_synth_getattr answers -ENOENT first');
+      'INVARIANT: the T_CWD branch comes BEFORE SYNTHETIC() — after it, policy_synth_getattr '
+      + 'answers -ENOENT for a node deliberately not in the ancestor table');
     // The exemption is asked INSIDE the T_PROJECT arm, after the self-recursion
     // guard — liveness first, and no other tier may reach it.
     const arm = src.slice(src.indexOf('case T_PROJECT: {'), src.indexOf('case T_FAIL:'));
+    // PRESENCE FIRST, because `indexOf` answers -1 for an absent needle and -1
+    // is less than everything — so both orderings below would pass VACUOUSLY
+    // against an arm that had lost a call site altogether.
+    for (const needle of ['caller_is_self()', 'policy_cwd_exempt(', 'policy_project_route('])
+      assert.ok(arm.includes(needle), `route()'s T_PROJECT arm no longer calls ${needle}`);
     assert.ok(arm.indexOf('caller_is_self()') < arm.indexOf('policy_cwd_exempt('),
-      'the exemption is asked before the self-recursion guard');
+      'INVARIANT: the self-recursion guard is asked BEFORE the exemption — liveness first, '
+      + 'since the guard exists to stop this daemon re-entering itself');
     assert.ok(arm.indexOf('policy_cwd_exempt(') < arm.indexOf('policy_project_route('),
-      'the exemption is asked after the project route, so it can never fire');
+      'INVARIANT: the exemption is asked BEFORE policy_project_route — after it, the unmarked '
+      + 'denial has already returned and the exemption can never fire');
   });
 
   // WHICH OP BODIES ASK. `policy_mutation_check` owns the EROFS answer and
