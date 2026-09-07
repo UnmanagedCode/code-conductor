@@ -32,8 +32,18 @@ function call(sock, op, flags, p) {
     // Both listeners come OFF on either outcome — this helper runs once per
     // assertion on one long-lived socket, and a leaked `once('error')` per call
     // trips node's max-listeners warning by the eleventh test.
-    const done = (fn, v) => { sock.off('data', onData); sock.off('error', onErr); fn(v); };
+    const done = (fn, v) => {
+      sock.off('data', onData); sock.off('error', onErr);
+      sock.off('end', onEnd); sock.off('close', onEnd);
+      fn(v);
+    };
     const onErr = (e) => done(reject, e);
+    // A SERVER-SIDE `destroy()` IS A CLEAN FIN, NOT AN `error` (card 2026-0371).
+    // `ControlServer.close()` destroys every live connection, so a frame in
+    // flight across a teardown ends this stream with no error event at all —
+    // and settling on `data`/`error` alone hangs until the runner's timeout,
+    // which reads as a wedged handler rather than as the close it is.
+    const onEnd = () => done(reject, new Error(`control socket closed with no reply to op ${op} '${p}'`));
     const onData = (c) => {
       buf = Buffer.concat([buf, c]);
       if (buf.length < CCU_REPLY_LEN) return;
@@ -41,6 +51,8 @@ function call(sock, op, flags, p) {
     };
     sock.on('data', onData);
     sock.on('error', onErr);
+    sock.on('end', onEnd);
+    sock.on('close', onEnd);
     sock.write(encodeRequest(op, flags, p));
   });
 }
