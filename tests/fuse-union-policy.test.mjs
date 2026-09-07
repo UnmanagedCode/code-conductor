@@ -142,6 +142,8 @@ describe('the compiled policy driver', { skip }, () => {
                       'collapse remote-absent and control-refused into one reason'],
     ['b13-refusals',  'the refusal log records each (path, reason) exactly once',
                       'drop the dedupe, or key it on op as well'],
+    ['b16-abandon',   'a project-tier abandon sends a bare DIRTY and drops the cached decision; no other tier sends anything',
+                      'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit; widen the tier test'],
     ['b15-unreconcilable',
                       "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP, and a host-tier one does not",
                       '`return -EOPNOTSUPP` → `return 0`; the T_PROJECT test flipped or widened to every tier; EOPNOTSUPP collapsed into EROFS'],

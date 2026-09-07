@@ -967,28 +967,9 @@ static int push_mirror(const char *op, const char *path, int removed)
 	return push_mirror_flags(op, path, removed ? CCU_FLAG_REMOVED : 0);
 }
 
-/*
- * RELEASE THE WRITE CLAIM FOR AN OP THAT TOOK ONE AND THEN FAILED.
- *
- * A `FETCH` carrying CCU_FLAG_FOR_WRITE turns cc's cache OFF for that path
- * until a `DIRTY` arrives. If the op then fails — `openat` refused, the
- * mutation returned -1 — no DIRTY would ever come and the path would stay
- * uncached for the life of the session, with cc silently declining to refresh a
- * mirror copy it is still serving reads from. That is a leak with the cache
- * disabled underneath it, so the failure path releases the claim explicitly.
- *
- * The reconcile it triggers is a no-op in content terms (the op failed, so the
- * mirror is unchanged) and costs one copy of one file on an error path. The
- * RESULT IS DELIBERATELY DISCARDED: the caller already has an errno to report,
- * and replacing it with the reconcile's would tell the worker the wrong thing.
- */
-static void abandon_claim(const char *path, enum tier tier)
-{
-	if (tier != T_PROJECT)
-		return;
-	cache_invalidate(path);
-	(void)ccu_call(CCU_DIRTY, 0, path);
-}
+/* policy.h owns it — see policy_abandon_claim, which is drivable from the unit
+ * fixture because it composes only policy primitives. */
+#define abandon_claim(path, tier) policy_abandon_claim((path), (tier))
 
 /*
  * WHAT THE RECONCILE CANNOT EXPRESS, REFUSED RATHER THAN APPLIED TO THE MIRROR

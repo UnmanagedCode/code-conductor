@@ -353,7 +353,16 @@ describe('the control channel, cc side', () => {
   test('(d) close() waits for an in-flight handler and refuses anything after it', async () => {
     const p = '/srv/app/inflight.txt';
     await fs.writeFile(at(p), 'BEFORE\n');
-    let release; const held = new Promise((r) => { release = r; });
+    // `held` is resolved in the `finally` below whatever happens, so a failing
+    // assertion cannot leave the handler blocked. It is given a deadline of its
+    // own too, so the handler cannot outlive the test even if `release` is
+    // somehow never reached.
+    // `unref`'d, or the deadline itself keeps the event loop alive after the
+    // test returns and the FILE never reports.
+    let release; const held = Promise.race([
+      new Promise((r) => { release = r; }),
+      new Promise((r) => { setTimeout(r, 20_000).unref(); }),
+    ]);
     let started; const entered = new Promise((r) => { started = r; });
     let pushed = false;
     const base = localDirSource(srcRoot);
@@ -366,6 +375,7 @@ describe('the control channel, cc side', () => {
     });
     const c = await connect(srv.socketPath);
     const c2 = await connect(srv.socketPath);
+    let closing = Promise.resolve();
     try {
       await call(c, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p);
       await fs.writeFile(inMirror(p), 'IN FLIGHT\n');
@@ -379,7 +389,7 @@ describe('the control channel, cc side', () => {
       await entered;
 
       let closed = false;
-      const closing = srv.close().then(() => { closed = true; });
+      closing = srv.close().then(() => { closed = true; });
       await new Promise((r) => setTimeout(r, 30));
 
       // THE `#closing` HALF, on a SECOND connection opened before the close.
@@ -404,7 +414,19 @@ describe('the control channel, cc side', () => {
       assert.equal(await fs.readFile(at(p), 'utf8'), 'IN FLIGHT\n');
 
 
-    } finally { c.destroy(); c2.destroy(); await srv.close().catch(() => {}); }
+    } finally {
+      // RELEASED HERE, NOT ONLY ON THE HAPPY PATH. Any failing assertion above
+      // used to skip `release()`, and `srv.close()` then awaited the drain of a
+      // handler that could never finish — so the test WEDGED instead of
+      // failing, and a mutation prover got TIMEOUT rather than a graded
+      // verdict. In CI that hangs rather than reds, which is worse than a
+      // failure. A test whose cleanup depends on its own assertions passing
+      // cannot fail cleanly.
+      release();
+      await Promise.race([closing, new Promise((r) => { setTimeout(r, 5000).unref(); })]);
+      c.destroy(); c2.destroy();
+      await srv.close().catch(() => {});
+    }
   });
 
   // F6 — THE CLAIM SURVIVES A flush, and is released only by the close.
@@ -463,6 +485,111 @@ describe('the control channel, cc side', () => {
     assert.equal((await call(sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY);
     assert.equal((await call(sock, CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
     assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'ARRIVED LATER\n');
+  });
+
+  // P1 — A THROW OUT OF THE BODY RELEASES THE CLAIM TOO. The wrapper's whole
+  // selling point is that a failure path added later cannot forget, and only
+  // its REPLY arm was driven — the `catch` arm was unmeasured, so a throw left
+  // the per-path blackhole the wrapper exists to prevent.
+  //
+  // DIES UNDER: deleting `this.#claimed.delete(p)` from the catch arm.
+  test('a FETCH whose source THROWS leaves no claim behind', async () => {
+    const p = '/srv/app/thrower.txt';
+    await fs.writeFile(at(p), 'REAL\n');
+    let boom = 0;
+    const base = localDirSource(srcRoot);
+    const throwy = {
+      ...base,
+      // REJECTS rather than returning {error}: an exception is not a value the
+      // handler inspects, so it takes a different path out of the body.
+      stat: async (q) => { if (boom-- > 0) throw new Error('EIO: source exploded'); return base.stat(q); },
+    };
+    const srv = await ControlServer.listen({
+      socketPath: path.join(box, 'throwy.sock'), mirror, source: throwy, tiers, log: () => {},
+    });
+    const c = await connect(srv.socketPath);
+    try {
+      boom = 1;
+      const r = await call(c, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p);
+      assert.equal(r.status, CCU_STATUS.REFUSED, 'a throw was not reported');
+
+      // THE PATH MUST STILL BE REACHABLE. A leaked claim makes STAT answer
+      // ABSENT from it whatever the source holds, for the rest of the session.
+      assert.equal((await call(c, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY,
+        'the throw leaked a claim — this path is now a blackhole');
+      assert.equal((await call(c, CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'REAL\n');
+    } finally { c.destroy(); await srv.close(); }
+  });
+
+  // P2 — A LIST OF A CLAIMED DIRECTORY WHOSE SOURCE ENTRY HAS VANISHED must not
+  // unmirror it. Route (a) LISTs the PARENT of a claimed file, which is a
+  // different guard; this is the arm where the claimed path is the directory
+  // being listed, and the mirror entry the worker holds is what gets destroyed.
+  //
+  // DIES UNDER: dropping `if (this.#claimHeld(p)) return READY;` from #list's
+  // `kids === null` arm.
+  test('a LIST of a claimed directory the source lost keeps the mirror entry', async () => {
+    const d = '/srv/app/claimeddir';
+    await fs.mkdir(at(d), { recursive: true });
+    await fs.writeFile(path.join(at(d), 'inside.txt'), 'HELD\n');
+
+    // The worker claims the directory, as `rmdir`/`mkdir` on it would.
+    assert.equal((await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, d)).status, CCU_STATUS.READY);
+    await fs.mkdir(inMirror(d), { recursive: true });
+    await fs.writeFile(path.join(inMirror(d), 'worker.txt'), 'UNPUSHED\n');
+
+    // The source loses it out from under the claim.
+    await fs.rm(at(d), { recursive: true, force: true });
+
+    const r = await call(sock, CCU_OP.LIST, 0, d);
+    assert.equal(r.status, CCU_STATUS.READY, 'a claimed directory was reported absent');
+    assert.equal(await fs.readFile(path.join(inMirror(d), 'worker.txt'), 'utf8'), 'UNPUSHED\n',
+      'the claimed directory the worker holds was unmirrored');
+
+    // NON-VACUITY: an UNCLAIMED directory the source lost is still unmirrored,
+    // so the guard is scoped to the claim and not a blanket "never unmirror".
+    const e = '/srv/app/looseddir';
+    await fs.mkdir(at(e), { recursive: true });
+    assert.equal((await call(sock, CCU_OP.LIST, 0, e)).status, CCU_STATUS.READY);
+    await fs.rm(at(e), { recursive: true, force: true });
+    assert.equal((await call(sock, CCU_OP.LIST, 0, e)).status, CCU_STATUS.ABSENT);
+    await assert.rejects(() => fs.access(inMirror(e)));
+  });
+
+  // P3 — THE UNCLAIMED-ABSENT DIRTY ARM, in both directions. It is REACHABLE:
+  // a worker that unlinks a file it still holds open (`exec 3>f; rm f; exec
+  // 3>&-`) sends DIRTY+REMOVED from the unlink, which releases the claim, and
+  // then the close's flush/release send a bit-clear DIRTY at a path that is now
+  // absent AND unclaimed. That op's reconcile already landed, so READY is the
+  // truthful answer and REFUSED would fail an op that succeeded.
+  //
+  // The CLAIMED complement is the opposite answer: cc was holding the entry for
+  // a worker and has lost it, which is cc's own failure and must refuse.
+  //
+  // DIES UNDER: swapping either arm's answer for the other's.
+  test('a bit-clear DIRTY at an absent mirror entry: READY if unclaimed, REFUSED if claimed', async () => {
+    const p = '/srv/app/reclaimed.txt';
+    await fs.writeFile(at(p), 'ORIGINAL\n');
+
+    // UNCLAIMED — the unlink already reconciled this path.
+    assert.equal((await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+    await fs.rm(inMirror(p));
+    assert.equal((await call(sock, CCU_OP.DIRTY, CCU_FLAG_REMOVED, p)).status, CCU_STATUS.READY);
+    // …and now the still-open handle closes.
+    const late = await call(sock, CCU_OP.DIRTY, 0, p);
+    assert.equal(late.status, CCU_STATUS.READY,
+      'an op whose reconcile already landed was told it failed');
+
+    // CLAIMED — cc is holding the entry and has lost it. That is cc's failure,
+    // and the worker must hear about it rather than believe the write landed.
+    const q = '/srv/app/lostbycc.txt';
+    await fs.writeFile(at(q), 'ORIGINAL\n');
+    assert.equal((await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, q)).status, CCU_STATUS.READY);
+    await fs.rm(inMirror(q));
+    const held = await call(sock, CCU_OP.DIRTY, 0, q);
+    assert.equal(held.status, CCU_STATUS.REFUSED, 'cc losing a claimed entry was reported as success');
+    assert.equal(held.err, EIO);
   });
 
   // ── THE RECONCILE ─────────────────────────────────────────────────────────

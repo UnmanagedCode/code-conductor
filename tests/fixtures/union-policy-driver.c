@@ -633,6 +633,58 @@ static void b0_parse(void)
  * its directions are asserted here, so `return -EOPNOTSUPP` -> `return 0` and a
  * flipped tier test die in the deterministic suite.
  */
+/* ── B16: abandon_claim ─────────────────────────────────────────────────── */
+/*
+ * THE GUARD AGAINST THE WORST FAILURE MODE IN THIS TICKET, and until now it had
+ * no behavioural coverage anywhere: the prover measured that both its mutants
+ * were killed ONLY by A16's sha256 latch, which fires for any C edit and so
+ * says nothing about behaviour.
+ *
+ * What it owes: a project-tier abandon SENDS A FRAME — a DIRTY, with no flags,
+ * because the op failed and the mirror is unchanged — and invalidates the
+ * cached routing decision. At any other tier it sends nothing, because no other
+ * tier ever took a claim.
+ */
+static void b16_abandon(void)
+{
+	int cerr;
+
+	pin("project\t/srv/app");
+	pin("host\t/etc/hosts");
+	anc_build();
+	proc_set(1300, 1300, 44);
+	policy_mark_tid(1300);
+	canned_reply(CCU_READY, 0);
+
+	/* A warm cache entry, so the invalidation has something to remove. */
+	cache_put(1300, "/srv/app/f", 0);
+	CHECK(cache_get(1300, "/srv/app/f", &cerr) == 1, "the entry is warm to begin with");
+
+	last_req_len = 0;
+	policy_abandon_claim("/srv/app/f", T_PROJECT);
+
+	CHECK(last_req_len > 0, "a project-tier abandon sends no frame, so the claim is never released");
+	CHECK(last_req[4] == CCU_DIRTY, "the abandon frame is not a DIRTY");
+	/* NO FLAGS. A REMOVED bit here would tell cc to delete the source entry
+	 * for an op that merely failed; a FOR_WRITE bit would tell it to KEEP the
+	 * claim, which is the opposite of the whole point. */
+	CHECK(last_req[5] == 0, "the abandon frame carries flags, so it does not release the claim");
+	CHECK(cache_get(1300, "/srv/app/f", &cerr) == 0,
+	      "the abandon left a stale routing decision cached");
+
+	/* AND NOTHING AT ANY OTHER TIER — no claim was ever taken there, so a
+	 * frame would be cc reconciling a path the worker never wrote. */
+	last_req_len = 0;
+	policy_abandon_claim("/etc/hosts", T_HOST);
+	CHECK(last_req_len == 0, "a host-tier abandon sent a frame");
+	policy_abandon_claim("/etc/hosts", T_BIND);
+	CHECK(last_req_len == 0, "a bind-tier abandon sent a frame");
+	policy_abandon_claim("/nowhere", T_FAIL);
+	CHECK(last_req_len == 0, "a fail-tier abandon sent a frame");
+	policy_abandon_claim("/usr", T_SYNTH);
+	CHECK(last_req_len == 0, "a synthetic abandon sent a frame");
+}
+
 static void b15_unreconcilable(void)
 {
 	/* THE REFUSAL, and only at the tier whose mutations need reconciling. */
@@ -681,6 +733,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b13-refusals"))  b13_refusals();
 	else if (!strcmp(c, "b14-reasons"))   b14_control_reasons();
 	else if (!strcmp(c, "b15-unreconcilable")) b15_unreconcilable();
+	else if (!strcmp(c, "b16-abandon"))   b16_abandon();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
 

@@ -183,6 +183,29 @@ with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
 | `RUN_DOCKER_SYSTEM` | the docker-backed `System` provider against a real daemon (`systems-docker`). Needs a docker socket. |
 | `RUN_CLI_CONTRACT` | the real-`claude` CLI-behaviour contract cases (`systems-cli-*.real`), read through `tests/cliContractCase.mjs`. Deliberately left UNSET by `npm run gate:systems` — see its header for the pricing. |
 
+### §5.1c A16's sha256 latch BLANKET-KILLS EVERY C MUTANT — scope C mutants narrowly
+
+`src/systems/fuse/union.c.sha256` pins the digests of `union.c` and `policy.h`, and
+`tests/fuse-lifecycle.test.mjs`'s **A16** asserts them. That latch is a **deliberate-edit
+disclosure**, not behavioural coverage — and it fires for *any* byte changed in either file.
+
+**Consequence for a prover:** a C mutant run at whole-suite scope is killed by A16 whatever it
+did, so its failure set is attribution-free and a KILLED verdict says nothing about whether the
+behaviour is covered. Measured on card 2026-0355: `abandon_claim`'s two mutants were killed
+**only** by A16, and the function had no behavioural coverage anywhere, real-mount arms included.
+
+**How to run C mutants so the verdict means something:**
+- Scope every C mutant to the tests that should catch it (`expectFail`/`expectPass`), never the
+  whole suite — `{tests}` derives from the mutant's own refs (§5.1a), so a narrow scope excludes
+  A16 automatically.
+- If A16 is in the failure set, treat the mutant as **unattributed** and re-run it narrower
+  rather than recording KILLED.
+- The deterministic home for a C behaviour is `tests/fuse-union-policy.test.mjs` — it drives
+  `tests/fixtures/union-policy-driver.c` against `policy.h` with no mount, and its cases do not
+  read the sha pin. A behaviour reachable only from `union.c` op bodies has no such home; that
+  is why `policy.h` exists and why logic keeps moving into it.
+
+
 **§5.1b The CAPABILITY gate, which is a different animal from an env flag.**
 
 `tests/fuse-union-policy.test.mjs` compiles `tests/fixtures/union-policy-driver.c` and skips when it

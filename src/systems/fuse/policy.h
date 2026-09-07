@@ -933,6 +933,37 @@ static inline void policy_refuse(const char *op, const char *path, const char *r
 	pthread_mutex_unlock(&refusal_mu);
 }
 
+/*
+ * RELEASE THE WRITE CLAIM FOR AN OP THAT TOOK ONE AND THEN FAILED.
+ *
+ * A `FETCH` carrying CCU_FLAG_FOR_WRITE turns cc's cache OFF for that path
+ * until a `DIRTY` arrives. If the op then fails — `openat` refused, the
+ * mutation returned -1, a refusal after the claim — no DIRTY would ever come
+ * and the path would stay uncached for the life of the session, with cc
+ * declining to refresh a mirror copy it is still serving reads from and
+ * answering ABSENT for a file the source may since have gained.
+ *
+ * Lives here rather than in union.c because it composes only the primitives
+ * above — a tier test, the cache and the transport — so it is drivable from a
+ * unit fixture. It was previously in the op bodies and had no behavioural
+ * coverage at all.
+ *
+ * The reconcile it triggers is a no-op in content terms (the op failed, so the
+ * mirror is unchanged) and costs one copy of one file on an error path. The
+ * RESULT IS DELIBERATELY DISCARDED: the caller already has an errno to report,
+ * and replacing it with the reconcile's would tell the worker the wrong thing.
+ *
+ * NOTHING HAPPENS AT ANY OTHER TIER, because no other tier takes a claim: a
+ * frame is sent only for T_PROJECT.
+ */
+static inline void policy_abandon_claim(const char *path, enum tier tier)
+{
+	if (tier != T_PROJECT)
+		return;
+	cache_invalidate(path);
+	(void)ccu_call(CCU_DIRTY, 0, path);
+}
+
 /* ── the project tier's whole decision, in one place ────────────────────── */
 /*
  * CRITERION 6, AND THE ORDER IS THE POLICY.
