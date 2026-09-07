@@ -9,7 +9,6 @@
 // sweepSessionTmpDirs).
 
 import path from 'node:path';
-import { statSync } from 'node:fs';
 import { orchStoreRoot } from '../../projects.ts';
 import { withinPosix } from '../mirror.ts';
 import { httpError } from '../../httpError.ts';
@@ -97,54 +96,59 @@ export interface FusePlan {
   intentPath: string;
   recordPath: string;
   daemonLog: string;
+  // THE REFUSAL LOG the daemon writes (`CC_UNION_REFUSALS`) — every fail-closed
+  // path, every unmarked denial, every refused control reply. It is the
+  // instrument the pin list is derived from and the thing that must be empty by
+  // the end; the real gate reads it (R4).
+  refusalLog: string;
   // The cwd the bootstrap `cd`s to INSIDE the chroot. A host-pinned path keeps
   // its exact spelling, which is why this is simply the CLI's cwd.
   cwdInside: string;
   mountOpts: string;
+  // cc's control socket, which the daemon connects to and refuses to mount
+  // without. It is under `rundir` — a SIBLING of `root`, tiered `hide` — so
+  // nothing inside the chroot can name it. Containment is structural here,
+  // not policy.
+  controlSock: string;
+  // THE PATH WHOSE RESOLUTION MARKS A THREAD GROUP AS THE CLI — the launcher
+  // binary, absolute, in the spelling the kernel will ask the union about. The
+  // daemon refuses to mount without it: with no marking event no caller is ever
+  // marked and the project tier is unreachable, which would look exactly like a
+  // containment success.
+  markPath: string;
   tiers: TierEntry[];
   pinsText: string;
   uid: number;
   gid: number;
-  // S1 STAND-IN — see resolveMirrorStandIn. `standInSource` is the host
-  // directory bound in; `standInAt` is where under `mirror` it is bound, which
-  // is the project's own remote-space path because the daemon's remote tier is
-  // rooted at `mirror` and resolves `/x` to `<mirror>/x`.
-  //
-  // That placement is also what keeps the fake remote's tree DELIBERATELY
-  // NARROW: only the project's path is populated, so every other path misses
-  // the remote-first `default:` arm instead of shadowing a host one. The hazard
-  // is measured, not hypothetical — S3 §B2 caught a `create` at `tier=default`
-  // landing on the remote and absent from the host, because union.c:944 routes
-  // a create to the remote whenever the parent exists there.
-  standInSource: string | null;
-  standInAt: string | null;
+  // THE S2 FAKE REMOTE — see resolveFakeRemoteRoot. The root
+  // `localDirSource` reads and writes on the worker's behalf.
+  fakeRemoteRoot: string;
 }
 
-// ── the S1 STAND-IN, labelled ───────────────────────────────────────────────
+// ── the S2 FAKE REMOTE, labelled as one ─────────────────────────────────────
 //
-// S1 has NO transport and NO control channel. The daemon's remote tier is a
-// plain local directory, and in S1 that directory is filled by a bind mount of
-// the project's own path when — and only when — that path happens to exist on
-// the orchestrator's own filesystem, which is the case for every provider that
-// backs a project with a directory on this host.
+// S2 has no transport. The `RemoteSource` behind the control channel is a plain
+// local directory, and this resolves which one.
 //
-// What that proves: the per-session mirror directory's PLACEMENT, its `hide`
-// tiering, and its CLEANUP, with the union's `project` tier serving real bytes.
-// What it does NOT prove: any transport, any latency, any control channel. S3
-// replaces this bind with cc materialising files into the same directory.
+// WHAT THAT PROVES: the control channel end to end — every frame, the mirror
+// discipline, the materialisation and the push — and the tier policy above it.
+// WHAT IT DOES NOT PROVE: any transport, any latency and any `System` call. S3
+// (2026-0356) deletes this and constructs the `System`-backed source instead.
 //
-// It is therefore not a claim about the remote at all: where the system is
-// genuinely elsewhere this returns null and the mirror stays empty.
-export function resolveMirrorStandIn(systemPath: string): string | null {
-  try { return statSync(systemPath).isDirectory() ? systemPath : null; }
-  catch { return null; }
+// THE OVERRIDE IS WHY IT IS A KNOB AT ALL. Criteria 3 and 4 are only checkable
+// when the remote's bytes DIFFER from the host's at the same path; the default
+// of `/` makes them identical and the distinction unobservable, which is
+// exactly the limit S1's bind-mount stand-in had. The real gate points it at a
+// temp tree.
+export function resolveFakeRemoteRoot(): string {
+  return process.env.CC_FUSE_FAKE_REMOTE_ROOT || '/';
 }
 
 export interface FusePlanInput {
   instanceId: string;
   cwdInside: string;
-  systemPath: string;
-  standInSource: string | null;
+  fakeRemoteRoot: string;
+  markPath: string;
   // THE TIER TABLE, BUILT BY THE CALLER AND CARRIED BY REFERENCE. It is not
   // built here, and that is criterion 15's mechanism rather than a style
   // choice: `src/instances.ts` builds ONE array and hands the SAME array to
@@ -164,20 +168,33 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   const root = path.join(rundir, 'root');
   const mirror = path.join(rundir, 'mirror');
 
-  // CONFIGURATION-TIME REFUSAL, and it has to be here because it cannot be
-  // caught anywhere later: a remote root that CONTAINS the mount deadlocks in
-  // VFS path resolution BEFORE the daemon is consulted, so no daemon-side guard
-  // can see it (S2 §11.2, S3 §A3 W-D1). A kill path makes that deadlock
-  // recoverable; it does not make it acceptable.
+  // CONFIGURATION-TIME REFUSAL: THE SOURCE MUST NOT CONTAIN CC'S OWN STAGING
+  // MIRROR. cc materialises a remote path P at `<mirror>/P` and reads it from
+  // `<fakeRemoteRoot>/P`; where the mirror lies inside the source root, some P
+  // resolves back into the mirror and cc serves its own staging area as remote
+  // content — a listing of the source enumerates the mirror, and what the
+  // worker then reads is cc's copy of what it already had.
   //
-  // `root` and `mirror` are siblings under `rundir` by construction, so the
-  // containment cannot arise from the layout. It arises from what the S1 bind
-  // puts BEHIND `mirror`: the mountpoint lives under the store, so a project
-  // whose system path is an ancestor of the store makes the union's own
-  // mountpoint reachable by walking its remote tier.
-  const inside = input.standInSource === null ? null : withinPosix(root, input.standInSource);
+  // Whether such a P is REACHABLE depends on the tier table, which is a
+  // per-session artifact; this refuses on the containment itself, which is the
+  // conservative half of that question and the half decidable here.
+  //
+  // ROOT `/` IS EXEMPT, and on a MEASURED mechanism rather than on intent.
+  // There, `<fakeRemoteRoot>/P` is P, so cc reads the mirror only for a P at or
+  // inside the mirror — and the mirror is `<runDir>/mirror` while `runDir`
+  // carries a `hide` pin (tierTable.ts), which longest-prefix makes win over
+  // even a `project /`. `route()` answers `-ENOENT` for a `hide` path before
+  // any control frame is sent, so no such P reaches cc at all.
+  //
+  // The mirror's SHALLOW ancestors (`/`, and whatever contains the projects
+  // root) do stay remote-tier under an advertised root of `/`. That is not the
+  // hazard: a `LIST` materialises one level of directory entries and never
+  // descends, and the chain from the projects root down to `runDir` is `host`,
+  // so no frame ever names the mirror's parent. `tests/fuse-lifecycle.test.mjs`
+  // asserts both halves against the real table.
+  const inside = input.fakeRemoteRoot === '/' ? null : withinPosix(mirror, input.fakeRemoteRoot);
   if (inside !== null) {
-    throw httpError(501, `FUSE_MIRROR_CONTAINS_MOUNT: the union mountpoint ${root} lies inside its own remote tier ${input.standInSource} (at '${inside}'), which deadlocks path resolution before the daemon is consulted`, { code: 'FUSE_MIRROR_CONTAINS_MOUNT' });
+    throw httpError(501, `FUSE_REMOTE_ROOT_CONTAINS_MIRROR: this session's staging mirror ${mirror} lies inside the remote root ${input.fakeRemoteRoot} (at '${inside}'), so cc would read its own mirror back as remote content and serve it to the worker`, { code: 'FUSE_REMOTE_ROOT_CONTAINS_MIRROR' });
   }
 
   return {
@@ -190,14 +207,16 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     intentPath: path.join(rundir, 'intent.json'),
     recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
+    refusalLog: path.join(rundir, 'refusals.log'),
+    controlSock: path.join(rundir, 'control.sock'),
+    markPath: input.markPath,
     cwdInside: input.cwdInside,
     mountOpts: MOUNT_OPTS,
     tiers: input.tiers,
     pinsText: renderPinsFile(input.tiers),
     uid: process.getuid?.() ?? 0,
     gid: process.getgid?.() ?? 0,
-    standInSource: input.standInSource,
-    standInAt: input.standInSource === null ? null : path.join(mirror, input.systemPath),
+    fakeRemoteRoot: input.fakeRemoteRoot,
   };
 }
 

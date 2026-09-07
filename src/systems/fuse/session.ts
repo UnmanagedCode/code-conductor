@@ -31,6 +31,8 @@ import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
 import { scanProcesses, membersOf, type ProcRow, type RawScan } from './procScan.ts';
 import { reclaimProcess, type OrphanReclaim } from './orphans.ts';
+import { ControlServer } from './control.ts';
+import { localDirSource, type RemoteSource } from './remoteSource.ts';
 
 export interface Deadlines {
   // Per-step bounds. Every one of them is a BOUND, not a wait: a step that
@@ -552,14 +554,24 @@ export class FuseSession {
   // Resolved by launch() before prepare(), because the compile is async and
   // spawn() is not.
   unionBinary: string | null = null;
+  // THE CONTROL SERVER, owned here because its lifetime is exactly this
+  // session's: it is listening before the daemon starts and closed before
+  // teardown signals anything. `runTeardown` cannot own it — it is a free
+  // function the boot sweep also runs, over a rundir belonging to a process
+  // that no longer exists.
+  #control: ControlServer | null = null;
+  readonly #source: RemoteSource;
 
-  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines> } & Sinks) {
+  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines>; source?: RemoteSource } & Sinks) {
     this.plan = opts.plan;
     this.#ccBootId = opts.ccBootId;
     this.#driver = opts.driver ?? realMountDriver;
     this.#scan = opts.scan;
     this.#sinks = { emit: opts.emit, log: opts.log };
     this.#deadlines = { ...DEFAULT_DEADLINES, ...opts.deadlines };
+    // The S2 fake remote (see resolveFakeRemoteRoot). S3 hands in a
+    // `System`-backed source here instead and deletes `localDirSource`.
+    this.#source = opts.source ?? localDirSource(opts.plan.fakeRemoteRoot);
   }
 
   get ccBootId(): string { return this.#ccBootId; }
@@ -606,9 +618,20 @@ export class FuseSession {
     await fsp.mkdir(p.root, { recursive: true });
     await fsp.mkdir(p.mirror, { recursive: true });
     await fsp.mkdir(p.fusectl, { recursive: true });
-    if (p.standInAt) await fsp.mkdir(p.standInAt, { recursive: true });
     await fsp.writeFile(p.pinsPath, p.pinsText);
     await fsp.writeFile(p.daemonLog, '');
+    await fsp.writeFile(p.refusalLog, '');
+    // LISTENING BEFORE THE SPAWN, because the daemon probes the socket before
+    // it mounts and refuses if it cannot connect. A relaunch into the same run
+    // directory closes the previous server first — the socket path is the same
+    // file and two listeners on it is one listener plus a leak.
+    await this.#control?.close().catch(() => {});
+    this.#control = await ControlServer.listen({
+      socketPath: p.controlSock,
+      mirror: p.mirror,
+      source: this.#source,
+      log: (line) => this.#sinks.log?.warn(line),
+    });
     const intent: FuseIntent = {
       schema: RECORD_SCHEMA,
       instanceId: p.instanceId,
@@ -645,6 +668,20 @@ export class FuseSession {
   // Idempotent: the crash path (_handleExit) and the commanded path (kill())
   // both reach it, and on a normal kill_instance both fire.
   async teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
+    // CLOSED FIRST, AND OUTSIDE THE LATCH.
+    //
+    // First, because every remote-tier op blocks on a reply: a daemon thread
+    // mid-request would otherwise sit in the kernel until its receive timeout,
+    // and dropping the connection turns each blocked call into -EIO at once,
+    // which is what lets the worker's threads leave FUSE and be signalled.
+    //
+    // Outside the latch, because the latch is about not running the teardown
+    // STATE MACHINE twice — it says nothing about a socket. prepare() unlatches
+    // and opens a NEW server, so a session that prepared after an earlier
+    // teardown and was then killed without a process would keep that server
+    // listening for the life of the orchestrator. Measured as a real leak.
+    await this.#control?.close().catch(() => {});
+    this.#control = null;
     if (this.#tornDown) return { alreadyTornDown: true };
     this.#tornDown = true;
     return runTeardown({

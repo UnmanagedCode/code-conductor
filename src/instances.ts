@@ -61,8 +61,8 @@ import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './wor
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
-import { buildFusePlan, resolveMirrorStandIn, fuseRunDir } from './systems/fuse/plan.ts';
-import { buildTierTable, type LocalRoot } from './systems/fuse/tierTable.ts';
+import { buildFusePlan, resolveFakeRemoteRoot, fuseRunDir } from './systems/fuse/plan.ts';
+import { buildTierTable, resolveOnPath, type LocalRoot } from './systems/fuse/tierTable.ts';
 import { FuseSession } from './systems/fuse/session.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
 import { ensureUnionBinary } from './systems/fuse/build.ts';
@@ -3458,7 +3458,16 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   async kill({ graceMs = 2000 }: { graceMs?: number } = {}): Promise<void> {
-    if (!this.proc) return;
+    if (!this.proc) {
+      // A SESSION CAN HOLD A PREPARED FuseSession WITH NO PROCESS. launch()
+      // creates the run directory and starts listening on the control socket
+      // BEFORE spawn(), because the daemon refuses to mount without a socket to
+      // connect to — so a launch that failed between the two leaves both, and
+      // `_handleExit` cannot reclaim them: it only runs for a process that
+      // existed. Idempotent, so the ordinary path is unaffected.
+      await this._fuse?.teardown().catch(() => {});
+      return;
+    }
     // Mark this as a commanded teardown so _handleExit doesn't mistake the
     // resulting signalled exit for a spontaneous launch crash.
     this._killing = true;
@@ -4836,9 +4845,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // how the table and the refusals that quote it would come to disagree.
       const mirrorRoot = mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath;
       const exclude = mirrorScopeForSession?.exclude ?? [];
+      // RESOLVED ONCE, ABSOLUTE, and used twice: as the CLI's host pin and as
+      // the daemon's marking event. `resolveClaudeBin()` returns a bare
+      // `claude` by default, and a bare name pins nothing and marks nothing.
+      const claudeCommand = resolveOnPath(resolveClaudeBin().command);
       const tiers = buildTierTable({
         localRoots,
-        claudeCommand: resolveClaudeBin().command,
+        claudeCommand,
         execPath: process.execPath,
         selfProjectDir: selfProjectDir(),
         projectsRoot: projectsRoot(),
@@ -4876,8 +4889,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
           plan: buildFusePlan({
             instanceId: id,
             cwdInside: cwd,
-            systemPath: redirectPlacement.systemPath,
-            standInSource: resolveMirrorStandIn(redirectPlacement.systemPath),
+            fakeRemoteRoot: resolveFakeRemoteRoot(),
+            markPath: claudeCommand,
             // THE SAME ARRAY the redirect above holds, by reference.
             tiers,
           }),
@@ -5477,7 +5490,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (!inst) {
       throw httpError(404, 'instance not found');
     }
-    if (inst.proc) await inst.kill({ graceMs: 500 });
+    // UNCONDITIONALLY, because `kill()` is now the one place that reclaims a
+    // session's mount scaffolding and it handles the no-process case itself: an
+    // instance removed after a failed launch still owns a run directory and a
+    // listening control socket, both created BEFORE spawn().
+    await inst.kill({ graceMs: 500 });
     // Independently of the kill: an instance can be removed with no live
     // process (it crashed, or it already exited), and a command it still has
     // running on the remote system would then outlive every reference to the

@@ -34,6 +34,10 @@ SETPRIV_BIN=$(command -v setpriv)
 grep -q '[[:space:]]fusectl$' /proc/filesystems || die "fusectl is not in /proc/filesystems"
 [ -x "$CC_FUSE_BIN" ] || die "union binary $CC_FUSE_BIN is missing or not executable"
 [ -r "$CC_FUSE_PINS" ] || die "pins file $CC_FUSE_PINS is unreadable"
+# cc listens on this before it spawns us, and the daemon refuses to mount
+# without it. A named refusal here beats the daemon's, which arrives inside the
+# mount-wait loop at step 5.
+[ -S "$CC_FUSE_CONTROL" ] || die "cc's control socket $CC_FUSE_CONTROL is missing or is not a socket"
 
 # ── 2. the scaffolding. cc created these dirs so every file under the run
 #       directory is cc-owned and cc can reclaim the tree without sudo; this is
@@ -113,26 +117,21 @@ setsid sleep infinity </dev/null >/dev/null 2>&1 &
 ANCHOR_PID=$!
 write_record starting
 
-# ── 3. THE S1 STAND-IN, and it is labelled one. There is no transport and no
-#       control channel in S1: the daemon's remote tier is a plain local
-#       directory, and this bind is what puts real bytes behind it at the
-#       project's own remote-space path. S3 replaces this with cc materialising
-#       files into the same directory over the control channel. It proves the
-#       mirror's placement, its `hide` tiering and its cleanup — and NO
-#       transport, NO latency, NO channel.
-if [ -n "${CC_FUSE_STANDIN_SRC:-}" ] && [ -n "${CC_FUSE_STANDIN_AT:-}" ]; then
-	mount --bind "$CC_FUSE_STANDIN_SRC" "$CC_FUSE_STANDIN_AT" \
-		|| die "could not bind the stand-in remote $CC_FUSE_STANDIN_SRC at $CC_FUSE_STANDIN_AT"
-fi
+# ── 3. (was the S1 stand-in bind mount.) There is nothing to place behind the
+#       mirror any more: cc materialises every remote path into it over the
+#       control channel, and a bind here would be a second mechanism.
 
 # ── 4. the daemon. Root, and it stays root: S1 §7.2 measured that a
 #       non-root daemon breaks the CLI's own Bash tool with EACCES on
 #       /tmp/claude-1000. `allow_other,default_permissions` plus per-request
 #       setfsuid/setfsgid is what lets one daemon serve callers of another uid.
-FUSE_S3_HOST_ROOT=/ \
-FUSE_S3_REMOTE="$CC_FUSE_MIRROR" \
-FUSE_S3_PINS="$CC_FUSE_PINS" \
-FUSE_S3_MNT="$CC_FUSE_ROOT" \
+CC_UNION_HOST_ROOT=/ \
+CC_UNION_REMOTE="$CC_FUSE_MIRROR" \
+CC_UNION_PINS="$CC_FUSE_PINS" \
+CC_UNION_MNT="$CC_FUSE_ROOT" \
+CC_UNION_CONTROL="$CC_FUSE_CONTROL" \
+CC_UNION_MARK_PATH="$CC_FUSE_MARK_PATH" \
+CC_UNION_REFUSALS="$CC_FUSE_REFUSAL_LOG" \
 	"$CC_FUSE_BIN" -f -o "$CC_FUSE_MOUNT_OPTS" "$CC_FUSE_ROOT" \
 	>"$CC_FUSE_DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
@@ -184,7 +183,9 @@ mount -t fusectl none "$CC_FUSE_FUSECTL" || die "could not mount fusectl at $CC_
 # ── 9. real bind mounts OVER the union, after it is up and NEVER as tiers. A
 #       passthrough serving /proc/self/* answers with the DAEMON's identity and
 #       breaks /proc/self/exe, which is how a bun single-file executable finds
-#       its embedded payload (S1 §7.1, measured).
+#       its embedded payload (S1 §7.1, measured). The three targets are the
+#       `bind` tier: the union serves each as a read-only synthetic directory
+#       purely so this bind has something to land on.
 mount --bind /proc "$CC_FUSE_ROOT/proc" || die "could not bind /proc into the chroot"
 mount --bind /sys  "$CC_FUSE_ROOT/sys"  || die "could not bind /sys into the chroot"
 mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chroot"
@@ -196,8 +197,26 @@ mount --rbind /dev "$CC_FUSE_ROOT/dev"  || die "could not bind /dev into the chr
 PATH="${CC_FUSE_PATH:-$PATH}"
 export PATH
 exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c '
+	# THE MARKING EVENT, FIRED DELIBERATELY AND BEFORE THE cd.
+	#
+	# The union serves a project path only to a thread group marked as the
+	# CLI, and a thread group is marked the first time it resolves the CLI
+	# binary. Every link from here on — this shell, setpriv, the CLI — is the
+	# SAME pid, because each one execs, and exec preserves the thread group
+	# and its start time. So marking here marks the CLI.
+	#
+	# Without it the FIRST union op this pid makes is the `cd` below, into
+	# the project tree, unmarked — and the launch dies "cwd does not exist
+	# inside the chroot" before the CLI is ever reached. Waiting for the
+	# loader to read the binary incidentally is one op too late, and it also
+	# leaves the pre-mark window S1 §9.1 measured wide open.
+	#
+	# A plain existence test: the daemon marks on RESOLUTION, so a stat is
+	# the whole event. `|| :` because the mark path is host-pinned and an
+	# unreadable one is the daemon`s refusal to report, not this shell`s.
+	[ -e "$5" ] || :
 	cd "$2" || { echo "cc-fuse-bootstrap: REFUSED — cwd $2 does not exist inside the chroot" >&2; exit 78; }
 	sp=$1; u=$3; g=$4
-	shift 4
+	shift 5
 	exec "$sp" --reuid="$u" --regid="$g" --init-groups -- "$@"
-' sh "$SETPRIV_BIN" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$@"
+' sh "$SETPRIV_BIN" "$CC_FUSE_CWD" "$CC_FUSE_UID" "$CC_FUSE_GID" "$CC_FUSE_MARK_PATH" "$@"
