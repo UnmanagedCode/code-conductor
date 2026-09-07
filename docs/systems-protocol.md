@@ -108,8 +108,7 @@ broken, because that boundary is easy to assume wrongly in both directions.
 ### The POSIX assumption
 
 The target is a **competent POSIX environment with GNU coreutils**: `stat`,
-`find` with `-printf`, `mkdir`, `rm`, `unlink`,
-`realpath`, `chmod`, `base64`, `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
+`find` with `-printf`, `mkdir`, `rm`, `unlink`, `realpath`, `chmod`, `base64`, `tr`, `printf`, `env`, and a POSIX login shell. This is what shrinks the
 provider contract to **three** operations: everything else on cc's own `System`
 interface (`src/systems/system.ts` — the members beyond `exec`, `readFile` and
 `readFileBytes`/`writeFile`) is DERIVED by cc over `exec`, listed in §7. The

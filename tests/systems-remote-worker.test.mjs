@@ -495,30 +495,34 @@ describe('a worker session on a remote system', () => {
     assert.match(block, /^# System$/m);
     assert.match(block, /\/app.*prod-box/s);
     assert.match(block, /Bash.*run/s);
-    // The correction: local paths for reading and editing, and a prohibition on
-    // opening a system path. A doc that says the opposite is worse than saying
-    // nothing.
+    // THE CORRECTION, and its subject changed with the geometry: the CLI is
+    // chrooted at the system path, so that path IS the working directory. A
+    // prohibition on using it — which is what this doc used to carry — would
+    // forbid the only path that works.
     assert.match(block, /working directory/);
-    assert.match(block, /never at their `\/app` paths/);
-    assert.ok(!/Read `?\/app/.test(block), 'it never suggests reading a system path');
+    assert.match(block, /same path/);
+    assert.ok(!/never at their/.test(block),
+      'the doc still forbids the system path, which is now the working directory');
   
     const local = await composeProjectConventionsDoc([]);
     assert.ok(!/^# System$/m.test(local), 'a local project carries no such section');
   });
   
-  // PINS S5: the pair says nothing false. The earlier wording claimed a system
-  // path "appears only in command output" — and cc's own PostToolUse note puts
-  // one on a tool RESULT ("Saved to /app/… on system '<id>'."), which is not
-  // command output. A worker holding a false statement from its system prompt
-  // has to decide which of the two to trust.
-  test('the disclosure does not claim system paths appear only in command output', async () => {
+  // PINS S5: the pair says nothing false. This is a SYSTEM PROMPT — a worker
+  // holding a false statement from it has to decide which of the two to trust —
+  // and every wording this sentence has had was falsified by a later change, so
+  // the claims it must not make are pinned rather than only the ones it makes.
+  test('the disclosure makes no claim the geometry has falsified', async () => {
     const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
       .split('# Workspace conventions')[0];
+    // Two dead wordings: "appears only in command output", and the local/system
+    // path split that the chroot collapsed.
     assert.ok(!/only in command output/.test(block), block);
-    // The behavioural half survives: never open a system path, and it names the
-    // same file as its local counterpart.
-    assert.match(block, /never/i);
-    assert.match(block, /same file/);
+    assert.ok(!/local path/i.test(block), block);
+    // And it does not claim there is a second spelling to prefer.
+    assert.ok(!/never at their/.test(block), block);
+    // The behavioural half: one path, named as such.
+    assert.match(block, /same path/);
   });
 
   // PINS A DELETION, WHICH IS THE ONLY WAY A DELETION FROM A SYSTEM PROMPT STAYS

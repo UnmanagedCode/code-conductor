@@ -54,15 +54,16 @@ const PROJECT_HEADING = '# Project conventions';
 //     time a command prints a path. Told, a worker did the task and remarked on
 //     nothing; untold, it took a system path from a stack trace, tried to read
 //     it, and spent a call recovering.
-//   * The second is a CORRECTION, twice over. An earlier wording said system
-//     paths "are the system's copies of what you see locally" and sent the model
-//     straight to `Read /app/greeting.py` — which cannot work, because the CLI
-//     reads on cc's machine. It has to say files are read and edited at their
-//     LOCAL paths. A later wording then said a system path "appears only in
-//     command output", which is FALSE: a system path reaches a tool result by
-//     several routes that are not command output. The prohibition is what
-//     carries the behaviour, so it says NEVER OPEN one — true wherever the path
-//     came from — rather than making a claim about where such paths can appear.
+//   * The second is a CORRECTION, and its SUBJECT CHANGED with the FUSE-union
+//     geometry. Two earlier wordings were wrong in opposite directions — one
+//     sent the model to `Read /app/greeting.py` when the CLI read on cc's
+//     machine, the other told it to read at a LOCAL path and NEVER at the
+//     system path. Both described a world with two spellings of one file.
+//     There is one now: the CLI runs chrooted at `${system.path}`, so a
+//     prohibition on using that path would forbid the only path that works.
+//     The sentence says the two are the same path, which is the fact a worker
+//     acts on — and it makes no claim about where such a path can APPEAR,
+//     because that is the claim both earlier wordings got wrong.
 // A THIRD SENTENCE WAS DELETED BY CARD 2026-0312 AND NOTHING REPLACED IT — a
 // per-session saving, recorded so it is not re-added by someone rediscovering
 // the problem it solved. It said shell state is PER AGENT, and it existed for an
@@ -88,8 +89,8 @@ const PROJECT_HEADING = '# Project conventions';
 function systemDisclosure(system: { id: string; path: string }): string {
   return `# System\n\n`
     + `This project's tree is at \`${system.path}\` on system \`${system.id}\`, where \`Bash\` commands run. `
-    + `Read, write and edit files at their paths under this session's working directory — `
-    + `never at their \`${system.path}\` paths, which name the same files seen from the system.\n`;
+    + `That is also this session's working directory, so every tool names a file by the same path — `
+    + `there is no second, local spelling of it.\n`;
 }
 
 // The disclosure argument for a project being CREATED on a system, from the two
