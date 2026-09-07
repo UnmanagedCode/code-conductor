@@ -81,6 +81,39 @@ describe('a mirror root wider than the project', () => {
     assert.equal(inst._redirect.systemPath, tree);
   });
 
+  // A13 — PINS criterion 4's third clause on the channel it is reported
+  // through: an advertised exclude OUTSIDE the mirror root is INERT — the spawn
+  // succeeds — and it is REPORTED ONCE on the session's own stream, which is
+  // where the rest of this subsystem's non-fatal news goes. Turning `inert` into
+  // a refusal breaks the spawn; dropping the emission leaves an operator who
+  // wrote a no-op exclude with no way to learn it.
+  test('an exclude outside the mirror root is inert, and reported once on the session stream', async () => {
+    const id = `inert${++n}`;
+    const box = await fs.realpath(await mkdtemp('cc-inert-'));
+    const tree = await seedRepo(path.join(box, 'nest', 'app'));
+    const mirrorFile = path.join(box, '.mirror');
+    await fs.writeFile(mirrorFile, path.join(box, 'nest'));   // narrower than `box`
+    await addSystem({ id, label: id, launch: ['node', FIXTURE,
+      '--mirror-file', mirrorFile, '--advertise-exclude', '/var/lib/elsewhere'] });
+    assert.equal((await adoptProject('app', tree, { system: id })).ok, true);
+
+    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const inst = instances.get(r.body.id);
+    await waitFor(() => inst.status === 'idle');
+
+    const lines = inst.ring.toArray()
+      .filter(ev => ev.kind === 'system' && ev.subtype === 'stderr')
+      .map(ev => ev.data?.line ?? '')
+      .filter(l => l.includes('/var/lib/elsewhere'));
+    assert.equal(lines.length, 1, `expected exactly one inert report, got ${JSON.stringify(lines)}`);
+    assert.match(lines[0], /outside its mirror root/);
+    assert.match(lines[0], /no effect/);
+    // …and it really was inert: the exclude is still pinned for the session, and
+    // the session came up.
+    assert.deepEqual(inst._mirrorScope.exclude, ['/var/lib/elsewhere']);
+  });
+
   // PINS: the wider slice is reachable because the TIER TABLE says so, and the
   // project keeps its own narrower entry inside it. Both are `project` tier —
   // remote only, no host fallback — so a path between the two is served from the
@@ -90,7 +123,7 @@ describe('a mirror root wider than the project', () => {
       localRoots: [], claudeCommand: '', execPath: '/usr/bin/node',
       selfProjectDir: '/repo', projectsRoot: '/projects', homeDir: '/home/u',
       runDir: '/projects/.code-conductor/systems/fuse/run/i1',
-      systemPath: '/box/nest/app', mirrorRoot: '/box',
+      systemPath: '/box/nest/app', mirrorRoot: '/box', exclude: [],
     });
     assert.equal(tierOf(entries, '/box/nest/app/src/main.js'), 'project');
     assert.equal(tierOf(entries, '/box/OUT-OF-PROJECT.txt'), 'project',
@@ -101,7 +134,7 @@ describe('a mirror root wider than the project', () => {
       localRoots: [], claudeCommand: '', execPath: '/usr/bin/node',
       selfProjectDir: '/repo', projectsRoot: '/projects', homeDir: '/home/u',
       runDir: '/projects/.code-conductor/systems/fuse/run/i1',
-      systemPath: '/box/nest/app', mirrorRoot: '/box/nest/app',
+      systemPath: '/box/nest/app', mirrorRoot: '/box/nest/app', exclude: [],
     });
     assert.equal(tierOf(narrow, '/box/nest/app/src/main.js'), 'project');
     assert.equal(tierOf(narrow, '/box/OUT-OF-PROJECT.txt'), null);

@@ -16,10 +16,16 @@
 //                   (src/systems/bashForwarder.ts). Nothing outlives a command,
 //                   so no command's state reaches any later one and there is
 //                   nothing to keep one agent's commands apart from another's.
-//   Read/Write/    — NOT HOOKED AT ALL. The CLI runs inside a chroot onto the
-//   Edit/Notebook    union, so it opens the system's own bytes at the system's
-//                    own path: nothing to translate, fetch or write back, and
-//                    no second spelling for a path to have.
+//   Read/Write/    — HOOKED, AND FOR ONE REASON ONLY: to REFUSE a path the
+//   Edit/Notebook    union does not serve to this session. The CLI runs inside
+//                    a chroot onto the union, so at an allowed path it opens
+//                    the system's own bytes at the system's own path — nothing
+//                    to translate, fetch or write back, and no second spelling
+//                    for a path to have. What the hook adds is the sentence a
+//                    worker reads instead of an -ENOENT: the decision comes
+//                    from the shared tier table (classifyForTool,
+//                    src/systems/fuse/tierTable.ts) and NEVER from probing the
+//                    filesystem.
 //   Glob/Grep     — removed from the tool registry by the injected settings
 //                   (src/settings.ts) AND refused here by name. A marked CLI's
 //                   `Grep` spawns an UNMARKED `rg`, which the union routes as a
@@ -33,6 +39,7 @@ import path from 'node:path';
 import { SystemError } from './protocol.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
 import type { System } from './system.ts';
+import { classifyForTool, type TierEntry } from './fuse/tierTable.ts';
 
 // A System cc can run one command on. Every non-local system is one
 // (registry.ts resolves a non-local id to a ProviderSystem); the type says so
@@ -85,6 +92,16 @@ export interface ForwardSink {
   err(text: string): void;
 }
 
+// The tools whose file_path this module owns. NotebookEdit carries its path
+// under a different key, which is the only reason the map is not a set.
+//
+// EXPORTED so a test can enumerate it rather than transcribe it: the refusals
+// below have to cover every entry, and a fifth tool added here must fail that
+// test instead of quietly escaping the boundary.
+export const FILE_TOOLS: Record<string, string> = {
+  Read: 'file_path', Write: 'file_path', Edit: 'file_path', NotebookEdit: 'notebook_path',
+};
+
 // STILL REFUSED BY NAME under the chroot, and this is not a leftover.
 // `permissions.deny` already asks the CLI to remove these (src/settings.ts) and
 // measurably does on the profiles where they exist at all — but that is
@@ -120,6 +137,13 @@ export interface SessionRedirectOptions {
   systemPath: string;
   forwarderUrl: string;
   emit: (ev: unknown) => void;
+  // THE tier/deny artifact for this session — the SAME array the FUSE plan
+  // renders its pins file from (src/instances.ts builds it once). Identity, not
+  // equality: see FusePlanInput.tiers.
+  tiers: readonly TierEntry[];
+  // The advertisement's own two fields, which the refusals name.
+  exclude: readonly string[];
+  mirrorRoot: string;
   shellCommandTimeoutMs?: number;
   maxOutputBytes?: number;
 }
@@ -130,7 +154,14 @@ export class SessionRedirect {
   // CLI's own working directory. There is no second spelling any more.
   readonly systemPath: string;
 
+  // PUBLIC, and deliberately: criterion 15 is an IDENTITY claim — the array the
+  // hook decides from is the same object the pins file was rendered from — and
+  // an identity claim that cannot be read cannot be asserted.
+  readonly tiers: readonly TierEntry[];
+
   readonly #system: RedirectableSystem;
+  readonly #exclude: readonly string[];
+  readonly #mirrorRoot: string;
   readonly #forwarderUrl: string;
   readonly #emit: (ev: unknown) => void;
   readonly #shellCommandTimeoutMs: number | undefined;
@@ -163,6 +194,9 @@ export class SessionRedirect {
     this.systemId = opts.systemId;
     this.systemPath = opts.systemPath;
     this.#system = opts.system;
+    this.tiers = opts.tiers;
+    this.#exclude = opts.exclude;
+    this.#mirrorRoot = opts.mirrorRoot;
     this.#forwarderUrl = opts.forwarderUrl;
     this.#emit = opts.emit;
     this.#shellCommandTimeoutMs = opts.shellCommandTimeoutMs;
@@ -182,12 +216,40 @@ export class SessionRedirect {
           + `project's files are. Use \`find\` or \`grep\` through Bash, which runs there.`,
       };
     }
-    // FILE TOOLS ARE NOT HOOKED AT ALL any more. The filesystem decides which
-    // bytes appear at a path, so there is nothing for a PreToolUse pull to do —
-    // and no local counterpart to translate to, because a file has ONE spelling
-    // whichever tool names it.
     if (toolName === 'Bash') return this.#redirectBash(toolInput);
+    // ONE BRANCH, and no pull, no push, no path map and no mirror probe behind
+    // it. A file has ONE spelling whichever tool names it, so the only question
+    // left is whether the union serves that path to this session — which the
+    // tier table answers, in memory.
+    const key = FILE_TOOLS[toolName];
+    if (key !== undefined) return this.#classifyFile(toolName, key, toolInput);
     return { decision: 'allow' };
+  }
+
+  #classifyFile(toolName: string, key: string, toolInput: Record<string, unknown>): RedirectDecision {
+    const p = toolInput[key];
+    // REFUSED, not passed through. The CLI was measured resolving every file
+    // path to an absolute one before the hook fires, so this is unreachable
+    // today — but a relative path cannot be classified at all: the tier table is
+    // a longest-prefix rule over ABSOLUTE paths, so a relative one would match
+    // nothing and be refused as "outside the mirror root", which is a sentence
+    // about the wrong thing. cc does not get to guess which machine a relative
+    // path means, and the invariant should not rest on an undocumented CLI
+    // behaviour staying put.
+    if (typeof p !== 'string' || !path.isAbsolute(p)) {
+      return {
+        decision: 'deny',
+        reason: `cc: ${toolName} needs an absolute path on a project hosted on system `
+          + `'${this.systemId}' — ${JSON.stringify(p)} could name a file on either machine. `
+          + `Use a path under ${this.systemPath}.`,
+      };
+    }
+    const verdict = classifyForTool(this.tiers, {
+      exclude: this.#exclude, mirrorRoot: this.#mirrorRoot,
+      systemId: this.systemId, systemPath: this.systemPath,
+    }, p);
+    if (verdict.decision === 'allow') return { decision: 'allow' };
+    return { decision: 'deny', reason: verdict.reason };
   }
 
   #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {

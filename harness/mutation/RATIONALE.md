@@ -167,9 +167,11 @@ The *rule* — env-gated opt-in tests are outside mutation proof — is in the R
 the data and the derivation.
 
 **§5.1 Snapshot of the gates — as of `acfad1d`, a starting point to re-derive, not a fact to trust.**
-Re-confirmed while writing this doc (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
-sort -u` → exactly these four, and a full `npm test` run's 13 skips partition into them with no
-remainder):
+Re-derived at card 2026-0355 (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
+sort -u`) → **six**, not the four this table listed: `RUN_FUSE_LIFECYCLE` and `RUN_DOCKER_SYSTEM`
+were added after the snapshot. `RUN_CLI_CONTRACT` is a **seventh** and the grep above misses it —
+it is read in `tests/cliContractCase.mjs`, a shared helper rather than a `*.test.mjs`, so re-derive
+with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
 
 | Env flag | Surface left unproven |
 |---|---|
@@ -177,11 +179,30 @@ remainder):
 | `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
 | `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
+| `RUN_FUSE_LIFECYCLE` | the whole FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (`fuse-lifecycle.real`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **The largest unprovable surface in this repo**: the daemon's routing, the caller mark, whether an unmarked process really gets `-ENOENT`, and whether `bootstrap.sh`'s binds succeed are all only observable here. `tests/fuse-lifecycle.test.mjs` (in `npm test`, and mutation-provable) covers the teardown state machine, the pure `wrapLaunch` transform, the tier table and the refusals — nothing that mounts. |
+| `RUN_DOCKER_SYSTEM` | the docker-backed `System` provider against a real daemon (`systems-docker`). Needs a docker socket. |
+| `RUN_CLI_CONTRACT` | the real-`claude` CLI-behaviour contract cases (`systems-cli-*.real`), read through `tests/cliContractCase.mjs`. Deliberately left UNSET by `npm run gate:systems` — see its header for the pricing. |
 
 Enabling any of them needs something a review environment does not have (the real
 `claude`/`ollama` binary plus auth plus network; a Chromium install via the `code-playwright`
 sibling; a network voice download), so the whole set is out of scope for mutation proof — report
 such a claim as unprovable-by-this-harness rather than mutating it.
+
+**§5.1a What `{tests}` resolves to, and it is NOT derived from the mutated file** (measured at card
+2026-0355, `code-mutant` `lib/narrow.mjs` + `lib/adapters/node-test.mjs`). The scope comes from the
+MUTANT's own declared `expectFail` ∪ `expectPass` refs, mapped through the adapter's
+`scopeOf(ref) = splitRef(ref).file` — so it is **language-agnostic about the source**: a mutant in a
+`.c` or `.h` file scopes exactly as a `.ts` one does, to the test files the author named, at file
+granularity. There is no source→test mapping anywhere in the harness, so no `.h` file needs one.
+
+Two consequences worth knowing before filing a verdict:
+- A mutant that declares **neither** `expectFail` nor `expectPass` does not map to "nothing" and
+  does not map to the whole suite: in counted mode `planNarrowing` **throws**
+  (`cannot narrow without at least one entry in expectFail or expectPass`). Only `learn` mode falls
+  back to `baselineCommand`, i.e. the whole `npm test`.
+- `harness/mutation/config.json` therefore has **no scope list to maintain**. `tests/run.mjs`
+  auto-discovers `tests/*.test.mjs`, so a new test file is inside `baselineCommand` the moment it
+  exists, and inside `{tests}` the moment a mutant names it.
 
 **§5.2 The recipe.** The skip count is host- and gate-dependent — re-derive it, don't trust a fixed
 number (13 at measurement time, per §1):

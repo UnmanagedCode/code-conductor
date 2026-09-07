@@ -175,12 +175,18 @@ describe('a worker session on a remote system', () => {
   // PINS: the injected settings widen the hook surface AND remove Glob/Grep.
   // A redirected session that still offered Grep would answer searches from a
   // session root holding the config surface and nothing else.
+  //
+  // The `Read` clause is DELIBERATELY INVERTED FROM S1: S2 hooks Read to REFUSE
+  // a path the union does not serve to this session (criterion 11), so a Read
+  // missing from this matcher would leak an -ENOENT the model reads as "the
+  // file is absent". It is hooked and NOT gated — see the ask-mode arm in
+  // tests/systems-redirect-hooks.test.mjs.
   test('the spawn argv carries the redirected settings', async () => {
     const argv = instances.get(instId)._spawnArgv;
     const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]);
     assert.deepEqual(settings.permissions.deny, ['Glob', 'Grep']);
-    assert.doesNotMatch(settings.hooks.PreToolUse[0].matcher, /\bRead\b/,
-      'Read is hooked — the pull it existed for is gone');
+    assert.match(settings.hooks.PreToolUse[0].matcher, /\bRead\b/,
+      'Read is not hooked — the refusal seam criterion 11 needs is gone');
     assert.ok(settings.hooks.PostToolUse, 'the PostToolUse seam is still registered for S3');
   });
 

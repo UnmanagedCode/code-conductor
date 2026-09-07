@@ -75,6 +75,18 @@ export interface HookRedirector {
 }
 
 
+// Tools a REDIRECTED session hooks for a reason other than permission, and
+// which must therefore not raise an ask card. `Read` is here because a
+// redirected session hooks it to REFUSE a path the union does not serve, never
+// to ask about one it does (src/settings.ts →
+// REDIRECT_PRE_TOOL_MATCHER); gating it would start prompting on reads that
+// never prompted before, which is a regression against every local session.
+// Scoped to redirected sessions: with no redirector attached the gate below
+// tests no tool name at all. The exemption is this list and nothing else — a
+// tool hooked later gates unless it is added here, rather than falling through
+// a hole (card 2026-0339).
+const REDIRECT_UNGATED_TOOLS = new Set(['Read']);
+
 interface PendingCallback {
   res: Response;
   timer: NodeJS.Timeout;
@@ -173,11 +185,7 @@ export class HookBroker {
   ): void {
     const toolUseId = envelope?.tool_use_id;
     const mode = this._getMode();
-    // No redirect exemption any more. It existed for `Read`, which a redirected
-    // session hooked only to fetch bytes before the CLI opened the file — a
-    // PreToolUse the union made unnecessary, so `Read` is no longer hooked at
-    // all and there is nothing left to exempt.
-    if (mode !== 'ask') {
+    if (mode !== 'ask' || (redirected && REDIRECT_UNGATED_TOOLS.has(toolName))) {
       respondAllow(res, updatedInput);
       return;
     }

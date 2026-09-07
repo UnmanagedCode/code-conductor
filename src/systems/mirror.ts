@@ -55,6 +55,16 @@ export function withinPosix(inner: string, outer: string): string | null {
 
 
 
+// The exclude entry that covers `systemAbs`, or null. The PREFIX comes back
+// rather than a boolean so a refusal can name the rule and a model can
+// generalise from it instead of retrying sibling by sibling.
+export function isExcluded(systemAbs: string, exclude: readonly string[]): string | null {
+  for (const e of exclude) {
+    if (withinPosix(systemAbs, e) !== null) return e;
+  }
+  return null;
+}
+
 // ── card 2026-0259 §2.4: what cc will and will not believe ───────────
 
 function invalid(systemId: string, detail: string): Error {
@@ -177,4 +187,28 @@ export function resolveMirrorScope({ systemId, project, systemPath, advertisemen
   return { scope: { mirrorRoot, exclude: advertisement.exclude }, inert };
 }
 
+// ── The refusal a worker reads mid-task ──────────────────────────────
 
+// THE HIGHEST-VALUE SENTENCE IN THIS FEATURE, and every clause earns its place
+// against one failure mode: a model that mistakes a refusal for file-not-found
+// concludes the file is absent instead of using the channel that works.
+//
+//   `cc will not bridge`   — names cc as the actor and the act as a refusal.
+//                            Not "cannot", which reads as inability.
+//   the PREFIX, not just the path — so the model generalises instead of
+//                            retrying sibling by sibling.
+//   `NOT the file being absent — cc has not looked` — the anti-ENOENT clause,
+//                            twice: a denial AND a positive statement of
+//                            ignorance.
+//   `Bash runs on … under no such restriction`, with `cat` / `sed -i` / `>`
+//                          — the channel that works, with concrete verbs for
+//                            both directions, delivered at the point of use.
+//
+// The word "found" and the phrase "does not exist" appear nowhere.
+export function excludedRefusal(p: string, systemId: string, prefix: string): string {
+  return `cc will not bridge '${p}' to this session: system '${systemId}' advertises '${prefix}' as `
+    + `excluded from file mirroring, so Read, Write and Edit cannot reach any path under it. This is cc `
+    + `refusing to carry the file, NOT the file being absent — cc has not looked, and this says nothing `
+    + `about whether it exists. Bash runs on '${systemId}' under no such restriction: read it with `
+    + `\`cat\`, change it with \`sed -i\` or a \`>\` redirect there instead.`;
+}

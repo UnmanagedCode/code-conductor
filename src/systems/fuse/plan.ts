@@ -9,12 +9,11 @@
 // sweepSessionTmpDirs).
 
 import path from 'node:path';
-import os from 'node:os';
 import { statSync } from 'node:fs';
-import { orchStoreRoot, projectsRoot, selfProjectDir } from '../../projects.ts';
+import { orchStoreRoot } from '../../projects.ts';
 import { withinPosix } from '../mirror.ts';
 import { httpError } from '../../httpError.ts';
-import { buildTierTable, renderPinsFile, type TierEntry, type TierTableInput } from './tierTable.ts';
+import { renderPinsFile, type TierEntry } from './tierTable.ts';
 
 // Zero kernel caching. `attr_timeout`/`entry_timeout`/`negative_timeout` are
 // libfuse HIGH-LEVEL mount options, so the frozen daemon passes them through
@@ -145,11 +144,19 @@ export interface FusePlanInput {
   instanceId: string;
   cwdInside: string;
   systemPath: string;
-  mirrorRoot: string;
   standInSource: string | null;
-  localRoots: readonly string[];
-  claudeCommand: string;
-  tierOverrides?: Partial<TierTableInput>;
+  // THE TIER TABLE, BUILT BY THE CALLER AND CARRIED BY REFERENCE. It is not
+  // built here, and that is criterion 15's mechanism rather than a style
+  // choice: `src/instances.ts` builds ONE array and hands the SAME array to
+  // `SessionRedirect` and to this function, so the pins the daemon parses and
+  // the table the hook decides from are the same object. A second
+  // `buildTierTable` call here would produce an equal table that could later
+  // stop being equal.
+  //
+  // It is also why the plan no longer takes `localRoots`, `claudeCommand` or a
+  // `mirrorRoot`: every one of those is an input to the table, and the table's
+  // one construction site owns them.
+  tiers: TierEntry[];
 }
 
 export function buildFusePlan(input: FusePlanInput): FusePlan {
@@ -173,19 +180,6 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     throw httpError(501, `FUSE_MIRROR_CONTAINS_MOUNT: the union mountpoint ${root} lies inside its own remote tier ${input.standInSource} (at '${inside}'), which deadlocks path resolution before the daemon is consulted`, { code: 'FUSE_MIRROR_CONTAINS_MOUNT' });
   }
 
-  const tiers = buildTierTable({
-    localRoots: input.localRoots,
-    claudeCommand: input.claudeCommand,
-    execPath: process.execPath,
-    selfProjectDir: selfProjectDir(),
-    projectsRoot: projectsRoot(),
-    homeDir: os.homedir(),
-    runDir: rundir,
-    systemPath: input.systemPath,
-    mirrorRoot: input.mirrorRoot,
-    ...input.tierOverrides,
-  });
-
   return {
     instanceId: input.instanceId,
     rundir,
@@ -198,8 +192,8 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     daemonLog: path.join(rundir, 'daemon.log'),
     cwdInside: input.cwdInside,
     mountOpts: MOUNT_OPTS,
-    tiers,
-    pinsText: renderPinsFile(tiers),
+    tiers: input.tiers,
+    pinsText: renderPinsFile(input.tiers),
     uid: process.getuid?.() ?? 0,
     gid: process.getgid?.() ?? 0,
     standInSource: input.standInSource,
