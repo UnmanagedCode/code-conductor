@@ -20,7 +20,7 @@
 // ride through the wrap unmodified.
 
 import path from 'node:path';
-import { realpathSync } from 'node:fs';
+import { realpathSync, accessSync, constants as fsc } from 'node:fs';
 import { isExcluded, withinPosix, excludedRefusal } from '../mirror.ts';
 
 export type Tier = 'host' | 'project' | 'hide' | 'fail' | 'bind';
@@ -96,7 +96,37 @@ const LOADER_OBJECTS = [
   '/usr/lib/x86_64-linux-gnu/libnss_files.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_systemd.so.2',
   '/usr/lib/x86_64-linux-gnu/gconv',
+  // DERIVED FROM THE REFUSAL LOG, not from a brief. Under the instrument's host
+  // fallback these were served whether pinned or not, so nothing named them
+  // until the `fail` tier made an unpinned NEEDED object -ENOENT:
+  //
+  //     /usr/local/bin/node: error while loading shared libraries:
+  //     libstdc++.so.6: cannot open shared object file
+  //
+  // `libstdc++` and `libgcc_s` are node's own NEEDED set — one layer the S1
+  // brief's six objects did not cover, because S1 never had to load node inside
+  // the union. `libcap.so.2` is libsystemd's, reached through the
+  // `libnss_systemd` dlopen closure already pinned above.
+  '/usr/lib/x86_64-linux-gnu/libstdc++.so.6',
+  '/usr/lib/x86_64-linux-gnu/libgcc_s.so.1',
+  '/usr/lib/x86_64-linux-gnu/libcap.so.2',
 ];
+
+// AND EACH ONE'S REALPATH, because a SONAME is usually a symlink to a versioned
+// file with a DIFFERENT NAME and the tier table matches path strings. Derived,
+// not transcribed: pinning `libcap-ng.so.0` while its target
+// `libcap-ng.so.0.0.0` stayed unpinned is what the refusal log named on the
+// first fail-closed launch —
+//
+//     /usr/bin/setpriv: error while loading shared libraries: libcap-ng.so.0:
+//     cannot open shared object file: No such file or directory
+//
+// — and it was invisible under the instrument's host fallback, which served the
+// target whether it was pinned or not.
+const LOADER_REALPATHS = LOADER_OBJECTS.flatMap((p) => {
+  try { const r = realpathSync(p); return r === p ? [] : [r]; }
+  catch { return []; }   // not installed here; the pin that names it costs nothing
+});
 
 // BOTH SPELLINGS OF EVERY ONE OF THEM, derived rather than hand-doubled so the
 // two lists cannot drift. On a merged-usr host `/lib` and `/lib64` are symlinks
@@ -104,10 +134,9 @@ const LOADER_OBJECTS = [
 // the ELF header of every binary here requests `/lib64/ld-linux-x86-64.so.2`
 // literally, which the `/usr/lib64` spelling does not match. Same class as the
 // interpreter chain, one layer down.
-const LOADER_PINS = [...new Set([
-  ...LOADER_OBJECTS,
-  ...LOADER_OBJECTS.map(p => p.startsWith('/usr/') ? p.slice(4) : p),
-])];
+const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...LOADER_REALPATHS].flatMap(
+  p => p.startsWith('/usr/') ? [p, p.slice(4)] : [p],
+))];
 
 // THE INTERPRETER CHAIN `bootstrap.sh`'S LAST STEP EXECS **INSIDE** THE UNION,
 // as root and before the privilege drop: `chroot $ROOT /bin/sh -c '... exec
@@ -197,12 +226,39 @@ function installPrefix(a: string, b: string): string | null {
   return out.length >= 3 ? out.join('/') : null;
 }
 
+// A BARE COMMAND NAME RESOLVED AGAINST CC'S OWN PATH, the way the bootstrap's
+// final `setpriv` resolves it INSIDE the chroot — `wrap.ts` carries cc's PATH
+// through as `CC_FUSE_PATH` and the bootstrap restores it immediately before
+// that exec, so the two lookups see the same list.
+//
+// IT STOPPED BEING OPTIONAL WHEN `T_FAIL` REACHED ENUM INDEX 0. Under the
+// instrument's remote-first-with-host-fallback default an unpinned launcher
+// still ran, from the host, so a bare `claude` costing no pin was invisible.
+// Fail-closed, an unpinned launcher is `-ENOENT` and the CLI cannot exec at
+// all — and `resolveClaudeBin()` returns a bare `claude` by default.
+//
+// '' when nothing on PATH matches: an unresolvable launcher is the caller's
+// refusal to make, not this module's.
+export function resolveOnPath(cmd: string): string {
+  if (!cmd) return '';
+  if (path.isAbsolute(cmd)) return cmd;
+  if (cmd.includes('/')) return path.resolve(cmd);
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const p = path.join(dir, cmd);
+    try { accessSync(p, fsc.X_OK); return p; } catch { /* next entry */ }
+  }
+  return '';
+}
+
 // A launcher binary's pins: the path itself, its realpath, and the install
 // prefix above both. Pinning the leaves alone left every parent directory in an
 // npm-global chain falling back on a getattr (rig/pins.s3.txt); one prefix
 // covers the walk.
 export function binaryPins(bin: string): string[] {
-  if (!bin || !path.isAbsolute(bin)) return [];
+  const abs = resolveOnPath(bin);
+  if (!abs) return [];
+  bin = abs;
   const out = [bin];
   let real = bin;
   try { real = realpathSync(bin); } catch { /* not installed here; pin what we were given */ }
@@ -314,7 +370,11 @@ export type ToolAccessDecision =
 // Longest prefix wins, matched at a COMPONENT BOUNDARY — the same rule
 // union.c's `tier_of` applies, so the hook and the daemon agree about which
 // entry owns a path. `/tmp/apple` must not match the pin `/tmp/app`.
-function resolveEntry(entries: readonly TierEntry[], p: string): TierEntry | null {
+//
+// Exported because it answers the DAEMON's question too — "which entry owns
+// this path" — and a test that wanted that answer would otherwise transcribe
+// the rule a third time.
+export function resolveTierEntry(entries: readonly TierEntry[], p: string): TierEntry | null {
   const len = (e: TierEntry): number => (e.prefix === '/' ? 1 : e.prefix.length);
   let best: TierEntry | null = null;
   for (const e of entries) {
@@ -331,7 +391,7 @@ export function classifyForTool(
   session: ToolAccessSession,
   p: string,
 ): ToolAccessDecision {
-  const entry = resolveEntry(entries, p);
+  const entry = resolveTierEntry(entries, p);
   // NO ENTRY AT ALL means outside the remote tier's boundary and outside every
   // host pin: the mirror root is itself a `project` entry, so nothing inside it
   // can land here.
