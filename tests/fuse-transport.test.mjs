@@ -703,28 +703,46 @@ describe("the write path — mode, faults and the double reconcile", () => {
   // DIES UNDER: dropping the regular-file test from `#restoreMode` (the
   // target's mode below comes back 0755).
   //
-  // WHAT THE INODE DISCRIMINATOR RESTS ON, and WHERE THAT IS CHECKED — recorded
-  // here because it is the same shape as the false green this arm's own first
-  // fixture had. `#restoreMode` compares the RECORDED inode to the mirror
-  // entry's CURRENT one, so an alias needs two mirror-entry replacements
-  // between the last record and the DIRTY, with the second tmp reusing the
-  // first's freed inode. What forecloses it is the RECORD CADENCE: every
-  // reconcile that lands re-records the pair (`#adoptWriteMtime` → `#record`),
-  // so the inode a mode is next compared against is the entry that was
-  // carrying it.
+  // WHAT THE INODE DISCRIMINATOR RESTS ON, and WHERE THAT IS ACTUALLY CHECKED.
+  // `#restoreMode` compares the RECORDED inode to the mirror entry's CURRENT
+  // one, so an alias needs two mirror-entry replacements between the last
+  // record and the DIRTY, with the second tmp reusing the first's freed inode.
+  // What forecloses it is the RECORD CADENCE: `#record` runs on every copying
+  // FETCH and on every landed reconcile (`#adoptWriteMtime`), so the inode a
+  // mode is next compared against is the entry that was carrying it.
   //
-  // THAT CADENCE IS CHECKED BY T11'S COUNTER-ARM, not by a comment: its chmod
-  // is made at the SAME inode as the record left, so cc must skip the restore
-  // and push 0700. A record left STALE by the preceding cycle would make that
-  // same-inode chmod read as a replacement, cc would restore 0755, and the arm
-  // would fail on the source's mode. Nothing else in this file would notice.
+  // THE KILLERS ARE T14b AND T11'S MAIN ARM — not T11's counter-arm, and an
+  // earlier version of this comment claimed otherwise. Traced:
+  //   * `#record` dropped from `#adoptWriteMtime` (the natural cadence-breaker)
+  //     leaves `#fresh` holding the PRE-push fingerprint, so **T14b**'s trailing
+  //     open re-downloads (8 B recorded against a 25 B source ⇒ `reads()+1`).
+  //   * `#mode.set` dropped from `#record` leaves no recorded mode at all, so
+  //     `#restoreMode` returns early and **T11's MAIN arm** gets 0644 on the
+  //     source instead of 0755.
+  //
+  // AND WHY THE COUNTER-ARM IS NOT ONE, because this is where a prover would
+  // otherwise mis-scope: under the first mutant the counter-arm PASSES. The
+  // same stale `#fresh` that T14b catches makes the counter-arm's own
+  // intervening `FETCH(FOR_WRITE)` miss freshness and COPY — and the copy path
+  // re-records, so `#mode` is current again by the time the chmod is compared.
+  // What the counter-arm does pin is the DISCRIMINATOR (skip the restore when
+  // the inodes are equal), which is a different invariant.
   //
   // ONE PATH LEAVES THE MODE RECORD STALE ON PURPOSE: when the adoption's
-  // source-size guard trips (T14c), `#fresh` is dropped and `#mode` is not — so
-  // the next comparison sees a difference and RESTORES. That is the
-  // conservative direction (preserve the source's mode rather than push a
-  // tmp file's fresh 0644), it only arises on a path that just suffered a
-  // racing source write, and it is stated rather than asserted.
+  // source-size guard trips (T14c), `#fresh` is dropped and `#mode` is not.
+  // WHAT FOLLOWS DEPENDS ON THE INODE, because that is what `#restoreMode`
+  // compares — the record being stale is not by itself enough:
+  //   * mirror entry REPLACED since the record (a rename) ⇒ the comparison sees
+  //     a difference and RESTORES, and only when a push follows before any
+  //     copying FETCH refreshes the record. On the CLI's open-per-write cadence
+  //     that needs a rename inside a still-held claim between the guard trip
+  //     and the next flush.
+  //   * mirror entry NOT replaced ⇒ the inodes are equal, the restore is
+  //     SKIPPED, and the pushed mode is the mirror's own — which `#shape` set
+  //     from the source, so it is right anyway.
+  // Both outcomes are the conservative direction; the case only arises on a
+  // path that just suffered a racing source write, and it is stated rather
+  // than asserted.
   test('T11b — a mirror entry that became a symlink is not chmod\'d through', async () => {
     await rig(async ({ src, mirror, call }) => {
       const p = path.join(src, 'was-a-file');
@@ -1019,6 +1037,67 @@ describe("the write path — mode, faults and the double reconcile", () => {
         'a repaired path kept a fault whose sentence asserts a divergence that no longer exists');
       assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY,
         'a repaired path is still refused for writing');
+    });
+  });
+
+  // PINS: AN ABANDONED CLAIM DOES NOT POISON THE PATH, and the discrimination
+  // is the FRAME's rather than a guess about the state.
+  //
+  // `policy_abandon_claim` fires when a mutating op took a claim and then
+  // failed BEFORE mutating (a failed `openat` in `pt_open`/`pt_create`, and the
+  // path branches of mkdir/unlink/rmdir/symlink/rename/chmod). The mirror entry
+  // is present — the op's own FETCH materialised it — and holds cc's OWN
+  // unmodified cache copy, so there is nothing to reconcile. It now carries
+  // `RELEASE_ONLY`, which says exactly that.
+  //
+  // WHY IT CANNOT BE INFERRED INSTEAD, since that was the first proposal: a
+  // flagless DIRTY on a path whose claim came from `pt_open` is EITHER an
+  // abandon OR the releasing frame of a handle that wrote and never flushed
+  // (the killed-process backstop). Same op, same flags, same `createdHere:
+  // false`. Suppressing the fault on that signature would have swallowed the
+  // second case — T12's exact sequence — and let the next STAT re-shape away
+  // the only copy of what the worker wrote. So the daemon declares which it is.
+  //
+  // DIES UNDER: cc treating a RELEASE_ONLY frame as a reconcile (arm 1 records
+  // a fault and the self-heal below never happens); cc treating a FLAGLESS one
+  // as an abandon (arm 2 records none, which is the data-loss direction).
+  test('T13c — an abandoned claim releases and self-heals; a flagless release still faults', async () => {
+    await rig(async ({ src, mirror, call, server }) => {
+      // ── ARM 1: THE ABANDON. The mirror holds cc's cache copy, untouched.
+      const p = path.join(src, 'abandoned.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      const dest = path.join(mirror, p);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      assert.equal(await fs.readFile(dest, 'utf8'), 'ORIGINAL',
+        'the op\'s own FETCH did not materialise the entry, so this is not the abandon shape');
+      // The source is made unpushable, so a frame that DID try to reconcile
+      // would fail and record a fault. That is what makes arm 1 non-vacuous.
+      await wedgeSource(p);
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY, p)).status, CCU_STATUS.READY);
+      assert.equal(server.faultAt(p), null,
+        'an abandoned claim poisoned a path the worker never wrote to');
+
+      // AND THE SELF-HEAL IS BACK, which is what the fault had removed: the
+      // claim is gone, so cc manages the path as a cache again and the next
+      // open re-materialises from the source.
+      await fs.rm(p, { recursive: true, force: true });
+      await fs.writeFile(p, 'THE SOURCE MOVED ON, AT A DIFFERENT LENGTH');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY,
+        'the path is still refused for writing, so the claim was never released');
+      assert.equal(await fs.readFile(dest, 'utf8'), 'THE SOURCE MOVED ON, AT A DIFFERENT LENGTH',
+        'the mirror is frozen on a stale copy — cc did not resume managing the path');
+
+      // ── ARM 2: THE CONTROL, and it is the direction that must NOT change.
+      // A FLAGLESS release of a handle that wrote is a real reconcile, and its
+      // failure is a real divergence.
+      const q = path.join(src, 'written.txt');
+      await fs.writeFile(q, 'ORIGINAL');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, q)).status, CCU_STATUS.READY);
+      await fs.writeFile(path.join(mirror, q), 'WORKER BYTES');
+      await wedgeSource(q);
+      assert.equal((await call(CCU_OP.DIRTY, 0, q)).status, CCU_STATUS.REFUSED);
+      assert.equal(server.faultAt(q)?.kind, 'diverged',
+        'a killed handle\'s failed reconcile recorded nothing — the next STAT will destroy its bytes');
     });
   });
 

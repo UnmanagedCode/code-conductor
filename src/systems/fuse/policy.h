@@ -778,7 +778,7 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
 
 /*
  * THE FLAGS BYTE IS OP-SCOPED. Each bit is meaningful for exactly one op, and
- * naming which is part of the definition — the byte is one field, not three
+ * naming which is part of the definition — the byte is one field, not a set of
  * independent booleans that every op must answer.
  *
  * They exist because CC CANNOT TELL THE WORKER'S INTENT FROM ITS OWN CACHE
@@ -786,9 +786,8 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
  * will AND the statement of what the worker did, and those two roles are in
  * direct conflict: a mirror entry that is gone may mean "the worker deleted it"
  * or "cc removed a stale copy", and cc was inferring the first from the second.
- * The bits below make the worker's intent DECLARED instead — there are FOUR of
- * them, and the count is deliberately not written into the prose again, because
- * the table is the list.
+ * The bits below make the worker's intent DECLARED instead. The count is
+ * deliberately not written into this prose, because the table is the list.
  */
 #define CCU_FLAG_FOR_CREATE 0x01  /* FETCH: the caller is about to CREATE `path`,
                                    * so the PARENT is what must exist. */
@@ -987,10 +986,28 @@ static inline void policy_refuse(const char *op, const char *path, const char *r
  * unit fixture. It was previously in the op bodies and had no behavioural
  * coverage at all.
  *
- * The reconcile it triggers is a no-op in content terms (the op failed, so the
- * mirror is unchanged) and costs one copy of one file on an error path. The
- * RESULT IS DELIBERATELY DISCARDED: the caller already has an errno to report,
- * and replacing it with the reconcile's would tell the worker the wrong thing.
+ * IT CARRIES CCU_FLAG_RELEASE_ONLY, AND THAT BIT IS THE WHOLE OF WHAT AN
+ * ABANDON MEANS: release the claim, reconcile NOTHING. The op failed before
+ * mutating, so the mirror still holds cc's own unmodified cache copy and there
+ * is nothing to carry.
+ *
+ * A BARE ZERO WAS A REAL DEFECT, not a tidiness question, and it is recorded
+ * because the two frames are otherwise identical on the wire. `pt_release`
+ * sends a flagless DIRTY for a handle that WROTE and never flushed — the
+ * killed-process backstop — so cc read an abandon as exactly that: it pushed
+ * the mirror's unmodified copy and, if the push failed, recorded a `diverged`
+ * fault whose sentence asserts a write that never happened and kept the claim
+ * for the session, freezing cc's cache on a file the worker never touched. The
+ * pre-fault behaviour self-healed on the next FETCH; the fault removed that.
+ * cc cannot separate the two by inspection — same op, same flags, same
+ * `createdHere` — so the DAEMON DECLARES WHICH IT IS, which is what the
+ * op-scoped flags byte exists for.
+ *
+ * It therefore also drops one whole-file upload from every error path.
+ *
+ * THE RESULT IS DELIBERATELY DISCARDED: the caller already has an errno to
+ * report, and replacing it with the reconcile's would tell the worker the wrong
+ * thing.
  *
  * NOTHING HAPPENS AT ANY OTHER TIER, because no other tier takes a claim: a
  * frame is sent only for T_PROJECT.
@@ -1000,7 +1017,7 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
 	if (tier != T_PROJECT)
 		return;
 	cache_invalidate(path);
-	(void)ccu_call(CCU_DIRTY, 0, path);
+	(void)ccu_call(CCU_DIRTY, CCU_FLAG_RELEASE_ONLY, path);
 }
 
 /* ── the narrow cwd exemption ───────────────────────────────────────────── */

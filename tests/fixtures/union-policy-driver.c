@@ -685,10 +685,23 @@ static void b16_abandon(void)
 
 	CHECK(last_req_len > 0, "a project-tier abandon sends no frame, so the claim is never released");
 	CHECK(last_req[4] == CCU_DIRTY, "the abandon frame is not a DIRTY");
-	/* NO FLAGS. A REMOVED bit here would tell cc to delete the source entry
-	 * for an op that merely failed; a FOR_WRITE bit would tell it to KEEP the
-	 * claim, which is the opposite of the whole point. */
-	CHECK(last_req[5] == 0, "the abandon frame carries flags, so it does not release the claim");
+	/* RELEASE_ONLY, AND EXACTLY THAT BIT.
+	 *
+	 * A REMOVED bit would tell cc to delete the source entry for an op that
+	 * merely failed. A FOR_WRITE bit would tell it to KEEP the claim, the
+	 * opposite of the whole point. AND A BARE ZERO — which this case pinned
+	 * until card 2026-0356 — is indistinguishable on the wire from the
+	 * releasing frame of a handle that WROTE and never flushed, so cc read an
+	 * abandon as a reconcile: it pushed the mirror's unmodified cache copy
+	 * and, if that push failed, recorded a `diverged` fault and froze its
+	 * cache for the session on a file the worker never wrote.
+	 *
+	 * RELEASE_ONLY says what an abandon means and nothing else — release the
+	 * claim, carry nothing — so no push is attempted and no fault can arise.
+	 * It also drops the whole-file upload this function's own header names as
+	 * a cost on every error path. */
+	CHECK(last_req[5] == CCU_FLAG_RELEASE_ONLY,
+	      "the abandon frame is not RELEASE_ONLY, so cc reads it as a reconcile of worker bytes");
 	CHECK(cache_get(1300, "/srv/app/f", &cerr) == 0,
 	      "the abandon left a stale routing decision cached");
 

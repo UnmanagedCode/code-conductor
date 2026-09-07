@@ -209,7 +209,14 @@ export class ControlServer {
   //      "tidy" this into releasing on failure: that re-arms the byte
   //      destruction the claim exists to prevent.
   //   2. `abandon_claim` in the daemon, for an op that took a claim and then
-  //      failed before mutating — otherwise no DIRTY would ever arrive.
+  //      failed before mutating — otherwise no DIRTY would ever arrive. It is
+  //      SUBORDINATE to item 1 rather than independent of it: the abandon
+  //      produces a DIRTY, and that DIRTY's own outcome decides. It carries
+  //      `CCU_FLAG_RELEASE_ONLY` precisely so it lands in item 1's
+  //      release-outright case and can never reach 1a — a bare zero was
+  //      indistinguishable from a killed handle's release, so an abandon whose
+  //      push failed used to keep the claim and poison a file the worker never
+  //      wrote (`policy_abandon_claim`, `policy.h`; T13c).
   //   3. this server being dropped. `FuseSession.teardown()` closes it, sets
   //      `#control = null`, and `runTeardown` then `rm -rf`s the run directory
   //      including the mirror, so the map and the files it protects die
@@ -248,9 +255,15 @@ export class ControlServer {
   #mode = new Map<string, { mode: number; ino: bigint }>();
 
   // A PATH THIS SESSION COULD NOT RECONCILE, OR CANNOT CARRY AT ALL. Sticky for
-  // the session's life and cleared by NOTHING: cc cannot resync without
-  // destroying the bytes the worker wrote, and the per-session mirror dies with
-  // the session, so the fault dies with it too.
+  // the session's life, and per-session like the mirror it describes: both die
+  // with this server.
+  //
+  // CLEARED BY EXACTLY ONE THING — a SUCCESSFUL push of the same path, which is
+  // the moment the diverged sentence becomes false (see `#dirty`). Nothing else
+  // clears one, and an `over-cap` fault is cleared by nothing at all. The
+  // original rationale for "cleared by nothing" was that cc cannot resync
+  // without destroying the bytes the worker wrote — true of every path except
+  // that one, where the bytes are what LANDED.
   #faults = new Map<string, Fault>();
 
   // Set once `close()` starts. A handler that has already been dequeued must
