@@ -42,7 +42,8 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { detectToolchain } from '../src/systems/fuse/build.ts';
 import { encodeRequest, encodeReply, decodeRequests, CCU_OP, CCU_STATUS,
-  CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED } from '../src/systems/fuse/control.ts';
+  CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED,
+  CCU_FLAG_RELEASE_ONLY } from '../src/systems/fuse/control.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRIVER_SRC = path.join(HERE, 'fixtures', 'union-policy-driver.c');
@@ -142,8 +143,8 @@ describe('the compiled policy driver', { skip }, () => {
                       'collapse remote-absent and control-refused into one reason'],
     ['b13-refusals',  'the refusal log records each (path, reason) exactly once',
                       'drop the dedupe, or key it on op as well'],
-    ['b16-abandon',   'a project-tier abandon sends a bare DIRTY and drops the cached decision; no other tier sends anything',
-                      'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit; widen the tier test'],
+    ['b16-abandon',   'a project-tier abandon sends a RELEASE_ONLY DIRTY and drops the cached decision; no other tier sends anything',
+                      'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit or a BARE ZERO (which cc cannot tell from a killed handle\'s release); widen the tier test'],
     ['b17-cwd-exempt', 'an unmarked caller may getattr the EXACT project root and nothing else, from a fixed 0111 node, with no frame',
                       'make the exemption unconditional; swap pin_exact for tier_of; widen the op test past getattr; 0111 → 0555'],
     ['b18-cwd-wide-mirror',
@@ -198,11 +199,19 @@ describe('the compiled policy driver', { skip }, () => {
     // pair, because a codec that ORs them into one value passes single-bit
     // vectors.
     const vectors = [
-      ['REQ', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE, { forCreate: true, forWrite: false, removed: false }],
-      ['REQ_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, { forCreate: false, forWrite: true, removed: false }],
+      ['REQ', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE,
+        { forCreate: true, forWrite: false, removed: false, releaseOnly: false }],
+      ['REQ_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_WRITE,
+        { forCreate: false, forWrite: true, removed: false, releaseOnly: false }],
       ['REQ_CREATE_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE,
-        { forCreate: true, forWrite: true, removed: false }],
-      ['REQ_REMOVED', CCU_OP.DIRTY, CCU_FLAG_REMOVED, { forCreate: false, forWrite: false, removed: true }],
+        { forCreate: true, forWrite: true, removed: false, releaseOnly: false }],
+      ['REQ_REMOVED', CCU_OP.DIRTY, CCU_FLAG_REMOVED,
+        { forCreate: false, forWrite: false, removed: true, releaseOnly: false }],
+      // T20 — THE FOURTH BIT. `0x08`, on DIRTY, and it must be DISTINCT from
+      // every vector above: reusing `0x04` would make a release-only frame
+      // decode as a removal and delete the file on the system.
+      ['REQ_RELEASE_ONLY', CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY,
+        { forCreate: false, forWrite: false, removed: false, releaseOnly: true }],
     ];
     for (const [name, op, flags, want] of vectors) {
       assert.ok(hex[name], `the C side printed no ${name} vector`);
@@ -339,6 +348,91 @@ describe('the compiled policy driver', { skip }, () => {
       + 'denial has already returned and the exemption can never fire');
   });
 
+  // ── T19b: THE TRACE SEPARATES A READ OPEN FROM A WRITE OPEN ────────────────
+  //
+  // PINS: every ROUTE-traced line carries the CCU_FLAG_* byte the op declared,
+  // so `open` at `cflags=2` is a WRITE open and `cflags=0` is a read one.
+  //
+  // IT IS AN INSTRUMENT CLAIM AND THAT IS WHY IT IS PINNED. The two-handle
+  // premise is carried as a standing condition whose CHECK is a
+  // `CC_FUSE_TRACE=1` capture counted offline (PROVENANCE D13c, measurement
+  // M6) — and a trace that reported `cflags=0` for every op would answer the
+  // question with a confident zero instead of failing. A source-shape
+  // assertion, because no deterministic fixture can reach a libfuse op body.
+  test('T19b: the trace line carries the frame intent the op declared', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    assert.match(src, /"%s\\t%s\\ttier=%s cflags=%u /,
+      'INVARIANT: the trace line has a cflags field — without it a capture cannot tell a read '
+      + 'open from a write open, and M6 cannot be measured at all');
+    // CARRIED ON THE ROUTE, not re-derived. `struct route` records the byte it
+    // was handed, and every trace site reads it back off the route — so a
+    // route whose flags change cannot leave a trace site reporting the old
+    // intent.
+    assert.match(src, /struct route \{[\s\S]*?uint8_t\s+intent;[\s\S]*?\};/,
+      'INVARIANT: struct route carries the frame intent it was given');
+    assert.match(src, /r->intent = cflags;/,
+      'INVARIANT: route() records the cflags byte it was handed — without it every trace '
+      + 'site reads an uninitialised value');
+    assert.match(src, /tr\(op, p, tier_name\(r\.tier\), r\.intent\);/,
+      'INVARIANT: ROUTE forwards the ROUTE\'S OWN intent to tr — a literal there reports the '
+      + 'same intent for every op');
+    // AND THE TWO OPS THAT ROUTE BOTH ENDS BY HAND. These called `route()`
+    // directly and traced a HAND-COPIED literal; the literals happened to
+    // equal the `to` route's flags, so the trace was right by coincidence and
+    // would have gone on reporting the old intent the moment either call
+    // changed. A confidently wrong number is one level worse than the blind
+    // instrument this field was added to fix.
+    for (const op of ['rename', 'link']) {
+      assert.match(src, new RegExp(`tr\\("${op}", to, tier_name\\(rt\\.tier\\), rt\\.intent\\);`),
+        `INVARIANT: pt_${op} traces the intent its own \`to\` route carries, not a copy of it`);
+      assert.doesNotMatch(src, new RegExp(`tr\\("${op}", to, tier_name\\(rt\\.tier\\), CCU_FLAG`),
+        `INVARIANT: pt_${op}'s trace does not hand-copy a flag literal`);
+    }
+    // AND THE `fh` BRANCHES REPORT 0 HONESTLY: they send no frame, so there is
+    // no intent to report, and a non-zero there would invent one.
+    for (const op of ['getattr', 'chmod', 'chown', 'truncate', 'utimens']) {
+      assert.match(src, new RegExp(`tr\\("${op}", path, "fh", 0\\);`),
+        `INVARIANT: pt_${op}'s fh branch reports cflags=0 — it sends no frame`);
+    }
+  });
+
+  // ── T19: THE RELEASING FRAME'S FLAGS, PINNED AT THE PRODUCER ───────────────
+  //
+  // PINS: `pt_release`'s reconcile frame carries CCU_FLAG_RELEASE_ONLY exactly
+  // when the handle is NOT dirty, and carries nothing when it is.
+  //
+  // A SOURCE-SHAPE ASSERTION, and the asymmetry is the same one PROVENANCE
+  // records for FOR_WRITE: no deterministic fixture can observe what the
+  // libfuse daemon put on the wire, because the fixture cannot reach an op
+  // body. The CONSUMER's half of this bit is driven for real in
+  // tests/fuse-transport.test.mjs (T14/T15); this is the half that says the
+  // daemon sends it, and that the condition is `fd_dirty` — the expression that
+  // keeps the killed-process backstop alive.
+  test('T19: pt_release sends RELEASE_ONLY only when the handle is not dirty', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    const body = bodyOfIn(src, 'release');
+    // The frame is sent through the FLAGS entry point at all — `push_mirror`
+    // cannot express this bit, so a body still calling it is the mutant that
+    // reinstates the double upload.
+    assert.match(body, /push_mirror_flags\("release", path,/,
+      'INVARIANT: pt_release sends its reconcile through push_mirror_flags — a `push_mirror` call '
+      + 'here cannot carry RELEASE_ONLY at all, and every written file uploads twice');
+    assert.doesNotMatch(body, /push_mirror\("release"/,
+      'INVARIANT: pt_release no longer sends a flagless reconcile');
+    // THE CONDITION, AND ITS DIRECTION. `fd_dirty[fd] ? 0 : RELEASE_ONLY` — an
+    // inversion compiles, keeps the flag present, and silently drops the bytes
+    // of every handle whose flush never ran.
+    assert.match(body, /fd_dirty\[fd\] \? 0 : CCU_FLAG_RELEASE_ONLY/,
+      'INVARIANT: the flag is conditioned on fd_dirty, and in this direction — a dirty handle '
+      + 'sends a FULL reconcile (the killed-process backstop) and a clean one sends RELEASE_ONLY');
+    // AND THE TIER/CLAIM GUARD IS STILL WHAT DECIDES WHETHER ANY FRAME GOES.
+    // Without this, a mutant that hoisted the push out of the guard would keep
+    // both assertions above and start sending release frames for host-tier
+    // handles.
+    assert.match(body, /fd_claimed\[fd\] &&\s+\(enum tier\)fd_tier\[fd\] == T_PROJECT\) \{\s+push_mirror_flags\("release"/,
+      'INVARIANT: the release frame is sent only for a CLAIMED project-tier handle');
+  });
+
   // WHICH OP BODIES ASK. `policy_mutation_check` owns the EROFS answer and
   // b6 proves the answer, but the driver cannot reach a libfuse op body — so
   // this asserts, from the source, that every mutating op consults it. Weaker
@@ -469,7 +563,10 @@ describe('the compiled policy driver', { skip }, () => {
         `pt_${op} should land through pt_release's push, not its own`);
       assert.match(body, /fd_tier_set\(/, `pt_${op} does not mark its fd, so release cannot push`);
     }
-    assert.match(bodyOf('release'), /push_mirror\(/, 'pt_release stopped pushing');
+    // EITHER ENTRY POINT COUNTS HERE — the claim this line makes is that a
+    // release still sends a reconcile frame at all. WHICH flags it carries is
+    // T19's, above, and a `push_mirror(` here would fail that one.
+    assert.match(bodyOf('release'), /push_mirror_flags\(|push_mirror\(/, 'pt_release stopped pushing');
     // AND THE PUSH THAT close(2) ACTUALLY SEES. The kernel discards release's
     // return value, so a reconcile answered only there is a refusal the worker
     // never learns about — criterion 10. `flush` is where close(2) reads from.

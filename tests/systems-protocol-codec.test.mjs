@@ -168,10 +168,38 @@ test('classifyStderr maps every well-known message, and nothing else', () => {
   assert.equal(classifyStderr("bfs: error: '/tmp/f/.': Not a directory."), 'ENOTDIR');
   assert.equal(classifyStderr("cat: /tmp: Is a directory"), 'EISDIR');
   assert.equal(classifyStderr("cp: error writing 'x': No space left on device"), 'ENOSPC');
+  assert.equal(classifyStderr("rm: cannot remove '/d': Directory not empty"), 'ENOTEMPTY');
+  assert.equal(classifyStderr('readlink: /tmp/plain: Invalid argument'), 'EINVAL');
   assert.equal(classifyStderr('something nobody has seen before'), 'EUNKNOWN',
     'an unmatched failure is EUNKNOWN — cc never guesses at a message it does not know');
   assert.equal(classifyStderr(''), 'EUNKNOWN');
 });
+
+// A CODE AND ITS CLASSIFIER ROW MOVE TOGETHER. The membership half is the
+// "taxonomy is closed" case above; this is the other half, derived rather than
+// transcribed: an FS code that nothing in STDERR_TABLE can produce would be a
+// name cc can never actually answer with, and the reverse — a row for a code
+// the taxonomy dropped — is a silent EUNKNOWN.
+test('every FS code except the catch-all is reachable through classifyStderr', () => {
+  const reachable = new Set(FS_ERROR_CODES.filter(c => c !== 'EUNKNOWN')
+    .map(c => [c, SAMPLE_STDERR[c]]).filter(([, m]) => m !== undefined)
+    .map(([c, m]) => [c, classifyStderr(m)]).filter(([c, got]) => c === got).map(([c]) => c));
+  assert.deepEqual(FS_ERROR_CODES.filter(c => c !== 'EUNKNOWN' && !reachable.has(c)), [],
+    'an FS code with no classifier row (or no sample here) — add both, not one');
+});
+
+// One real strerror() tail per FS code. Sourced from the tools' own output, not
+// invented: these are what the derived commands actually print under LC_ALL=C.
+const SAMPLE_STDERR = {
+  ENOENT: "stat: cannot statx '/nope': No such file or directory",
+  EACCES: 'cat: ro: Permission denied',
+  EEXIST: "mkdir: cannot create directory 'd': File exists",
+  ENOTDIR: "find: '/tmp/f/.': Not a directory",
+  EISDIR: 'cat: /tmp: Is a directory',
+  ENOSPC: "cp: error writing 'x': No space left on device",
+  ENOTEMPTY: "rm: cannot remove '/d': Directory not empty",
+  EINVAL: 'readlink: /tmp/plain: Invalid argument',
+};
 
 test('an unmatched failure carries its exit code and its RAW stderr, verbatim', () => {
   const e = execFailure("stat '/x'", 3, 'weird tool said no\n');

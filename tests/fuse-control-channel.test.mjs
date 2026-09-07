@@ -26,14 +26,26 @@ import { tierFixtureInput } from './tierFixture.mjs';
 const ENOENT = 2, EIO = 5, EACCES = 13;
 
 // One request, one reply, on its own connection.
-function call(sock, op, flags, p) {
+// `raw` lets a caller drive the helper with bytes of its own — used by the
+// clean-FIN case, which needs a frame the server refuses to act on.
+function call(sock, op, flags, p, raw) {
   return new Promise((resolve, reject) => {
     let buf = Buffer.alloc(0);
     // Both listeners come OFF on either outcome — this helper runs once per
     // assertion on one long-lived socket, and a leaked `once('error')` per call
     // trips node's max-listeners warning by the eleventh test.
-    const done = (fn, v) => { sock.off('data', onData); sock.off('error', onErr); fn(v); };
+    const done = (fn, v) => {
+      sock.off('data', onData); sock.off('error', onErr);
+      sock.off('end', onEnd); sock.off('close', onEnd);
+      fn(v);
+    };
     const onErr = (e) => done(reject, e);
+    // A SERVER-SIDE `destroy()` IS A CLEAN FIN, NOT AN `error` (card 2026-0371).
+    // `ControlServer.close()` destroys every live connection, so a frame in
+    // flight across a teardown ends this stream with no error event at all —
+    // and settling on `data`/`error` alone hangs until the runner's timeout,
+    // which reads as a wedged handler rather than as the close it is.
+    const onEnd = () => done(reject, new Error(`control socket closed with no reply to op ${op} '${p}'`));
     const onData = (c) => {
       buf = Buffer.concat([buf, c]);
       if (buf.length < CCU_REPLY_LEN) return;
@@ -41,7 +53,9 @@ function call(sock, op, flags, p) {
     };
     sock.on('data', onData);
     sock.on('error', onErr);
-    sock.write(encodeRequest(op, flags, p));
+    sock.on('end', onEnd);
+    sock.on('close', onEnd);
+    sock.write(raw ?? encodeRequest(op, flags, p));
   });
 }
 
@@ -836,6 +850,35 @@ describe('the control channel, cc side', () => {
     await closed;
     assert.ok(logs.some(l => l.includes('bad magic')), logs.join('|'));
     s3.destroy();
+  });
+
+  // PINS THE HELPER, and it is the only case that does deterministically.
+  //
+  // `ControlServer` answers a frame it cannot act on by DESTROYING the socket,
+  // which is a clean FIN with no reply and no `error` event — exactly what
+  // `close()` produces for a frame in flight across a teardown. A `call()` that
+  // listened for `data` and `error` alone never settled on it and the case hung
+  // until the runner's 60 s timeout, which reads as a wedged handler rather
+  // than as the close it is (card 2026-0371).
+  //
+  // The one in-flight case elsewhere in this file concedes in its own comment
+  // that the reply/FIN order is a race, so reverting the fix reds it only in
+  // the minority outcome — and a flaky red is not a pin. Here the server
+  // destroys before writing anything, with certainty.
+  //
+  // DIES UNDER: reverting `call()` to `data`/`error` only — the promise then
+  // never settles and this case times out instead of passing.
+  test('a call that gets a clean FIN and no reply REJECTS, rather than hanging', async () => {
+    const s5 = await connect(sockPath);
+    try {
+      const bad = encodeRequest(CCU_OP.STAT, 0, '/srv/app');
+      bad[0] ^= 0xff;
+      // Driven THROUGH the helper, because the helper is the subject.
+      await assert.rejects(
+        () => call(s5, CCU_OP.STAT, 0, '/srv/app', bad),
+        /closed with no reply/,
+        'a server-side destroy must settle the call, not leave it pending');
+    } finally { s5.destroy(); }
   });
 
   // PINS: the codec's own round trip, so a decode change that happens to match

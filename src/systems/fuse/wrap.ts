@@ -60,6 +60,24 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     CC_FUSE_CONTROL: plan.controlSock,
     CC_FUSE_MARK_PATH: plan.markPath,
     CC_FUSE_REFUSAL_LOG: plan.refusalLog,
+    // THE TRACE PATH, AND ITS NAME IS NOT THE OPERATOR'S SWITCH.
+    //
+    // `CC_FUSE_TRACE` is cc's own on/off flag, read by `resolveTraceEnabled`
+    // and keyed exactly on `'1'`. This is the worker-side PATH the bootstrap
+    // hands the daemon. Two meanings under one name, on two sides of a process
+    // boundary that `{...process.env}` crosses, is a live defect and not a
+    // tidiness question: an orchestrator started with `CC_FUSE_TRACE=0` — the
+    // most natural way an operator turns something off — put `"0"` in the
+    // worker's slot, and the bootstrap's non-emptiness test handed the daemon
+    // `CC_UNION_TRACE="0"`. `fopen("0","a")` as root then writes a junk file
+    // named `0` and pays the full per-op tracing cost on EVERY spawn.
+    //
+    // Set below rather than here, because turning it off is a DELETE and not a
+    // value: the spread at the top of this object runs first, so an inherited
+    // `CC_FUSE_TRACE_LOG` survives anything short of removing the key. (An
+    // `undefined` value would be omitted by `spawn`, but the key would still be
+    // `in` the object, and a caller — or a test — reading this env would
+    // disagree with the child's.)
     // sudo's `secure_path` replaces PATH even under `-E`, so the PATH the CLI
     // is meant to run with is carried in a name sudo does not know about and
     // restored by the bootstrap immediately before the final exec. Without this
@@ -67,6 +85,8 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     // sudoers' PATH rather than cc's.
     CC_FUSE_PATH: spec.env.PATH ?? '',
   };
+  if (plan.tracePath) env.CC_FUSE_TRACE_LOG = plan.tracePath;
+  else delete env.CC_FUSE_TRACE_LOG;
   return {
     command: 'sudo',
     args: [

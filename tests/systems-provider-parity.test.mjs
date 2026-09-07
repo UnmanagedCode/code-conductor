@@ -16,6 +16,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalSystem } from '../src/systems/localSystem.ts';
+import { msFromNanos } from '../src/systems/system.ts';
 import { CAPABILITY_CONFIGS, makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 
@@ -173,7 +174,10 @@ test('the file operations agree on results AND on error codes', async () => {
         statMissing: await sys.stat(p('nope')),
         statBroken: await sys.stat(p('broken')),
         statLink: (await sys.stat(p('link'))).kind,
-        readDir: (await sys.readDir(p('dir'))).sort((x, y) => x.name.localeCompare(y.name)),
+        // mtimeMs is dropped for the same reason as in the capability case:
+        // two separate trees. The widened-members case asserts it exactly.
+        readDir: (await sys.readDir(p('dir'))).sort((x, y) => x.name.localeCompare(y.name))
+          .map(({ mtimeMs, ...rest }) => rest),
         readDirOnFile: await codeOf(() => sys.readDir(p('dir/file'))),
         readDirMissing: await codeOf(() => sys.readDir(p('nope'))),
         realpath: (await sys.realpath(p('link'))).replace(root, '<ROOT>'),
@@ -188,10 +192,19 @@ test('the file operations agree on results AND on error codes', async () => {
         writeExclusive: await codeOf(() => sys.writeFile(p('dir/file'), 'x', { exclusive: true })),
         unlinkMissing: await codeOf(() => sys.unlink(p('nope'))),
         removeTreeMissing: await codeOf(() => sys.removeTree(p('nope'))),
+        // A mode a caller has in hand comes from stat and carries the file-type
+        // bits; chmod must MASK them on both rather than one of them rejecting.
+        chmod: await (async () => {
+          await sys.chmod(p('dir/file'), st.mode | 0o111);
+          return (await fs.stat(p('dir/file'))).mode & 0o7777;
+        })(),
+        chmodMissing: await codeOf(() => sys.chmod(p('nope'), 0o644)),
       };
     },
   );
   assert.deepEqual(a, b);
+  assert.equal(a.chmod, 0o755);
+  assert.equal(a.chmodMissing.code, 'ENOENT');
   // …and the answers are the RIGHT ones, not merely the same wrong ones.
   assert.equal(a.statMissing, null);
   assert.equal(a.statBroken, null);
@@ -241,7 +254,9 @@ test('every capability configuration is observationally equal to the local syste
       exec: normalise(await sys.exec({ shell: 'echo a; echo b >&2; exit 3' }, { cwd: root }), root),
       stat: (await sys.stat(p('d/f'))).size,
       read: await sys.readFile(p('d/f')),
-      dir: await sys.readDir(p('d')),
+      // Two separate temp trees, so mtimeMs cannot match by construction. Its
+      // fidelity is asserted per-implementation in the widened-members case.
+      dir: (await sys.readDir(p('d'))).map(({ mtimeMs, ...rest }) => rest),
       missing: await codeOf(() => sys.readFile(p('nope'))),
     };
   };
@@ -257,5 +272,221 @@ test('every capability configuration is observationally equal to the local syste
       await sys.connect();
       assert.deepEqual(await run(sys), expected, config.name);
     } finally { sys.dispose(); }
+  }
+});
+
+// The same reason the file-operations case above exists, for the members the
+// FUSE union's transport added: a symlink the two disagree about, a mode with
+// type bits on one side and not the other, or an mtime one of them rounds
+// differently is a mirror that answers wrongly about what a file IS.
+//
+// mtimeMs is NOT in the cross-implementation compare — the two runs build
+// separate trees, so the numbers cannot match. It is asserted per run against
+// that run's own tree (`mtimeExact` below), through `msFromNanos` from the same
+// integer nanoseconds the implementation uses: EXACT whole milliseconds, no
+// tolerance, and no second formula that could disagree with the first.
+test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree', async () => {
+  const BINARY = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x0a, 0x00, 0x80]);
+  const [a, b] = await both(
+    async (root) => {
+      await fs.mkdir(path.join(root, 'dir/sub'), { recursive: true });
+      await fs.writeFile(path.join(root, 'dir/file'), 'contents\n');
+      await fs.chmod(path.join(root, 'dir/file'), 0o755);
+      await fs.symlink('relative/target', path.join(root, 'link'));
+      await fs.mkdir(path.join(root, 'empty'));
+      await fs.mkdir(path.join(root, 'full'));
+      await fs.writeFile(path.join(root, 'full/kid'), 'x');
+    },
+    async (sys, root) => {
+      const p = (rel) => path.join(root, rel);
+      // A kind cc's own `SystemEntryKind` cannot name, so `%y`'s b/c/p/s all
+      // land on 'other' — the case where a raw local mode would carry type
+      // bits the derivation cannot see.
+      await sys.exec({ argv: ['mkfifo', p('fifo')] }, { cwd: root });
+      const scrub = (x) => (x === null ? null : { ...x, mtimeMs: '<ms>' });
+      // THE ORACLE IS THE IMPLEMENTATION'S OWN ARITHMETIC, from the same
+      // integer nanoseconds — not `Math.round(fs.Stats.mtimeMs)`, which is the
+      // formula `msFromNanos` REPLACED and which disagrees with it on a
+      // half-millisecond boundary about once in 5000. An oracle that flakes is
+      // not an oracle, and it would have flaked under the very claim it
+      // asserts.
+      const exact = async (rel) => {
+        const got = await sys.lstat(p(rel));
+        const st = await fs.lstat(p(rel), { bigint: true });
+        return got !== null
+          && got.mtimeMs === msFromNanos(Number(st.mtimeNs / 1000000000n), Number(st.mtimeNs % 1000000000n));
+      };
+
+      const out = {
+        lstatFile: scrub(await sys.lstat(p('dir/file'))),
+        lstatDir: scrub(await sys.lstat(p('dir'))),
+        // THE WHOLE REASON `lstat` EXISTS BESIDE `stat`: a symlink reported as
+        // one, with its target, where `stat` answers about what it points at.
+        lstatLink: scrub(await sys.lstat(p('link'))),
+        lstatFifo: scrub(await sys.lstat(p('fifo'))),
+        lstatMissing: await sys.lstat(p('nope')),
+        lstatUnderFile: await sys.lstat(p('dir/file/x')),
+        mtimeExact: [await exact('dir/file'), await exact('dir'), await exact('link')],
+
+        readDir: (await sys.readDir(p('dir'))).sort((x, y) => x.name.localeCompare(y.name)).map(scrub),
+
+        readlink: await sys.readlink(p('link')),
+        readlinkMissing: await codeOf(() => sys.readlink(p('nope'))),
+
+        removeEntryMissing: await codeOf(() => sys.removeEntry(p('nope'))),
+        removeEntryEmptyDir: await codeOf(() => sys.removeEntry(p('empty'))),
+        removeEntryFullDir: await codeOf(() => sys.removeEntry(p('full'))),
+        // ASSERTED AFTER THE REFUSAL, not just the error: an `rm -rf` in
+        // disguise refuses nothing and this is what would catch it.
+        fullDirKept: (await sys.readDir(p('full'))).map(scrub),
+      };
+
+      // A symlink REPLACES whatever is there, on both — over nothing, over a
+      // file, and over an existing link.
+      await sys.symlink('one', p('sl'));
+      out.symlinkFresh = await sys.readlink(p('sl'));
+      await sys.symlink('two', p('sl'));
+      out.symlinkOverLink = await sys.readlink(p('sl'));
+      await fs.writeFile(p('overme'), 'plain');
+      await sys.symlink('three', p('overme'));
+      out.symlinkOverFile = await sys.readlink(p('overme'));
+
+      // …AND OVER A REAL DIRECTORY, which is the case the three above cannot
+      // reach and the only one where the two ever disagreed. MEASURED before
+      // the fix: `ln -sfn -- t d` exits 0 having created `d/t`, so the wire
+      // side reported SUCCESS having landed the link somewhere nobody asked
+      // for, while `LocalSystem` threw. Both must refuse, with the same code,
+      // and the directory must be untouched afterwards.
+      await fs.mkdir(p('realdir'));
+      await fs.writeFile(p('realdir/kid'), 'x');
+      out.symlinkOverDir = await codeOf(() => sys.symlink('four', p('realdir')));
+      out.dirSurvived = (await sys.lstat(p('realdir'))).kind;
+      out.dirKeptKids = (await sys.readDir(p('realdir'))).map(e => e.name);
+
+      // `removeEntry` on a symlink takes the LINK, never the target.
+      await sys.symlink(p('dir/file'), p('doomed'));
+      await sys.removeEntry(p('doomed'));
+      out.linkGoneTargetStayed = [await sys.lstat(p('doomed')), (await sys.lstat(p('dir/file'))).kind];
+
+      // Bytes a UTF-8 round trip does not survive, and the mode that makes an
+      // atomic write preserving.
+      await sys.writeFileBytes(p('bin'), BINARY, { atomic: true, mode: 0o750 });
+      out.binary = (await sys.readFileBytes(p('bin'))).toString('hex');
+      out.binaryMode = (await sys.lstat(p('bin'))).mode.toString(8);
+      out.binaryPair = await codeOf(() => sys.writeFileBytes(p('bin'), BINARY, { atomic: true, exclusive: true }));
+      return out;
+    },
+  );
+  assert.deepEqual(a, b);
+
+  // …and the answers are the RIGHT ones, not merely the same wrong ones.
+  assert.deepEqual(a.lstatLink, { kind: 'symlink', size: 15, mode: 0o120777, mtimeMs: '<ms>', target: 'relative/target' });
+  assert.equal(a.lstatFile.mode, 0o100755, 'a FULL mode: permission bits plus the type bits the kind implies');
+  assert.equal(a.lstatDir.mode & 0o170000, 0o040000);
+  assert.equal(a.lstatFifo.kind, 'other');
+  assert.equal(a.lstatFifo.mode & 0o170000, 0, 'a kind cc cannot name reports permission bits alone on BOTH sides');
+  assert.equal(a.lstatMissing, null);
+  assert.equal(a.lstatUnderFile, null, 'a non-directory component is absence, not a failure to look');
+  assert.deepEqual(a.mtimeExact, [true, true, true], 'whole-millisecond mtime, exactly, on both');
+
+  assert.deepEqual(a.readDir.map(e => e.name), ['file', 'sub']);
+  assert.equal(a.readDir[0].mode, 0o100755, 'the listing carries the mode, so a child costs no second round trip');
+  assert.equal(a.readDir[0].size, 9);
+  assert.equal(a.readDir[1].kind, 'dir');
+  assert.deepEqual(a.readDir.map(e => e.target), [null, null]);
+
+  assert.equal(a.readlink, 'relative/target');
+  assert.equal(a.readlinkMissing.code, 'ENOENT');
+
+  assert.equal(a.removeEntryMissing.ok, true, 'an absent entry is the declared intent already met');
+  assert.equal(a.removeEntryEmptyDir.ok, true);
+  assert.equal(a.removeEntryFullDir.code, 'ENOTEMPTY');
+  assert.deepEqual(a.fullDirKept.map(e => e.name), ['kid'], 'the refusal kept the children');
+
+  assert.deepEqual([a.symlinkFresh, a.symlinkOverLink, a.symlinkOverFile], ['one', 'two', 'three']);
+  assert.equal(a.symlinkOverDir.ok, false, 'a symlink silently landed INSIDE the directory instead of refusing');
+  assert.equal(a.symlinkOverDir.code, 'EISDIR');
+  assert.equal(a.dirSurvived, 'dir');
+  assert.deepEqual(a.dirKeptKids, ['kid'], 'the refusal left the directory and its children alone');
+  assert.deepEqual(a.linkGoneTargetStayed, [null, 'file']);
+
+  assert.equal(a.binary, BINARY.toString('hex'), 'a NUL and a 0xFF survive the wire unmangled');
+  assert.equal(a.binaryMode, '100750', 'the mode rides the atomic write, so a rename does not reset it');
+  assert.equal(a.binaryPair.ok, false);
+});
+
+// REPAIRED RATHER THAN PINNED. `fs.readlink` of a non-symlink is EINVAL, and
+// `readlink -v` says "Invalid argument" — the same failure, observed by both
+// sides, which for a while cc answered `EUNKNOWN` to on the wire and `EINVAL`
+// to locally. The first cut of this file pinned that as a divergence.
+//
+// THE CLOSED-TAXONOMY ARGUMENT FOR KEEPING IT RAN BACKWARDS: the taxonomy is
+// closed SO THAT every error a real call can produce is named, so an errno a
+// genuine call produces and cc cannot name is exactly what the closure exists
+// to prevent — a caller cannot tell "that is not a symlink" from "the box
+// hiccuped". One `FS_ERROR_CODES` entry and one classifier row, and the
+// conformance suite's "every code is produced by a real failure" case is
+// satisfied by the very call below. A permanent case titled "the one code the
+// two do NOT share", inside a suite whose stated invariant is that they agree
+// on error codes, was the worse outcome.
+test('readlink of a non-symlink is EINVAL on both, not EUNKNOWN on one', async () => {
+  const [a, b] = await both(
+    async (root) => { await fs.writeFile(path.join(root, 'plain'), 'x'); },
+    async (sys, root) => ({
+      nonLink: await codeOf(() => sys.readlink(path.join(root, 'plain'))),
+      // The control that keeps this about the KIND and not about the path:
+      // absence is still ENOENT, and the two must not have collapsed together.
+      missing: await codeOf(() => sys.readlink(path.join(root, 'nope'))),
+    }),
+  );
+  assert.deepEqual(a, b);
+  assert.equal(a.nonLink.code, 'EINVAL');
+  assert.equal(a.missing.code, 'ENOENT');
+});
+
+// DERIVED FROM THE PROTOTYPE, NOT TRANSCRIBED. A member added to `System`
+// without a parity case fails HERE rather than shipping uncovered — which is
+// the failure mode a hand-maintained list of members has by construction.
+//
+// The value is the title of the case that runs it against BOTH implementations,
+// and the titles are checked against this file's own bytes, so a row naming a
+// case that does not exist is a failure too.
+const PARITY_CASES = {
+  exec: 'exec: the ordinary results agree — streams, exit code, cwd and env',
+  readFile: 'the file operations agree on results AND on error codes',
+  readFileBytes: 'the file operations agree on results AND on error codes',
+  writeFile: 'writeFile agrees on plain, atomic and exclusive, and on what lands on disk',
+  writeFileBytes: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
+  stat: 'the file operations agree on results AND on error codes',
+  lstat: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
+  readDir: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
+  readlink: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
+  // (also 'readlink of a non-symlink is EINVAL on both, not EUNKNOWN on one')
+  symlink: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
+  removeEntry: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
+  realpath: 'the file operations agree on results AND on error codes',
+  mkdir: 'the file operations agree on results AND on error codes',
+  removeTree: 'the file operations agree on results AND on error codes',
+  unlink: 'the file operations agree on results AND on error codes',
+  chmod: 'the file operations agree on results AND on error codes',
+  // cc's own machine advertises nothing unconditionally and NOTHING calls it on
+  // a `local` handle (LocalSystem.mirror's own header), so there is no shared
+  // behaviour to compare. Its wire half is tests/systems-mirror-advertisement.
+  mirror: null,
+};
+
+test('every member of System has a parity case, derived from the prototype', async () => {
+  const members = Object.getOwnPropertyNames(LocalSystem.prototype)
+    .filter(n => n !== 'constructor').sort();
+  assert.ok(members.length >= 17, `only ${members.length} members enumerated — re-anchor this test`);
+  assert.deepEqual(members.filter(m => !(m in PARITY_CASES)), [],
+    'a member of System with no parity case');
+  assert.deepEqual(Object.keys(PARITY_CASES).filter(m => !members.includes(m)).sort(), [],
+    'a parity case naming a member System no longer has');
+  // NON-VACUITY: a row may not name a case that does not exist.
+  const self = await fs.readFile(new URL(import.meta.url), 'utf8');
+  for (const [member, title] of Object.entries(PARITY_CASES)) {
+    if (title === null) continue;
+    assert.ok(self.includes(`test('${title}'`), `${member} names a case this file does not define: ${title}`);
   }
 });

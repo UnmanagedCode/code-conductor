@@ -155,8 +155,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // R3's non-vacuity control writes here — a project-tier directory that
     // really is writable, so an EROFS elsewhere is the node's answer.
     await fs.mkdir(path.join(fakeRemote, box), { recursive: true });
-    prevFakeRemote = process.env.CC_FUSE_FAKE_REMOTE_ROOT;
-    process.env.CC_FUSE_FAKE_REMOTE_ROOT = fakeRemote;
+    prevFakeRemote = process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT;
+    process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT = fakeRemote;
 
     await addSystem({ id: 'fusebox', label: 'fusebox', launch: ['node', FIXTURE] });
     assert.equal((await adoptProject('app', path.join(box, 'app'), { system: 'fusebox' })).ok, true);
@@ -189,8 +189,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const f = (k) => rows.map(r => r[k]).join('/');
       console.log(`fuse gate timing [${where}] n=${rows.length} spawn→idle ms: ${f('spawnMs')} | turn ms: ${f('turnMs')}`);
     }
-    if (prevFakeRemote === undefined) delete process.env.CC_FUSE_FAKE_REMOTE_ROOT;
-    else process.env.CC_FUSE_FAKE_REMOTE_ROOT = prevFakeRemote;
+    if (prevFakeRemote === undefined) delete process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT;
+    else process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT = prevFakeRemote;
     if (ctx) await ctx.instances.shutdown();
     disposeSystemHandles();
     if (home) await rmrf(home);
@@ -1028,13 +1028,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // IN THE FAKE REMOTE, so it genuinely exists on "the system": a refusal at
     // a path the source does not have would prove absence, not policy.
     await fs.mkdir(path.join(fakeRemote, proj, SUB), { recursive: true });
-    // (e) reads the daemon's OWN output, and nothing else in the product turns
-    // the trace on. Scoped to this arm: set before the spawn the daemon
-    // inherits it through, removed in the `finally`.
-    const traceDir = await mkdtemp('cc-fuse-trace-');
-    const tracePath = path.join(traceDir, 'union.trace');
-    const prevTrace = process.env.CC_UNION_TRACE;
-    process.env.CC_UNION_TRACE = tracePath;
+    // (e) reads the daemon's OWN output, through the PRODUCT'S OWN TRACE
+    // SWITCH. `resolveTraceEnabled()` keys exactly on '1' and is read by
+    // `buildFusePlan` IN THIS PROCESS at spawn time (instances.ts:4965), so
+    // the switch is set before `spawnWorker()` and restored in the `finally`.
+    const prevTrace = process.env.CC_FUSE_TRACE;
+    process.env.CC_FUSE_TRACE = '1';
     let inst;
     try {
       inst = await spawnWorker();
@@ -1075,15 +1074,29 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // (e) THE DAEMON SAID SO ITSELF, rather than the decision being read off
       // a shell's exit code: the routed tier is in the trace, and the root is
       // NOT in the refusal log while the two paths under it are.
+      // THE PLAN'S OWN PATH, not one this arm chose: `buildFusePlan` puts the
+      // trace at `<rundir>/trace.log` (plan.ts:233) and `wrapLaunch` hands
+      // exactly that to the worker as `CC_FUSE_TRACE_LOG` (wrap.ts:88). Read
+      // HERE, inside the `try` — the `finally`'s `remove` reclaims the rundir
+      // and takes the trace with it, which is also why this arm leaves no
+      // temp directory of its own behind.
+      const tracePath = path.join(fuseRunDir(inst.id), 'trace.log');
       const trace = await fs.readFile(tracePath, 'utf8').catch(() => '');
       const rows = trace.split('\n').filter(Boolean);
       // THE TWO WAYS THIS CAN GO RED ARE DIFFERENT FINDINGS, so they are
       // distinguished rather than collapsed — but only REACHABLE causes are
-      // named. Nothing in the product turns the trace on: CC_UNION_TRACE is
-      // not one of the CC_* variables `wrapLaunch` sets explicitly, so it
-      // reaches the daemon only by riding the env SPREAD — `spawnEnv =
-      // {...process.env}` (instances.ts) → `...spec.env` (wrap.ts:44) →
-      // `sudo -n -E` → bootstrap.sh → the daemon's own environment.
+      // named. THE PRODUCT TURNS THE TRACE ON and this arm asks it to, over a
+      // chain of four explicit links: `CC_FUSE_TRACE=1` →
+      // `resolveTraceEnabled()` (plan.ts:144) → `plan.tracePath` =
+      // `<rundir>/trace.log` (plan.ts:233) → `wrapLaunch` emitting
+      // `CC_FUSE_TRACE_LOG` (wrap.ts:88) → bootstrap.sh exporting
+      // `CC_UNION_TRACE` from it (bootstrap.sh:146).
+      //
+      // AN AMBIENT `CC_UNION_TRACE` IS NOT A CHANNEL, and must not become one
+      // again: bootstrap.sh's `else` arm unsets it exactly so that `sudo -E`,
+      // which carries the orchestrator's whole environment, cannot leak
+      // tracing into a spawn cc chose none for. That hardening is pinned
+      // (single assignment site) in `tests/fuse-lifecycle.test.mjs`.
       //
       // NOT sudoers, and that is checked rather than assumed: cc's preflight
       // already probes this exact `sudo -n -E` form with a sentinel
@@ -1102,11 +1115,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // instrument is missing is not a guard.
       assert.ok(rows.length > 0,
         'THE TRACE INSTRUMENT DID NOT RUN — no rows were written, so the assertion below could '
-        + 'not be made. In likelihood order: the product\'s env chain stopped carrying it '
-        + '(`spawnEnv = {...process.env}` in instances.ts, `...spec.env` in wrap.ts, or '
-        + 'bootstrap.sh no longer passing its environment to the daemon); this arm\'s own '
-        + 'set/restore of process.env.CC_UNION_TRACE; or — remotely — a sudoers value-content '
-        + 'rule filtering a path-valued variable that preflight\'s plain sentinel does not catch. '
+        + 'not be made. In likelihood order: the product\'s trace chain broke a link '
+        + '(`resolveTraceEnabled` in plan.ts, `plan.tracePath`, `wrapLaunch` emitting '
+        + 'CC_FUSE_TRACE_LOG in wrap.ts, or bootstrap.sh exporting CC_UNION_TRACE from it); '
+        + 'this arm\'s own set/restore of process.env.CC_FUSE_TRACE; or — remotely — a sudoers '
+        + 'value-content rule filtering a path-valued variable that preflight\'s plain sentinel '
+        + 'does not catch. '
         + `A failed fopen is NOT a cause: the daemon refuses to mount instead. Expected rows at ${tracePath}.`);
       const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       assert.ok(rows.some(l => new RegExp(`^getattr\t${esc(proj)}\ttier=cwd .*\\bmark=0\\b`).test(l)),
@@ -1121,14 +1135,14 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
           `no unmarked-project-denied for ${denied}: ${JSON.stringify(refusals)}`);
       }
     } finally {
-      // NESTED, so a throw from `remove` cannot leave CC_UNION_TRACE set for
+      // NESTED, so a throw from `remove` cannot leave CC_FUSE_TRACE set for
       // every arm after this one. Cross-arm env leakage is how a flake gets
       // manufactured later.
       try {
         if (inst) await instances.remove(inst.id);
       } finally {
-        if (prevTrace === undefined) delete process.env.CC_UNION_TRACE;
-        else process.env.CC_UNION_TRACE = prevTrace;
+        if (prevTrace === undefined) delete process.env.CC_FUSE_TRACE;
+        else process.env.CC_FUSE_TRACE = prevTrace;
       }
     }
     assertNoResidue(before, runRoot, null, 'R8');
@@ -1185,6 +1199,181 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       await instances.remove(inst.id);
     }
     assertNoResidue(before, runRoot, null, 'R9');
+  });
+
+  // ── R10 ──────────────────────────────────────────────────────────────────
+  // MODE PRESERVATION AT THE REAL MOUNT, through the syscall sequence an
+  // atomic edit actually makes.
+  //
+  // THE NUMBERING, stated precisely because the short version is ambiguous.
+  // Plan 2026-0356 §8.7 gives this arm's CONTENT the label R9. The label R9 in
+  // this file is already taken — by the merged card 2026-0373's cwd/mark arm,
+  // which is different work that happens to have landed on that number first.
+  // So: R10 here is the plan's R9 by content, and R11 here is the plan's R10
+  // and R11 merged, because they are one state (see R11's own header).
+  //
+  // WHY IT WORKS THROUGH A RENAME AND NOT ONLY THROUGH A WRITE: `pt_rename`
+  // routes the DESTINATION with FOR_CREATE|FOR_WRITE, so cc FETCHes the 0755
+  // target and records its mode against the mirror inode carrying it. The
+  // rename then replaces that inode with the tmp file's, cc sees the inode
+  // change on the reconcile, and restores. Nothing here tells cc a mode — the
+  // ledger is populated by the ordinary open, which is what makes the
+  // mechanism inode-driven rather than hint-driven.
+  test('R10 — an atomic rename over a 0755 target leaves the system copy 0755', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const mark = inside(record, inst._fuse.plan.markPath);
+      const onSystem = (rel) => path.join(fakeRemote, box, 'app', rel);
+      const inChroot = (rel) => inside(record, path.join(box, 'app', rel));
+      const marked = (script, ...args) => inNs(record.anchorPid,
+        `[ -e "$1" ]; ${script}`, mark, ...args);
+
+      await fs.writeFile(onSystem('r10-mode.sh'), '#!/bin/sh\necho one\n');
+      await fs.chmod(onSystem('r10-mode.sh'), 0o755);
+
+      // ONE MARKED SHELL, ONE REDIRECTION. `>` is performed by the shell's own
+      // thread group, so the create is marked; the new file takes the shell's
+      // umask, which is what strips the mode in the first place.
+      const mk = await marked('echo two > "$2"', inChroot('r10-tmp'));
+      assert.equal(mk.ok, true, `the marked create refused: ${mk.stderr}`);
+      const tmpMode = (await fs.stat(onSystem('r10-tmp'))).mode & 0o777;
+      assert.notEqual(tmpMode, 0o755,
+        `the tmp file already came out 0755 (${tmpMode.toString(8)}), so there is nothing to restore `
+        + 'and this arm cannot fail');
+
+      // A SECOND MARKED SHELL, exec\'ing into `mv` — R7 proves the mark
+      // survives exec, which is what makes an external binary marked here.
+      const mv = await marked('exec mv "$2" "$3"', inChroot('r10-tmp'), inChroot('r10-mode.sh'));
+      assert.equal(mv.ok, true, `the marked rename refused: ${mv.stdout} ${mv.stderr}`);
+
+      await waitFor(async () =>
+        (await fs.readFile(onSystem('r10-mode.sh'), 'utf8').catch(() => '')).includes('two'),
+        { timeout: 15_000 });
+      assert.equal((await fs.stat(onSystem('r10-mode.sh'))).mode & 0o777, 0o755,
+        'the atomic rename stripped the system copy\'s executable bit');
+      // AND THE TMP END IS GONE FROM THE SYSTEM, so the rename landed as a move
+      // rather than as a copy that left its scratch file behind.
+      await assert.rejects(() => fs.access(onSystem('r10-tmp')),
+        'the tmp file is still on the system — the from-end reconcile did not land');
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R10');
+  });
+
+  // ── R11 ──────────────────────────────────────────────────────────────────
+  // CRITERION 10 END TO END WITH A REAL PUSH FAILURE, and the fault surface it
+  // produces. The plan's R10 and R11, in one arm because they are one state:
+  // the divergence has to exist before the tool refusal can be asked about.
+  //
+  // THE WEDGE IS A NON-EMPTY DIRECTORY AT THE SOURCE PATH, and it is the one
+  // shape that fails and STAYS failed: `push`'s wrong-kind repair calls
+  // `rmdir`, which refuses ENOTEMPTY, so the reconcile cannot recover. A
+  // permission wedge would not separate the open from the push (cc copies the
+  // source mode onto the mirror, so anything stopping the push stops the open),
+  // and R7's mirror-removal wedge is a DIFFERENT branch — cc deliberately does
+  // not record a fault for it, because that refusal's wording promises an
+  // intact local copy and there is none.
+  //
+  // NOT R7's ARM AGAIN: R7 pins that close(2) reports EIO. This pins what
+  // happens AFTERWARDS — the fault is recorded, the worker's bytes survive, and
+  // the tool surface refuses the next write by name.
+  test('R11 — a push that cannot land diverges the path, and the tool surface refuses it by name', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const mark = inside(record, inst._fuse.plan.markPath);
+      const onSystem = (rel) => path.join(fakeRemote, box, 'app', rel);
+      const inChroot = (rel) => inside(record, path.join(box, 'app', rel));
+      const unionPath = path.join(box, 'app', 'r11-diverge.txt');
+
+      await fs.writeFile(onSystem('r11-diverge.txt'), 'ORIGINAL\n');
+
+      // Open, write, hold — then wedge the SOURCE while the handle is still
+      // open, so the open succeeded and only the reconcile fails.
+      const NODE_PROBE = [
+        'const fs=require("fs");',
+        'const fd=fs.openSync(process.argv[1],"w");',
+        'fs.writeSync(fd,"WORKER BYTES\\n");',
+        'const t=Date.now(); while(Date.now()-t<4000);',
+        'try{fs.closeSync(fd)}catch(e){console.log("CLOSE_ERR:"+e.code);process.exit(3)}',
+        'console.log("CLOSE_OK")',
+      ].join('');
+      const mirrorCopy = path.join(fuseRunDir(inst.id), 'mirror', unionPath);
+      const writer = inNs(record.anchorPid,
+        '[ -e "$1" ]; exec "$3" -e "$4" "$2"',
+        mark, inChroot('r11-diverge.txt'), inside(record, inst._fuse.plan.markPath), NODE_PROBE);
+      await waitFor(async () =>
+        (await fs.readFile(mirrorCopy, 'utf8').catch(() => '')).includes('WORKER BYTES'),
+        { timeout: 15_000 });
+      await fs.rm(onSystem('r11-diverge.txt'));
+      await fs.mkdir(path.join(onSystem('r11-diverge.txt'), 'occupied'), { recursive: true });
+      await fs.writeFile(path.join(onSystem('r11-diverge.txt'), 'occupied', 'x'), 'y\n');
+
+      const w = await writer;
+      assert.match(w.stdout, /CLOSE_ERR:EIO/,
+        `close(2) did not report the refused reconcile: ${w.stdout} ${w.stderr}`);
+
+      // 1. THE FAULT IS RECORDED, on the session's own control server.
+      const fault = inst._fuse.controlServer.faultAt(unionPath);
+      assert.ok(fault, 'the push failed and the session recorded no fault');
+      assert.equal(fault.kind, 'diverged');
+
+      // 2. THE WORKER'S BYTES SURVIVE. The claim is kept, so cc's own cache
+      //    management cannot re-shape the mirror entry away — and a marked
+      //    READ of the path still serves them.
+      const read = await inNs(record.anchorPid, '[ -e "$1" ]; read L < "$2"; echo "$L"',
+        mark, inChroot('r11-diverge.txt'));
+      assert.match(read.stdout, /WORKER BYTES/,
+        `a diverged path stopped serving the bytes the refusal promises: ${read.stdout} ${read.stderr}`);
+
+      // 3. A SECOND WRITE OPEN IS REFUSED AT THE SYSCALL.
+      const REOPEN = [
+        'const fs=require("fs");',
+        'try{fs.closeSync(fs.openSync(process.argv[1],"w"))}catch(e){console.log("OPEN_ERR:"+e.code);process.exit(3)}',
+        'console.log("OPEN_OK")',
+      ].join('');
+      const again = await inNs(record.anchorPid,
+        '[ -e "$1" ]; exec "$3" -e "$4" "$2"',
+        mark, inChroot('r11-diverge.txt'), inside(record, inst._fuse.plan.markPath), REOPEN);
+      assert.match(again.stdout, /OPEN_ERR:EIO/,
+        `a diverged path accepted a second write: ${again.stdout} ${again.stderr}`);
+
+      // 4. THE FAULT SURFACE, AT THE HOOK, TWO-DIRECTIONALLY. `Read` is
+      //    ALLOWED — which is only possible because the tier gate allows this
+      //    path — and `Write` at the SAME path is refused by the fault, naming
+      //    the file. That pair is the proof the plan asks for: a path
+      //    `classifyForTool` allows, refused by `preToolUse`.
+      const redirect = inst._redirect;
+      assert.ok(redirect, 'the session has no redirect, so the hook surface cannot be asked');
+      assert.deepEqual(await redirect.preToolUse('Read', { file_path: unionPath }),
+        { decision: 'allow' },
+        'the tier gate denies this path, so a Write denial below would prove nothing about faults');
+      const d = await redirect.preToolUse('Write', { file_path: unionPath });
+      assert.equal(d.decision, 'deny');
+      assert.match(d.reason, new RegExp(unionPath.replace(/[.*+?^$()|[\]\\]/g, '\\$&')),
+        'the refusal does not name the file');
+      assert.match(d.reason, /have diverged/);
+      assert.match(d.reason, /Bash runs ON SYSTEM 'fusebox'/,
+        'the refusal does not point at Bash on the system');
+
+      // 5. AND THE SAME SENTENCE REACHES THE WORKER IN BAND, through the only
+      //    channel a post-return failure has.
+      const note = await redirect.postToolUse('Write', { file_path: unionPath }, { ok: true });
+      assert.match(String(note), /have diverged/,
+        'a reconcile that failed after the tool returned reached the worker nowhere');
+
+      // 6. THE SYSTEM COPY WAS NEVER OVERWRITTEN — the wedge is still there,
+      //    intact, which is what "cc will not overwrite the system's copy"
+      //    means.
+      assert.equal(await fs.readFile(path.join(onSystem('r11-diverge.txt'), 'occupied', 'x'), 'utf8'), 'y\n');
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R11');
   });
 
   // ── ARM 7 ────────────────────────────────────────────────────────────────

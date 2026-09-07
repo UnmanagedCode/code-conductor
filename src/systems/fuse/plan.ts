@@ -120,34 +120,41 @@ export interface FusePlan {
   pinsText: string;
   uid: number;
   gid: number;
-  // THE S2 FAKE REMOTE — see resolveFakeRemoteRoot. The root
-  // `localDirSource` reads and writes on the worker's behalf.
-  fakeRemoteRoot: string;
+  // THE SOURCE OVERRIDE'S ROOT, or '' in production. See
+  // `FusePlanInput.sourceOverrideRoot`; the only thing this field does here is
+  // feed the containment refusal below.
+  sourceOverrideRoot: string;
+  // WHERE THE DAEMON WRITES ITS PER-OP TRACE, or '' when tracing is off — and
+  // off is the default, because the daemon's `tr()` resolves ids per op and
+  // reads /proc, which production must not pay for. `CC_FUSE_TRACE=1` turns it
+  // on (and nothing else does — see resolveTraceEnabled); it is the instrument
+  // the two-handle premise and the per-op accounting are measured with.
+  tracePath: string;
 }
 
-// ── the S2 FAKE REMOTE, labelled as one ─────────────────────────────────────
+// THE DAEMON'S PER-OP TRACE, off by default. `union.c` has honoured
+// `CC_UNION_TRACE` since the fork and cc has never set it; `tr()` calls
+// `resolve_ids` per op and reads /proc, so it is opt-in rather than always-on.
 //
-// S2 has no transport. The `RemoteSource` behind the control channel is a plain
-// local directory, and this resolves which one.
-//
-// WHAT THAT PROVES: the control channel end to end — every frame, the mirror
-// discipline, the materialisation and the push — and the tier policy above it.
-// WHAT IT DOES NOT PROVE: any transport, any latency and any `System` call. S3
-// (2026-0356) deletes this and constructs the `System`-backed source instead.
-//
-// THE OVERRIDE IS WHY IT IS A KNOB AT ALL. Criteria 3 and 4 are only checkable
-// when the remote's bytes DIFFER from the host's at the same path; the default
-// of `/` makes them identical and the distinction unobservable, which is
-// exactly the limit S1's bind-mount stand-in had. The real gate points it at a
-// temp tree.
-export function resolveFakeRemoteRoot(): string {
-  return process.env.CC_FUSE_FAKE_REMOTE_ROOT || '/';
+// EXACTLY `'1'`, AND THE WORKER-SIDE VARIABLE HAS A DIFFERENT NAME. This is the
+// operator's switch and cc is its only reader; the PATH the bootstrap hands the
+// daemon is `CC_FUSE_TRACE_LOG` (wrap.ts). One name for both would put an
+// operator's `CC_FUSE_TRACE=0` — the natural way to turn something OFF — into
+// the worker's path slot, where a non-emptiness test reads it as on.
+export function resolveTraceEnabled(): boolean {
+  return process.env.CC_FUSE_TRACE === '1';
 }
 
 export interface FusePlanInput {
   instanceId: string;
   cwdInside: string;
-  fakeRemoteRoot: string;
+  // WHERE THE SOURCE'S BYTES COME FROM WHEN THEY DO NOT COME FROM THE SYSTEM —
+  // a local directory standing in for the remote, or null in production. It is
+  // the LIFECYCLE GATE'S INSTRUMENT, not a production knob: criteria 3 and 4
+  // are only checkable when the remote's bytes DIFFER from the host's at the
+  // same path, and that gate must not need a container. `src/instances.ts` is
+  // the one reader of the environment variable behind it.
+  sourceOverrideRoot: string | null;
   markPath: string;
   // THE TIER TABLE, BUILT BY THE CALLER AND CARRIED BY REFERENCE. It is not
   // built here, and that is criterion 15's mechanism rather than a style
@@ -170,18 +177,23 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
 
   // CONFIGURATION-TIME REFUSAL: THE SOURCE MUST NOT CONTAIN CC'S OWN STAGING
   // MIRROR. cc materialises a remote path P at `<mirror>/P` and reads it from
-  // `<fakeRemoteRoot>/P`; where the mirror lies inside the source root, some P
-  // resolves back into the mirror and cc serves its own staging area as remote
-  // content — a listing of the source enumerates the mirror, and what the
-  // worker then reads is cc's copy of what it already had.
+  // `<sourceOverrideRoot>/P`; where the mirror lies inside the source root,
+  // some P resolves back into the mirror and cc serves its own staging area as
+  // remote content — a listing of the source enumerates the mirror, and what
+  // the worker then reads is cc's copy of what it already had.
+  //
+  // IT GUARDS THE OVERRIDE ROOT, WHICH IS WHAT IT ALWAYS GUARDED. In production
+  // there is no root at all — a path P from the daemon IS the path on the
+  // system — so there is no arithmetic for a containment to break, and the
+  // check has nothing to do.
   //
   // Whether such a P is REACHABLE depends on the tier table, which is a
   // per-session artifact; this refuses on the containment itself, which is the
   // conservative half of that question and the half decidable here.
   //
   // ROOT `/` IS EXEMPT, and on a MEASURED mechanism rather than on intent.
-  // There, `<fakeRemoteRoot>/P` is P, so cc reads the mirror only for a P at or
-  // inside the mirror — and the mirror is `<runDir>/mirror` while `runDir`
+  // There, `<sourceOverrideRoot>/P` is P, so cc reads the mirror only for a P at
+  // or inside the mirror — and the mirror is `<runDir>/mirror` while `runDir`
   // carries a `hide` pin (tierTable.ts), which longest-prefix makes win over
   // even a `project /`. `route()` answers `-ENOENT` for a `hide` path before
   // any control frame is sent, so no such P reaches cc at all.
@@ -192,9 +204,10 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   // descends, and the chain from the projects root down to `runDir` is `host`,
   // so no frame ever names the mirror's parent. `tests/fuse-lifecycle.test.mjs`
   // asserts both halves against the real table.
-  const inside = input.fakeRemoteRoot === '/' ? null : withinPosix(mirror, input.fakeRemoteRoot);
+  const override = input.sourceOverrideRoot;
+  const inside = override === null || override === '/' ? null : withinPosix(mirror, override);
   if (inside !== null) {
-    throw httpError(501, `FUSE_REMOTE_ROOT_CONTAINS_MIRROR: this session's staging mirror ${mirror} lies inside the remote root ${input.fakeRemoteRoot} (at '${inside}'), so cc would read its own mirror back as remote content and serve it to the worker`, { code: 'FUSE_REMOTE_ROOT_CONTAINS_MIRROR' });
+    throw httpError(501, `FUSE_REMOTE_ROOT_CONTAINS_MIRROR: this session's staging mirror ${mirror} lies inside the remote root ${override} (at '${inside}'), so cc would read its own mirror back as remote content and serve it to the worker`, { code: 'FUSE_REMOTE_ROOT_CONTAINS_MIRROR' });
   }
 
   return {
@@ -216,7 +229,8 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     pinsText: renderPinsFile(input.tiers),
     uid: process.getuid?.() ?? 0,
     gid: process.getgid?.() ?? 0,
-    fakeRemoteRoot: input.fakeRemoteRoot,
+    sourceOverrideRoot: override ?? '',
+    tracePath: resolveTraceEnabled() ? path.join(rundir, 'trace.log') : '',
   };
 }
 

@@ -74,6 +74,8 @@ import { SystemError } from './protocol.ts';
 import { ProviderShell, type ShellHost } from './providerShell.ts';
 import type { System } from './system.ts';
 import { classifyForTool, type TierEntry } from './fuse/tierTable.ts';
+import { refusalFor, refusesTool } from './fuse/faultRefusals.ts';
+import type { Fault } from './fuse/control.ts';
 
 // A System cc can run one command on. Every non-local system is one
 // (registry.ts resolves a non-local id to a ProviderSystem); the type says so
@@ -180,6 +182,12 @@ export interface SessionRedirectOptions {
   mirrorRoot: string;
   shellCommandTimeoutMs?: number;
   maxOutputBytes?: number;
+  // THE PER-PATH FAULT SURFACE, read from the session's control server
+  // (src/systems/fuse/control.ts). Optional because a redirected session
+  // without a union mount — the in-process launcher's — has no control server
+  // at all, and there is then no fault to report.
+  faultAt?: (p: string) => Fault | null;
+  settle?: (p: string) => Promise<void>;
 }
 
 export class SessionRedirect {
@@ -200,6 +208,8 @@ export class SessionRedirect {
   readonly #emit: (ev: unknown) => void;
   readonly #shellCommandTimeoutMs: number | undefined;
   readonly #maxOutputBytes: number;
+  readonly #faultAt: ((p: string) => Fault | null) | undefined;
+  readonly #settle: ((p: string) => Promise<void>) | undefined;
 
   // ONE for the whole session, built on first use. It holds configuration only —
   // the project root, the fence, the ceiling — because no command's state
@@ -235,6 +245,8 @@ export class SessionRedirect {
     this.#emit = opts.emit;
     this.#shellCommandTimeoutMs = opts.shellCommandTimeoutMs;
     this.#maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.#faultAt = opts.faultAt;
+    this.#settle = opts.settle;
   }
 
   // ── PreToolUse ─────────────────────────────────────────────────────
@@ -282,8 +294,21 @@ export class SessionRedirect {
       exclude: this.#exclude, mirrorRoot: this.#mirrorRoot,
       systemId: this.systemId, systemPath: this.systemPath,
     }, p);
-    if (verdict.decision === 'allow') return { decision: 'allow' };
-    return { decision: 'deny', reason: verdict.reason };
+    if (verdict.decision === 'deny') return { decision: 'deny', reason: verdict.reason };
+    // THE FAULT SURFACE IS SECOND, AND THAT ORDERING IS A RULING, NOT A STYLE
+    // CHOICE. The tier gate is the owner's most important property; a surface
+    // consulted ahead of it is a bypass route by construction, whatever it
+    // returns today. It costs nothing here: a fault only exists for a path
+    // written through the union, which is project tier, which the gate allows.
+    //
+    // NOTE THE RETURN TYPE. These denials carry no `class`, because
+    // `ToolDenyClass` stays FOUR — this local shape absorbs them, and a reader
+    // counting the tier wordings still counts four.
+    const fault = this.#faultAt?.(p);
+    if (fault && refusesTool(fault, toolName)) {
+      return { decision: 'deny', reason: refusalFor(fault, p, this.systemId) };
+    }
+    return { decision: 'allow' };
   }
 
   #redirectBash(toolInput: Record<string, unknown>): RedirectDecision {
@@ -320,17 +345,29 @@ export class SessionRedirect {
   // channel available: a tool result cannot be substituted, only annotated, so
   // cc can say where a write landed but can never rewrite a `/app` path inside
   // a command's output into its local counterpart.
-  // A NO-OP TODAY, AND DELIBERATELY STILL WIRED. It used to push the local file
-  // back to the system and report where it landed; the union writes through, so
-  // there is nothing to push and nothing to say.
+  // WHAT IT REPORTS: a reconcile that failed AFTER the tool already returned
+  // success. The union writes through, so there is nothing to push here — but
+  // the push cc issues from the daemon's `flush` can refuse, and
+  // `additionalContext` is the only channel that can put that in front of the
+  // worker IN BAND rather than in a log (hookBroker.ts already emits it).
   //
-  // The hook stays registered (REDIRECT_POST_TOOL_MATCHER, src/settings.ts)
-  // because S3's write-back needs exactly this seam: a lazy per-open mirror
-  // pushes at `release`, which can fail after the tool has already returned
-  // success, and a failed push has to reach the worker in band rather than be
-  // logged. Deleting the wiring now means re-deriving it then.
-  async postToolUse(_toolName: string, _toolInput: Record<string, unknown>, _toolResponse: unknown): Promise<string | null> {
-    return null;
+  // `Read` is deliberately outside the matcher (REDIRECT_POST_TOOL_MATCHER,
+  // src/settings.ts): a read-only open pushes nothing, so it can report
+  // nothing.
+  async postToolUse(toolName: string, toolInput: Record<string, unknown>, _toolResponse: unknown): Promise<string | null> {
+    const key = FILE_TOOLS[toolName];
+    if (key === undefined) return null;
+    const p = toolInput[key];
+    if (typeof p !== 'string' || !path.isAbsolute(p)) return null;
+    // THE AWAIT IS THE CRITERION. The push is issued from the daemon's `flush`
+    // and answered to `close(2)`, so by the time a tool returns the outcome is
+    // usually known — but a `release` backstop, or a frame still queued behind
+    // another for the same path, can land after it. `settle` awaits the path's
+    // in-flight entry so the note below reports a settled state rather than a
+    // racing one.
+    await this.#settle?.(p);
+    const fault = this.#faultAt?.(p);
+    return fault ? refusalFor(fault, p, this.systemId) : null;
   }
 
   // ── The forwarded command ──────────────────────────────────────────

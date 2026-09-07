@@ -125,6 +125,29 @@ write_record starting
 #       non-root daemon breaks the CLI's own Bash tool with EACCES on
 #       /tmp/claude-1000. `allow_other,default_permissions` plus per-request
 #       setfsuid/setfsgid is what lets one daemon serve callers of another uid.
+#       CC_UNION_TRACE MUST BE ABSENT, NOT EMPTY, when tracing is off, and it
+#       cannot ride as a command prefix like the others for that reason: the
+#       daemon tests the POINTER (`if (tp)`, union.c), and an empty string is a
+#       non-NULL pointer in C — it would `fopen("")`, fail ENOENT and REFUSE TO
+#       MOUNT, on every ordinary spawn. `set -u` above is the second reason the
+#       reference is defaulted rather than bare.
+#
+#       THE INPUT IS A PATH, NOT A FLAG. `CC_FUSE_TRACE_LOG` is set by
+#       `wrapLaunch` only when cc decided tracing is on, and stripped otherwise;
+#       cc's own on/off switch is `CC_FUSE_TRACE`, which nothing here reads. A
+#       non-emptiness test on a PATH is exact — where the same test on a flag
+#       accepted "0".
+#
+#       THE `else` ARM IS LOAD-BEARING: sudo -E carries the orchestrator's whole
+#       environment through, so an ambient CC_UNION_TRACE would otherwise reach
+#       the daemon on a spawn where cc chose no tracing at all. This is the one
+#       place the daemon's environment is composed, so it is the one place that
+#       can be sure.
+if [ -n "${CC_FUSE_TRACE_LOG:-}" ]; then
+	export CC_UNION_TRACE="$CC_FUSE_TRACE_LOG"
+else
+	unset CC_UNION_TRACE || :
+fi
 CC_UNION_HOST_ROOT=/ \
 CC_UNION_REMOTE="$CC_FUSE_MIRROR" \
 CC_UNION_PINS="$CC_FUSE_PINS" \
@@ -135,6 +158,8 @@ CC_UNION_REFUSALS="$CC_FUSE_REFUSAL_LOG" \
 	"$CC_FUSE_BIN" -f -o "$CC_FUSE_MOUNT_OPTS" "$CC_FUSE_ROOT" \
 	>"$CC_FUSE_DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
+#       Off the CLI's exec, which the CC_FUSE_* variables do ride on.
+unset CC_UNION_TRACE || :
 write_record starting
 
 # ── 5. wait for the mount, via /proc/self/mounts and NEVER `mountpoint -q`:

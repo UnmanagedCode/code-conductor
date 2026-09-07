@@ -562,16 +562,18 @@ export class FuseSession {
   #control: ControlServer | null = null;
   readonly #source: RemoteSource;
 
-  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines>; source?: RemoteSource } & Sinks) {
+  // `source` IS REQUIRED, and that is the point: a caller that forgets it now
+  // fails to typecheck, where the old default silently mounted a local
+  // directory as the remote — the worst outcome this file can produce, because
+  // every read succeeds and every one of them is about the wrong machine.
+  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines>; source: RemoteSource } & Sinks) {
     this.plan = opts.plan;
     this.#ccBootId = opts.ccBootId;
     this.#driver = opts.driver ?? realMountDriver;
     this.#scan = opts.scan;
     this.#sinks = { emit: opts.emit, log: opts.log };
     this.#deadlines = { ...DEFAULT_DEADLINES, ...opts.deadlines };
-    // The S2 fake remote (see resolveFakeRemoteRoot). S3 hands in a
-    // `System`-backed source here instead and deletes `localDirSource`.
-    this.#source = opts.source ?? localDirSource(opts.plan.fakeRemoteRoot);
+    this.#source = opts.source;
   }
 
   get ccBootId(): string { return this.#ccBootId; }
@@ -652,6 +654,10 @@ export class FuseSession {
     await fsp.writeFile(p.pinsPath, p.pinsText);
     await fsp.writeFile(p.daemonLog, '');
     await fsp.writeFile(p.refusalLog, '');
+    // Created EMPTY here for the same reason the other two are: the daemon runs
+    // as root and appends, so a file cc did not create first would be
+    // root-owned and teardown could not reclaim the tree without sudo.
+    if (p.tracePath) await fsp.writeFile(p.tracePath, '');
     // LISTENING BEFORE THE SPAWN, because the daemon probes the socket before
     // it mounts and refuses if it cannot connect. A relaunch into the same run
     // directory closes the previous server first — the socket path is the same

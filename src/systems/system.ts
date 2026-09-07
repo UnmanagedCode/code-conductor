@@ -12,11 +12,23 @@ import type { SystemErrorCode } from './protocol.ts';
 // The provider contract has exactly three MUST primitives — `exec`, `readFile`
 // and `writeFile` — and everything else here is DERIVED from `exec` on the far
 // side (`stat -c`, `find`, `mkdir -p`, `rm -rf`, `unlink`, `realpath`,
-// `chmod`). They are cc-side helpers rather than provider surface, which
+// `chmod`, `ln -sfn`, `readlink`, `rm -d`). They are cc-side helpers rather
+// than provider surface, which
 // is why they live on this interface but will not appear in the wire protocol:
 // a provider implements three operations, this interface exposes the shapes cc
 // actually calls. `LocalSystem` implements each one natively, so routing
 // through it is exactly today's behaviour.
+//
+// DELIBERATELY ABSENT, each for a reason that would otherwise be re-litigated:
+//   `utimes` — setting a source file's mtime to the mirror's would misreport
+//     when the source changed, which build tools on the box depend on.
+//   `chown`  — the system's uid space is not the orchestrator's
+//     (src/systems/fuse/PROVENANCE.md D13b).
+//   `rename` — a cross-tier rename is EXDEV and a project-tier directory
+//     rename refuses (D13e), so nothing can ask for one.
+//   a RANGED write, or a ranged read past `readFileBytes`'s `length` — the
+//     union's mirror must hold a whole file to serve arbitrary offsets, so a
+//     ranged transfer buys nothing.
 //
 // Two implementations: the in-process LocalSystem, and ProviderSystem, which
 // reaches a system over the wire protocol (docs/systems-protocol.md).
@@ -187,9 +199,77 @@ export interface SystemStat {
   mtimeMs: number;
 }
 
+// THE POSIX FILE-TYPE BITS FOR A KIND — the inverse of `kindFromMode`, and
+// what lets `lstat` and `readDir` report a FULL mode from a derivation that
+// carries permission bits alone (`find -printf '%m'`). A caller reading
+// `SystemStat.mode` must not have to know which derivation produced it.
+//
+// `other` HAS NO BITS HERE, and both implementations report permission bits
+// alone for it rather than one of them guessing: `%y` distinguishes b, c, p and
+// s, cc's own `SystemEntryKind` does not, and a local `fs.lstat` that passed
+// the real bits through would diverge from the wire for every fifo and socket.
+export function typeBitsFor(kind: SystemEntryKind): number {
+  switch (kind) {
+    case 'dir': return 0o040000;
+    case 'file': return 0o100000;
+    case 'symlink': return 0o120000;
+    default: return 0;
+  }
+}
+
+// WHOLE MILLISECONDS FROM INTEGER NANOSECONDS, and BOTH implementations reach
+// it — which is the point, because they were converging by luck and missing.
+//
+// The two sides start from different representations: a local `bigint` stat has
+// exact nanoseconds, and the wire has `find -printf '%T@'`'s
+// `seconds.nanoseconds` decimal string. Rounding each in its own arithmetic
+// disagrees on a half-millisecond boundary: `Number("1788783387.216499885")`
+// cannot hold that value, so `× 1000` lands just under `.5` where
+// `secs*1000 + ns/1e6` lands just over. MEASURED at 18 disagreements in 400k
+// random nanosecond values (~5e-5) — a flake, in a repo that tracks flakes,
+// underneath two documents claiming the two agree EXACTLY.
+//
+// Integer in, integer out. `nanos / 1e6` is exact for every integer `nanos`
+// below 1e9 (both operands are exactly representable and so is the quotient's
+// half-way point), so the rounding is deterministic rather than nearly so; a
+// `nanos` that rounds to 1000 needs no carry, because `secs * 1000 + 1000` IS
+// the next second.
+export function msFromNanos(secs: number, nanos: number): number {
+  return secs * 1000 + Math.round(nanos / 1e6);
+}
+
+// `find -printf '%T@'` — `seconds.nanoseconds`, where GNU prints ten fractional
+// digits (nanoseconds times ten). PARSED AS TWO INTEGERS, never as one float:
+// the float is the whole of the disagreement msFromNanos exists to end.
+export function msFromFindStamp(stamp: string): number | null {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(stamp);
+  if (!m) return null;
+  return msFromNanos(Number(m[1]), Number((m[2] ?? '').padEnd(9, '0').slice(0, 9)));
+}
+
+// `stat` FOLLOWS symlinks (matching fs.stat) and therefore cannot report a
+// symlink at all — it answers about the target, or `null` for a broken link.
+// The union's remote tier must: `RemoteStat`'s domain is file, dir, symlink and
+// absent (src/systems/fuse/PROVENANCE.md D13), and a symlink shaped into the
+// mirror as a file answers wrongly about what it is.
+export interface SystemLstat extends SystemStat {
+  // The link's target for `kind === 'symlink'`, null for every other kind.
+  target: string | null;
+}
+
+// ONE ROUND TRIP CARRIES ALL OF IT. Every field below comes out of the same
+// `find -printf`, so a listing of N children costs one `exec` rather than
+// 1 + N — which is the difference between a directory listing and N latencies
+// once the system is across a wire.
 export interface SystemDirent {
   name: string;
   kind: SystemEntryKind;
+  size: number;
+  // FULL mode, type bits included — the same meaning as `SystemStat.mode`.
+  mode: number;
+  mtimeMs: number;
+  // The link's target for `kind === 'symlink'`, null for every other kind.
+  target: string | null;
 }
 
 export interface WriteFileOptions {
@@ -235,11 +315,34 @@ export interface System {
   // return type differs, and every caller knows which one it wants.
   readFileBytes(filePath: string, opts?: { length?: number }): Promise<Buffer>;
   writeFile(filePath: string, data: string, opts?: WriteFileOptions): Promise<void>;
+  // THE BINARY-SAFE WRITE. `writeFile` takes a string and therefore cannot
+  // carry a byte a UTF-8 round trip does not survive; the wire already carries
+  // base64 of raw bytes, so this needs no new frame and no new capability —
+  // only cc not converting on the way in. `writeFile` delegates here.
+  writeFileBytes(filePath: string, data: Buffer, opts?: WriteFileOptions): Promise<void>;
 
   // ── Derived from exec on the far side ──────────────────────────────
   // null when the path does not exist. Follows symlinks, like fs.stat.
   stat(p: string): Promise<SystemStat | null>;
+  // null when there is no entry at `p`, which INCLUDES a non-directory
+  // component on the way to it: ENOTDIR is the answer "there is nothing here",
+  // not a failure to get one. (`stat` above nulls on ENOENT alone and is left
+  // as it is — its callers ask about a target, not about an entry.) Every other
+  // failure throws.
+  lstat(p: string): Promise<SystemLstat | null>;
   readDir(p: string): Promise<SystemDirent[]>;
+  readlink(p: string): Promise<string>;
+  // Create a symlink at `p`, REPLACING whatever entry is already there. The
+  // target is not required to be absolute — it is the link's contents, read on
+  // the far side, not a path cc resolves.
+  symlink(target: string, p: string): Promise<void>;
+  // Remove ONE entry, NON-RECURSIVELY: a file, a symlink, or an EMPTY
+  // directory. A non-empty directory is ENOTEMPTY and the children stay — the
+  // shape the union's reconcile needs, where the mirror may be sparser than the
+  // source and a recursive delete driven by a frame would remove children the
+  // worker never enumerated. An absent `p` RESOLVES: the declared intent is
+  // "hold nothing at `p`", which is already true.
+  removeEntry(p: string): Promise<void>;
   realpath(p: string): Promise<string>;
   mkdir(p: string, opts?: { recursive?: boolean }): Promise<void>;
   // RECURSIVE, FORCED removal — `rm -rf`. The destructive shape: never call it

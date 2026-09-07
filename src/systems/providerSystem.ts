@@ -30,9 +30,9 @@ import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } fro
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
 import { ProviderShell, type ShellExecOptions, type ShellHost } from './providerShell.ts';
 import { closingTailMatches } from './shellFraming.ts';
-import { requireAbsolute } from './system.ts';
+import { msFromFindStamp, requireAbsolute, typeBitsFor } from './system.ts';
 import type {
-  ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemStat, WriteFileOptions,
+  ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemLstat, SystemStat, WriteFileOptions,
 } from './system.ts';
 
 // Extra time cc waits for an `exit` frame past the deadline the provider was
@@ -422,15 +422,29 @@ export class ProviderSystem implements System, ShellHost {
   }
 
   async writeFile(filePath: string, data: string, opts: WriteFileOptions = {}): Promise<void> {
-    requireAbsolute('writeFile', 'path', filePath);
+    // THE ONE PLACE A STRING BECOMES BYTES, and it is here rather than deeper
+    // because it is the only lossy step on this path: everything below carries
+    // base64 of whatever Buffer it is handed.
+    return this.#writeBytes('writeFile', filePath, Buffer.from(data, 'utf8'), opts);
+  }
+
+  // THE BINARY-SAFE WRITE — the whole of it, and it needs nothing from a
+  // provider. The wire already carries base64 of raw bytes in `data` frames;
+  // the only thing that ever mangled a NUL or a 0xFF was cc's own
+  // `Buffer.from(data, 'utf8')` on the way in.
+  async writeFileBytes(filePath: string, data: Buffer, opts: WriteFileOptions = {}): Promise<void> {
+    return this.#writeBytes('writeFileBytes', filePath, data, opts);
+  }
+
+  async #writeBytes(op: string, filePath: string, buf: Buffer, opts: WriteFileOptions): Promise<void> {
+    requireAbsolute(op, 'path', filePath);
     if (opts.atomic && opts.exclusive) {
       // Same refusal as LocalSystem: an atomic write ends in a rename, which
       // overwrites by definition, so the combination has no honest meaning.
-      throw new Error('writeFile: atomic and exclusive are mutually exclusive');
+      throw new Error(`${op}: atomic and exclusive are mutually exclusive`);
     }
-    const buf = Buffer.from(data, 'utf8');
     if (buf.length > MAX_FILE_BYTES) {
-      throw new SystemError('EFBIG', `writeFile '${filePath}': ${buf.length} bytes exceeds the ${MAX_FILE_BYTES}-byte protocol cap`);
+      throw new SystemError('EFBIG', `${op} '${filePath}': ${buf.length} bytes exceeds the ${MAX_FILE_BYTES}-byte protocol cap`);
     }
     await this.#request<void>('w', (id) => ({
       type: 'writeFile', id, ...this.#binding(), path: filePath,
@@ -623,14 +637,94 @@ export class ProviderSystem implements System, ShellHost {
     };
   }
 
+  // `stat` FOLLOWS symlinks and therefore cannot report one; this is the
+  // other question, and the union's remote tier asks it. `-P` is find's
+  // DEFAULT, so `%y` of a symlink is `l` and `%l` is its target — kind, perms,
+  // size, ms-precision mtime and the target in ONE round trip.
+  async lstat(p: string): Promise<SystemLstat | null> {
+    requireAbsolute('lstat', 'path', p);
+    const what = `lstat '${p}'`;
+    const r = await this.#derive(what, ['find', p, '-maxdepth', '0', '-printf', `${FIND_FIELDS}\\n`]);
+    if (r.code !== 0) {
+      const err = execFailure(what, r.code, r.stderr);
+      // ABSENCE IS A VALUE, and ENOTDIR is absence here: a non-directory
+      // component means there is no entry at `p`. Every other failure throws,
+      // because reading a broken installation as "no such file" turns one
+      // fixable fault into a fleet of misses.
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+      throw err;
+    }
+    // ONE record, so an embedded NEWLINE is unambiguous and only a TAB can
+    // misalign the fields — unlike a listing, where both can.
+    const fields = r.stdout.replace(/\n$/, '').split('\t');
+    if (fields.length !== FIND_FIELD_COUNT) {
+      throw new SystemError('EUNKNOWN', `${what}: unparseable output: ${JSON.stringify(r.stdout)}`, { exitCode: 0, stderr: r.stderr });
+    }
+    return parseFindFields(fields, what);
+  }
+
   async readDir(p: string): Promise<SystemDirent[]> {
     requireAbsolute('readDir', 'path', p);
     // The trailing `/.` is what makes a FILE report ENOTDIR rather than an
     // empty listing — `find <file> -mindepth 1` exits 0 with no output, which
     // would read as "an empty directory".
-    const r = await this.#derive(`readDir '${p}'`, ['find', `${p}/.`, '-mindepth', '1', '-maxdepth', '1', '-printf', '%y\\t%f\\n']);
+    //
+    // NAME LAST, so the fields before it are positionally fixed; a name is the
+    // one field that can contain anything.
+    const r = await this.#derive(`readDir '${p}'`, ['find', `${p}/.`, '-mindepth', '1', '-maxdepth', '1', '-printf', `${FIND_FIELDS}\\t%f\\n`]);
     if (r.code !== 0) throw execFailure(`readDir '${p}'`, r.code, r.stderr);
     return parseFindLines(r.stdout, p);
+  }
+
+  async readlink(p: string): Promise<string> {
+    requireAbsolute('readlink', 'path', p);
+    // `-v` is what makes a failure SAY WHY: without it readlink exits 1 in
+    // silence and every failure classifies EUNKNOWN.
+    const r = await this.#deriveOk(`readlink '${p}'`, ['readlink', '-v', '--', p]);
+    return r.stdout.replace(/\n$/, '');
+  }
+
+  async symlink(target: string, p: string): Promise<void> {
+    // `target` is the link's CONTENTS, read on the far side — a relative one is
+    // legal and cc does not resolve it, so only `p` is checked.
+    requireAbsolute('symlink', 'path', p);
+    // `-f` REPLACES an existing entry; `-n` stops an existing
+    // symlink-to-directory at `p` swallowing the new link inside it.
+    //
+    // `-T` IS WHAT STOPS A REAL DIRECTORY DOING THE SAME, and it is a
+    // correctness fix rather than a hardening one: measured, `ln -sfn -- t d`
+    // on a real directory `d` exits 0 having created `d/t`. That is a SUCCESS
+    // REPORTED HAVING LANDED SOMEWHERE ELSE — through `systemSource.push` it
+    // returned 'ok' with the link at a path nobody asked for, which is the
+    // exact failure class this epic exists to close. `-T` refuses instead, as
+    // `LocalSystem.symlink`'s `fs.unlink` already did.
+    const what = `symlink '${p}'`;
+    const r = await this.#derive(what, ['ln', '-sfnT', '--', target, p]);
+    if (r.code === 0) return;
+    // `ln`'s OWN wording for that refusal, translated HERE rather than in
+    // `classifyStderr`: the table matches `strerror()` tails, which are stable
+    // across tools, and this is a coreutils sentence with no errno in it. The
+    // derivation that ran `ln` is the only place that knows what it means.
+    if (/cannot overwrite directory/.test(r.stderr)) {
+      throw new SystemError('EISDIR', `${what}: ${r.stderr.trim()}`, { exitCode: r.code, stderr: r.stderr });
+    }
+    throw execFailure(what, r.code, r.stderr);
+  }
+
+  async removeEntry(p: string): Promise<void> {
+    requireAbsolute('removeEntry', 'path', p);
+    // `rm -d` IS THE ONE ROUND TRIP a stat-then-branch would make two: it
+    // unlinks a file or a symlink, `rmdir`s an EMPTY directory, and refuses a
+    // non-empty one — which is exactly the non-recursive contract, enforced by
+    // the tool rather than by cc choosing a call.
+    const what = `removeEntry '${p}'`;
+    const r = await this.#derive(what, ['rm', '-d', '--', p]);
+    if (r.code === 0) return;
+    const err = execFailure(what, r.code, r.stderr);
+    // ENOENT IS THE DECLARED INTENT ALREADY MET — "hold nothing at `p`". Not
+    // `-f`, which would also swallow ENOTEMPTY's sibling failures.
+    if (err.code === 'ENOENT') return;
+    throw err;
   }
 
   async realpath(p: string): Promise<string> {
@@ -831,18 +925,72 @@ export function kindFromMode(mode: number): SystemEntryKind {
 
 const FIND_TYPES: Record<string, SystemEntryKind> = { f: 'file', d: 'dir', l: 'symlink' };
 
-// `find -printf '%y\t%f\n'` output. A filename containing a newline produces a
-// line with no tab, and that is an ERROR, never a silent skip: a listing that
-// quietly drops an entry is indistinguishable from one that does not have it.
+// THE ONE `-printf` BOTH `lstat` AND `readDir` ARE BUILT ON, so the two cannot
+// drift into reporting different fields for the same entry. `readDir` appends
+// `\t%f`; nothing else may reorder it, because the parser is positional.
+//
+//   %y kind letter · %m permission bits, octal · %s size · %T@ mtime,
+//   seconds.nanoseconds · %l symlink target (empty for every other kind)
+const FIND_FIELDS = '%y\\t%m\\t%s\\t%T@\\t%l';
+const FIND_FIELD_COUNT = 5;
+
+// `%m` IS PERMISSION BITS ALONE, so the type bits are reconstructed from the
+// kind — see `typeBitsFor`. A caller reading `mode` must not have to know which
+// derivation produced it.
+function parseFindFields(f: string[], what: string): SystemLstat {
+  const kind = FIND_TYPES[f[0]] ?? 'other';
+  const perm = parseInt(f[1], 8);
+  const size = Number(f[2]);
+  // TWO INTEGERS, NOT A FLOAT. `msFromFindStamp` is the same derivation
+  // `LocalSystem` reaches from its own exact nanoseconds — see msFromNanos for
+  // the half-millisecond disagreement that made "exactly comparable" false.
+  const mtimeMs = msFromFindStamp(f[3]);
+  if (!Number.isFinite(perm) || !Number.isFinite(size) || mtimeMs === null) {
+    throw new SystemError('EUNKNOWN', `${what}: unparseable entry ${JSON.stringify(f.join('\t'))}`);
+  }
+  return {
+    kind,
+    size,
+    mode: perm | typeBitsFor(kind),
+    mtimeMs,
+    // `%l` is empty for anything that is not a link, and an empty link target
+    // is not a thing — so the kind decides, not the emptiness.
+    target: kind === 'symlink' ? f[4] : null,
+  };
+}
+
+// `find -printf '<FIND_FIELDS>\t%f\n'` output. A name or a symlink target
+// containing a TAB produces too many fields and one containing a NEWLINE
+// produces too few; either is an ERROR, never a silent skip, because a listing
+// that quietly drops an entry is indistinguishable from one that does not have
+// it.
+//
+// TWO GUARDS, BECAUSE THE FIELD COUNT ALONE HAS A HOLE — and it is the worst
+// kind, a SILENT MIS-NAMING rather than a dropped entry. A name whose LAST
+// character is a newline emits `…\tname\n` followed by the record's own `\n`,
+// so the split yields a well-formed six-field line for `name` plus an EMPTY
+// element. Skipping empties turned a file called `"name\n"` into one called
+// `"name"` — colliding with a real sibling of that name, in exactly the class
+// the rule exists for.
+//
+// `find` terminates every record, so a clean listing splits to exactly ONE
+// trailing empty element and no other. An empty anywhere else is a name that
+// ended in a newline, which is what the second guard says.
 export function parseFindLines(stdout: string, dir: string): SystemDirent[] {
+  const what = `readDir '${dir}'`;
   const out: SystemDirent[] = [];
-  for (const line of stdout.split('\n')) {
-    if (line === '') continue;
-    const tab = line.indexOf('\t');
-    if (tab !== 1) {
-      throw new SystemError('EUNKNOWN', `readDir '${dir}': unparseable entry ${JSON.stringify(line)} — a filename containing a newline cannot be listed`);
+  const lines = stdout.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === '') {
+      if (i === lines.length - 1) continue;   // the terminator of the last record
+      throw new SystemError('EUNKNOWN', `${what}: unparseable listing — an entry name ends in a newline, which cannot be told from the name without it`);
     }
-    out.push({ name: line.slice(2), kind: FIND_TYPES[line[0]] ?? 'other' });
+    const fields = line.split('\t');
+    if (fields.length !== FIND_FIELD_COUNT + 1) {
+      throw new SystemError('EUNKNOWN', `${what}: unparseable entry ${JSON.stringify(line)} — a name or symlink target containing a tab or a newline cannot be listed`);
+    }
+    out.push({ name: fields[FIND_FIELD_COUNT], ...parseFindFields(fields, what) });
   }
   return out;
 }
