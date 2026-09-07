@@ -295,9 +295,17 @@ export class ControlServer {
     return encodeReply(CCU_STATUS.READY, 0);
   }
 
-  // ALWAYS COPIES, with no revalidation shortcut, so freshness at open is
-  // exact. `forCreate` means the caller is about to create the path, so the
-  // PARENT is what has to exist.
+  // ALWAYS COPIES, with no revalidation shortcut: `#shape` may skip a file
+  // whose size and ms-floored mtime already match, but the copy below runs
+  // regardless, so an open sees the source's current bytes.
+  //
+  // WHAT THAT DOES NOT COVER, stated here because the sentence used to claim
+  // more: it is freshness against the SOURCE, not isolation from this session.
+  // A second FETCH of a path another handle is mid-write on would copy over
+  // its unpushed bytes — the claim record is what stops that, not this.
+  //
+  // `forCreate` means the caller is about to create the path, so the PARENT is
+  // what has to exist.
   async #fetch(p: string, dest: string, forCreate: boolean): Promise<Buffer> {
     if (forCreate) {
       const parent = await this.#opts.source.stat(path.posix.dirname(p));

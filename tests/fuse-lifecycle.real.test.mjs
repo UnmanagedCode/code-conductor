@@ -894,11 +894,17 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // AND THE THREE THE RECONCILE CANNOT EXPRESS REFUSE, rather than
       // succeeding against the mirror and reaching the system never.
       await fs.writeFile(onSystem('r7-link-src.txt'), 'x\n');
+      // EOPNOTSUPP, not EPERM: the truth is that this filesystem cannot
+      // REPRESENT an alias, and EPERM would send the caller hunting a
+      // privilege that would not change the answer.
       const ln = await marked('exec ln "$2" "$3" 2>&1', inChroot('r7-link-src.txt'), inChroot('r7-link-dst.txt'));
-      assert.match(ln.stdout, /Operation not permitted/, `a hard link was accepted: ${ln.stdout} ${ln.stderr}`);
+      assert.match(ln.stdout, /Operation not supported/, `a hard link was accepted: ${ln.stdout} ${ln.stderr}`);
       await assert.rejects(() => fs.access(onSystem('r7-link-dst.txt')),
         'the hard link reached the system as a second file');
 
+      // mknod KEEPS EPERM, deliberately: a container refusing a device node is
+      // what a caller already expects, and the permissions reading is right
+      // there. The two errnos differing is the assertion, not an accident.
       const mk = await marked('exec mkfifo "$2" 2>&1', inChroot('r7-fifo'));
       assert.match(mk.stdout, /Operation not permitted/, `a fifo was accepted: ${mk.stdout}`);
       await assert.rejects(() => fs.access(onSystem('r7-fifo')));
@@ -906,13 +912,23 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // chown needs root to get past the kernel's own check, so it runs there.
       const ch = await inNsRoot(record.anchorPid, '[ -e "$1" ]; exec chown 0:0 "$2" 2>&1',
         mark, inChroot('remote-marker.txt'));
-      assert.match(ch.stdout, /Operation not permitted/, `chown was accepted: ${ch.stdout}`);
+      assert.match(ch.stdout, /Operation not supported/, `chown was accepted: ${ch.stdout}`);
+
+      // AND THE TWO XATTR MUTATIONS, which round 3 found changing the mirror
+      // and reaching the system never — they were in neither enumeration, so
+      // both guards were vacuous for exactly them.
+      const sx = await marked('exec setfattr -n user.cc -v x "$2" 2>&1', inChroot('remote-marker.txt'));
+      if (!/not found|No such file/.test(sx.stdout + sx.stderr)) {
+        assert.match(sx.stdout, /Operation not supported/, `setxattr was accepted: ${sx.stdout}`);
+      }
 
       // Each refusal is in the log by name, so the pin-derivation instrument
       // sees them rather than only the caller.
       const refusals = await refusalsOf(inst.id);
       const notReconcilable = refusals.filter(r => r[2] === 'not-reconcilable').map(r => r[0]);
-      assert.deepEqual([...new Set(notReconcilable)].sort(), ['chown', 'link', 'mknod']);
+      const want = ['chown', 'link', 'mknod'];
+      if (/Operation not supported/.test(sx.stdout)) want.push('setxattr');
+      assert.deepEqual([...new Set(notReconcilable)].sort(), want.sort());
     } finally {
       await instances.remove(inst.id);
     }

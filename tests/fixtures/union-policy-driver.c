@@ -601,6 +601,39 @@ static void b0_parse(void)
 	}
 }
 
+/*
+ * b15 — WHAT A PROJECT-TIER OP OWES WHEN THE RECONCILE CANNOT CARRY IT.
+ *
+ * `policy_unreconcilable` has exactly `policy_mutation_check`'s shape — pure,
+ * tier in, errno out, no libfuse — and it was reachable only from a regex over
+ * union.c and from real-gate R7, which a mutation prover cannot run. Both of
+ * its directions are asserted here, so `return -EOPNOTSUPP` -> `return 0` and a
+ * flipped tier test die in the deterministic suite.
+ */
+static void b15_unreconcilable(void)
+{
+	/* THE REFUSAL, and only at the tier whose mutations need reconciling. */
+	CHECK(policy_unreconcilable(T_PROJECT) == -EOPNOTSUPP,
+	      "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP");
+
+	/* AND THE OTHER DIRECTION, which is what makes it a rule rather than a
+	 * constant: a host path IS the orchestrator's own file, so the op lands
+	 * on it directly and there is nothing to reconcile. A mutant that
+	 * refuses everywhere breaks every host-pinned chmod. */
+	CHECK(policy_unreconcilable(T_HOST) == 0, "a host-tier op is not refused");
+	CHECK(policy_unreconcilable(T_BIND) == 0, "a bind-tier op is not refused");
+	CHECK(policy_unreconcilable(T_SYNTH) == 0,
+	      "a synthetic node is policy_mutation_check's EROFS, not this");
+	CHECK(policy_unreconcilable(T_HIDE) == 0, "a hidden path never reaches here");
+	CHECK(policy_unreconcilable(T_FAIL) == 0, "an unpinned path never reaches here");
+
+	/* THE TWO ERRNOS ARE DIFFERENT, and deliberately: EROFS says the node is
+	 * read-only, EOPNOTSUPP says the filesystem cannot represent the
+	 * operation. Collapsing them loses which one the caller is being told. */
+	CHECK(policy_mutation_check(T_SYNTH) != policy_unreconcilable(T_PROJECT),
+	      "the read-only and the unrepresentable answers are distinguishable");
+}
+
 int main(int argc, char **argv)
 {
 	const char *c = argc > 1 ? argv[1] : "";
@@ -624,6 +657,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b12-errno"))     b12_errno();
 	else if (!strcmp(c, "b13-refusals"))  b13_refusals();
 	else if (!strcmp(c, "b14-reasons"))   b14_control_reasons();
+	else if (!strcmp(c, "b15-unreconcilable")) b15_unreconcilable();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
 

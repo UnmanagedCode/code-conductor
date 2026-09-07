@@ -599,7 +599,32 @@ export class FuseSession {
   // without sudo — a root-created intermediate directory would need root to
   // remove. It is also what makes a crash before the handshake recoverable by
   // name: the directory exists and intent.json says whose it is.
-  async prepare(): Promise<void> {
+  // MUTUAL EXCLUSION BETWEEN prepare() AND teardown(), and it is not a
+  // tidy-up — the interleaving loses a whole mount.
+  //
+  // Nothing above serialises them: `_mutating` covers rewind/fork/prune only,
+  // and the instance is in `byId` before `launch()` runs, so a `kill()` can
+  // reach `teardown()` while `launch()` is inside `prepare()`. Interleaved, a
+  // teardown that latches during the `await ControlServer.listen()` leaves
+  // prepare() to assign `#control` afterwards — latched WITH A LIVE SERVER —
+  // and the final teardown then early-returns on the latch, so `runTeardown`
+  // never runs and the mount, the root daemon and the run directory survive to
+  // the next boot sweep. A generation stamp would fix the latch and still let
+  // the two halves interleave; excluding them is what makes the sequential
+  // reasoning that the rest of this class relies on true.
+  #gate: Promise<unknown> = Promise.resolve();
+
+  #exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#gate.then(fn, fn);
+    this.#gate = run.catch(() => {});
+    return run;
+  }
+
+  prepare(): Promise<void> {
+    return this.#exclusive(() => this.#prepare());
+  }
+
+  async #prepare(): Promise<void> {
     const p = this.plan;
     // A RELAUNCH INTO THE SAME RUN DIRECTORY IS ORDINARY: rewind and prune both
     // kill the subprocess and call launch() again on the same Instance, so this
@@ -677,7 +702,11 @@ export class FuseSession {
 
   // Idempotent: the crash path (_handleExit) and the commanded path (kill())
   // both reach it, and on a normal kill_instance both fire.
-  async teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
+  teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
+    return this.#exclusive(() => this.#teardown(closeStdin));
+  }
+
+  async #teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
     // CLOSED FIRST, AND OUTSIDE THE LATCH.
     //
     // First, because every remote-tier op blocks on a reply: a daemon thread
@@ -686,10 +715,13 @@ export class FuseSession {
     // which is what lets the worker's threads leave FUSE and be signalled.
     //
     // Outside the latch, because the latch is about not running the teardown
-    // STATE MACHINE twice — it says nothing about a socket. prepare() unlatches
-    // and opens a NEW server, so a session that prepared after an earlier
-    // teardown and was then killed without a process would keep that server
-    // listening for the life of the orchestrator. Measured as a real leak.
+    // STATE MACHINE twice and says nothing about a socket. With `#exclusive`
+    // above, a latched teardown can no longer be holding a live server — so
+    // this is defence in depth rather than the fix it was described as, and it
+    // costs one no-op await. The leak it was credited with was closed by
+    // `Instance.kill()`'s no-process arm together with `remove()` going through
+    // `kill()` at all; before that pair, `remove()` skipped `kill()` entirely,
+    // so kill's own fix was unreachable from there.
     await this.#control?.close().catch(() => {});
     this.#control = null;
     if (this.#tornDown) return { alreadyTornDown: true };

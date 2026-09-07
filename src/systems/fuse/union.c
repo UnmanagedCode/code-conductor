@@ -712,6 +712,70 @@ static void synth_emit(void *ctx, const char *name, const char *full, enum tier 
 		f->stop = 1;
 }
 
+/*
+ * The pinned children of ONE directory, collected once per readdir so the
+ * dirent loop can mark the ones the mirror already holds and the rest are
+ * emitted afterwards. Bounded by the pin list, not by the directory.
+ */
+#define MAX_PINNED_CHILDREN 64
+struct pinned_children {
+	char      name[MAX_PINNED_CHILDREN][NAME_MAX + 1];
+	char      full[MAX_PINNED_CHILDREN][PATH_MAX];
+	enum tier tier[MAX_PINNED_CHILDREN];
+	char      seen[MAX_PINNED_CHILDREN];
+	size_t    n;
+};
+
+static void copy_bounded(char *dst, size_t cap, const char *src)
+{
+	size_t n = strnlen(src, cap - 1);
+
+	memcpy(dst, src, n);
+	dst[n] = '\0';
+}
+
+static void pinned_children_collect(void *ctx, const char *name, const char *full, enum tier t)
+{
+	struct pinned_children *pc = ctx;
+
+	if (pc->n >= MAX_PINNED_CHILDREN)
+		return;
+	/* Bounded copies rather than snprintf: both sources are already
+	 * PATH_MAX-bounded table entries, but the compiler cannot see that and
+	 * its format-truncation analysis is right to say so. */
+	copy_bounded(pc->name[pc->n], sizeof(pc->name[0]), name);
+	copy_bounded(pc->full[pc->n], sizeof(pc->full[0]), full);
+	pc->tier[pc->n] = t;
+	pc->seen[pc->n] = 0;
+	pc->n++;
+}
+
+static void pinned_children_of(const char *dir, struct pinned_children *pc)
+{
+	pc->n = 0;
+	policy_synth_children(dir, pinned_children_collect, pc);
+}
+
+static void pinned_children_mark(struct pinned_children *pc, const char *name)
+{
+	size_t i;
+
+	for (i = 0; i < pc->n; i++)
+		if (strcmp(pc->name[i], name) == 0)
+			pc->seen[i] = 1;
+}
+
+static void pinned_children_emit(struct pinned_children *pc,
+				 void (*emit)(void *, const char *, const char *, enum tier),
+				 void *ctx)
+{
+	size_t i;
+
+	for (i = 0; i < pc->n; i++)
+		if (!pc->seen[i])
+			emit(ctx, pc->name[i], pc->full[i], pc->tier[i]);
+}
+
 static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		      off_t off, struct fuse_file_info *fi,
 		      enum fuse_readdir_flags flags)
@@ -732,6 +796,27 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		return 0;
 	}
 
+	/*
+	 * PINNED CHILDREN OF A REAL DIRECTORY ARE EMITTED TOO, and this is the
+	 * half a round-2 fix removed. cc materialises ONLY `project` content
+	 * into the mirror (control.ts `#servable`) — correctly, since a host pin
+	 * is served from `host_fd` and a mirror copy of it would be a second copy
+	 * of the orchestrator's file inside the run directory, never read. But
+	 * the mirror is what this loop reads, so a `host` or `bind` child of a
+	 * project directory had no dirent at all while `stat` and `open` on it
+	 * kept succeeding: `ls /` omitting `/etc` while `cat /etc/hosts` works is
+	 * the same one-caller-two-answers defect as listing a `fail` name, just
+	 * inverted. At `mirrorRoot: "/"` that is every pinned path there is.
+	 *
+	 * The emit rule is policy_synth_children's, applied here as well: host,
+	 * project and bind are named; hide and fail are not. Collected FIRST so
+	 * the dirent loop can mark the ones already present, and the remainder
+	 * emitted after — one small array, no hash set, because a directory's
+	 * pinned children are bounded by the pin list and not by the directory.
+	 */
+	struct pinned_children pc;
+
+	pinned_children_of(h->path, &pc);
 	rewinddir(h->d);
 	while ((de = readdir(h->d)) != NULL) {
 		char  child[PATH_MAX];
@@ -741,9 +826,8 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			snprintf(child, sizeof(child), "%s%s%s",
 				 strcmp(path, "/") == 0 ? "" : path, "/", de->d_name);
 			/*
-			 * WHAT A REAL DIRECTORY MAY NOT LIST, and both halves
-			 * are the same rule policy_synth_children applies to a
-			 * synthetic one:
+			 * WHAT A REAL DIRECTORY MAY NOT LIST, and it is the same
+			 * rule policy_synth_children applies to a synthetic one:
 			 *   T_HIDE  the mountpoint and the union's own
 			 *           scaffolding. Without this the union lists
 			 *           its own backing store, and a dirent that
@@ -751,29 +835,33 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			 *   T_FAIL  a name whose every op answers -ENOENT.
 			 *           Listing it would put `ls` and `cat` in
 			 *           disagreement about whether a file exists,
-			 *           from one caller — the defect this
-			 *           filesystem exists to remove.
+			 *           from one caller — the defect this filesystem
+			 *           exists to remove.
 			 *
 			 * THE SECOND ONE IS BELT AND BRACES, and is stated as
 			 * such rather than claimed as the guard: cc's control
 			 * server filters an excluded child out of `LIST` before
 			 * shaping it (control.ts `#servable`), so the mirror
-			 * does not hold one for this loop to find. It is here
-			 * because the tier table is the daemon's own answer to
-			 * "may this name be seen", and a directory it serves
-			 * should not depend on cc having filtered first.
+			 * does not normally hold one for this loop to find.
 			 */
 			{
 				enum tier ct = resolve_class(child);
 				if (ct == T_HIDE || ct == T_FAIL)
 					continue;
 			}
+			pinned_children_mark(&pc, de->d_name);
 		}
 		memset(&st, 0, sizeof(st));
 		st.st_ino  = de->d_ino;
 		st.st_mode = de->d_type << 12;
 		if (filler(buf, de->d_name, &st, 0, 0))
-			break;
+			return 0;
+	}
+
+	{
+		struct fillctx fc = { buf, filler, 0 };
+
+		pinned_children_emit(&pc, synth_emit, &fc);
 	}
 	return 0;
 }
@@ -828,16 +916,21 @@ static int push_mirror(const char *op, const char *path)
  *           a mapping is a decision S3 owns. No RemoteSource method carries
  *           ownership at all.
  *
- * -EPERM rather than -EROFS: the tier is writable and other ops on it succeed,
- * so this is the operation being unavailable, not the filesystem being
- * read-only.
+ * THE ERRNO IS policy.h's, and it is -EOPNOTSUPP: the truth being told is that
+ * this filesystem cannot REPRESENT the operation, and -EPERM would send the
+ * caller hunting a privilege that would not change the answer — the same
+ * reasoning that chose -EROFS over -EACCES for a synthetic node. `pt_mknod`
+ * translates it back to -EPERM at its own call site, because a container
+ * refusing a device node is what a caller already expects there and the
+ * permissions reading is the right one in that one case.
  */
 static int refuse_unreconcilable(const char *op, const char *path, enum tier t)
 {
-	if (t != T_PROJECT)
-		return 0;
-	policy_refuse(op, path, "not-reconcilable");
-	return -EPERM;
+	int rc = policy_unreconcilable(t);
+
+	if (rc)
+		policy_refuse(op, path, "not-reconcilable");
+	return rc;
 }
 
 /* An open fd whose METADATA changed still owes a push, and pt_release already
@@ -874,7 +967,8 @@ static int pt_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 	ROUTE("mknod", path, 1, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
-	if ((rrc = refuse_unreconcilable("mknod", path, r.tier)) != 0) return rrc;
+	/* -EPERM here, not the shared -EOPNOTSUPP: see refuse_unreconcilable. */
+	if (refuse_unreconcilable("mknod", path, r.tier) != 0) return -EPERM;
 	cred_enter();
 	int rc = mknodat(r.fd, rp, mode, rdev);
 	int e = errno;
@@ -1198,6 +1292,7 @@ static int pt_setxattr(const char *path, const char *name, const char *value,
 	ROUTE("setxattr", path, 0, CCU_FETCH);
 	(void)rp;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
+	if ((rrc = refuse_unreconcilable("setxattr", path, r.tier)) != 0) return rrc;
 	char abs[PATH_MAX];
 	abspath(&r, path, abs, sizeof(abs));
 	return lsetxattr(abs, name, value, size, flags) == -1 ? -errno : 0;
@@ -1207,6 +1302,13 @@ static int pt_getxattr(const char *path, const char *name, char *value, size_t s
 {
 	ROUTE("getxattr", path, 0, CCU_STAT);
 	(void)rp;
+	/* THE READS REFUSE TOO, and for the mirror's sake rather than the
+	 * reconcile's: cc materialises a project path with `copyFile`, which
+	 * carries no extended attributes, so the mirror entry has NONE of the
+	 * source's. Answering from it would report "no such attribute" about a
+	 * file that has one — one path, two answers, in the direction a caller
+	 * cannot detect. EOPNOTSUPP is a filesystem's ordinary answer here. */
+	if ((rrc = policy_unreconcilable(r.tier))) return rrc;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
 	char abs[PATH_MAX];
 	abspath(&r, path, abs, sizeof(abs));
@@ -1218,6 +1320,7 @@ static int pt_listxattr(const char *path, char *list, size_t size)
 {
 	ROUTE("listxattr", path, 0, CCU_STAT);
 	(void)rp;
+	if ((rrc = policy_unreconcilable(r.tier))) return rrc;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
 	char abs[PATH_MAX];
 	abspath(&r, path, abs, sizeof(abs));
@@ -1230,6 +1333,7 @@ static int pt_removexattr(const char *path, const char *name)
 	ROUTE("removexattr", path, 0, CCU_FETCH);
 	(void)rp;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
+	if ((rrc = refuse_unreconcilable("removexattr", path, r.tier)) != 0) return rrc;
 	char abs[PATH_MAX];
 	abspath(&r, path, abs, sizeof(abs));
 	return lremovexattr(abs, name) == -1 ? -errno : 0;

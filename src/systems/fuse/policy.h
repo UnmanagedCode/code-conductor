@@ -393,6 +393,32 @@ static inline int policy_mutation_check(enum tier t)
 	return (t == T_SYNTH || t == T_BIND) ? -EROFS : 0;
 }
 
+/*
+ * WHAT A PROJECT-TIER OP OWES WHEN THE RECONCILE CANNOT CARRY IT.
+ *
+ * `DIRTY` means "make the source entry at P match the MIRROR entry at P", so
+ * its domain is exactly what a mirror entry can express: a file, a directory,
+ * a symlink, or nothing. An op whose effect lives OUTSIDE that — a device node,
+ * a hard link's aliasing, an ownership pair in a uid space that is not this
+ * machine's, an extended attribute the mirror never carried — cannot be landed
+ * by any reconcile, so applying it to the mirror alone would report success
+ * having reached the system never. It refuses instead.
+ *
+ * ONLY AT `project`. A `host` path IS the orchestrator's own file: the op lands
+ * on it directly and there is nothing to reconcile.
+ *
+ * -EOPNOTSUPP, NOT -EPERM, for everything routed through here, and it is the
+ * same reasoning that chose -EROFS over -EACCES above: the truth is "this
+ * filesystem cannot represent that", and -EPERM would send the caller looking
+ * for a privilege that would change the answer. `mknod` keeps -EPERM at its own
+ * call site — a container refusing a device node is what a caller already
+ * expects there, and it is the one case where the permissions reading is right.
+ */
+static inline int policy_unreconcilable(enum tier t)
+{
+	return t == T_PROJECT ? -EOPNOTSUPP : 0;
+}
+
 /* ── caller identity, over an injected /proc reader ─────────────────────── */
 
 struct proc_reader {
@@ -593,9 +619,10 @@ static inline int policy_is_marked_tid(pid_t tid)
  * denial is never written back, so the mark's arrival is visible on the next op
  * rather than one TTL later.
  *
- * FETCH NEVER CONSULTS IT — an open always revalidates, so freshness at open is
- * exact and S3's per-open revalidate inherits an exact contract rather than a
- * one-second-stale one.
+ * FETCH NEVER CONSULTS IT — an open always reaches cc, so no cached routing
+ * decision can stand in for the materialisation an open needs. What that buys
+ * is that S3's per-open revalidate inherits a contract with no cache in front
+ * of it, rather than a one-second-stale one.
  */
 #define CACHE_SLOTS  1024
 #define CACHE_TTL_MS 1000

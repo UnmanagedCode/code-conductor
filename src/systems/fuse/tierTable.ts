@@ -491,6 +491,6 @@ function hostPinnedRefusal(p: string, entry: TierEntry, systemId: string): strin
     + `file tools do not carry it. This is cc refusing to carry the file, NOT the file being `
     + `absent — cc has not looked, and this says nothing about whether it exists. Bash runs ON `
     + `SYSTEM '${systemId}', not on the orchestrator: \`cat '${p}'\` there answers with system `
-    + `'${systemId}''s own file at that path, which is the right answer for a question about `
-    + `'${systemId}' and is NOT the orchestrator's copy this refusal is about.`;
+    + `'${systemId}''s own file at that path IF IT HAS ONE, which is the right answer for a `
+    + `question about '${systemId}' and is NOT the orchestrator's copy this refusal is about.`;
 }

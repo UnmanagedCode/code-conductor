@@ -164,8 +164,25 @@ describe('the compiled policy driver', { skip }, () => {
   // reachable half (R3).
   test('every mutating op body consults policy_mutation_check', async () => {
     const src = await fs.readFile(UNION_C, 'utf8');
+    // THE OPS WHOSE SYNTHETIC ANSWER IS -EROFS. `setxattr`/`removexattr` are
+    // mutating too but answer -EOPNOTSUPP on a synthetic node, which is the
+    // right answer and a different guard — they are enumerated just below.
     const MUTATING = ['mkdir', 'mknod', 'unlink', 'rmdir', 'symlink', 'create',
       'chmod', 'chown', 'truncate', 'utimens', 'rename', 'link'];
+    // THE SECOND GUARD, and the reason this test now derives its set from the
+    // ops table: these two were in NEITHER enumeration, so both this test's
+    // "a thirteenth mutating op added without the guard is a failure" and the
+    // partition test's "a new mutating op lands in neither list and fails
+    // here" were vacuous for exactly the two ops that were changing the mirror
+    // and landing nowhere. An enumeration that omits two of its own members is
+    // the defect, not the omission.
+    const XATTR_MUTATING = ['setxattr', 'removexattr'];
+    for (const op of XATTR_MUTATING) {
+      const at = src.indexOf(`static int pt_${op}(`);
+      const next = src.indexOf('\nstatic ', at + 1);
+      assert.match(src.slice(at, next), /SYNTHETIC\(r\.tier\)\) return -EOPNOTSUPP/,
+        `pt_${op} does not refuse a synthetic node`);
+    }
     for (const op of MUTATING) {
       const at = src.indexOf(`static int pt_${op}(`);
       assert.ok(at > 0, `pt_${op} is missing from union.c`);
@@ -179,6 +196,22 @@ describe('the compiled policy driver', { skip }, () => {
     const bodies = src.match(/^static int pt_[a-z]+\(/gm) ?? [];
     assert.equal(src.match(/policy_mutation_check\(/g).length, MUTATING.length + 2,
       `expected one call per mutating op plus rename/link's second end; ${bodies.length} pt_ ops in the file`);
+
+    // AND THE LIST IS CHECKED AGAINST THE OPS TABLE, so an op cannot be
+    // mutating in `fuse_operations` and absent from the enumeration that is
+    // supposed to police it — which is exactly how setxattr/removexattr hid.
+    const table = src.slice(src.indexOf('static const struct fuse_operations'));
+    const bound = new Set([...table.matchAll(/\.(\w+)\s*=\s*pt_(\w+),/g)].map(m => m[1]));
+    const MUTATING_ENTRY_POINTS = ['mkdir', 'mknod', 'unlink', 'rmdir', 'symlink', 'create',
+      'chmod', 'chown', 'truncate', 'utimens', 'rename', 'link', 'setxattr', 'removexattr', 'write'];
+    const enumerated = new Set([...MUTATING, ...XATTR_MUTATING]);
+    for (const op of MUTATING_ENTRY_POINTS) {
+      if (!bound.has(op)) continue;
+      // `write` acts on an fd the open already routed and marked, so it is the
+      // one mutating entry point with no path to guard. Named, not skipped.
+      if (op === 'write') continue;
+      assert.ok(enumerated.has(op), `pt_${op} is bound as a mutating op but is in no enumeration`);
+    }
   });
 
   // AND THAT EVERY PROJECT-TIER MUTATION EITHER LANDS OR REFUSES — the bar M1
@@ -197,8 +230,12 @@ describe('the compiled policy driver', { skip }, () => {
     // LANDS: mutates the mirror, then tells cc the mirror is authoritative.
     const PUSHES = ['mkdir', 'unlink', 'rmdir', 'symlink', 'rename', 'chmod', 'truncate', 'utimens'];
     // REFUSES: outside what `RemoteStat` can express, so it cannot be
-    // reconciled and must not be applied to the mirror alone.
-    const REFUSES = ['mknod', 'link', 'chown'];
+    // reconciled and must not be applied to the mirror alone. `setxattr` and
+    // `removexattr` are here because the mirror carries no extended attributes
+    // at all — cc materialises with `copyFile` — so the attribute would live in
+    // the mirror for the session, `getxattr` would keep answering the phantom,
+    // and the system would never learn.
+    const REFUSES = ['mknod', 'link', 'chown', 'setxattr', 'removexattr'];
     // `create`/`open` land through `pt_release`'s own push, which is why they
     // are in neither list — asserted, so the exemption is not a silent gap.
     const VIA_RELEASE = ['create', 'open'];
@@ -234,7 +271,16 @@ describe('the compiled policy driver', { skip }, () => {
     const covered = [...PUSHES, ...REFUSES, ...VIA_RELEASE].sort();
     assert.equal(new Set(covered).size, covered.length, 'an op is in two lists');
     assert.deepEqual(covered,
-      ['chmod', 'chown', 'create', 'link', 'mkdir', 'mknod', 'open', 'rename', 'rmdir',
-        'symlink', 'truncate', 'unlink', 'utimens'].sort());
+      ['chmod', 'chown', 'create', 'link', 'mkdir', 'mknod', 'open', 'removexattr',
+        'rename', 'rmdir', 'setxattr', 'symlink', 'truncate', 'unlink', 'utimens'].sort());
+
+    // THE READS REFUSE TOO, and for the mirror's sake rather than the
+    // reconcile's: a mirror entry never carried the source's xattrs, so
+    // answering `getxattr` from it reports "no such attribute" about a file
+    // that has one — undetectable from the caller's side.
+    for (const op of ['getxattr', 'listxattr']) {
+      assert.match(bodyOf(op), /policy_unreconcilable\(/,
+        `pt_${op} answers a project path from a mirror entry that has no xattrs`);
+    }
   });
 });

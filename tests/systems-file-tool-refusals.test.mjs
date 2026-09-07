@@ -114,6 +114,15 @@ const neverClaimsAbsence = (reason) => {
 // it only when the system id is inside the same sentence as `Bash`.
 const namesBashOnTheSystem = (reason, systemId) => {
   assert.match(reason, /\bBash\b/, `no Bash pointer at all: ${reason}`);
+  // THE DIRECTION, not just the presence of a machine name. "Bash runs on the
+  // orchestrator, not on the system" carries the system id, satisfies the
+  // sentence rule below, and says the exact opposite of what is true — so the
+  // clause the owner's correction made load-bearing has to be pinned as a
+  // direction. Bash runs on the SYSTEM; every wording must say so.
+  assert.match(reason, /\bBash runs (ON SYSTEM|on)\s+'?/,
+    `the Bash pointer does not state where Bash runs: ${reason}`);
+  assert.doesNotMatch(reason, /Bash runs (ON |on )?(the )?orchestrator/i,
+    `the Bash pointer is inverted: ${reason}`);
   const sentences = reason.split(/(?<=\.)\s+/).filter(x => /\bBash\b/.test(x));
   assert.ok(sentences.length > 0, reason);
   assert.ok(
@@ -205,6 +214,11 @@ describe('the four file-tool refusals', () => {
       swap('Bash runs under no such restriction: read it with `cat` there instead.'),
       // The pointer removed outright, which leaves the agent with no channel.
       swap(''),
+      // THE INVERSION, which is the dangerous mutant rather than the empty one:
+      // it carries the system id, so a rule that only looked for a machine name
+      // somewhere in the Bash sentence would accept it — while telling the
+      // agent the precise opposite of where Bash runs.
+      swap(`Bash runs on the orchestrator, not on system '${SYSTEM_ID}': read it with \`cat\` there instead.`),
     ];
     for (const m of mutants) {
       assert.throws(() => namesBashOnTheSystem(m, SYSTEM_ID), /AssertionError/,

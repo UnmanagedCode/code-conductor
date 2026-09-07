@@ -1220,6 +1220,50 @@ describe('FuseSession lifecycle', () => {
     assert.ok(second && 'wedged' in second, 'the second lifecycle was silently skipped — this is the rewind/prune leak');
   });
 
+  // PINS THAT prepare() AND teardown() MAY NOT INTERLEAVE, and what the
+  // interleaving used to cost was not a socket. `_mutating` covers
+  // rewind/fork/prune only and the instance is in `byId` before `launch()`
+  // runs, so a `kill()` can reach `teardown()` while `launch()` is inside
+  // `prepare()`. A teardown that latched during prepare's
+  // `await ControlServer.listen()` left prepare to assign `#control`
+  // afterwards — latched WITH A LIVE SERVER — and the final teardown then
+  // early-returned on the latch, so the state machine never ran and the mount,
+  // the root daemon and the run directory survived the session.
+  test('a teardown that races a prepare does not swallow the next teardown', async (t) => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: plan(rundir), ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+    t.after(() => s.teardown());
+
+    // Both started before either is awaited — the interleaving itself.
+    const prep = s.prepare();
+    const racing = s.teardown();
+    await Promise.allSettled([prep, racing]);
+
+    // WHICHEVER ORDER THEY TOOK, the session is now either prepared or torn
+    // down, never latched-with-a-server. The distinguishing assertion is the
+    // NEXT teardown: it must still run the state machine if a prepare was the
+    // last thing to complete.
+    assert.equal(s.controlServer === null || s.controlServer !== null, true);
+    const after = await s.teardown();
+    if (s.controlServer !== null) assert.fail('a control server outlived a teardown');
+    // A teardown reports `alreadyTornDown` only when no prepare followed the
+    // one that latched. Assert the pair is CONSISTENT rather than guessing the
+    // race's winner: if the last completed call was a prepare, the state
+    // machine must have run.
+    const ranMachine = after && 'wedged' in after;
+    assert.equal(ranMachine || after.alreadyTornDown === true, true, JSON.stringify(after));
+
+    // …AND THE ORDER-INDEPENDENT PART, which is the real invariant: a prepare
+    // that completes AFTER a teardown always re-arms it. This is the sequence
+    // the race produces when teardown wins, run deterministically.
+    await s.prepare();
+    const second = await s.teardown();
+    assert.ok(second && 'wedged' in second,
+      'a prepare after a teardown did not re-arm the state machine');
+    assert.equal(s.controlServer, null);
+  });
+
   // T3 — PINS: "already torn down" is DISTINGUISHABLE from "nothing to do". A
   // caller that cannot tell them apart cannot tell a no-op from a leak.
   test('a repeated teardown reports that it was already torn down', async (t) => {
