@@ -702,6 +702,14 @@ describe('the mount literals', () => {
     const pinned = await fs.readFile(path.join(dir, 'union.c.sha256'), 'utf8');
     const rows = pinned.split('\n').filter(Boolean).map(l => l.trim().split(/\s+/));
     assert.ok(rows.length >= 1, 'the pin file is empty');
+    // PHASE B OWES A ROW-COUNT ASSERTION HERE, and this comment is the record.
+    // The loop below is source-agnostic, so it covers `policy.h` automatically —
+    // but only ONCE A SECOND ROW EXISTS. There is one row today and nothing
+    // asserts otherwise, so a Phase B that adds `policy.h` to the build address
+    // (A19) and forgets to add its pin row passes this test silently, and the
+    // latch would be guarding half of what it claims. When `policy.h` lands,
+    // `assert.equal(rows.length, 2)` and the two NAMES are assertions, not a
+    // regenerated file. Tracked with A19/A20 as a Phase B deliverable.
     for (const [want, name] of rows) {
       const buf = await fs.readFile(path.join(dir, name));
       assert.equal(createHash('sha256').update(buf).digest('hex'), want,

@@ -32,6 +32,30 @@
 //                   stranger — so it would search the wrong side and return
 //                   silently wrong results rather than failing.
 //
+// WHAT "EVERY TOOL" MEANS ABOVE, and the one carve-out, because the invariant
+// otherwise claims a completeness the code does not have.
+//
+// The set is closed against a MEASUREMENT, not against the CLI's documentation.
+// MEASURED (claude 2.1.263, cc's exact launch flags — `-p
+// --input-format=stream-json --output-format=stream-json --verbose`, reading the
+// `system`/`init` frame's `tools` array, with no `permissions.deny` in play so
+// nothing was suppressed): the headless registry carries 27 tools and contains
+// **no `LS`**, no `Glob`, no `Grep`, no `MultiEdit` and no `NotebookRead`. The
+// tools that can observe or mutate the tree are exactly `Bash` and the four in
+// FILE_TOOLS.
+//
+// SO `LS` IS A DELIBERATE CARVE-OUT, not an oversight: it is named in
+// src/settings.ts's list of ungated read tools, it is in neither FILE_TOOLS nor
+// REDIRECT_PRE_TOOL_MATCHER, and `preToolUse` falls THROUGH to allow for it. On
+// the pinned CLI that fall-through is unreachable because the tool does not
+// exist. IF IT RETURNS, it is a boundary hole and not a cosmetic one: an `LS` of
+// an excluded path answers a bare -ENOENT — exactly what the refusal wording
+// below exists to stop a worker reading as "absent" — and a listing additionally
+// discloses the shape of a subtree whose `Read` is refused. Re-measure the init
+// frame before assuming otherwise, and add it to FILE_TOOLS with its MEASURED
+// argument name (do not guess one) plus a RUN_CLI_CONTRACT case, which is the
+// suite that exists for this class of undocumented CLI surface.
+//
 // This module is composition and policy only. The shell framing lives in
 // src/systems/providerShell.ts, and the deny surface below.
 

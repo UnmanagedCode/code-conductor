@@ -543,6 +543,64 @@ describe('a worker session on a remote system', () => {
     }
   });
 
+  // A10-LIVE — PINS CRITERION 15 AT THE PRODUCTION CALL SITE, which the unit
+  // half in tests/systems-file-tool-refusals.test.mjs cannot reach.
+  //
+  // THIS IS THE THIRD ITERATION IN THIS EPIC OF ONE DEFECT: a test that exists,
+  // reads correctly, and does not reach the call site it was written for. The
+  // unit A10 asserts `===` between a hand-built SessionRedirect and a hand-built
+  // FusePlan, which is a claim about the two constructors and NOT about
+  // src/instances.ts — add a second `buildTierTable({...same input})` at the
+  // `buildFusePlan` call and every unit assertion still passes: two arrays equal
+  // today, free to drift tomorrow, suite green.
+  //
+  // Criterion 15 says a test must FAIL if the two can drift, so the claim has to
+  // be made against the object graph the production create path actually built.
+  //
+  // THE MUTATION THIS MUST DIE UNDER: any second `buildTierTable(...)` call in
+  // the create path feeding either consumer — equality survives it, identity
+  // does not.
+  //
+  // Reached with the same stub-launcher technique as the arm above and for the
+  // same reason: the wiring under test is done at CREATE, before launch, and the
+  // instance is registered in `byId` before launch runs — so a throwing `launch`
+  // keeps this hermetic with no mount and no spawn.
+  test('the redirect and the fuse plan hold the SAME tier table object', async () => {
+    const real = instances._claudeLauncher;
+    instances._claudeLauncher = {
+      launch() { throw new Error('stub launcher: nothing is spawned in this case'); },
+    };
+    const idsBefore = new Set(instances.byId.keys());
+    let id = null;
+    try {
+      await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      const fresh = [...instances.byId.keys()].filter(k => !idsBefore.has(k));
+      assert.equal(fresh.length, 1, 'exactly one instance should have been registered');
+      id = fresh[0];
+      const inst = instances.byId.get(id);
+      // Both consumers exist at all — without this the identity below could hold
+      // vacuously on two undefineds.
+      assert.notEqual(inst._redirect, null, 'the session was not redirected');
+      assert.notEqual(inst._fuse, null, 'the session got no union');
+      assert.ok(Array.isArray(inst._redirect.tiers), 'the redirect holds no table');
+      assert.ok(inst._redirect.tiers.length > 0, 'the table is empty, so identity would be trivial');
+      // THE CLAIM: one object, not two equal ones.
+      assert.equal(inst._redirect.tiers, inst._fuse.plan.tiers,
+        'the hook and the daemon hold different tier-table objects — they can now drift');
+      // And the pins the daemon parses were rendered from THAT object, so the
+      // identity reaches the artifact rather than stopping at a field.
+      const projectLines = inst._fuse.plan.pinsText.split('\n').filter(l => l.startsWith('project\t'));
+      assert.ok(projectLines.length > 0, 'the rendered pins carry no project rule');
+      for (const e of inst._redirect.tiers.filter(t => t.tier === 'project')) {
+        assert.ok(projectLines.includes(`project\t${e.prefix}`),
+          `${e.prefix} is in the hook's table but not in the rendered pins`);
+      }
+    } finally {
+      instances._claudeLauncher = real;
+      if (id) { try { await instances.remove(id); } catch { /* the create already failed */ } }
+    }
+  });
+
   test('a remote project discloses its system, and a local one says nothing', async () => {
     const doc = await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } });
     const block = doc.split('# Workspace conventions')[0];

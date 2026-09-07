@@ -69,11 +69,28 @@ const denied = (r, cls) => {
 };
 
 // THE NEGATIVE RULE, applied to all four wordings and not only to the one that
-// documents it: a refusal that says "found" or "does not exist" is read as
-// file-not-found, which is the whole failure mode.
+// documents it: a refusal a model reads as file-not-found is the whole failure
+// mode, whatever words carry it.
+//
+// THE WORD FAMILY, NOT THE ONE INFLECTION. Round 1 caught this row failing its
+// own documented killer: `cc will not bridge` → `cc could not find` leaves the
+// `\b`-delimited word `found` ABSENT, because `find` is not `found`, so the
+// mutation survived. The rule is about the CLAIM, so it forbids the claim's
+// whole vocabulary.
+//
+// `absent` and `exists` are deliberately NOT forbidden: the contract's own
+// anti-ENOENT clause says "NOT the file being absent" and "says nothing about
+// whether it exists", so banning either word would forbid the wording it exists
+// to protect. `does not exist` is banned as a PHRASE for the same reason.
+const ABSENCE_CLAIMS = [
+  /\b(?:found|find|finds|finding)\b/i,
+  /does ?n(?:o|')t exist/i,
+  /\bno such file\b/i,
+  /\bmissing\b/i,
+  /\bnot there\b/i,
+];
 const neverClaimsAbsence = (reason) => {
-  assert.doesNotMatch(reason, /\bfound\b/, reason);
-  assert.doesNotMatch(reason, /does not exist/, reason);
+  for (const bad of ABSENCE_CLAIMS) assert.doesNotMatch(reason, bad, reason);
 };
 
 describe('the four file-tool refusals', () => {
@@ -105,12 +122,55 @@ describe('the four file-tool refusals', () => {
       const r = classify(p);
       assert.equal(r.decision, 'deny', p);
       neverClaimsAbsence(r.reason);
+      // THE POSITIVE HALF, so a DUPLICATION dies too: appending "cc could not
+      // find …" to an intact refusal leaves `will not bridge` present, which is
+      // all A1 checks, and only the negative rule above catches it. Asserting
+      // both here means neither a replacement nor an addition survives.
+      assert.match(r.reason, /cc will not bridge/, r.reason);
       seen.add(r.class);
     }
     // ALL FOUR CLASSES were exercised above, so the rule is not being checked
     // against one wording four times.
     assert.deepEqual([...seen].sort(),
       ['bind-mount', 'excluded', 'host-pinned', 'outside-mirror-root']);
+  });
+
+  // THE GUARD'S OWN DISCRIMINATION, asserted rather than hand-run once.
+  //
+  // Round 1's finding was not that a refusal was wrong — it was that the ROW's
+  // documented killer did not kill. A row whose mutation survives is worse than
+  // no row, because a prover and a future author both trust it. So the mutant
+  // wordings are data here: each must be REJECTED by the rule, and the shipped
+  // wordings must be ACCEPTED by it, which is what stops the fix from being a
+  // regex that rejects everything.
+  test('the absence rule rejects the mutations it exists to catch', () => {
+    const intact = fixture().classify('/srv/app/secrets/key.pem').reason;
+    const mutants = [
+      // The plan's stated killer, and the one that survived round 1.
+      intact.replace('cc will not bridge', 'cc could not find'),
+      // Its inflections, which a single-word ban would also have missed.
+      intact.replace('cc will not bridge', 'cc did not find'),
+      intact.replace('cc will not bridge', 'cc found no'),
+      // A DUPLICATION rather than a replacement — A1 survives this one.
+      `${intact} cc could not find it.`,
+      // The phrase form, both spellings.
+      `${intact} The file does not exist.`,
+      `${intact} The file doesn't exist.`,
+      `${intact} No such file.`,
+      `${intact} The file is missing.`,
+    ];
+    for (const m of mutants) {
+      assert.throws(() => neverClaimsAbsence(m), /AssertionError/,
+        `the absence rule accepted a mutant that claims absence: ${m.slice(-90)}`);
+    }
+    // …and it accepts every wording actually shipped, so it is discriminating
+    // rather than merely strict. This is the half that fails if the fix were a
+    // regex matching everything.
+    const { classify, input } = fixture();
+    for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
+      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      neverClaimsAbsence(classify(p).reason);
+    }
   });
 
   // A3 — PINS that the refusal covers the WHOLE tool family, reads and writes
@@ -204,8 +264,16 @@ describe('the four file-tool refusals', () => {
   test('A7: a project path absent from every filesystem is allowed', () => {
     const { classify } = fixture();
     assert.deepEqual(classify('/srv/app/does/not/exist/anywhere.txt'), { decision: 'allow' });
-    // And the function takes no filesystem-shaped input at all: its arguments
-    // are the table, four strings and a path. There is nothing to probe with.
+    // WHAT THE LINE BELOW DOES AND DOES NOT ESTABLISH, stated exactly because an
+    // earlier wording here claimed "there is nothing to probe with" and an arity
+    // number cannot establish that. It is a TRIPWIRE on the signature: it kills
+    // "add a `mirrorFs`/`existsSync` parameter", and nothing else. It does NOT
+    // rule out an `import fs` inside the module, and it does NOT rule out a
+    // filesystem handle smuggled onto the existing third parameter.
+    //
+    // The discriminating assertion is the one ABOVE: a project path that exists
+    // on no filesystem anywhere is ALLOWED, so any probe-before-allow — however
+    // it reached a filesystem — flips it to deny and this test fails.
     assert.equal(classifyForTool.length, 3);
   });
 
@@ -268,6 +336,16 @@ describe('the four file-tool refusals', () => {
     });
     assert.equal(redirect.tiers, plan.tiers, 'the hook and the plan hold different arrays');
     assert.equal(plan.tiers, tiers);
+    // WHY IDENTITY IS UNFORGEABLE BY A SECOND CALL, which is what makes the
+    // live assertion in tests/systems-remote-worker.test.mjs lethal rather than
+    // decorative: `buildTierTable` returns a FRESH array every time, so a second
+    // call anywhere in the create path cannot satisfy `===` however equal its
+    // contents are. Asserted, not reasoned about — if it ever memoised, the
+    // live identity check would start passing for the wrong reason.
+    const a = buildTierTable(tierFixtureInput());
+    const b = buildTierTable(tierFixtureInput());
+    assert.notEqual(a, b, 'buildTierTable memoises, so `===` no longer proves one construction site');
+    assert.deepEqual(a, b, '…and the two are equal, so identity is the only thing separating them');
 
     // (ii) One append, two observable changes.
     const bespoke = { tier: 'fail', prefix: '/srv/bespoke', why: 'appended by this test', toolAccess: 'deny' };
