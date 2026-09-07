@@ -179,9 +179,30 @@ with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
 | `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
 | `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
-| `RUN_FUSE_LIFECYCLE` | the whole FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (`fuse-lifecycle.real`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **The largest unprovable surface in this repo**: the daemon's routing, the caller mark, whether an unmarked process really gets `-ENOENT`, and whether `bootstrap.sh`'s binds succeed are all only observable here. `tests/fuse-lifecycle.test.mjs` (in `npm test`, and mutation-provable) covers the teardown state machine, the pure `wrapLaunch` transform, the tier table and the refusals — nothing that mounts. |
+| `RUN_FUSE_LIFECYCLE` | the FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (`fuse-lifecycle.real`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **NARROWED at card 2026-0355 by the policy split**: `policy.h` includes no libfuse header, so `tests/fuse-union-policy.test.mjs` now proves the tier resolution, the ancestor derivation, the synthetic node, the marking policy, the resolution cache, the frame codec and the refusal log deterministically (see the capability row below). What is left here, and is genuinely only observable here: that the libfuse op bodies CALL the policy; that `mount --bind` succeeds onto a synthetic node; that `fuse_get_context()->pid` is a TID in practice; that the marking event fires on the CLI's real first read; and the socket transport itself, including `-EIO` on a dead cc. `src/systems/fuse/PROVENANCE.md` → "The policy split" states the same boundary at the source. |
 | `RUN_DOCKER_SYSTEM` | the docker-backed `System` provider against a real daemon (`systems-docker`). Needs a docker socket. |
 | `RUN_CLI_CONTRACT` | the real-`claude` CLI-behaviour contract cases (`systems-cli-*.real`), read through `tests/cliContractCase.mjs`. Deliberately left UNSET by `npm run gate:systems` — see its header for the pricing. |
+
+**§5.1b The CAPABILITY gate, which is a different animal from an env flag.**
+
+`tests/fuse-union-policy.test.mjs` compiles `tests/fixtures/union-policy-driver.c` and skips when it
+cannot. It is NOT env-gated — nothing opts into it — so it runs by default on any host with a
+toolchain, and a prover reading a `SURVIVED` from a mutant in `policy.h` or `union.c` must
+**check the toolchain before filing it**: a silently skipped C test is indistinguishable from a
+passing one.
+
+| gate | exact detection | what a skip means |
+|---|---|---|
+| C toolchain | `detectToolchain()` in `src/systems/fuse/build.ts` — `gcc --version`, then `pkg-config --cflags fuse3` and `pkg-config --libs fuse3` | the PRODUCT could not have built the daemon either. It is the same function `ensureUnionBinary()` builds through, deliberately: a second, more permissive probe would let the test skip where the product would have compiled |
+
+Confirm it in one line before filing:
+
+```bash
+gcc --version >/dev/null && pkg-config --exists fuse3 && echo "toolchain present — a C SURVIVED is real"
+```
+
+The file prints `fuse-union-policy: SKIPPED — no toolchain: <reason>` on stderr when it skips, and
+the reason is `detectToolchain()`'s own.
 
 Enabling any of them needs something a review environment does not have (the real
 `claude`/`ollama` binary plus auth plus network; a Chromium install via the `code-playwright`
