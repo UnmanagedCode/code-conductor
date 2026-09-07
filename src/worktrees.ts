@@ -496,16 +496,17 @@ export async function createWorktree(
     if (!base) {
       throw httpError(404, `base worktree '${baseWorktree}' not found under project '${projectName}'`);
     }
-    // Depth cap of one. Not a safety guard: it is what keeps the
-    // dependents refusal in syncWorktree / mergeWorktreeIntoParent
-    // non-recursive — a base is always a leaf's direct parent, never a chain.
-    if (base.baseWorktree) {
-      throw httpError(
-        400,
-        `base worktree '${baseWorktree}' is itself based on '${base.baseWorktree}' — ` +
-          `a worktree can only be based on one that is itself based on the project root (depth is capped at one)`,
-      );
-    }
+    // The base may itself have a base: chains nest to any depth. Two structural
+    // facts hold that up, and the obvious "improvements" undo them:
+    //   - `baseWorktree` is written at ONE site (the meta literal below), at
+    //     creation, naming a record that already exists. Creation order is
+    //     therefore a topological order and the graph is a DAG by construction,
+    //     which is why no cycle check exists anywhere. A re-parenting API would
+    //     end that.
+    //   - every dependents guard is scoped to the one branch its operation
+    //     rewrites, and exactly one hop of records references that branch, so the
+    //     DIRECT child is always the first blocker to fire. The refusal predicate
+    //     is depth-independent; only the LIST it hands back walks the subtree.
     basePath = base.worktreePath;
     baseWorktreeName = base.worktreeName;
     baseLabel = `worktree '${baseWorktree}'`;
@@ -689,23 +690,57 @@ export async function getWorktree(projectName: string, worktreeName: string): Pr
   return all.find(w => w.worktreeName === name) ?? null;
 }
 
-// Worktrees that name this one as their base. The predicate is over worktree
-// RECORDS, not live instances: killing a worker is not enough — a surviving
-// child whose base sha was rewritten under it is genuinely broken, so the
-// worktree must actually be deleted before its base is allowed to move.
+// Every worktree that descends from this one — the whole subtree, DEEPEST FIRST.
+// The predicate is over worktree RECORDS, not live instances: killing a worker is
+// not enough — a surviving child whose base sha was rewritten under it is
+// genuinely broken, so the worktree must actually be deleted before its base is
+// allowed to move.
+//
+// TRANSITIVE FOR THE MESSAGE, NOT FOR THE GATE. The walk permits and refuses
+// nothing new: a subtree is empty exactly when the direct-child set is, so every
+// guard built on this fires on precisely the records it fired on before, at any
+// depth. What it buys is the design value the gate was built for — naming the
+// real blocker on the first call. Direct children alone, `sync(A)` on A -> B -> C
+// answers "delete B"; the caller obeys and the delete of B is refused for C.
+// Deepest first because that is the order they have to go in.
+//
+// Bounded like agentTreeBackends (src/instances.ts): downward-only over one
+// already-loaded listWorktrees array, each record visited at most once. `seen`
+// costs nothing and terminates a hand-edited cycle that createWorktree cannot
+// produce.
+//
+// What is guaranteed is the order ACROSS levels — deeper before shallower, which
+// is what makes the list a delete order. Sibling order WITHIN a level is simply
+// listWorktrees's (`createdAt`, readdir order on an equal timestamp) and is NOT
+// guaranteed: siblings are independent, so any order of them deletes cleanly.
 export async function listDependentWorktrees(projectName: string, worktreeName: string): Promise<string[]> {
   const all = await listWorktrees(projectName);
   // Alias here too, not just at getWorktree: the foreign key is matched
   // literally below, so a bare slug would silently return [] and bypass every
   // dependents refusal built on it.
-  const name = resolveWorktreeName(projectName, worktreeName, all.map(w => w.worktreeName)) ?? worktreeName;
-  return all.filter(w => w.baseWorktree === name).map(w => w.worktreeName);
+  const root = resolveWorktreeName(projectName, worktreeName, all.map(w => w.worktreeName)) ?? worktreeName;
+  const seen = new Set<string>([root]);
+  const levels: string[][] = [];
+  let frontier = new Set<string>([root]);
+  while (frontier.size > 0) {
+    const next: string[] = [];
+    for (const w of all) {
+      if (seen.has(w.worktreeName)) continue;
+      if (w.baseWorktree === undefined || !frontier.has(w.baseWorktree)) continue;
+      seen.add(w.worktreeName);
+      next.push(w.worktreeName);
+    }
+    if (next.length > 0) levels.push(next);
+    frontier = new Set(next);
+  }
+  return levels.reverse().flat();
 }
 
 // The shared refusal for "this worktree is somebody's base". Minted once here
 // rather than per surface: unlike WORKTREE_BEHIND (where the REST user clicks
 // Sync and the conductor calls sync_worktree), both audiences act identically —
-// delete the children — so the wording names no button and no tool. `verb`
+// delete the subtree, deepest first — so the wording names no button and no
+// tool, and it hands back `dependents` in the order they must go. `verb`
 // distinguishes the three call sites, and keys the one clause whose content is
 // verb-specific: sync and merge REWRITE the base under the children, delete
 // takes the branch away entirely. Evaluated on the worktree being synced,
@@ -721,15 +756,16 @@ export function dependentsRefusal(
   ok: false; code: 'WORKTREE_HAS_DEPENDENTS'; dependents: string[]; reason: string;
 } {
   const consequence = verb === 'deleting'
-    ? 'deleting it would delete the branch they are based on'
-    : `${verb} it would rewrite the base they were created from`;
+    ? 'deleting it would delete the branch its children are based on'
+    : `${verb} it would rewrite the base its children were created from`;
   return {
     ok: false,
     code: 'WORKTREE_HAS_DEPENDENTS',
     dependents,
-    reason: `worktree '${worktreeName}' is the base for ${dependents.length} other worktree(s) — ` +
-      `${dependents.join(', ')} — and ${consequence}. ` +
-      `Delete them first (killing their workers is not enough).`,
+    reason: `worktree '${worktreeName}' is the base for ${dependents.length} other worktree(s), ` +
+      `directly or further down the chain, and ${consequence}. ` +
+      `Delete them first, in this order: ${dependents.join(', ')} ` +
+      `(killing their workers is not enough).`,
   };
 }
 
@@ -1244,9 +1280,9 @@ export async function syncWorktree(projectName: string, worktreeName: string): P
   // --rebase-merges is load-bearing, not a nicety: a worktree that other
   // worktrees merged into carries their merge commits, and a bare `git rebase`
   // FLATTENS those — silently, looking like a clean sync — collapsing the
-  // two-level `base <- merge(feature) <- merge(task)` history this exists to
-  // produce. It works off the commit graph, not branch names, so it still
-  // recreates a merge whose side branch has since been deleted. Keep it in step
+  // nested `base <- merge <- merge <- …` history this exists to produce, however
+  // deep the chain runs. It works off the commit graph, not branch names, so it
+  // still recreates a merge whose side branch has since been deleted. Keep it in step
   // with buildRebasePrompt below: if only one of the two carries the flag, the
   // conflict path undoes what the automated path preserved.
   const rebase = await runGit(system, meta.worktreePath, ['rebase', '--rebase-merges', meta.baseBranch]);

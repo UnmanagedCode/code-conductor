@@ -554,7 +554,8 @@ export function buildTools(): Tool[] {
             description:
               'Base the new worktree on this existing worktree of the project instead of the project\'s HEAD, ' +
               'so it syncs against and merges into that worktree — how a multi-task feature integrates as a unit ' +
-              'before landing. Depth is capped at one: a worktree that is itself based on another is refused as a base.',
+              'before landing. Chains are allowed to any depth, but a base can neither sync nor merge while anything ' +
+              'descends from it — land and delete a chain leaf-first.',
           },
           name: {
             type: 'string',
@@ -574,7 +575,7 @@ export function buildTools(): Tool[] {
         'Remove a worktree (git deregister + branch delete + dir sweep). Refuses if a live instance ' +
         'is attached, the working tree is dirty, or another worktree is based on this one ' +
         '(WORKTREE_HAS_DEPENDENTS, listing them — delete those first) — unless force:true, which kills any ' +
-        'attached instance and, with dependents, deletes the branch they are based on.',
+        'attached instance and deletes the branch its children are based on.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -599,7 +600,7 @@ export function buildTools(): Tool[] {
         'both are ok:true and carry branch, baseBranch, baseSha, ahead, behind and a ready-to-send ' +
         'rebasePrompt: send_prompt it verbatim to whichever worker should do the work, or resolve it ' +
         'another way. Refuses WORKTREE_HAS_DEPENDENTS (listing them) while any worktree is based on ' +
-        'this one, since every sync path rewrites the base they were created from — delete those ' +
+        'this one, since every sync path rewrites the base its children were created from — delete those ' +
         'worktrees first; killing their workers is not enough.',
       inputSchema: {
         type: 'object',
