@@ -99,8 +99,8 @@ describe('the compiled policy driver', { skip }, () => {
   //  id  | invariant                                        | mutation it must die under
   // -----|--------------------------------------------------|---------------------------
   const CASES = [
-    ['b0-parse',      'the pins parser accepts exactly five kinds and rejects `synth`',
-                      'add `synth` to the kind table, or drop the absolute-path rule'],
+    ['b0-parse',      'the pins parser accepts exactly five kinds and rejects the DERIVED `synth` and `cwd`',
+                      'add `synth` or `cwd` to the kind table, or drop the absolute-path rule'],
     ['b1-prefix',     'longest prefix wins, at a COMPONENT boundary',
                       "delete tier_of's `path[p->len] != '/'` guard"],
     ['b2-failclosed', 'an unpinned path is T_FAIL, and T_FAIL is enum index 0',
@@ -144,6 +144,11 @@ describe('the compiled policy driver', { skip }, () => {
                       'drop the dedupe, or key it on op as well'],
     ['b16-abandon',   'a project-tier abandon sends a bare DIRTY and drops the cached decision; no other tier sends anything',
                       'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit; widen the tier test'],
+    ['b17-cwd-exempt', 'an unmarked caller may getattr the EXACT project root and nothing else, from a fixed 0111 node, with no frame',
+                      'make the exemption unconditional; swap pin_exact for tier_of; widen the op test past getattr; 0111 → 0555'],
+    ['b18-cwd-wide-mirror',
+                      'a project-tier directory with no EXACT pin is not exempt, so a WIDE advertised mirror root is not repaired (residual 2)',
+                      'widen the exemption to tier_of, which would silently close a residual this card did not rule on'],
     ['b15-unreconcilable',
                       "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP, and a host-tier one does not",
                       '`return -EOPNOTSUPP` → `return 0`; the T_PROJECT test flipped or widened to every tier; EOPNOTSUPP collapsed into EROFS'],
@@ -215,6 +220,123 @@ describe('the compiled policy driver', { skip }, () => {
     // every assertion above.
     assert.equal(new Set(vectors.map(([n]) => hex[n])).size, vectors.length,
       'two flag vectors encode to the same bytes');
+  });
+
+  // ── C4: THE CWD EXEMPTION'S OP ALLOW-LIST, AS AN ENUMERATION DERIVED FROM
+  // union.c ──────────────────────────────────────────────────────────────────
+  //
+  // `getattr` is the ONLY op a chdir(2) performs against this daemon: with
+  // `default_permissions` the kernel answers `access(2)` itself, and with
+  // entry_timeout=0/attr_timeout=0 the LOOKUP and the MAY_EXEC refresh both
+  // land in `pt_getattr`. Every other op is therefore out — and `opendir` is out
+  // twice over, because a directory's LISTING is content inside it, which is the
+  // exact thing the ruling withholds.
+  //
+  // ONE LITERAL, USED TWICE: it is driven through the predicate in the fixture
+  // (where no kernel gate can mask the daemon's own answer) AND set-compared
+  // against the op strings union.c actually routes, so an op added there without
+  // being classified fails here rather than silently joining the allow-list.
+  const NOT_EXEMPT_OPS = ['access', 'chmod', 'chown', 'create', 'getxattr', 'link',
+    'listxattr', 'mkdir', 'mknod', 'open', 'opendir', 'readlink', 'removexattr',
+    'rename', 'rmdir', 'setxattr', 'statfs', 'symlink', 'truncate', 'unlink', 'utimens'];
+
+  test('the cwd exemption allows getattr and nothing else, and the set is union.c’s own', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    const routed = [...src.matchAll(/\b(?:ROUTE|route)\("([a-z]+)"/g)].map(m => m[1]);
+    assert.ok(routed.length > 20, `union.c's ops were not parsed: ${routed.length}`);
+    assert.deepEqual([...new Set(routed)].sort(), [...NOT_EXEMPT_OPS, 'getattr'].sort(),
+      'an op union.c routes is classified neither exempt nor not-exempt');
+
+    // AND THE DERIVATION CANNOT BE EVADED. The set above is read off LITERAL
+    // `ROUTE("…")` / `route("…")` call sites, so an op routed through a
+    // VARIABLE would be invisible to it and would join the allow-list's blind
+    // spot silently. Every non-literal call site is therefore enumerated here
+    // — the three structural ones — and a fourth FAILS, rather than a comment
+    // asking a future author to keep to the convention.
+    const STRUCTURAL = [
+      /^const char \*op, const char \*path, uint8_t cflags,/,   // route()'s own definition
+      /^op, p, cflags, fop\)/,                                  // the ROUTE macro's parameter list
+      /^op, p, cflags, fop, &r\);/,                             // and its body's forwarding call
+    ];
+    // PER LINE, AND THE WINDOW IS WHY. A `(.{0,60})` capture SWALLOWS any call
+    // site whose text begins inside the previous match's window, and that was
+    // already happening in this file: `route("rename", to, …)` at :1119 sits
+    // one line below :1118 and went unseen (26 sites found, 27 present). A
+    // variable-form op placed directly after a literal one — exactly the
+    // rename/link two-line shape — therefore evaded both the per-site guard
+    // and the count. Matching per line and taking the head to end-of-line
+    // cannot overlap, so every site is classified.
+    //
+    // The lookbehind keeps `policy_project_route(` and friends out: `_` is a
+    // word character, so there is no word boundary before `route` in them.
+    const sites = [];
+    src.split('\n').forEach((line) => {
+      for (const m of line.matchAll(/(?<![\w])(?:ROUTE|route)\(/g))
+        sites.push(line.slice(m.index + m[0].length));
+    });
+    assert.ok(sites.length > routed.length, `route() call sites were not parsed: ${sites.length}`);
+    // Every literal site the op set was derived from is one of these, so the
+    // two counts cannot drift apart unnoticed.
+    assert.equal(sites.filter(t => t.startsWith('"')).length, routed.length,
+      'the per-line sweep and the op-name extraction disagree about the literal sites');
+    const nonLiteral = sites.filter(t => !t.startsWith('"'));
+    for (const t of nonLiteral)
+      assert.ok(STRUCTURAL.some(re => re.test(t)),
+        `union.c routes an op through a NON-LITERAL name, so the allow-list cannot see it: route(${t}`);
+    assert.equal(nonLiteral.length, STRUCTURAL.length,
+      `expected exactly ${STRUCTURAL.length} structural route( sites, got ${nonLiteral.length}`);
+    // …and every one of them is actually refused by the predicate.
+    const r = await run(bin, ['b17-cwd-exempt', ...NOT_EXEMPT_OPS]);
+    assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+    const lines = r.stdout.split('\n').filter(Boolean);
+    assert.ok(lines.every(l => l.startsWith('ok ')), r.stdout);
+    for (const op of NOT_EXEMPT_OPS)
+      assert.ok(lines.some(l => l.includes(`\`${op}\` is not exempt`)), `${op} was not driven`);
+  });
+
+  // ── C8: WHERE union.c ASKS, AND WHERE IT DISPATCHES ────────────────────────
+  //
+  // The fixture cannot reach union.c, so the two-line call site is pinned from
+  // the source — as `route()`'s flags byte is, and for the same reason: every
+  // behavioural test drives `policy_cwd_exempt` directly, so a call site that
+  // was never added, or that assigned the wrong tier, would be invisible.
+  test('route() asks the exemption and pt_getattr dispatches T_CWD before SYNTHETIC', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    assert.match(src, /policy_cwd_exempt\(op, path, \(pid_t\)fuse_get_context\(\)->pid\)\)\s*\{\s*\n\s*r->tier = T_CWD;/,
+      'INVARIANT: route() asks policy_cwd_exempt with the CALLING THREAD id and assigns T_CWD — '
+      + 'the call site is missing, takes a different id, or assigns another tier');
+    const body = bodyOfIn(src, 'getattr');
+    const dispatch = body.search(/if \(r\.tier == T_CWD\)\s*\n?\s*return policy_cwd_getattr\(path, st\);/);
+    const synthetic = body.search(/if \(SYNTHETIC\(r\.tier\)\)/);
+    assert.ok(dispatch > 0,
+      'INVARIANT: pt_getattr dispatches T_CWD to policy_cwd_getattr — that branch is gone');
+    assert.ok(synthetic > 0,
+      'INVARIANT: pt_getattr keeps its SYNTHETIC branch — the ordering below compares two LIVE branches');
+    // BEFORE the synthetic branch — and the order is INERT today, because
+    // `SYNTHETIC(t)` is `(t == T_SYNTH || t == T_BIND)` and so is false for
+    // T_CWD: moving the branch below it changes nothing behaviourally. What
+    // this pins is the safe placement for the day SYNTHETIC() is widened to
+    // include T_CWD, after which the ordering is the only thing keeping this
+    // node from being answered out of the ancestor table it is not in. (The
+    // -ENOENT outcome belongs to the CALL-SITE mutant the first assertion
+    // covers, not to this move.)
+    assert.ok(dispatch < synthetic,
+      'INVARIANT: the T_CWD branch comes BEFORE SYNTHETIC(), so that widening SYNTHETIC() to '
+      + 'include T_CWD cannot start answering this node from the ancestor table it is not in');
+    // The exemption is asked INSIDE the T_PROJECT arm, after the self-recursion
+    // guard — liveness first, and no other tier may reach it.
+    const arm = src.slice(src.indexOf('case T_PROJECT: {'), src.indexOf('case T_FAIL:'));
+    // PRESENCE FIRST, because `indexOf` answers -1 for an absent needle and -1
+    // is less than everything — so both orderings below would pass VACUOUSLY
+    // against an arm that had lost a call site altogether.
+    for (const needle of ['caller_is_self()', 'policy_cwd_exempt(', 'policy_project_route('])
+      assert.ok(arm.includes(needle), `route()'s T_PROJECT arm no longer calls ${needle}`);
+    assert.ok(arm.indexOf('caller_is_self()') < arm.indexOf('policy_cwd_exempt('),
+      'INVARIANT: the self-recursion guard is asked BEFORE the exemption — liveness first, '
+      + 'since the guard exists to stop this daemon re-entering itself');
+    assert.ok(arm.indexOf('policy_cwd_exempt(') < arm.indexOf('policy_project_route('),
+      'INVARIANT: the exemption is asked BEFORE policy_project_route — after it, the unmarked '
+      + 'denial has already returned and the exemption can never fire');
   });
 
   // WHICH OP BODIES ASK. `policy_mutation_check` owns the EROFS answer and

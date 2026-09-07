@@ -995,6 +995,198 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assertNoResidue(before, runRoot, null, 'R7');
   });
 
+  // ── R8 ───────────────────────────────────────────────────────────────────
+  // THE ACCEPTANCE GATE FOR 2026-0373: a spawn-time chdir from an UNMARKED
+  // thread group resolves the project ROOT and nothing inside it.
+  //
+  // THE PROBE REPRODUCES THE DEFECT'S OWN MECHANISM rather than a shell's `cd`:
+  // `node -e` + `spawnSync(..., { cwd })` is libuv's chdir-in-the-FORKED-CHILD,
+  // which is precisely what the CLI's Bash spawn does and precisely what R1
+  // cannot see (R1 calls `system.execOneShot({shell:'pwd'}, {cwd})` directly,
+  // which is why R1 passed while every child the CLI spawned at its own cwd
+  // died). The `node` binary is named by its HOST path, so it never routes
+  // through the union and is never marked; its spawned child is a further new
+  // thread group, also unmarked — two levels of unmarked, exactly like reality.
+  const R8_PROBE = [
+    'const {spawnSync}=require("child_process");',
+    'const [root,sub,file]=process.argv.slice(1);',
+    'const run=(bin,args,cwd)=>{const r=spawnSync(bin,args,{cwd,encoding:"utf8"});',
+    'return {status:r.status,err:r.error?r.error.code:null,',
+    'out:(r.stdout||"").trim(),se:(r.stderr||"").trim()};};',
+    'console.log(JSON.stringify({',
+    'a:run("/bin/sh",["-c","pwd -P"],root),',
+    'b:run("/bin/sh",["-c","pwd -P"],sub),',
+    'c:run("/bin/cat",[file],"/"),',
+    'd:run("/usr/bin/stat",["-c","%a %u %g",root],"/"),',
+    'e:run("/bin/ls",[root],"/")}));',
+  ].join('');
+
+  test('R8 — an unmarked spawn resolves the project root, and nothing inside it', async () => {
+    const before = snapshot(runRoot);
+    const proj = path.join(box, 'app');
+    const SUB = 'cwd-sub';
+    // IN THE FAKE REMOTE, so it genuinely exists on "the system": a refusal at
+    // a path the source does not have would prove absence, not policy.
+    await fs.mkdir(path.join(fakeRemote, proj, SUB), { recursive: true });
+    // (e) reads the daemon's OWN output, and nothing else in the product turns
+    // the trace on. Scoped to this arm: set before the spawn the daemon
+    // inherits it through, removed in the `finally`.
+    const traceDir = await mkdtemp('cc-fuse-trace-');
+    const tracePath = path.join(traceDir, 'union.trace');
+    const prevTrace = process.env.CC_UNION_TRACE;
+    process.env.CC_UNION_TRACE = tracePath;
+    let inst;
+    try {
+      inst = await spawnWorker();
+      const record = await readRecord(inst.id);
+      const out = await inNs(record.anchorPid, 'exec "$1" -e "$2" "$3" "$4" "$5"',
+        process.execPath, R8_PROBE,
+        inside(record, proj), inside(record, path.join(proj, SUB)),
+        inside(record, path.join(proj, 'remote-marker.txt')));
+      assert.ok(out.stdout.trim().startsWith('{'),
+        `the probe did not run: ${out.stdout} ${out.stderr}`);
+      const res = JSON.parse(out.stdout.trim());
+
+      // (a) THE ROOT RESOLVES. Without the exemption the chdir happens in the
+      // forked child, which is a brand-new and therefore unmarked thread group,
+      // and the process dies before its own image runs.
+      assert.equal(res.a.err, null, `the spawn at the project root failed: ${JSON.stringify(res.a)}`);
+      assert.equal(res.a.status, 0, `the spawn at the project root failed: ${JSON.stringify(res.a)}`);
+      assert.equal(res.a.out, inside(record, proj), JSON.stringify(res.a));
+
+      // (b) A PROJECT-TIER DIRECTORY THAT IS NOT THE ROOT STAYS DENIED. The
+      // ruling is the exact project pin and nothing under it.
+      assert.equal(res.b.err, 'ENOENT', `a spawn inside the project tree survived: ${JSON.stringify(res.b)}`);
+
+      // (c) A FILE IN THE PROJECT TREE STAYS DENIED — and this is also the
+      // arm's NON-VACUITY CONTROL: it can only fail this way for an unmarked
+      // caller, so it proves the probe's thread group really is unmarked. R2
+      // owns the marked/unmarked pair for a file; this is the same denial
+      // reached from the probe that (a) and (b) run in.
+      assert.notEqual(res.c.status, 0, `an unmarked caller read a project file: ${JSON.stringify(res.c)}`);
+      assert.match(res.c.se, /No such file or directory/, JSON.stringify(res.c));
+
+      // (d) THE MODE IS THE RULING. `d--x--x--x` says "you may enter, you may
+      // not read", so `stat` answers and a listing does not.
+      assert.equal(res.d.out, '111 0 0', `the project root is not the traverse-only node: ${JSON.stringify(res.d)}`);
+      assert.notEqual(res.e.status, 0, `an unmarked caller listed the project root: ${JSON.stringify(res.e)}`);
+      assert.equal(res.e.out, '', `a child name reached an unmarked caller: ${JSON.stringify(res.e)}`);
+
+      // (e) THE DAEMON SAID SO ITSELF, rather than the decision being read off
+      // a shell's exit code: the routed tier is in the trace, and the root is
+      // NOT in the refusal log while the two paths under it are.
+      const trace = await fs.readFile(tracePath, 'utf8').catch(() => '');
+      const rows = trace.split('\n').filter(Boolean);
+      // THE TWO WAYS THIS CAN GO RED ARE DIFFERENT FINDINGS, so they are
+      // distinguished rather than collapsed — but only REACHABLE causes are
+      // named. Nothing in the product turns the trace on: CC_UNION_TRACE is
+      // not one of the CC_* variables `wrapLaunch` sets explicitly, so it
+      // reaches the daemon only by riding the env SPREAD — `spawnEnv =
+      // {...process.env}` (instances.ts) → `...spec.env` (wrap.ts:44) →
+      // `sudo -n -E` → bootstrap.sh → the daemon's own environment.
+      //
+      // NOT sudoers, and that is checked rather than assumed: cc's preflight
+      // already probes this exact `sudo -n -E` form with a sentinel
+      // (`sudoPreservesEnv`, preflight.ts) and REFUSES the spawn before any
+      // arm runs, so a host that does not preserve the environment dies at
+      // `spawnWorker` and never reaches this line. The only sudoers channel
+      // left is a value-content rule (`env_check`-style) that could
+      // discriminate this PATH-valued variable from preflight's plain
+      // sentinel — remote enough to name last.
+      //
+      // Nor is it the daemon failing to OPEN the file: `union.c` refuses to
+      // mount when it cannot (`cc-union: trace <path>: …`, then `return 1`),
+      // which surfaces as a failed spawn, not as an empty trace here.
+      //
+      // Still an assertion and never a skip: a guard that skips when its
+      // instrument is missing is not a guard.
+      assert.ok(rows.length > 0,
+        'THE TRACE INSTRUMENT DID NOT RUN — no rows were written, so the assertion below could '
+        + 'not be made. In likelihood order: the product\'s env chain stopped carrying it '
+        + '(`spawnEnv = {...process.env}` in instances.ts, `...spec.env` in wrap.ts, or '
+        + 'bootstrap.sh no longer passing its environment to the daemon); this arm\'s own '
+        + 'set/restore of process.env.CC_UNION_TRACE; or — remotely — a sudoers value-content '
+        + 'rule filtering a path-valued variable that preflight\'s plain sentinel does not catch. '
+        + `A failed fopen is NOT a cause: the daemon refuses to mount instead. Expected rows at ${tracePath}.`);
+      const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      assert.ok(rows.some(l => new RegExp(`^getattr\t${esc(proj)}\ttier=cwd .*\\bmark=0\\b`).test(l)),
+        `THE DAEMON RAN AND EMITTED NO unmarked tier=cwd ROW for ${proj} — the exemption did not `
+        + `fire, or route() assigned another tier (${rows.length} rows traced): `
+        + rows.filter(l => l.includes(proj)).slice(-8).join(' | '));
+      const refusals = await refusalsOf(inst.id);
+      assert.deepEqual(refusals.filter(r => r[1] === proj && r[2] === 'unmarked-project-denied'), [],
+        'the project root was refused to the unmarked caller after all');
+      for (const denied of [path.join(proj, SUB), path.join(proj, 'remote-marker.txt')]) {
+        assert.ok(refusals.some(r => r[1] === denied && r[2] === 'unmarked-project-denied'),
+          `no unmarked-project-denied for ${denied}: ${JSON.stringify(refusals)}`);
+      }
+    } finally {
+      // NESTED, so a throw from `remove` cannot leave CC_UNION_TRACE set for
+      // every arm after this one. Cross-arm env leakage is how a flake gets
+      // manufactured later.
+      try {
+        if (inst) await instances.remove(inst.id);
+      } finally {
+        if (prevTrace === undefined) delete process.env.CC_UNION_TRACE;
+        else process.env.CC_UNION_TRACE = prevTrace;
+      }
+    }
+    assertNoResidue(before, runRoot, null, 'R8');
+  });
+
+  // ── R9 ───────────────────────────────────────────────────────────────────
+  // THE TWO-CHANGE CAUSATION, as a STANDING ARM rather than a one-off
+  // measurement, and stated at a project-tier directory that is NOT the root so
+  // both halves stay live after the exemption lands.
+  //
+  //   cwd is the variable, mark fixed unmarked — `/` spawns, the subdirectory
+  //   does not ⇒ moving the session cwd onto a project-tier path is one
+  //   precondition of the defect.
+  //   mark is the variable, cwd fixed at the subdirectory — unmarked denied,
+  //   MARKED served ⇒ the project tier's unmarked denial is the other.
+  const R9_PROBE = [
+    'const {spawnSync}=require("child_process");',
+    'const run=(cwd)=>{const r=spawnSync("/bin/sh",["-c","pwd -P"],{cwd,encoding:"utf8"});',
+    'return {status:r.status,err:r.error?r.error.code:null,out:(r.stdout||"").trim()};};',
+    'console.log(JSON.stringify({root:run(process.argv[1]),sub:run(process.argv[2])}));',
+  ].join('');
+
+  test('R9 — the spawn dies of the cwd AND of the mark, and of neither alone', async () => {
+    const before = snapshot(runRoot);
+    const proj = path.join(box, 'app');
+    const SUB = 'cwd-sub';
+    await fs.mkdir(path.join(fakeRemote, proj, SUB), { recursive: true });
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const sub = inside(record, path.join(proj, SUB));
+
+      // HALF ONE: the mark is held fixed at unmarked and only the cwd moves.
+      const out = await inNs(record.anchorPid, 'exec "$1" -e "$2" "$3" "$4"',
+        process.execPath, R9_PROBE, '/', sub);
+      assert.ok(out.stdout.trim().startsWith('{'), `the probe did not run: ${out.stdout} ${out.stderr}`);
+      const res = JSON.parse(out.stdout.trim());
+      assert.equal(res.root.status, 0, `the same spawn at / failed: ${JSON.stringify(res.root)}`);
+      assert.equal(res.root.out, '/', JSON.stringify(res.root));
+      assert.equal(res.sub.err, 'ENOENT', `the unmarked spawn inside the project tree survived: ${JSON.stringify(res.sub)}`);
+
+      // HALF TWO: the cwd is held fixed at the subdirectory and only the mark
+      // moves. R7's technique verbatim — `[ -e ]` and `cd` are both BUILTINS,
+      // so the marking stat and the chdir are made by ONE thread group; a
+      // `cat` or a spawn would be an unmarked child and would answer half one's
+      // question again.
+      const marked = await inNs(record.anchorPid,
+        '[ -e "$1" ] || exit 9; cd "$2" || exit 8; pwd -P',
+        inside(record, inst._fuse.plan.markPath), sub);
+      assert.equal(marked.ok, true,
+        `a MARKED caller could not chdir into the project tree: ${marked.stdout} ${marked.stderr}`);
+      assert.equal(marked.stdout.trim(), sub, `${marked.stdout} ${marked.stderr}`);
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R9');
+  });
+
   // ── ARM 7 ────────────────────────────────────────────────────────────────
   // PINS: nothing this run started is still running, established WITHOUT
   // reading mount.json. Ordered last in the file so it sees every earlier arm's
