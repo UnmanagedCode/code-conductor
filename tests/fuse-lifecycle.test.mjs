@@ -449,7 +449,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'allow_other,attr_timeout=0',
     tiers: [], pinsText: '', uid: 1000, gid: 1000,
-    fakeRemoteRoot: '/',
+    sourceOverrideRoot: '', tracePath: '',
   };
   const wrapped = () => wrapLaunch(
     { command: 'claude', args: ['-p', 'a prompt\nwith a newline', '--model', 'x'], cwd: '/store/sessions/foo', env: { HOME: '/home/node', PATH: '/opt/bin:/usr/bin' } },
@@ -754,7 +754,7 @@ describe('the mount literals', () => {
     const { buildFusePlan, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
     const plan = buildFusePlan({
       instanceId: 'inst-a18', cwdInside: '/srv/app',
-      fakeRemoteRoot: '/', markPath: '/usr/bin/claude',
+      sourceOverrideRoot: null, markPath: '/usr/bin/claude',
       tiers: buildTierTable(tierFixtureInput({ runDir: fuseRunDir('inst-a18') })),
     });
     assert.equal(path.dirname(plan.mirror), plan.rundir);
@@ -844,15 +844,17 @@ describe('the configuration-time containment refusal', () => {
   // exemption exercised rather than merely present.
   //
   // WHAT THE REFUSAL IS FOR: cc materialises a remote path P at `<mirror>/P`
-  // and reads it from `<fakeRemoteRoot>/P`. Where the mirror lies inside the
+  // and reads it from `<sourceOverrideRoot>/P`. Where the mirror lies inside the
   // source root, some P resolves back into the mirror and cc serves its own
-  // staging area to the worker as remote content.
+  // staging area to the worker as remote content. IN PRODUCTION THERE IS NO
+  // ROOT AT ALL — a path P from the daemon IS the path on the system — so this
+  // guards the override, which is what it always guarded.
 
   // Arm (b). Mutation it must die under: deleting the containment check.
   test('A20b: a non-/ remote root containing the mirror is refused', async () => {
     const { buildFusePlan, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
     const rundir = fuseRunDir('inst-x');
-    assert.throws(() => buildFusePlan({ ...planArgs, fakeRemoteRoot: path.dirname(path.dirname(rundir)) }), (e) => {
+    assert.throws(() => buildFusePlan({ ...planArgs, sourceOverrideRoot: path.dirname(path.dirname(rundir)) }), (e) => {
       assert.equal(e.code, 'FUSE_REMOTE_ROOT_CONTAINS_MIRROR');
       assert.equal(e.statusCode, 501);
       // It names the mirror, not the mountpoint: the mount is not what is at
@@ -867,26 +869,55 @@ describe('the configuration-time containment refusal', () => {
   // Arm (c). Mutation it must die under: making the refusal unconditional.
   test('A20c: a non-containing remote root is accepted', async () => {
     const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
-    const plan = buildFusePlan({ ...planArgs, fakeRemoteRoot: '/srv/app' });
-    assert.equal(plan.fakeRemoteRoot, '/srv/app');
+    const plan = buildFusePlan({ ...planArgs, sourceOverrideRoot: '/srv/app' });
+    assert.equal(plan.sourceOverrideRoot, '/srv/app');
   });
 
-  // Arm (a). THE DEFAULT ROOT, and it is the arm that makes the exemption
-  // provable: `/` contains the mirror like it contains everything, so without
-  // this a mutant deleting the `/` exemption would survive untouched — and
-  // every default launch would 501.
+  // Arm (a). THE TWO ACCEPTED ROOTS, and this is the arm that makes the
+  // exemptions provable rather than merely present: `/` contains the mirror
+  // like it contains everything, and PRODUCTION has no root to compare at all.
+  // Without both a mutant collapsing either exemption survives untouched — and
+  // every production launch would 501 on the second.
   //
-  // Mutation it must die under: `input.fakeRemoteRoot === '/' ? null : …`
-  // collapsed to the bare containment check.
-  test('A20a: the default remote root / is accepted', async () => {
-    const { buildFusePlan, resolveFakeRemoteRoot } = await import('../src/systems/fuse/plan.ts');
-    assert.equal(resolveFakeRemoteRoot(), '/', 'the default is the host filesystem standing in for the remote');
-    const plan = buildFusePlan({ ...planArgs, fakeRemoteRoot: resolveFakeRemoteRoot() });
-    assert.equal(plan.fakeRemoteRoot, '/');
+  // Mutation it must die under: `override === null || override === '/' ? null
+  // : …` collapsed to the bare containment check, in EITHER clause.
+  test('A20a: no override at all, and an override of /, are both accepted', async () => {
+    const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+    // PRODUCTION. `null` is what `src/instances.ts` passes when
+    // CC_FUSE_SOURCE_OVERRIDE_ROOT is unset, which is every ordinary spawn.
+    const prod = buildFusePlan({ ...planArgs, sourceOverrideRoot: null });
+    assert.equal(prod.sourceOverrideRoot, '', 'no override is recorded as no root, not as "/"');
+    const root = buildFusePlan({ ...planArgs, sourceOverrideRoot: '/' });
+    assert.equal(root.sourceOverrideRoot, '/');
+  });
+
+  // PINS the trace's default: OFF, and therefore costing the daemon nothing.
+  // `tr()` resolves ids per op and reads /proc, so an accidentally-on trace is
+  // a per-op cost on every production session.
+  //
+  // Mutation it must die under: making `tracePath` unconditional; inverting the
+  // `CC_FUSE_TRACE === '1'` test.
+  test('A20t: the daemon trace is off unless CC_FUSE_TRACE=1, and lands in the run dir when on', async () => {
+    const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+    const prev = process.env.CC_FUSE_TRACE;
+    try {
+      delete process.env.CC_FUSE_TRACE;
+      assert.equal(buildFusePlan({ ...planArgs, sourceOverrideRoot: null }).tracePath, '');
+      // Not any truthy value: the daemon REFUSES TO MOUNT on a trace path it
+      // cannot open, so the switch is exact rather than loose.
+      process.env.CC_FUSE_TRACE = 'yes';
+      assert.equal(buildFusePlan({ ...planArgs, sourceOverrideRoot: null }).tracePath, '');
+      process.env.CC_FUSE_TRACE = '1';
+      const on = buildFusePlan({ ...planArgs, sourceOverrideRoot: null });
+      assert.equal(on.tracePath, path.join(on.rundir, 'trace.log'));
+    } finally {
+      if (prev === undefined) delete process.env.CC_FUSE_TRACE;
+      else process.env.CC_FUSE_TRACE = prev;
+    }
   });
 
   // AND WHY `/` IS SAFE, as data rather than as prose. At root `/`,
-  // `<fakeRemoteRoot>/P` IS P, so cc reads the mirror only for a P at or inside
+  // `<sourceOverrideRoot>/P` IS P, so cc reads the mirror only for a P at or inside
   // the mirror. Every such P resolves `hide`, and `route()` answers -ENOENT for
   // a `hide` path before any control frame is sent — so no such P ever reaches
   // cc. Asserted at the WIDEST advertised mirror root, `/`, which is the only
@@ -1195,7 +1226,7 @@ describe('FuseSession lifecycle', () => {
     controlSock: path.join(rundir, 'control.sock'),
     markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'o', tiers: [], pinsText: '# pins\n',
-    uid: 1000, gid: 1000, fakeRemoteRoot: '/',
+    uid: 1000, gid: 1000, sourceOverrideRoot: '', tracePath: '',
   });
 
   // T3 / B1 — PINS: the teardown latch is released by a successful prepare().

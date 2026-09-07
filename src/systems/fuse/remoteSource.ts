@@ -2,9 +2,10 @@
 // talks to, and the S2 implementation of it.
 //
 // The handler (control.ts) knows about frames, the mirror and serialisation; it
-// knows nothing about how a file is reached. That split is what makes S3 a
-// substitution rather than a rewrite: S3 deletes `localDirSource` and passes a
-// `System`-backed implementation of the same four methods.
+// knows nothing about how a file is reached. That split is what made S3 a
+// SUBSTITUTION rather than a rewrite: production passes `systemSource`
+// (systemSource.ts), a real `System` handle behind the same five methods, and
+// not one signature here changed for it.
 
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
@@ -64,17 +65,27 @@ export interface RemoteSource {
   push(src: string, p: string): Promise<'ok' | { error: string }>;
 }
 
-// ── THE S2 FAKE REMOTE, LABELLED AS ONE ─────────────────────────────────────
+// ── THE DETERMINISTIC SOURCE ────────────────────────────────────────────────
 //
-// A plain local directory. WHAT IT PROVES: the control channel, the mirror
-// discipline and the tier policy — every frame, every materialisation, every
-// refusal. WHAT IT DOES NOT PROVE: any transport, any latency and any `System`
-// call. S3 (2026-0356) deletes it.
+// A plain local directory. NOT the production source any more — that is
+// `systemSource` — but not deleted either, because it has three live jobs that
+// a real transport cannot do:
 //
-// It exists as a separate ROOT rather than as "the host filesystem" because
-// criteria 3 and 4 are only checkable when the remote's bytes DIFFER from the
-// host's at the same path: S1's bind-mount stand-in made them identical and the
-// distinction unobservable.
+//   1. the unit suite's. `tests/fuse-control-channel.test.mjs` drives the whole
+//      control channel against it with no provider and no latency.
+//   2. the real lifecycle gate's. Criteria 3 and 4 are only checkable when the
+//      remote's bytes DIFFER from the host's at the same path — S1's bind-mount
+//      stand-in made them identical and the distinction unobservable — and that
+//      gate must not need a container. `CC_FUSE_SOURCE_OVERRIDE_ROOT` selects
+//      it, and `src/instances.ts` reports it loudly on the session's stream,
+//      because a session using it is not talking to its system at all.
+//   3. THE MEASUREMENT CONTROL. Every latency figure in S1, S2 and the three
+//      spikes was taken against this; it is the arm the transport's cost is
+//      reported against (tests/fuse-transport-bench.mjs).
+//
+// WHAT IT PROVES: the control channel, the mirror discipline and the tier
+// policy — every frame, every materialisation, every refusal. WHAT IT DOES NOT
+// PROVE: any transport, any latency and any `System` call.
 export function localDirSource(root: string): RemoteSource {
   // The source is addressed by the path the WORKER sees, which is absolute in
   // the union's own space; `/` maps to `root`. A path that escapes `root` is a

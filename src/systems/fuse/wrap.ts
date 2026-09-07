@@ -60,6 +60,11 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     CC_FUSE_CONTROL: plan.controlSock,
     CC_FUSE_MARK_PATH: plan.markPath,
     CC_FUSE_REFUSAL_LOG: plan.refusalLog,
+    // OMITTED ENTIRELY when tracing is off, rather than sent empty: the
+    // bootstrap forwards it to `CC_UNION_TRACE` unconditionally, and an unset
+    // variable expands empty there, so the off path is byte-identical to
+    // before this existed.
+    ...(plan.tracePath ? { CC_FUSE_TRACE: plan.tracePath } : {}),
     // sudo's `secure_path` replaces PATH even under `-E`, so the PATH the CLI
     // is meant to run with is carried in a name sudo does not know about and
     // restored by the bootstrap immediately before the final exec. Without this

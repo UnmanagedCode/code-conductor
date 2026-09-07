@@ -58,12 +58,14 @@ import {
   trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
-import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
+import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
-import { buildFusePlan, resolveFakeRemoteRoot, fuseRunDir } from './systems/fuse/plan.ts';
+import { buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
 import { buildTierTable, resolveOnPath, type LocalRoot } from './systems/fuse/tierTable.ts';
 import { FuseSession } from './systems/fuse/session.ts';
+import { localDirSource } from './systems/fuse/remoteSource.ts';
+import { systemSource } from './systems/fuse/systemSource.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
 import { ensureUnionBinary } from './systems/fuse/build.ts';
 import { wrapLaunch, type LaunchWrap } from './systems/fuse/wrap.ts';
@@ -1782,6 +1784,20 @@ export class Instance extends EventEmitter implements InstanceLike {
       }
     }
 
+    // IS THE BOX STILL THERE — asked NOW, not from a cache, and that is the
+    // whole of it. `systemById` refuses a provider that will not come up and a
+    // remote it does not serve, but `connect()`, `assertRemoteKnown()` and
+    // `mirror()` all memoise on the handshake OBJECT, so a container that
+    // stopped after that generation began is invisible until first use. For a
+    // union spawn "first use" is inside the worker's own chroot, where every
+    // project path answers -EIO and there is nothing to say why.
+    //
+    // BEFORE `assertFuseAvailable` and therefore before `prepare()`: nothing is
+    // created for a session that is about to be refused.
+    if (this._fuse && placement) {
+      await this._assertRemoteMountable(placement, pinned?.mirrorRoot ?? placement.systemPath);
+    }
+
     // The FUSE preflight is the LAST thing before spawn and the first thing
     // that can refuse: criterion 9 wants a host that cannot mount to refuse the
     // spawn by name, and only a check on this side of spawn() reaches the
@@ -1793,6 +1809,48 @@ export class Instance extends EventEmitter implements InstanceLike {
     }
     this.spawn({ resume });
     if (this._fuse) await this._awaitFuseMount();
+  }
+
+  // THE TWO WAYS A UNION SPAWN IS DOOMED BEFORE IT STARTS, and they are two
+  // codes because they are two repairs.
+  //
+  // Both are asked LIVE. `systemById` refuses a provider that will not come up
+  // and a remote it does not serve, but `connect()`, `assertRemoteKnown()` and
+  // `mirror()` all memoise on the handshake OBJECT — the connection GENERATION
+  // — so a container that stopped after that generation began is invisible to
+  // every one of them until first use. For an ordinary operation that is fine.
+  // For this one "first use" is inside the worker's own chroot, where every
+  // project path answers -EIO and there is nothing there to say why.
+  async _assertRemoteMountable(placement: RedirectPlacement, mirrorRoot: string): Promise<void> {
+    const target = placement.system.remoteId === null
+      ? `system '${placement.systemId}'`
+      // The REMOTE is the thing an operator starts, so a refusal naming only
+      // the system would point at the wrong repair.
+      : `remote '${placement.system.remoteId}' of system '${placement.systemId}'`;
+    const unreachable = (why: string): Error => Object.assign(
+      new Error(`cc will not start a worker for project '${placement.project}': its files are served from `
+        + `${target}, which did not answer a live check before the mount (${why}). A worker mounted onto an `
+        + `unreachable system reaches no project file at all. Start it and spawn again.`),
+      { statusCode: 502, code: 'FUSE_REMOTE_UNREACHABLE', systemRefusal: true },
+    );
+
+    try { await assertRemoteLive(placement.system, `project '${placement.project}'`); }
+    catch (e) { throw unreachable(e instanceof Error ? e.message : String(e)); }
+
+    // ONE `lstat`, and it is the transport's own first act — the mount is about
+    // to make it anyway. Its FAILURE is a liveness fault; its ANSWERING
+    // "nothing here" is a configuration one, which is why the two part here.
+    let st;
+    try { st = await placement.system.lstat(mirrorRoot); }
+    catch (e) { throw unreachable(`mirror root '${mirrorRoot}': ${e instanceof Error ? e.message : String(e)}`); }
+    if (st === null) {
+      throw Object.assign(
+        new Error(`cc will not start a worker for project '${placement.project}': ${target} advertises mirror `
+          + `root '${mirrorRoot}', and that path does not exist on it. Every file tool in the session would be `
+          + `refused as outside the mirror root. Fix the remote's mirror record, or the path on the machine.`),
+        { statusCode: 501, code: 'FUSE_MIRROR_ROOT_ABSENT', systemRefusal: true },
+      );
+    }
   }
 
   // The bootstrap's handshake. Absence past the deadline is fatal to the
@@ -4606,6 +4664,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // and NONE AT ALL for a provider that does not advertise the capability —
       // whose absent-behaviour now means "the narrowest mirror root", the
       // project's own path.
+      //
+      // THE MEMOISATION IS WHY THIS IS NOT ALSO THE LIVENESS CHECK. It answers
+      // from the connection generation, so a box that stopped after that
+      // generation began is invisible here. `_assertRemoteMountable` (launch())
+      // asks live, per spawn, and refuses by name.
       const { scope: mirrorScope, inert: mirrorNotes } = resolveMirrorScope({
         systemId: proj.system.id, project, systemPath: cwd,
         advertisement: await proj.system.mirror(),
@@ -4885,15 +4948,40 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // The exemption is `inProcess`: a launcher that runs the CLI inside cc's
       // own process has no subprocess to put in a namespace. See LauncherLike.
       if (!inst._launcher.inProcess) {
+        // THE SOURCE OVERRIDE IS THE LIFECYCLE GATE'S INSTRUMENT, NOT A
+        // PRODUCTION KNOB: a session using it is not talking to its system at
+        // all. It exists because criteria 3 and 4 are only checkable when the
+        // remote's bytes DIFFER from the host's at the same path, and that gate
+        // must not need a container. Reported on the session's own stream,
+        // loudly, every launch — a silent stand-in for a remote is the worst
+        // outcome this whole subsystem has.
+        const sourceOverrideRoot = process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT || null;
+        if (sourceOverrideRoot) {
+          inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line:
+            `cc-fuse: CC_FUSE_SOURCE_OVERRIDE_ROOT=${sourceOverrideRoot} — this session's file tools are `
+            + `served from a LOCAL DIRECTORY, not from system '${redirectPlacement.systemId}'` } } as UiEvent);
+        }
         inst.attachFuse(new FuseSession({
           plan: buildFusePlan({
             instanceId: id,
             cwdInside: cwd,
-            fakeRemoteRoot: resolveFakeRemoteRoot(),
+            sourceOverrideRoot,
             markPath: claudeCommand,
             // THE SAME ARRAY the redirect above holds, by reference.
             tiers,
           }),
+          // ONE SPELLING PER PATH, and it is the system's. `systemSource` takes
+          // no root: a path P from the daemon IS the path on the system, so
+          // there is no `root + P` arithmetic and no place for one to be wrong.
+          source: sourceOverrideRoot
+            ? localDirSource(sourceOverrideRoot)
+            : systemSource(redirectPlacement.system, {
+              // ONTO THE SESSION'S OWN STREAM. Every line here is a reason a
+              // control frame was REFUSED, which the worker sees as a bare
+              // -EIO; the session's stderr is where someone reading that will
+              // be. `FuseSession`'s own `log` sink is not wired at this site.
+              log: (line) => inst._emitUi({ kind: 'system', subtype: 'stderr', data: { line } } as UiEvent),
+            }),
           ccBootId: BOOT_ID,
           emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
         }));

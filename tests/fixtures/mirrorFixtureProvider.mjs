@@ -36,6 +36,14 @@
 //   --frame-log <path>         append every frame this fixture writes, so a
 //                              test can assert what actually went ON THE WIRE
 //                              rather than trusting the fixture to have sent it
+//   --dead-file <path>         while that file EXISTS, answer every `exec` with
+//                              an id-addressed ENOREMOTE instead of running it
+//                              — the provider is UP and its handshake is the
+//                              same generation, but the machine behind it has
+//                              gone. Checked PER FRAME, never at startup, which
+//                              is the whole point: it is the state cc's
+//                              handshake-keyed memoisation cannot see, and the
+//                              only way to produce it without a container
 //   --ignore-prune             strip the `( -path … ) -prune -o` clause out of
 //                              any `exec` argv before running it, emulating a
 //                              far side whose `find` does not honour the
@@ -46,7 +54,7 @@
 //
 // Every other flag goes to the real provider unchanged.
 
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { NdjsonDecoder, SystemError, encodeFrame } from '../../src/systems/protocol.ts';
 import { ReferenceProvider, parseProviderArgs } from '../../src/systems/referenceProvider.ts';
 
@@ -77,6 +85,7 @@ const mirrorFile = takeValue('--mirror-file');
 const pidFile = takeValue('--pid-file');
 const frameLog = takeValue('--frame-log');
 const ignorePrune = takeFlag('--ignore-prune');
+const deadFile = takeValue('--dead-file');
 const exclude = takeAll('--advertise-exclude');
 let mirrorRoot = takeValue('--advertise-mirror');
 
@@ -132,6 +141,11 @@ process.stdin.on('data', (chunk) => {
     return;
   }
   for (const f of frames) {
+    if (deadFile && f.type === 'exec' && existsSync(deadFile)) {
+      write({ type: 'error', id: f.id, code: 'ENOREMOTE',
+        message: 'the target is not running' });
+      continue;
+    }
     if (ignorePrune && f.type === 'exec' && Array.isArray(f.argv)) {
       f.argv = withoutPruneClause(f.argv);
     }

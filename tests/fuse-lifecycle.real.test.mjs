@@ -155,8 +155,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // R3's non-vacuity control writes here — a project-tier directory that
     // really is writable, so an EROFS elsewhere is the node's answer.
     await fs.mkdir(path.join(fakeRemote, box), { recursive: true });
-    prevFakeRemote = process.env.CC_FUSE_FAKE_REMOTE_ROOT;
-    process.env.CC_FUSE_FAKE_REMOTE_ROOT = fakeRemote;
+    prevFakeRemote = process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT;
+    process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT = fakeRemote;
 
     await addSystem({ id: 'fusebox', label: 'fusebox', launch: ['node', FIXTURE] });
     assert.equal((await adoptProject('app', path.join(box, 'app'), { system: 'fusebox' })).ok, true);
@@ -189,8 +189,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const f = (k) => rows.map(r => r[k]).join('/');
       console.log(`fuse gate timing [${where}] n=${rows.length} spawn→idle ms: ${f('spawnMs')} | turn ms: ${f('turnMs')}`);
     }
-    if (prevFakeRemote === undefined) delete process.env.CC_FUSE_FAKE_REMOTE_ROOT;
-    else process.env.CC_FUSE_FAKE_REMOTE_ROOT = prevFakeRemote;
+    if (prevFakeRemote === undefined) delete process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT;
+    else process.env.CC_FUSE_SOURCE_OVERRIDE_ROOT = prevFakeRemote;
     if (ctx) await ctx.instances.shutdown();
     disposeSystemHandles();
     if (home) await rmrf(home);
