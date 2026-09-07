@@ -632,8 +632,15 @@ static int pt_getattr(const char *path, struct stat *st, struct fuse_file_info *
 	{
 		ROUTE("getattr", path, 0, CCU_STAT);
 		/* The one op the narrow cwd exemption allows, and the only op
-		 * body T_CWD ever reaches. Before SYNTHETIC(), which answers
-		 * from the ancestor table this node is deliberately not in. */
+		 * body T_CWD ever reaches.
+		 *
+		 * BEFORE SYNTHETIC(), AND THE ORDER IS INERT TODAY — SYNTHETIC()
+		 * is (T_SYNTH || T_BIND), so it is false for T_CWD and this
+		 * branch would still fire after it. It is placed and pinned here
+		 * so that WIDENING SYNTHETIC() to include T_CWD cannot silently
+		 * start answering this node out of the ancestor table it is
+		 * deliberately not in (policy_synth_getattr would find no entry
+		 * and answer -ENOENT). */
 		if (r.tier == T_CWD)
 			return policy_cwd_getattr(path, st);
 		if (SYNTHETIC(r.tier))

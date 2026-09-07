@@ -258,10 +258,27 @@ describe('the compiled policy driver', { skip }, () => {
       /^op, p, cflags, fop\)/,                                  // the ROUTE macro's parameter list
       /^op, p, cflags, fop, &r\);/,                             // and its body's forwarding call
     ];
+    // PER LINE, AND THE WINDOW IS WHY. A `(.{0,60})` capture SWALLOWS any call
+    // site whose text begins inside the previous match's window, and that was
+    // already happening in this file: `route("rename", to, …)` at :1119 sits
+    // one line below :1118 and went unseen (26 sites found, 27 present). A
+    // variable-form op placed directly after a literal one — exactly the
+    // rename/link two-line shape — therefore evaded both the per-site guard
+    // and the count. Matching per line and taking the head to end-of-line
+    // cannot overlap, so every site is classified.
+    //
     // The lookbehind keeps `policy_project_route(` and friends out: `_` is a
     // word character, so there is no word boundary before `route` in them.
-    const sites = [...src.matchAll(/(?<![\w])(?:ROUTE|route)\((.{0,60})/gs)].map(m => m[1]);
+    const sites = [];
+    src.split('\n').forEach((line) => {
+      for (const m of line.matchAll(/(?<![\w])(?:ROUTE|route)\(/g))
+        sites.push(line.slice(m.index + m[0].length));
+    });
     assert.ok(sites.length > routed.length, `route() call sites were not parsed: ${sites.length}`);
+    // Every literal site the op set was derived from is one of these, so the
+    // two counts cannot drift apart unnoticed.
+    assert.equal(sites.filter(t => t.startsWith('"')).length, routed.length,
+      'the per-line sweep and the op-name extraction disagree about the literal sites');
     const nonLiteral = sites.filter(t => !t.startsWith('"'));
     for (const t of nonLiteral)
       assert.ok(STRUCTURAL.some(re => re.test(t)),
@@ -295,11 +312,17 @@ describe('the compiled policy driver', { skip }, () => {
       'INVARIANT: pt_getattr dispatches T_CWD to policy_cwd_getattr — that branch is gone');
     assert.ok(synthetic > 0,
       'INVARIANT: pt_getattr keeps its SYNTHETIC branch — the ordering below compares two LIVE branches');
-    // BEFORE the synthetic branch: T_CWD is not in the ancestor table, so
-    // `policy_synth_getattr` would answer -ENOENT for it.
+    // BEFORE the synthetic branch — and the order is INERT today, because
+    // `SYNTHETIC(t)` is `(t == T_SYNTH || t == T_BIND)` and so is false for
+    // T_CWD: moving the branch below it changes nothing behaviourally. What
+    // this pins is the safe placement for the day SYNTHETIC() is widened to
+    // include T_CWD, after which the ordering is the only thing keeping this
+    // node from being answered out of the ancestor table it is not in. (The
+    // -ENOENT outcome belongs to the CALL-SITE mutant the first assertion
+    // covers, not to this move.)
     assert.ok(dispatch < synthetic,
-      'INVARIANT: the T_CWD branch comes BEFORE SYNTHETIC() — after it, policy_synth_getattr '
-      + 'answers -ENOENT for a node deliberately not in the ancestor table');
+      'INVARIANT: the T_CWD branch comes BEFORE SYNTHETIC(), so that widening SYNTHETIC() to '
+      + 'include T_CWD cannot start answering this node from the ancestor table it is not in');
     // The exemption is asked INSIDE the T_PROJECT arm, after the self-recursion
     // guard — liveness first, and no other tier may reach it.
     const arm = src.slice(src.indexOf('case T_PROJECT: {'), src.indexOf('case T_FAIL:'));

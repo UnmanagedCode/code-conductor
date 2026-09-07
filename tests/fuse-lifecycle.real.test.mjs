@@ -1078,18 +1078,36 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const trace = await fs.readFile(tracePath, 'utf8').catch(() => '');
       const rows = trace.split('\n').filter(Boolean);
       // THE TWO WAYS THIS CAN GO RED ARE DIFFERENT FINDINGS, so they are
-      // distinguished rather than collapsed. Nothing in the product turns the
-      // trace on, and it reaches the daemon only because `sudo -n -E` (wrap.ts
-      // → bootstrap.sh) PRESERVES CC_UNION_TRACE — a sudoers `env_reset`
-      // without a matching `env_keep` strips it, and the arm would then be
-      // reporting the host's configuration as a defect in the union. It is
-      // still an assertion and never a skip: a guard that skips when its
+      // distinguished rather than collapsed — but only REACHABLE causes are
+      // named. Nothing in the product turns the trace on: CC_UNION_TRACE is
+      // not one of the CC_* variables `wrapLaunch` sets explicitly, so it
+      // reaches the daemon only by riding the env SPREAD — `spawnEnv =
+      // {...process.env}` (instances.ts) → `...spec.env` (wrap.ts:44) →
+      // `sudo -n -E` → bootstrap.sh → the daemon's own environment.
+      //
+      // NOT sudoers, and that is checked rather than assumed: cc's preflight
+      // already probes this exact `sudo -n -E` form with a sentinel
+      // (`sudoPreservesEnv`, preflight.ts) and REFUSES the spawn before any
+      // arm runs, so a host that does not preserve the environment dies at
+      // `spawnWorker` and never reaches this line. The only sudoers channel
+      // left is a value-content rule (`env_check`-style) that could
+      // discriminate this PATH-valued variable from preflight's plain
+      // sentinel — remote enough to name last.
+      //
+      // Nor is it the daemon failing to OPEN the file: `union.c` refuses to
+      // mount when it cannot (`cc-union: trace <path>: …`, then `return 1`),
+      // which surfaces as a failed spawn, not as an empty trace here.
+      //
+      // Still an assertion and never a skip: a guard that skips when its
       // instrument is missing is not a guard.
       assert.ok(rows.length > 0,
-        'THE TRACE INSTRUMENT DID NOT RUN — CC_UNION_TRACE never reached the daemon, so this '
-        + 'assertion could not be made. This is a finding against the HOST, not the union: the '
-        + 'variable rides wrapLaunch\'s env through `sudo -n -E`, and sudoers may be stripping it '
-        + `(env_reset without env_keep). Expected rows at ${tracePath}.`);
+        'THE TRACE INSTRUMENT DID NOT RUN — no rows were written, so the assertion below could '
+        + 'not be made. In likelihood order: the product\'s env chain stopped carrying it '
+        + '(`spawnEnv = {...process.env}` in instances.ts, `...spec.env` in wrap.ts, or '
+        + 'bootstrap.sh no longer passing its environment to the daemon); this arm\'s own '
+        + 'set/restore of process.env.CC_UNION_TRACE; or — remotely — a sudoers value-content '
+        + 'rule filtering a path-valued variable that preflight\'s plain sentinel does not catch. '
+        + `A failed fopen is NOT a cause: the daemon refuses to mount instead. Expected rows at ${tracePath}.`);
       const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       assert.ok(rows.some(l => new RegExp(`^getattr\t${esc(proj)}\ttier=cwd .*\\bmark=0\\b`).test(l)),
         `THE DAEMON RAN AND EMITTED NO unmarked tier=cwd ROW for ${proj} — the exemption did not `

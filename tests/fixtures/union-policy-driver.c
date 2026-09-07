@@ -835,6 +835,18 @@ static void b17_cwd_exempt(int argc, char **argv)
 	 * existed, +1 means none did. It is also why an unmarked denial is never
 	 * written back — a mark arriving later must be visible on the very next
 	 * op rather than one TTL after it. */
+	/* WHAT THIS CASE DOES NOT COVER, SO NOBODY LATER CREDITS IT WITH BOTH
+	 * HALVES. The plan's C7 mutant — "implement the exemption by routing
+	 * getattr through ccu_call/cache_put" — has two sides. The policy.h side
+	 * (this predicate or policy_cwd_getattr sending a frame or writing an
+	 * entry) is what the arithmetic below kills. The union.c side — pt_getattr
+	 * answering an exempted getattr from the MIRROR instead of calling
+	 * policy_cwd_getattr — is INVISIBLE HERE BY CONSTRUCTION: this fixture
+	 * drives the predicate and policy_cwd_getattr directly and never reaches
+	 * an op body, so the frame and entry counts come out identical either way.
+	 * That half rests on R8(d)'s '111 0 0' literal, which a mirror-routed
+	 * answer cannot satisfy — the mirror entry carries the source's real mode
+	 * and ownership, not this node's fixed ones. */
 	proc_set(700, 700, 333);
 	CHECK(policy_cwd_exempt("getattr", "/srv/app", 700) == 1,
 	      "a second unmarked thread group is exempted too");
