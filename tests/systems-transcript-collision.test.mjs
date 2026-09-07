@@ -155,11 +155,45 @@ describe('the transcript-directory collision guard', () => {
     assert.equal(normalizeSystemPath('/'), '/');
   });
 
-  // T6e PINS THE CALL SITE, which T6d does not: T6d exercises the helper alone,
-  // so deleting the `normalizeSystemPath(...)` at validatePlacementInput's
-  // return leaves it green while every new row regresses and the adopt-side
-  // duplicate check reopens. This one adopts with a trailing slash and reads
-  // the STORED record back.
+  // T6f PINS THE CALL SITE T6e MISSED, and the miss is the point: T6e adopts,
+  // and `adoptProject` normalises through `system.realpath` before it ever gets
+  // there — so `validatePlacementInput`'s own `normalizeSystemPath(p)` was never
+  // reached, and replacing it with a bare `p` left T6e (and the whole suite)
+  // green. `createProject` is the ONLY caller of that function, so this is the
+  // path that has to be driven.
+  //
+  // THE MUTATION THIS MUST DIE UNDER: `systemPath: normalizeSystemPath(p)` → `p`
+  // in validatePlacementInput. Both assertions below fail under it — the record
+  // keeps the caller's spelling, and the guard then compares that spelling.
+  test('T6f: createProject normalises the systemPath it stores, and the guard reads it', async () => {
+    const remote = await bindRemoteSystem();
+    const box = await fs.realpath(remote.root);
+
+    // A trailing slash and an interior `.`: the two shapes `normalize` folds,
+    // and both are one directory with the un-suffixed spelling.
+    assert.equal((await createProject('slashed', { system: remote.id, systemPath: `${box}/app/` })).name, 'slashed');
+    assert.equal((await createProject('dotted', { system: remote.id, systemPath: `${box}/./sub` })).name, 'dotted');
+
+    const rows = await listProjects();
+    assert.equal(rows.find(r => r.name === 'slashed')?.path, `${box}/app`,
+      "the caller's trailing slash reached the record");
+    assert.equal(rows.find(r => r.name === 'dotted')?.path, `${box}/sub`,
+      "the caller's `.` segment reached the record");
+
+    // AND THE GUARD COMPARES THAT SPELLING: a candidate at the normalised path
+    // collides against the registered places, as ONE directory rather than as
+    // two that merely encode alike.
+    const hit = await transcriptCwdCollision(
+      { project: 'other', worktree: null, system: remote.id, cwd: `${box}/app` });
+    assert.equal(hit?.project, 'slashed');
+    assert.equal(hit.samePath, true);
+  });
+
+  // T6e PINS THE ADOPT PATH's stored spelling. NOT the call site it was written
+  // for — mutation showed `adoptProject` normalises through `system.realpath`
+  // and never reaches `validatePlacementInput`, so T6f above is what closes
+  // that. This one still earns its place: it is the only assertion that an
+  // adopted remote row's stored path is normalised, whatever normalises it.
   test('T6e: a systemPath is normalised before it is stored', async () => {
     const remote = await bindRemoteSystem();
     const tree = await seedRepo(path.join(remote.root, 'app'));

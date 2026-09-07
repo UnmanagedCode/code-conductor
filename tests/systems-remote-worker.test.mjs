@@ -487,6 +487,56 @@ describe('a worker session on a remote system', () => {
   // locally. It must say files are read and edited at their LOCAL paths and that
   // system paths appear only in command output.
   
+  // PINS THE `inProcess` DEFAULT — the fail-safe polarity, which had no test.
+  // Both STATED directions were pinned (RealClaudeLauncher declares `false`, the
+  // in-process one declares `true`), but every launcher in the tree declares the
+  // field, so `undefined` never occurred at runtime and nothing held the default.
+  // That default is the whole reason the field is optional: a future launcher
+  // class that omits it must get the union, not skip it — skipping would run a
+  // remote worker unwrapped at a path that need not exist on cc's machine, which
+  // is exactly the state deleting CC_FUSE_WORKERS was meant to make unreachable.
+  //
+  // THE MUTATION THIS MUST DIE UNDER: `!inst._launcher.inProcess` →
+  // `inst._launcher.inProcess === false` in the create path. Under it a launcher
+  // with no field attaches no FuseSession and the assertion below fails.
+  //
+  // The stub's `launch` THROWS, so nothing is spawned and no mount is attempted:
+  // the decision under test is made at CREATE, before launch, and the instance
+  // is registered in `byId` before launch runs — so the create failing is how
+  // this stays fast and hermetic rather than something to work around.
+  test('a launcher that declares no inProcess field still gets the union', async () => {
+    const real = instances._claudeLauncher;
+    instances._claudeLauncher = {
+      launch() { throw new Error('stub launcher: nothing is spawned in this case'); },
+    };
+    // Identified by a DELTA of exactly one against the pre-call key set, not by
+    // `.at(-1)`: this describe registers other instances, and a fallback that
+    // took the newest key could read a leftover from an earlier case and pass
+    // for the wrong reason.
+    const idsBefore = new Set(instances.byId.keys());
+    let id = null;
+    try {
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      // The create is EXPECTED to fail — at the spawn, or earlier at the FUSE
+      // preflight on a host that cannot mount. Either way the decision has
+      // already been made and recorded on the instance, which is registered
+      // before launch runs.
+      const fresh = [...instances.byId.keys()].filter(k => !idsBefore.has(k));
+      assert.equal(fresh.length, 1,
+        `exactly one instance should have been registered, got ${fresh.length}: ${JSON.stringify(r.body)}`);
+      id = fresh[0];
+      const inst = instances.byId.get(id);
+      assert.notEqual(inst._fuse, null,
+        'a launcher with no `inProcess` field ran a remote worker with NO union');
+      // And the control half, so this is about the field and not about remoteness:
+      // the same project on a launcher that DOES declare `inProcess` gets none.
+      assert.equal(inst._redirect === null, false, 'the session was not redirected at all');
+    } finally {
+      instances._claudeLauncher = real;
+      if (id) { try { await instances.remove(id); } catch { /* the create already failed */ } }
+    }
+  });
+
   test('a remote project discloses its system, and a local one says nothing', async () => {
     const doc = await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } });
     const block = doc.split('# Workspace conventions')[0];

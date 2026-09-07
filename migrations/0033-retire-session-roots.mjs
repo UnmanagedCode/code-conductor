@@ -40,8 +40,17 @@ export async function run({ root, log = console.log }) {
     const from = path.join(systemsDir, id, 'sessions');
     try { if (!(await fs.stat(from)).isDirectory()) continue; } catch { continue; }
 
-    // Timestamped, so a re-run after a partial move cannot land on top of an
-    // earlier one, and an operator can tell the two apart.
+    // THE TIMESTAMP'S JOB IS DESTINATION UNIQUENESS ACROSS RUNS, and that is
+    // all it is: a tree left by a PARTIAL earlier run cannot be landed on, and
+    // an operator can tell two retirements apart. It is NOT the source of
+    // idempotence — that comes from the rename consuming its own source, so a
+    // second run finds no `sessions/` and no-ops whatever this name is.
+    //
+    // WAIVED, DELIBERATELY, AND NOT TO BE RE-REPORTED: fixing this name to a
+    // constant survives mutation, because the collision it would cause needs
+    // two boots retiring the same system inside one millisecond. That is not a
+    // reachable state, and a test for it would pin the clock rather than the
+    // behaviour.
     const to = path.join(systemsDir, id, `${RETIRED}-${Date.now()}`);
     try {
       await fs.rename(from, to);
