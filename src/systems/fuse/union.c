@@ -572,6 +572,12 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 			policy_refuse(op, path, "self-recursion");
 			return 0;
 		}
+		/* THE NARROW CWD EXEMPTION — policy.h owns the whole
+		 * decision; this only asks and dispatches. */
+		if (policy_cwd_exempt(op, path, (pid_t)fuse_get_context()->pid)) {
+			r->tier = T_CWD;
+			return 0;
+		}
 		rc = policy_project_route(op, path, (pid_t)fuse_get_context()->pid, fop, cflags);
 		if (rc)
 			return rc;
@@ -579,6 +585,12 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		return 0;
 	}
 
+	/* T_CWD is derived HERE, by the arm above, and `resolve_class` never
+	 * returns it — so reaching this switch with it means a later edit
+	 * classified a path as the cwd node outside the exemption, and that
+	 * fails closed. Listed alongside T_FAIL rather than defaulted, which
+	 * also keeps the switch exhaustive. */
+	case T_CWD:
 	case T_FAIL:
 		break;
 	}
@@ -619,6 +631,18 @@ static int pt_getattr(const char *path, struct stat *st, struct fuse_file_info *
 	}
 	{
 		ROUTE("getattr", path, 0, CCU_STAT);
+		/* The one op the narrow cwd exemption allows, and the only op
+		 * body T_CWD ever reaches.
+		 *
+		 * BEFORE SYNTHETIC(), AND THE ORDER IS INERT TODAY — SYNTHETIC()
+		 * is (T_SYNTH || T_BIND), so it is false for T_CWD and this
+		 * branch would still fire after it. It is placed and pinned here
+		 * so that WIDENING SYNTHETIC() to include T_CWD cannot silently
+		 * start answering this node out of the ancestor table it is
+		 * deliberately not in (policy_synth_getattr would find no entry
+		 * and answer -ENOENT). */
+		if (r.tier == T_CWD)
+			return policy_cwd_getattr(path, st);
 		if (SYNTHETIC(r.tier))
 			return policy_synth_getattr(path, st);
 		cred_enter();
