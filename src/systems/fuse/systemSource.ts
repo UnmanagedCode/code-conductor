@@ -127,6 +127,21 @@ export function systemSource(system: System, opts: { log?: (line: string) => voi
       const land = async (): Promise<void> => {
         if (kind === 'symlink') return system.symlink(await fsp.readlink(src), p);
         if (kind === 'dir') {
+          // A SYMLINK AT `p` IS THE ONE KIND CHANGE THE RETRY BELOW CANNOT
+          // REACH, because nothing fails. Measured: `mkdir -p` over a
+          // symlink-to-directory exits 0 leaving the link, and `chmod` then
+          // FOLLOWS it — so the push returns 'ok' with the source holding a
+          // link where the mirror says directory, and with a mode change
+          // landed on a directory nobody named. A success reported having
+          // landed somewhere else, which is the class this epic exists to
+          // close, and a result comparison cannot catch it because both
+          // sources answer 'ok': only the landed KIND differs.
+          //
+          // Neither `mkdir` nor `chmod` has a no-follow form to reach for, so
+          // the kind is asked for. ONE extra round trip, on the DIR arm only —
+          // a file push, the hot path, still costs one.
+          const at = await system.lstat(p);
+          if (at !== null && at.kind !== 'dir') await system.removeEntry(p);
           await system.mkdir(p, { recursive: true });
           return system.chmod(p, mode);
         }

@@ -16,6 +16,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalSystem } from '../src/systems/localSystem.ts';
+import { msFromNanos } from '../src/systems/system.ts';
 import { CAPABILITY_CONFIGS, makeProviderSystem } from './referenceProviderHarness.mjs';
 import { rmrf } from './rmrf.mjs';
 
@@ -281,8 +282,9 @@ test('every capability configuration is observationally equal to the local syste
 //
 // mtimeMs is NOT in the cross-implementation compare — the two runs build
 // separate trees, so the numbers cannot match. It is asserted per run against
-// what `fs.lstat` says on that run's own tree (`mtimeExact` below), which is
-// the stronger claim anyway: EXACT whole milliseconds, no tolerance.
+// that run's own tree (`mtimeExact` below), through `msFromNanos` from the same
+// integer nanoseconds the implementation uses: EXACT whole milliseconds, no
+// tolerance, and no second formula that could disagree with the first.
 test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree', async () => {
   const BINARY = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x0a, 0x00, 0x80]);
   const [a, b] = await both(
@@ -302,9 +304,17 @@ test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBy
       // bits the derivation cannot see.
       await sys.exec({ argv: ['mkfifo', p('fifo')] }, { cwd: root });
       const scrub = (x) => (x === null ? null : { ...x, mtimeMs: '<ms>' });
+      // THE ORACLE IS THE IMPLEMENTATION'S OWN ARITHMETIC, from the same
+      // integer nanoseconds — not `Math.round(fs.Stats.mtimeMs)`, which is the
+      // formula `msFromNanos` REPLACED and which disagrees with it on a
+      // half-millisecond boundary about once in 5000. An oracle that flakes is
+      // not an oracle, and it would have flaked under the very claim it
+      // asserts.
       const exact = async (rel) => {
         const got = await sys.lstat(p(rel));
-        return got !== null && got.mtimeMs === Math.round((await fs.lstat(p(rel))).mtimeMs);
+        const st = await fs.lstat(p(rel), { bigint: true });
+        return got !== null
+          && got.mtimeMs === msFromNanos(Number(st.mtimeNs / 1000000000n), Number(st.mtimeNs % 1000000000n));
       };
 
       const out = {

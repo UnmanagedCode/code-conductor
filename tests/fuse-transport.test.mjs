@@ -11,6 +11,16 @@
 //
 // WHAT IT DOES NOT PROVE: latency (that is measured, not asserted —
 // tests/fuse-transport-bench.mjs) and a real container (the `app3` acceptance).
+//
+// NOTHING HERE MOUNTS, AND THAT IS MAINTAINED RATHER THAN INHERITED. Two arms
+// used to: a spawn that SUCCEEDS attaches `_fuse`, runs the full preflight and
+// makes a real mount, so the file reddened on any host without `/dev/fuse` or
+// `sudo -n` — the exact hosts this header claims immunity from — and added a
+// participant to the only real-mount contention in `npm test` (card 2026-0370).
+// The refusal arms are safe and stay: their probe runs BEFORE
+// `assertFuseAvailable` and `prepare()`, which is asserted by T16's
+// no-run-directory check. Anything needing a SUCCESSFUL spawn is driven at the
+// level of the function under test instead.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,7 +37,12 @@ import { seedRepo } from './remoteSystem.mjs';
 import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
+
+// One line per LIVENESS PROBE the fixture received — see its `--probe-log`.
+const probeCount = async (log) =>
+  (await fs.readFile(log, 'utf8').catch(() => '')).split('\n').filter(l => l !== '').length;
 import { fuseRunRoot } from '../src/systems/fuse/plan.ts';
+import { assertRemoteLive } from '../src/systems/registry.ts';
 import net from 'node:net';
 import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE } from '../src/systems/fuse/control.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
@@ -47,6 +62,8 @@ function handle({ log } = {}) {
 }
 
 // `{ 'c2p:exec:argv': 3, 'p2c:exit': 3, … }` — what actually crossed the wire.
+// The log's columns are `<epoch-ms> <dir> <type> <id>`; only the last three
+// matter here, and the timestamp is the bench's and the gate's business.
 // An `exec` is tagged `argv` (a derivation) or `shell` (a redirected Bash
 // command); see tests/recordingProvider.mjs for why the two must not be one
 // count.
@@ -54,7 +71,7 @@ async function frames(log) {
   const out = {};
   for (const line of (await fs.readFile(log, 'utf8')).split('\n')) {
     if (line === '') continue;
-    const [dir, type] = line.split('\t');
+    const [, dir, type] = line.split('\t');
     const k = `${dir}:${type}`;
     out[k] = (out[k] ?? 0) + 1;
   }
@@ -324,6 +341,22 @@ describe('systemSource — the remote source over a real System handle', () => {
           await fs.symlink('elsewhere', path.join(m, n));
           await fs.writeFile(path.join(d, n), 'was a file');
         }],
+        // SIX DIRECTIONS, NOT FOUR. These two are the ones nothing fails on,
+        // which is why they were missing and why they are the dangerous pair:
+        // `mkdir -p` over a symlink-to-directory exits 0 leaving the LINK, and
+        // `chmod` then follows it. Both sources reply 'ok', so a result
+        // comparison is blind — the landed KIND is the only observable, which
+        // is what the assertion below reads.
+        ['dirOverSymlink', async (m, d, n) => {
+          await fs.mkdir(path.join(m, n), { recursive: true });
+          await fs.mkdir(path.join(d, `${n}-target`), { recursive: true });
+          await fs.symlink(path.join(d, `${n}-target`), path.join(d, n));
+        }],
+        ['dirOverSymlinkToFile', async (m, d, n) => {
+          await fs.mkdir(path.join(m, n), { recursive: true });
+          await fs.writeFile(path.join(d, `${n}-target`), 'x');
+          await fs.symlink(path.join(d, `${n}-target`), path.join(d, n));
+        }],
       ];
       for (const [name, make] of KIND_CHANGES) {
         await make(mirror, dest, name);
@@ -332,8 +365,17 @@ describe('systemSource — the remote source over a real System handle', () => {
         const viaLocal = await local.push(path.join(localMirror, name), path.join(localDest, name));
         assert.deepEqual(viaSystem, viaLocal, `${name}: the two sources disagree`);
         assert.equal(viaSystem, 'ok', name);
-        assert.equal((await fs.lstat(path.join(dest, name))).isDirectory(),
-          (await fs.lstat(path.join(localDest, name))).isDirectory(), `${name}: different kind landed`);
+        // THE LANDED KIND, on both, compared to each other AND to the mirror's.
+        // The result is 'ok' on both for every direction here, so it can only
+        // be the kind that catches a push that landed the wrong thing — or, in
+        // the symlink directions, landed it somewhere else entirely.
+        const kindAt = async (base) => {
+          const st = await fs.lstat(path.join(base, name));
+          return st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'dir' : 'file';
+        };
+        assert.equal(await kindAt(dest), await kindAt(localDest), `${name}: different kind landed`);
+        assert.equal(await kindAt(dest), await kindAt(mirror),
+          `${name}: the source's kind does not match the mirror's, which is what a reconcile MEANS`);
       }
       // …AND THE ONE THEY BOTH REFUSE: a NON-EMPTY directory. `removeEntry` is
       // non-recursive by contract, so neither may take children the worker
@@ -552,8 +594,11 @@ describe('per-open revalidate — the mirror is not re-downloaded for nothing', 
 // provider stays up, its handshake stays the same object, and only a live
 // `exec` finds out.
 //
-// NO MOUNT, NO SUDO, NO FUSE — the probe runs before `assertFuseAvailable`,
-// which is also what makes the "nothing was created" half assertable.
+// NO MOUNT, NO SUDO, NO FUSE. The refusals run before `assertFuseAvailable`
+// and `prepare()`, which is what makes the "nothing was created" half
+// assertable — and the two arms that needed a SUCCESSFUL probe are driven
+// directly rather than through a spawn, because reaching one through
+// `POST /api/instances` means a real mount.
 describe('the launch probe — is the box still there, asked now', () => {
   const FIXTURE = path.join(HERE, 'fixtures', 'mirrorFixtureProvider.mjs');
   // See mirror-geometry-follow's fixture fact 1: bootServer({realProcess:true})
@@ -611,8 +656,7 @@ describe('the launch probe — is the box still there, asked now', () => {
   // The fixture logs what the provider WROTE, so the probe is counted by the
   // answer it drew: the `exit` frame for a `true` that ran, or the `error`
   // frame for one the dead file refused. Either way, exactly one per probe.
-  const probeFrames = async (log) =>
-    (await fs.readFile(log, 'utf8').catch(() => '')).split('\n').filter(l => l !== '').length;
+
   const runDirs = async () => new Set(await fs.readdir(fuseRunRoot()).catch(() => []));
 
   // PINS: a box that has gone away refuses the SPAWN by name, before anything
@@ -647,42 +691,57 @@ describe('the launch probe — is the box still there, asked now', () => {
     assert.deepEqual([...await runDirs()].filter(d => !before.has(d)), []);
   });
 
-  // PINS: A PROBE THAT SUCCEEDED DOES NOT SATISFY THE NEXT SPAWN'S PROBE. That
-  // is the whole of the memoisation gap, and the first cut of this case could
-  // not reach it: it killed the box BEFORE the first spawn, so no probe ever
-  // succeeded, and the memo a success-keyed mutant writes — the shape
-  // `assertRemoteKnown` actually has, `#probedAgainst = hs` set only on the
-  // success path — was never populated. A mutant memoising exactly that way
-  // skipped nothing and refused anyway.
+  // PINS: A PROBE THAT SUCCEEDED DOES NOT SATISFY THE NEXT ONE. That is the
+  // whole of the memoisation gap — `connect`, `assertRemoteKnown` and `mirror`
+  // each write their memo on the SUCCESS path (`#probedAgainst = hs`), so a
+  // case where no probe ever succeeds cannot kill a mutant that copies them.
   //
-  // The counted signal was confounded too. `_assertRemoteMountable`'s
-  // mirror-root `lstat` is itself an `exec` the dead file answers with a logged
-  // error, so a fully memoised `assertRemoteLive` still produced a 502 matching
-  // /live check/ AND a fresh error frame. Both assertions passed on traffic the
-  // probe never made. So the count here is of the PROBE's own frame — an
-  // `exec` of `true` — and of nothing else.
+  // DRIVEN DIRECTLY, NOT THROUGH A SPAWN, and that is what keeps this file
+  // mount-free. Reaching a successful probe through `POST /api/instances`
+  // requires `_fuse` to be attached, which means a real mount, `sudo -n` and
+  // `/dev/fuse` — in a file whose header promises none of them, and in the
+  // default suite, which is the contention shape card 2026-0370 records. The
+  // invariant is about `assertRemoteLive` and is asserted on it.
   //
-  // DIES UNDER: memoising the answer on the handshake, the way `connect`,
-  // `assertRemoteKnown` and `mirror` each do.
-  test('T17 — a probe that SUCCEEDED does not satisfy the next spawn', async () => {
-    const f = await fixture();
+  // DIES UNDER: memoising the answer on the handshake, the way the three
+  // memoised probes beside it do.
+  test('T17 — a probe that SUCCEEDED does not satisfy the next call', async () => {
+    const box = await fs.realpath(await mkdtemp('cc-probe-'));
+    const deadFile = path.join(box, '.dead');
+    const probeLog = path.join(box, 'probes.log');
+    const sys = new ProviderSystem({ id: 'probe-unit', launch: { argv:
+      ['node', FIXTURE, '--dead-file', deadFile, '--probe-log', probeLog] } });
+    try {
+      // 1. A SUCCESSFUL probe, so any memo a mutant would keep is populated by
+      //    the path that actually writes one.
+      await assertRemoteLive(sys, "project 'p'");
+      const after = await probeCount(probeLog);
+      assert.equal(after, 1, 'the first call made no probe at all — the case cannot fail');
 
-    // 1. A LIVE SPAWN FIRST, so any memo a mutant would keep is written by a
-    //    probe that really succeeded. Without this the case cannot fail.
-    const alive = await spawn(f.project);
-    assert.equal(alive.status, 201, `the box must be reachable for the memo to be populated: ${JSON.stringify(alive.body)}`);
-    await api(baseUrl, 'DELETE', `/api/instances/${alive.body.id}`);
-    assert.ok(await probeFrames(f.probeLog) >= 1, 'the live spawn made no probe at all — the fixture is not exercising it');
+      // 2. The box goes away on the SAME connection generation: the handshake
+      //    object is untouched, which is exactly what the memo is keyed on.
+      const generation = sys.handshake;
+      await fs.writeFile(deadFile, '');
+      await assert.rejects(() => assertRemoteLive(sys, "project 'p'"), /does not serve it|live check|could not run/);
+      assert.equal(sys.handshake, generation, 'the connection restarted — this no longer tests the memo');
+      assert.ok(await probeCount(probeLog) > after,
+        'the second call answered from the memo a successful probe left behind: nothing crossed the wire');
+    } finally { sys.dispose(); }
+  });
 
-    // 2. The box goes away, on the SAME connection generation.
-    await fs.writeFile(f.deadFile, '');
-    const before = await probeFrames(f.probeLog);
-
-    const dead = await spawn(f.project);
-    assert.equal(dead.status, 502, JSON.stringify(dead.body));
-    assert.match(dead.body.error, /live check/);
-    assert.ok(await probeFrames(f.probeLog) > before,
-      'the spawn answered from the memo a successful probe left behind: no new `true` crossed the wire');
+  // THE NON-VACUITY CONTROL for T16/T18, at the same level and for the same
+  // reason: a live, correctly-advertised box passes BOTH probes. Without it
+  // every refusal above would still pass against a probe that refuses
+  // unconditionally.
+  test('T16-T18 control — a live box passes both probes', async () => {
+    const box = await fs.realpath(await mkdtemp('cc-probe-'));
+    const sys = new ProviderSystem({ id: 'probe-live', launch: { argv:
+      ['node', FIXTURE, '--dead-file', path.join(box, '.never')] } });
+    try {
+      await assertRemoteLive(sys, "project 'p'");        // resolves, or throws and fails the case
+      assert.notEqual(await sys.lstat(box), null, 'the mirror-root probe found nothing at a path that exists');
+      assert.equal(await sys.lstat(path.join(box, 'nope')), null, 'and it can still tell absence');
+    } finally { sys.dispose(); }
   });
 
   // PINS: THE BOUND SPELLING OF BOTH REFUSALS. `_assertRemoteMountable` picks
@@ -692,7 +751,9 @@ describe('the launch probe — is the box still there, asked now', () => {
   // bound branch, or flattening it to the unbound wording, survived them all.
   // The remote is the thing an operator restarts, so a refusal that named only
   // the system would point at the wrong repair.
-  // DIES UNDER: dropping the `remoteId !== null` arm in either place.
+  // DIES UNDER: dropping the `remoteId !== null` arm in either place; deleting
+  // `assertRemoteLive`'s ENOREMOTE branch (caught by the inner reason, not by
+  // the wording — see below).
   test('T16b/T18b — a BOUND handle names its remote in both refusals', async () => {
     const dead = await fixture({ remote: 'ctr-a' });
     await fs.writeFile(dead.deadFile, '');
@@ -701,6 +762,15 @@ describe('the launch probe — is the box still there, asked now', () => {
     assert.match(r.body.error, new RegExp(`remote 'ctr-a' of system '${dead.id}'`),
       'the bound refusal did not name the remote');
     assert.match(r.body.error, /live check/);
+    // THE INNER REASON, which is what actually dies with the branch. The
+    // wording above is re-interpolated by `_assertRemoteMountable`'s own
+    // `target`, so deleting `assertRemoteLive`'s ENOREMOTE arm lets the failure
+    // fall through to the generic `spawnError` arm and STILL produce
+    // `remote 'ctr-a' of system '…'` and `/live check/` — every assertion above
+    // passes while a dedicated refusal and its sentence vanish. This is the one
+    // clause only that branch can write.
+    assert.match(r.body.error, /does not serve it/,
+      "the ENOREMOTE branch's own sentence is gone — the generic arm produced this refusal");
 
     const absent = await fixture({ remote: 'ctr-b', mirrorSub: 'geometry' });
     await rmrf(absent.root);
@@ -736,13 +806,4 @@ describe('the launch probe — is the box still there, asked now', () => {
     assert.match(r.body.error, /outside the mirror root/);
   });
 
-  // THE CONTROL THAT MAKES ALL THREE NON-VACUOUS: the same fixture, alive and
-  // correctly advertised, does NOT refuse at either probe. Without it every arm
-  // above would still pass against a spawn that refuses unconditionally.
-  test('T16-T18 control — a live box with a real mirror root passes both probes', async () => {
-    const f = await fixture();
-    const r = await spawn(f.project);
-    assert.doesNotMatch(String(r.body.error ?? ''), /live check|mirror root/, JSON.stringify(r.body));
-    if (r.status === 201) await api(baseUrl, 'DELETE', `/api/instances/${r.body.id}`);
-  });
 });

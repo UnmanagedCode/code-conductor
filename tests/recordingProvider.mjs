@@ -9,7 +9,14 @@
 // that crossed, and this is what makes those observable.
 //
 // It spawns the real provider and relays stdin→child and child→stdout
-// UNCHANGED, appending one `<dir>\t<type>` line per frame to `--log`. Only the
+// UNCHANGED, appending one `<epoch-ms>\t<dir>\t<type>` line per frame to
+// `--log`.
+//
+// THE TIMESTAMP IS WHAT MAKES OVERLAP A MEASUREMENT. A round-trip count and a
+// wall time give a concurrency factor only by DIVISION — a residual fitted to
+// the one number the decomposition exists to explain, with no free parameter
+// left to check it against. Pairing each request frame with its reply gives
+// ΣRTᵢ directly, and ΣRTᵢ / wall IS the mean in-flight depth. Only the
 // frame TYPE is recorded: a `data` frame carries 64 KiB of base64 and a log of
 // payloads would be its own memory problem.
 //
@@ -61,14 +68,18 @@ function tap(dir, onLine) {
       buf = buf.slice(nl + 1);
       if (line.trim() === '') continue;
       let type = '?';
+      let f = null;
       try {
-        const f = JSON.parse(line);
+        f = JSON.parse(line);
         type = f.type ?? '?';
         // The one discriminator, and it is structural: a derivation carries
         // `argv`, a redirected shell command carries `shell`.
         if (type === 'exec') type = Array.isArray(f.argv) ? 'exec:argv' : 'exec:shell';
-      } catch { type = 'unparseable'; }
-      onLine(`${dir}\t${type}\n`);
+      } catch { type = 'unparseable'; f = null; }
+      // The id too, when the frame carries one: an in-flight interval needs
+      // its request paired with its own reply, and cc multiplexes by id.
+      const id = typeof f?.id === 'string' ? f.id : '';
+      onLine(`${Date.now()}\t${dir}\t${type}\t${id}\n`);
     }
   };
 }

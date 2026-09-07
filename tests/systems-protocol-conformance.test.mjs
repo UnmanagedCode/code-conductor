@@ -31,6 +31,7 @@ import {
 const BOUND = conformanceRemoteId() === null ? {} : { remoteId: conformanceRemoteId() };
 const FLAG_TARGET = conformanceRemoteId() === null ? '' : `${conformanceRemoteId()}=`;
 import { rmrf } from './rmrf.mjs';
+import { msFromNanos } from '../src/systems/system.ts';
 
 // Every taxonomy code this file provokes for real. The last test checks the
 // union against the exported lists, so a new code cannot be added to the
@@ -436,10 +437,15 @@ for (const config of CAPABILITY_CONFIGS) {
       // ONE ROUND TRIP CARRIES THE WHOLE ENTRY. A listing that reported name
       // and kind alone would cost 1 + N round trips to answer the same
       // question, which across a wire is N latencies.
-      const real = await fs.lstat(path.join(dir, 'a file with spaces'));
+      // The oracle derives ms the way the implementation does — from integer
+      // nanoseconds through `msFromNanos` — not by re-rounding
+      // `fs.Stats.mtimeMs`, which is the formula that fix removed and which
+      // disagrees with it on a half-millisecond boundary.
+      const real = await fs.lstat(path.join(dir, 'a file with spaces'), { bigint: true });
       assert.deepEqual(entries[0], {
         name: 'a file with spaces', kind: 'file', target: null,
-        size: real.size, mode: (real.mode & 0o7777) | 0o100000, mtimeMs: Math.round(real.mtimeMs),
+        size: Number(real.size), mode: (Number(real.mode) & 0o7777) | 0o100000,
+        mtimeMs: msFromNanos(Number(real.mtimeNs / 1000000000n), Number(real.mtimeNs % 1000000000n)),
       });
       assert.equal(entries[2].mode & 0o170000, 0o040000, 'a directory carries its type bits too');
       await assert.rejects(() => sys.readDir(path.join(dir, 'a file with spaces')),
@@ -486,9 +492,10 @@ for (const config of CAPABILITY_CONFIGS) {
       await fs.symlink('relative/target', path.join(root, 'link'));
       await fs.symlink(path.join(root, 'gone'), path.join(root, 'broken'));
 
-      const real = await fs.lstat(f);
+      const real = await fs.lstat(f, { bigint: true });
       assert.deepEqual(await sys.lstat(f), {
-        kind: 'file', size: 6, mode: 0o100640, mtimeMs: Math.round(real.mtimeMs), target: null,
+        kind: 'file', size: 6, mode: 0o100640, target: null,
+        mtimeMs: msFromNanos(Number(real.mtimeNs / 1000000000n), Number(real.mtimeNs % 1000000000n)),
       }, 'a FULL mode — permission bits from %m, type bits from the kind');
 
       const link = await sys.lstat(path.join(root, 'link'));

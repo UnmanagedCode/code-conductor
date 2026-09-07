@@ -114,7 +114,7 @@ async function frameCounts() {
   try { text = await fs.readFile(LOG, 'utf8'); } catch { return {}; }
   for (const line of text.split('\n')) {
     if (line === '') continue;
-    const [dir, type] = line.split('\t');
+    const [, dir, type] = line.split('\t');
     if (dir === 'c2p') out[type] = (out[type] ?? 0) + 1;
   }
   return out;
