@@ -23,6 +23,7 @@ import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts'
 import { reclaimOrphanProcesses } from '../src/systems/fuse/orphans.ts';
 import { parseScan, membersOf, orphansUnder } from '../src/systems/fuse/procScan.ts';
 import { FuseSession } from '../src/systems/fuse/session.ts';
+import { Instance, InstanceManager } from '../src/instances.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 
 // ── the fake driver ─────────────────────────────────────────────────────────
@@ -895,10 +896,15 @@ describe('the configuration-time containment refusal', () => {
   // buildTierTable — the mirror then resolves `project` under the `/` pin and
   // becomes a path cc would be asked to materialise from itself.
   test('A20: at root /, no path cc could be asked about resolves into the mirror', async () => {
-    const { fuseRunDir } = await import('../src/systems/fuse/plan.ts');
-    const runDir = fuseRunDir('inst-a20');
+    // THE FIXTURE'S OWN GEOMETRY, not `fuseRunDir()`'s. This describe repoints
+    // PROJECTS_ROOT at a temp dir and `projectsRoot()` reads the env per call,
+    // so `fuseRunDir()` lands under /tmp while `tierFixtureInput().projectsRoot`
+    // stays its constant — and the host-chain loop below then iterated ZERO
+    // times and asserted nothing. One geometry, read from one place.
+    const input = tierFixtureInput({ mirrorRoot: '/' });
+    const runDir = input.runDir;
     const mirror = path.join(runDir, 'mirror');
-    const tiers = buildTierTable(tierFixtureInput({ runDir, mirrorRoot: '/' }));
+    const tiers = buildTierTable(input);
     const at = (p) => resolveTierEntry(tiers, p)?.tier ?? 'fail';
 
     // The mirror, its parent, and anything inside it: hide, so no frame is sent.
@@ -909,11 +915,79 @@ describe('the configuration-time containment refusal', () => {
     // no LIST ever names the mirror's parent as a child either. (`/` and the
     // directory holding the projects root DO stay `project` — that is not the
     // hazard: a LIST materialises one level of entries and never descends.)
-    const projectsRoot = tierFixtureInput().projectsRoot;
-    for (let p = path.dirname(runDir); p.startsWith(projectsRoot); p = path.dirname(p)) {
+    //
+    // COMPONENT-BOUNDARY containment, not `startsWith`: `/workspaces/cc-projectsX`
+    // is not inside `/workspaces/cc-projects`. And the ITERATION COUNT is
+    // asserted, so a future repointing cannot silently empty this loop again —
+    // which is exactly how it was empty when it landed.
+    const inside = (p, root) => p === root || p.startsWith(root + path.sep);
+    let checked = 0;
+    for (let p = path.dirname(runDir); inside(p, input.projectsRoot); p = path.dirname(p)) {
       assert.equal(at(p), 'host', p);
+      checked++;
     }
+    assert.equal(checked, 5,
+      `the host chain from ${input.projectsRoot} down to ${path.dirname(runDir)} must be walked, got ${checked} steps`);
     assert.equal(at('/'), 'project', 'the widest advertised mirror root is remote-tier');
+  });
+});
+
+// ── the three callers that reclaim a session's mount scaffolding ────────────
+//
+// `launch()` creates the run directory and starts LISTENING on the control
+// socket BEFORE `spawn()`, because the daemon refuses to mount without a socket
+// to connect to. So a session can hold a prepared `FuseSession` with no process
+// at all — and nothing else reclaims it: `_handleExit` only runs for a process
+// that existed. Every caller that drops an instance therefore has to tear the
+// mount scaffolding down UNCONDITIONALLY.
+//
+// Measured as a real leak (a listening `Server@…/control.sock` surviving a
+// whole test file), and shipped in `127e4643` with no test — this is that debt.
+// Prototype-only stand-ins, following `tests/instance-liveness.test.mjs`: the
+// question is which branch each caller takes, and a booted server would add a
+// launch path without adding an assertion.
+describe('reclaiming a prepared-but-unspawned session', () => {
+  const stubFuse = () => { const f = { torn: 0, teardown: async () => { f.torn++; } }; return f; };
+
+  const stubInstance = (fuse) => {
+    const inst = Object.create(Instance.prototype);
+    Object.assign(inst, { proc: null, _fuse: fuse, _redirect: null, id: 'inst-x', project: 'p' });
+    return inst;
+  };
+
+  const stubManager = (insts) => {
+    const mgr = Object.create(InstanceManager.prototype);
+    Object.assign(mgr, {
+      byId: new Map(insts.map(i => [i.id, i])),
+      _cancelAutoResume() {}, _purgeIdleFor() {}, emit() {},
+      _sessionRenew: { purge() {} },
+    });
+    return mgr;
+  };
+
+  // Dies if `kill()`'s no-process arm returns before the teardown.
+  test('Instance.kill() with no process still tears the mount down', async () => {
+    const fuse = stubFuse();
+    await stubInstance(fuse).kill({ graceMs: 0 });
+    assert.equal(fuse.torn, 1, 'kill() returned early and left the control socket listening');
+  });
+
+  // Dies if `remove()` gates the kill on `i.proc` again.
+  test('InstanceManager.remove() reclaims a session that never spawned', async () => {
+    const fuse = stubFuse();
+    const inst = stubInstance(fuse);
+    await stubManager([inst]).remove('inst-x');
+    assert.equal(fuse.torn, 1, 'remove() skipped the kill because there was no process');
+  });
+
+  // Dies if `removeAllForProject()` gates the kill on `i.proc` again — the
+  // sibling caller the original fix missed.
+  test('InstanceManager.removeAllForProject() reclaims one too', async () => {
+    const fuse = stubFuse();
+    const inst = stubInstance(fuse);
+    const n = await stubManager([inst]).removeAllForProject('p');
+    assert.equal(n, 1);
+    assert.equal(fuse.torn, 1, 'removeAllForProject() skipped the kill because there was no process');
   });
 });
 

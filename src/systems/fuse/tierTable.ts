@@ -112,21 +112,34 @@ const LOADER_OBJECTS = [
   '/usr/lib/x86_64-linux-gnu/libcap.so.2',
 ];
 
-// AND EACH ONE'S REALPATH, because a SONAME is usually a symlink to a versioned
-// file with a DIFFERENT NAME and the tier table matches path strings. Derived,
-// not transcribed: pinning `libcap-ng.so.0` while its target
-// `libcap-ng.so.0.0.0` stayed unpinned is what the refusal log named on the
-// first fail-closed launch —
+// A PIN'S TARGET IS A SECOND PIN, and this derivation belongs to EVERY pinned
+// leaf rather than to the loader list alone. The tier table matches path
+// STRINGS, and the union's open follows a symlink to a path that has its own
+// tier — so pinning a link while its target stays unpinned is a `fail`-tier
+// -ENOENT at the second hop.
+//
+// The loader list is where it was measured. Pinning `libcap-ng.so.0` while its
+// target `libcap-ng.so.0.0.0` stayed unpinned is what the refusal log named on
+// the first fail-closed launch —
 //
 //     /usr/bin/setpriv: error while loading shared libraries: libcap-ng.so.0:
 //     cannot open shared object file: No such file or directory
 //
 // — and it was invisible under the instrument's host fallback, which served the
 // target whether it was pinned or not.
-const LOADER_REALPATHS = LOADER_OBJECTS.flatMap((p) => {
-  try { const r = realpathSync(p); return r === p ? [] : [r]; }
-  catch { return []; }   // not installed here; the pin that names it costs nothing
-});
+//
+// `ETC_PINS` carries the same hazard UNMEASURED HERE: nothing in it is a
+// symlink on this host, but `/etc/resolv.conf` is one to
+// `/run/systemd/resolve/stub-resolv.conf` on any systemd-resolved host, and
+// `/run` is pinned by nothing. Derived rather than waited for, because the
+// symptom is name resolution failing inside the chroot on a machine nobody has
+// run this on yet.
+function realpathsOf(paths: readonly string[]): string[] {
+  return paths.flatMap((p) => {
+    try { const r = realpathSync(p); return r === p ? [] : [r]; }
+    catch { return []; }   // not installed here; the pin that names it costs nothing
+  });
+}
 
 // BOTH SPELLINGS OF EVERY ONE OF THEM, derived rather than hand-doubled so the
 // two lists cannot drift. On a merged-usr host `/lib` and `/lib64` are symlinks
@@ -134,7 +147,7 @@ const LOADER_REALPATHS = LOADER_OBJECTS.flatMap((p) => {
 // the ELF header of every binary here requests `/lib64/ld-linux-x86-64.so.2`
 // literally, which the `/usr/lib64` spelling does not match. Same class as the
 // interpreter chain, one layer down.
-const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...LOADER_REALPATHS].flatMap(
+const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...realpathsOf(LOADER_OBJECTS)].flatMap(
   p => p.startsWith('/usr/') ? [p, p.slice(4)] : [p],
 ))];
 
@@ -295,6 +308,7 @@ export function buildTierTable(input: TierTableInput): TierEntry[] {
   for (const r of input.localRoots) addLocal(r);
   for (const b of BOOTSTRAP_CHAIN) for (const p of binaryPins(b)) add('host', p, "the bootstrap's interpreter chain, exec'd inside the union as root");
   for (const p of ETC_PINS) add('host', p, 'identity, name resolution, TLS trust, managed settings');
+  for (const p of realpathsOf(ETC_PINS)) add('host', p, "the target of a pinned /etc symlink — the union's open follows it, and the target has its own tier");
   for (const p of LOADER_PINS) add('host', p, "the loader's NEEDED set and glibc's dlopen closure");
   // Longest prefix wins, so this overrides the store/projects-root host pins
   // above and the union never serves its own scaffolding.

@@ -5521,7 +5521,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   async removeAllForProject(projectName: string): Promise<number> {
     const victims = [...this.byId.values()].filter(i => i.project === projectName);
     await Promise.all(victims.map(async (i) => {
-      try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
+      // UNCONDITIONALLY, for the same reason remove() does: `kill()` is the
+      // one place that reclaims a session's mount scaffolding and it handles
+      // the no-process case itself. An instance whose launch failed between
+      // prepare() and spawn() still owns a run directory and a LISTENING
+      // control socket, and gating on `proc` leaves both for the orchestrator's
+      // lifetime.
+      try { await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
       try { await i._redirect?.close(); } catch { /* ignore */ }
       // Same reason as remove(): the directory holds this session's command
       // output and nothing else will reap it.
