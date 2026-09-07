@@ -124,6 +124,21 @@ export class ControlServer {
   // thread for the life of the mount, so an unclosed set means close() never
   // resolves and both the relaunch and the teardown that call it hang.
   #conns = new Set<net.Socket>();
+  // PATHS THIS SESSION CREATED AND HAS NOT PUSHED YET.
+  //
+  // A file created through the union exists in the MIRROR from the moment of
+  // `create` and on the SOURCE only once `release` pushes it. In between, a
+  // plain `source.stat` answers "nothing here" for a file the worker is holding
+  // open — and libfuse issues a `getattr` immediately after every `create` to
+  // build the entry. Without this set that getattr answers -ENOENT, the create
+  // fails with the parent reported missing, and #stat's stale-entry removal
+  // DELETES the file the worker just wrote. Measured at the real gate (R3).
+  //
+  // It is a record of what cc itself materialised, which is the only thing that
+  // distinguishes "created here, not pushed yet" from "deleted on the source" —
+  // the mirror alone cannot tell them apart. Self-healing: an entry whose
+  // mirror file has since gone is dropped rather than trusted.
+  #local = new Set<string>();
 
   private constructor(server: net.Server, opts: ControlServerOptions) {
     this.#server = server;
@@ -228,6 +243,7 @@ export class ControlServer {
   async #stat(p: string, dest: string): Promise<Buffer> {
     const st = await this.#opts.source.stat(p);
     if (st === null) {
+      if (await this.#localOnly(p, dest)) return encodeReply(CCU_STATUS.READY, 0);
       await this.#unmirror(dest);
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
@@ -249,7 +265,10 @@ export class ControlServer {
     // REMOVE WHAT THE SOURCE NO LONGER HAS, or readdir shows ghosts: a file
     // deleted on the remote would keep appearing until the session ended.
     for (const name of await fsp.readdir(dest)) {
-      if (!want.has(name)) await this.#unmirror(path.posix.join(dest, name));
+      // A child this session created and has not pushed is NOT a ghost.
+      if (!want.has(name) && !this.#local.has(path.posix.join(p, name))) {
+        await this.#unmirror(path.posix.join(dest, name));
+      }
     }
     return encodeReply(CCU_STATUS.READY, 0);
   }
@@ -263,12 +282,14 @@ export class ControlServer {
       if (parent === null) return encodeReply(CCU_STATUS.ABSENT, ENOENT);
       await fsp.mkdir(path.posix.dirname(dest), { recursive: true });
       // The path itself may legitimately not exist yet; an absent source entry
-      // is not a refusal here, the create will make it.
+      // is not a refusal here, the create will make it — and cc records that it
+      // is about to exist in the mirror alone.
       const self = await this.#opts.source.stat(p);
-      if (self === null) return encodeReply(CCU_STATUS.READY, 0);
+      if (self === null) { this.#local.add(p); return encodeReply(CCU_STATUS.READY, 0); }
     }
     const st = await this.#opts.source.stat(p);
     if (st === null) {
+      if (await this.#localOnly(p, dest)) return encodeReply(CCU_STATUS.READY, 0);
       await this.#unmirror(dest);
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
@@ -286,9 +307,19 @@ export class ControlServer {
   // copy completed, so a failure is still reported rather than swallowed.
   async #dirty(p: string, dest: string): Promise<Buffer> {
     const r = await this.#opts.source.push(dest, p);
-    if (r === 'ok') return encodeReply(CCU_STATUS.READY, 0);
+    if (r === 'ok') { this.#local.delete(p); return encodeReply(CCU_STATUS.READY, 0); }
     this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
     return encodeReply(CCU_STATUS.REFUSED, EIO);
+  }
+
+  // 1 = the mirror is holding a file this session created and has not pushed,
+  // so an absent source entry is not the source having deleted it. Drops the
+  // record when the mirror entry has since gone — a locally created file that
+  // was then unlinked leaves nothing to push and nothing to protect.
+  async #localOnly(p: string, dest: string): Promise<boolean> {
+    if (!this.#local.has(p)) return false;
+    try { await fsp.lstat(dest); return true; }
+    catch { this.#local.delete(p); return false; }
   }
 
   // Make `<mirror>/P` be of `kind`, with the source's mode, size and mtime. A
