@@ -365,10 +365,15 @@ export function classifyForTool(
 
 // OUTSIDE THE REMOTE TIER'S BOUNDARY. Bash execs on the system and reaches this
 // path, so the channel exists and is named.
+//
+// IT ALSO NAMES THE PROJECT'S OWN TREE, which is what a worker overwhelmingly
+// wanted — a refusal that only says "not that one" costs a call to find out
+// where the files actually are.
 function outsideMirrorRefusal(p: string, session: ToolAccessSession): string {
   return `cc will not bridge '${p}' to this session: this session's file tools reach system `
     + `'${session.systemId}' only under '${session.mirrorRoot}', the mirror root that system `
-    + `advertises, and '${p}' is outside it. This is cc refusing to carry the file, NOT the file `
+    + `advertises, and '${p}' is outside it. This project's tree is at '${session.systemPath}', `
+    + `and its files are read and edited there. This is cc refusing to carry the file, NOT the file `
     + `being absent — cc has not looked, and this says nothing about whether it exists. Bash runs on `
     + `'${session.systemId}' with the whole filesystem in reach: read it with \`cat\`, change it `
     + `with \`sed -i\` or a \`>\` redirect there instead.`;

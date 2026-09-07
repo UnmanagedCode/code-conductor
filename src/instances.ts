@@ -4831,6 +4831,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // Built unconditionally, including where `inProcess` means no chroot
       // exists: the hook still has to answer, and a session with a redirect but
       // no table would allow everything.
+      // Resolved ONCE. The narrowest mirror root is the project's own path (the
+      // no-advertisement case, `noMirror`), and spelling that fallback twice is
+      // how the table and the refusals that quote it would come to disagree.
+      const mirrorRoot = mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath;
+      const exclude = mirrorScopeForSession?.exclude ?? [];
       const tiers = buildTierTable({
         localRoots,
         claudeCommand: resolveClaudeBin().command,
@@ -4840,8 +4845,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         homeDir: os.homedir(),
         runDir: fuseRunDir(id),
         systemPath: redirectPlacement.systemPath,
-        mirrorRoot: mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath,
-        exclude: mirrorScopeForSession?.exclude ?? [],
+        mirrorRoot,
+        exclude,
       });
       inst.attachRedirect(new SessionRedirect({
         system: redirectPlacement.system,
@@ -4849,8 +4854,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         systemPath: redirectPlacement.systemPath,
         forwarderUrl: this.bashForwardUrl(id) ?? '',
         tiers,
-        exclude: mirrorScopeForSession?.exclude ?? [],
-        mirrorRoot: mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath,
+        exclude,
+        mirrorRoot,
         emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
       }), redirectPlacement);
       // The FUSE-union chroot, attached in the same block and gated on the same
@@ -4866,7 +4871,6 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       //
       // The exemption is `inProcess`: a launcher that runs the CLI inside cc's
       // own process has no subprocess to put in a namespace. See LauncherLike.
-      //
       if (!inst._launcher.inProcess) {
         inst.attachFuse(new FuseSession({
           plan: buildFusePlan({

@@ -168,6 +168,9 @@ describe('the four file-tool refusals', () => {
     assert.match(reason, /cc will not bridge/);
     assert.match(reason, new RegExp(`'${MIRROR_ROOT}'`), 'the mirror root is not named');
     assert.match(reason, /mirror root/);
+    // …and the project's own tree, which is where the worker actually wanted to
+    // be. A refusal that only says "not that one" costs a call to find out.
+    assert.match(reason, new RegExp(`'${SYSTEM_PATH}'`), "the project's tree is not named");
     assert.match(reason, /Bash runs on/);
     neverClaimsAbsence(reason);
     // A path INSIDE the root but outside the project is the control: it is
