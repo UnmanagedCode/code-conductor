@@ -1244,7 +1244,6 @@ describe('FuseSession lifecycle', () => {
     // down, never latched-with-a-server. The distinguishing assertion is the
     // NEXT teardown: it must still run the state machine if a prepare was the
     // last thing to complete.
-    assert.equal(s.controlServer === null || s.controlServer !== null, true);
     const after = await s.teardown();
     if (s.controlServer !== null) assert.fail('a control server outlived a teardown');
     // A teardown reports `alreadyTornDown` only when no prepare followed the

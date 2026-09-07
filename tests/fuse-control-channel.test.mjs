@@ -240,8 +240,14 @@ describe('the control channel, cc side', () => {
     const p = '/srv/app/one.txt';
     await fs.writeFile(at(p), 'SOURCE-SHORT\n');
 
-    // The open: a writable handle takes the claim.
+    // The open: a writable handle takes the claim — AND STILL MATERIALISES.
+    // A worker opening an existing file for write needs its current bytes, so
+    // the claim check must read the state BEFORE this frame's own claim. If it
+    // did not, every write-open would see an empty file.
+    await fs.rm(inMirror(p), { force: true });
     assert.equal((await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'SOURCE-SHORT\n',
+      'the taking FETCH short-circuited and never materialised');
     // The worker writes through its fd — more bytes than the source has.
     const written = 'WORKER-WROTE-MUCH-MORE-THAN-THE-SOURCE-HAS\n';
     await fs.writeFile(inMirror(p), written);
@@ -359,6 +365,7 @@ describe('the control channel, cc side', () => {
       socketPath: path.join(box, 'slow.sock'), mirror, source: slow, tiers, log: () => {},
     });
     const c = await connect(srv.socketPath);
+    const c2 = await connect(srv.socketPath);
     try {
       await call(c, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p);
       await fs.writeFile(inMirror(p), 'IN FLIGHT\n');
@@ -374,6 +381,19 @@ describe('the control channel, cc side', () => {
       let closed = false;
       const closing = srv.close().then(() => { closed = true; });
       await new Promise((r) => setTimeout(r, 30));
+
+      // THE `#closing` HALF, on a SECOND connection opened before the close.
+      // Two earlier cuts were wrong: one connected after `close()` resolved,
+      // by which time the listener was gone and the arm was dead code; the
+      // other reused `c`, whose reply chain is serialised behind the blocked
+      // handler, so the frame could not be dispatched until after the drain.
+      // A separate socket dispatches immediately, which is the state that
+      // matters — a frame arriving mid-drain must not start against a mirror
+      // about to be deleted.
+      const late = await call(c2, CCU_OP.STAT, 0, '/srv/app/two.txt').catch(() => null);
+      assert.ok(late, 'the late frame got no reply at all');
+      assert.equal(late.status, CCU_STATUS.REFUSED, 'a frame ran after close() began');
+      assert.equal(late.err, EIO);
       assert.equal(closed, false, 'close() returned while a handler was still running');
       assert.equal(pushed, false);
 
@@ -383,15 +403,66 @@ describe('the control channel, cc side', () => {
       await inFlight;
       assert.equal(await fs.readFile(at(p), 'utf8'), 'IN FLIGHT\n');
 
-      // AND NOTHING STARTED AFTER close() ACTS. A frame arriving now is
-      // refused rather than run against a mirror about to be deleted.
-      const c2 = await connect(srv.socketPath).catch(() => null);
-      if (c2) {
-        const late = await call(c2, CCU_OP.STAT, 0, p).catch(() => null);
-        if (late) assert.equal(late.status, CCU_STATUS.REFUSED);
-        c2.destroy();
-      }
-    } finally { c.destroy(); await srv.close().catch(() => {}); }
+
+    } finally { c.destroy(); c2.destroy(); await srv.close().catch(() => {}); }
+  });
+
+  // F6 — THE CLAIM SURVIVES A flush, and is released only by the close.
+  // `flush` fires once per `close` of a DUPLICATED descriptor while the
+  // original handle stays open. Releasing the claim there left the next write
+  // batch on that handle unprotected and reopened the whole destruction
+  // window — so a DIRTY carrying FOR_WRITE reconciles without releasing.
+  //
+  // DIES UNDER: `#dirty` releasing unconditionally, or `pt_flush` sending a
+  // bare DIRTY.
+  test('a flush reconciles without releasing the claim; the close releases it', async () => {
+    const p = '/srv/app/dup.log';
+    await fs.writeFile(at(p), 'ORIGINAL\n');
+    assert.equal((await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+
+    // The worker writes and a duplicate closes: flush pushes, handle open.
+    await fs.writeFile(inMirror(p), 'FIRST BATCH\n');
+    assert.equal((await call(sock, CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(at(p), 'utf8'), 'FIRST BATCH\n');
+
+    // THE CLAIM MUST STILL HOLD: the next write batch goes into the same
+    // inode, and a STAT arriving now must not re-shape it.
+    await fs.writeFile(inMirror(p), 'FIRST BATCH\nSECOND BATCH\n');
+    assert.equal((await call(sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'FIRST BATCH\nSECOND BATCH\n',
+      'the second write batch was destroyed — the claim did not survive the flush');
+
+    // The close releases, and pushes what the handle finally held.
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(at(p), 'utf8'), 'FIRST BATCH\nSECOND BATCH\n');
+
+    // NON-VACUITY: released, so the cache is managing the path again.
+    await fs.writeFile(at(p), 'SOURCE MOVED ON\n');
+    assert.equal((await call(sock, CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'SOURCE MOVED ON\n');
+  });
+
+  // F2 — A CLAIM SURVIVES ONLY A READY. A FETCH that fails must leave none, or
+  // the path becomes a blackhole: STAT answers ABSENT from the claim, LIST
+  // skips shaping the child, a read-only open short-circuits READY and then
+  // fails ENOENT, and a read sends no DIRTY, so nothing ever releases it.
+  //
+  // DIES UNDER: removing the `reply[4] !== READY` release from `#fetch`.
+  test('a FETCH that fails leaves no claim behind', async () => {
+    const p = '/srv/app/nodir/new.txt';
+    // for_create with an absent PARENT: the frame fails.
+    const r = await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, p);
+    assert.equal(r.status, CCU_STATUS.ABSENT);
+
+    // The source gains the file later — through any channel.
+    await fs.mkdir(path.dirname(at(p)), { recursive: true });
+    await fs.writeFile(at(p), 'ARRIVED LATER\n');
+
+    // …and it must be reachable. A leaked claim made this ABSENT for the rest
+    // of the session whatever the source held.
+    assert.equal((await call(sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY);
+    assert.equal((await call(sock, CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'ARRIVED LATER\n');
   });
 
   // ── THE RECONCILE ─────────────────────────────────────────────────────────

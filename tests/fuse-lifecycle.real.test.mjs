@@ -917,9 +917,15 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // AND THE TWO XATTR MUTATIONS, which round 3 found changing the mirror
       // and reaching the system never — they were in neither enumeration, so
       // both guards were vacuous for exactly them.
-      const sx = await marked('exec setfattr -n user.cc -v x "$2" 2>&1', inChroot('remote-marker.txt'));
-      if (!/not found|No such file/.test(sx.stdout + sx.stderr)) {
+      // NOT CONDITIONAL ON THE BINARY EXISTING. A silent skip here is
+      // indistinguishable from a pass, so an absent `setfattr` is named.
+      const haveSetfattr = (await sh('sh', ['-c', 'command -v setfattr'])).ok;
+      let sx = { stdout: '' };
+      if (haveSetfattr) {
+        sx = await marked('exec setfattr -n user.cc -v x "$2" 2>&1', inChroot('remote-marker.txt'));
         assert.match(sx.stdout, /Operation not supported/, `setxattr was accepted: ${sx.stdout}`);
+      } else {
+        console.log('fuse gate [R7]: setfattr absent — the xattr refusal is NOT covered on this host');
       }
 
       // A DIRECTORY RENAME REFUSES, and the control below is what makes it a
@@ -936,12 +942,52 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.equal(await fs.readFile(path.join(onSystem('r7-dir-from'), 'child.txt'), 'utf8'), 'INSIDE\n');
       await assert.rejects(() => fs.access(onSystem('r7-dir-to')));
 
+      // CRITERION 10 AT THE SYSCALL. A reconcile that cannot land must not
+      // report success — and the kernel DISCARDS `release`'s return value, so
+      // the push lives in `flush`, which is what `close(2)` reports. Nothing
+      // proved the worker ever sees it until this arm.
+      //
+      // THE OPEN MUST SUCCEED AND ONLY THE RECONCILE FAIL, or the arm passes
+      // on an EACCES the daemon never sent and proves nothing. Permissions
+      // cannot separate the two — cc copies the source's mode onto the mirror,
+      // so anything that stops cc's push stops the worker's open as well.
+      // What does separate them is TIME: the handle stays open while the test
+      // removes the mirror entry cc is holding for it, so the push finds
+      // nothing to copy, refuses EIO, and `flush` answers that to close(2).
+      //
+      // `node` rather than a shell: a shell does not report a redirect's close
+      // error, and close(2) is the whole point of this arm.
+      const NODE_PROBE = [
+        'const fs=require("fs");',
+        'const fd=fs.openSync(process.argv[1],"w");',
+        'fs.writeSync(fd,"NEW\\n");',
+        'const t=Date.now(); while(Date.now()-t<4000);',
+        'try{fs.closeSync(fd)}catch(e){console.log("CLOSE_ERR:"+e.code);process.exit(3)}',
+        'console.log("CLOSE_OK")',
+      ].join('');
+      const eioPath = path.join(box, 'app', 'r7-eio.txt');
+      await fs.writeFile(onSystem('r7-eio.txt'), 'ORIGINAL\n');
+      const mirrorCopy = path.join(fuseRunDir(inst.id), 'mirror', eioPath);
+      const writer = inNs(record.anchorPid,
+        '[ -e "$1" ]; exec "$3" -e "$4" "$2"',
+        mark, inChroot('r7-eio.txt'), inside(record, inst._fuse.plan.markPath), NODE_PROBE);
+      // Wait until the handle is genuinely open with its bytes in the mirror,
+      // then take the mirror entry away while it is still held.
+      await waitFor(async () =>
+        (await fs.readFile(mirrorCopy, 'utf8').catch(() => '')).includes('NEW'), { timeout: 15_000 });
+      await fs.rm(mirrorCopy);
+      const w = await writer;
+      assert.match(w.stdout, /CLOSE_ERR:EIO/,
+        `close(2) did not report the refused reconcile: ${w.stdout} ${w.stderr}`);
+      assert.equal(await fs.readFile(onSystem('r7-eio.txt'), 'utf8'), 'ORIGINAL\n',
+        'the system copy changed even though the reconcile refused');
+
       // Each refusal is in the log by name, so the pin-derivation instrument
       // sees them rather than only the caller.
       const refusals = await refusalsOf(inst.id);
       const notReconcilable = refusals.filter(r => r[2] === 'not-reconcilable').map(r => r[0]);
       const want = ['chown', 'link', 'mknod', 'rename'];
-      if (/Operation not supported/.test(sx.stdout)) want.push('setxattr');
+      if (haveSetfattr) want.push('setxattr');
       assert.deepEqual([...new Set(notReconcilable)].sort(), want.sort());
     } finally {
       await instances.remove(inst.id);

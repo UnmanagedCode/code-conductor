@@ -500,6 +500,14 @@ struct route {
 #define FDTIER_SLOTS 65536
 static unsigned char fd_tier[FDTIER_SLOTS];
 static unsigned char fd_dirty[FDTIER_SLOTS];
+/*
+ * SEPARATE FROM fd_dirty, and it has to be. `fd_dirty` says "there are bytes to
+ * push" and `flush` clears it on a successful reconcile; `fd_claimed` says "cc
+ * has stopped caching this path for us", which stays true until the handle
+ * closes. Conflating them made `release` skip the only frame that releases the
+ * claim whenever a `flush` had already pushed.
+ */
+static unsigned char fd_claimed[FDTIER_SLOTS];
 
 static void fd_tier_set(int fd, enum tier t, int writable)
 {
@@ -518,7 +526,18 @@ static void fd_tier_set(int fd, enum tier t, int writable)
  * exhaustive over `enum tier`; anything that reaches past it — T_FAIL, and any
  * member a later edit adds — fails closed and says so in the refusal log.
  */
-static int route(const char *op, const char *path, int for_create, uint8_t fop,
+/*
+ * `cflags` IS THE WHOLE FLAGS BYTE, PASSED THROUGH UNTOUCHED — not a boolean.
+ *
+ * It was `int for_create` and was forwarded as `for_create ? FOR_CREATE : 0`,
+ * which was correct while FOR_CREATE was the only bit. When FOR_WRITE arrived
+ * the call sites started handing over a flags byte and this signature went on
+ * claiming a boolean, so the collapse silently dropped every other bit: no
+ * write claim was ever taken, every guard that depends on one was dead, and a
+ * write-only op arrived at cc labelled a create. The parameter is named for
+ * what it carries now, because the old name is what hid it.
+ */
+static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		 struct route *r)
 {
 	r->rp   = rel(path);
@@ -553,8 +572,7 @@ static int route(const char *op, const char *path, int for_create, uint8_t fop,
 			policy_refuse(op, path, "self-recursion");
 			return 0;
 		}
-		rc = policy_project_route(op, path, (pid_t)fuse_get_context()->pid, fop,
-					  for_create ? CCU_FLAG_FOR_CREATE : 0);
+		rc = policy_project_route(op, path, (pid_t)fuse_get_context()->pid, fop, cflags);
 		if (rc)
 			return rc;
 		r->fd = remote_fd;      /* no fallback, by design */
@@ -738,8 +756,13 @@ static void pinned_children_collect(void *ctx, const char *name, const char *ful
 {
 	struct pinned_children *pc = ctx;
 
-	if (pc->n >= MAX_PINNED_CHILDREN)
+	if (pc->n >= MAX_PINNED_CHILDREN) {
+		/* AN HONEST BOUND. Silently dropping names would lose them from
+		 * `ls` while `stat` kept working — this function's own defect,
+		 * at scale. The log is the instrument that would show it. */
+		policy_refuse("readdir", full, "pinned-children-truncated");
 		return;
+	}
 	/* Bounded copies rather than snprintf: both sources are already
 	 * PATH_MAX-bounded table entries, but the compiler cannot see that and
 	 * its format-truncation analysis is right to say so. */
@@ -765,15 +788,42 @@ static void pinned_children_mark(struct pinned_children *pc, const char *name)
 			pc->seen[i] = 1;
 }
 
+/*
+ * EMITTED ONLY IF IT IS REALLY THERE — and this check belongs to REAL
+ * directories alone. The asymmetry with `policy_synth_children`, which emits
+ * unchecked, is deliberate: H9 forbids a synthetic node from statting the host
+ * because a synthetic node HAS no backing directory, and existence is exactly
+ * what the ancestor table withholds. A real directory has one, so the check
+ * costs nothing H9 protects.
+ *
+ * Without it every session's `ls /etc` listed `ld.so.preload` and
+ * `claude-code` — both ETC_PINS entries, both absent on this host — for `cat`
+ * to answer -ENOENT. That is criterion 1's `ls`/`cat` disagreement, which the
+ * previous fix reintroduced in the opposite direction.
+ *
+ * A `host` or `bind` pin is checked against the host root; a `project` child
+ * that survived the mark step is not in the mirror and so is not there either.
+ */
 static void pinned_children_emit(struct pinned_children *pc,
 				 void (*emit)(void *, const char *, const char *, enum tier),
 				 void *ctx)
 {
+	struct stat st;
 	size_t i;
 
-	for (i = 0; i < pc->n; i++)
-		if (!pc->seen[i])
+	for (i = 0; i < pc->n; i++) {
+		if (pc->seen[i])
+			continue;
+		if (pc->tier[i] == T_SYNTH) {
+			/* Its own node, from the ancestor table. Nothing to
+			 * stat, and H9 says do not try. */
 			emit(ctx, pc->name[i], pc->full[i], pc->tier[i]);
+			continue;
+		}
+		if (fstatat(host_fd, rel(pc->full[i]), &st, AT_SYMLINK_NOFOLLOW) == -1)
+			continue;
+		emit(ctx, pc->name[i], pc->full[i], pc->tier[i]);
+	}
 }
 
 static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
@@ -900,15 +950,21 @@ static int pt_releasedir(const char *path, struct fuse_file_info *fi)
  * THE RETURN VALUE IS THE OP'S. A reconcile that could not land must not leave
  * the caller thinking it did (epic criterion 10), so every caller returns this.
  */
-static int push_mirror(const char *op, const char *path, int removed)
+static int push_mirror_flags(const char *op, const char *path, uint8_t flags)
 {
 	int rc;
 
 	cache_invalidate(path);
-	rc = ccu_call(CCU_DIRTY, removed ? CCU_FLAG_REMOVED : 0, path);
+	rc = ccu_call(CCU_DIRTY, flags, path);
 	if (rc)
-		policy_refuse(op, path, removed ? "dirty-remove-refused" : "dirty-push-refused");
+		policy_refuse(op, path,
+			      (flags & CCU_FLAG_REMOVED) ? "dirty-remove-refused" : "dirty-push-refused");
 	return rc;
+}
+
+static int push_mirror(const char *op, const char *path, int removed)
+{
+	return push_mirror_flags(op, path, removed ? CCU_FLAG_REMOVED : 0);
 }
 
 /*
@@ -1122,8 +1178,12 @@ static int pt_link(const char *from, const char *to)
 	struct route rf, rt;
 	int rc;
 
+	/* `link` REFUSES at the project tier below, so neither end takes a write
+	 * claim: a claim nothing releases is a per-path blackhole for the rest of
+	 * the session. The `to` end still says FOR_CREATE, which is what makes
+	 * the parent exist for a host-tier link. */
 	if ((rc = route("link", from, 0, CCU_FETCH, &rf))) return rc;
-	if ((rc = route("link", to,   1, CCU_FETCH, &rt))) return rc;
+	if ((rc = route("link", to, CCU_FLAG_FOR_CREATE, CCU_FETCH, &rt))) return rc;
 	tr("link", to, tier_name(rt.tier));
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
 	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
@@ -1164,13 +1224,14 @@ static int pt_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_inf
 		int fd = (int)fi->fh;
 		tr("chown", path, "fh");
 		if (fd >= 0 && fd < FDTIER_SLOTS && (enum tier)fd_tier[fd] == T_PROJECT)
+			/* The fh branch took no claim — no FETCH was sent. */
 			return refuse_unreconcilable("chown", path, T_PROJECT);
 		return fchown(fd, uid, gid) == -1 ? -errno : 0;
 	}
 	{
 		ROUTE("chown", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 		if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
-		if ((rrc = refuse_unreconcilable("chown", path, r.tier)) != 0) return rrc;
+		if ((rrc = refuse_unreconcilable("chown", path, r.tier)) != 0) { abandon_claim(path, r.tier); return rrc; }
 		cred_enter();
 		int rc = fchownat(r.fd, rp, uid, gid, AT_SYMLINK_NOFOLLOW);
 		int e = errno;
@@ -1234,6 +1295,7 @@ static int pt_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	cred_leave();
 	if (fd == -1) { abandon_claim(path, r.tier); return -e; }
 	fd_tier_set(fd, r.tier, 1);
+	if (fd < FDTIER_SLOTS) fd_claimed[fd] = 1;
 	fi->fh = fd;
 	return 0;
 }
@@ -1255,6 +1317,10 @@ static int pt_open(const char *path, struct fuse_file_info *fi)
 		return -e;
 	}
 	fd_tier_set(fd, r.tier, (fi->flags & (O_WRONLY | O_RDWR)) != 0);
+	/* Exactly the handles whose ROUTE carried FOR_WRITE, so the claim cc took
+	 * and the claim this daemon releases cannot disagree. */
+	if (fd < FDTIER_SLOTS && (fi->flags & (O_WRONLY | O_RDWR)))
+		fd_claimed[fd] = 1;
 	fi->fh = fd;
 	return 0;
 }
@@ -1323,7 +1389,11 @@ static int pt_flush(const char *path, struct fuse_file_info *fi)
 	if (fd < 0 || fd >= FDTIER_SLOTS || !fd_dirty[fd] ||
 	    (enum tier)fd_tier[fd] != T_PROJECT)
 		return 0;
-	rc = push_mirror("flush", path, 0);
+	/* KEEPS THE CLAIM. `flush` fires per `close` of a duplicated descriptor
+	 * while the original handle stays open, and releasing here left the next
+	 * write batch on that handle unprotected — reopening exactly the window
+	 * the claim exists to close. `release` is the only releaser. */
+	rc = push_mirror_flags("flush", path, CCU_FLAG_FOR_WRITE);
 	if (rc == 0)
 		fd_dirty[fd] = 0;
 	return rc;
@@ -1344,13 +1414,27 @@ static int pt_release(const char *path, struct fuse_file_info *fi)
 {
 	int fd = (int)fi->fh;
 
-	if (fd >= 0 && fd < FDTIER_SLOTS && fd_dirty[fd] &&
+	/*
+	 * THE ONLY RELEASER OF THE CLAIM, so this runs for a claimed handle
+	 * whether or not anything is dirty — a `flush` that already pushed left
+	 * the claim standing deliberately, and nothing else would ever drop it.
+	 *
+	 * THE COST, named rather than hidden: a file written and then closed
+	 * reconciles TWICE — once at `flush`, once here — because the releasing
+	 * frame is also a reconciling one. Encoding "release without
+	 * reconciling" as a flag COMBINATION would remove the second copy and
+	 * make the wire unreadable; in S2 the source is a local directory so the
+	 * copy is cheap, and S3 owns the write path and will revisit batching
+	 * there regardless.
+	 */
+	if (fd >= 0 && fd < FDTIER_SLOTS && fd_claimed[fd] &&
 	    (enum tier)fd_tier[fd] == T_PROJECT) {
 		push_mirror("release", path, 0);
 	}
 	if (fd >= 0 && fd < FDTIER_SLOTS) {
 		fd_tier[fd] = 0;
 		fd_dirty[fd] = 0;
+		fd_claimed[fd] = 0;
 	}
 	close(fd);
 	return 0;
@@ -1367,7 +1451,15 @@ static int pt_fallocate(const char *path, int mode, off_t off, off_t len,
 			struct fuse_file_info *fi)
 {
 	(void)path;
-	return fallocate((int)fi->fh, mode, off, len) == -1 ? -errno : 0;
+	if (fallocate((int)fi->fh, mode, off, len) == -1)
+		return -errno;
+	/* CONTENT CHANGED, so the handle owes a push. FALLOC_FL_ZERO_RANGE and
+	 * FALLOC_FL_PUNCH_HOLE rewrite bytes and a plain fallocate extends the
+	 * file, and `flush` clears the bit on a successful reconcile — without
+	 * this, `write; flush; fallocate; close` reconciled the pre-fallocate
+	 * content and the size change never reached the system. */
+	fd_mark_dirty(fi->fh);
+	return 0;
 }
 
 static off_t pt_lseek(const char *path, off_t off, int whence,

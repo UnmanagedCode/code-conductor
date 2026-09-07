@@ -767,10 +767,17 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
  */
 #define CCU_FLAG_FOR_CREATE 0x01  /* FETCH: the caller is about to CREATE `path`,
                                    * so the PARENT is what must exist. */
-#define CCU_FLAG_FOR_WRITE  0x02  /* FETCH: the caller will MUTATE `path`, so cc
-                                   * must stop managing it as a cache until the
-                                   * matching DIRTY — no re-shape, no truncate,
-                                   * no unmirror, no re-copy. */
+#define CCU_FLAG_FOR_WRITE  0x02  /* "the worker is still writing here", and it
+                                   * means that on BOTH ops it is defined for.
+                                   * FETCH: take the claim — cc stops managing
+                                   * `path` as a cache (no re-shape, no
+                                   * truncate, no unmirror, no re-copy).
+                                   * DIRTY: KEEP it — the handle is still open,
+                                   * so reconcile but do not release. `flush`
+                                   * fires once per `close` of a duplicated
+                                   * descriptor while the original stays open,
+                                   * and a claim released there would leave the
+                                   * next write batch unprotected. */
 #define CCU_FLAG_REMOVED    0x04  /* DIRTY: the worker REMOVED the entry, so the
                                    * source must lose it. Absence is never
                                    * inferred from the mirror; it is declared

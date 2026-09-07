@@ -60,6 +60,14 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+// One body extractor, shared by both source-shape tests.
+function bodyOfIn(src, op) {
+  const at = src.indexOf(`static int pt_${op}(`);
+  assert.ok(at > 0, `pt_${op} is missing from union.c`);
+  const next = src.indexOf('\nstatic ', at + 1);
+  return src.slice(at, next === -1 ? src.length : next);
+}
+
 describe('the compiled policy driver', { skip }, () => {
   let bin;
 
@@ -104,9 +112,12 @@ describe('the compiled policy driver', { skip }, () => {
     ['b4-children',   'a synthetic dir lists exactly its own children, omitting hide and fail',
                       'drop the T_HIDE/T_FAIL skip, or the immediate-child guard'],
     // NOT this file's: the same rule for a REAL directory lives in
-    // `pt_readdir` (union.c), which no unit fixture can reach. Its kill is
-    // `tests/systems-mirror-geometry-follow.test.mjs`'s fail-pin arm for cc's
-    // half and the real gate's R2 for the daemon's.
+    // `pt_readdir` (union.c), which no unit fixture can reach. cc's half is
+    // killed by `tests/systems-mirror-geometry-follow.test.mjs`'s fail-pin arm.
+    // THE DAEMON'S HALF IS CURRENTLY UNKILLED, and saying so is the point of
+    // this note: R2 was credited with it and R2 reads a FILE — no arm anywhere
+    // runs a real directory listing through the mount. Recorded in
+    // PROVENANCE.md's "what is measured where" as a real gap.
     ['b5-getattr',    'the synthetic node is fixed 0555/uid0/mtime0 and touches no filesystem',
                       'fstatat the host directory of the same name'],
     ['b6-erofs',      'a mutation on a synthetic or bind node is EROFS, not EACCES',
@@ -131,11 +142,35 @@ describe('the compiled policy driver', { skip }, () => {
                       'collapse remote-absent and control-refused into one reason'],
     ['b13-refusals',  'the refusal log records each (path, reason) exactly once',
                       'drop the dedupe, or key it on op as well'],
+    ['b15-unreconcilable',
+                      "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP, and a host-tier one does not",
+                      '`return -EOPNOTSUPP` → `return 0`; the T_PROJECT test flipped or widened to every tier; EOPNOTSUPP collapsed into EROFS'],
   ];
 
   for (const [id, invariant] of CASES) {
     test(`${id}: ${invariant}`, async () => { await drive(id); });
   }
+
+  // NO ORPHANED CASE. This loop is the ONLY runner, so a case the fixture
+  // defines and dispatches but CASES never names is compiled, correct and
+  // never executed — and the pass count stays arithmetically consistent, which
+  // is how `b15` hid for a whole round. A prover mutating what an orphaned case
+  // covers reads SURVIVED and files it as real.
+  //
+  // Derived from the fixture's own dispatcher rather than from a second list,
+  // so adding a case to the driver and forgetting the table is a failure here.
+  test('every case the fixture dispatches is in CASES', async () => {
+    const src = await fs.readFile(DRIVER_SRC, 'utf8');
+    const dispatched = [...src.matchAll(/strcmp\(c, "([a-z0-9-]+)"\)/g)].map(m => m[1]);
+    assert.ok(dispatched.length > 10, `the dispatcher was not parsed: ${dispatched.length}`);
+    const listed = new Set([...CASES.map(([id]) => id), 'frame-vectors']);
+    const orphans = dispatched.filter(id => !listed.has(id));
+    assert.deepEqual(orphans, [], 'these driver cases are defined but never run');
+    // …and the other direction, so CASES cannot name a case that no longer
+    // exists and quietly stop covering anything.
+    const gone = [...listed].filter(id => !dispatched.includes(id));
+    assert.deepEqual(gone, [], 'these CASES entries name no dispatcher case');
+  });
 
   // THE WIRE, CROSS-CHECKED ACROSS THE LANGUAGE BOUNDARY. Both codecs implement
   // one spec, and a test that asserted each against its own transcription of
@@ -220,20 +255,49 @@ describe('the compiled policy driver', { skip }, () => {
     assert.equal(src.match(/policy_mutation_check\(/g).length, MUTATING.length + 2,
       `expected one call per mutating op plus rename/link's second end; ${bodies.length} pt_ ops in the file`);
 
-    // AND THE LIST IS CHECKED AGAINST THE OPS TABLE, so an op cannot be
-    // mutating in `fuse_operations` and absent from the enumeration that is
-    // supposed to police it — which is exactly how setxattr/removexattr hid.
+    // TABLE FIRST, NOT LIST FIRST. The previous shape iterated a hand-written
+    // list of entry points against the bound set, so an op bound in
+    // `fuse_operations` and missing from THAT list passed silently — which is
+    // how `fallocate` sat unclassified while being content-mutating. Now every
+    // binding must be classified, and an unclassified one fails here.
     const table = src.slice(src.indexOf('static const struct fuse_operations'));
-    const bound = new Set([...table.matchAll(/\.(\w+)\s*=\s*pt_(\w+),/g)].map(m => m[1]));
-    const MUTATING_ENTRY_POINTS = ['mkdir', 'mknod', 'unlink', 'rmdir', 'symlink', 'create',
-      'chmod', 'chown', 'truncate', 'utimens', 'rename', 'link', 'setxattr', 'removexattr', 'write'];
-    const enumerated = new Set([...MUTATING, ...XATTR_MUTATING]);
-    for (const op of MUTATING_ENTRY_POINTS) {
-      if (!bound.has(op)) continue;
-      // `write` acts on an fd the open already routed and marked, so it is the
-      // one mutating entry point with no path to guard. Named, not skipped.
-      if (op === 'write') continue;
-      assert.ok(enumerated.has(op), `pt_${op} is bound as a mutating op but is in no enumeration`);
+    const bound = [...table.matchAll(/\.(\w+)\s*=\s*pt_(\w+),/g)].map(m => m[1]);
+    assert.ok(bound.length > 20, `the ops table was not parsed: ${bound.length}`);
+    const CLASS = {
+      // Read-only: no path mutation, nothing to reconcile.
+      init: 'read', getattr: 'read', access: 'read', readlink: 'read',
+      opendir: 'read', readdir: 'read', releasedir: 'read', read: 'read',
+      statfs: 'read', getxattr: 'read', listxattr: 'read', lseek: 'read',
+      // `open` routes and may take the claim, but mutates nothing itself —
+      // what it opens is mutated through `write`/`truncate`/`fallocate`.
+      open: 'lifecycle',
+      // Mutating, guarded by policy_mutation_check (-EROFS on a synthetic).
+      mkdir: 'erofs', mknod: 'erofs', unlink: 'erofs', rmdir: 'erofs',
+      symlink: 'erofs', create: 'erofs', chmod: 'erofs', chown: 'erofs',
+      truncate: 'erofs', utimens: 'erofs', rename: 'erofs', link: 'erofs',
+      // Mutating, guarded to -EOPNOTSUPP on a synthetic (an xattr is not a
+      // read-only-filesystem question).
+      setxattr: 'xattr', removexattr: 'xattr',
+      // Act on an fd the open already routed, claimed and marked. They mutate
+      // CONTENT, so each must leave the handle owing a push.
+      write: 'fd', fsync: 'fd', fallocate: 'fd',
+      // The handle's own lifecycle.
+      flush: 'lifecycle', release: 'lifecycle',
+    };
+    const unclassified = bound.filter(op => !(op in CLASS));
+    assert.deepEqual(unclassified, [],
+      'these ops are bound in fuse_operations and classified nowhere');
+    // …and the classification cannot name an op that is not bound.
+    assert.deepEqual(Object.keys(CLASS).filter(op => !bound.includes(op)), []);
+    // The two mutating classes ARE the two enumerations above, so a mutating
+    // op cannot be classified here and still be missing from the guard lists.
+    assert.deepEqual(bound.filter(op => CLASS[op] === 'erofs').sort(), [...MUTATING].sort());
+    assert.deepEqual(bound.filter(op => CLASS[op] === 'xattr').sort(), [...XATTR_MUTATING].sort());
+    // Every content-mutating fd op re-arms the push, or a change after the
+    // last flush is silently never reconciled.
+    for (const op of bound.filter(o => CLASS[o] === 'fd' && o !== 'fsync')) {
+      assert.match(bodyOfIn(src, op), /fd_dirty\[|fd_mark_dirty\(/,
+        `pt_${op} mutates content without re-arming the push`);
     }
   });
 
@@ -263,12 +327,7 @@ describe('the compiled policy driver', { skip }, () => {
     // are in neither list — asserted, so the exemption is not a silent gap.
     const VIA_RELEASE = ['create', 'open'];
 
-    const bodyOf = (op) => {
-      const at = src.indexOf(`static int pt_${op}(`);
-      assert.ok(at > 0, `pt_${op} is missing`);
-      const next = src.indexOf('\nstatic ', at + 1);
-      return src.slice(at, next === -1 ? src.length : next);
-    };
+    const bodyOf = (op) => bodyOfIn(src, op);
 
     for (const op of PUSHES) {
       const body = bodyOf(op);
@@ -290,7 +349,7 @@ describe('the compiled policy driver', { skip }, () => {
     // AND THE PUSH THAT close(2) ACTUALLY SEES. The kernel discards release's
     // return value, so a reconcile answered only there is a refusal the worker
     // never learns about — criterion 10. `flush` is where close(2) reads from.
-    assert.match(bodyOf('flush'), /push_mirror\(/,
+    assert.match(bodyOf('flush'), /push_mirror_flags\(|push_mirror\(/,
       'the push is not in flush, so a refused reconcile cannot reach close(2)');
     // EVERY CLAIMING OP RELEASES ITS CLAIM WHEN IT FAILS, or the path stays
     // uncached for the session with cc still serving reads from the mirror.
@@ -299,6 +358,38 @@ describe('the compiled policy driver', { skip }, () => {
     }
     assert.match(bodyOf('rename'), /abandon_claim\(from[\s\S]*abandon_claim\(to/,
       'pt_rename releases only one of the two claims it takes');
+
+    // ── THE FLAG IS PINNED WHERE IT IS PRODUCED ─────────────────────────────
+    //
+    // `route()` took `int for_create` and forwarded `for_create ? FOR_CREATE :
+    // 0`, collapsing the flags byte to one bit — so FOR_WRITE never reached the
+    // wire and every claim guard was dead for an entire round. NOTHING CAUGHT
+    // IT, because every test exercised one side of the seam with hand-made
+    // input: the codec vectors hand-craft flags on both sides, the driver calls
+    // `policy_project_route` directly and bypasses `route()`, and the
+    // control-channel tests hand-craft frames with the bit already set. So the
+    // flag is asserted at the site that PRODUCES it.
+    assert.match(src, /static int route\(const char \*op, const char \*path, uint8_t cflags,/,
+      "route() takes a boolean again, so every bit but the lowest is dropped");
+    assert.match(src, /policy_project_route\([^;]*fop, cflags\)/,
+      'route() reconstructs the flags byte instead of forwarding it');
+    // Every op that will mutate says so on its own ROUTE.
+    for (const op of [...PUSHES.filter(o => o !== 'rename'), 'mknod', 'setxattr', 'removexattr', 'chown']) {
+      assert.match(bodyOf(op), new RegExp(`ROUTE\\("${op}", path, [^)]*CCU_FLAG_FOR_WRITE`),
+        `pt_${op} mutates the mirror without taking a write claim`);
+    }
+    assert.match(bodyOf('create'), /ROUTE\("create", path, CCU_FLAG_FOR_CREATE \| CCU_FLAG_FOR_WRITE/);
+    assert.match(bodyOf('rename'), /route\("rename", from, CCU_FLAG_FOR_WRITE[\s\S]*route\("rename", to, CCU_FLAG_FOR_CREATE \| CCU_FLAG_FOR_WRITE/);
+    // A WRITABLE open takes one and a read-only open does NOT — the second half
+    // is what keeps the claim scoped, since claiming every read would disable
+    // the cache wholesale.
+    assert.match(bodyOf('open'),
+      /ROUTE\("open", path, \(fi->flags & \(O_WRONLY \| O_RDWR\)\) \? CCU_FLAG_FOR_WRITE : 0/,
+      'pt_open claims unconditionally or never');
+    // `link` refuses at the project tier, so it must NOT take a claim nothing
+    // would release.
+    assert.doesNotMatch(bodyOf('link'), /CCU_FLAG_FOR_WRITE/,
+      'pt_link takes a write claim it never releases');
 
     // THE PARTITION: the two lists are disjoint and together are exactly the
     // mutating set the previous test enumerates, minus the two that go through

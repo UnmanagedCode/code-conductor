@@ -309,7 +309,7 @@ export class ControlServer {
         case CCU_OP.STAT:  return await this.#stat(req.path, dest);
         case CCU_OP.LIST:  return await this.#list(req.path, dest);
         case CCU_OP.FETCH: return await this.#fetch(req.path, dest, req.forCreate, req.forWrite);
-        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed);
+        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed, req.forWrite);
         default:
           this.#opts.log?.(`cc-union control: unknown op ${req.op} for '${req.path}'`);
           return encodeReply(CCU_STATUS.REFUSED, EIO);
@@ -397,13 +397,36 @@ export class ControlServer {
   // `forCreate` means the caller is about to create the path, so the PARENT is
   // what has to exist. `forWrite` means the caller will mutate it, so cc stops
   // being a cache for it until the matching DIRTY.
+  //
+  // A CLAIM SURVIVES ONLY A `READY`, AND THAT IS ENFORCED HERE RATHER THAN ON
+  // EVERY FAILURE PATH. The first cut recorded the claim before any outcome was
+  // known and released it on none of its failures, so any op whose own FETCH
+  // failed left one behind — and a leaked claim is worse than a disabled cache:
+  // STAT answers ABSENT from it, LIST skips shaping the child, a read-only
+  // open short-circuits READY and then fails ENOENT, and a read sends no DIRTY,
+  // so nothing ever releases it. A file the source gained later became
+  // invisible for the rest of the session. One wrapper, so a failure path
+  // added later cannot forget.
   async #fetch(p: string, dest: string, forCreate: boolean, forWrite: boolean): Promise<Buffer> {
+    if (this.#claimHeld(p)) return encodeReply(CCU_STATUS.READY, 0);
+    let reply: Buffer;
+    try {
+      reply = await this.#fetchBody(p, dest, forCreate, forWrite);
+    } catch (e) {
+      this.#claimed.delete(p);
+      throw e;
+    }
+    if (reply[4] !== CCU_STATUS.READY) this.#claimed.delete(p);
+    return reply;
+  }
+
+  async #fetchBody(p: string, dest: string, forCreate: boolean, forWrite: boolean): Promise<Buffer> {
     // AN ALREADY-CLAIMED PATH IS NOT RE-MATERIALISED — that is the second
     // handle copying over the first's unpushed bytes. But the FETCH that TAKES
     // the claim must still materialise: a worker opening an existing file for
     // write needs its current contents. So the check reads the state BEFORE
-    // this frame's own claim is recorded.
-    if (this.#claimHeld(p)) return encodeReply(CCU_STATUS.READY, 0);
+    // this frame's own claim is recorded — which `#fetch` above has already
+    // checked, before taking one.
     if (forWrite) this.#claimed.set(p, { createdHere: false });
     if (forCreate) {
       const parent = await this.#opts.source.stat(path.posix.dirname(p));
@@ -442,7 +465,12 @@ export class ControlServer {
   // a deletion: it is either an op that already reconciled the path (the claim
   // is gone, so there is nothing owed) or cc's own cache having lost something
   // it was holding for a worker — which refuses rather than deleting.
-  async #dirty(p: string, dest: string, removed: boolean): Promise<Buffer> {
+  //
+  // `stillOpen` (FOR_WRITE on a DIRTY) means the handle has not closed, so the
+  // claim is KEPT: `flush` fires per `close` of a duplicated descriptor while
+  // the original stays open, and releasing there left the next write batch on
+  // that handle unprotected. `release` sends it clear, and is the only releaser.
+  async #dirty(p: string, dest: string, removed: boolean, stillOpen = false): Promise<Buffer> {
     const claimed = this.#claimed.has(p);
     let r: 'ok' | { error: string };
     if (removed) {
@@ -453,10 +481,11 @@ export class ControlServer {
     } else {
       r = await this.#opts.source.push(dest, p);
     }
-    // RELEASED EITHER WAY. The reconcile has been attempted and answered, so
-    // the window the claim protects is over; keeping it would leave cc's cache
-    // off for the rest of the session.
-    this.#claimed.delete(p);
+    // RELEASED EITHER WAY once the handle is gone — success or failure. The
+    // reconcile has been attempted and answered, so the window the claim
+    // protects is over; keeping it would leave cc's cache off for the rest of
+    // the session.
+    if (!stillOpen) this.#claimed.delete(p);
     if (r === 'ok') return encodeReply(CCU_STATUS.READY, 0);
     this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
     return encodeReply(CCU_STATUS.REFUSED, EIO);
