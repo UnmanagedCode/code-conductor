@@ -660,10 +660,16 @@ static void b0_parse(void)
  * were killed ONLY by A16's sha256 latch, which fires for any C edit and so
  * says nothing about behaviour.
  *
- * What it owes: a project-tier abandon SENDS A FRAME — a DIRTY, with no flags,
- * because the op failed and the mirror is unchanged — and invalidates the
- * cached routing decision. At any other tier it sends nothing, because no other
- * tier ever took a claim.
+ * What it owes: a project-tier abandon SENDS A FRAME — a DIRTY carrying
+ * CCU_FLAG_RELEASE_ONLY, because the op failed before mutating and the mirror
+ * still holds cc's own unmodified cache copy, so there is nothing to reconcile
+ * — and invalidates the cached routing decision. At any other tier it sends
+ * nothing, because no other tier ever took a claim.
+ *
+ * IT PINNED A BARE ZERO UNTIL CARD 2026-0356's REFINE ROUND, and the byte below
+ * is the whole of what changed: a flagless frame is indistinguishable from
+ * `pt_release`'s frame for a handle that WROTE and never flushed. The reasoning
+ * is at the assertion.
  */
 static void b16_abandon(void)
 {
@@ -698,8 +704,10 @@ static void b16_abandon(void)
 	 *
 	 * RELEASE_ONLY says what an abandon means and nothing else — release the
 	 * claim, carry nothing — so no push is attempted and no fault can arise.
-	 * It also drops the whole-file upload this function's own header names as
-	 * a cost on every error path. */
+	 * It also drops a whole-file upload from every error path, which
+	 * `policy_abandon_claim`'s own block in policy.h had already named as a
+	 * cost, and with it the hazard of overwriting the box's newer bytes with
+	 * cc's stale cache copy. */
 	CHECK(last_req[5] == CCU_FLAG_RELEASE_ONLY,
 	      "the abandon frame is not RELEASE_ONLY, so cc reads it as a reconcile of worker bytes");
 	CHECK(cache_get(1300, "/srv/app/f", &cerr) == 0,

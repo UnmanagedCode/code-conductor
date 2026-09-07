@@ -807,13 +807,21 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
                                    * inferred from the mirror; it is declared
                                    * here or it did not happen. */
 #define CCU_FLAG_RELEASE_ONLY 0x08 /* DIRTY: release the claim and reconcile
-                                   * NOTHING. The handle is closing and a
-                                   * `flush` already landed its bytes, so the
-                                   * releasing frame has nothing left to carry.
-                                   * Without it every written file uploads
-                                   * TWICE — once at `flush`, once at
-                                   * `release` — because the releasing frame is
-                                   * also a reconciling one (PROVENANCE D13d).
+                                   * NOTHING.
+                                   *
+                                   * TWO PRODUCERS, and the bit means the same
+                                   * thing for both. `pt_release`: the handle is
+                                   * closing and a `flush` already landed its
+                                   * bytes, so the releasing frame has nothing
+                                   * left to carry — without it every written
+                                   * file uploads TWICE, once at `flush` and
+                                   * once at `release`, because the releasing
+                                   * frame is also a reconciling one
+                                   * (PROVENANCE D13d). `policy_abandon_claim`
+                                   * below: the op failed BEFORE mutating, so
+                                   * the mirror still holds cc's own unmodified
+                                   * cache copy and there is nothing to carry
+                                   * either (PROVENANCE D16).
                                    *
                                    * A DEDICATED BIT, NOT A FLAG COMBINATION:
                                    * one bit, one meaning, on one op, which is
