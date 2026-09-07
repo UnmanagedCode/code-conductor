@@ -26,7 +26,7 @@ import { renderPlaybookConvention } from '../src/playbookConvention.ts';
 import { loadPlaybooks, DEFAULT_PLAYBOOK_ID, SEED_PLAYBOOK_IDS } from '../src/playbooks.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import * as m0028 from '../migrations/0028-tri-state-default-playbook.mjs';
-import * as m0029 from '../migrations/0029-enable-playbooks-conductor-convention.mjs';
+import * as m0033 from '../migrations/0033-drop-convention-enabled-allow-list.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -161,10 +161,11 @@ test('a user-overlay playbook is selectable (one catalog, not a second discovery
 });
 
 test('setting the default leaves the convention selection untouched', async () => {
+  const offSwitches = SEED_CONVENTIONS.map(m => m.slug).filter(s => s !== 'playbooks');
   await setSelection(['playbooks']);
   await setDefaultPlaybook({ mode: 'playbook', id: 'solo' });
   const store = await storeJson();
-  assert.deepEqual(store.enabled, ['playbooks']);
+  assert.deepEqual(store.disabled, offSwitches, 'the selection sits on the same store and is not disturbed');
   assert.deepEqual(store.defaultPlaybook, { mode: 'playbook', id: 'solo' });
 });
 
@@ -251,11 +252,22 @@ test('the convention rides the playbooks convention toggle', async () => {
   assert.ok((await composeCurrentConduct()).includes('## Preferred playbook'), 'present with playbooks on');
 });
 
-// Reproduces the SYMPTOM (card 2026-0120), not the intentional toggle above:
-// a store frozen before `playbooks` was seeded loses the section not because
-// anyone unchecked it, but because it was never in `enabled` to begin with.
-// The migration must repair exactly that, through the real read path.
-test('a pre-playbooks-slug store loses the section, and migration 0029 restores it', async () => {
+// The SYMPTOM of card 2026-0120 no longer reproduces, and this is where that is
+// pinned — through the real read path, with the real seeds, which is what makes
+// it different from the synthetic-seed proof in
+// tests/conventions-selection-compose.test.mjs (N1/N2).
+//
+// The store below is the exact fixture that used to lose the section: an
+// allow-list frozen before `playbooks` was seeded. Under the deny-list
+// (card 2026-0123) `enabled` is not a selection key at all, so nothing is
+// switched off and the section is there BEFORE any migration runs — which is
+// the whole point: migrations 0015 and 0029 each existed only to repair one
+// instance of this, and no future seed needs a third. Migration 0033 then
+// removes the dead key without disturbing what is composed.
+//
+// NOT CLAIMING: that 0029 was wrong, or is no longer replayable — it stays in
+// the chain and its own tests still pin it.
+test('a pre-playbooks-slug store no longer loses the section — the freeze class is retired', async () => {
   const preSlugs = SEED_CONVENTIONS.map(m => m.slug).filter(s => s !== 'playbooks');
   const file = path.join(orchStoreRoot(), 'conventions', 'conductor.json');
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -264,14 +276,29 @@ test('a pre-playbooks-slug store loses the section, and migration 0029 restores 
     defaultPlaybook: { mode: 'playbook', id: 'solo' },
   }));
 
+  const before = await composeCurrentConduct();
+  assert.ok(before.includes('## Preferred playbook — `solo`'),
+    'the never-listed seed is on despite the frozen allow-list, with no migration run');
+  assert.ok(before.includes('**Available playbooks**'), 'and so is the listing it gates');
+
+  // Non-vacuity: it is the deny-list, not an unconditional "always compose it",
+  // that puts the section there — an explicit off-switch still removes it.
+  await fs.writeFile(file, JSON.stringify({
+    disabled: ['playbooks'],
+    defaultPlaybook: { mode: 'playbook', id: 'solo' },
+  }));
   assert.ok(!(await composeCurrentConduct()).includes('## Preferred playbook'),
-    'the frozen pre-existing selection omits the section entirely');
+    'an explicit off-switch does still drop the section');
 
-  await m0029.run({ root: path.dirname(orchStoreRoot()) });
-
-  const doc = await composeCurrentConduct();
-  assert.ok(doc.includes('## Preferred playbook — `solo`'), 'the section is restored');
-  assert.ok(doc.includes('**Available playbooks**'), 'the listing is restored too');
+  // And migration 0033 retires the dead key without changing what composes.
+  await fs.writeFile(file, JSON.stringify({
+    enabled: preSlugs,
+    defaultPlaybook: { mode: 'playbook', id: 'solo' },
+  }));
+  assert.equal((await m0033.run({ root: path.dirname(orchStoreRoot()) })).applied, true);
+  const store = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.ok(!('enabled' in store), 'the allow-list key is gone');
+  assert.equal(await composeCurrentConduct(), before, 'and the composed doc is byte-identical across the migration');
 });
 
 test('a selected id that no longer resolves omits the section rather than failing the spawn', async () => {

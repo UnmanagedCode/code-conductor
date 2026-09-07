@@ -114,8 +114,9 @@ function indexBacking(byPublic: Map<string, LineageRow>): Map<string, string> {
 // only orders a read behind writes already INSIDE it, while a kicked write sits
 // upstream on the per-instance chain and has not enrolled yet. It is registered
 // by `_kickLineageWrite` and awaited in `loadLineage` — the single chokepoint
-// every reader funnels through (the three resolvers plus the session-list scan
-// in `src/projects.ts`), so one await covers all four.
+// every reader funnels through (the three resolvers here, the transport's
+// `resolveResumeRef` in `src/instances.ts`, and the session-list scan in
+// `src/projects.ts`), so one await covers every one of them.
 //
 // Three facts a future editor needs:
 //   - NO SELF-DEADLOCK: every mutation reads through `loadStrict`, never

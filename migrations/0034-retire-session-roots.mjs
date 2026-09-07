@@ -20,7 +20,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-export const name = '0033-retire-session-roots';
+export const name = '0034-retire-session-roots';
 
 const STORE = '.code-conductor';
 const RETIRED = 'retired-session-roots';

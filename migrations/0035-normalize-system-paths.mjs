@@ -23,7 +23,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-export const name = '0034-normalize-system-paths';
+export const name = '0035-normalize-system-paths';
 
 const STORE = '.code-conductor';
 

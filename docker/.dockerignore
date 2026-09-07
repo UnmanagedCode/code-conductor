@@ -1,0 +1,4 @@
+# Never ship the local .env (secrets) into the image build context.
+.env
+# Host-side operator tool, not part of the image.
+cc-mount.py

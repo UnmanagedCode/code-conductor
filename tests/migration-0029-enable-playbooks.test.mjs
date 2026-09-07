@@ -9,7 +9,20 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import * as m0029 from '../migrations/0029-enable-playbooks-conductor-convention.mjs';
-import { runMigrations } from '../migrations/index.mjs';
+import { ALL } from '../migrations/index.mjs';
+
+// Replay the real registered chain up to and including `lastName`, in order —
+// the same shape tests/migration-0018b.test.mjs uses. Deliberately a PREFIX and
+// not the whole chain: 0033 later retires the `enabled` key altogether (the
+// deny-list inversion, card 2026-0123), so a full-chain end-state assertion
+// would report `enabled` absent and stop testing 0029's own subject. This test
+// pins 0029's registration; a later migration is entitled to remove the key it
+// wrote.
+async function runChainThrough(lastName, { root }) {
+  const end = ALL.findIndex(m => m.name === lastName);
+  assert.ok(end >= 0, `no migration named ${lastName} is registered`);
+  for (const m of ALL.slice(0, end + 1)) await m.run({ root, log: () => {} });
+}
 
 async function mkTmp() {
   return mkdtemp('cc-enable-playbooks-');
@@ -83,10 +96,10 @@ test('idempotent: a second run is a no-op, no duplicate slug', async () => {
 });
 
 // Catches a mutation that creates a store file where none existed: a fresh
-// install has no file at all, and getSelection()'s absent-key fallback
-// already yields every seed including `playbooks` — writing a file here
-// would freeze the seed set for real, defeating that fallback for every
-// future seed addition.
+// install has no file at all, and getSelection() already yields every seed
+// including `playbooks` from a store with no off-switches in it — writing a
+// file here would have frozen the seed set for real under the allow-list this
+// migration predates.
 test('fresh install (no file): no-op, and no file is created', async () => {
   const root = await mkTmp();
   const file = storeFile(root);
@@ -117,12 +130,12 @@ test('store present but `enabled` absent: no-op, file left untouched', async () 
 // — before the listener binds. A correct 0029 module that is never added to
 // `ALL` would fix nothing in production while every direct m0029.run() test
 // above still passes, since none of them go through the registered chain.
-test('runMigrations (the real boot entrypoint) enables playbooks for a pre-existing selection', async () => {
+test('the registered chain through 0029 enables playbooks for a pre-existing selection', async () => {
   const root = await mkTmp();
   const file = storeFile(root);
   await writeJson(file, { enabled: [...PRE_PLAYBOOKS_SLUGS] });
 
-  await runMigrations({ root, log: () => {} });
+  await runChainThrough(m0029.name, { root });
 
   const store = JSON.parse(await fs.readFile(file, 'utf8'));
   assert.ok(store.enabled.includes('playbooks'), '0029 ran as part of the registered chain, not just standalone');

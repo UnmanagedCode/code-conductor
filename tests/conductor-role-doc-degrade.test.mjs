@@ -399,7 +399,7 @@ describe('the conductor role doc composed over a degraded convention catalog', (
     // Every seed off; the plugin's conductor convention is the entire selection.
     await setSelection(['gated-plug/cfrag']);
     const store = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'conventions', 'conductor.json'), 'utf8'));
-    assert.deepEqual([store.enabled, store.pluginOff], [[], []], 'all-seeds-off is a legal, persisted selection');
+    assert.deepEqual(store.disabled, SEEDS, 'all-seeds-off is a legal, persisted selection');
     assert.deepEqual(await getSelection(), ['gated-plug/cfrag'], 'and the plugin convention is the whole of it');
 
     const healthy = await spawnConductor();
@@ -417,12 +417,12 @@ describe('the conductor role doc composed over a degraded convention catalog', (
   // T9 ─────────────────────────────────────────────────────────────────
   // PINS: the control on T8 — EMPTINESS alone never warns, only degradedness
   // does. Two vouched-absence arms, both with `getSelection() === []`: the
-  // convention explicitly switched off by the user (`pluginOff`) over a healthy
-  // catalog, and the plugin DISABLED while the box is still down, which clears
-  // the degrade because a disabled plugin's conventions are already gone by
-  // design. Both stay silent.
+  // convention explicitly switched off by the user (its slug in `disabled`) over
+  // a healthy catalog, and the plugin DISABLED while the box is still down,
+  // which clears the degrade because a disabled plugin's conventions are
+  // already gone by design. Both stay silent.
   //
-  // NOT CLAIMING: that a `pluginOff` convention stays silent DURING an outage —
+  // NOT CLAIMING: that a switched-off convention stays silent DURING an outage —
   // it does not, and deliberately: the flag carries no cause, so that arm
   // over-warns exactly as T5's no-loss arm does, which is what the wording's
   // `may` is for.
@@ -452,11 +452,10 @@ describe('the conductor role doc composed over a degraded convention catalog', (
   // T6 ─────────────────────────────────────────────────────────────────
   // PINS: the measured basis of the amended criterion 4 — there is NO marker
   // analogue to key a freeze on. After an explicit Save with the plugin's
-  // conductor convention checked, the store holds no plugin slug anywhere: not
-  // in `enabled` (plugin slugs never persist there) and not in `pluginOff`
-  // (that records only explicit OFF-switches). So nothing survives the outage
-  // to say what the selection was SUPPOSED to contain, and no `missing` set can
-  // be computed.
+  // conductor convention checked, the store holds no plugin slug anywhere:
+  // `disabled` records only explicit OFF-switches, and there is no allow-list
+  // for an ON slug to land in. So nothing survives the outage to say what the
+  // selection was SUPPOSED to contain, and no `missing` set can be computed.
   //
   // NOT CLAIMING: that such a record could not be added; that its absence is a
   // defect — it is the design that makes a disabled plugin's conventions vanish
@@ -470,7 +469,7 @@ describe('the conductor role doc composed over a degraded convention catalog', (
     assert.ok((await getSelection()).includes('gated-plug/cfrag'), 'the convention is enabled after the Save');
 
     const store = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'conventions', 'conductor.json'), 'utf8'));
-    assert.deepEqual(store.enabled, SEEDS, 'enabled holds the seed slugs only');
-    assert.deepEqual(store.pluginOff, [], 'and pluginOff is empty — an ON plugin convention leaves no trace');
+    assert.deepEqual(store.disabled, [], 'the deny-list is empty — an ON plugin convention leaves no trace');
+    assert.ok(!('enabled' in store), 'and there is no allow-list it could have landed in');
   });
 });

@@ -1,6 +1,6 @@
 // A plugin's conductor conventions are ON by default while the plugin is
 // enabled (derived from the live catalog); only the user's explicit off-switches
-// persist (pluginOff). Exercises the real plugin host wired to the conduct
+// persist (the shared `disabled` deny-list). Exercises the real plugin host wired to the conduct
 // catalog exactly as server.ts does (the conductor-convention provider), against
 // a temp PROJECTS_ROOT. Toggling a plugin needs no regen step — the composed
 // role prompt is rebuilt from the live catalog on the next conductor spawn.
@@ -212,7 +212,7 @@ test('a manual off-switch survives an update that removes then re-adds the conve
     wire(host);
 
     await host.enable('cond-plugin');
-    await setSelection([...SEEDS, 'cond-plugin/a']); // user unchecks b → pluginOff gets cond-plugin/b
+    await setSelection([...SEEDS, 'cond-plugin/a']); // user unchecks b → `disabled` gets cond-plugin/b
     assert.ok(!(await getSelection()).includes('cond-plugin/b'), 'b off');
 
     await writeManifest(dir, COND_ONE);   // update REMOVES b
@@ -303,7 +303,7 @@ test('migration strips a legacy plugin slug from enabled; the convention stays o
 
     const store = JSON.parse(await fs.readFile(path.join(env.root, '.code-conductor', 'conventions', 'conductor.json'), 'utf8'));
     assert.deepEqual(store.enabled, ['canonical-workflow'], 'plugin slug stripped, seed retained');
-    assert.ok(!('pluginOff' in store) || !store.pluginOff.includes('cond-plugin/a'), 'not moved to pluginOff');
+    assert.ok(!('disabled' in store) || !store.disabled.includes('cond-plugin/a'), 'not turned into an off-switch');
 
     // The convention is still effectively on (on-by-default for the enabled plugin).
     assert.ok((await getSelection()).includes('cond-plugin/a'), 'convention survives the upgrade');

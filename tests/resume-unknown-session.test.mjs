@@ -10,9 +10,11 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, seedSessionJsonl } from './helpers.mjs';
 import { hasResumableConversation, writeSessionMetadata } from '../src/transcript.ts';
+import { listWorktrees, createWorktree } from '../src/worktrees.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-resume.json');
@@ -193,6 +195,154 @@ test('spawn_instance({resume:<bogus>}) with NO project still throws the existing
       () => spawnInstance({ resume: 'ffffffff-1111-2222-3333-444444444444', mode: 'bypassPermissions' }, { instances: ctx.instances }),
       (e) => e.statusCode === 400 && /project required/.test(e.message),
     );
+  } finally {
+    await ctx.close();
+  }
+});
+
+// --- The stranded-worktree leak (card 2026-0358, fix 3) ---
+
+function git(cwd, ...args) {
+  return new Promise((resolve, reject) => {
+    execFile('git', ['-C', cwd, ...args], { encoding: 'utf8' }, (err, stdout) => {
+      if (err) reject(err); else resolve(stdout);
+    });
+  });
+}
+
+// `POST /api/projects` git-inits but never commits, and `git worktree add`
+// needs a branch HEAD — so a project with no commit could not grow a worktree
+// at all, and "the count did not change" would be true for the wrong reason.
+async function commitProject(projectPath) {
+  await git(projectPath, 'config', 'user.email', 'test@example.com');
+  await git(projectPath, 'config', 'user.name', 'test');
+  await git(projectPath, 'config', 'commit.gpgsign', 'false');
+  await git(projectPath, 'add', '-A');
+  await git(projectPath, 'commit', '-q', '-m', 'initial');
+}
+
+test('a resume never creates a worktree, even when the caller asks for one', async () => {
+  // INVARIANT: `resume` + `worktree:true` is refused BEFORE createWorktree()
+  // runs, so a resume that cannot proceed strands nothing. A fresh worktree is a
+  // fresh cwd and ~/.claude/projects/<encoded-cwd>/ is keyed on that path, so the
+  // combination can never hold the resumed transcript — it is contradictory, not
+  // unlucky.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await commitProject(path.join(ctx.projectsRoot, 'demo'));
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
+
+    // PREMISE GUARD: this project really can grow a worktree, so the
+    // count-unchanged assertion below is about the refusal and not about a
+    // createWorktree() that would have failed anyway.
+    const fresh = await spawnInstance(
+      { project: 'demo', createWorktree: true, mode: 'bypassPermissions' }, { instances: ctx.instances });
+    assert.ok(fresh.sessionId, `the premise spawn must succeed: ${JSON.stringify(fresh)}`);
+    const before = (await listWorktrees('demo')).map(w => w.worktreeName);
+    assert.equal(before.length, 1, 'premise: createWorktree:true does create one here');
+
+    const bogus = 'e171ceb7-949a-4470-b470-bdea99458950';
+    let threw = null;
+    try {
+      await spawnInstance(
+        { resume: bogus, project: 'demo', createWorktree: true, mode: 'bypassPermissions' },
+        { instances: ctx.instances });
+    } catch (e) { threw = e; }
+
+    // The load-bearing assertion: nothing was stranded on disk or in the store.
+    assert.deepEqual((await listWorktrees('demo')).map(w => w.worktreeName), before,
+      'a resume that asks for a worktree must strand none');
+    assert.ok(threw, 'the contradictory combination must be refused, not silently honoured');
+    assert.equal(threw.statusCode, 400);
+    assert.match(threw.message, /resume/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('the surfaced SESSION_UNKNOWN names the cwd it probed and leaks no backing id', async () => {
+  // INVARIANT (the negative half is the valuable one): the refusal says WHERE it
+  // looked — without it, a resume refused at the wrong cwd is indistinguishable
+  // from a bad id, which is what made the incident read as a mistype for hours —
+  // and it still echoes the caller's own handle, never the ~/.claude UUID that
+  // `resume` has been rebound to by the time the throw happens.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    const projectPath = path.join(ctx.projectsRoot, 'demo');
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
+
+    // A real session, so its public id and backing id differ — and NO transcript
+    // seeded, so resuming it refuses at a cwd that genuinely holds nothing.
+    const fresh = await spawnInstance({ project: 'demo', mode: 'bypassPermissions' }, { instances: ctx.instances });
+    const handle = fresh.sessionId;
+    await waitFor(() => ctx.instances.anyForSession(handle)?.status === 'idle');
+    const backing = ctx.instances.anyForSession(handle).backingSessionId;
+    assert.notEqual(backing, handle, 'premise: the two ids must differ, or the leak assertion is vacuous');
+    await ctx.instances.remove(ctx.instances.anyForSession(handle).id);
+
+    const res = await spawnInstance({ resume: handle, project: 'demo', mode: 'bypassPermissions' }, { instances: ctx.instances });
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'SESSION_UNKNOWN');
+    assert.equal(res.sessionId, handle, 'the refusal echoes the handle the caller passed');
+    assert.ok(res.reason.includes(projectPath),
+      `the refusal must name the cwd it probed; got: ${res.reason}`);
+    assert.ok(!res.reason.includes(backing),
+      `the refusal must not surface the backing id; got: ${res.reason}`);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('a resume into a worktree the session did not run in is refused; its OWN worktree still resumes', async () => {
+  // INVARIANT: an explicit `worktree:"<name>"` skips the `worktree === undefined`
+  // recovery, so it is taken on faith — and a resume landing at the wrong cwd is
+  // this card's whole failure mode. Verify the supplied name against where the
+  // session actually ran. Refusing ALL strings would be wrong: naming the
+  // session's own worktree (in either spelling) is the legitimate, common call.
+  const ctx = await bootServer({ scenarioPath: SCENARIO });
+  try {
+    await api(ctx.baseUrl, 'POST', '/api/projects', { name: 'demo' });
+    await commitProject(path.join(ctx.projectsRoot, 'demo'));
+    const { spawnInstance } = await import('../src/mcp/handlers.ts');
+
+    // A session that really ran in worktree `own`.
+    const w = await spawnInstance(
+      { project: 'demo', createWorktree: true, name: 'own', mode: 'bypassPermissions' },
+      { instances: ctx.instances });
+    assert.ok(w.sessionId, JSON.stringify(w));
+    const inst = ctx.instances.anyForSession(w.sessionId);
+    const own = (await listWorktrees('demo'))[0].worktreeName;
+    await seedJsonl(ctx.claudeProjectsRoot, inst.cwd, inst.backingSessionId);
+    await ctx.instances.remove(inst.id);
+
+    // …and a second worktree it has nothing to do with.
+    const other = (await createWorktree('demo', { name: 'other' })).worktreeName;
+    assert.notEqual(other, own, 'premise: two distinct worktrees');
+
+    await assert.rejects(
+      () => spawnInstance({ resume: w.sessionId, project: 'demo', worktree: other, mode: 'bypassPermissions' },
+        { instances: ctx.instances }),
+      (e) => e.statusCode === 400 && e.code === 'RESUME_WORKTREE_MISMATCH' && e.message.includes(own),
+      'a mismatched worktree must be refused, naming where the session actually ran');
+
+    // The legitimate call, in BOTH accepted spellings — the canonical dir name…
+    const back = await spawnInstance(
+      { resume: w.sessionId, project: 'demo', worktree: own, mode: 'bypassPermissions' },
+      { instances: ctx.instances });
+    assert.notEqual(back.ok, false, `naming its own worktree must work: ${JSON.stringify(back)}`);
+    assert.equal(ctx.instances.anyForSession(w.sessionId).cwd, inst.cwd);
+    await ctx.instances.remove(ctx.instances.anyForSession(w.sessionId).id);
+
+    // …and the bare slug, which resolveWorktreeName aliases to the same record.
+    // A guard comparing raw strings would false-positive here.
+    const slug = own.replace('demo_worktree_', '');
+    assert.notEqual(slug, own, 'premise: the two spellings differ');
+    const bySlug = await spawnInstance(
+      { resume: w.sessionId, project: 'demo', worktree: slug, mode: 'bypassPermissions' },
+      { instances: ctx.instances });
+    assert.notEqual(bySlug.ok, false, `the bare slug must work too: ${JSON.stringify(bySlug)}`);
   } finally {
     await ctx.close();
   }

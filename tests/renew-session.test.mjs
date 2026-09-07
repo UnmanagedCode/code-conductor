@@ -298,9 +298,17 @@ async function materializeBothSegments(claudeProjectsRoot, cwd, firstBacking) {
 }
 
 // Fire spawn_instance({resume}) WITHOUT awaiting it, park until the server is
-// demonstrably inside create({resume}) — `_resuming` is populated synchronously,
-// before _doCreate's first await, and that first await IS the lineage read — then
-// release the held write and settle.
+// demonstrably past the point of no return, then release the held write and
+// settle.
+//
+// THE POINT OF NO RETURN IS THE CALL'S FIRST LINEAGE READ, and that is a seam
+// that moves: it used to be `_doCreate`'s `publicIdFor` (marked by `_resuming`,
+// which create() populates before that first await), and since the transport
+// resolves `resume` through `resolveResumeRef` (src/mcp/server.ts) it is now one
+// layer above create() — with the write held, `_resuming` is never reached at
+// all. So the probe watches BOTH seams. The deep-read flag is set on entry and
+// waitFor only observes it on a later poll, by which point the read is parked on
+// the barrier.
 //
 // `settledBeforeRelease` is captured in the promise's own continuation, so the
 // ordering claim is a recorded fact rather than a timer. The release is
@@ -310,16 +318,22 @@ async function resumeAcrossRelease(srv, publicId, releaseWrite) {
   let settledBeforeRelease = null;
   const note = () => { if (settledBeforeRelease === null) settledBeforeRelease = !released; };
   const before = new Set(srv.instances.byId.keys());
-  const resumeP = callTool(srv.baseUrl, 'spawn_instance', { resume: publicId })
-    .then((v) => { note(); return v; }, (e) => { note(); throw e; });
-  // Park until the server is demonstrably past the point of no return — either
-  // inside create({resume}) with the read still pending, or (with no barrier)
-  // already finished. The second disjunct is what turns a missing barrier into
-  // the assertion failure below instead of a 10s timeout.
-  await waitFor(() => srv.instances._resuming.size === 1 || settledBeforeRelease !== null);
-  released = true;
-  releaseWrite();
-  await resumeP;
+  let deepReadEntered = false;
+  const realDeep = srv.instances.resolveResumeRef.bind(srv.instances);
+  srv.instances.resolveResumeRef = (input) => { deepReadEntered = true; return realDeep(input); };
+  try {
+    const resumeP = callTool(srv.baseUrl, 'spawn_instance', { resume: publicId })
+      .then((v) => { note(); return v; }, (e) => { note(); throw e; });
+    // The last disjunct is what turns a missing barrier into the assertion
+    // failure below instead of a 10s timeout.
+    await waitFor(() => deepReadEntered || srv.instances._resuming.size === 1
+      || settledBeforeRelease !== null);
+    released = true;
+    releaseWrite();
+    await resumeP;
+  } finally {
+    srv.instances.resolveResumeRef = realDeep;
+  }
   const inst2 = [...srv.instances.byId.values()].find((i) => !before.has(i.id));
   assert.ok(inst2, 'the resume registered a new instance');
   return { inst2, settledBeforeRelease };

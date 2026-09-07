@@ -104,7 +104,8 @@ export function buildTools(): Tool[] {
         'temp / conducted / debug / overage / auto-resume / resumes-hot only when they deviate from ' +
         'their default — so anything on a `flags` line is news. ' +
         '**`resumes-hot` means resuming that session comes up in bypassPermissions** — either it was ' +
-        'recorded in that mode, or it has no recorded mode and therefore falls back to it. ' +
+        'recorded in that mode, or it has no recorded mode and therefore falls back to it. It reads the ' +
+        'session record only: a playbook stage pinning `mode` overrides it on the resume itself. ' +
         'Every other tool here returning a worker summary returns that shape as JSON, minus ' +
         '`awaitingWake`, `playbook` and `stage`.',
       inputSchema: {
@@ -220,7 +221,7 @@ export function buildTools(): Tool[] {
         type: 'object',
         properties: {
           project: { type: 'string', description: 'Required for a fresh spawn. Optional when resume is given — recovered from the session\'s recorded location if worktree is also omitted.' },
-          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value always wins.' },
+          mode: { type: 'string', enum: VALID_MODES, description: 'plan / ask / bypassPermissions. Defaults to plan. A `resume` instead inherits the session\'s recorded mode, or bypassPermissions when it has none — list_sessions\' `resumes-hot` flag marks which sessions those are. An explicit value wins, EXCEPT where a playbook stage pins `mode`: the pinned value is filled in over the inherited one, and a conflicting explicit value is refused.' },
           effort: {
             type: 'string', enum: EFFORT_LEVELS,
             description:
@@ -238,11 +239,10 @@ export function buildTools(): Tool[] {
           resume: {
             type: 'string',
             description:
-              'Optional sessionId to resume (vs. spawning a fresh session). Must be a FULL sessionId — unlike ' +
-              'every other sessionId argument, this one is not prefix-resolved. When the session is ' +
+              'Optional sessionId to resume (vs. spawning a fresh session). When the session is ' +
               'playbook-tracked, its recorded playbook + stage are recovered too, alongside the project + ' +
               'worktree above: a resume re-attaches a worker where it already is, so it enters no stage and the ' +
-              'entered-stage checks (`needs`, `pin`, spawnability, capacity) do not apply. A resume with no ' +
+              'entered-stage checks (`needs`, spawnability, capacity) do not apply. A resume with no ' +
               '`model` comes back on the model it last ran.',
           },
           worktree: {
@@ -554,7 +554,8 @@ export function buildTools(): Tool[] {
             description:
               'Base the new worktree on this existing worktree of the project instead of the project\'s HEAD, ' +
               'so it syncs against and merges into that worktree — how a multi-task feature integrates as a unit ' +
-              'before landing. Depth is capped at one: a worktree that is itself based on another is refused as a base.',
+              'before landing. Chains are allowed to any depth, but a base can neither sync nor merge while anything ' +
+              'descends from it — land and delete a chain leaf-first.',
           },
           name: {
             type: 'string',
@@ -574,7 +575,7 @@ export function buildTools(): Tool[] {
         'Remove a worktree (git deregister + branch delete + dir sweep). Refuses if a live instance ' +
         'is attached, the working tree is dirty, or another worktree is based on this one ' +
         '(WORKTREE_HAS_DEPENDENTS, listing them — delete those first) — unless force:true, which kills any ' +
-        'attached instance and, with dependents, deletes the branch they are based on.',
+        'attached instance and deletes the branch its children are based on.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -599,7 +600,7 @@ export function buildTools(): Tool[] {
         'both are ok:true and carry branch, baseBranch, baseSha, ahead, behind and a ready-to-send ' +
         'rebasePrompt: send_prompt it verbatim to whichever worker should do the work, or resolve it ' +
         'another way. Refuses WORKTREE_HAS_DEPENDENTS (listing them) while any worktree is based on ' +
-        'this one, since every sync path rewrites the base they were created from — delete those ' +
+        'this one, since every sync path rewrites the base its children were created from — delete those ' +
         'worktrees first; killing their workers is not enough.',
       inputSchema: {
         type: 'object',

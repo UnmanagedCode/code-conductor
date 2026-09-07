@@ -1,11 +1,11 @@
 // Workspace conventions — the "applies to every project" sections, composed
 // alongside the always-on core into one text with no destination of its own.
 //
-// CORE (conventions/workspace/core.md) is always present. The four built-in
-// conventions (conventions/workspace/<slug>.md) and any user-defined custom
-// conventions are toggled via a single GLOBAL selection — installation-wide by
-// design, so it can never drift per project — persisted at
-// <orchStoreRoot>/conventions/workspace.json as { enabled: [...], rules: [...] }.
+// CORE (conventions/workspace/core.md) is always present. The built-in
+// conventions (SEED_CONVENTIONS; bodies in conventions/workspace/<slug>.md) and
+// any user-defined custom conventions are toggled via a single GLOBAL selection
+// — installation-wide by design, so it can never drift per project — persisted
+// at <orchStoreRoot>/conventions/workspace.json as { disabled: [...], rules: [...] }.
 //
 // Delivery is per destination, and every destination is app-owned + fully
 // overwritten: src/projectClaudeMd.ts folds this text into each project's
@@ -41,6 +41,8 @@ export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: 
     description: 'CLAUDE.md + the conductor role doc cost tokens every session — cut color, keep behavior-changing instruction' },
   { slug: 'opening-urls', name: 'Opening URLs',
     description: 'Render actionable URLs as tappable ▶ buttons; never open them yourself; use sparingly' },
+  { slug: 'answering-questions', name: 'Answering questions',
+    description: 'Answer a question before acting on it; name the implied work and wait for the go-ahead' },
 ];
 
 const catalog = createFragmentCatalog({
@@ -67,10 +69,11 @@ export const validateSlug = catalog.validateSlug;
 
 // ── Global selection (the shared collaborator, no overrides) ────────────────
 //
-// Plain selection: the persisted `enabled` array is the whole story, and its
-// absence defaults to all built-ins so a fresh install composes the equivalent
-// of the pre-carve bundled canonical. Deleting a custom convention also drops
-// it from that array.
+// Plain selection: the persisted `disabled` deny-list is the whole story, and
+// every built-in and custom convention it does not name is composed — so a
+// fresh install (no store at all) composes the equivalent of the pre-carve
+// bundled canonical, and so does an install that has saved its settings.
+// Deleting a custom convention also prunes it from that array.
 
 const selection = createSelectionStore({ catalog, seeds: SEED_CONVENTIONS, noun: 'convention' });
 

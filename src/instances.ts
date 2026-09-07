@@ -55,7 +55,7 @@ export async function sweepSessionTmpDirs(liveIds: Iterable<string>): Promise<vo
 }
 import {
   mintPublicId, recordRotation, revertRotation, resolveBacking, publicIdFor, segmentsFor, dropSegment,
-  trackLineageWrite,
+  trackLineageWrite, loadLineage, type Lineage,
 } from './sessionLineage.ts';
 import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './worktrees.ts';
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
@@ -250,6 +250,36 @@ export type RotationMechanism = 'renew' | 'prune';
 // never throw. A real Instance always has the array (set in its constructor).
 function segmentsOf(i: Instance): string[] {
   return i._segments ?? [];
+}
+
+// What the session-ref resolvers answer. See InstanceManager.resolveSessionRef
+// for what each shape means to a caller.
+export type SessionRef = { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null;
+
+// resolveResumeRef's answer: TWO ids rather than one, because `resume`'s two
+// consumers need different ones. See that method for which is which.
+export type ResumeRef =
+  { handle: string; resume: string } | { ambiguous: string[]; tooShort: boolean } | null;
+
+// The DECISION shared by both resolvers, over a `candidate → owning public id`
+// map: exact-beats-prefix, then the SESSION_PREFIX_MIN floor, then
+// one-owner-vs-many. Shared so the two universes cannot drift on the rule; the
+// only difference between them is what went into `owner`.
+//
+// Two segments of the SAME session sharing a prefix collapse to one answer, not
+// an ambiguity — the set here is of owning sessions, not of candidate strings.
+function decideSessionRef(owner: Map<string, string>, input: string): SessionRef {
+  const exact = owner.get(input);
+  if (exact !== undefined) return { sessionId: exact }; // exact match always wins
+  const sessions = new Set<string>();
+  for (const [candidate, publicId] of owner) {
+    if (candidate.startsWith(input)) sessions.add(publicId);
+  }
+  if (sessions.size === 0) return null;
+  const ambiguous = [...sessions];
+  if (input.length < SESSION_PREFIX_MIN) return { ambiguous, tooShort: true };
+  if (ambiguous.length === 1) return { sessionId: ambiguous[0] };
+  return { ambiguous, tooShort: false };
 }
 
 // Does this instance answer to `id`? True for its PERMANENT public id and for
@@ -4124,9 +4154,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   //
   // `_resumingPublicIds` covers from THIS check onward — not the whole
   // create({resume}) call. `publicIdFor`/`resolveBacking` are awaited BEFORE
-  // the `.add` (`_doCreate`, below), so a short prefix is not covered; that
-  // prefix is unfixable by construction, since the public sessionId is not yet
-  // known until `publicIdFor` resolves it.
+  // the `.add` (`_doCreate`, below), so a caller naming a form this window has
+  // not resolved yet is not covered. An MCP `resume` no longer reaches that
+  // window unresolved (src/mcp/server.ts normalises it to the public id first);
+  // the REST spawn route still can.
   isSessionLive(sessionId: string): boolean {
     if (this._resumingPublicIds.has(sessionId)) return true;
     const inst = this.anyForSession(sessionId);
@@ -4147,47 +4178,91 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // shared with an exited session must refuse rather than mis-resolve): its public
   // id PLUS every backing id it has run under. Resolution is purely in-memory, so
   // this stays synchronous and store-free on the MCP hot path. Historical
-  // disk-only sessions are intentionally out of scope (still addressable by full
-  // id through the handlers' disk probe).
+  // disk-only sessions are intentionally out of scope here (still addressable by
+  // full id through the handlers' disk probe) — resolveResumeRef below widens the
+  // universe for the one argument that needs them.
   //
-  // Answers are ALWAYS public ids — a backing id must never reach a conductor,
-  // which is also why `ambiguous` can only ever list public ids.
-  // Returns one of:
+  // The two resolvers DECIDE alike (one shared tail, decideSessionRef) and differ
+  // only in their candidate set and in what they hand back. Every id either
+  // reports is a PUBLIC id — a backing id must never reach a conductor, which is
+  // also why `ambiguous` can only ever list public ids. The three outcomes:
   //   null                              → no match (caller leaves the arg untouched,
   //                                         so the handler's existing SESSION_UNKNOWN /
   //                                         SESSION_NOT_LIVE / disk-probe path runs)
-  //   { sessionId }                     → exact match on any candidate (always
-  //                                         wins), or a prefix >= SESSION_PREFIX_MIN
-  //                                         chars matching exactly ONE session
   //   { ambiguous:[publicIds], tooShort} → a prefix matching >1 SESSION, OR a
   //                                         too-short (< SESSION_PREFIX_MIN) prefix
   //                                         matching >= 1
-  //
-  // Two segments of the SAME session sharing a prefix collapse to one answer, not
-  // an ambiguity — the set below is of owning sessions, not of candidate strings.
-  resolveSessionRef(input: unknown): { sessionId: string } | { ambiguous: string[]; tooShort: boolean } | null {
+  //   resolved                          → exact match on any candidate (always
+  //                                         wins), or a prefix >= SESSION_PREFIX_MIN
+  //                                         chars matching exactly ONE session.
+  //                                         resolveSessionRef reports it as
+  //                                         `{ sessionId }`; resolveResumeRef as
+  //                                         `{ handle, resume }`, because its one
+  //                                         caller needs the caller's own spelling
+  //                                         as well — see there.
+  resolveSessionRef(input: unknown): SessionRef {
     if (typeof input !== 'string' || !input) return null;
-    // candidate → owning public id. Public ids are claimed FIRST so an exact match
-    // on a public id deterministically beats a segment of some other session.
+    return decideSessionRef(this._refOwners(null), input);
+  }
+  // The DEEP sibling of resolveSessionRef, for `spawn_instance`'s `resume`.
+  //
+  // TWO WIDENINGS, both forced by what `resume` is for.
+  //
+  // 1. A WIDER CANDIDATE SET. `resume` names a session that is usually not
+  //    running, and the ORDINARY one is not in `byId` at all: a conductor worker
+  //    is temp, so it is evicted the moment its subprocess exits (below), and an
+  //    orchestrator restart never re-enters a conducted worker
+  //    (src/resumeRestart.ts) — it comes back looking like an ordinary,
+  //    non-archived, resumable row no in-memory resolver can see. So the lineage
+  //    store's ids are overlaid onto the in-memory ones and ONE candidate set is
+  //    decided. The union is required for SOUNDNESS, not only coverage:
+  //    consulting the store just when memory misses would answer confidently for
+  //    a prefix unique in memory but shared with a cold session, where
+  //    SESSION_AMBIGUOUS is correct.
+  //
+  // 2. TWO IDS OUT, because `resume`'s two consumers want different ones and only
+  //    the caller has the second:
+  //      • `handle` — the public id. The policy gate's projection is keyed by it
+  //        (`bySession`, src/playbooks.ts), so this is what the gate must see.
+  //      • `resume` — what create() should actually be handed. The caller's OWN
+  //        string whenever it names a real session, public id or ANY segment,
+  //        because resolveBacking (src/sessionLineage.ts) returns a named segment
+  //        VERBATIM and `current` only for a public id. Rewriting a segment to
+  //        its handle would silently redirect the resume to the newest
+  //        transcript, which is exactly the wrong-transcript landing this whole
+  //        path exists to prevent. Only a PREFIX is rewritten: a prefix names no
+  //        particular segment, so the handle is the only defensible reading — and
+  //        create() cannot resolve a prefix itself (publicIdFor is exact-only).
+  //
+  // Never a `slice(0, 8)`: a public id is 13 chars (or the full id) after a
+  // collision, and for a rotated session it is a slice of the FIRST backing id
+  // only. The store is segment-aware; a slice is not. Cost is one JSON read per
+  // spawn_instance({resume}) — an agent-paced path — and resolveSessionRef stays
+  // synchronous and store-free for its three hot-path callers.
+  async resolveResumeRef(input: unknown): Promise<ResumeRef> {
+    if (typeof input !== 'string' || !input) return null;
+    const owner = this._refOwners(await loadLineage());
+    const ref = decideSessionRef(owner, input);
+    if (!ref || 'ambiguous' in ref) return ref;
+    // `owner.has(input)` IS decideSessionRef's exact branch — a full id it knows,
+    // public or segment. Anything else that resolved is a prefix.
+    return { handle: ref.sessionId, resume: owner.has(input) ? input : ref.sessionId };
+  }
+  // candidate → owning public id. Public ids are claimed FIRST — from BOTH
+  // universes before either's segments — so an exact match on a public id
+  // deterministically beats a segment of some other session.
+  _refOwners(lineage: Lineage | null): Map<string, string> {
     const owner = new Map<string, string>();
     for (const i of this.byId.values()) {
       if (i.sessionId) owner.set(i.sessionId, i.sessionId);
     }
+    if (lineage) for (const publicId of lineage.byPublic.keys()) if (!owner.has(publicId)) owner.set(publicId, publicId);
     for (const i of this.byId.values()) {
       if (!i.sessionId) continue;
       for (const seg of segmentsOf(i)) if (!owner.has(seg)) owner.set(seg, i.sessionId);
     }
-    const exact = owner.get(input);
-    if (exact !== undefined) return { sessionId: exact }; // exact match always wins
-    const sessions = new Set<string>();
-    for (const [candidate, publicId] of owner) {
-      if (candidate.startsWith(input)) sessions.add(publicId);
-    }
-    if (sessions.size === 0) return null;
-    const ambiguous = [...sessions];
-    if (input.length < SESSION_PREFIX_MIN) return { ambiguous, tooShort: true };
-    if (ambiguous.length === 1) return { sessionId: ambiguous[0] };
-    return { ambiguous, tooShort: false };
+    if (lineage) for (const [seg, publicId] of lineage.byBacking) if (!owner.has(seg)) owner.set(seg, publicId);
+    return owner;
   }
   // SessionIds of live (proc-attached) temp instances whose cwd matches.
   // Routes use this to strip running temp jsonls from the regular Sessions
@@ -4437,6 +4512,25 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         { statusCode: 400 },
       );
     }
+    // A resume that also asks for a FRESH worktree is contradictory, not merely
+    // unlucky: `~/.claude/projects/<encodeCwd(path)>/` is keyed purely on the
+    // absolute path (src/projects.ts), so a brand-new worktree is a brand-new
+    // cwd that can hold no transcript for `resume`. Refused HERE — the same
+    // "refuse rather than ignore" shape as the guard above, and deliberately
+    // BEFORE createWorktree() below, because the resume pre-flight that would
+    // otherwise catch it runs after the worktree already exists and would strand
+    // it. The one way the combination can succeed is a worktree deleted and
+    // recreated under the same name (removeWorktree leaves the transcript dir
+    // behind), which resumes a session's history onto a branch freshly cut from
+    // HEAD — a bug that happens not to throw, so it is refused too.
+    if (resume && worktree === true) {
+      throw Object.assign(
+        new Error(`session ${publicId ?? resume} cannot be resumed into a fresh worktree — a new worktree is a new cwd, `
+          + `which holds none of its history. Drop createWorktree (MCP) / worktree:true to resume it where it is, `
+          + `or omit \`resume\` to spawn a new worker in a new worktree.`),
+        { statusCode: 400, code: 'RESUME_TAKES_NO_WORKTREE' },
+      );
+    }
     if (worktree === true) {
       worktreeMeta = await createWorktree(project, { baseWorktree, name });
       cwd = worktreeMeta.worktreePath;
@@ -4444,6 +4538,30 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       worktreeMeta = await getWorktree(project, worktree.trim());
       if (!worktreeMeta) {
         throw httpError(404, `worktree '${worktree}' not found under project '${project}'`);
+      }
+      // An EXPLICIT worktree name skips the `worktree === undefined` recovery
+      // above, so it is otherwise taken on faith — and a resume landing at the
+      // wrong cwd replays nothing, or worse, the wrong thing. Check it against
+      // where the session actually ran.
+      //
+      // Naming the session's OWN worktree is legitimate and stays legal — that is
+      // what the restart manifest and the UI both pass — so only a MISMATCH is
+      // refused. Compared on the canonical worktreeName, never the raw argument:
+      // `getWorktree` accepts the bare slug too (resolveWorktreeName,
+      // src/worktrees.ts), and a raw-string comparison would refuse that spelling.
+      // A session findSessionLocation cannot place is left to the pre-flight
+      // below rather than refused here.
+      if (resume) {
+        const recorded = await findSessionLocation(resume).catch(() => null);
+        if (recorded && recorded.worktreeName !== worktreeMeta.worktreeName) {
+          throw Object.assign(
+            new Error(`session ${publicId ?? resume} ran in `
+              + `${recorded.worktreeName ? `worktree '${recorded.worktreeName}'` : `project '${recorded.project}' itself`}`
+              + `, not in worktree '${worktreeMeta.worktreeName}' — a resume opens the session where it is. `
+              + `Omit \`worktree\` and it is recovered automatically.`),
+            { statusCode: 400, code: 'RESUME_WORKTREE_MISMATCH' },
+          );
+        }
       }
       cwd = worktreeMeta.worktreePath;
     }
@@ -4524,9 +4642,16 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // advertisement used to create is empty, and this refusal is the whole
       // answer again.
       {
+        // `cwd` rides as a PROPERTY, not just interpolated into the message:
+        // spawnInstance (src/mcp/handlers.ts) rebuilds the conductor-facing
+        // reason from scratch rather than surfacing this message, because by here
+        // `resume` is the backing id and printing it would hand a conductor a
+        // ~/.claude UUID (docs/protocol.md → Public vs backing id). Without the
+        // property the surfaced refusal loses WHERE it looked, which is what made
+        // a wrong-cwd resume read as a bad id.
         throw Object.assign(
           new Error(`no resumable conversation for session ${resume} in ${cwd}`),
-          { statusCode: 404, code: 'SESSION_UNKNOWN' },
+          { statusCode: 404, code: 'SESSION_UNKNOWN', cwd },
         );
       }
     }

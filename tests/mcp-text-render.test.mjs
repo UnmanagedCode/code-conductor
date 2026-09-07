@@ -173,6 +173,30 @@ describe('renderProjects', () => {
     ].join('\n'));
   });
 
+  // The same `← base` marker renderWorktrees carries. Without it a chain is
+  // invisible on list_projects — the conductor's primary recon call — because a
+  // row shows only its base BRANCH.
+  test('a derived worktree row names the worktree it is based on', () => {
+    const out = renderProjects([{
+      name: 'code-conductor', path: '/w/cc-projects/code-conductor', workspace: null,
+      liveCount: 0, isGitRepo: true,
+      worktrees: [
+        WORKTREE,
+        { ...WORKTREE,
+          worktreeName: 'code-conductor_worktree_task',
+          worktreePath: '/w/cc-projects/code-conductor_worktree_task',
+          branch: 'code-conductor/task',
+          baseBranch: 'code-conductor/dcd22e',
+          baseWorktree: 'code-conductor_worktree_dcd22e' },
+      ],
+      sessions: { count: 0, archivedCount: 0, lastActivity: 0 },
+    }]);
+    assert.match(out, /base code-conductor\/dcd22e@04746607c1b2 ← code-conductor_worktree_dcd22e/);
+    // A root-based row is untouched — no dangling arrow.
+    const rootRow = out.split('\n').find(l => l.includes('code-conductor_worktree_dcd22e  br'));
+    assert.ok(!rootRow.includes('←'), rootRow);
+  });
+
   test('neither cold worktree key reaches the text', () => {
     // Sentinel parent values that share no substring with any hot field, so a
     // leak of either cold key is unambiguous.

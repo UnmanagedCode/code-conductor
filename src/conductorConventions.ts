@@ -9,7 +9,7 @@
 // conventions (conventions/conductor/<slug>.md) and any user-defined custom
 // conventions are toggled via a single GLOBAL selection (the conductor is a
 // singleton), persisted at
-// <orchStoreRoot>/conventions/conductor.json (keys: `rules`, `enabled`, `pluginOff`).
+// <orchStoreRoot>/conventions/conductor.json (keys: `rules`, `disabled`).
 //
 // Every enabled convention costs tokens in every conductor session's system
 // prompt — keep the built-in set lean; project-specific detail belongs in
@@ -21,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { orchStoreRoot } from './projects.ts';
 import { createFragmentCatalog, type ExtraEntry } from './fragmentCatalog.ts';
-import { createSelectionStore } from './conventionSelection.ts';
+import { createSelectionStore, disabledOf } from './conventionSelection.ts';
 // Static import is safe: playbooks.ts reaches the tool registry through a lazy
 // dynamic import precisely so the handlers→conductorConventions edge cannot close
 // a cycle. By the time loadPlaybooks() resolves that registry, this module is
@@ -106,60 +106,42 @@ export const addCustomConvention = catalog.addCustom;
 export const updateCustomConvention = catalog.updateCustom;
 export const validateSlug = catalog.validateSlug;
 
-// ── Global selection (the shared collaborator + this scope's two overrides) ──
+// ── Global selection (the shared collaborator + this scope's derive hook) ──
 //
 // A plugin's conductor conventions are ON by default the moment the plugin is
 // enabled, so the only per-convention state worth persisting is the user's
-// explicit OFF-switches. The selection keys in the store:
-//   enabled   — seed/custom selection ONLY (absent ⇒ default all seeds, so a
-//               future-added built-in defaults on); plugin slugs never live here.
-//   pluginOff — namespaced <id>/<slug> conventions the user explicitly unchecked.
+// explicit OFF-switches — which is exactly what the shared `disabled` deny-list
+// holds. It records seed, custom and plugin off-switches alike, so this scope
+// needs no second list and no `persist` override (card 2026-0123).
 //
 // Effective selection = base ∪ (conventions of currently-enabled plugins −
-// pluginOff). getCatalog() surfaces plugin conventions from ENABLED plugins
+// `disabled`). getCatalog() surfaces plugin conventions from ENABLED plugins
 // only, so a disabled plugin's conventions vanish automatically — no purge
 // needed, and a stale slug can never reach compose() (no 400). Plugin UPDATES
 // that add a convention get it on automatically; a removed one drops out.
-
-const isPluginSlug = (s: string): boolean => typeof s === 'string' && s.includes('/'); // namespaced <id>/<slug>; seeds/custom never contain '/'
-
-const pluginOffOf = (state: Record<string, unknown>): Set<string> =>
-  new Set(Array.isArray(state.pluginOff) ? state.pluginOff as string[] : []);
 
 const selection = createSelectionStore({
   catalog,
   seeds: SEED_CONVENTIONS,
   noun: 'convention',
   // Effective enabled slugs — the seed/custom base plus every enabled-plugin
-  // convention the user hasn't turned off. A plugin slug that a legacy store
-  // left in `enabled` is filtered out of the base and re-derived from the live
-  // catalog, so it can't survive its plugin being disabled.
+  // convention the user hasn't turned off. `base` provably carries no plugin
+  // slug of its own to filter: it is built from the seed literals and from
+  // custom slugs, both `/`-free (SLUG_RE, src/identifiers.ts), so a namespaced
+  // <id>/<slug> can only come from the live catalog and cannot survive its
+  // plugin being disabled.
   derive: async ({ base, state, catalog: getCat }) => {
-    const off = pluginOffOf(state);
+    const off = disabledOf(state);
     const pluginOn = (await getCat())
       .filter(m => m.plugin && !off.has(m.slug))
       .map(m => m.slug);
-    return [...new Set([...base.filter(s => !isPluginSlug(s)), ...pluginOn])];
-  },
-  // Split the full submitted checkbox set: seed/custom slugs persist as the
-  // base `enabled`; each available plugin convention drives pluginOff (checked
-  // ⇒ clear the off-switch, unchecked ⇒ record it). Plugin slugs never enter
-  // `enabled`, so a settings save can't freeze the seed-default set.
-  persist: ({ submitted, state, catalog: cat }) => {
-    const submittedSet = new Set(submitted);
-    const off = pluginOffOf(state);
-    for (const m of cat) {
-      if (!m.plugin) continue;
-      if (submittedSet.has(m.slug)) off.delete(m.slug);
-      else off.add(m.slug);
-    }
-    return { enabled: submitted.filter(s => !isPluginSlug(s)), pluginOff: [...off] };
+    return [...new Set([...base, ...pluginOn])];
   },
 });
 
 export const getSelection = selection.getSelection;
 export const setSelection = selection.setSelection;
-// Deleting a custom convention also drops it from the enabled selection.
+// Deleting a custom convention also prunes it from the persisted deny-list.
 export const deleteCustomConvention = selection.deleteCustom;
 
 // ── Compose ───────────────────────────────────────────────────────────────────
@@ -326,8 +308,8 @@ export async function defaultPlaybookConvention(): Promise<string> {
 //     on a project's line-1 `<!-- cc:conventions … -->` marker — a persisted
 //     record of the INTENDED selection that survives the outage — and the
 //     conductor scope has none: <store>/conventions/conductor.json holds no
-//     plugin slug even after an explicit Save (`enabled` is seed/custom only,
-//     `pluginOff` records off-switches only). So a freeze here could only key on
+//     plugin slug for an ENABLED convention even after an explicit Save
+//     (`disabled` records off-switches only). So a freeze here could only key on
 //     `degraded` alone, which flags outages that cost this document nothing, and
 //     would silently make a live settings Save ineffective mid-outage.
 //   • BANNER injected into the doc. The flag names no slug and no cause, and

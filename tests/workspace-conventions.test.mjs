@@ -36,8 +36,8 @@ afterEach(async () => {
 
 // ── Catalog + compose (unit) ─────────────────────────────────────────────────
 
-test('SEED_CONVENTIONS has 4 built-in conventions with metadata (no inline body)', () => {
-  assert.equal(SEED_CONVENTIONS.length, 4);
+test('SEED_CONVENTIONS has 5 built-in conventions with metadata (no inline body)', () => {
+  assert.equal(SEED_CONVENTIONS.length, 5);
   for (const m of SEED_CONVENTIONS) {
     assert.ok(m.slug && m.name && m.description);
     assert.equal(m.body, undefined);
@@ -46,7 +46,7 @@ test('SEED_CONVENTIONS has 4 built-in conventions with metadata (no inline body)
 
 test('getCatalog loads bodies from conventions/workspace/*.md, builtin:true', async () => {
   const cat = await getCatalog();
-  assert.equal(cat.length, 4);
+  assert.equal(cat.length, 5);
   for (const m of cat) {
     assert.equal(m.builtin, true);
     assert.ok(m.body && m.body.startsWith('## '), `${m.slug} has a heading body`);
@@ -61,6 +61,7 @@ test('composeWorkspace(all) = core + all convention bodies', async () => {
   assert.match(doc, /## README maintenance/);
   assert.match(doc, /## System-prompt docs/);
   assert.match(doc, /## Opening URLs/);
+  assert.match(doc, /## Answering questions/);
 });
 
 test('composeWorkspace([]) = core only (no convention headings)', async () => {
@@ -93,7 +94,7 @@ test('setSelection with an unknown slug → 400', async () => {
 test('addCustomConvention appears in catalog; enabling it composes its body', async () => {
   await addCustomConvention({ slug: 'house-rule', name: 'House rule', description: 'd', body: '## House rule\n- be nice' });
   const cat = await getCatalog();
-  assert.equal(cat.length, 5);
+  assert.equal(cat.length, 6);
   assert.equal(cat.find(c => c.slug === 'house-rule').builtin, false);
   await setSelection(['house-rule']);
   assert.match(await composeCurrentWorkspace(), /## House rule/);
@@ -109,12 +110,12 @@ test('deleteCustomConvention drops the slug from the enabled selection', async (
 
 // ── REST API ───────────────────────────────────────────────────────────────
 
-test('GET /api/settings/conventions/workspace returns core + 4 built-in conventions + enabled', async () => {
+test('GET /api/settings/conventions/workspace returns core + 5 built-in conventions + enabled', async () => {
   const r = await api(baseUrl, 'GET', '/api/settings/conventions/workspace');
   assert.equal(r.status, 200);
   assert.ok(r.body.core && r.body.core.name);
-  assert.equal(r.body.conventions.length, 4);
-  assert.equal(r.body.enabled.length, 4);
+  assert.equal(r.body.conventions.length, 5);
+  assert.equal(r.body.enabled.length, 5);
   for (const m of r.body.conventions) assert.equal(m.builtin, true);
 });
 
@@ -156,8 +157,10 @@ test('POST creates a custom convention (201); PUT /:slug updates; DELETE removes
   });
   assert.equal(add.status, 201);
   assert.equal(add.body.convention.builtin, false);
-  // Custom conventions are off by default (not in the default all-builtins selection),
-  // so the body is present in the catalog but not yet in the composed text.
+  // A custom convention is enabled the moment it is created (nothing switches
+  // it off, and the persisted state is a deny-list), so its body is already in
+  // the composed text. The explicit save below is the round trip, not the
+  // enablement.
   await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/selection', {
     enabled: [...SEED_CONVENTIONS.map(m => m.slug), 'rest-mod'],
   });
