@@ -1028,13 +1028,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // IN THE FAKE REMOTE, so it genuinely exists on "the system": a refusal at
     // a path the source does not have would prove absence, not policy.
     await fs.mkdir(path.join(fakeRemote, proj, SUB), { recursive: true });
-    // (e) reads the daemon's OWN output, and nothing else in the product turns
-    // the trace on. Scoped to this arm: set before the spawn the daemon
-    // inherits it through, removed in the `finally`.
-    const traceDir = await mkdtemp('cc-fuse-trace-');
-    const tracePath = path.join(traceDir, 'union.trace');
-    const prevTrace = process.env.CC_UNION_TRACE;
-    process.env.CC_UNION_TRACE = tracePath;
+    // (e) reads the daemon's OWN output, through the PRODUCT'S OWN TRACE
+    // SWITCH. `resolveTraceEnabled()` keys exactly on '1' and is read by
+    // `buildFusePlan` IN THIS PROCESS at spawn time (instances.ts:4965), so
+    // the switch is set before `spawnWorker()` and restored in the `finally`.
+    const prevTrace = process.env.CC_FUSE_TRACE;
+    process.env.CC_FUSE_TRACE = '1';
     let inst;
     try {
       inst = await spawnWorker();
@@ -1075,15 +1074,29 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // (e) THE DAEMON SAID SO ITSELF, rather than the decision being read off
       // a shell's exit code: the routed tier is in the trace, and the root is
       // NOT in the refusal log while the two paths under it are.
+      // THE PLAN'S OWN PATH, not one this arm chose: `buildFusePlan` puts the
+      // trace at `<rundir>/trace.log` (plan.ts:233) and `wrapLaunch` hands
+      // exactly that to the worker as `CC_FUSE_TRACE_LOG` (wrap.ts:88). Read
+      // HERE, inside the `try` — the `finally`'s `remove` reclaims the rundir
+      // and takes the trace with it, which is also why this arm leaves no
+      // temp directory of its own behind.
+      const tracePath = path.join(fuseRunDir(inst.id), 'trace.log');
       const trace = await fs.readFile(tracePath, 'utf8').catch(() => '');
       const rows = trace.split('\n').filter(Boolean);
       // THE TWO WAYS THIS CAN GO RED ARE DIFFERENT FINDINGS, so they are
       // distinguished rather than collapsed — but only REACHABLE causes are
-      // named. Nothing in the product turns the trace on: CC_UNION_TRACE is
-      // not one of the CC_* variables `wrapLaunch` sets explicitly, so it
-      // reaches the daemon only by riding the env SPREAD — `spawnEnv =
-      // {...process.env}` (instances.ts) → `...spec.env` (wrap.ts:44) →
-      // `sudo -n -E` → bootstrap.sh → the daemon's own environment.
+      // named. THE PRODUCT TURNS THE TRACE ON and this arm asks it to, over a
+      // chain of four explicit links: `CC_FUSE_TRACE=1` →
+      // `resolveTraceEnabled()` (plan.ts:144) → `plan.tracePath` =
+      // `<rundir>/trace.log` (plan.ts:233) → `wrapLaunch` emitting
+      // `CC_FUSE_TRACE_LOG` (wrap.ts:88) → bootstrap.sh exporting
+      // `CC_UNION_TRACE` from it (bootstrap.sh:146).
+      //
+      // AN AMBIENT `CC_UNION_TRACE` IS NOT A CHANNEL, and must not become one
+      // again: bootstrap.sh's `else` arm unsets it exactly so that `sudo -E`,
+      // which carries the orchestrator's whole environment, cannot leak
+      // tracing into a spawn cc chose none for. That hardening is pinned
+      // (single assignment site) in `tests/fuse-lifecycle.test.mjs`.
       //
       // NOT sudoers, and that is checked rather than assumed: cc's preflight
       // already probes this exact `sudo -n -E` form with a sentinel
@@ -1102,11 +1115,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // instrument is missing is not a guard.
       assert.ok(rows.length > 0,
         'THE TRACE INSTRUMENT DID NOT RUN — no rows were written, so the assertion below could '
-        + 'not be made. In likelihood order: the product\'s env chain stopped carrying it '
-        + '(`spawnEnv = {...process.env}` in instances.ts, `...spec.env` in wrap.ts, or '
-        + 'bootstrap.sh no longer passing its environment to the daemon); this arm\'s own '
-        + 'set/restore of process.env.CC_UNION_TRACE; or — remotely — a sudoers value-content '
-        + 'rule filtering a path-valued variable that preflight\'s plain sentinel does not catch. '
+        + 'not be made. In likelihood order: the product\'s trace chain broke a link '
+        + '(`resolveTraceEnabled` in plan.ts, `plan.tracePath`, `wrapLaunch` emitting '
+        + 'CC_FUSE_TRACE_LOG in wrap.ts, or bootstrap.sh exporting CC_UNION_TRACE from it); '
+        + 'this arm\'s own set/restore of process.env.CC_FUSE_TRACE; or — remotely — a sudoers '
+        + 'value-content rule filtering a path-valued variable that preflight\'s plain sentinel '
+        + 'does not catch. '
         + `A failed fopen is NOT a cause: the daemon refuses to mount instead. Expected rows at ${tracePath}.`);
       const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       assert.ok(rows.some(l => new RegExp(`^getattr\t${esc(proj)}\ttier=cwd .*\\bmark=0\\b`).test(l)),
@@ -1121,14 +1135,14 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
           `no unmarked-project-denied for ${denied}: ${JSON.stringify(refusals)}`);
       }
     } finally {
-      // NESTED, so a throw from `remove` cannot leave CC_UNION_TRACE set for
+      // NESTED, so a throw from `remove` cannot leave CC_FUSE_TRACE set for
       // every arm after this one. Cross-arm env leakage is how a flake gets
       // manufactured later.
       try {
         if (inst) await instances.remove(inst.id);
       } finally {
-        if (prevTrace === undefined) delete process.env.CC_UNION_TRACE;
-        else process.env.CC_UNION_TRACE = prevTrace;
+        if (prevTrace === undefined) delete process.env.CC_FUSE_TRACE;
+        else process.env.CC_FUSE_TRACE = prevTrace;
       }
     }
     assertNoResidue(before, runRoot, null, 'R8');
