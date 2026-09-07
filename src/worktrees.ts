@@ -707,7 +707,12 @@ export async function getWorktree(projectName: string, worktreeName: string): Pr
 // Bounded like agentTreeBackends (src/instances.ts): downward-only over one
 // already-loaded listWorktrees array, each record visited at most once. `seen`
 // costs nothing and terminates a hand-edited cycle that createWorktree cannot
-// produce. Level order, never `createdAt` — a clock field cannot be asserted on.
+// produce.
+//
+// What is guaranteed is the order ACROSS levels — deeper before shallower, which
+// is what makes the list a delete order. Sibling order WITHIN a level is simply
+// listWorktrees's (`createdAt`, readdir order on an equal timestamp) and is NOT
+// guaranteed: siblings are independent, so any order of them deletes cleanly.
 export async function listDependentWorktrees(projectName: string, worktreeName: string): Promise<string[]> {
   const all = await listWorktrees(projectName);
   // Alias here too, not just at getWorktree: the foreign key is matched

@@ -481,10 +481,17 @@ test('T6c: the refusal names the whole subtree deepest-first, and that order is 
 //       order. A re-parenting API would silently make cycles reachable, and no
 //       behavioural test can see that coming. Source scan, fail-by-default, on
 //       the model of tests/session-lineage-chokepoint.test.mjs.
+//
+//       WHAT IT CATCHES, precisely: a literal `baseWorktree:` object property
+//       carrying a value, and a literal `.baseWorktree =` member assignment —
+//       the two shapes an ordinary re-parenting API would be written in. A
+//       computed or bracket-notation write (`meta['baseWorktree'] = x`) matches
+//       neither and passes silently. That is accepted: the threat model here is
+//       an honest author adding a feature, not one evading the scan.
 // ---------------------------------------------------------------------------
 const SRC_ROOT = path.join(__dirname, '..');
 
-// Every place `baseWorktree` may appear as a written property, file → the exact
+// Every place a literal `baseWorktree` property write may appear, file → the exact
 // normalised snippets allowed there. A new one fails until it is either removed
 // or justified here.
 const BASE_WORKTREE_WRITES = {
@@ -534,7 +541,8 @@ test('T6d: baseWorktree is written at exactly one site, so the base graph is a D
       if (allowed.includes(normalised)) { allowedSeen++; continue; }
       violations.push(`${rel}: ${normalised}`);
     }
-    // Mutation of an existing record — the shape a re-parenting API would take.
+    // Mutation of an existing record — the shape a re-parenting API would most
+    // plainly take. Literal member access only; see the header.
     for (const m of src.match(/\.baseWorktree\s*=[^=]/g) ?? []) {
       violations.push(`${rel}: ${m.trim()}`);
     }

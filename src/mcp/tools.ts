@@ -575,7 +575,7 @@ export function buildTools(): Tool[] {
         'Remove a worktree (git deregister + branch delete + dir sweep). Refuses if a live instance ' +
         'is attached, the working tree is dirty, or another worktree is based on this one ' +
         '(WORKTREE_HAS_DEPENDENTS, listing them — delete those first) — unless force:true, which kills any ' +
-        'attached instance and, with dependents, deletes the branch they are based on.',
+        'attached instance and deletes the branch its children are based on.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -600,7 +600,7 @@ export function buildTools(): Tool[] {
         'both are ok:true and carry branch, baseBranch, baseSha, ahead, behind and a ready-to-send ' +
         'rebasePrompt: send_prompt it verbatim to whichever worker should do the work, or resolve it ' +
         'another way. Refuses WORKTREE_HAS_DEPENDENTS (listing them) while any worktree is based on ' +
-        'this one, since every sync path rewrites the base they were created from — delete those ' +
+        'this one, since every sync path rewrites the base its children were created from — delete those ' +
         'worktrees first; killing their workers is not enough.',
       inputSchema: {
         type: 'object',
