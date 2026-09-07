@@ -20,6 +20,8 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
          CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
+import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
+import { tierFixtureInput } from './tierFixture.mjs';
 
 const ENOENT = 2, EIO = 5, EACCES = 13;
 
@@ -49,7 +51,7 @@ const connect = (p) => new Promise((resolve, reject) => {
 });
 
 describe('the control channel, cc side', () => {
-  let box, srcRoot, mirror, sockPath, server, sock, logs;
+  let box, srcRoot, mirror, sockPath, server, sock, logs, tiers;
 
   before(async () => {
     box = await mkdtemp('cc-ctl-');
@@ -59,8 +61,15 @@ describe('the control channel, cc side', () => {
     await fs.mkdir(path.join(srcRoot, 'srv', 'app'), { recursive: true });
     await fs.mkdir(mirror, { recursive: true });
     logs = [];
+    // THE PRODUCT'S OWN TABLE, not a transcribed one: the server's job is to
+    // materialise exactly what the daemon would serve, and a hand-written table
+    // here would let a derivation change pass unnoticed in the test that reads
+    // it. `/srv/app/secrets` is an advertised exclude, so it renders `fail`.
+    tiers = buildTierTable(tierFixtureInput({
+      systemPath: '/srv/app', mirrorRoot: '/srv/app', exclude: ['/srv/app/secrets'],
+    }));
     server = await ControlServer.listen({
-      socketPath: sockPath, mirror, source: localDirSource(srcRoot),
+      socketPath: sockPath, mirror, source: localDirSource(srcRoot), tiers,
       log: (l) => logs.push(l),
     });
     sock = await connect(sockPath);
@@ -234,6 +243,72 @@ describe('the control channel, cc side', () => {
     await fs.symlink('b.txt', at('/srv/app/link'));
     await call(sock, CCU_OP.STAT, 0, '/srv/app/link');
     assert.equal(await fs.readlink(inMirror('/srv/app/link')), 'b.txt');
+  });
+
+  // PINS: AN EXCLUDED PATH IS NOT MATERIALISED, NAME OR METADATA. The daemon
+  // suppresses a `fail` child from a listing on the way out; this is the half
+  // that keeps it from being written to this machine at all — its size, mode
+  // and mtime are exactly what the exclusion withholds, and a `#shape`d stub
+  // would put all three in the mirror and the name in the parent's readdir.
+  //
+  // Dies if `#list` drops the tier filter, or if `#handle` stops refusing a
+  // non-project path.
+  test('an excluded child is neither served nor shaped into the mirror', async () => {
+    await fs.mkdir(at('/srv/app/secrets'), { recursive: true });
+    await fs.writeFile(at('/srv/app/secrets/key.pem'), 'PRIVATE-KEY-BYTES');
+    await fs.writeFile(at('/srv/app/ordinary.txt'), 'fine');
+
+    // Asked about directly: refused, and cc chooses the errno.
+    const direct = await call(sock, CCU_OP.STAT, 0, '/srv/app/secrets/key.pem');
+    assert.equal(direct.status, CCU_STATUS.REFUSED);
+    assert.equal(direct.err, EACCES);
+
+    // And reached as a CHILD of a directory that IS served: the listing must
+    // carry the sibling and not the excluded one.
+    const listed = await call(sock, CCU_OP.LIST, 0, '/srv/app');
+    assert.equal(listed.status, CCU_STATUS.READY);
+    const names = await fs.readdir(inMirror('/srv/app'));
+    assert.ok(names.includes('ordinary.txt'), names.join(','));
+    assert.ok(!names.includes('secrets'), `the excluded name reached the mirror: ${names.join(',')}`);
+    await assert.rejects(() => fs.access(inMirror('/srv/app/secrets')));
+  });
+
+  // PINS: the serialisation key is the PATH, so a STAT waits on an in-flight
+  // FETCH of the same path. With the op in the key it does not, and #shape's
+  // truncate re-shapes the mirror copy to the source's size underneath a
+  // writable handle — destroying bytes the DIRTY then pushes as a mangled copy.
+  test('a STAT waits on an in-flight FETCH of the same path', async () => {
+    const p = '/srv/app/slow.txt';
+    await fs.writeFile(at(p), 'SOURCE-BYTES');
+    // A source whose fetch is slow enough to overlap, wrapping the real one so
+    // everything else about it stays the product's.
+    const base = localDirSource(srcRoot);
+    let fetching = false, overlapped = false;
+    const slow = {
+      ...base,
+      async fetch(q, dest) {
+        fetching = true;
+        await new Promise(r => setTimeout(r, 60));
+        const out = await base.fetch(q, dest);
+        fetching = false;
+        return out;
+      },
+      async stat(q) { if (fetching && q === p) overlapped = true; return base.stat(q); },
+    };
+    const s2 = await ControlServer.listen({
+      socketPath: path.join(box, 'ctl2.sock'), mirror, source: slow, tiers, log: (l) => logs.push(l),
+    });
+    const c2 = await connect(s2.socketPath);
+    try {
+      const fetch = call(c2, CCU_OP.FETCH, 0, p);
+      await new Promise(r => setTimeout(r, 10));
+      const stat = await Promise.race([
+        call(c2, CCU_OP.STAT, 0, p).then(() => 'stat-first'),
+        fetch.then(() => 'fetch-first'),
+      ]);
+      assert.equal(stat, 'fetch-first', 'a STAT overtook an in-flight FETCH of the same path');
+      assert.equal(overlapped, false, 'the STAT reached the source while the FETCH was still running');
+    } finally { c2.destroy(); await s2.close(); }
   });
 
   // PINS: the handler writes ONLY inside the mirror. The daemon's paths come

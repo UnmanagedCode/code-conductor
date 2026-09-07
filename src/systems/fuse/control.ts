@@ -17,6 +17,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { promises as fsp, constants as fsc } from 'node:fs';
 import { withinPosix } from '../mirror.ts';
+import { resolveTierEntry, type TierEntry } from './tierTable.ts';
 import type { RemoteSource } from './remoteSource.ts';
 
 // ── the frame codec ─────────────────────────────────────────────────────────
@@ -108,15 +109,27 @@ export interface ControlServerOptions {
   // `<mirror>/P`, which is exactly what the daemon's remote tier resolves.
   mirror: string;
   source: RemoteSource;
+  // THE SAME ARRAY the daemon's pins were rendered from, so cc materialises
+  // only what the daemon would serve. It is not a second opinion: the daemon
+  // sends a frame ONLY from `route()`'s `T_PROJECT` arm, so a frame naming
+  // anything else is a defect, and a CHILD of a project directory that is not
+  // itself `project` — an `exclude` renders `fail` — must not be shaped into
+  // the mirror at all. Shaping it would put the excluded path's name, size,
+  // mode and mtime on this machine and into the parent's listing, which is the
+  // metadata the exclusion exists to withhold.
+  tiers: readonly TierEntry[];
   log?: (line: string) => void;
 }
 
 export class ControlServer {
   #server: net.Server;
   #opts: ControlServerOptions;
-  // SERIALISED PER PATH: two FUSE worker threads reaching the same file would
-  // otherwise materialise it twice, and the second copy would land on top of a
-  // handle the first already handed out.
+  // SERIALISED PER PATH — the PATH ALONE, and the op is deliberately not in the
+  // key. Two FUSE worker threads reaching the same file would otherwise
+  // materialise it twice; worse, a `STAT` that did not wait on an in-flight
+  // `FETCH` or `DIRTY` would let `#shape` re-truncate the mirror copy to the
+  // source's stale size while a writable handle held unpushed bytes, destroying
+  // them, and the `DIRTY` would then push the mangled copy.
   #inflight = new Map<string, Promise<Buffer>>();
   // TRACKED EXPLICITLY, because `net.Server` exposes a connection COUNT and not
   // the sockets. `server.close()` stops accepting and then waits for every live
@@ -202,7 +215,7 @@ export class ControlServer {
   }
 
   #dispatch(req: ControlRequest): Promise<Buffer> {
-    const key = `${req.op}\0${req.path}`;
+    const key = req.path;
     const prior = this.#inflight.get(key);
     const run = (prior ?? Promise.resolve()).then(() => this.#handle(req));
     this.#inflight.set(key, run);
@@ -221,6 +234,10 @@ export class ControlServer {
   async #handle(req: ControlRequest): Promise<Buffer> {
     const dest = this.#mirrorPath(req.path);
     if (dest === null) return encodeReply(CCU_STATUS.REFUSED, EACCES);
+    if (!this.#servable(req.path)) {
+      this.#opts.log?.(`cc-union control: refusing op ${req.op} for '${req.path}' — not a project-tier path`);
+      return encodeReply(CCU_STATUS.REFUSED, EACCES);
+    }
     try {
       switch (req.op) {
         case CCU_OP.STAT:  return await this.#stat(req.path, dest);
@@ -258,8 +275,13 @@ export class ControlServer {
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
     await fsp.mkdir(dest, { recursive: true });
-    const want = new Set(children.map(c => c.name));
-    for (const c of children) {
+    // A CHILD THE DAEMON WOULD NOT SERVE IS NOT SHAPED, so an excluded path's
+    // name and metadata never reach this machine and never reach the parent's
+    // listing. `union.c`'s readdir suppresses the same classes on the way out;
+    // this is the half that keeps them from being written down at all.
+    const servable = children.filter(c => this.#servable(path.posix.join(p, c.name)));
+    const want = new Set(servable.map(c => c.name));
+    for (const c of servable) {
       await this.#shape(path.posix.join(dest, c.name), c.kind, c.size, c.mode, c.mtimeMs, c.target);
     }
     // REMOVE WHAT THE SOURCE NO LONGER HAS, or readdir shows ghosts: a file
@@ -310,6 +332,12 @@ export class ControlServer {
     if (r === 'ok') { this.#local.delete(p); return encodeReply(CCU_STATUS.READY, 0); }
     this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
     return encodeReply(CCU_STATUS.REFUSED, EIO);
+  }
+
+  // 1 = the daemon would serve this path from the mirror, i.e. it is
+  // `project`-tier in the ONE table the pins were rendered from.
+  #servable(p: string): boolean {
+    return resolveTierEntry(this.#opts.tiers, p)?.tier === 'project';
   }
 
   // 1 = the mirror is holding a file this session created and has not pushed,

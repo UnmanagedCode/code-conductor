@@ -636,6 +636,10 @@ export class FuseSession {
       socketPath: p.controlSock,
       mirror: p.mirror,
       source: this.#source,
+      // THE SAME ARRAY the pins file was rendered from — criterion 15 reaches
+      // the control server too, or cc would materialise paths the daemon
+      // refuses and the two would disagree about what the session may see.
+      tiers: p.tiers,
       log: (line) => this.#sinks.log?.warn(line),
     });
     const intent: FuseIntent = {

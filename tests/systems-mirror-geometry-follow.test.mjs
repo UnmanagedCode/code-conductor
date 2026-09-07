@@ -242,5 +242,36 @@ describe('a mirror advertisement that moves under a live session', () => {
     assert.notEqual(f.inst.pid, null, 'no worker started');
     assert.equal(f.inst._fuse.record?.stage, 'mounted',
       'the union never reached the mounted handshake');
+
+    // AND WHAT THE EXCLUSION ACTUALLY WITHHOLDS, now that H5 has landed and
+    // this is no longer an expectation that would outlive the change.
+    //
+    // cc must not SHAPE an excluded child into the mirror. Its size, mode and
+    // mtime are exactly what the exclusion holds back, and a stub would put all
+    // three on this machine and the name into the parent's listing — `ls` would
+    // show it and `cat` would answer -ENOENT, one caller and two answers.
+    // Reached as a CHILD of a directory that IS served, which is the path the
+    // per-path refusal cannot cover.
+    await fs.mkdir(excluded, { recursive: true });
+    await fs.writeFile(path.join(excluded, 'secret.txt'), 'EXCLUDED-BYTES');
+    await fs.writeFile(path.join(f.box, 'nest', 'ordinary.txt'), 'fine');
+
+    const mirror = f.inst._fuse.plan.mirror;
+    // Drive the LIST through the control server the session is already running,
+    // at the mirror root — the same frame `opendir` sends.
+    const { encodeRequest, CCU_OP } = await import('../src/systems/fuse/control.ts');
+    const net = await import('node:net');
+    const sock = net.connect(f.inst._fuse.plan.controlSock);
+    await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });
+    try {
+      const reply = new Promise((r) => sock.once('data', r));
+      sock.write(encodeRequest(CCU_OP.LIST, 0, path.join(f.box, 'nest')));
+      await reply;
+    } finally { sock.destroy(); }
+
+    const names = await fs.readdir(path.join(mirror, f.box, 'nest'));
+    assert.ok(names.includes('ordinary.txt'), `the served sibling is missing: ${names.join(',')}`);
+    assert.ok(!names.includes('other'),
+      `the excluded name and its metadata reached the mirror: ${names.join(',')}`);
   });
 });
