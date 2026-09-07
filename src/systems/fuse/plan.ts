@@ -127,14 +127,20 @@ export interface FusePlan {
   // WHERE THE DAEMON WRITES ITS PER-OP TRACE, or '' when tracing is off — and
   // off is the default, because the daemon's `tr()` resolves ids per op and
   // reads /proc, which production must not pay for. `CC_FUSE_TRACE=1` turns it
-  // on; it is the instrument the two-handle premise and the per-op accounting
-  // are measured with.
+  // on (and nothing else does — see resolveTraceEnabled); it is the instrument
+  // the two-handle premise and the per-op accounting are measured with.
   tracePath: string;
 }
 
 // THE DAEMON'S PER-OP TRACE, off by default. `union.c` has honoured
 // `CC_UNION_TRACE` since the fork and cc has never set it; `tr()` calls
 // `resolve_ids` per op and reads /proc, so it is opt-in rather than always-on.
+//
+// EXACTLY `'1'`, AND THE WORKER-SIDE VARIABLE HAS A DIFFERENT NAME. This is the
+// operator's switch and cc is its only reader; the PATH the bootstrap hands the
+// daemon is `CC_FUSE_TRACE_LOG` (wrap.ts). One name for both would put an
+// operator's `CC_FUSE_TRACE=0` — the natural way to turn something OFF — into
+// the worker's path slot, where a non-emptiness test reads it as on.
 export function resolveTraceEnabled(): boolean {
   return process.env.CC_FUSE_TRACE === '1';
 }

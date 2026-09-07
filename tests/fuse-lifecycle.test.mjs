@@ -456,6 +456,113 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     { plan, unionBinary: '/store/bin/union-abc', ccBootId: 'boot-9', spawnedAt: 5 },
   );
 
+  // ── THE TRACE SWITCH, PINNED AT THE PRODUCER ────────────────────────────
+  //
+  // A20t below drives `buildFusePlan` — the CONSUMER of the operator's switch —
+  // and is green against every mutant of what follows, because the defect this
+  // pins lives in what `wrapLaunch` EMITS. That produce-vs-consume gap is the
+  // shape that cost S2 its worst bug.
+  //
+  // THE DEFECT: `CC_FUSE_TRACE` used to name BOTH cc's on/off switch and the
+  // worker-side path. `instances.ts` builds the worker env as
+  // `{...process.env}` and the spread at the top of `wrapLaunch`'s object runs
+  // FIRST, so an orchestrator started with `CC_FUSE_TRACE=0` — the natural way
+  // to turn a thing off — put `"0"` into the path slot, the bootstrap's
+  // non-emptiness test read it as ON, and the daemon got `CC_UNION_TRACE="0"`.
+
+  // PINS: what `wrapLaunch` emits for the worker-side trace path is decided by
+  // `plan.tracePath` ALONE, and an inherited value never survives it.
+  // DIES UNDER: reverting to a spread that omits rather than deletes; keying
+  // the emitted variable on anything in `spec.env`; renaming one end only.
+  test('the worker-side trace path is emitted only when the plan has one, and an inherited one is STRIPPED', () => {
+    const inherited = {
+      HOME: '/home/node', PATH: '/opt/bin',
+      // Every spelling an operator might have in their own environment. Each
+      // is a value the OLD non-emptiness test on the bootstrap side accepted.
+      CC_FUSE_TRACE: '0', CC_FUSE_TRACE_LOG: '/somewhere/stale.log',
+    };
+    const call = (tracePath) => wrapLaunch(
+      { command: 'claude', args: [], cwd: '/x', env: inherited },
+      { plan: { ...plan, tracePath }, unionBinary: '/b', ccBootId: 'b', spawnedAt: 1 },
+    ).env;
+
+    const off = call('');
+    assert.equal('CC_FUSE_TRACE_LOG' in off, false,
+      'an inherited trace path rode through a launch cc decided was untraced');
+    // The KEY is gone, not merely undefined: `spawn` would omit an undefined
+    // value, but a reader of this object would still see the key and disagree
+    // with the child.
+    assert.equal(Object.prototype.hasOwnProperty.call(off, 'CC_FUSE_TRACE_LOG'), false);
+    // The operator's own switch DOES ride through, and that is correct rather
+    // than overlooked: the worker inherits the orchestrator's environment
+    // wholesale, and stripping one inert variable out of it would be a rule
+    // with no reader. What makes it inert is asserted on the other side —
+    // bootstrap.sh reads `CC_FUSE_TRACE_LOG` and nothing else.
+    assert.equal(off.CC_FUSE_TRACE, '0');
+
+    const on = call('/store/run/inst-1/trace.log');
+    assert.equal(on.CC_FUSE_TRACE_LOG, '/store/run/inst-1/trace.log');
+  });
+
+  // PINS: the two ends are keyed on DIFFERENT NAMES, so the operator's flag
+  // cannot land in the path slot — over every value that distinguishes the
+  // exact `=== '1'` test from the non-emptiness one.
+  // DIES UNDER: collapsing the two names back into one; loosening
+  // `resolveTraceEnabled` to a truthiness test.
+  test("the operator's switch is exactly '1', and it never reaches the worker as a path", async () => {
+    const { buildFusePlan, resolveTraceEnabled, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
+    const prev = process.env.CC_FUSE_TRACE;
+    const planArgs = { instanceId: 'inst-t', cwdInside: '/srv/app', sourceOverrideRoot: null,
+      markPath: '/usr/bin/claude', tiers: [] };
+    try {
+      for (const [value, wantOn] of [[undefined, false], ['', false], ['0', false], ['yes', false], ['1', true]]) {
+        if (value === undefined) delete process.env.CC_FUSE_TRACE;
+        else process.env.CC_FUSE_TRACE = value;
+        assert.equal(resolveTraceEnabled(), wantOn, `CC_FUSE_TRACE=${JSON.stringify(value)}`);
+        const p = buildFusePlan(planArgs);
+        assert.equal(p.tracePath, wantOn ? path.join(fuseRunDir('inst-t'), 'trace.log') : '',
+          `CC_FUSE_TRACE=${JSON.stringify(value)}`);
+        // AND THROUGH THE PRODUCER, with the operator's own value inherited —
+        // the whole path the defect took.
+        const env = wrapLaunch(
+          { command: 'claude', args: [], cwd: '/x', env: { ...(value === undefined ? {} : { CC_FUSE_TRACE: value }) } },
+          { plan: { ...plan, tracePath: p.tracePath }, unionBinary: '/b', ccBootId: 'b', spawnedAt: 1 },
+        ).env;
+        assert.equal('CC_FUSE_TRACE_LOG' in env, wantOn, `CC_FUSE_TRACE=${JSON.stringify(value)}`);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.CC_FUSE_TRACE;
+      else process.env.CC_FUSE_TRACE = prev;
+    }
+  });
+
+  // PINS the OTHER end of the same handoff, in bootstrap.sh — a SOURCE-SHAPE
+  // assertion, in the idiom this suite already uses for the daemon's own
+  // producer side (A16, and the `pt_release` partition pin): the block that
+  // composes the daemon's environment cannot be observed from a deterministic
+  // fixture, and running the bootstrap needs sudo and a real mount.
+  //
+  // Both arms are asserted, because the `else` is not tidiness: `sudo -E`
+  // carries the orchestrator's whole environment through, so an ambient
+  // `CC_UNION_TRACE` reaches the daemon on an untraced spawn unless this
+  // clears it.
+  // DIES UNDER: keying the guard on `CC_FUSE_TRACE` again; dropping the `else`.
+  test("bootstrap.sh keys the daemon's trace on the PATH, and clears an ambient one", async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const src = await readFile(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'systems', 'fuse', 'bootstrap.sh'), 'utf8');
+    const guard = /if \[ -n "\$\{CC_FUSE_TRACE_LOG:-\}" \]; then\n\texport CC_UNION_TRACE="\$CC_FUSE_TRACE_LOG"\nelse\n\tunset CC_UNION_TRACE \|\| :\nfi/;
+    assert.match(src, guard, 'the daemon trace guard is not the shape this test pins — re-anchor or repair');
+    // NOTHING ELSE MAY SET IT. A second assignment anywhere would be a second
+    // mechanism, and the guard above would stop being the whole answer.
+    assert.deepEqual(src.match(/CC_UNION_TRACE=/g), ['CC_UNION_TRACE='],
+      'CC_UNION_TRACE is assigned in more than one place');
+    // And the operator's own flag is read NOWHERE here: cc is its only reader.
+    assert.equal(/\$\{?CC_FUSE_TRACE[^_]/.test(src), false,
+      "bootstrap.sh reads cc's operator switch, which is how the two names collapsed before");
+  });
+
   // PINS: the namespace is private and the mount namespace is new. Losing
   // `--propagation private` would let the mount escape into /proc/1/mounts,
   // which is the exact condition criterion 5 forbids.
@@ -891,9 +998,15 @@ describe('the configuration-time containment refusal', () => {
     assert.equal(root.sourceOverrideRoot, '/');
   });
 
-  // PINS the trace's default: OFF, and therefore costing the daemon nothing.
-  // `tr()` resolves ids per op and reads /proc, so an accidentally-on trace is
-  // a per-op cost on every production session.
+  // PINS the trace's default AT THE CONSUMER: OFF, and therefore costing the
+  // daemon nothing. `tr()` resolves ids per op and reads /proc, so an
+  // accidentally-on trace is a per-op cost on every production session.
+  //
+  // THE CONSUMER IS ONLY HALF THE SWITCH, and this arm cannot see the other:
+  // it drives `buildFusePlan`, so it is green whatever `wrapLaunch` and
+  // bootstrap.sh do with the answer. The producer end — where an inherited
+  // value used to survive an untraced launch — is pinned in the `wrapLaunch`
+  // describe above.
   //
   // Mutation it must die under: making `tracePath` unconditional; inverting the
   // `CC_FUSE_TRACE === '1'` test.
@@ -903,10 +1016,15 @@ describe('the configuration-time containment refusal', () => {
     try {
       delete process.env.CC_FUSE_TRACE;
       assert.equal(buildFusePlan({ ...planArgs, sourceOverrideRoot: null }).tracePath, '');
-      // Not any truthy value: the daemon REFUSES TO MOUNT on a trace path it
-      // cannot open, so the switch is exact rather than loose.
-      process.env.CC_FUSE_TRACE = 'yes';
-      assert.equal(buildFusePlan({ ...planArgs, sourceOverrideRoot: null }).tracePath, '');
+      // Not any truthy value — and `'0'` is the case that mattered: cc's
+      // switch is exact, but the bootstrap's end tested NON-EMPTINESS, so an
+      // operator's `CC_FUSE_TRACE=0` reached the daemon as a trace path named
+      // `0`. Fixed by giving the two ends different names; asserted end to end
+      // in the `wrapLaunch` describe.
+      for (const loose of ['yes', '0', 'true']) {
+        process.env.CC_FUSE_TRACE = loose;
+        assert.equal(buildFusePlan({ ...planArgs, sourceOverrideRoot: null }).tracePath, '', loose);
+      }
       process.env.CC_FUSE_TRACE = '1';
       const on = buildFusePlan({ ...planArgs, sourceOverrideRoot: null });
       assert.equal(on.tracePath, path.join(on.rundir, 'trace.log'));
