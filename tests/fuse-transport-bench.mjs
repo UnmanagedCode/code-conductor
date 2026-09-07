@@ -16,6 +16,9 @@
 //                    provider — the whole NDJSON → base64 → 64 KiB chunking
 //                    path, deterministic and in-repo, which isolates the
 //                    PROTOCOL's cost from a container's.
+//   --arm docker     the real `cc-box` handle. Needs the container up; its
+//                    fixtures are built ON THE BOX through the same handle,
+//                    because there is no shared filesystem to build them on.
 //
 // MEDIAN AND p90, NEVER A MEAN: one GC pause skews a mean and says nothing
 // about the distribution a worker actually meets.
@@ -57,8 +60,19 @@ function stats(ms) {
 }
 
 // The source under measurement, plus whatever has to be torn down with it.
+const DOCKER_LAUNCH = ['/usr/local/bin/node',
+  '/workspaces/cc-projects/code-system/src/launcher/main.mjs', '--kind', 'docker'];
+const DOCKER_REMOTE = opt('--remote', 'cc-box');
+const DOCKER_ROOT = opt('--box-root', '/root/cc-bench');
+
 async function makeArm(arm, root, log) {
   if (arm === 'localdir') return { source: localDirSource(root), dispose: () => {} };
+  if (arm === 'docker') {
+    const owner = new ProviderSystem({ id: 'docker', launch: { argv: DOCKER_LAUNCH } });
+    const sys = owner.bindRemote(DOCKER_REMOTE);
+    await owner.connect();
+    return { source: systemSource(sys), sys, dispose: () => owner.dispose() };
+  }
   const launch = log
     ? ['node', RECORDER, '--log', log, '--', 'node', REFERENCE_PROVIDER]
     : ['node', REFERENCE_PROVIDER];
@@ -94,11 +108,20 @@ async function rig(fn, { log } = {}) {
   // its root; `systemSource` takes the path as-is. Putting the tree at the SAME
   // absolute path under both roots is what makes one path string work for both,
   // so the two arms drive byte-identical frames.
-  const src = path.join(root, 'src');
+  // THE DOCKER ARM'S TREE IS ON THE BOX, because there is no shared filesystem
+  // to build it on — which is the whole difference the arm exists to measure.
+  const remote = ARM === 'docker';
+  const src = remote ? path.posix.join(DOCKER_ROOT, path.basename(root)) : path.join(root, 'src');
   const mirror = path.join(root, 'mirror');
-  await fs.mkdir(src, { recursive: true });
+  if (!remote) await fs.mkdir(src, { recursive: true });
   await fs.mkdir(mirror, { recursive: true });
   const arm = await makeArm(ARM, ARM === 'localdir' ? '/' : root, log);
+  // Written through the arm's OWN handle, so one call site serves every arm.
+  const put = async (p, bytes) => (remote
+    ? arm.sys.writeFileBytes(p, bytes, { atomic: true })
+    : fs.writeFile(p, bytes));
+  const mkdirp = async (p) => (remote ? arm.sys.mkdir(p, { recursive: true }) : fs.mkdir(p, { recursive: true }));
+  if (remote) await mkdirp(src);
   const server = await ControlServer.listen({
     socketPath: path.join(root, 'control.sock'),
     mirror,
@@ -108,10 +131,11 @@ async function rig(fn, { log } = {}) {
   const sock = await new Promise((res, rej) => {
     const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
   });
-  try { return await fn({ root, src, mirror, sock, sys: arm.sys }); }
+  try { return await fn({ root, src, mirror, sock, sys: arm.sys, put, mkdirp }); }
   finally {
     sock.destroy();
     await server.close();
+    if (remote) await arm.sys.removeTree(src).catch(() => {});
     arm.dispose();
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -125,11 +149,11 @@ const row = (label, s) => console.log(
 async function fetchCold() {
   for (const label of SIZES) {
     const bytes = Buffer.alloc(sizeOf(label), 0x61);
-    await rig(async ({ src, sock }) => {
+    await rig(async ({ src, sock, put }) => {
       const ms = [];
       for (let i = 0; i < RUNS; i++) {
-        const p = path.join(src, `cold-${label}-${i}`);
-        await fs.writeFile(p, bytes);
+        const p = path.posix.join(src, `cold-${label}-${i}`);
+        await put(p, bytes);
         const t = performance.now();
         const status = await call(sock, CCU_OP.FETCH, 0, p);
         ms.push(performance.now() - t);
@@ -145,9 +169,9 @@ async function fetchCold() {
 async function fetchWarm() {
   for (const label of SIZES) {
     const bytes = Buffer.alloc(sizeOf(label), 0x61);
-    await rig(async ({ src, sock }) => {
-      const p = path.join(src, `warm-${label}`);
-      await fs.writeFile(p, bytes);
+    await rig(async ({ src, sock, put }) => {
+      const p = path.posix.join(src, `warm-${label}`);
+      await put(p, bytes);
       await call(sock, CCU_OP.FETCH, 0, p);
       const ms = [];
       for (let i = 0; i < RUNS; i++) {
@@ -166,17 +190,17 @@ async function fetchWarm() {
 // is against a real 1 + N and not against a remembered one.
 async function list() {
   for (const n of CHILDREN) {
-    await rig(async ({ src, sock, sys }) => {
-      const dir = path.join(src, `dir-${n}`);
-      await fs.mkdir(dir, { recursive: true });
-      for (let i = 0; i < n; i++) await fs.writeFile(path.join(dir, `f${i}`), 'x');
+    await rig(async ({ src, sock, sys, put, mkdirp }) => {
+      const dir = path.posix.join(src, `dir-${n}`);
+      await mkdirp(dir);
+      for (let i = 0; i < n; i++) await put(path.posix.join(dir, `f${i}`), Buffer.from('x'));
       if (SHAPE === 'per-child' && !sys) throw new Error('--shape per-child needs --arm reference');
       const once = async () => {
         if (SHAPE === 'per-child') {
           // The shape `readDir` had before the widening: name and kind from the
           // listing, everything else a round trip PER CHILD.
           const kids = await sys.readDir(dir);
-          for (const k of kids) await sys.lstat(path.join(dir, k.name));
+          for (const k of kids) await sys.lstat(path.posix.join(dir, k.name));
           return;
         }
         const status = await call(sock, CCU_OP.LIST, 0, dir);
