@@ -490,6 +490,18 @@ struct route {
 	enum tier   tier;
 	int         fd;
 	const char *rp;
+	/* THE FRAME INTENT THIS ROUTE WAS GIVEN, carried rather than re-derived,
+	 * so `tr()` reports the byte the op actually declared. The two ops that
+	 * route both ends by hand (`rename`, `link`) used to trace a hand-copied
+	 * literal, which happened to be right and would have gone on reporting
+	 * the OLD intent the moment either call changed — a confidently wrong
+	 * number, which is one level worse than the blind instrument the cflags
+	 * field was added to fix.
+	 *
+	 * NAMED `intent` AND NOT `cflags` for one mechanical reason: the ROUTE
+	 * macro's own parameter is called `cflags`, so `r.cflags` inside the
+	 * macro body would expand to `r.<the argument>` and not compile. */
+	uint8_t     intent;
 };
 
 #define SYNTHETIC(t) ((t) == T_SYNTH || (t) == T_BIND)
@@ -547,9 +559,10 @@ static void fd_tier_set(int fd, enum tier t, int writable)
 static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		 struct route *r)
 {
-	r->rp   = rel(path);
-	r->fd   = -1;
-	r->tier = resolve_class(path);
+	r->rp     = rel(path);
+	r->fd     = -1;
+	r->intent = cflags;
+	r->tier   = resolve_class(path);
 
 	/* THE MARKING EVENT, before tier dispatch: reading the CLI's own binary
 	 * is a host-tier op, so a mark set after dispatch would never fire. */
@@ -610,7 +623,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	int rrc = route(op, p, cflags, fop, &r);        \
 	if (rrc)                                        \
 		return rrc;                             \
-	tr(op, p, tier_name(r.tier), (unsigned)(cflags)); \
+	tr(op, p, tier_name(r.tier), r.intent);         \
 	const char *rp = r.rp;
 
 /* ── operations ─────────────────────────────────────────────────────────── */
@@ -1134,7 +1147,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 		abandon_claim(from, rf.tier);
 		return rc;
 	}
-	tr("rename", to, tier_name(rt.tier), CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE);
+	tr("rename", to, tier_name(rt.tier), rt.intent);
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) goto give_up;
 	if (rf.fd != rt.fd) {
 		policy_refuse("rename", to, "xdev-rename");
@@ -1196,7 +1209,7 @@ static int pt_link(const char *from, const char *to)
 	 * the parent exist for a host-tier link. */
 	if ((rc = route("link", from, 0, CCU_FETCH, &rf))) return rc;
 	if ((rc = route("link", to, CCU_FLAG_FOR_CREATE, CCU_FETCH, &rt))) return rc;
-	tr("link", to, tier_name(rt.tier), CCU_FLAG_FOR_CREATE);
+	tr("link", to, tier_name(rt.tier), rt.intent);
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
 	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
 	if (rf.fd != rt.fd) {

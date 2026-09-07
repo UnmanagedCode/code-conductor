@@ -192,10 +192,22 @@ export class ControlServer {
   //
   // WHAT RELEASES A CLAIM, in full, because a claim that outlives its handle is
   // a leak with cc's cache disabled underneath it:
-  //   1. the op's own DIRTY, whether it succeeds or fails. Once the reconcile
-  //      has been ATTEMPTED and answered, the window is over and the worker has
-  //      the outcome; holding the claim past that is the sticky behaviour that
-  //      is deliberately 2026-0356's.
+  //   1. the op's own DIRTY, with ONE EXCEPTION that is the whole of §5.2.
+  //      A `RELEASE_ONLY` frame releases it OUTRIGHT — that frame IS the
+  //      release, so there is no handle left to ask about. A declared removal
+  //      (whether the source op succeeded or not), a mirror-holds-nothing
+  //      refusal and a SUCCESSFUL push release it once the handle is gone,
+  //      i.e. on any DIRTY that does not carry FOR_WRITE.
+  //   1a. **A PUSH THAT FAILED DOES NOT.** It KEEPS the claim, on purpose and
+  //      permanently for the session: cc must stop managing that path as a
+  //      cache, or the next `STAT` or parent `LIST` re-shapes the mirror entry
+  //      to the SOURCE's stale size and destroys the only copy of what the
+  //      worker wrote. Reads keep serving those bytes — that is the recovery
+  //      channel the diverged refusal points at — and writes are refused by
+  //      `#fetch`'s fault gate. `#dirty` returns before the release below, and
+  //      `tests/fuse-transport.test.mjs` T12 pins all four halves. Do not
+  //      "tidy" this into releasing on failure: that re-arms the byte
+  //      destruction the claim exists to prevent.
   //   2. `abandon_claim` in the daemon, for an op that took a claim and then
   //      failed before mutating — otherwise no DIRTY would ever arrive.
   //   3. this server being dropped. `FuseSession.teardown()` closes it, sets
@@ -584,9 +596,13 @@ export class ControlServer {
     try {
       const cur = await fsp.lstat(dest, { bigint: true });
       this.#fresh.set(p, { size: st.size, mtimeMs: st.mtimeMs, ino: cur.ino });
-      // THE MODE LEDGER IS WRITTEN WHERE THE MODE IS OBSERVED, from the same
-      // `lstat` that fingerprints the entry — so the recorded mode and the
-      // recorded inode are the same observation and cannot disagree.
+      // THE MODE LEDGER IS WRITTEN HERE, IN ONE CALL WITH THE FINGERPRINT, and
+      // that is the invariant — not that the two values come from one
+      // observation, because they do not: the mode is the SOURCE's (`st.mode`)
+      // and the inode is the MIRROR entry's (`cur.ino`). What matters is that
+      // they are recorded TOGETHER, so the pair can never be half-updated and
+      // the inode a mode is compared against is always the entry that was
+      // carrying that mode.
       this.#mode.set(p, { mode: st.mode, ino: cur.ino });
     } catch {
       // A mirror entry that has already gone is not a fingerprint worth
@@ -651,12 +667,34 @@ export class ControlServer {
         this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
         return encodeReply(CCU_STATUS.REFUSED, EIO);
       }
+      // AND A SUCCESSFUL PUSH OF THIS PATH CLEARS A DIVERGENCE OF THIS PATH,
+      // because at that moment the sentence the fault produces is FALSE: the
+      // system's copy now holds the mirror's bytes.
+      //
+      // IT IS REACHED BY THE DAEMON'S OWN SEQUENCE, not by a contrivance. A
+      // `flush` that refuses records the fault and returns non-zero, so
+      // `fd_dirty` stays set and the `release` sends a FULL reconcile — and if
+      // whatever blocked the push has gone in between, that one lands. Without
+      // this clear, every later write open of a repaired path is refused for
+      // the rest of the session by a sentence asserting a divergence that no
+      // longer exists.
+      //
+      // NARROW BY CONSTRUCTION, and deliberately: only a `diverged` fault, only
+      // on the branch that records one, only for the path that was pushed. A
+      // path whose pushes keep failing stays sticky, which is the whole of
+      // §5.2. An `over-cap` fault is never cleared here either: it is not a
+      // divergence but a statement that cc cannot carry the file at all, and
+      // landing a push says nothing about that.
+      if (this.#faults.get(p)?.kind === 'diverged') this.#faults.delete(p);
       await this.#adoptWriteMtime(p, dest);
     }
-    // RELEASED EITHER WAY once the handle is gone — success or failure. The
-    // reconcile has been attempted and answered, so the window the claim
-    // protects is over; keeping it would leave cc's cache off for the rest of
-    // the session.
+    // RELEASED once the handle is gone — for every branch that REACHES here.
+    // A push that failed does NOT: it returned above, keeping the claim for the
+    // session (§5.2, and see `#claimed`'s item 1a). What is left is a declared
+    // removal, whose source op may have succeeded or failed, and a successful
+    // push. For those the reconcile has been attempted and answered, so the
+    // window the claim protects is over and keeping it would leave cc's cache
+    // off for the rest of the session with nothing to protect.
     if (!stillOpen) this.#claimed.delete(p);
     if (r === 'ok') return encodeReply(CCU_STATUS.READY, 0);
     this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
@@ -713,6 +751,28 @@ export class ControlServer {
     if (!cur.isFile()) return;
     const st = await this.#opts.source.stat(p);
     if (isSourceError(st) || st === null || st.kind !== 'file') { this.#fresh.delete(p); return; }
+    // THE SOURCE MUST STILL HOLD WHAT CC PUSHED, and this is the ONE place in
+    // this file that needs saying so. Every other writer of a `#fresh`
+    // fingerprint stats the source BEFORE copying its bytes, so a source change
+    // during the copy leaves the fingerprint stale and the next FETCH
+    // conservatively re-copies. THIS ONE STATS AFTER, with no copy in between,
+    // which inverts that: a box-side writer landing between the push and this
+    // stat would have cc pair the MIRROR's bytes with the OTHER writer's
+    // `(size, mtime)`, and the next open would then match size, mtime AND the
+    // mirror inode — which the push never touched, so the inode half cannot
+    // help here — skip the copy, and serve the worker its own bytes as the
+    // file's content. Acceptance criterion 9 puts two workers on one remote
+    // project, so that population is real.
+    //
+    // NOT RECORDING IS ALWAYS SAFE: the next FETCH copies, which is the
+    // behaviour before any adoption existed.
+    //
+    // WHAT THE SIZE TEST DOES NOT COVER, named beside the identical-size limit
+    // `#fresh` already carries: a racing write of the SAME LENGTH. cc has no
+    // cheaper evidence — `RemoteStat` carries no source inode, and the
+    // derivation `find -printf` cannot supply one — and a content read would be
+    // the whole download this saving exists to avoid.
+    if (st.size !== cur.size) { this.#fresh.delete(p); return; }
     await fsp.utimes(dest, new Date(st.mtimeMs), new Date(st.mtimeMs)).catch(() => {});
     await this.#record(p, dest, st);
   }

@@ -433,7 +433,13 @@ function call(sock, op, flags, p) {
 
 // A real ControlServer on a real socket, over `systemSource` on a recorded
 // reference provider — so a frame count here is the transport's, not a mock's.
-async function rig(fn) {
+//
+// `wrapSource` composes over the real `systemSource` — it is how a case drives
+// a BOX-SIDE WRITER landing at a chosen instant, which no timing can do
+// deterministically. The wrapper's own filesystem writes go straight to the
+// source tree (the reference provider's far side IS this filesystem), so they
+// cost no provider frame and leave every count in this file the transport's.
+async function rig(fn, { wrapSource = (s) => s } = {}) {
   const box = await fs.realpath(await mkdtemp('cc-reval-'));
   const log = path.join(box, 'frames.log');
   const src = path.join(box, 'srv', 'app');
@@ -447,7 +453,7 @@ async function rig(fn) {
     server = await ControlServer.listen({
       socketPath: path.join(box, 'control.sock'),
       mirror,
-      source: systemSource(sys),
+      source: wrapSource(systemSource(sys)),
       tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
     });
     sock = await new Promise((res, rej) => {
@@ -696,6 +702,29 @@ describe("the write path — mode, faults and the double reconcile", () => {
   // and whose next push carries the wrong one.
   // DIES UNDER: dropping the regular-file test from `#restoreMode` (the
   // target's mode below comes back 0755).
+  //
+  // WHAT THE INODE DISCRIMINATOR RESTS ON, and WHERE THAT IS CHECKED — recorded
+  // here because it is the same shape as the false green this arm's own first
+  // fixture had. `#restoreMode` compares the RECORDED inode to the mirror
+  // entry's CURRENT one, so an alias needs two mirror-entry replacements
+  // between the last record and the DIRTY, with the second tmp reusing the
+  // first's freed inode. What forecloses it is the RECORD CADENCE: every
+  // reconcile that lands re-records the pair (`#adoptWriteMtime` → `#record`),
+  // so the inode a mode is next compared against is the entry that was
+  // carrying it.
+  //
+  // THAT CADENCE IS CHECKED BY T11'S COUNTER-ARM, not by a comment: its chmod
+  // is made at the SAME inode as the record left, so cc must skip the restore
+  // and push 0700. A record left STALE by the preceding cycle would make that
+  // same-inode chmod read as a replacement, cc would restore 0755, and the arm
+  // would fail on the source's mode. Nothing else in this file would notice.
+  //
+  // ONE PATH LEAVES THE MODE RECORD STALE ON PURPOSE: when the adoption's
+  // source-size guard trips (T14c), `#fresh` is dropped and `#mode` is not — so
+  // the next comparison sees a difference and RESTORES. That is the
+  // conservative direction (preserve the source's mode rather than push a
+  // tmp file's fresh 0644), it only arises on a path that just suffered a
+  // racing source write, and it is stated rather than asserted.
   test('T11b — a mirror entry that became a symlink is not chmod\'d through', async () => {
     await rig(async ({ src, mirror, call }) => {
       const p = path.join(src, 'was-a-file');
@@ -880,14 +909,116 @@ describe("the write path — mode, faults and the double reconcile", () => {
       await fs.writeFile(p2, 'ORIGINAL');
       assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p2)).status, CCU_STATUS.READY);
       await fs.writeFile(path.join(mirror, p2), 'WRITTEN THROUGH THE UNION');
-      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY | 0, p2)).status, CCU_STATUS.READY,
-        'the flush is the frame under test, so it must not be a release-only one');
-      assert.equal((await call(CCU_OP.DIRTY, 0, p2)).status, CCU_STATUS.READY);
+      // THE DAEMON'S OWN PAIR, in the daemon's own order: `flush` carries
+      // FOR_WRITE (union.c `pt_flush`) and `release` carries RELEASE_ONLY once
+      // that flush has landed. A first cut sent RELEASE_ONLY first and a
+      // flags-0 frame second, which is not merely mislabelled — it drops the
+      // claim before pushing anything, so the push AND the adoption happened on
+      // an UNCLAIMED flags-0 DIRTY, a different route from the `stillOpen`
+      // flush route this arm exists to drive.
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p2)).status, CCU_STATUS.READY);
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY, p2)).status, CCU_STATUS.READY);
       const afterPush = await reads();
       assert.equal((await call(CCU_OP.FETCH, 0, p2)).status, CCU_STATUS.READY);
       assert.equal(await reads(), afterPush,
         'the open after a write re-downloaded the file the worker had just written');
       assert.equal(await fs.readFile(path.join(mirror, p2), 'utf8'), 'WRITTEN THROUGH THE UNION');
+    });
+  });
+
+  // PINS: the post-push fingerprint is only recorded when THE SOURCE STILL
+  // HOLDS WHAT CC PUSHED. `#adoptWriteMtime` is the one writer of a `#fresh`
+  // fingerprint that does not materialise the bytes it describes — it stats the
+  // SOURCE after the push, where every other writer stats before copying — so
+  // a box-side writer landing in that window would otherwise pair the MIRROR's
+  // bytes with ANOTHER writer's `(size, mtime)`. The next open then matches
+  // size, mtime and the mirror inode (which the push never touched), skips the
+  // copy, and serves the worker its own stale bytes as the file's content.
+  //
+  // Criterion 9 — two workers on one remote project — makes that population
+  // real, so this is not a theoretical race.
+  // DIES UNDER: recording the adoption unconditionally (the second open below
+  // transfers nothing and the mirror keeps the worker's bytes).
+  test('T14c — a source-side write landing after the push is not fingerprinted as fresh', async () => {
+    const OTHER = 'A DIFFERENT WRITER PUT THIS HERE, AND IT IS A DIFFERENT LENGTH';
+    const WORKER = 'WORKER BYTES';
+    let target = null;
+    // A box-side writer that lands IMMEDIATELY AFTER cc's push returns —
+    // deterministically, which is the only way to sit inside a window this
+    // narrow. Everything else passes straight through.
+    const wrapSource = (inner) => ({
+      ...inner,
+      push: async (from, to) => {
+        const r = await inner.push(from, to);
+        if (to === target) await fs.writeFile(to, OTHER);
+        return r;
+      },
+    });
+    await rig(async ({ src, mirror, call, reads }) => {
+      const p = path.join(src, 'contended.txt');
+      target = p;
+      await fs.writeFile(p, 'ORIGINAL');
+      const dest = path.join(mirror, p);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(dest, WORKER);
+      const heldIno = (await fs.lstat(dest)).ino;
+
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      // THE FIXTURE REALLY DID RACE THE PUSH, asserted rather than assumed: the
+      // source holds the other writer's bytes and the MIRROR inode is untouched
+      // — which is exactly the state in which the inode half of the
+      // fingerprint cannot help, and a size+mtime match would be believed.
+      assert.equal(await fs.readFile(p, 'utf8'), OTHER,
+        'the wrapper did not land after the push, so this arm proves nothing');
+      assert.equal((await fs.lstat(dest)).ino, heldIno,
+        'the mirror inode moved, so the inode half of the fingerprint would catch this anyway');
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY, p)).status, CCU_STATUS.READY);
+
+      const base = await reads();
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), base + 1,
+        'the open after a contended push transferred nothing — cc believed a fingerprint it had '
+        + 'paired with another writer\'s metadata');
+      assert.equal(await fs.readFile(dest, 'utf8'), OTHER,
+        'the worker was served its own stale bytes as the file\'s content');
+    }, { wrapSource });
+  });
+
+  // PINS: a diverged fault is CLEARED by a successful reconcile OF THE SAME
+  // PATH, because at that moment the divergence the sentence asserts no longer
+  // exists. The reachable sequence is the daemon's own: a `flush` that refuses
+  // records the fault and leaves `fd_dirty` set, so the `release` sends a FULL
+  // reconcile — and if the source has become writable in between, that one
+  // SUCCEEDS. Without the clear, every later write open of a repaired path is
+  // refused for the rest of the session by a sentence that is false.
+  // DIES UNDER: keeping the fault on a successful push (the FETCH below is
+  // refused); clearing it on a FAILED push (T12's second write open stops
+  // being refused).
+  test('T13b — a successful reconcile of the same path clears its diverged fault', async () => {
+    await rig(async ({ src, mirror, call, server }) => {
+      const p = path.join(src, 'repaired.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      const dest = path.join(mirror, p);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(dest, 'WORKER BYTES');
+      await wedgeSource(p);
+
+      // The flush refuses and records the fault. `fd_dirty` stays set in the
+      // daemon, which is why the release below is a FULL reconcile.
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.REFUSED);
+      assert.equal(server.faultAt(p)?.kind, 'diverged');
+
+      // The obstruction goes; the releasing full reconcile lands.
+      await fs.rm(p, { recursive: true, force: true });
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await fs.readFile(p, 'utf8'), 'WORKER BYTES',
+        'the second reconcile did not actually land, so there is nothing repaired to clear');
+
+      // THE FAULT IS GONE, and the path is writable again.
+      assert.equal(server.faultAt(p), null,
+        'a repaired path kept a fault whose sentence asserts a divergence that no longer exists');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY,
+        'a repaired path is still refused for writing');
     });
   });
 
@@ -917,9 +1048,12 @@ describe("the write path — mode, faults and the double reconcile", () => {
   // tool can be refused by name before the worker ever opens the path — and it
   // refuses BOTH directions, because cc never materialised the file and has
   // nothing to serve a reader either.
-  // DIES UNDER: refusing without recording (faultAt is null, and the tool
-  // refusal has nothing to report); recording it with `refuses: 'writes'` (the
-  // read arm below succeeds and serves a zero-length stub).
+  // DIES UNDER: refusing without recording (`faultAt` is null, and the tool
+  // refusal has nothing to report); recording it with `refuses: 'writes'` —
+  // and for THAT mutant the observable is the WIRE DELTA, not the status: the
+  // cap check in `#fetchBody` re-fires and the second read still comes back
+  // REFUSED/EFBIG, so only the frame count separates a sticky refusal from a
+  // re-derived one.
   test('T12b — an over-cap FETCH records a fault that refuses reads as well as writes', async () => {
     await rig(async ({ src, call, server, wire }) => {
       const p = path.join(src, 'huge.bin');

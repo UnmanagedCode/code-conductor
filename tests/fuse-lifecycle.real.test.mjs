@@ -1205,8 +1205,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // MODE PRESERVATION AT THE REAL MOUNT, through the syscall sequence an
   // atomic edit actually makes.
   //
-  // THE NUMBERING: the plan calls this R9, which the merged 2026-0373 arm
-  // already holds. R10/R11 here are the plan's R9 and its R10+R11.
+  // THE NUMBERING, stated precisely because the short version is ambiguous.
+  // Plan 2026-0356 §8.7 gives this arm's CONTENT the label R9. The label R9 in
+  // this file is already taken — by the merged card 2026-0373's cwd/mark arm,
+  // which is different work that happens to have landed on that number first.
+  // So: R10 here is the plan's R9 by content, and R11 here is the plan's R10
+  // and R11 merged, because they are one state (see R11's own header).
   //
   // WHY IT WORKS THROUGH A RENAME AND NOT ONLY THROUGH A WRITE: `pt_rename`
   // routes the DESTINATION with FOR_CREATE|FOR_WRITE, so cc FETCHes the 0755

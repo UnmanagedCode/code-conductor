@@ -34,6 +34,13 @@ import { divergedRefusal, overCapRefusal, refusesTool } from '../src/systems/fus
 import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
 import { withinPosix } from '../src/systems/mirror.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
+import { promises as fs } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// `ToolDenyClass`'s members exist only in this file's SOURCE — it is a type
+// union, so there is nothing to import at runtime. T23 parses them out of it.
+const TIER_TABLE_SRC = path.join(path.dirname(fileURLToPath(import.meta.url)),
+  '..', 'src', 'systems', 'fuse', 'tierTable.ts');
 
 const SYSTEM_ID = 'prod-box';
 const SYSTEM_PATH = '/srv/app';
@@ -132,6 +139,22 @@ const namesBashOnTheSystem = (reason, systemId) => {
     `the Bash pointer does not name the machine it answers from: ${sentences.join(' | ')}`,
   );
 };
+
+// THE THIRD RULE, and it exists because the FIFTH and SIXTH wordings are about
+// ONE FILE rather than about a prefix. A model that cannot tell WHICH file of a
+// tree is poisoned has to probe to find out, which is the cost the whole clause
+// discipline exists to avoid — so the path is named, quoted, in full.
+//
+// Quoted deliberately: an unquoted path run together with prose is what a
+// prefix-built wording produces, and it reads as a directory.
+const namesTheFile = (reason, p) => {
+  assert.match(reason, new RegExp(`'${p.replace(/[.*+?^$()|[\]\\]/g, '\\$&')}'`),
+    `the refusal does not name the file it is about: ${reason}`);
+};
+
+// Every occurrence of `p` gone, so a mutant genuinely has no file name in it
+// rather than merely one fewer.
+const dropAll = (reason, p) => reason.split(p).join('a file');
 
 describe('the four file-tool refusals', () => {
   // A1 — PINS every clause of the excluded refusal, restored verbatim from the
@@ -753,9 +776,21 @@ describe('the fault refusals — divergence and over-cap', () => {
     // clause and adds the claim the whole discipline exists to forbid.
     assert.throws(() => neverClaimsAbsence(`${reason} cc could not find it.`), /AssertionError/,
       'the absence rule accepted a wording that claims the file was not found');
-    // No file name — the clause a model needs to know WHICH file is poisoned.
-    assert.doesNotMatch(reason.replace(new RegExp(P.replace(/\//g, '\\/'), 'g'), 'X'),
-      new RegExp(P.replace(/\//g, '\\/')), 'the file-name check is satisfied by something else');
+    // …AND THE FILE-NAME CLAUSE, which needs a RULE of its own to be
+    // falsifiable at all. A first cut asserted that the wording with every
+    // occurrence of the path replaced no longer contains the path — a global
+    // replace cannot leave a match behind, so it passed by construction
+    // whatever `divergedRefusal` produced, while claiming to verify the
+    // clause. The rule below is a real function and each mutant is a real
+    // transformation of the shipped sentence.
+    for (const m of [namesTheFile.bind(null, dropAll(reason, P), P),
+      // …and the near-miss: the DIRECTORY named but not the file, which is
+      // what a wording built from a prefix would produce and which leaves a
+      // model unable to tell which file of the tree is poisoned.
+      namesTheFile.bind(null, dropAll(reason, P) + ` See '${path.posix.dirname(P)}'.`, P)]) {
+      assert.throws(m, /AssertionError/, 'the file-name rule accepted a wording with no file name');
+    }
+    namesTheFile(reason, P);
   });
 
   // PINS: the over-cap refusal names THE CAP and the file's own size, points at
@@ -770,7 +805,7 @@ describe('the fault refusals — divergence and over-cap', () => {
     // `MAX_FILE_BYTES` and this is the same number the daemon enforces.
     assert.match(reason, new RegExp(`\\b${MAX_FILE_BYTES}\\b`), 'the cap is not in the sentence');
     assert.match(reason, new RegExp(`\\b${MAX_FILE_BYTES + 7}\\b`), 'the file\'s own size is not named');
-    assert.match(reason, new RegExp(`'${P.replace(/\//g, '\\/')}'`));
+    namesTheFile(reason, P);
     assert.match(reason, /NOT the file being absent/);
     assert.match(reason, /`sed -n`/, 'the channel that works — a RANGE read — is not named');
     neverClaimsAbsence(reason);
@@ -782,24 +817,45 @@ describe('the fault refusals — divergence and over-cap', () => {
   // FOUR — so the stateful surface did not become a fifth tier wording.
   // DIES UNDER: consulting the fault record inside `classifyForTool`; adding a
   // fifth deny class.
-  test('T23: classifyForTool is stateless, and the deny classes are still four', () => {
+  test('T23: classifyForTool is stateless, and every declared deny class is still produced', async () => {
     const { classify } = fixture();
     assert.deepEqual(classify(P), { decision: 'allow' },
       'classifyForTool learned about faults — the tier surface is no longer stateless');
-    // The same two-directional set the four wordings are pinned by, restated
-    // here because THIS is the change that could have grown it.
+
+    // THE SET IS DERIVED FROM THE DECLARATION, NOT TRANSCRIBED. `ToolDenyClass`
+    // is a TYPE UNION (src/systems/fuse/tierTable.ts) and therefore has no
+    // runtime array to read — so the members are parsed off the source text,
+    // which is the only place they exist. A hand-written literal here would
+    // fail only if one of the fixed probes below happened to produce a new
+    // member; a derived set fails the moment a member has no probe.
+    const tierSrc = await fs.readFile(TIER_TABLE_SRC, 'utf8');
+    const decl = /export type ToolDenyClass =([^;]+);/.exec(tierSrc);
+    assert.ok(decl, 'ToolDenyClass is no longer a type union — this derivation reads nothing');
+    const declared = [...decl[1].matchAll(/'([a-z-]+)'/g)].map(m => m[1]).sort();
+    assert.ok(declared.length >= 4, `the union was not parsed: ${JSON.stringify(declared)}`);
+
     const { classify: c2, input } = fixture();
     const seen = new Set();
     for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
       '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       seen.add(c2(p).class);
     }
-    assert.deepEqual([...seen].sort(),
-      ['bind-mount', 'excluded', 'host-pinned', 'outside-mirror-root']);
-    // AND A FAULT-DRIVEN DENIAL CARRIES NO CLASS AT ALL, which is what keeps
-    // that array a four-element one however many faults exist.
-    assert.equal(Object.hasOwn(
-      { decision: 'deny', reason: divergedRefusal(P, DIVERGED, SYSTEM_ID) }, 'class'), false);
+    // BOTH DIRECTIONS: a declared member no probe reaches fails here, and a
+    // class the table produces that the union does not declare fails too.
+    assert.deepEqual([...seen].sort(), declared,
+      'the deny classes the table produces and the ones ToolDenyClass declares disagree');
+
+    // AND A FAULT-DRIVEN DENIAL CARRIES NO `class` — ASSERTED ON THE PRODUCT'S
+    // OWN RETURN VALUE. A first cut asserted it on an object literal the test
+    // itself had just built, which is definitionally true whatever
+    // `#classifyFile` returns: a mutant ADDING `class` to that return survived
+    // it, and the mutation harness does not run the typecheck that would have
+    // caught it either.
+    const d = await redirectWith(DIVERGED).preToolUse('Write', { file_path: P });
+    assert.equal(d.decision, 'deny');
+    assert.match(d.reason, /have diverged/, 'this is not the fault denial');
+    assert.equal(Object.hasOwn(d, 'class'), false,
+      'the fault denial carries a ToolDenyClass — the stateful surface became a fifth tier class');
   });
 
   // PINS: THE ORDERING RULING ITSELF, two-directionally. A path that is BOTH

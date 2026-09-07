@@ -364,11 +364,30 @@ describe('the compiled policy driver', { skip }, () => {
     assert.match(src, /"%s\\t%s\\ttier=%s cflags=%u /,
       'INVARIANT: the trace line has a cflags field — without it a capture cannot tell a read '
       + 'open from a write open, and M6 cannot be measured at all');
-    // FORWARDED FROM THE MACRO, not passed as a constant. `tr(op, p, tier, 0)`
-    // compiles, keeps the field, and makes every line read as a read open.
-    assert.match(src, /tr\(op, p, tier_name\(r\.tier\), \(unsigned\)\(cflags\)\);/,
-      'INVARIANT: ROUTE forwards its OWN cflags to tr — a literal there reports the same '
-      + 'intent for every op');
+    // CARRIED ON THE ROUTE, not re-derived. `struct route` records the byte it
+    // was handed, and every trace site reads it back off the route — so a
+    // route whose flags change cannot leave a trace site reporting the old
+    // intent.
+    assert.match(src, /struct route \{[\s\S]*?uint8_t\s+intent;[\s\S]*?\};/,
+      'INVARIANT: struct route carries the frame intent it was given');
+    assert.match(src, /r->intent = cflags;/,
+      'INVARIANT: route() records the cflags byte it was handed — without it every trace '
+      + 'site reads an uninitialised value');
+    assert.match(src, /tr\(op, p, tier_name\(r\.tier\), r\.intent\);/,
+      'INVARIANT: ROUTE forwards the ROUTE\'S OWN intent to tr — a literal there reports the '
+      + 'same intent for every op');
+    // AND THE TWO OPS THAT ROUTE BOTH ENDS BY HAND. These called `route()`
+    // directly and traced a HAND-COPIED literal; the literals happened to
+    // equal the `to` route's flags, so the trace was right by coincidence and
+    // would have gone on reporting the old intent the moment either call
+    // changed. A confidently wrong number is one level worse than the blind
+    // instrument this field was added to fix.
+    for (const op of ['rename', 'link']) {
+      assert.match(src, new RegExp(`tr\\("${op}", to, tier_name\\(rt\\.tier\\), rt\\.intent\\);`),
+        `INVARIANT: pt_${op} traces the intent its own \`to\` route carries, not a copy of it`);
+      assert.doesNotMatch(src, new RegExp(`tr\\("${op}", to, tier_name\\(rt\\.tier\\), CCU_FLAG`),
+        `INVARIANT: pt_${op}'s trace does not hand-copy a flag literal`);
+    }
     // AND THE `fh` BRANCHES REPORT 0 HONESTLY: they send no frame, so there is
     // no intent to report, and a non-zero there would invent one.
     for (const op of ['getattr', 'chmod', 'chown', 'truncate', 'utimens']) {

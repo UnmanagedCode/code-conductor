@@ -786,7 +786,9 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
  * will AND the statement of what the worker did, and those two roles are in
  * direct conflict: a mirror entry that is gone may mean "the worker deleted it"
  * or "cc removed a stale copy", and cc was inferring the first from the second.
- * These two bits make the worker's intent DECLARED instead.
+ * The bits below make the worker's intent DECLARED instead — there are FOUR of
+ * them, and the count is deliberately not written into the prose again, because
+ * the table is the list.
  */
 #define CCU_FLAG_FOR_CREATE 0x01  /* FETCH: the caller is about to CREATE `path`,
                                    * so the PARENT is what must exist. */
