@@ -14,11 +14,24 @@
 //
 // WHAT THIS FILE CANNOT REACH, stated up front so a SURVIVED here is read
 // against a known boundary rather than argued about (plan 2026-0355 §7.1, and
-// PROVENANCE.md's policy-split section): that `pt_getattr`/`pt_opendir` CALL
-// `resolve_class`; that a `mount --bind` succeeds onto a synthetic node; that
-// `fuse_get_context()->pid` is a TID in practice; that the marking event fires
-// on the CLI's real first read; and the socket transport itself. Each is an arm
-// of `tests/fuse-lifecycle.real.test.mjs`.
+// PROVENANCE.md's policy-split section). It is a boundary of TWO kinds and the
+// difference matters to whoever files the verdict:
+//
+//   COVERED ELSEWHERE, by a named arm — `route()`'s host arm and its
+//   no-fallback-on-EIO behaviour (real gate R2, R6); that `pt_getattr` and
+//   `pt_opendir` call `resolve_class`, and that a `mount --bind` succeeds onto
+//   a synthetic node (R3); `pt_readdir`'s suppression of a `fail` child (R2,
+//   and cc's half in `systems-mirror-geometry-follow`).
+//
+//   COVERED NOWHERE, and recorded as such rather than assigned to an arm that
+//   does not exist — that `fuse_get_context()->pid` is a TID in practice, and
+//   that the marking event fires on the CLI's own first read of its binary.
+//   Both rest on S1 §6 Q1's measurement (983 of 14 677 ops had pid != tgid),
+//   which is real and historical; the INSTRUMENT that produced it was the
+//   spike's identity trace, deleted by ledger row D2. No live arm re-measures
+//   either. `bootstrap.sh` now fires the marking event deliberately, so the
+//   second one is no longer load-bearing for the launch — R2 would fail if the
+//   mark did not reach the CLI's thread group — but nothing pins the TID claim.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -52,7 +65,11 @@ describe('the compiled policy driver', { skip }, () => {
   before(async () => {
     const dir = await mkdtemp('cc-policy-drv-');
     bin = path.join(dir, 'driver');
-    // The SAME compiler and the same flags the product builds the daemon with.
+    // The same compiler and the same `pkg-config` flags the product builds the
+    // daemon with, PLUS `-Werror`, which `build.ts`'s CFLAGS deliberately does
+    // not carry: a warning that would only be printed during a production
+    // compile must fail this fixture, because nobody reads a test's compiler
+    // output. Strictly stricter, so it can only reject what the product accepts.
     const r = await run(tools.cc, ['-Wall', '-Wextra', '-Werror', '-O2', ...tools.cflags,
       DRIVER_SRC, '-o', bin, ...tools.libs]);
     assert.equal(r.code, 0, `the policy driver did not compile:\n${r.stderr}`);
@@ -85,22 +102,32 @@ describe('the compiled policy driver', { skip }, () => {
                       "drop anc_build's pin_exact filter"],
     ['b4-children',   'a synthetic dir lists exactly its own children, omitting hide and fail',
                       'drop the T_HIDE/T_FAIL skip, or the immediate-child guard'],
+    // NOT this file's: the same rule for a REAL directory lives in
+    // `pt_readdir` (union.c), which no unit fixture can reach. Its kill is
+    // `tests/systems-mirror-geometry-follow.test.mjs`'s fail-pin arm for cc's
+    // half and the real gate's R2 for the daemon's.
     ['b5-getattr',    'the synthetic node is fixed 0555/uid0/mtime0 and touches no filesystem',
                       'fstatat the host directory of the same name'],
     ['b6-erofs',      'a mutation on a synthetic or bind node is EROFS, not EACCES',
                       'return -EACCES, or let T_BIND through'],
+    // `or serve the host` is NOT reachable from here: the host arm is
+    // `route()`'s (union.c), which no unit fixture can call. Real gate R2.
     ['b7-unmarked',   'an unmarked caller at a project path gets -ENOENT and sends no frame',
-                      'restore the R_MARKED branch, or serve the host'],
+                      'delete the mark check in policy_project_route'],
     ['b8-reuse',      'a marked tgid whose field-22 starttime moved loses the mark',
                       "delete mark_of's starttime comparison"],
     ['b9-tgid-key',   'the mark is keyed on the TGID, resolved through the injected reader',
                       'look the mark up by the calling TID'],
-    ['b10-cache-key', 'a resolution warmed by one tgid is never served to another',
-                      'drop tgid from the cache key, or consult the cache after the mark check'],
+    ['b10-cache-key', 'the mark check runs before the lookup, so a recycled tgid is never served a warm entry',
+                      'move the cache lookup ahead of the mark check, or drop tgid from the key'],
     ['b11-codec',     'the frame codec round-trips and rejects short, bad-magic and over-long',
                       'drop the length check or the magic check'],
+    // `or fall back to the host on EIO` is NOT reachable from here either —
+    // there is no host fd in this file. Real gate R6 owns it.
     ['b12-errno',     'ABSENT→ENOENT, REFUSED→EACCES, dead or truncated channel→EIO',
-                      'swap ABSENT→EACCES, or fall back to the host on EIO'],
+                      'swap ABSENT→EACCES, or drop the reply-status switch'],
+    ['b14-reasons',   'each control failure names itself in the refusal log, and the three are distinguished',
+                      'collapse remote-absent and control-refused into one reason'],
     ['b13-refusals',  'the refusal log records each (path, reason) exactly once',
                       'drop the dedupe, or key it on op as well'],
   ];
