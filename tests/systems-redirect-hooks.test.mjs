@@ -13,7 +13,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { HookBroker } from '../src/hookBroker.ts';
 import { buildSettingsJSON } from '../src/settings.ts';
-import { FILE_TOOLS } from '../src/systems/toolRedirect.ts';
+import { FILE_TOOLS, SessionRedirect } from '../src/systems/toolRedirect.ts';
+import { InstanceManager } from '../src/instances.ts';
+import { redirectTierOptions } from './tierFixture.mjs';
 
 function fakeRes() {
   const res = {
@@ -109,6 +111,81 @@ test('a redirected session suppresses the CLI dynamic git instructions', () => {
 test('a local session keeps the CLI git instructions', () => {
   const s = JSON.parse(buildSettingsJSON({ hookCallbackUrl: 'http://h' }));
   assert.equal(s.includeGitInstructions, undefined);
+});
+
+// PINS THE PORTLESS COUPLING, and it exists because a round-2 review reversed a
+// claim of mine that was FALSE.
+//
+// THE CLAIM THAT WAS WRONG: that a redirected session with no `serverPort`
+// degrades loudly, because `hookCallbackUrl` and `bashForwardUrl` share the
+// `if (!this.serverPort) return null` guard, so `forwarderUrl` would be `''`
+// and every forwarded command would fail visibly. They share a GUARD, not a
+// FAILURE. With no `hookCallbackUrl`, `buildSettingsJSON` registers NO
+// PreToolUse hook at all — so nothing ever consults the redirect, `Bash` is
+// never rewritten, `forwarderUrl` is never read, and the worker's raw command
+// runs LOCALLY with no refusal and no diagnostic. Silent execution against the
+// wrong machine: exactly the failure class src/systems/toolRedirect.ts's
+// invariant exists to prevent.
+//
+// UNREACHABLE IN PRODUCTION TODAY, by ordering: every create path is either
+// served by the listening server or, for the one that is not
+// (`restoreFromResumeManifest`), explicitly sequenced after `setServerPort`
+// (server.ts, with a comment stating the dependency). A comment states intent;
+// this states the coupling the intent rests on.
+//
+// SO WHAT IS PINNED IS THE BICONDITIONAL, not either guard: no hook URL ⟺ no
+// forwarder URL ⟺ no registered PreToolUse hook. THE MUTATION THIS MUST DIE
+// UNDER: giving `bashForwardUrl` (or `hookCallbackUrl`) a fallback while the
+// other stays null — under it the two disagree, and a session could rewrite
+// Bash with no hook to carry the rewrite, or register hooks pointing nowhere.
+// Both are silent-local by another road.
+test('with no server port, the hook URL and the forwarder URL degrade together', async () => {
+  const im = new InstanceManager();               // never given a port
+  const id = 'inst-portless';
+
+  const coupled = () => {
+    const hook = im.hookCallbackUrl(id);
+    const fwd = im.bashForwardUrl(id);
+    assert.equal(hook === null, fwd === null,
+      `the two URLs disagree about the port: hook=${hook} forwarder=${fwd}`);
+    return { hook, fwd };
+  };
+
+  // ── portless ──
+  const off = coupled();
+  assert.equal(off.hook, null);
+  assert.equal(off.fwd, null);
+  // …and the consequence: NO hook is registered, which is what makes the
+  // redirect unreachable rather than merely broken.
+  const sOff = JSON.parse(buildSettingsJSON({ hookCallbackUrl: off.hook ?? undefined, redirect: true }));
+  assert.deepEqual(sOff.hooks.PreToolUse, [], 'a PreToolUse hook was registered with no callback URL');
+  assert.equal(sOff.hooks.PostToolUse, undefined, 'a PostToolUse hook was registered with no callback URL');
+
+  // The redirect's own rewrite is NOT self-disabling — it still produces a
+  // `--url ''` argv — which is the evidence that the missing HOOK, and not a
+  // failing forwarder, is the whole failure. Asserted so nobody re-derives my
+  // wrong claim from the guard's existence.
+  const redirect = new SessionRedirect({
+    system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
+    systemId: 'prod-box', systemPath: '/srv/app',
+    ...redirectTierOptions({ systemPath: '/srv/app' }),
+    forwarderUrl: off.fwd ?? '',
+    emit: () => {},
+  });
+  const d = await redirect.preToolUse('Bash', { command: 'echo hi' });
+  assert.equal(d.decision, 'allow');
+  assert.match(d.updatedInput.command, /--url ''/,
+    'the rewrite silently stopped happening, which would hide the real failure');
+
+  // ── THE CONTROL, and without it every assertion above passes for a manager
+  // whose URL builders are simply broken. ──
+  im.setServerPort(44279);
+  const on = coupled();
+  assert.notEqual(on.hook, null);
+  assert.notEqual(on.fwd, null);
+  const sOn = JSON.parse(buildSettingsJSON({ hookCallbackUrl: on.hook ?? undefined, redirect: true }));
+  assert.equal(sOn.hooks.PreToolUse.length, 1, 'the port is set and still no hook is registered');
+  assert.match(sOn.hooks.PreToolUse[0].hooks[0].url, /hook-callback$/);
 });
 
 // PINS: the rewrite reaches the CLI. Without `updatedInput` on the response the

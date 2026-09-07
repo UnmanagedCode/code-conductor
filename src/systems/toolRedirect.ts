@@ -36,25 +36,35 @@
 // otherwise claims a completeness the code does not have.
 //
 // The set is closed against a MEASUREMENT, not against the CLI's documentation.
-// MEASURED (claude 2.1.263, cc's exact launch flags — `-p
-// --input-format=stream-json --output-format=stream-json --verbose`, reading the
-// `system`/`init` frame's `tools` array, with no `permissions.deny` in play so
-// nothing was suppressed): the headless registry carries 27 tools and contains
-// **no `LS`**, no `Glob`, no `Grep`, no `MultiEdit` and no `NotebookRead`. The
-// tools that can observe or mutate the tree are exactly `Bash` and the four in
-// FILE_TOOLS.
+// The measurement is DATA, not a number quoted here:
+// tests/fixtures/cli-tool-registry.measured.json carries the argv, the
+// `--settings` JSON and the full tool lists verbatim, and
+// tests/systems-cli-contract.real.test.mjs pins it under RUN_CLI_CONTRACT=1.
+// Its result: the tools that can observe or mutate the tree are exactly `Bash`
+// and the four in FILE_TOOLS — no `LS`, no `Glob`, no `Grep`, no `MultiEdit`,
+// no `NotebookRead`.
+//
+// WHAT MAKES THAT ARGV THE RIGHT ONE, because an earlier version of this comment
+// got it wrong and the error was load-bearing: the argv was read off
+// `Instance._spawnArgv` of a REAL redirected worker rather than reconstructed,
+// so it includes `--permission-prompt-tool stdio` and cc's own `--settings`.
+// `stdio` CHANGES THE PROFILE — it un-strips the interactive tools, 30 with it
+// against 27 without — so a probe run on the four format flags alone measures a
+// different session than cc ships and cannot answer this question at all. The
+// deny-off control is in the same fixture: removing `permissions.deny` as the
+// only variable leaves the list identical, so `Glob`/`Grep` are absent by
+// PROFILE and not by cc's denial.
 //
 // SO `LS` IS A DELIBERATE CARVE-OUT, not an oversight: it is named in
 // src/settings.ts's list of ungated read tools, it is in neither FILE_TOOLS nor
 // REDIRECT_PRE_TOOL_MATCHER, and `preToolUse` falls THROUGH to allow for it. On
-// the pinned CLI that fall-through is unreachable because the tool does not
+// the measured CLI that fall-through is unreachable because the tool does not
 // exist. IF IT RETURNS, it is a boundary hole and not a cosmetic one: an `LS` of
 // an excluded path answers a bare -ENOENT — exactly what the refusal wording
 // below exists to stop a worker reading as "absent" — and a listing additionally
-// discloses the shape of a subtree whose `Read` is refused. Re-measure the init
-// frame before assuming otherwise, and add it to FILE_TOOLS with its MEASURED
-// argument name (do not guess one) plus a RUN_CLI_CONTRACT case, which is the
-// suite that exists for this class of undocumented CLI surface.
+// discloses the shape of a subtree whose `Read` is refused. The gated case above
+// goes red when that happens; the fix is to add it to FILE_TOOLS with its
+// MEASURED argument name, which is not in the fixture and must not be guessed.
 //
 // This module is composition and policy only. The shell framing lives in
 // src/systems/providerShell.ts, and the deny surface below.

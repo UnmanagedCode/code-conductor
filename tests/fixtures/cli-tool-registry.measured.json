@@ -1,0 +1,149 @@
+{
+  "what": "The headless tool registry a REDIRECTED cc worker session actually gets.",
+  "why": "src/systems/toolRedirect.ts's stated invariant is that every tool which can observe or mutate the system's tree is redirected or refused by name. That is closed against this measurement, not against the CLI's documentation. `LS` is named in src/settings.ts's ungated-read list, is in neither FILE_TOOLS nor REDIRECT_PRE_TOOL_MATCHER, and preToolUse falls THROUGH to allow for it - so the invariant holds only while the tool does not exist.",
+  "measuredAt": "2026-09-07",
+  "cliVersion": "2.1.263 (Claude Code)",
+  "howArgvWasObtained": "Read verbatim off `Instance._spawnArgv` of a real redirected worker created through POST /api/instances, then replayed against the real binary with a fresh --session-id. NOT hand-reconstructed.",
+  "readFrom": "the first stdout line: the `system`/`init` frame's `tools` array, which the CLI emits BEFORE it calls the API.",
+  "productionArgv": [
+    "-p",
+    "--input-format=stream-json",
+    "--output-format=stream-json",
+    "--verbose",
+    "--include-partial-messages",
+    "--include-hook-events",
+    "--allow-dangerously-skip-permissions",
+    "--permission-mode",
+    "bypassPermissions",
+    "--effort",
+    "high",
+    "--thinking",
+    "adaptive",
+    "--settings",
+    "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Edit|Write|NotebookEdit|Bash|Glob|Grep|Read\",\"hooks\":[{\"type\":\"http\",\"url\":\"http://127.0.0.1:<PORT>/api/instances/<INSTANCE-ID>/hook-callback\",\"timeout\":660}]}],\"PostToolUse\":[{\"matcher\":\"Edit|Write|NotebookEdit|Bash\",\"hooks\":[{\"type\":\"http\",\"url\":\"http://127.0.0.1:<PORT>/api/instances/<INSTANCE-ID>/hook-callback\",\"timeout\":660}]}]},\"permissions\":{\"deny\":[\"Glob\",\"Grep\"]},\"includeGitInstructions\":false}",
+    "--permission-prompt-tool",
+    "stdio",
+    "--mcp-config",
+    "{\"mcpServers\":{\"code-conductor\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:<PORT>/mcp?caller=<INSTANCE-ID>\"}}}",
+    "--model",
+    "claude-opus-4-8",
+    "--session-id",
+    "<SESSION-ID>"
+  ],
+  "settingsJSONVerbatim": {
+    "hooks": {
+      "PreToolUse": [
+        {
+          "matcher": "Edit|Write|NotebookEdit|Bash|Glob|Grep|Read",
+          "hooks": [
+            {
+              "type": "http",
+              "url": "http://127.0.0.1:<PORT>/api/instances/<INSTANCE-ID>/hook-callback",
+              "timeout": 660
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "Edit|Write|NotebookEdit|Bash",
+          "hooks": [
+            {
+              "type": "http",
+              "url": "http://127.0.0.1:<PORT>/api/instances/<INSTANCE-ID>/hook-callback",
+              "timeout": 660
+            }
+          ]
+        }
+      ]
+    },
+    "permissions": {
+      "deny": [
+        "Glob",
+        "Grep"
+      ]
+    },
+    "includeGitInstructions": false
+  },
+  "runs": {
+    "productionArgv": {
+      "note": "the argv above, unmodified. permissions.deny=[Glob,Grep] IS in play.",
+      "permissionMode": "bypassPermissions",
+      "model": "claude-opus-4-8",
+      "tools": [
+        "AskUserQuestion",
+        "Bash",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "DesignSync",
+        "Edit",
+        "EnterPlanMode",
+        "EnterWorktree",
+        "ExitPlanMode",
+        "ExitWorktree",
+        "ListAgents",
+        "Monitor",
+        "NotebookEdit",
+        "PushNotification",
+        "Read",
+        "RemoteTrigger",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "SendMessage",
+        "ShareOnboardingGuide",
+        "Skill",
+        "Task",
+        "TaskOutput",
+        "TaskStop",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Write"
+      ]
+    },
+    "productionArgvMinusDeny": {
+      "note": "byte-identical to the above except the `permissions` block is removed from --settings. THE ONLY VARIABLE. This is the deny-off control: Glob/Grep are absent here too, so their absence is the PROFILE's and not the denial's effect.",
+      "tools": [
+        "AskUserQuestion",
+        "Bash",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "DesignSync",
+        "Edit",
+        "EnterPlanMode",
+        "EnterWorktree",
+        "ExitPlanMode",
+        "ExitWorktree",
+        "ListAgents",
+        "Monitor",
+        "NotebookEdit",
+        "PushNotification",
+        "Read",
+        "RemoteTrigger",
+        "ReportFindings",
+        "ScheduleWakeup",
+        "SendMessage",
+        "ShareOnboardingGuide",
+        "Skill",
+        "Task",
+        "TaskOutput",
+        "TaskStop",
+        "ToolSearch",
+        "WebFetch",
+        "WebSearch",
+        "Workflow",
+        "Write"
+      ]
+    }
+  },
+  "conclusions": [
+    "LS is ABSENT under production's real argv, including --permission-prompt-tool stdio. The preToolUse fall-through for LS is therefore unreachable on this CLI.",
+    "Glob, Grep, MultiEdit and NotebookRead are also absent, with and without permissions.deny.",
+    "The tools that can observe or mutate the tree are exactly Bash plus the four in FILE_TOOLS (Read, Write, Edit, NotebookEdit).",
+    "--permission-prompt-tool stdio un-strips exactly AskUserQuestion, EnterPlanMode and ExitPlanMode (30 tools with it vs 27 without), which confirms tests/cliContractCase.mjs's claim about that flag and is why a probe run WITHOUT it measures a different session than cc ships."
+  ],
+  "pinnedBy": "tests/systems-cli-contract.real.test.mjs -> 'a cc-shaped session serves no LS, and no Glob/Grep even with no deny' (RUN_CLI_CONTRACT=1). Re-run that, and re-take this file, before trusting any of the above on a newer CLI."
+}
