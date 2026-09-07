@@ -609,6 +609,16 @@ static void b0_parse(void)
 	CHECK(pins_parse_line(l3) == 0 && npins == 1, "a host rule adds one");
 	CHECK(pins_parse_line(l4) == -1, "`synth` is REJECTED — it is derived, never parsed");
 	CHECK(strstr(policy_err, "unknown kind") != NULL, "and says so: %s", policy_err);
+	{
+		/* AND `cwd` IS REJECTED THE SAME WAY. This is the STRUCTURAL
+		 * proof that the narrow cwd exemption can never enter the
+		 * artifact the hook's tier table shares: T_CWD is derived in C
+		 * by route(), so no pins file can name it and no `cwd` entry can
+		 * reach `renderPinsFile`'s consumers. */
+		char lc[] = "cwd\t/srv/app";
+		CHECK(pins_parse_line(lc) == -1, "`cwd` is REJECTED — it is derived, never parsed");
+		CHECK(strstr(policy_err, "unknown kind") != NULL, "and says so: %s", policy_err);
+	}
 	CHECK(pins_parse_line(l5) == -1, "a relative path is rejected");
 	CHECK(strstr(policy_err, "not absolute") != NULL, "and says so: %s", policy_err);
 	CHECK(pins_parse_line(l6) == -1, "a kind with no path is rejected");
@@ -709,6 +719,151 @@ static void b15_unreconcilable(void)
 	      "the read-only and the unrepresentable answers are distinguishable");
 }
 
+/* ── B17: the narrow cwd exemption ──────────────────────────────────────── */
+/*
+ * THIS LAYER IS MANDATORY AND THE REAL GATE CANNOT SUBSTITUTE FOR IT.
+ * `MOUNT_OPTS` carries `default_permissions`, so through a real mount the
+ * KERNEL refuses an unmarked `opendir` against the 0111 node before the daemon
+ * is ever asked — the daemon's own op allow-list, the gate that actually
+ * enforces the conjunction, is MASKED by a lower layer. A masked guard is
+ * unkillable by mutation: break it and every real-mount test still passes. Only
+ * this fixture can prove it.
+ *
+ * `argv[2..]` are op names, handed over by the .mjs so the allow-list is driven
+ * from the SAME literal the source-shape test checks against union.c's op
+ * strings. Running the case with no ops still asserts the two named below.
+ */
+static void b17_cwd_exempt(int argc, char **argv)
+{
+	char tmpl[] = "/tmp/cc-policy-cwdXXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[512];
+	struct stat st;
+	int n_sub = 0, n_file = 0, n_root = 0, i;
+	int calls;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	refusal_fp = fdopen(fd, "w+");
+	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+
+	pin("project\t/srv/app");              /* pins[0] */
+	pin("host\t/etc");                     /* pins[1] */
+	/* A PROJECT PIN AT A PATH THAT DOES NOT EXIST ON THIS HOST (C7): if the
+	 * node were ever filled from a host stat it would answer -ENOENT here. */
+	pin("project\t/zzz-no-such-root-on-this-host/app");   /* pins[2] */
+	anc_build();
+	proc_set(500, 500, 111);               /* an unmarked thread group */
+	proc_set(600, 600, 222);               /* the one we mark */
+	policy_mark_tid(600);
+
+	/* ── C1: the root resolves, and only for an unmarked caller ─────── */
+	CHECK(policy_cwd_exempt("getattr", "/srv/app", 500) == 1,
+	      "an UNMARKED caller may getattr the exact project root");
+	CHECK(xport_calls == 0, "and the exemption sent no control frame");
+
+	/* ── C2: a marked caller is NOT exempted ────────────────────────── */
+	CHECK(policy_cwd_exempt("getattr", "/srv/app", 600) == 0,
+	      "a MARKED caller is not exempted — it gets the real routed answer");
+	CHECK(policy_project_route("getattr", "/srv/app", 600, CCU_STAT, 0) == 0,
+	      "and that answer is the routed one");
+	CHECK(xport_calls == 1, "which took exactly one control round trip (%d)", xport_calls);
+	calls = xport_calls;                   /* every unmarked op below adds none */
+
+	/* ── C3: nothing inside it, both directions of the ruling ───────── */
+	CHECK(policy_cwd_exempt("getattr", "/srv/app/README.md", 500) == 0,
+	      "a FILE in the project tree is not exempt");
+	CHECK(policy_project_route("getattr", "/srv/app/README.md", 500, CCU_STAT, 0) == -ENOENT,
+	      "and it is denied");
+	CHECK(policy_cwd_exempt("getattr", "/srv/app/src", 500) == 0,
+	      "a project-tier DIRECTORY that is not the root is not exempt either");
+	CHECK(policy_project_route("getattr", "/srv/app/src", 500, CCU_STAT, 0) == -ENOENT,
+	      "and it is denied");
+	CHECK(xport_calls == calls, "no control frame was sent on the unmarked caller's behalf");
+
+	/* ── C4: the op allow-list is `getattr` alone ───────────────────── */
+	CHECK(policy_cwd_exempt("opendir", "/srv/app", 500) == 0,
+	      "opendir is NOT exempt — a directory's listing is content inside it");
+	CHECK(policy_cwd_exempt("access", "/srv/app", 500) == 0,
+	      "neither is access — default_permissions means the kernel answers it");
+	for (i = 2; i < argc; i++)
+		CHECK(policy_cwd_exempt(argv[i], "/srv/app", 500) == 0,
+		      "`%s` is not exempt", argv[i]);
+
+	/* ── C6: the node's attributes, against literals ────────────────── */
+	CHECK(policy_cwd_getattr("/srv/app", &st) == 0, "the cwd node answers");
+	CHECK((st.st_mode & 07777) == 0111 && S_ISDIR(st.st_mode),
+	      "mode is a 0111 directory — enter, do not read (got %o)", st.st_mode);
+	CHECK(st.st_nlink == 2, "nlink is 2");
+	CHECK(st.st_uid == 0 && st.st_gid == 0, "uid and gid are 0");
+	CHECK(st.st_size == 0, "size is 0");
+	CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0, "all three times are 0");
+	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + 0,
+	      "the inode comes from the pin table, at the pin's own index");
+	CHECK(policy_cwd_getattr("/etc", &st) == -ENOENT,
+	      "an exact HOST pin gets no cwd node");
+	CHECK(policy_cwd_exempt("getattr", "/etc", 500) == 0,
+	      "and an unmarked caller is not exempted at one");
+
+	/* ── C7: it touches no filesystem and asks nobody ───────────────── */
+	CHECK(policy_cwd_getattr("/zzz-no-such-root-on-this-host/app", &st) == 0,
+	      "a project pin over a nonexistent host path still answers");
+	CHECK((st.st_mode & 07777) == 0111 && S_ISDIR(st.st_mode),
+	      "with the same fixed mode (got %o)", st.st_mode);
+	CHECK(st.st_nlink == 2 && st.st_uid == 0 && st.st_gid == 0 && st.st_size == 0,
+	      "and the same fixed nlink, ownership and size");
+	CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0, "and the same zero times");
+	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + 2, "and its own pin's inode");
+	CHECK(policy_cwd_exempt("getattr", "/zzz-no-such-root-on-this-host/app", 500) == 1,
+	      "and it is exempt without the path existing");
+	CHECK(xport_calls == calls,
+	      "NO FRAME AND NO CACHE ENTRY for any unmarked op: a mark arriving later "
+	      "is visible on the very next op (%d)", xport_calls);
+
+	/* THE REFUSAL LOG: the two paths under the root are refused BY NAME, and
+	 * the root itself is not refused at all. */
+	rewind(refusal_fp);
+	while (fgets(line, sizeof(line), refusal_fp)) {
+		if (strstr(line, "\tunmarked-project-denied\n") == NULL) continue;
+		if (strstr(line, "\t/srv/app/src\t"))       n_sub++;
+		if (strstr(line, "\t/srv/app/README.md\t")) n_file++;
+		if (strstr(line, "\t/srv/app\t"))           n_root++;
+	}
+	CHECK(n_file == 1, "the file's denial is logged unmarked-project-denied (%d)", n_file);
+	CHECK(n_sub == 1, "so is the subdirectory's (%d)", n_sub);
+	CHECK(n_root == 0, "and the project ROOT is refused to nobody (%d)", n_root);
+	fclose(refusal_fp);
+	refusal_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── B18: the wide advertised mirror root is NOT repaired by the exemption ── */
+/*
+ * RESIDUAL 2 OF CARD 2026-0373, RECORDED AS A TEST RATHER THAN AS PROSE.
+ *
+ * When a provider advertises `mirrorRoot: '/'`, `buildTierTable` emits TWO
+ * project pins instead of the deduped one, so an intermediate directory such as
+ * `/srv` matches the `/` pin by longest prefix: project tier with NO EXACT PIN,
+ * therefore not exempt, and a chdir to `/srv/app` still dies at `/srv`. The
+ * ruling's words are exact — every project-tier directory that is not the root
+ * stays denied — so this is not widened here. It is a pre-existing gap in a
+ * configuration the defect was never measured in (the default deduplicates to
+ * one pin) and it has a follow-up card of its own.
+ */
+static void b18_cwd_wide_mirror(void)
+{
+	pin("project\t/");
+	pin("project\t/srv/app");
+	anc_build();
+	proc_set(500, 500, 111);
+
+	CHECK(tier_of("/srv") == T_PROJECT, "an intermediate dir is project tier by longest prefix");
+	CHECK(pin_exact("/srv") == NULL, "with no exact pin of its own");
+	CHECK(policy_cwd_exempt("getattr", "/srv", 500) == 0,
+	      "so it is NOT exempt, and a chdir through it still dies");
+	CHECK(policy_cwd_exempt("getattr", "/", 500) == 1, "both EXACT pins are exempt: /");
+	CHECK(policy_cwd_exempt("getattr", "/srv/app", 500) == 1, "and /srv/app");
+}
+
 int main(int argc, char **argv)
 {
 	const char *c = argc > 1 ? argv[1] : "";
@@ -734,6 +889,8 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b14-reasons"))   b14_control_reasons();
 	else if (!strcmp(c, "b15-unreconcilable")) b15_unreconcilable();
 	else if (!strcmp(c, "b16-abandon"))   b16_abandon();
+	else if (!strcmp(c, "b17-cwd-exempt")) b17_cwd_exempt(argc, argv);
+	else if (!strcmp(c, "b18-cwd-wide-mirror")) b18_cwd_wide_mirror();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
 

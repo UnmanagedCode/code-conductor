@@ -99,8 +99,8 @@ describe('the compiled policy driver', { skip }, () => {
   //  id  | invariant                                        | mutation it must die under
   // -----|--------------------------------------------------|---------------------------
   const CASES = [
-    ['b0-parse',      'the pins parser accepts exactly five kinds and rejects `synth`',
-                      'add `synth` to the kind table, or drop the absolute-path rule'],
+    ['b0-parse',      'the pins parser accepts exactly five kinds and rejects the DERIVED `synth` and `cwd`',
+                      'add `synth` or `cwd` to the kind table, or drop the absolute-path rule'],
     ['b1-prefix',     'longest prefix wins, at a COMPONENT boundary',
                       "delete tier_of's `path[p->len] != '/'` guard"],
     ['b2-failclosed', 'an unpinned path is T_FAIL, and T_FAIL is enum index 0',
@@ -144,6 +144,11 @@ describe('the compiled policy driver', { skip }, () => {
                       'drop the dedupe, or key it on op as well'],
     ['b16-abandon',   'a project-tier abandon sends a bare DIRTY and drops the cached decision; no other tier sends anything',
                       'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit; widen the tier test'],
+    ['b17-cwd-exempt', 'an unmarked caller may getattr the EXACT project root and nothing else, from a fixed 0111 node, with no frame',
+                      'make the exemption unconditional; swap pin_exact for tier_of; widen the op test past getattr; 0111 → 0555'],
+    ['b18-cwd-wide-mirror',
+                      'a project-tier directory with no EXACT pin is not exempt, so a WIDE advertised mirror root is not repaired (residual 2)',
+                      'widen the exemption to tier_of, which would silently close a residual this card did not rule on'],
     ['b15-unreconcilable',
                       "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP, and a host-tier one does not",
                       '`return -EOPNOTSUPP` → `return 0`; the T_PROJECT test flipped or widened to every tier; EOPNOTSUPP collapsed into EROFS'],
@@ -215,6 +220,67 @@ describe('the compiled policy driver', { skip }, () => {
     // every assertion above.
     assert.equal(new Set(vectors.map(([n]) => hex[n])).size, vectors.length,
       'two flag vectors encode to the same bytes');
+  });
+
+  // ── C4: THE CWD EXEMPTION'S OP ALLOW-LIST, AS AN ENUMERATION DERIVED FROM
+  // union.c ──────────────────────────────────────────────────────────────────
+  //
+  // `getattr` is the ONLY op a chdir(2) performs against this daemon: with
+  // `default_permissions` the kernel answers `access(2)` itself, and with
+  // entry_timeout=0/attr_timeout=0 the LOOKUP and the MAY_EXEC refresh both
+  // land in `pt_getattr`. Every other op is therefore out — and `opendir` is out
+  // twice over, because a directory's LISTING is content inside it, which is the
+  // exact thing the ruling withholds.
+  //
+  // ONE LITERAL, USED TWICE: it is driven through the predicate in the fixture
+  // (where no kernel gate can mask the daemon's own answer) AND set-compared
+  // against the op strings union.c actually routes, so an op added there without
+  // being classified fails here rather than silently joining the allow-list.
+  const NOT_EXEMPT_OPS = ['access', 'chmod', 'chown', 'create', 'getxattr', 'link',
+    'listxattr', 'mkdir', 'mknod', 'open', 'opendir', 'readlink', 'removexattr',
+    'rename', 'rmdir', 'setxattr', 'statfs', 'symlink', 'truncate', 'unlink', 'utimens'];
+
+  test('the cwd exemption allows getattr and nothing else, and the set is union.c’s own', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    const routed = [...src.matchAll(/\b(?:ROUTE|route)\("([a-z]+)"/g)].map(m => m[1]);
+    assert.ok(routed.length > 20, `union.c's ops were not parsed: ${routed.length}`);
+    assert.deepEqual([...new Set(routed)].sort(), [...NOT_EXEMPT_OPS, 'getattr'].sort(),
+      'an op union.c routes is classified neither exempt nor not-exempt');
+    // …and every one of them is actually refused by the predicate.
+    const r = await run(bin, ['b17-cwd-exempt', ...NOT_EXEMPT_OPS]);
+    assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
+    const lines = r.stdout.split('\n').filter(Boolean);
+    assert.ok(lines.every(l => l.startsWith('ok ')), r.stdout);
+    for (const op of NOT_EXEMPT_OPS)
+      assert.ok(lines.some(l => l.includes(`\`${op}\` is not exempt`)), `${op} was not driven`);
+  });
+
+  // ── C8: WHERE union.c ASKS, AND WHERE IT DISPATCHES ────────────────────────
+  //
+  // The fixture cannot reach union.c, so the two-line call site is pinned from
+  // the source — as `route()`'s flags byte is, and for the same reason: every
+  // behavioural test drives `policy_cwd_exempt` directly, so a call site that
+  // was never added, or that assigned the wrong tier, would be invisible.
+  test('route() asks the exemption and pt_getattr dispatches T_CWD before SYNTHETIC', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    assert.match(src, /policy_cwd_exempt\(op, path, \(pid_t\)fuse_get_context\(\)->pid\)\)\s*\{\s*\n\s*r->tier = T_CWD;/,
+      'route() does not ask the exemption, or does not assign T_CWD');
+    const body = bodyOfIn(src, 'getattr');
+    const dispatch = body.search(/if \(r\.tier == T_CWD\)\s*\n?\s*return policy_cwd_getattr\(path, st\);/);
+    const synthetic = body.search(/if \(SYNTHETIC\(r\.tier\)\)/);
+    assert.ok(dispatch > 0, 'pt_getattr does not dispatch T_CWD to policy_cwd_getattr');
+    assert.ok(synthetic > 0, 'pt_getattr lost its SYNTHETIC branch');
+    // BEFORE the synthetic branch: T_CWD is not in the ancestor table, so
+    // `policy_synth_getattr` would answer -ENOENT for it.
+    assert.ok(dispatch < synthetic,
+      'the T_CWD branch is after SYNTHETIC(), where policy_synth_getattr answers -ENOENT first');
+    // The exemption is asked INSIDE the T_PROJECT arm, after the self-recursion
+    // guard — liveness first, and no other tier may reach it.
+    const arm = src.slice(src.indexOf('case T_PROJECT: {'), src.indexOf('case T_FAIL:'));
+    assert.ok(arm.indexOf('caller_is_self()') < arm.indexOf('policy_cwd_exempt('),
+      'the exemption is asked before the self-recursion guard');
+    assert.ok(arm.indexOf('policy_cwd_exempt(') < arm.indexOf('policy_project_route('),
+      'the exemption is asked after the project route, so it can never fire');
   });
 
   // WHICH OP BODIES ASK. `policy_mutation_check` owns the EROFS answer and

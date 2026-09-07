@@ -65,8 +65,15 @@
  * T_SYNTH is DERIVED, never parsed from the pins file: `pins_load` rejects it
  * as an unknown kind. See the ancestor derivation below for why it has to
  * exist at all.
+ *
+ * T_CWD is the SECOND derived class and the ONLY CALLER-DEPENDENT one: the
+ * narrow cwd exemption (below) assigns it in `route()` for an unmarked caller
+ * at the exact project pin, and nowhere else. `pins_load` rejects `cwd` as an
+ * unknown kind exactly as it rejects `synth`, and `resolve_class` never returns
+ * it — so it cannot enter the pins file the hook's tier table is rendered from.
+ * Appended, so T_FAIL keeps index 0.
  */
-enum tier { T_FAIL = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH };
+enum tier { T_FAIL = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH, T_CWD };
 
 static inline const char *tier_name(enum tier t)
 {
@@ -76,6 +83,7 @@ static inline const char *tier_name(enum tier t)
 	case T_HIDE:    return "hide";
 	case T_BIND:    return "bind";
 	case T_SYNTH:   return "synth";
+	case T_CWD:     return "cwd";
 	case T_FAIL:    break;
 	}
 	return "fail";
@@ -295,6 +303,19 @@ static inline enum tier resolve_class(const char *path)
  */
 static inline unsigned long long policy_bind_ino(const char *path);
 
+/* A fixed directory node's attributes. The MODE is the caller's, because the
+ * two classes make two different statements and each is pinned on its own. */
+static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long long ino)
+{
+	memset(st, 0, sizeof(*st));
+	st->st_mode  = S_IFDIR | mode;
+	st->st_nlink = 2;
+	st->st_uid   = 0;
+	st->st_gid   = 0;
+	st->st_size  = 0;
+	st->st_ino   = ino;
+}
+
 static inline int policy_synth_getattr(const char *path, struct stat *st)
 {
 	int idx = anc_find(path);
@@ -306,21 +327,23 @@ static inline int policy_synth_getattr(const char *path, struct stat *st)
 		ino = policy_bind_ino(path);
 	else
 		return -ENOENT;
-	memset(st, 0, sizeof(*st));
-	st->st_mode  = S_IFDIR | 0555;
-	st->st_nlink = 2;
-	st->st_uid   = 0;
-	st->st_gid   = 0;
-	st->st_size  = 0;
-	st->st_ino   = ino;
+	/* 0555 HERE AND 0111 AT THE CWD NODE, AND THEY MUST NOT BE UNIFIED.
+	 * A synthetic ancestor is read-only scaffolding a caller may LIST — it
+	 * exists so a pinned leaf is reachable, and `ls /` inside the chroot is
+	 * how the pin set is inspected. The cwd node is a directory an unmarked
+	 * spawn may ENTER AND NOT READ. Unifying them would either hand an
+	 * unmarked caller the project root's listing or take traversal away from
+	 * the ancestors. */
+	policy_fixed_dir(st, 0555, ino);
 	return 0;
 }
 
 /*
- * A `bind` node needs an inode too — bootstrap.sh mounts the orchestrator's own
- * /proc, /sys and /dev over these three, and a bind target has to exist as a
- * directory first. They are not in the ancestor set (they carry an exact pin),
- * so they take an index past its end.
+ * THE INODE OF AN EXACTLY-PINNED NODE, for the two fixed-node classes that need
+ * one. A `bind` target: bootstrap.sh mounts the orchestrator's own /proc, /sys
+ * and /dev over these three, and a bind target has to exist as a directory
+ * first. And the cwd node the narrow exemption serves. Neither is in the
+ * ancestor set (both carry an exact pin), so they take an index past its end.
  */
 static inline unsigned long long policy_bind_ino(const char *path)
 {
@@ -962,6 +985,66 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
 		return;
 	cache_invalidate(path);
 	(void)ccu_call(CCU_DIRTY, 0, path);
+}
+
+/* ── the narrow cwd exemption ───────────────────────────────────────────── */
+/*
+ * AN UNMARKED CALLER MAY RESOLVE THE PROJECT ROOT DIRECTORY, AND NOTHING INSIDE IT.
+ *
+ * WHY IT HAS TO EXIST. A spawn chdir()s into the CLI's cwd IN THE FORKED CHILD,
+ * before it execs — so the caller is a new, unmarked thread group, and the
+ * project-tier denial kills the process before its own image runs. Every child
+ * the CLI spawns at its own cwd died of this (card 2026-0373).
+ *
+ * WHY IT IS EXACTLY THIS NARROW. Marking exists to stop a custom backend
+ * template's proxy setup, spawned by the CLI before `claude` runs, from reading
+ * remote bytes. A directory a spawn ENTERS is not a channel for reading bytes.
+ * A file is, and so is a listing. So: the exact project root, `getattr` alone,
+ * a fixed traverse-only node, and no control frame.
+ *
+ * FOUR CONDITIONS, ALL NECESSARY, AND THIS IS THE WHOLE DECISION — union.c's
+ * route() only asks. Keeping the conjunction here is what makes it provable from
+ * the unit fixture, where the real mount's kernel gate cannot mask it.
+ *
+ * ADDING AN OP HERE ALSO MEANS GIVING THAT OP'S BODY A T_CWD ARM. The op
+ * enumeration in tests/fuse-union-policy.test.mjs is what forces the decision.
+ */
+static inline int policy_cwd_exempt(const char *op, const char *path, pid_t tid)
+{
+	const struct pin *p = pin_exact(path);
+
+	/* EXACTLY a project pin. A path UNDER one is a file or a subdirectory and
+	 * stays denied, which is why this is pin_exact and not tier_of. */
+	if (!p || p->tier != T_PROJECT)
+		return 0;
+	if (strcmp(op, "getattr") != 0)
+		return 0;
+	/* MARKED CALLERS ARE NOT EXEMPTED — they get the real routed answer, from
+	 * the mirror, with its control frame. Last, because it is the only step
+	 * that reads /proc. */
+	return !policy_is_marked_tid(tid);
+}
+
+/*
+ * THE PROJECT ROOT AS AN UNMARKED CALLER SEES IT: 0111 root:root, nlink 2, size
+ * 0, all three times 0, and an inode from the pin table.
+ *
+ * 0111 AND NOT 0555, AND THAT IS THE RULING IN THE MODE BITS. `d--x--x--x` says
+ * "you may enter, you may not read" — so with default_permissions the KERNEL
+ * refuses an unmarked `opendir` before this daemon is ever asked, and `stat`
+ * succeeding while a listing refuses is a coherent POSIX shape rather than the
+ * one-caller-two-answers defect criterion 1 exists to remove. The daemon's op
+ * allow-list above is the second gate, and it is the only one for a caller with
+ * CAP_DAC_READ_SEARCH.
+ */
+static inline int policy_cwd_getattr(const char *path, struct stat *st)
+{
+	const struct pin *p = pin_exact(path);
+
+	if (!p || p->tier != T_PROJECT)
+		return -ENOENT;
+	policy_fixed_dir(st, 0111, policy_bind_ino(path));
+	return 0;
 }
 
 /* ── the project tier's whole decision, in one place ────────────────────── */

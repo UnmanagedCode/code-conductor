@@ -108,9 +108,12 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
   //
   // IT STAYS OFF, on a different reason. The CLI shells out to run that git
   // itself, unmarked and outside cc's remote-forwarded Bash tool — and the
-  // union's project tier has NO host side by design (union.c:903-909), so an
-  // unmarked caller there gets the remote's copy or `-ENOENT`, never a usable
-  // working tree. Guidance derived from that is worse than none.
+  // union's project tier has NO host side by design (`policy_project_route` in
+  // src/systems/fuse/policy.h), so an unmarked caller there gets `-ENOENT`,
+  // never a usable working tree. Guidance derived from that is worse than none.
+  // The narrow cwd exemption (card 2026-0373) changes only WHERE that spawn
+  // dies: it now starts, chdir's into the project root, and dies at its first
+  // project-tier read instead of at its chdir.
   //
   // Chosen over CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: 2.1.250 reads that var as
   // `e !== undefined ? !e : settings.includeGitInstructions ?? true`, so "0"
