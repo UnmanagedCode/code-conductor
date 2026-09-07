@@ -112,7 +112,7 @@ function assertNoResidue(before, runRoot, record, label) {
 }
 
 describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENABLED }, () => {
-  let ctx, baseUrl, instances, home, box, runRoot;
+  let ctx, baseUrl, instances, home, box, runRoot, fakeRemote, prevFakeRemote;
   // Reported, not asserted on: the wall time of a spawn and of one turn, inside
   // the chroot and outside it. S3's "Not measured" section names the cost of
   // attr_timeout=0/entry_timeout=0 as the more important of its two unmeasured
@@ -142,7 +142,21 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // and was absent from the host.
     box = await fs.realpath(await mkdtemp('cc-fuse-box-'));
     await seedRepo(path.join(box, 'app'));
-    await fs.writeFile(path.join(box, 'app', 'remote-marker.txt'), 'SYSTEM-SIDE-PROJECT-FILE\n');
+    await fs.writeFile(path.join(box, 'app', 'remote-marker.txt'), 'HOST-SIDE-COPY\n');
+
+    // THE FAKE REMOTE, AND ITS BYTES DIFFER FROM THE HOST'S AT THE SAME PATH.
+    // That is the whole reason the override exists: S1's bind-mount stand-in
+    // made the two identical, and criteria 3 and 4 are only checkable when a
+    // reader can tell which side answered. The tree MIRRORS the host layout, so
+    // `<fakeRemote>/<projectPath>` is the project's own path on "the system".
+    fakeRemote = await fs.realpath(await mkdtemp('cc-fuse-remote-'));
+    await fs.mkdir(path.join(fakeRemote, box, 'app'), { recursive: true });
+    await fs.writeFile(path.join(fakeRemote, box, 'app', 'remote-marker.txt'), 'SYSTEM-SIDE-PROJECT-FILE\n');
+    // R3's non-vacuity control writes here — a project-tier directory that
+    // really is writable, so an EROFS elsewhere is the node's answer.
+    await fs.mkdir(path.join(fakeRemote, box), { recursive: true });
+    prevFakeRemote = process.env.CC_FUSE_FAKE_REMOTE_ROOT;
+    process.env.CC_FUSE_FAKE_REMOTE_ROOT = fakeRemote;
 
     await addSystem({ id: 'fusebox', label: 'fusebox', launch: ['node', FIXTURE] });
     assert.equal((await adoptProject('app', path.join(box, 'app'), { system: 'fusebox' })).ok, true);
@@ -175,6 +189,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       const f = (k) => rows.map(r => r[k]).join('/');
       console.log(`fuse gate timing [${where}] n=${rows.length} spawn→idle ms: ${f('spawnMs')} | turn ms: ${f('turnMs')}`);
     }
+    if (prevFakeRemote === undefined) delete process.env.CC_FUSE_FAKE_REMOTE_ROOT;
+    else process.env.CC_FUSE_FAKE_REMOTE_ROOT = prevFakeRemote;
     if (ctx) await ctx.instances.shutdown();
     disposeSystemHandles();
     if (home) await rmrf(home);
@@ -238,11 +254,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assert.ok(workerRoot && workerRoot !== '/', `the worker's root is ${workerRoot}, i.e. not chrooted`);
     assert.equal(workerRoot, record.root);
 
-    // The stand-in remote's bytes are behind the project tier — the mechanism
-    // criterion 7 rests on, with NO transport (see plan.ts's stand-in label).
-    const seen = await sh('sudo', ['-n', 'nsenter', `--mount=/proc/${record.anchorPid}/ns/mnt`, '--',
-      'cat', path.join(record.root, box, 'app', 'remote-marker.txt')]);
-    assert.match(seen.stdout, /SYSTEM-SIDE-PROJECT-FILE/, seen.stderr);
+    // What a project path answers, and to WHOM, is R2's subject — an nsenter
+    // process is unmarked by construction and criterion 6 denies it there.
 
     await instances.remove(inst.id);
     assertNoResidue(before, runRoot, record, 'arm 1 cleanup');
@@ -308,7 +321,15 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     const record = await readRecord(inst.id);
     assert.ok(record);
 
-    inst._fuse = null;               // cc's memory of the mount, gone with the process
+    // cc's memory of the mount, gone with the process. A REAL restart takes
+    // cc's whole process with it, so the control socket goes with the fd table;
+    // this arm keeps the process alive, so it has to release by hand what dying
+    // would have released — otherwise it leaves a listening server behind for
+    // the rest of the file. The daemon survives it either way: a dropped
+    // control channel makes project ops -EIO, which is what the sweep then
+    // reclaims around.
+    await inst._fuse.controlServer?.close();
+    inst._fuse = null;
     instances.shutdownForResumeSync();
     instances.byId.delete(inst.id);
     await waitFor(() => inst.proc === null, { timeout: 20_000 });
@@ -383,7 +404,10 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         '/bin/sh', '-c',
         // stdio detached, or `sudo` waits on the backgrounded process's
         // inherited stdout for the whole 300 s.
-        'cd "$1" && { sleep 300 </dev/null >/dev/null 2>&1 & echo $!; }', 'sh', path.join(record.root, 'srv')]);
+        // `/usr` inside the chroot is a SYNTHETIC node, 0555 and traversable —
+        // and under the fail-closed tier an unpinned `/srv` no longer exists at
+        // all, which is what this arm used before S2.
+        'cd "$1" && { sleep 300 </dev/null >/dev/null 2>&1 & echo $!; }', 'sh', path.join(record.root, 'usr')]);
       holderPid = Number(started.stdout.trim());
       holderStart = startOf(holderPid);
       assert.ok(holderPid > 1 && holderStart, `the holder did not start: ${started.stderr}`);
@@ -487,6 +511,317 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assert.deepEqual(runDirsAfter, runDirsBefore,
       `the refused spawn created ${JSON.stringify(runDirsAfter.filter(d => !runDirsBefore.includes(d)))}`);
   });
+  // ══ S2's ARMS ═════════════════════════════════════════════════════════════
+  //
+  // R1-R6 (plan 2026-0355 §11.3). These need a real mount, a real chroot and a
+  // real second process in the namespace, so they cannot be deterministic. The
+  // policy split does not retire them: it moved what CAN be proven without a
+  // mount into `tests/fuse-union-policy.test.mjs`, and what is left here is
+  // exactly the remainder that table names.
+
+  // A command run INSIDE the namespace, at uid 1000, in ONE process — which is
+  // what makes marking observable at all. `[ -e ]` and `read` are shell
+  // BUILTINS, so both the marking stat and the subsequent open are made by the
+  // shell's own thread group; a `cat` would be a child with its own tgid and
+  // would answer the unmarked question instead.
+  const inNs = (anchorPid, script, ...args) => sh('sudo', ['-n', 'nsenter',
+    `--mount=/proc/${anchorPid}/ns/mnt`, '--',
+    'setpriv', `--reuid=${process.getuid()}`, `--regid=${process.getgid()}`, '--init-groups', '--',
+    '/bin/sh', '-c', script, 'sh', ...args]);
+
+  // The same, as ROOT. `default_permissions` makes the KERNEL check the caller
+  // against the node's own mode before the daemon is ever asked, and a
+  // synthetic node is 0555 root:root — so a uid-1000 probe gets EACCES from the
+  // kernel and never reaches the arm the daemon owns. Root passes that check,
+  // which is what makes the daemon's own answer observable.
+  const inNsRoot = (anchorPid, script, ...args) => sh('sudo', ['-n', 'nsenter',
+    `--mount=/proc/${anchorPid}/ns/mnt`, '--', '/bin/sh', '-c', script, 'sh', ...args]);
+
+  // nsenter does NOT chroot, so a probe names every path from OUTSIDE, under
+  // `record.root`. The union sees the suffix, which is the spelling the pins
+  // and the mark path are written in.
+  const inside = (record, p) => path.join(record.root, p);
+
+  const refusalsOf = async (instanceId) =>
+    (await fs.readFile(path.join(fuseRunDir(instanceId), 'refusals.log'), 'utf8').catch(() => ''))
+      .split('\n').filter(Boolean).map(l => l.split('\t'));
+
+  // ── R1 ───────────────────────────────────────────────────────────────────
+  // PINS criterion 1: ONE PATH SPELLING. The CLI's cwd inside the chroot, the
+  // path a file tool may name, and the directory the forwarded Bash tool lands
+  // in are the same string — the whole point of host pins keeping their exact
+  // spelling and of the project tier being mounted at its real remote path.
+  //
+  // WHAT THIS ARM DOES NOT DO, stated so it is not read as more: it does not
+  // drive the CLI's own tool calls. The fake CLI emits tool_use events and
+  // never executes a tool, so the file-tool half is asserted through the same
+  // `classifyForTool` the hook calls, and the Bash half through the same
+  // forwarder a real Bash tool would reach.
+  test('R1 — the CLI cwd, the file-tool path and Bash’s pwd are one spelling', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const p = path.join(box, 'app');
+      assert.equal(inst.cwd, p, 'the CLI cwd is not the project’s path on its system');
+
+      // The FILE-TOOL half, from the one artifact the hook decides from.
+      const { classifyForTool } = await import('../src/systems/fuse/tierTable.ts');
+      const redirect = inst._redirect;
+      const decision = classifyForTool(redirect.tiers, {
+        exclude: [], mirrorRoot: p, systemId: 'fusebox', systemPath: p,
+      }, path.join(p, 'remote-marker.txt'));
+      assert.equal(decision.decision, 'allow', JSON.stringify(decision));
+
+      // The BASH half, through the forwarder — it execs on the system, so its
+      // `pwd` is the answer about the machine the worker is asking about.
+      // The BASH half runs on the SYSTEM, through the same `execOneShot` the
+      // forwarder reaches, at the same cwd — so `pwd` there and the CLI's cwd
+      // here are one string or the arm fails.
+      const system = inst._redirectPlacement.system;
+      assert.equal(inst._redirectPlacement.systemPath, p, 'the forwarder’s cwd is not the CLI’s');
+      const out = await system.execOneShot({ shell: 'pwd' }, { cwd: p, timeoutMs: 30_000, stdin: 'ignore' });
+      assert.match(String(out.stdout ?? ''), new RegExp(`(^|\n)${p}(\n|$)`),
+        `Bash’s pwd is ${JSON.stringify(out.stdout)} (${out.stderr})`);
+
+      // And the same path answers inside the chroot, to a MARKED caller.
+      const record = await readRecord(inst.id);
+      const seen = await inNs(record.anchorPid,
+        '[ -e "$1" ]; read l < "$2" || exit 7; echo "$l"',
+        inside(record, inst._fuse.plan.markPath), inside(record, path.join(p, 'remote-marker.txt')));
+      assert.match(seen.stdout, /SYSTEM-SIDE-PROJECT-FILE/, `${seen.stdout} ${seen.stderr}`);
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R1');
+  });
+
+  // ── R2 ───────────────────────────────────────────────────────────────────
+  // PINS criteria 3 and 6 end to end, and it is only checkable because the fake
+  // remote's bytes DIFFER from the host's at the same path.
+  //
+  //   a marked caller at a project path  → the SYSTEM's bytes
+  //   an unmarked caller at the same one → -ENOENT. Never the remote's copy,
+  //                                        and never a host fallback.
+  //   either caller at a host pin        → the HOST's bytes, alike.
+  test('R2 — a project path answers the system to a marked caller and ENOENT to an unmarked one', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const projFile = inside(record, path.join(box, 'app', 'remote-marker.txt'));
+      const mark = inside(record, inst._fuse.plan.markPath);
+
+      const marked = await inNs(record.anchorPid,
+        '[ -e "$1" ]; read l < "$2" || exit 7; echo "$l"', mark, projFile);
+      assert.match(marked.stdout, /SYSTEM-SIDE-PROJECT-FILE/,
+        `a marked caller did not get the system’s bytes: ${marked.stdout} ${marked.stderr}`);
+      assert.doesNotMatch(marked.stdout, /HOST-SIDE-COPY/,
+        'the HOST’s copy surfaced inside the project tier');
+
+      // THE SAME COMMAND WITHOUT THE MARKING STAT. One token of difference, so
+      // the deny cannot be attributed to anything else about the caller.
+      const unmarked = await inNs(record.anchorPid, 'read l < "$1" || exit 7; echo "$l"', projFile);
+      assert.equal(unmarked.ok, false, `an unmarked caller was served: ${unmarked.stdout}`);
+      assert.doesNotMatch(unmarked.stdout, /SYSTEM-SIDE-PROJECT-FILE|HOST-SIDE-COPY/,
+        'an unmarked caller got bytes from one side or the other');
+
+      // …and a HOST PIN is served to that same unmarked caller.
+      // A REAL host pin — ETC_PINS names /etc/hosts, and a path that merely
+      // looks host-ish (/etc/hostname) is `fail` like anything unpinned, which
+      // would make this arm pass for the wrong reason.
+      const hostPin = inside(record, '/etc/hosts');
+      const both = await inNs(record.anchorPid, 'read l < "$1" || exit 7; echo "$l"', hostPin);
+      assert.equal(both.ok, true, `a host pin was denied to an unmarked caller: ${both.stderr}`);
+      assert.equal(both.stdout.trim(), (await fs.readFile('/etc/hosts', 'utf8')).split('\n')[0].trim(),
+        'the host pin did not answer with the orchestrator’s own file');
+
+      // And the denial is in the log, by name.
+      const refusals = await refusalsOf(inst.id);
+      assert.ok(refusals.some(r => r[2] === 'unmarked-project-denied'),
+        `no unmarked-project-denied entry: ${JSON.stringify(refusals)}`);
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R2');
+  });
+
+  // ── R3 ───────────────────────────────────────────────────────────────────
+  // PINS the pin-derivation gate AND risk K4: under `T_FAIL` at enum index 0
+  // the mount comes up at all, and `bootstrap.sh`'s three `mount --bind`s land
+  // on SYNTHETIC mountpoints. A `mount --bind` onto a FUSE synthetic node that
+  // the kernel refused would kill every launch, and the named contingency was
+  // to render the three as `host` pins of empty directories instead.
+  test('R3 — the mount comes up fail-closed and the three binds land on synthetic nodes', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const nsMounts = mountsOf(record.daemonPid) ?? [];
+      for (const b of ['/proc', '/sys', '/dev']) {
+        assert.ok(nsMounts.includes(path.join(record.root, b)),
+          `${b} was not bind-mounted onto its synthetic node: ${JSON.stringify(nsMounts.filter(m => m.startsWith(record.root)))}`);
+      }
+      // The synthetic node answers ITS OWN fixed attributes, not the host
+      // directory's — the assertion the unit driver cannot make because it
+      // cannot reach pt_getattr. `/usr` exists on the host with a real mtime
+      // and 0755; inside the chroot it is a scaffold.
+      const st = await inNs(record.anchorPid, 'stat -c "%a %u %g %Y" "$1"', inside(record, '/usr'));
+      assert.equal(st.ok, true, st.stderr);
+      assert.equal(st.stdout.trim(), '555 0 0 0',
+        `the synthetic /usr answered the host’s attributes: ${st.stdout}`);
+      // And it is READ-ONLY, with EROFS rather than EACCES — AS ROOT, because
+      // at uid 1000 `default_permissions` answers EACCES from the kernel before
+      // the daemon is consulted and the arm under test is never reached.
+      const wr = await inNsRoot(record.anchorPid, 'rmdir "$1" 2>&1 || true', inside(record, '/usr'));
+      assert.match(wr.stdout, /[Rr]ead-only file system/, `a synthetic node accepted a mutation: ${wr.stdout}`);
+      // A CHILD of a synthetic dir is a different answer, and worth pinning
+      // beside it: unpinned, so fail-closed -ENOENT rather than EROFS. The two
+      // together say the synthetic tree is a scaffold and not a writable one.
+      const child = await inNsRoot(record.anchorPid, 'mkdir "$1" 2>&1 || true', inside(record, '/usr/nope'));
+      assert.match(child.stdout, /No such file or directory/, `an unpinned path under a synthetic dir was created: ${child.stdout}`);
+      // THE CONTROL THAT MAKES BOTH NON-VACUOUS: a write at a PROJECT path
+      // succeeds, so EROFS and ENOENT above are those nodes' answers and not a
+      // blanket read-only mount.
+      //
+      // It has to be a shell REDIRECTION, not `mkdir`: `mkdir` is an external
+      // binary and therefore its own thread group, which the `[ -e ]` before it
+      // did not mark — so it would be denied for the right reason and read as
+      // the union refusing everything.
+      const probe = path.join(box, 'app', 'writable-probe');
+      // AT UID 1000, like the worker itself: the two probes above need root
+      // only to get past `default_permissions` on a 0555 node, and a write into
+      // the project tier has no such obstacle — the mirror is cc-owned.
+      const wok = await inNs(record.anchorPid,
+        '[ -e "$1" ]; echo PUSHED > "$2" && echo MADE',
+        inside(record, inst._fuse.plan.markPath), inside(record, probe));
+      if (!/MADE/.test(wok.stdout)) {
+        const rl = (await refusalsOf(inst.id)).map(r => r.join('\t')).join('\n');
+        const mdir = await fs.readdir(path.join(fuseRunDir(inst.id), 'mirror', box, 'app')).catch(e => String(e));
+        assert.fail(`the union refused a project write: ${wok.stdout} ${wok.stderr}\nrefusals:\n${rl}\nmirror <box>/app: ${JSON.stringify(mdir)}`);
+      }
+
+      // AND THE PUSH LANDED ON THE SYSTEM. `pt_release` sends DIRTY for a
+      // handle that was opened writable, and cc copies the mirror's copy back
+      // to the source — criterion 8's second half, end to end. READY means cc
+      // took ownership of the push, so the await here is for the copy, not for
+      // an acknowledgement the frame does not carry.
+      const onSystem = path.join(fakeRemote, probe);
+      await waitFor(async () => await fs.readFile(onSystem, 'utf8').then(t => t.includes('PUSHED')).catch(() => false),
+        { timeout: 15_000 });
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R3');
+  });
+
+  // ── R4 ───────────────────────────────────────────────────────────────────
+  // PINS the acceptance the spike used and the loop plan §13 K1 iterates
+  // against: after a full turn the refusal log contains nothing the CLI NEEDED.
+  //
+  // "Needed" is made falsifiable rather than left to judgement: no entry may
+  // name a path the worker went on to fail over — the turn completed — and no
+  // entry may carry a reason that means cc could not answer
+  // (`control-unavailable`) or would not (`control-refused`). Entries that
+  // remain are negative lookups, which answer identically pinned or not, and
+  // they are PRINTED so the next derivation iteration has its input.
+  test('R4 — after a full turn the refusal log names nothing the worker needed', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const refusals = await refusalsOf(inst.id);
+      console.log(`fuse gate [R4] refusal log after one turn (${refusals.length} entries):\n`
+        + refusals.map(r => '  ' + r.join('\t')).join('\n'));
+      const fatal = refusals.filter(r => r[2] === 'control-unavailable' || r[2] === 'control-refused');
+      assert.deepEqual(fatal, [], `cc failed to answer for: ${JSON.stringify(fatal)}`);
+      // A fail-closed path INSIDE the project tree would mean the tier table
+      // and the mirror root disagree, which is the one class the loop cannot
+      // dismiss as a negative lookup.
+      const inProject = refusals.filter(r => r[1].startsWith(path.join(box, 'app')));
+      assert.deepEqual(inProject, [], `a project path was refused: ${JSON.stringify(inProject)}`);
+      // NON-VACUITY: the log is a live instrument, not an empty file that would
+      // satisfy every filter above. R2 proves it records; here it must exist.
+      await fs.access(path.join(fuseRunDir(inst.id), 'refusals.log'));
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R4');
+  });
+
+  // ── R5 ───────────────────────────────────────────────────────────────────
+  // PINS criterion 9: the per-session mirror is OUTSIDE the chroot and has NO
+  // spelling inside it, and it goes with the session. A18 pins the geometry
+  // deterministically; this pins that the daemon actually answers -ENOENT for
+  // it, which is the half a plan file cannot establish.
+  test('R5 — the run directory is unreachable from inside the chroot and dies with the session', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    const rundir = fuseRunDir(inst.id);
+    try {
+      const record = await readRecord(inst.id);
+      // Its own spelling, from inside: the chroot re-roots at record.root, so
+      // the rundir's absolute path is asked of the union as-is.
+      for (const hidden of [rundir, path.join(rundir, 'mirror'), path.join(rundir, 'control.sock')]) {
+        const probe = await inNs(record.anchorPid,
+          '[ -e "$1" ] && echo PRESENT || echo ABSENT', inside(record, hidden));
+        assert.match(probe.stdout, /ABSENT/, `${hidden} is reachable from inside the chroot`);
+      }
+      // NON-VACUITY: the mirror really was populated on the outside, so ABSENT
+      // above is the tier answering rather than an empty tree. The CLI's own
+      // `cd` into the project is what materialised this directory.
+      await fs.access(path.join(rundir, 'mirror', box, 'app'));
+    } finally {
+      await instances.remove(inst.id);
+    }
+    await assert.rejects(() => fs.stat(rundir), 'the mirror outlived the session');
+    assertNoResidue(before, runRoot, null, 'R5');
+  });
+
+  // ── R6 ───────────────────────────────────────────────────────────────────
+  // PINS risk K3: cc's control server dying mid-session surfaces -EIO and NOT a
+  // wedge. Without the bounded receive timeout and the connection drop, a
+  // daemon thread blocked on a reply sits in an uninterruptible FUSE wait and
+  // the mount is only recoverable by aborting the connection.
+  //
+  // AND IT MUST NOT BE A HOST FALLBACK: a daemon that cannot reach cc serving
+  // the host looks exactly like a containment success.
+  test('R6 — killing cc’s control server surfaces EIO, not a wedge, and teardown is still clean', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    const record = await readRecord(inst.id);
+    try {
+      const mark = inside(record, inst._fuse.plan.markPath);
+      const projFile = inside(record, path.join(box, 'app', 'remote-marker.txt'));
+      // Warm it first, so the failure below is attributable to the close and
+      // not to the path never having worked.
+      const warm = await inNs(record.anchorPid, '[ -e "$1" ]; read l < "$2" || exit 7; echo "$l"', mark, projFile);
+      assert.match(warm.stdout, /SYSTEM-SIDE-PROJECT-FILE/, warm.stderr);
+
+      await inst._fuse.controlServer.close();
+
+      const t0 = Date.now();
+      // A DIFFERENT path, so the daemon's resolution cache cannot answer it.
+      const dead = await inNs(record.anchorPid, '[ -e "$1" ]; read l < "$2" || exit 7; echo "$l"',
+        mark, inside(record, path.join(box, 'app', 'README.md')));
+      const elapsed = Date.now() - t0;
+      assert.equal(dead.ok, false, `a project path answered with no control channel: ${dead.stdout}`);
+      // BOUNDED, and far under CONTROL_TIMEOUT_MS (120 s): the close drops the
+      // connection, so the blocked call returns at once rather than sitting out
+      // the receive timeout.
+      assert.ok(elapsed < 30_000, `the op took ${elapsed}ms — it waited out the timeout instead of failing`);
+      assert.doesNotMatch(dead.stdout, /HOST-SIDE-COPY/, 'a dead channel fell back to the host');
+      assert.match(dead.stderr, /I\/O error|Input\/output error/i, `expected EIO, got: ${dead.stderr}`);
+
+      // The daemon is still alive and the mount is still there — an -EIO is an
+      // op failing, not the filesystem going away.
+      assert.ok(alive(record.daemonPid, record.daemonStart), 'the daemon died instead of answering EIO');
+    } finally {
+      await instances.remove(inst.id);
+    }
+    // AND TEARDOWN IS STILL CLEAN, which is the half that says it was not a wedge.
+    assertNoResidue(before, runRoot, record, 'R6');
+    await assert.rejects(() => fs.stat(fuseRunDir(inst.id)), 'the run directory was not reclaimed');
+  });
+
   // ── ARM 7 ────────────────────────────────────────────────────────────────
   // PINS: nothing this run started is still running, established WITHOUT
   // reading mount.json. Ordered last in the file so it sees every earlier arm's

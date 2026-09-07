@@ -576,6 +576,12 @@ export class FuseSession {
 
   get ccBootId(): string { return this.#ccBootId; }
 
+  // The live control server, or null once torn down. Exposed because the real
+  // gate has to kill it MID-TURN to measure that a wedged cc becomes -EIO and a
+  // recoverable teardown rather than an unkillable D state (R6) — there is no
+  // other way to produce that state without killing cc itself.
+  get controlServer(): ControlServer | null { return this.#control; }
+
   // The launcher seam's transform for THIS session. A getter rather than a
   // stored closure so a caller that reaches for it before the binary is
   // resolved fails loudly instead of spawning an unwrapped CLI — which would
