@@ -341,6 +341,18 @@ test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBy
       await sys.symlink('three', p('overme'));
       out.symlinkOverFile = await sys.readlink(p('overme'));
 
+      // …AND OVER A REAL DIRECTORY, which is the case the three above cannot
+      // reach and the only one where the two ever disagreed. MEASURED before
+      // the fix: `ln -sfn -- t d` exits 0 having created `d/t`, so the wire
+      // side reported SUCCESS having landed the link somewhere nobody asked
+      // for, while `LocalSystem` threw. Both must refuse, with the same code,
+      // and the directory must be untouched afterwards.
+      await fs.mkdir(p('realdir'));
+      await fs.writeFile(p('realdir/kid'), 'x');
+      out.symlinkOverDir = await codeOf(() => sys.symlink('four', p('realdir')));
+      out.dirSurvived = (await sys.lstat(p('realdir'))).kind;
+      out.dirKeptKids = (await sys.readDir(p('realdir'))).map(e => e.name);
+
       // `removeEntry` on a symlink takes the LINK, never the target.
       await sys.symlink(p('dir/file'), p('doomed'));
       await sys.removeEntry(p('doomed'));
@@ -382,6 +394,10 @@ test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBy
   assert.deepEqual(a.fullDirKept.map(e => e.name), ['kid'], 'the refusal kept the children');
 
   assert.deepEqual([a.symlinkFresh, a.symlinkOverLink, a.symlinkOverFile], ['one', 'two', 'three']);
+  assert.equal(a.symlinkOverDir.ok, false, 'a symlink silently landed INSIDE the directory instead of refusing');
+  assert.equal(a.symlinkOverDir.code, 'EISDIR');
+  assert.equal(a.dirSurvived, 'dir');
+  assert.deepEqual(a.dirKeptKids, ['kid'], 'the refusal left the directory and its children alone');
   assert.deepEqual(a.linkGoneTargetStayed, [null, 'file']);
 
   assert.equal(a.binary, BINARY.toString('hex'), 'a NUL and a 0xFF survive the wire unmangled');
@@ -389,22 +405,33 @@ test('lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBy
   assert.equal(a.binaryPair.ok, false);
 });
 
-// A DIVERGENCE PINNED RATHER THAN HIDDEN. `fs.readlink` of a non-symlink is
-// EINVAL, which is not in FS_ERROR_CODES; `readlink -v` says "Invalid argument"
-// and classifyStderr has no row for it, so the wire side answers EUNKNOWN.
+// REPAIRED RATHER THAN PINNED. `fs.readlink` of a non-symlink is EINVAL, and
+// `readlink -v` says "Invalid argument" — the same failure, observed by both
+// sides, which for a while cc answered `EUNKNOWN` to on the wire and `EINVAL`
+// to locally. The first cut of this file pinned that as a divergence.
 //
-// Not repaired here: adding EINVAL widens a CLOSED taxonomy (docs
-// /systems-protocol.md §8, the conformance completeness check, the classifier
-// table) for a case no caller in cc branches on — `systemSource` reads a link's
-// target out of `lstat`'s `%l` and never calls `readlink` at all. Pinned so the
-// next reader finds the fact instead of the symptom, and so a repair reds here.
-test('readlink of a non-symlink is the one error code the two do NOT share', async () => {
+// THE CLOSED-TAXONOMY ARGUMENT FOR KEEPING IT RAN BACKWARDS: the taxonomy is
+// closed SO THAT every error a real call can produce is named, so an errno a
+// genuine call produces and cc cannot name is exactly what the closure exists
+// to prevent — a caller cannot tell "that is not a symlink" from "the box
+// hiccuped". One `FS_ERROR_CODES` entry and one classifier row, and the
+// conformance suite's "every code is produced by a real failure" case is
+// satisfied by the very call below. A permanent case titled "the one code the
+// two do NOT share", inside a suite whose stated invariant is that they agree
+// on error codes, was the worse outcome.
+test('readlink of a non-symlink is EINVAL on both, not EUNKNOWN on one', async () => {
   const [a, b] = await both(
     async (root) => { await fs.writeFile(path.join(root, 'plain'), 'x'); },
-    async (sys, root) => codeOf(() => sys.readlink(path.join(root, 'plain'))),
+    async (sys, root) => ({
+      nonLink: await codeOf(() => sys.readlink(path.join(root, 'plain'))),
+      // The control that keeps this about the KIND and not about the path:
+      // absence is still ENOENT, and the two must not have collapsed together.
+      missing: await codeOf(() => sys.readlink(path.join(root, 'nope'))),
+    }),
   );
-  assert.equal(a.code, 'EINVAL', 'LocalSystem passes node errno through');
-  assert.equal(b.code, 'EUNKNOWN', 'the derivation has no classifier row for "Invalid argument"');
+  assert.deepEqual(a, b);
+  assert.equal(a.nonLink.code, 'EINVAL');
+  assert.equal(a.missing.code, 'ENOENT');
 });
 
 // DERIVED FROM THE PROTOTYPE, NOT TRANSCRIBED. A member added to `System`
@@ -424,6 +451,7 @@ const PARITY_CASES = {
   lstat: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
   readDir: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
   readlink: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
+  // (also 'readlink of a non-symlink is EINVAL on both, not EUNKNOWN on one')
   symlink: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
   removeEntry: 'lstat, the widened readDir, readlink, symlink, removeEntry and writeFileBytes agree',
   realpath: 'the file operations agree on results AND on error codes',

@@ -456,10 +456,19 @@ for (const config of CAPABILITY_CONFIGS) {
       // a newline gives too few fields and a tab gives too many, and a guard
       // that checked only one bound would let the other through as a
       // MISATTRIBUTED entry — a name read as a mode, silently.
-      for (const bad of ['two\nlines', 'two\ttabs']) {
-        const dir = path.join(root, `weird-${bad.length}`);
+      // THREE SHAPES, because the field count alone has a hole. A name whose
+      // LAST character is a newline emits a well-formed six-field record plus
+      // an EMPTY line, so the count check passes and the entry came back named
+      // `trailing` — COLLIDING with the real sibling of that name below. A
+      // silent mis-naming, not a dropped entry, in the exact class the rule
+      // exists for.
+      for (const bad of ['two\nlines', 'two\ttabs', 'trailing\n']) {
+        const dir = path.join(root, `weird-${Buffer.from(bad).toString('hex')}`);
         await fs.mkdir(dir);
         await fs.writeFile(path.join(dir, 'plain'), 'x');
+        // The sibling a trailing newline would be mistaken FOR. Its presence is
+        // what makes the mis-naming a collision rather than a curiosity.
+        await fs.writeFile(path.join(dir, bad.replace(/[\n\t]/g, '')), 'x');
         await fs.writeFile(path.join(dir, bad), 'x');
         await assert.rejects(() => sys.readDir(dir),
           (e) => expectCode(e, 'EUNKNOWN', `a listing cc cannot parse (${JSON.stringify(bad)})`),
@@ -510,8 +519,13 @@ for (const config of CAPABILITY_CONFIGS) {
       await fs.writeFile(p('plain'), 'x');
       await sys.symlink('third', p('plain'));
       assert.equal(await sys.readlink(p('plain')), 'third');
+      await fs.writeFile(p('notalink'), 'x');
       await assert.rejects(() => sys.readlink(p('nope')),
         (e) => expectCode(e, 'ENOENT', 'readlink of a missing path'));
+      // NOT A SYMLINK is a different answer from NOT THERE, and a caller that
+      // cannot tell them apart cannot tell either from the box hiccuping.
+      await assert.rejects(() => sys.readlink(p('notalink')),
+        (e) => expectCode(e, 'EINVAL', 'readlink of a path that is not a symlink'));
 
       // removeEntry: ONE entry, never recursing, never following.
       await fs.writeFile(p('victim'), 'x');
@@ -764,6 +778,17 @@ test('parseFindLines refuses a malformed entry rather than skipping it', () => {
   // and a tab too many, and either would misattribute a name to another field.
   assert.throws(() => parseFindLines('f\t644\t3\t1\t\tone\nstray line\n', '/d'), (e) => e.code === 'EUNKNOWN');
   assert.throws(() => parseFindLines('f\t644\t3\t1\t\ttwo\ttabs\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  // AND THE HOLE THE COUNT CANNOT SEE: a name ending in a newline emits a
+  // well-formed record plus an EMPTY line, so it parsed cleanly as the name
+  // WITHOUT the newline — colliding with the sibling of that name beside it.
+  // A silent mis-naming, which is worse than the dropped entry the rule was
+  // written against. Caught by the empty-line position instead.
+  assert.throws(() => parseFindLines('f\t644\t3\t1\t\ttrailing\n\nf\t644\t3\t1\t\ttrailing\n', '/d'),
+    (e) => e.code === 'EUNKNOWN');
+  // …and the control: exactly one trailing terminator is the ordinary case and
+  // must still parse, or every listing in the product refuses.
+  assert.equal(parseFindLines('f\t644\t3\t1\t\tonly\n', '/d').length, 1);
+  assert.equal(parseFindLines('', '/d').length, 0, 'an empty directory is not a parse failure');
   // A field that is present but not a number is a parse failure too, not a NaN
   // that flows into a mirror as a size or a mode.
   assert.throws(() => parseFindLines('f\tzzz\t3\t1\t\ta\n', '/d'), (e) => e.code === 'EUNKNOWN');

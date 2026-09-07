@@ -602,8 +602,8 @@ asked to run, and so the POSIX assumption is concrete.
 | `stat` | `env LC_ALL=C stat -L -c '%f %s %.3Y' -- <path>` — `-L` follows symlinks (matching `fs.stat`), `%f` is the raw mode so the kind comes from the type bits rather than a locale-dependent word |
 | `lstat` | `env LC_ALL=C find <path> -maxdepth 0 -printf '%y\t%m\t%s\t%T@\t%l\n'` — `-P` is `find`'s default, so `%y` of a symlink is `l` and `%l` is its target. ONE round trip for kind, permission bits, size, ms-precision mtime and the target. `ENOENT` **and `ENOTDIR`** resolve to `null` |
 | `readDir` | `env LC_ALL=C find <path>/. -mindepth 1 -maxdepth 1 -printf '%y\t%m\t%s\t%T@\t%l\t%f\n'` — the same five fields plus the **name last**, so one `exec` lists a directory rather than 1 + N. The trailing `/.` is what makes a **file** report `ENOTDIR` instead of an empty listing |
-| `readlink` | `env LC_ALL=C readlink -v -- <path>` — `-v` is what makes a failure say why; without it `readlink` exits 1 in silence and every failure classifies `EUNKNOWN` |
-| `symlink` | `env LC_ALL=C ln -sfn -- <target> <path>` — `-f` REPLACES an existing entry, `-n` stops an existing symlink-to-directory at `<path>` swallowing the new link inside it |
+| `readlink` | `env LC_ALL=C readlink -v -- <path>` — `-v` is what makes a failure say why; without it `readlink` exits 1 in silence and every failure classifies `EUNKNOWN`. A path that is not a symlink is `EINVAL`, distinct from `ENOENT` for one that is not there |
+| `symlink` | `env LC_ALL=C ln -sfnT -- <target> <path>` — `-f` REPLACES an existing entry, `-n` stops an existing symlink-to-directory at `<path>` swallowing the new link inside it, and **`-T` stops a REAL directory doing the same**: without it, `ln -sfn -- t d` on a directory `d` exits 0 having created `d/t`, a success reported having landed somewhere else. A directory at `<path>` is `EISDIR` — translated by the derivation rather than by §8's classifier, because `ln`'s wording carries no `strerror()` tail to match |
 | `removeEntry` | `env LC_ALL=C rm -d -- <path>` — ONE entry, non-recursively: unlinks a file or symlink, `rmdir`s an EMPTY directory, refuses a non-empty one `ENOTEMPTY`. An absent `<path>` **resolves**: the declared intent is "hold nothing here" |
 | `realpath` | `env LC_ALL=C realpath -e -- <path>` — `-e` requires every component to exist, matching `fs.realpath` |
 | `mkdir` | `mkdir -- <path>`, or `mkdir -p -- <path>` when recursive |
@@ -716,7 +716,7 @@ cannot read.
 A derived command that **ran and failed** is classified by matching its stderr
 against a small table of well-known `strerror()` strings (substring, under
 `LC_ALL=C`): `ENOENT`, `EACCES`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOSPC`,
-`ENOTEMPTY`.
+`ENOTEMPTY`, `EINVAL`.
 
 **An unmatched failure is `EUNKNOWN`, carrying the exit code and the raw stderr
 verbatim, and it is surfaced to the user.** cc never guesses silently at a

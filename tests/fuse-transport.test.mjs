@@ -21,7 +21,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { ProviderSystem } from '../src/systems/providerSystem.ts';
 import { REFERENCE_PROVIDER } from './referenceProviderHarness.mjs';
 import { systemSource } from '../src/systems/fuse/systemSource.ts';
-import { isSourceError } from '../src/systems/fuse/remoteSource.ts';
+import { isSourceError, localDirSource } from '../src/systems/fuse/remoteSource.ts';
 import { bootServer, api, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { seedRepo } from './remoteSystem.mjs';
 import { adoptProject } from '../src/projects.ts';
@@ -32,6 +32,7 @@ import net from 'node:net';
 import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE } from '../src/systems/fuse/control.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
+import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RECORDER = path.join(HERE, 'recordingProvider.mjs');
@@ -45,7 +46,10 @@ function handle({ log } = {}) {
   return new ProviderSystem({ id: 'ref', launch: { argv } });
 }
 
-// `{ 'c2p:exec': 3, 'p2c:exit': 3, … }` — what actually crossed the wire.
+// `{ 'c2p:exec:argv': 3, 'p2c:exit': 3, … }` — what actually crossed the wire.
+// An `exec` is tagged `argv` (a derivation) or `shell` (a redirected Bash
+// command); see tests/recordingProvider.mjs for why the two must not be one
+// count.
 async function frames(log) {
   const out = {};
   for (const line of (await fs.readFile(log, 'utf8')).split('\n')) {
@@ -156,7 +160,7 @@ describe('systemSource — the remote source over a real System handle', () => {
       const kids = await systemSource(sys).list(dir);
       assert.equal(kids.length, 50);
       const after = await frames(log);
-      assert.equal((after['c2p:exec'] ?? 0) - (before['c2p:exec'] ?? 0), 1,
+      assert.equal((after['c2p:exec:argv'] ?? 0) - (before['c2p:exec:argv'] ?? 0), 1,
         'a listing of 50 children cost more than one round trip');
 
       const by = Object.fromEntries(kids.map(k => [k.name, k]));
@@ -193,16 +197,16 @@ describe('systemSource — the remote source over a real System handle', () => {
     });
   });
 
-  // PINS: a file over the protocol cap is refused BEFORE ANY TRANSFER, and
-  // that is asserted as a frame count and not as a failure — doing the check
-  // after the read also fails, with EFBIG, which is a different observable
-  // reached at a different cost.
-  // DIES UNDER: omitting the size check in the handler; doing it after the read.
+  // PINS: the SIZE of an over-cap file is reported honestly and asking for it
+  // is not itself a transfer — the input the handler's refusal is made from.
   //
-  // NOTE: this pins the SOURCE's half — that `readFileBytes` above the cap
-  // never puts bytes on the wire. The handler's own pre-read refusal is
-  // asserted in tests/fuse-control-channel.test.mjs.
-  test('T7 — a read above MAX_FILE_BYTES sends no data frames at all', async () => {
+  // A CONTROL, NOT A CAP TEST, and labelled as one after review: no
+  // implementation issues a `readFile` from a `stat` on any path, so the frame
+  // assertion below holds with the cap check deleted, moved after the read, or
+  // never written. **T7b is where the cap is pinned.** Both kills this case
+  // used to claim were false, and a claim that cannot fail is worse than an
+  // absent one because it is counted.
+  test('T7 control — a stat reports an over-cap size and transfers nothing by itself', async () => {
     const box = await fs.realpath(await mkdtemp('cc-transport-'));
     const log = path.join(box, 'frames.log');
     const { MAX_FILE_BYTES } = await import('../src/systems/protocol.ts');
@@ -268,7 +272,9 @@ describe('systemSource — the remote source over a real System handle', () => {
   // source's. The wording is byte-identical to `localDirSource`'s, so the two
   // sources cannot be told apart by it.
   // DIES UNDER: inferring a deletion from an absent mirror entry; dropping the
-  // mode from the atomic write; a dir or symlink arm that silently no-ops.
+  // mode from the atomic write; a dir or symlink arm that silently no-ops;
+  // dropping the wrong-kind retry (the two sources then disagree); widening
+  // that retry to a recursive removal (the non-empty arm then succeeds).
   test('T8b — push carries file, dir and symlink, and refuses an absent mirror entry', async () => {
     await withSource(async (src, box) => {
       const mirror = path.join(box, 'mirror');
@@ -289,6 +295,56 @@ describe('systemSource — the remote source over a real System handle', () => {
       await fs.symlink('yonder', path.join(mirror, 'lnk'));
       assert.equal(await src.push(path.join(mirror, 'lnk'), path.join(dest, 'lnk')), 'ok');
       assert.equal(await fs.readlink(path.join(dest, 'lnk')), 'yonder');
+
+      // A KIND CHANGE, EVERY DIRECTION, and asserted against `localDirSource`'s
+      // answer for the same mirror state rather than against a remembered one.
+      // The deterministic suite only stands in for the transport while the two
+      // sources agree, and they did not: `mkdir -p` over a file is EEXIST and
+      // `ln -sfnT` over a directory is EISDIR, where `localDirSource` removes
+      // the wrong-kind entry first and succeeds.
+      const localMirror = path.join(box, 'lmirror');
+      const localDest = path.join(box, 'ldest');
+      await fs.mkdir(localMirror, { recursive: true });
+      await fs.mkdir(localDest, { recursive: true });
+      const local = localDirSource('/');
+      const KIND_CHANGES = [
+        ['dirOverFile', async (m, d, n) => {
+          await fs.mkdir(path.join(m, n), { recursive: true });
+          await fs.writeFile(path.join(d, n), 'was a file');
+        }],
+        ['fileOverDir', async (m, d, n) => {
+          await fs.writeFile(path.join(m, n), 'now a file');
+          await fs.mkdir(path.join(d, n), { recursive: true });
+        }],
+        ['linkOverDir', async (m, d, n) => {
+          await fs.symlink('somewhere', path.join(m, n));
+          await fs.mkdir(path.join(d, n), { recursive: true });
+        }],
+        ['linkOverFile', async (m, d, n) => {
+          await fs.symlink('elsewhere', path.join(m, n));
+          await fs.writeFile(path.join(d, n), 'was a file');
+        }],
+      ];
+      for (const [name, make] of KIND_CHANGES) {
+        await make(mirror, dest, name);
+        await make(localMirror, localDest, name);
+        const viaSystem = await src.push(path.join(mirror, name), path.join(dest, name));
+        const viaLocal = await local.push(path.join(localMirror, name), path.join(localDest, name));
+        assert.deepEqual(viaSystem, viaLocal, `${name}: the two sources disagree`);
+        assert.equal(viaSystem, 'ok', name);
+        assert.equal((await fs.lstat(path.join(dest, name))).isDirectory(),
+          (await fs.lstat(path.join(localDest, name))).isDirectory(), `${name}: different kind landed`);
+      }
+      // …AND THE ONE THEY BOTH REFUSE: a NON-EMPTY directory. `removeEntry` is
+      // non-recursive by contract, so neither may take children the worker
+      // never enumerated.
+      await fs.writeFile(path.join(mirror, 'busy'), 'a file now');
+      await fs.mkdir(path.join(dest, 'busy'), { recursive: true });
+      await fs.writeFile(path.join(dest, 'busy', 'kid'), 'x');
+      const busy = await src.push(path.join(mirror, 'busy'), path.join(dest, 'busy'));
+      assert.ok(typeof busy === 'object' && busy.error, `a non-empty directory was replaced: ${busy}`);
+      assert.match(busy.error, /ENOTEMPTY/);
+      assert.deepEqual((await fs.readdir(path.join(dest, 'busy'))), ['kid']);
 
       await fs.writeFile(path.join(dest, 'live'), 'THE SOURCE STILL HAS THIS');
       const got = await src.push(path.join(mirror, 'never-materialised'), path.join(dest, 'live'));
@@ -420,18 +476,24 @@ describe('per-open revalidate — the mirror is not re-downloaded for nothing', 
     });
   });
 
-  // PINS: a file over the protocol cap is refused BEFORE ANY TRANSFER, and the
-  // frame count is the assertion rather than the failure — checking after the
-  // read also fails, with EFBIG from the provider, which is the same reply
-  // reached at the cost of a 32 MiB attempt.
-  // DIES UNDER: omitting the check; moving it after `source.fetch`.
+  // PINS: a file over the protocol cap is refused with NO TRANSFER ATTEMPTED,
+  // and the frame count is the assertion rather than the failure — checking
+  // after the read also fails, with EFBIG, but only after up to 32 MiB of
+  // base64 has crossed the wire to be discarded. `ProviderSystem.#read`'s fence
+  // counts what cc KEEPS, not what crosses: the provider streams until cc's
+  // accumulation passes the cap and only then does cc send `close`. So the two
+  // orderings differ in cost, not in outcome, and only a frame count separates
+  // them.
+  //
+  // THIS IS THE CAP'S ONLY PIN. T7 above is a size control and cannot fail.
+  // DIES UNDER: omitting the check; moving it after `source.fetch`; widening
+  // the comparison to `>=` (the control below is at exactly the cap).
   //
   // The worker gets EFBIG, which is a NAMED errno rather than the -EIO a
   // generic refusal would produce. The prose refusal that names the cap and
   // points at Bash is Phase B's.
   test('T7b — a FETCH above MAX_FILE_BYTES is refused with no transfer attempted', async () => {
     await rig(async ({ src, call, reads }) => {
-      const { MAX_FILE_BYTES } = await import('../src/systems/protocol.ts');
       const p = path.join(src, 'huge.bin');
       // Sparse: the SIZE is what is over the cap, and writing 32 MiB of real
       // bytes to prove a refusal would be the slowest case in the suite.
@@ -442,6 +504,16 @@ describe('per-open revalidate — the mirror is not re-downloaded for nothing', 
       assert.equal(r.status, CCU_STATUS.REFUSED);
       assert.equal(r.err, 27, 'EFBIG — a named errno, not the generic EIO a catch-all refusal gives');
       assert.equal(await reads(), base, 'cc tried to pull a file it had already decided it could not carry');
+
+      // THE BOUNDARY, and it is the control that makes the refusal a CAP
+      // rather than a blanket: a file of exactly MAX_FILE_BYTES is carried.
+      const edge = path.join(src, 'exactly.bin');
+      const fh2 = await fs.open(edge, 'w');
+      try { await fh2.truncate(MAX_FILE_BYTES); } finally { await fh2.close(); }
+      const at = await reads();
+      assert.equal((await call(CCU_OP.FETCH, 0, edge)).status, CCU_STATUS.READY,
+        'a file AT the cap must be carried — the comparison is `>`, not `>=`');
+      assert.equal(await reads(), at + 1, 'and carrying it is a transfer');
     });
   });
 
@@ -508,7 +580,7 @@ describe('the launch probe — is the box still there, asked now', () => {
   // provider generation. THE BOX IS ALIVE HERE: adoption itself goes through
   // the system, so an arm that starts dead never gets a project to spawn — and
   // the state under test is precisely a box that dies AFTER cc has connected.
-  async function fixture({ mirrorSub = null } = {}) {
+  async function fixture({ mirrorSub = null, remote = null } = {}) {
     const id = `probe${++n}`;
     const project = `probeapp${n}`;
     const box = await fs.realpath(await mkdtemp('cc-probe-'));
@@ -516,19 +588,31 @@ describe('the launch probe — is the box still there, asked now', () => {
     const projPath = path.join(root, 'app');
     await seedRepo(projPath);
     const deadFile = path.join(box, '.dead');
-    const frameLog = path.join(box, 'frames.ndjson');
+    const probeLog = path.join(box, 'probes.log');
     await addSystem({
       id, label: id,
-      launch: ['node', FIXTURE, '--dead-file', deadFile, '--frame-log', frameLog,
+      launch: ['node', FIXTURE, '--dead-file', deadFile, '--probe-log', probeLog,
+        // A BOUND handle needs the provider to serve that target, or cc refuses
+        // on its own side at the handshake and the probe is never reached.
+        ...(remote === null ? [] : ['--remote', `${remote}=/`]),
         ...(mirrorSub === null ? [] : ['--advertise-mirror', root])],
     });
-    assert.equal((await adoptProject(project, projPath, { system: id })).ok, true);
-    return { id, project, box, root, projPath, deadFile, frameLog };
+    assert.equal((await adoptProject(project, projPath, { system: id, remoteId: remote })).ok, true);
+    return { id, project, box, root, projPath, deadFile, probeLog, remote };
   }
 
   const spawn = (project) => api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
-  const errorFrames = async (log) => (await fs.readFile(log, 'utf8').catch(() => ''))
-    .split('\n').filter(l => l !== '').map(l => JSON.parse(l)).filter(f => f.type === 'error').length;
+  // THE PROBE'S OWN FRAME AND NOTHING ELSE. `assertRemoteLive` runs
+  // `env LC_ALL=C true` (registry.ts) — no other operation in a spawn does —
+  // so counting it is counting the probe. Counting `error` frames instead
+  // counted the mirror-root `lstat` beside it, which the dead file also
+  // answers, and the assertion passed on traffic the probe never made.
+  //
+  // The fixture logs what the provider WROTE, so the probe is counted by the
+  // answer it drew: the `exit` frame for a `true` that ran, or the `error`
+  // frame for one the dead file refused. Either way, exactly one per probe.
+  const probeFrames = async (log) =>
+    (await fs.readFile(log, 'utf8').catch(() => '')).split('\n').filter(l => l !== '').length;
   const runDirs = async () => new Set(await fs.readdir(fuseRunRoot()).catch(() => []));
 
   // PINS: a box that has gone away refuses the SPAWN by name, before anything
@@ -550,6 +634,12 @@ describe('the launch probe — is the box still there, asked now', () => {
     assert.match(r.body.error, new RegExp(`system '${f.id}'`));
     assert.match(r.body.error, /live check/);
     assert.match(r.body.error, /not running/, "the far side's OWN reason, not cc's summary of it");
+    // THE CONSEQUENCE AND THE REPAIR, because a refusal that names neither
+    // leaves the reader to guess what a dead box does to a mounted worker.
+    assert.match(r.body.error, /reaches no project file at all/);
+    assert.match(r.body.error, /Start it and spawn again/);
+    assert.equal(/remote '/.test(r.body.error), false,
+      'an UNBOUND handle has no remote to name, and naming one would point at nothing');
 
     // NOTHING WAS CREATED. The probe sits before `assertFuseAvailable` and
     // therefore before `prepare()`, the only thing that makes a run directory —
@@ -557,24 +647,68 @@ describe('the launch probe — is the box still there, asked now', () => {
     assert.deepEqual([...await runDirs()].filter(d => !before.has(d)), []);
   });
 
-  // PINS: the probe is NOT memoised — which is the entire fix, so this is what
-  // makes it non-vacuous. Two consecutive spawns against the same connection
-  // generation both refuse, and the SECOND really crossed the wire.
+  // PINS: A PROBE THAT SUCCEEDED DOES NOT SATISFY THE NEXT SPAWN'S PROBE. That
+  // is the whole of the memoisation gap, and the first cut of this case could
+  // not reach it: it killed the box BEFORE the first spawn, so no probe ever
+  // succeeded, and the memo a success-keyed mutant writes — the shape
+  // `assertRemoteKnown` actually has, `#probedAgainst = hs` set only on the
+  // success path — was never populated. A mutant memoising exactly that way
+  // skipped nothing and refused anyway.
+  //
+  // The counted signal was confounded too. `_assertRemoteMountable`'s
+  // mirror-root `lstat` is itself an `exec` the dead file answers with a logged
+  // error, so a fully memoised `assertRemoteLive` still produced a 502 matching
+  // /live check/ AND a fresh error frame. Both assertions passed on traffic the
+  // probe never made. So the count here is of the PROBE's own frame — an
+  // `exec` of `true` — and of nothing else.
+  //
   // DIES UNDER: memoising the answer on the handshake, the way `connect`,
   // `assertRemoteKnown` and `mirror` each do.
-  test('T17 — the probe is not memoised: the second spawn asks again, on the wire', async () => {
+  test('T17 — a probe that SUCCEEDED does not satisfy the next spawn', async () => {
     const f = await fixture();
-    await fs.writeFile(f.deadFile, '');
-    const first = await spawn(f.project);
-    assert.equal(first.status, 502, JSON.stringify(first.body));
-    const afterFirst = await errorFrames(f.frameLog);
-    assert.ok(afterFirst >= 1, 'the first spawn did not reach the far side at all');
 
-    const second = await spawn(f.project);
-    assert.equal(second.status, 502, JSON.stringify(second.body));
-    assert.match(second.body.error, /live check/);
-    assert.ok(await errorFrames(f.frameLog) > afterFirst,
-      'the second spawn answered from a cache: no new frame crossed the wire');
+    // 1. A LIVE SPAWN FIRST, so any memo a mutant would keep is written by a
+    //    probe that really succeeded. Without this the case cannot fail.
+    const alive = await spawn(f.project);
+    assert.equal(alive.status, 201, `the box must be reachable for the memo to be populated: ${JSON.stringify(alive.body)}`);
+    await api(baseUrl, 'DELETE', `/api/instances/${alive.body.id}`);
+    assert.ok(await probeFrames(f.probeLog) >= 1, 'the live spawn made no probe at all — the fixture is not exercising it');
+
+    // 2. The box goes away, on the SAME connection generation.
+    await fs.writeFile(f.deadFile, '');
+    const before = await probeFrames(f.probeLog);
+
+    const dead = await spawn(f.project);
+    assert.equal(dead.status, 502, JSON.stringify(dead.body));
+    assert.match(dead.body.error, /live check/);
+    assert.ok(await probeFrames(f.probeLog) > before,
+      'the spawn answered from the memo a successful probe left behind: no new `true` crossed the wire');
+  });
+
+  // PINS: THE BOUND SPELLING OF BOTH REFUSALS. `_assertRemoteMountable` picks
+  // `remote '<id>' of system '<id>'` when the handle names a target, and
+  // `assertRemoteLive` has a dedicated ENOREMOTE branch for the same case — and
+  // every other case in this file adopts UNBOUND, so a mutant deleting the
+  // bound branch, or flattening it to the unbound wording, survived them all.
+  // The remote is the thing an operator restarts, so a refusal that named only
+  // the system would point at the wrong repair.
+  // DIES UNDER: dropping the `remoteId !== null` arm in either place.
+  test('T16b/T18b — a BOUND handle names its remote in both refusals', async () => {
+    const dead = await fixture({ remote: 'ctr-a' });
+    await fs.writeFile(dead.deadFile, '');
+    const r = await spawn(dead.project);
+    assert.equal(r.status, 502, JSON.stringify(r.body));
+    assert.match(r.body.error, new RegExp(`remote 'ctr-a' of system '${dead.id}'`),
+      'the bound refusal did not name the remote');
+    assert.match(r.body.error, /live check/);
+
+    const absent = await fixture({ remote: 'ctr-b', mirrorSub: 'geometry' });
+    await rmrf(absent.root);
+    const m = await spawn(absent.project);
+    assert.equal(m.status, 501, JSON.stringify(m.body));
+    assert.match(m.body.error, new RegExp(`remote 'ctr-b' of system '${absent.id}'`));
+    assert.match(m.body.error, /outside the mirror root/);
+    assert.match(m.body.error, /Fix the remote's mirror record/);
   });
 
   // PINS: a box that is UP with nothing at the advertised mirror root is a
@@ -582,7 +716,15 @@ describe('the launch probe — is the box still there, asked now', () => {
   // the configuration, not the machine.
   // DIES UNDER: collapsing the two codes into one — 501 vs 502 is what carries
   // the distinction over HTTP, since the shared error handler sends the message
-  // alone; probing the project path instead of the advertised root.
+  // alone.
+  //
+  // NOT claiming to catch a probe of the PROJECT path instead of the mirror
+  // root: the fixture nests the project INSIDE the advertised root, so removing
+  // the root removes the project with it and both probes answer the same. The
+  // nesting is a design invariant — an advertised root that does not contain
+  // the project is already refused MIRROR_ROOT_EXCLUDES_PROJECT at create — so
+  // the clause is dropped rather than the fixture restructured to fake a
+  // geometry the product forbids.
   test('T18 — an advertised mirror root that is not on the box refuses 501 FUSE_MIRROR_ROOT_ABSENT', async () => {
     const f = await fixture({ mirrorSub: 'geometry' });
     // The advertised root goes, the box stays up. cc's pinned scope still names

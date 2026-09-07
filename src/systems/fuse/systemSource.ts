@@ -120,34 +120,49 @@ export function systemSource(system: System, opts: { log?: (line: string) => voi
       const kind = mirror.isSymbolicLink() ? 'symlink' : mirror.isDirectory() ? 'dir' : mirror.isFile() ? 'file' : null;
       if (kind === null) return { error: `'${p}' is a kind the mirror cannot carry` };
       const mode = mirror.mode & 0o7777;
-      try {
-        if (kind === 'symlink') {
-          // `ln -sfn` replaces whatever entry is there, so no probe first.
-          await system.symlink(await fsp.readlink(src), p);
-          return 'ok';
-        }
+      // `atomic` creates the parent and renames over the target, and `mode` is
+      // what makes the write PRESERVING — the rename installs the temp file, so
+      // without it an edited script comes back 0644
+      // (docs/systems-protocol.md §6).
+      const land = async (): Promise<void> => {
+        if (kind === 'symlink') return system.symlink(await fsp.readlink(src), p);
         if (kind === 'dir') {
           await system.mkdir(p, { recursive: true });
-          await system.chmod(p, mode);
-          return 'ok';
+          return system.chmod(p, mode);
         }
-        // `atomic` creates the parent and renames over the target, and `mode`
-        // is what makes the write PRESERVING — the rename installs the temp
-        // file, so without it an edited script comes back 0644
-        // (docs/systems-protocol.md §6).
-        await system.writeFileBytes(p, await fsp.readFile(src), { atomic: true, mode });
+        return system.writeFileBytes(p, await fsp.readFile(src), { atomic: true, mode });
+      };
+      try {
+        await land();
         return 'ok';
       } catch (e) {
-        // A DIRECTORY WHERE THE MIRROR NOW HAS A FILE is the one kind change
-        // worth a second round trip: it is what a worker replacing a directory
-        // with a file produces, and the rename cannot land over it. Retried
-        // ONCE — a second failure is the answer.
-        if (kind === 'file' && e instanceof SystemError && e.code === 'EISDIR') {
+        // A SOURCE ENTRY OF THE WRONG KIND IS REPLACED, NOT ADJUSTED — a file
+        // that became a directory cannot be renamed over, and a directory that
+        // became a file cannot be `mkdir`'d. `localDirSource` unlinks the
+        // wrong-kind entry first and this must too, or the two sources answer
+        // differently for the same mirror state and the deterministic suite
+        // stops standing in for the transport.
+        //
+        // A SECOND ROUND TRIP, ONLY ON THE KIND CHANGE. The first attempt is
+        // the probe: a stat-then-branch would pay for one on every push, and
+        // a kind change is rare. `removeEntry` is non-recursive, so a
+        // non-empty directory refuses ENOTEMPTY here exactly as
+        // `localDirSource`'s `rmdir` does.
+        //
+        //   file over a directory  → EISDIR    (the rename cannot land)
+        //   dir/symlink over a file or directory → EEXIST / EISDIR
+        //
+        // Retried ONCE. A second failure is the answer.
+        const code = e instanceof SystemError ? e.code : null;
+        if (code === 'EISDIR' || code === 'EEXIST' || code === 'ENOTDIR') {
           try {
             await system.removeEntry(p);
-            await system.writeFileBytes(p, await fsp.readFile(src), { atomic: true, mode });
+            await land();
             return 'ok';
-          } catch (again) { return reason('push', p, again); }
+          } catch (again) {
+            note(`push '${p}' failed after replacing a wrong-kind entry: ${String(again)}`);
+            return reason('push', p, again);
+          }
         }
         note(`push '${p}' failed: ${String(e)}`);
         return reason('push', p, e);

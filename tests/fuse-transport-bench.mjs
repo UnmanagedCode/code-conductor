@@ -43,6 +43,11 @@ const argv = process.argv.slice(2);
 const opt = (name, dflt) => { const i = argv.indexOf(name); return i === -1 ? dflt : argv[i + 1]; };
 const flag = (name) => argv.includes(name);
 
+// FRAME COUNTING, off unless asked: the recorder puts a relay process in front
+// of the provider, which is a variable a latency arm must not carry. A pass
+// with `--log` is a COUNT pass, and its milliseconds are not comparable to one
+// without.
+const LOG = opt('--log', '');
 const CASE = opt('--case', 'fetch-cold');
 const ARM = opt('--arm', 'localdir');
 const RUNS = Number(opt('--runs', '30'));
@@ -101,7 +106,26 @@ function call(sock, op, flags, p) {
   });
 }
 
-async function rig(fn, { log } = {}) {
+// cc → provider frame counts, or null when the recorder is not in line.
+async function frameCounts() {
+  if (!LOG) return null;
+  const out = {};
+  let text;
+  try { text = await fs.readFile(LOG, 'utf8'); } catch { return {}; }
+  for (const line of text.split('\n')) {
+    if (line === '') continue;
+    const [dir, type] = line.split('\t');
+    if (dir === 'c2p') out[type] = (out[type] ?? 0) + 1;
+  }
+  return out;
+}
+
+const frameDelta = (a, b) => (a && b
+  ? Object.fromEntries([...new Set([...Object.keys(a), ...Object.keys(b)])]
+    .map(k => [k, (b[k] ?? 0) - (a[k] ?? 0)]).filter(([, v]) => v))
+  : null);
+
+async function rig(fn, { log = LOG } = {}) {
   const box = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-bench-'));
   const root = await fs.realpath(box);
   // `localDirSource` addresses by the path the WORKER sees and joins it under
@@ -160,8 +184,21 @@ async function fetchCold() {
         if (status !== CCU_STATUS.READY) throw new Error(`FETCH ${p} → status ${status}`);
       }
       row(label, stats(ms));
+      await countOne(label, () => call(sock, CCU_OP.FETCH, 0, path.posix.join(src, `counted-${label}`)),
+        () => put(path.posix.join(src, `counted-${label}`), bytes));
     });
   }
+}
+
+// ONE OBSERVED iteration's cc → provider frames, printed beside the timings.
+// A count derived by arithmetic is not a measurement, which is the whole
+// reason this instrument exists.
+async function countOne(label, once, setup) {
+  if (!LOG) return;
+  await setup?.();
+  const before = await frameCounts();
+  await once();
+  console.log(`${CASE}\t${ARM}\t${label}\tframes=${JSON.stringify(frameDelta(before, await frameCounts()))}`);
 }
 
 // M2 — the WARM per-open revalidate. ONE path, opened RUNS+1 times; the first
@@ -181,6 +218,7 @@ async function fetchWarm() {
         if (status !== CCU_STATUS.READY) throw new Error(`FETCH ${p} → status ${status}`);
       }
       row(label, stats(ms));
+      await countOne(label, () => call(sock, CCU_OP.FETCH, 0, p));
     });
   }
 }
@@ -209,6 +247,14 @@ async function list() {
       // Three warm-ups, discarded: the first LIST of a directory also SHAPES
       // every child into the mirror, which is a one-off cost this is not about.
       for (let i = 0; i < 3; i++) await once();
+      // ONE OBSERVED iteration's frames. The `per-child` shape exists only in
+      // this file, so its 1 + N is otherwise a count by ARITHMETIC rather than
+      // by measurement — and an unobserved count is the thing this whole
+      // instrument exists not to report.
+      const fBefore = await frameCounts();
+      await once();
+      const f = frameDelta(fBefore, await frameCounts());
+      if (f) console.log(`${CASE}\t${ARM}\t${SHAPE}/${n}\tframes=${JSON.stringify(f)}`);
       const ms = [];
       for (let i = 0; i < RUNS; i++) {
         const t = performance.now();

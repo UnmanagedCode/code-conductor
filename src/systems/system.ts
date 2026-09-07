@@ -217,6 +217,36 @@ export function typeBitsFor(kind: SystemEntryKind): number {
   }
 }
 
+// WHOLE MILLISECONDS FROM INTEGER NANOSECONDS, and BOTH implementations reach
+// it — which is the point, because they were converging by luck and missing.
+//
+// The two sides start from different representations: a local `bigint` stat has
+// exact nanoseconds, and the wire has `find -printf '%T@'`'s
+// `seconds.nanoseconds` decimal string. Rounding each in its own arithmetic
+// disagrees on a half-millisecond boundary: `Number("1788783387.216499885")`
+// cannot hold that value, so `× 1000` lands just under `.5` where
+// `secs*1000 + ns/1e6` lands just over. MEASURED at 18 disagreements in 400k
+// random nanosecond values (~5e-5) — a flake, in a repo that tracks flakes,
+// underneath two documents claiming the two agree EXACTLY.
+//
+// Integer in, integer out. `nanos / 1e6` is exact for every integer `nanos`
+// below 1e9 (both operands are exactly representable and so is the quotient's
+// half-way point), so the rounding is deterministic rather than nearly so; a
+// `nanos` that rounds to 1000 needs no carry, because `secs * 1000 + 1000` IS
+// the next second.
+export function msFromNanos(secs: number, nanos: number): number {
+  return secs * 1000 + Math.round(nanos / 1e6);
+}
+
+// `find -printf '%T@'` — `seconds.nanoseconds`, where GNU prints ten fractional
+// digits (nanoseconds times ten). PARSED AS TWO INTEGERS, never as one float:
+// the float is the whole of the disagreement msFromNanos exists to end.
+export function msFromFindStamp(stamp: string): number | null {
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(stamp);
+  if (!m) return null;
+  return msFromNanos(Number(m[1]), Number((m[2] ?? '').padEnd(9, '0').slice(0, 9)));
+}
+
 // `stat` FOLLOWS symlinks (matching fs.stat) and therefore cannot report a
 // symlink at all — it answers about the target, or `null` for a broken link.
 // The union's remote tier must: `RemoteStat`'s domain is file, dir, symlink and

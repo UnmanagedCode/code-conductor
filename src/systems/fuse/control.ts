@@ -476,10 +476,13 @@ export class ControlServer {
     // that a kind change needs.
     await this.#shape(dest, st.kind, st.size, st.mode, st.mtimeMs, st.target);
     if (st.kind !== 'file') return encodeReply(CCU_STATUS.READY, 0);
-    // THE PROVIDER'S OWN CAP, CHECKED BEFORE A BYTE MOVES. `readFileBytes`
-    // would refuse EFBIG having transferred nothing anyway, but the size is
-    // already in hand from the stat above, so cc refuses without spending the
-    // round trip.
+    // THE PROVIDER'S OWN CAP, CHECKED BEFORE THE TRANSFER IS ATTEMPTED — and
+    // that saving is real rather than cosmetic. `readFileBytes` also refuses
+    // EFBIG, but LATE: `#read`'s fence counts what cc KEEPS, so the provider
+    // streams `data` frames until cc's accumulation crosses the cap and only
+    // then does cc send `close`. Up to 32 MiB of base64 crosses the wire to be
+    // discarded. The size is already in hand from the stat above, so cc
+    // refuses having moved nothing.
     if (st.size > MAX_FILE_BYTES) {
       this.#opts.log?.(`cc-union control: FETCH '${p}' refused: ${st.size} bytes exceeds the `
         + `${MAX_FILE_BYTES}-byte protocol cap, so cc cannot materialise it`);

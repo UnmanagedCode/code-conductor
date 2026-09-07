@@ -13,11 +13,20 @@
 // frame TYPE is recorded: a `data` frame carries 64 KiB of base64 and a log of
 // payloads would be its own memory problem.
 //
+// AN `exec` IS TAGGED `exec:argv` OR `exec:shell`, and that one bit is what
+// makes a union measurement attributable. cc's DERIVATIONS are all `argv`
+// (`env LC_ALL=C find …`); a REDIRECTED BASH command is `shell`. Both ride the
+// same handle to the same box, so a bare `exec` count cannot say which cost
+// belongs to the union's transport and which to the worker's own commands. The
+// tag is the frame's SHAPE, never its contents — a command line is the worker's
+// and does not belong in a log.
+//
 // Hand-written against docs/systems-protocol.md §1's framing and importing
 // nothing from `src/`, for the same reason tests/fake-provider.mjs does.
 
 import { spawn } from 'node:child_process';
 import { appendFileSync, writeFileSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 
 const argv = process.argv.slice(2);
 const at = argv.indexOf('--log');
@@ -35,8 +44,16 @@ const child = spawn(argv[sep + 1], argv.slice(sep + 2), { stdio: ['pipe', 'pipe'
 // never counted twice and never dropped — the same rule the real decoder has.
 function tap(dir, onLine) {
   let buf = '';
+  // A `StringDecoder` RATHER THAN `chunk.toString('utf8')`, because a decode
+  // per chunk turns a multi-byte character split across a chunk boundary into
+  // U+FFFD — the line then fails to parse and counts as `unparseable`. Every
+  // path in this repo is ASCII today, so it is latent; it is fixed rather than
+  // noted because the error direction UNDER-COUNTS `readFile`, which is
+  // precisely the direction that would flatter the revalidate claim this
+  // instrument exists to check.
+  const decoder = new StringDecoder('utf8');
   return (chunk) => {
-    buf += chunk.toString('utf8');
+    buf += decoder.write(chunk);
     for (;;) {
       const nl = buf.indexOf('\n');
       if (nl === -1) break;
@@ -44,7 +61,13 @@ function tap(dir, onLine) {
       buf = buf.slice(nl + 1);
       if (line.trim() === '') continue;
       let type = '?';
-      try { type = JSON.parse(line).type ?? '?'; } catch { type = 'unparseable'; }
+      try {
+        const f = JSON.parse(line);
+        type = f.type ?? '?';
+        // The one discriminator, and it is structural: a derivation carries
+        // `argv`, a redirected shell command carries `shell`.
+        if (type === 'exec') type = Array.isArray(f.argv) ? 'exec:argv' : 'exec:shell';
+      } catch { type = 'unparseable'; }
       onLine(`${dir}\t${type}\n`);
     }
   };

@@ -169,6 +169,7 @@ test('classifyStderr maps every well-known message, and nothing else', () => {
   assert.equal(classifyStderr("cat: /tmp: Is a directory"), 'EISDIR');
   assert.equal(classifyStderr("cp: error writing 'x': No space left on device"), 'ENOSPC');
   assert.equal(classifyStderr("rm: cannot remove '/d': Directory not empty"), 'ENOTEMPTY');
+  assert.equal(classifyStderr('readlink: /tmp/plain: Invalid argument'), 'EINVAL');
   assert.equal(classifyStderr('something nobody has seen before'), 'EUNKNOWN',
     'an unmatched failure is EUNKNOWN — cc never guesses at a message it does not know');
   assert.equal(classifyStderr(''), 'EUNKNOWN');
@@ -197,6 +198,7 @@ const SAMPLE_STDERR = {
   EISDIR: 'cat: /tmp: Is a directory',
   ENOSPC: "cp: error writing 'x': No space left on device",
   ENOTEMPTY: "rm: cannot remove '/d': Directory not empty",
+  EINVAL: 'readlink: /tmp/plain: Invalid argument',
 };
 
 test('an unmatched failure carries its exit code and its RAW stderr, verbatim', () => {

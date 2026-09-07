@@ -30,7 +30,7 @@ import { NO_ADVERTISEMENT, validateAdvertisement, type MirrorAdvertisement } fro
 import { ProviderConnection, type ConnectionOptions, type Handshake } from './providerConnection.ts';
 import { ProviderShell, type ShellExecOptions, type ShellHost } from './providerShell.ts';
 import { closingTailMatches } from './shellFraming.ts';
-import { requireAbsolute, typeBitsFor } from './system.ts';
+import { msFromFindStamp, requireAbsolute, typeBitsFor } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemLstat, SystemStat, WriteFileOptions,
 } from './system.ts';
@@ -690,7 +690,25 @@ export class ProviderSystem implements System, ShellHost {
     requireAbsolute('symlink', 'path', p);
     // `-f` REPLACES an existing entry; `-n` stops an existing
     // symlink-to-directory at `p` swallowing the new link inside it.
-    await this.#deriveOk(`symlink '${p}'`, ['ln', '-sfn', '--', target, p]);
+    //
+    // `-T` IS WHAT STOPS A REAL DIRECTORY DOING THE SAME, and it is a
+    // correctness fix rather than a hardening one: measured, `ln -sfn -- t d`
+    // on a real directory `d` exits 0 having created `d/t`. That is a SUCCESS
+    // REPORTED HAVING LANDED SOMEWHERE ELSE — through `systemSource.push` it
+    // returned 'ok' with the link at a path nobody asked for, which is the
+    // exact failure class this epic exists to close. `-T` refuses instead, as
+    // `LocalSystem.symlink`'s `fs.unlink` already did.
+    const what = `symlink '${p}'`;
+    const r = await this.#derive(what, ['ln', '-sfnT', '--', target, p]);
+    if (r.code === 0) return;
+    // `ln`'s OWN wording for that refusal, translated HERE rather than in
+    // `classifyStderr`: the table matches `strerror()` tails, which are stable
+    // across tools, and this is a coreutils sentence with no errno in it. The
+    // derivation that ran `ln` is the only place that knows what it means.
+    if (/cannot overwrite directory/.test(r.stderr)) {
+      throw new SystemError('EISDIR', `${what}: ${r.stderr.trim()}`, { exitCode: r.code, stderr: r.stderr });
+    }
+    throw execFailure(what, r.code, r.stderr);
   }
 
   async removeEntry(p: string): Promise<void> {
@@ -923,15 +941,18 @@ function parseFindFields(f: string[], what: string): SystemLstat {
   const kind = FIND_TYPES[f[0]] ?? 'other';
   const perm = parseInt(f[1], 8);
   const size = Number(f[2]);
-  const mtime = Number(f[3]);
-  if (!Number.isFinite(perm) || !Number.isFinite(size) || !Number.isFinite(mtime)) {
+  // TWO INTEGERS, NOT A FLOAT. `msFromFindStamp` is the same derivation
+  // `LocalSystem` reaches from its own exact nanoseconds — see msFromNanos for
+  // the half-millisecond disagreement that made "exactly comparable" false.
+  const mtimeMs = msFromFindStamp(f[3]);
+  if (!Number.isFinite(perm) || !Number.isFinite(size) || mtimeMs === null) {
     throw new SystemError('EUNKNOWN', `${what}: unparseable entry ${JSON.stringify(f.join('\t'))}`);
   }
   return {
     kind,
     size,
     mode: perm | typeBitsFor(kind),
-    mtimeMs: Math.round(mtime * 1000),
+    mtimeMs,
     // `%l` is empty for anything that is not a link, and an empty link target
     // is not a thing — so the kind decides, not the emptiness.
     target: kind === 'symlink' ? f[4] : null,
@@ -942,12 +963,29 @@ function parseFindFields(f: string[], what: string): SystemLstat {
 // containing a TAB produces too many fields and one containing a NEWLINE
 // produces too few; either is an ERROR, never a silent skip, because a listing
 // that quietly drops an entry is indistinguishable from one that does not have
-// it. The count check is the whole guard, and it is exact in both directions.
+// it.
+//
+// TWO GUARDS, BECAUSE THE FIELD COUNT ALONE HAS A HOLE — and it is the worst
+// kind, a SILENT MIS-NAMING rather than a dropped entry. A name whose LAST
+// character is a newline emits `…\tname\n` followed by the record's own `\n`,
+// so the split yields a well-formed six-field line for `name` plus an EMPTY
+// element. Skipping empties turned a file called `"name\n"` into one called
+// `"name"` — colliding with a real sibling of that name, in exactly the class
+// the rule exists for.
+//
+// `find` terminates every record, so a clean listing splits to exactly ONE
+// trailing empty element and no other. An empty anywhere else is a name that
+// ended in a newline, which is what the second guard says.
 export function parseFindLines(stdout: string, dir: string): SystemDirent[] {
   const what = `readDir '${dir}'`;
   const out: SystemDirent[] = [];
-  for (const line of stdout.split('\n')) {
-    if (line === '') continue;
+  const lines = stdout.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === '') {
+      if (i === lines.length - 1) continue;   // the terminator of the last record
+      throw new SystemError('EUNKNOWN', `${what}: unparseable listing — an entry name ends in a newline, which cannot be told from the name without it`);
+    }
     const fields = line.split('\t');
     if (fields.length !== FIND_FIELD_COUNT + 1) {
       throw new SystemError('EUNKNOWN', `${what}: unparseable entry ${JSON.stringify(line)} — a name or symlink target containing a tab or a newline cannot be listed`);

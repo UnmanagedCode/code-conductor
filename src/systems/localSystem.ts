@@ -8,7 +8,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { runGroupedCommand } from '../groupedCommand.ts';
 import type { MirrorAdvertisement } from './mirror.ts';
-import { requireAbsolute, typeBitsFor } from './system.ts';
+import { msFromNanos, requireAbsolute, typeBitsFor } from './system.ts';
 import type {
   ExecOptions, ExecResult, ExecSpec, System, SystemDirent, SystemEntryKind, SystemLstat, SystemStat, WriteFileOptions,
 } from './system.ts';
@@ -134,8 +134,11 @@ export class LocalSystem implements System {
 
   async lstat(p: string): Promise<SystemLstat | null> {
     requireAbsolute('lstat', 'path', p);
-    let s: Awaited<ReturnType<typeof fs.lstat>>;
-    try { s = await fs.lstat(p); }
+    // `bigint` FOR THE NANOSECONDS, and only for them: `fs.Stats.mtimeMs` is
+    // already a rounded double, so rounding it again cannot agree with the
+    // wire's own integer arithmetic (see msFromNanos).
+    let s: import('node:fs').BigIntStats;
+    try { s = await fs.lstat(p, { bigint: true }); }
     catch (e) {
       // ENOTDIR alongside ENOENT: a non-directory component means there is no
       // entry here, which is the answer rather than a failure to get one — and
@@ -154,16 +157,22 @@ export class LocalSystem implements System {
   //
   //   mode    — `find -printf '%m'` carries permission bits alone, so the type
   //             bits come from the kind on both sides (see `typeBitsFor`).
-  //   mtimeMs — `%T@` is seconds.nanoseconds and cc rounds it to whole
-  //             milliseconds, so this rounds too. (`stat` above is left at
-  //             fs.stat's own sub-millisecond value; its callers ask about a
-  //             target, and its conformance row already carries a tolerance.)
-  #lstatOf(s: { size: number; mode: number; mtimeMs: number; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }): SystemStat {
+  //   mtimeMs — through `msFromNanos`, the SAME function the wire side uses,
+  //             from exact integer nanoseconds. Rounding each side in its own
+  //             arithmetic disagreed on a half-millisecond boundary about once
+  //             in 20k. (`stat` above is left at fs.stat's own sub-millisecond
+  //             value; its callers ask about a target, and its conformance row
+  //             already carries a tolerance.)
+  #lstatOf(s: {
+    size: bigint; mode: bigint; mtimeNs: bigint;
+    isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean;
+  }): SystemStat {
     const kind = kindOf(s);
     return {
-      kind, size: s.size,
-      mode: (s.mode & 0o7777) | typeBitsFor(kind),
-      mtimeMs: Math.round(s.mtimeMs),
+      kind,
+      size: Number(s.size),
+      mode: (Number(s.mode) & 0o7777) | typeBitsFor(kind),
+      mtimeMs: msFromNanos(Number(s.mtimeNs / 1_000_000_000n), Number(s.mtimeNs % 1_000_000_000n)),
     };
   }
 
@@ -176,7 +185,7 @@ export class LocalSystem implements System {
     // fields so the wire side can collapse them; this side just fills them in.
     return Promise.all(entries.map(async (e) => {
       const full = path.join(p, e.name);
-      const s = await fs.lstat(full);
+      const s = await fs.lstat(full, { bigint: true });
       return {
         name: e.name,
         ...this.#lstatOf(s),
