@@ -91,13 +91,19 @@ t('PostToolUse still carries tool_response, and additionalContext still reaches 
 // else — and a tool result cannot be substituted, so there is no way to make
 // either honest on a remote project.
 //
-// MEASURED (2.1.250): today they are absent from the headless profile whether
-// or not `permissions.deny` names them, and `ToolSearch` cannot surface them
-// either. So cc's denial currently removes nothing, and this test is asserting
-// the property rather than the denial's effect — which is the point. If a CLI
-// upgrade puts them back and the denial does not hold, this fails, and the
-// second guard in src/systems/toolRedirect.ts is what keeps the boundary
-// consistent until it is fixed.
+// MEASURED (2.1.250): today they are absent from the headless profile, and
+// `ToolSearch` cannot surface them either. So cc's denial currently removes
+// nothing, and this test is asserting the property rather than the denial's
+// effect — which is the point. If a CLI upgrade puts them back and the denial
+// does not hold, this fails, and the second guard in
+// src/systems/toolRedirect.ts is what keeps the boundary consistent until it is
+// fixed.
+//
+// THIS CASE RUNS *WITH* `deny`, so on its own it cannot tell the profile's
+// absence from the denial's effect — an earlier wording here claimed
+// deny-independence and this case never measured it. The DENY-OFF control lives
+// in the case below, which is the same probe with `permissions` omitted; read
+// the two together.
 //
 // The registry list is read from the session's own `system`/`init` frame, so
 // nothing here depends on what a model chose to reach for.
@@ -112,6 +118,50 @@ t('a cc-shaped session can reach neither Glob nor Grep', async () => {
     }
     assert.ok(!tools.includes('Glob'), `Glob is absent (got ${tools.join(',')})`);
     assert.ok(!tools.includes('Grep'), `Grep is absent (got ${tools.join(',')})`);
+  } finally { await hooks.close(); await clean(); }
+});
+
+// PINS THE CARVE-OUT src/systems/toolRedirect.ts RECORDS, and the deny-off
+// control the case above lacks. ONE run, two claims, because both are read off
+// the same `system`/`init` frame.
+//
+// CLAIM 1 — `LS` IS NOT IN THE REGISTRY. `SessionRedirect.preToolUse` falls
+// THROUGH to allow for any tool outside FILE_TOOLS, and `LS` observes the tree:
+// were it served, an `LS` of an excluded path would answer a bare -ENOENT —
+// exactly what the refusal wording exists to stop a worker reading as "absent" —
+// and a listing would additionally disclose the shape of a subtree whose `Read`
+// is refused. That fall-through is unreachable only while the tool does not
+// exist, which is a fact about the CLI and therefore belongs here rather than in
+// a comment. If this goes red, the carve-out has become seam work: add `LS` to
+// FILE_TOOLS with its MEASURED argument name (do not guess one).
+//
+// CLAIM 2 — THE PROFILE, NOT THE DENIAL, is what removes `Glob`/`Grep`. This
+// probe passes NO `permissions.deny` at all, so their absence here is the
+// profile's own. Together with the with-deny case above that is the both-ways
+// measurement; alone, neither case is.
+//
+// NOT CLAIMING that the four FILE_TOOLS names are the whole of the CLI's
+// file-tool surface for all time — only that they are present and that these
+// three are not. A fifth file tool DECLARED in cc is caught elsewhere, by the
+// FILE_TOOLS enumeration in tests/systems-redirect-hooks.test.mjs (A15); a
+// fifth appearing in the CLI without cc declaring it is caught by nothing, and
+// that is what the absent-list above narrows rather than closes.
+t('a cc-shaped session serves no LS, and no Glob/Grep even with no deny', async () => {
+  const { dir, clean } = await fixture();
+  const hooks = await hookServer(() => allow());
+  try {
+    // No `deny` key: `settingsJSON` omits the whole `permissions` block, which
+    // is what makes claim 2 a control rather than a repeat.
+    const settings = settingsJSON(hooks.url, { pre: ['Edit', 'Write', 'NotebookEdit', 'Bash', 'Read'] });
+    assert.ok(!JSON.parse(settings).permissions, 'the control must carry no permissions block');
+    const tools = await toolRegistry(dir, settings);
+    // Not vacuous: every tool the seam actually classifies is present.
+    for (const present of ['Bash', 'Read', 'Write', 'Edit', 'NotebookEdit']) {
+      assert.ok(tools.includes(present), `${present} is in the registry (got ${tools.join(',')})`);
+    }
+    for (const absent of ['LS', 'Glob', 'Grep', 'MultiEdit', 'NotebookRead']) {
+      assert.ok(!tools.includes(absent), `${absent} is absent (got ${tools.join(',')})`);
+    }
   } finally { await hooks.close(); await clean(); }
 });
 

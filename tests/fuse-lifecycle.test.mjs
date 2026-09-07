@@ -16,13 +16,15 @@ import { promises as fs, rmSync } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { runTeardown, DEFAULT_DEADLINES } from '../src/systems/fuse/session.ts';
-import { buildTierTable, renderPinsFile, binaryPins, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
+import { buildTierTable, renderPinsFile, binaryPins, resolveOnPath, resolveTierEntry, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { wrapLaunch } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
 import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
 import { reclaimOrphanProcesses } from '../src/systems/fuse/orphans.ts';
 import { parseScan, membersOf, orphansUnder } from '../src/systems/fuse/procScan.ts';
 import { FuseSession } from '../src/systems/fuse/session.ts';
+import { Instance, InstanceManager } from '../src/instances.ts';
+import { tierFixtureInput } from './tierFixture.mjs';
 
 // ── the fake driver ─────────────────────────────────────────────────────────
 //
@@ -442,9 +444,12 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     fusectl: '/store/run/inst-1/fusectl', pinsPath: '/store/run/inst-1/pins.txt',
     intentPath: '/store/run/inst-1/intent.json', recordPath: '/store/run/inst-1/mount.json',
     daemonLog: '/store/run/inst-1/daemon.log',
+    refusalLog: '/store/run/inst-1/refusals.log',
+    controlSock: '/store/run/inst-1/control.sock',
+    markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'allow_other,attr_timeout=0',
     tiers: [], pinsText: '', uid: 1000, gid: 1000,
-    standInSource: '/srv/app', standInAt: '/store/run/inst-1/mirror/srv/app',
+    fakeRemoteRoot: '/',
   };
   const wrapped = () => wrapLaunch(
     { command: 'claude', args: ['-p', 'a prompt\nwith a newline', '--model', 'x'], cwd: '/store/sessions/foo', env: { HOME: '/home/node', PATH: '/opt/bin:/usr/bin' } },
@@ -497,19 +502,31 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     assert.equal(w.env.CC_FUSE_PATH, '/opt/bin:/usr/bin');
   });
 
-  // PINS: no stand-in ⇒ no stand-in variables, so the bootstrap's bind is
-  // skipped rather than run against an empty path.
-  test('omits the stand-in variables when there is no stand-in source', () => {
-    const w = wrapLaunch({ command: 'claude', args: [], cwd: '/x', env: {} },
-      { plan: { ...plan, standInSource: null, standInAt: null }, unionBinary: '/b', ccBootId: 'b', spawnedAt: 0 });
-    assert.equal(w.env.CC_FUSE_STANDIN_SRC, undefined);
-    assert.equal(w.env.CC_FUSE_STANDIN_AT, undefined);
+  // PINS: the three things the daemon REFUSES TO MOUNT without, carried by
+  // name. `bootstrap.sh` renames each into the daemon's own CC_UNION_* prefix,
+  // and a missing one is a launch that dies in the mount-wait loop rather than
+  // at a named refusal.
+  test('carries the control socket, the mark path and the refusal log', () => {
+    const w = wrapped();
+    assert.equal(w.env.CC_FUSE_CONTROL, plan.controlSock);
+    assert.equal(w.env.CC_FUSE_MARK_PATH, plan.markPath);
+    assert.equal(w.env.CC_FUSE_REFUSAL_LOG, plan.refusalLog);
   });
 });
 
 describe('the tier table', () => {
+  // `localRoots` are DECLARATIONS now (S2 §4.2): each carries the bit the hook
+  // reads. Every one is still host-pinned for the daemon whatever the bit says,
+  // which is what the first test below asserts.
   const input = {
-    localRoots: ['/store/attachments/app', '/store/session-tmp/inst-1', '/home/node/.claude', '/home/node/.claude/projects', '/opt/plugins/p1'],
+    localRoots: [
+      { prefix: '/store/attachments/app', access: 'allow', why: 'uploads' },
+      { prefix: '/store/session-tmp/inst-1', access: 'allow', why: 'own tmp' },
+      { prefix: '/home/node/.claude/plans', access: 'allow', why: 'plan mode writes here' },
+      { prefix: '/home/node/.claude', access: 'deny', why: 'the CLI\'s own state' },
+      { prefix: '/home/node/.claude/projects', access: 'deny', why: 'every session\'s transcripts' },
+      { prefix: '/opt/plugins/p1', access: 'allow', why: 'a plugin root' },
+    ],
     claudeCommand: '/usr/local/share/npm-global/bin/claude',
     execPath: '/usr/local/bin/node',
     selfProjectDir: '/workspaces/cc-projects/code-conductor',
@@ -517,8 +534,11 @@ describe('the tier table', () => {
     homeDir: '/home/node',
     runDir: '/workspaces/cc-projects/.code-conductor/systems/fuse/run/inst-1',
     systemPath: '/srv/app',
+    mirrorRoot: '/srv/app',
+    exclude: [],
   };
   const tierOf = (entries, prefix) => entries.find(e => e.prefix === prefix)?.tier;
+  const lines = (entries) => renderPinsFile(entries).split('\n').filter(l => l && !l.startsWith('#'));
 
   // PINS: the three pins whose absence is a behaviour change under the frozen
   // daemon's remote-first `default` arm — every one of them would otherwise be
@@ -529,7 +549,7 @@ describe('the tier table', () => {
     assert.equal(tierOf(t, '/workspaces/cc-projects'), 'host');
     assert.equal(tierOf(t, '/workspaces/cc-projects/code-conductor'), 'host');
     assert.equal(tierOf(t, '/home/node'), 'host');
-    for (const r of input.localRoots) assert.equal(tierOf(t, r), 'host', r);
+    for (const r of input.localRoots) assert.equal(tierOf(t, r.prefix), 'host', r.prefix);
   });
 
   // PINS: the run directory is HIDDEN, so the union never serves its own
@@ -547,26 +567,75 @@ describe('the tier table', () => {
     assert.deepEqual(t.filter(e => e.tier === 'project').map(e => e.prefix), ['/srv/app']);
   });
 
-  // PINS: the epic's "two mechanisms, never one list". Both directions.
-  test('the bind-mount set is not in the table, and no input changes it', () => {
+  // ── A11/A12: the epic's "two mechanisms, never one list" ──────────────────
+  //
+  // DELIBERATELY INVERTED FROM S1, which asserted `tierOf(t, b) === undefined`.
+  // S1 kept BIND_MOUNTS out of the table because the frozen daemon had no kind
+  // for them; S2 has to tell the daemon those three paths exist as directories,
+  // because `bootstrap.sh` binds OVER them and a `mount --bind` onto a target
+  // the daemon answers -ENOENT for kills the launch (S2 §4.3, §13 K4). The
+  // never-merge rule is unchanged and is now asserted as what it always was —
+  // a claim about DERIVATION, not about absence: each kind comes from exactly
+  // one source and no input to one moves the other.
+  //
+  // PINS: `bind` is derived only from the constant; `fail` only from the
+  // advertisement's excludes.
+  test('bind is derived only from the constant, and no exclude changes it', () => {
     const t = buildTierTable(input);
-    for (const b of BIND_MOUNTS) assert.equal(tierOf(t, b), undefined, `${b} appears as a tier`);
+    for (const b of BIND_MOUNTS) assert.equal(tierOf(t, b), 'bind', b);
     // A TRIPWIRE, not coverage: this literal exists so that changing the bind
     // set is a deliberate two-place edit rather than a silent one, and so a
     // later reader who merges it with the tier table has to delete an assertion
     // that says not to. It proves nothing about behaviour by itself.
     assert.deepEqual([...BIND_MOUNTS], ['/proc', '/sys', '/dev']);
+    // CLEARING the excludes leaves every bind line — a provider that excludes
+    // nothing must not lose /proc bind-mounting.
+    const none = lines(buildTierTable({ ...input, exclude: [] }));
+    for (const b of BIND_MOUNTS) assert.ok(none.includes(`bind\t${b}`), `${b} lost its bind line`);
     // A provider that excludes nothing, and one that excludes something odd,
     // leave the bind set identical — it is a constant, not a derivation.
     const before = [...BIND_MOUNTS];
-    buildTierTable({ ...input, systemPath: '/var/lib/secrets' });
+    buildTierTable({ ...input, systemPath: '/var/lib/secrets', exclude: ['/var/lib/secrets'] });
     assert.deepEqual([...BIND_MOUNTS], before);
+  });
+
+  // PINS: an exclude adds a `fail` line and NOTHING to the bind set — the other
+  // direction of the same rule.
+  test('an exclude inside the mirror root adds a fail line and no bind line', () => {
+    const t = buildTierTable({ ...input, mirrorRoot: '/', exclude: ['/var/lib/secrets'] });
+    assert.equal(tierOf(t, '/var/lib/secrets'), 'fail');
+    const rendered = lines(t);
+    assert.ok(rendered.includes('fail\t/var/lib/secrets'), rendered.join(' '));
+    assert.ok(!rendered.includes('bind\t/var/lib/secrets'));
+    // And it did not become a fourth bind mount.
+    assert.deepEqual(rendered.filter(l => l.startsWith('bind\t')), ['bind\t/proc', 'bind\t/sys', 'bind\t/dev']);
+  });
+
+  // PINS: excluded AND bind-mounted keeps `bind` — the daemon needs the
+  // directory to exist so `bootstrap.sh`'s bind succeeds, and the bind then
+  // shadows the union there anyway. Inverting the two `add` loops in
+  // buildTierTable turns this line into `fail /proc` and kills the launch.
+  test('an exclude that is also a bind mount keeps its bind line', () => {
+    const rendered = lines(buildTierTable({ ...input, mirrorRoot: '/', exclude: ['/proc'] }));
+    assert.ok(rendered.includes('bind\t/proc'), rendered.join(' '));
+    assert.ok(!rendered.includes('fail\t/proc'), 'the fail spelling shadowed the bind one');
+  });
+
+  // PINS criterion 4's third clause: an exclude OUTSIDE the mirror root is
+  // INERT — it renders nothing. `resolveMirrorScope` has already reported it on
+  // the session's stream; turning it into a `fail` pin would make an
+  // "inert, no effect" diagnostic a lie and -ENOENT a path the union never
+  // served in the first place.
+  test('an exclude outside the mirror root renders nothing', () => {
+    const t = buildTierTable({ ...input, mirrorRoot: '/srv/app', exclude: ['/var/lib/secrets'] });
+    assert.equal(tierOf(t, '/var/lib/secrets'), undefined);
+    assert.ok(!lines(t).some(l => l.startsWith('fail\t')), 'an inert exclude reached the pins file');
   });
 
   // PINS: a prefix appearing twice keeps its FIRST decision, so the table's
   // meaning cannot depend on construction order.
   test('a duplicate prefix keeps its first tier', () => {
-    const t = buildTierTable({ ...input, localRoots: [...input.localRoots, '/home/node'] });
+    const t = buildTierTable({ ...input, localRoots: [...input.localRoots, { prefix: '/home/node', access: 'allow', why: 'a second spelling of the home pin' }] });
     assert.deepEqual(t.filter(e => e.prefix === '/home/node').length, 1);
     assert.equal(tierOf(t, '/home/node'), 'host');
   });
@@ -609,16 +678,93 @@ describe('the tier table', () => {
     // The install prefix is the common ancestor of the launcher and its target;
     // with no symlink to follow it is the bin directory itself.
     assert.ok(pins.some(p => p === '/usr/local/share/npm-global/bin' || p === '/usr/local/share/npm-global'), pins.join(' '));
-    assert.deepEqual(binaryPins('claude'), [], 'a non-absolute command pins nothing');
+    // A BARE NAME IS RESOLVED AGAINST PATH, and that stopped being cosmetic
+    // when T_FAIL reached enum index 0: `resolveClaudeBin()` returns a bare
+    // `claude` by default, an unpinned launcher is now -ENOENT rather than a
+    // host fallback, and the CLI could not exec at all.
+    assert.deepEqual(binaryPins('cc-no-such-command-anywhere'), [],
+      'a name PATH cannot resolve pins nothing');
+    const shPins = binaryPins('sh');
+    assert.ok(shPins.length > 0 && path.isAbsolute(shPins[0]),
+      `a bare name on PATH resolves to an absolute pin, got ${JSON.stringify(shPins)}`);
+    assert.equal(resolveOnPath('/already/absolute'), '/already/absolute');
+    assert.equal(resolveOnPath('cc-no-such-command-anywhere'), '');
   });
 
   // PINS: the rendered file is what union.c's pins_load actually parses —
   // `<tier>\t<prefix>` with `#` comments.
   test('renders one tab-separated rule per line, with comments', () => {
-    const text = renderPinsFile([{ tier: 'host', prefix: '/etc/passwd', why: 'identity' }, { tier: 'hide', prefix: '/run/x', why: 'scaffolding' }]);
+    const text = renderPinsFile([{ tier: 'host', prefix: '/etc/passwd', why: 'identity', toolAccess: 'deny' }, { tier: 'hide', prefix: '/run/x', why: 'scaffolding', toolAccess: 'deny' }]);
     const rules = text.split('\n').filter(l => l && !l.startsWith('#'));
     assert.deepEqual(rules, ['host\t/etc/passwd', 'hide\t/run/x']);
     assert.ok(text.split('\n').some(l => l.startsWith('# identity')));
+  });
+});
+
+// ── the three literals the daemon's behaviour rests on ─────────────────────
+//
+// Each of these is a value cc renders or hands to a frozen daemon, where the
+// consequence of a drift is invisible from every other assertion in the suite.
+describe('the mount literals', () => {
+  // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. `union.c` is a fork of
+  // the frozen spike instrument and diverges from it by design, one PROVENANCE.md
+  // ledger row at a time; editing it without regenerating the pin in the same
+  // commit is the undisclosed drift this catches. Needs no compiler, so it runs
+  // everywhere — and it iterates the pin file's ROWS, so it covers `policy.h`
+  // the moment Phase B adds a second line.
+  test('A16: union.c.sha256 matches the source it pins', async () => {
+    const { createHash } = await import('node:crypto');
+    const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
+    const pinned = await fs.readFile(path.join(dir, 'union.c.sha256'), 'utf8');
+    const rows = pinned.split('\n').filter(Boolean).map(l => l.trim().split(/\s+/));
+    // THE ROW COUNT AND BOTH NAMES ARE ASSERTIONS, not a regenerated file. The
+    // loop below is source-agnostic, so it covers any source the pin file names
+    // — but only the ones it names. Adding a source to the build address (A19)
+    // and forgetting its pin row would otherwise pass this test silently, and
+    // the latch would be guarding half of what it claims.
+    assert.equal(rows.length, 2, `the pin file must carry one row per build source, got ${rows.length}`);
+    assert.deepEqual(rows.map(r => r[1]).sort(), ['policy.h', 'union.c']);
+    for (const [want, name] of rows) {
+      const buf = await fs.readFile(path.join(dir, name));
+      assert.equal(createHash('sha256').update(buf).digest('hex'), want,
+        `${name} changed without its sha256 pin being regenerated`);
+    }
+  });
+
+  // A17 — PINS the mount options as LITERALS. Every one is load-bearing and
+  // none is observable without a real mount: the daemon runs as root and serves
+  // callers of another uid (`allow_other` + `default_permissions`), and FUSE's
+  // attribute cache is per-inode rather than per-caller, so a non-zero timeout
+  // measurably answered one path 15 bytes to `stat` and 33 to `cat` across the
+  // routing boundary.
+  test('A17: MOUNT_OPTS carries allow_other, default_permissions and three zero timeouts', async () => {
+    const { MOUNT_OPTS } = await import('../src/systems/fuse/plan.ts');
+    const opts = MOUNT_OPTS.split(',');
+    for (const want of ['allow_other', 'default_permissions',
+      'attr_timeout=0', 'entry_timeout=0', 'negative_timeout=0']) {
+      assert.ok(opts.includes(want), `${want} missing from ${MOUNT_OPTS}`);
+    }
+  });
+
+  // A18 — PINS criterion 9's geometry: the per-session mirror is OUTSIDE the
+  // chroot and has no spelling inside it. `rundir` is tiered `hide`, so the
+  // union answers -ENOENT for its own backing store; moving `mirror` under
+  // `root` would put the remote tier's backing store inside the tree it backs.
+  test('A18: the mirror is under rundir, not under root, and rundir is hidden', async () => {
+    const { buildFusePlan, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
+    const plan = buildFusePlan({
+      instanceId: 'inst-a18', cwdInside: '/srv/app',
+      fakeRemoteRoot: '/', markPath: '/usr/bin/claude',
+      tiers: buildTierTable(tierFixtureInput({ runDir: fuseRunDir('inst-a18') })),
+    });
+    assert.equal(path.dirname(plan.mirror), plan.rundir);
+    assert.equal(path.dirname(plan.root), plan.rundir);
+    assert.equal(plan.mirror.startsWith(plan.root + path.sep), false, 'the mirror is inside the chroot');
+    assert.equal(plan.tiers.find(e => e.prefix === plan.rundir)?.tier, 'hide');
+    // And nothing inside the chroot can name it: the pins file's only mention of
+    // the run directory is the `hide` rule itself.
+    const named = plan.pinsText.split('\n').filter(l => !l.startsWith('#') && l.includes(plan.rundir));
+    assert.deepEqual(named, [`hide\t${plan.rundir}`]);
   });
 });
 
@@ -691,22 +837,157 @@ describe('the configuration-time containment refusal', () => {
   });
   after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
 
-  // PINS: a remote root that CONTAINS the mount must be refused BEFORE anything
-  // is mounted. It deadlocks in VFS path resolution before the daemon is
-  // consulted, so no daemon-side guard can ever catch it.
-  test('refuses a stand-in source that contains the mountpoint', async () => {
+  const planArgs = { instanceId: 'inst-x', cwdInside: '/srv/app', markPath: '/usr/bin/claude', tiers: [] };
+
+  // A20 — PINS `FUSE_REMOTE_ROOT_CONTAINS_MIRROR`, in THREE arms, because two
+  // of them are each other's control and the third is what makes the `/`
+  // exemption exercised rather than merely present.
+  //
+  // WHAT THE REFUSAL IS FOR: cc materialises a remote path P at `<mirror>/P`
+  // and reads it from `<fakeRemoteRoot>/P`. Where the mirror lies inside the
+  // source root, some P resolves back into the mirror and cc serves its own
+  // staging area to the worker as remote content.
+
+  // Arm (b). Mutation it must die under: deleting the containment check.
+  test('A20b: a non-/ remote root containing the mirror is refused', async () => {
     const { buildFusePlan, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
     const rundir = fuseRunDir('inst-x');
-    const args = { instanceId: 'inst-x', cwdInside: '/srv/app', systemPath: '/srv/app', localRoots: [], claudeCommand: 'claude' };
-    assert.throws(() => buildFusePlan({ ...args, standInSource: path.dirname(path.dirname(rundir)) }), (e) => {
-      assert.equal(e.code, 'FUSE_MIRROR_CONTAINS_MOUNT');
+    assert.throws(() => buildFusePlan({ ...planArgs, fakeRemoteRoot: path.dirname(path.dirname(rundir)) }), (e) => {
+      assert.equal(e.code, 'FUSE_REMOTE_ROOT_CONTAINS_MIRROR');
       assert.equal(e.statusCode, 501);
+      // It names the mirror, not the mountpoint: the mount is not what is at
+      // stake any more and a refusal that named it would send a reader looking
+      // for a deadlock that cannot happen.
+      assert.match(e.message, /staging mirror/);
+      assert.ok(e.message.includes(path.join(rundir, 'mirror')), e.message);
       return true;
     });
-    // The same call with a stand-in that does NOT contain the mountpoint is the
-    // control: without it the refusal above could be unconditional.
-    const plan = buildFusePlan({ ...args, standInSource: '/srv/app' });
-    assert.equal(plan.standInAt, path.join(plan.mirror, '/srv/app'));
+  });
+
+  // Arm (c). Mutation it must die under: making the refusal unconditional.
+  test('A20c: a non-containing remote root is accepted', async () => {
+    const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+    const plan = buildFusePlan({ ...planArgs, fakeRemoteRoot: '/srv/app' });
+    assert.equal(plan.fakeRemoteRoot, '/srv/app');
+  });
+
+  // Arm (a). THE DEFAULT ROOT, and it is the arm that makes the exemption
+  // provable: `/` contains the mirror like it contains everything, so without
+  // this a mutant deleting the `/` exemption would survive untouched — and
+  // every default launch would 501.
+  //
+  // Mutation it must die under: `input.fakeRemoteRoot === '/' ? null : …`
+  // collapsed to the bare containment check.
+  test('A20a: the default remote root / is accepted', async () => {
+    const { buildFusePlan, resolveFakeRemoteRoot } = await import('../src/systems/fuse/plan.ts');
+    assert.equal(resolveFakeRemoteRoot(), '/', 'the default is the host filesystem standing in for the remote');
+    const plan = buildFusePlan({ ...planArgs, fakeRemoteRoot: resolveFakeRemoteRoot() });
+    assert.equal(plan.fakeRemoteRoot, '/');
+  });
+
+  // AND WHY `/` IS SAFE, as data rather than as prose. At root `/`,
+  // `<fakeRemoteRoot>/P` IS P, so cc reads the mirror only for a P at or inside
+  // the mirror. Every such P resolves `hide`, and `route()` answers -ENOENT for
+  // a `hide` path before any control frame is sent — so no such P ever reaches
+  // cc. Asserted at the WIDEST advertised mirror root, `/`, which is the only
+  // setting under which the question is live at all.
+  //
+  // Mutation it must die under: dropping the `hide` pin on `runDir` from
+  // buildTierTable — the mirror then resolves `project` under the `/` pin and
+  // becomes a path cc would be asked to materialise from itself.
+  test('A20: at root /, no path cc could be asked about resolves into the mirror', async () => {
+    // THE FIXTURE'S OWN GEOMETRY, not `fuseRunDir()`'s. This describe repoints
+    // PROJECTS_ROOT at a temp dir and `projectsRoot()` reads the env per call,
+    // so `fuseRunDir()` lands under /tmp while `tierFixtureInput().projectsRoot`
+    // stays its constant — and the host-chain loop below then iterated ZERO
+    // times and asserted nothing. One geometry, read from one place.
+    const input = tierFixtureInput({ mirrorRoot: '/' });
+    const runDir = input.runDir;
+    const mirror = path.join(runDir, 'mirror');
+    const tiers = buildTierTable(input);
+    const at = (p) => resolveTierEntry(tiers, p)?.tier ?? 'fail';
+
+    // The mirror, its parent, and anything inside it: hide, so no frame is sent.
+    for (const p of [runDir, mirror, path.join(mirror, 'srv'), path.join(mirror, 'srv/app/x.txt'), path.join(mirror, 'etc')]) {
+      assert.equal(at(p), 'hide', p);
+    }
+    // The chain from the projects root down to the run directory is `host`, so
+    // no LIST ever names the mirror's parent as a child either. (`/` and the
+    // directory holding the projects root DO stay `project` — that is not the
+    // hazard: a LIST materialises one level of entries and never descends.)
+    //
+    // COMPONENT-BOUNDARY containment, not `startsWith`: `/workspaces/cc-projectsX`
+    // is not inside `/workspaces/cc-projects`. And the ITERATION COUNT is
+    // asserted, so a future repointing cannot silently empty this loop again —
+    // which is exactly how it was empty when it landed.
+    const inside = (p, root) => p === root || p.startsWith(root + path.sep);
+    let checked = 0;
+    for (let p = path.dirname(runDir); inside(p, input.projectsRoot); p = path.dirname(p)) {
+      assert.equal(at(p), 'host', p);
+      checked++;
+    }
+    assert.equal(checked, 5,
+      `the host chain from ${input.projectsRoot} down to ${path.dirname(runDir)} must be walked, got ${checked} steps`);
+    assert.equal(at('/'), 'project', 'the widest advertised mirror root is remote-tier');
+  });
+});
+
+// ── the three callers that reclaim a session's mount scaffolding ────────────
+//
+// `launch()` creates the run directory and starts LISTENING on the control
+// socket BEFORE `spawn()`, because the daemon refuses to mount without a socket
+// to connect to. So a session can hold a prepared `FuseSession` with no process
+// at all — and nothing else reclaims it: `_handleExit` only runs for a process
+// that existed. Every caller that drops an instance therefore has to tear the
+// mount scaffolding down UNCONDITIONALLY.
+//
+// Measured as a real leak (a listening `Server@…/control.sock` surviving a
+// whole test file), and shipped in `127e4643` with no test — this is that debt.
+// Prototype-only stand-ins, following `tests/instance-liveness.test.mjs`: the
+// question is which branch each caller takes, and a booted server would add a
+// launch path without adding an assertion.
+describe('reclaiming a prepared-but-unspawned session', () => {
+  const stubFuse = () => { const f = { torn: 0, teardown: async () => { f.torn++; } }; return f; };
+
+  const stubInstance = (fuse) => {
+    const inst = Object.create(Instance.prototype);
+    Object.assign(inst, { proc: null, _fuse: fuse, _redirect: null, id: 'inst-x', project: 'p' });
+    return inst;
+  };
+
+  const stubManager = (insts) => {
+    const mgr = Object.create(InstanceManager.prototype);
+    Object.assign(mgr, {
+      byId: new Map(insts.map(i => [i.id, i])),
+      _cancelAutoResume() {}, _purgeIdleFor() {}, emit() {},
+      _sessionRenew: { purge() {} },
+    });
+    return mgr;
+  };
+
+  // Dies if `kill()`'s no-process arm returns before the teardown.
+  test('Instance.kill() with no process still tears the mount down', async () => {
+    const fuse = stubFuse();
+    await stubInstance(fuse).kill({ graceMs: 0 });
+    assert.equal(fuse.torn, 1, 'kill() returned early and left the control socket listening');
+  });
+
+  // Dies if `remove()` gates the kill on `i.proc` again.
+  test('InstanceManager.remove() reclaims a session that never spawned', async () => {
+    const fuse = stubFuse();
+    const inst = stubInstance(fuse);
+    await stubManager([inst]).remove('inst-x');
+    assert.equal(fuse.torn, 1, 'remove() skipped the kill because there was no process');
+  });
+
+  // Dies if `removeAllForProject()` gates the kill on `i.proc` again — the
+  // sibling caller the original fix missed.
+  test('InstanceManager.removeAllForProject() reclaims one too', async () => {
+    const fuse = stubFuse();
+    const inst = stubInstance(fuse);
+    const n = await stubManager([inst]).removeAllForProject('p');
+    assert.equal(n, 1);
+    assert.equal(fuse.torn, 1, 'removeAllForProject() skipped the kill because there was no process');
   });
 });
 
@@ -910,8 +1191,11 @@ describe('FuseSession lifecycle', () => {
     fusectl: path.join(rundir, 'fusectl'), pinsPath: path.join(rundir, 'pins.txt'),
     intentPath: path.join(rundir, 'intent.json'), recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
+    refusalLog: path.join(rundir, 'refusals.log'),
+    controlSock: path.join(rundir, 'control.sock'),
+    markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'o', tiers: [], pinsText: '# pins\n',
-    uid: 1000, gid: 1000, standInSource: null, standInAt: null,
+    uid: 1000, gid: 1000, fakeRemoteRoot: '/',
   });
 
   // T3 / B1 — PINS: the teardown latch is released by a successful prepare().
@@ -919,11 +1203,12 @@ describe('FuseSession lifecycle', () => {
   // directory (instances.ts rewindToUserMessage / pruneSession), and a latch
   // that never reset made the second kill() a no-op: no unmounts, no abort, no
   // signals, and a root daemon plus a private mount surviving until restart.
-  test('prepare() releases the teardown latch, so a relaunched session tears down again', async () => {
+  test('prepare() releases the teardown latch, so a relaunched session tears down again', async (t) => {
     const rundir = await mkdtemp('cc-fuse-life-');
     const p = plan(rundir);
     const d = fakeDriver();
     const s = new FuseSession({ plan: p, ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+    t.after(() => s.teardown());
 
     await s.prepare();
     const first = await s.teardown();
@@ -935,12 +1220,56 @@ describe('FuseSession lifecycle', () => {
     assert.ok(second && 'wedged' in second, 'the second lifecycle was silently skipped — this is the rewind/prune leak');
   });
 
+  // PINS THAT prepare() AND teardown() MAY NOT INTERLEAVE, and what the
+  // interleaving used to cost was not a socket. `_mutating` covers
+  // rewind/fork/prune only and the instance is in `byId` before `launch()`
+  // runs, so a `kill()` can reach `teardown()` while `launch()` is inside
+  // `prepare()`. A teardown that latched during prepare's
+  // `await ControlServer.listen()` left prepare to assign `#control`
+  // afterwards — latched WITH A LIVE SERVER — and the final teardown then
+  // early-returned on the latch, so the state machine never ran and the mount,
+  // the root daemon and the run directory survived the session.
+  test('a teardown that races a prepare does not swallow the next teardown', async (t) => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: plan(rundir), ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+    t.after(() => s.teardown());
+
+    // Both started before either is awaited — the interleaving itself.
+    const prep = s.prepare();
+    const racing = s.teardown();
+    await Promise.allSettled([prep, racing]);
+
+    // WHICHEVER ORDER THEY TOOK, the session is now either prepared or torn
+    // down, never latched-with-a-server. The distinguishing assertion is the
+    // NEXT teardown: it must still run the state machine if a prepare was the
+    // last thing to complete.
+    const after = await s.teardown();
+    if (s.controlServer !== null) assert.fail('a control server outlived a teardown');
+    // A teardown reports `alreadyTornDown` only when no prepare followed the
+    // one that latched. Assert the pair is CONSISTENT rather than guessing the
+    // race's winner: if the last completed call was a prepare, the state
+    // machine must have run.
+    const ranMachine = after && 'wedged' in after;
+    assert.equal(ranMachine || after.alreadyTornDown === true, true, JSON.stringify(after));
+
+    // …AND THE ORDER-INDEPENDENT PART, which is the real invariant: a prepare
+    // that completes AFTER a teardown always re-arms it. This is the sequence
+    // the race produces when teardown wins, run deterministically.
+    await s.prepare();
+    const second = await s.teardown();
+    assert.ok(second && 'wedged' in second,
+      'a prepare after a teardown did not re-arm the state machine');
+    assert.equal(s.controlServer, null);
+  });
+
   // T3 — PINS: "already torn down" is DISTINGUISHABLE from "nothing to do". A
   // caller that cannot tell them apart cannot tell a no-op from a leak.
-  test('a repeated teardown reports that it was already torn down', async () => {
+  test('a repeated teardown reports that it was already torn down', async (t) => {
     const rundir = await mkdtemp('cc-fuse-life-');
     const d = fakeDriver();
     const s = new FuseSession({ plan: plan(rundir), ccBootId: 'b', driver: d, scan: d.scan });
+    t.after(() => s.teardown());
     await s.prepare();
     assert.ok('wedged' in (await s.teardown()));
     assert.deepEqual(await s.teardown(), { alreadyTornDown: true });
@@ -949,10 +1278,11 @@ describe('FuseSession lifecycle', () => {
   // T3 — PINS the handshake deadline's two arms, which differ in what the
   // caller must do: a LIVE process that never wrote the record is a mount that
   // did not come up, a DEAD one has already put its own named refusal on stderr.
-  test('awaitHandshake gives up at the deadline while alive, and immediately once dead', async () => {
+  test('awaitHandshake gives up at the deadline while alive, and immediately once dead', async (t) => {
     const rundir = await mkdtemp('cc-fuse-life-');
     const driver = fakeDriver();
     const s = new FuseSession({ plan: plan(rundir), ccBootId: 'b', driver, scan: driver.scan, deadlines: { handshakeMs: 500, pollMs: 50 } });
+    t.after(() => s.teardown());
     await s.prepare();
 
     const t0 = driver.now();
@@ -967,11 +1297,12 @@ describe('FuseSession lifecycle', () => {
   // PINS: the handshake waits for `stage: mounted`. The record exists from the
   // moment the bootstrap has a pid to name, so its mere presence would report a
   // mount that is not up.
-  test('awaitHandshake ignores a stage:starting record and takes the mounted one', async () => {
+  test('awaitHandshake ignores a stage:starting record and takes the mounted one', async (t) => {
     const rundir = await mkdtemp('cc-fuse-life-');
     const p = plan(rundir);
     const driver = fakeDriver();
     const s = new FuseSession({ plan: p, ccBootId: 'b', driver, scan: driver.scan, deadlines: { handshakeMs: 300, pollMs: 50 } });
+    t.after(() => s.teardown());
     await s.prepare();
     await fs.writeFile(p.recordPath, JSON.stringify({ stage: 'starting', anchorPid: 7, daemonPid: 0 }));
     assert.equal(await s.awaitHandshake(() => true), null);
@@ -987,11 +1318,12 @@ describe('FuseSession lifecycle', () => {
   // PINS: relaunching into a run directory whose previous teardown WEDGED is
   // refused rather than silently mounting a second session over the handle to
   // the first.
-  test('prepare() refuses to reuse a run directory whose last teardown wedged', async () => {
+  test('prepare() refuses to reuse a run directory whose last teardown wedged', async (t) => {
     const rundir = await mkdtemp('cc-fuse-life-');
     const p = plan(rundir);
     const d = fakeDriver();
     const s = new FuseSession({ plan: p, ccBootId: 'b', driver: d, scan: d.scan });
+    t.after(() => s.teardown());
     await s.prepare();
     await fs.writeFile(p.recordPath, JSON.stringify({ stage: 'mounted', wedged: true, terminalState: 'WEDGED(threads=2 states=DD)' }));
     await assert.rejects(() => s.prepare(), (e) => {

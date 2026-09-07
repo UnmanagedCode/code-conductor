@@ -5,7 +5,7 @@ import { promises as fsp, mkdirSync, chmodSync, createWriteStream, writeFileSync
 import path from 'node:path';
 import os from 'node:os';
 import { Parser, QuiescenceScan, SOFT_INTERRUPT_MARKER, isOuterUserEcho, snapStartToQuiescent, firstQuiescentAtOrAfter, lastQuiescentAtOrBefore } from './parser.ts';
-import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot } from './projects.ts';
+import { getProject, findSessionLocation, readFirstPrompt, sessionFilePath, subAgentDirPath, assertBackingId, orchStoreRoot, claudeProjectsRoot, projectsRoot, selfProjectDir } from './projects.ts';
 
 // Where one redirected session's CLAUDE_CODE_TMPDIR lives. Named once because
 // three sites depend on it agreeing: spawn() creates it, remove() reclaims it,
@@ -61,7 +61,8 @@ import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './wor
 import { LOCAL_SYSTEM_ID } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
-import { buildFusePlan, resolveMirrorStandIn } from './systems/fuse/plan.ts';
+import { buildFusePlan, resolveFakeRemoteRoot, fuseRunDir } from './systems/fuse/plan.ts';
+import { buildTierTable, resolveOnPath, type LocalRoot } from './systems/fuse/tierTable.ts';
 import { FuseSession } from './systems/fuse/session.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
 import { ensureUnionBinary } from './systems/fuse/build.ts';
@@ -3457,7 +3458,16 @@ export class Instance extends EventEmitter implements InstanceLike {
   }
 
   async kill({ graceMs = 2000 }: { graceMs?: number } = {}): Promise<void> {
-    if (!this.proc) return;
+    if (!this.proc) {
+      // A SESSION CAN HOLD A PREPARED FuseSession WITH NO PROCESS. launch()
+      // creates the run directory and starts listening on the control socket
+      // BEFORE spawn(), because the daemon refuses to mount without a socket to
+      // connect to — so a launch that failed between the two leaves both, and
+      // `_handleExit` cannot reclaim them: it only runs for a process that
+      // existed. Idempotent, so the ordinary path is unaffected.
+      await this._fuse?.teardown().catch(() => {});
+      return;
+    }
     // Mark this as a commanded teardown so _handleExit doesn't mistake the
     // resulting signalled exit for a spontaneous launch crash.
     this._killing = true;
@@ -4787,23 +4797,78 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       // move to any more, and a session whose remote tier silently changed
       // shape mid-life is a worse outcome than a named refusal.
       inst._mirrorScope = mirrorScopeForSession;
-      const localRoots = [
-        attachmentsDir(project, worktreeMeta?.worktreeName ?? null),
-        sessionTmpDir(id),
-        path.join(os.homedir(), '.claude'),
-        claudeProjectsRoot(),
-        ...claudePluginDirs,
+      // THE HOST-LOCAL PREFIXES THIS SESSION MAY REACH, each declaring whether a
+      // FILE TOOL may name it. Every one is host-pinned for the daemon whatever
+      // the bit says — a local root served from the remote would answer about
+      // the wrong machine — so `access` decides the hook and nothing else, and
+      // THE ALLOW SET IS THIS ARRAY AND NOWHERE ELSE.
+      //
+      // Each `deny` is a path that holds OTHER sessions' data, and each `allow`
+      // is a path a real named tool call has to reach and that Bash — which
+      // execs on the system — cannot see, so a deny would make it unreachable
+      // through every channel at once.
+      const localRoots: LocalRoot[] = [
+        { prefix: attachmentsDir(project, worktreeMeta?.worktreeName ?? null), access: 'allow',
+          why: "this project's upload channel — Bash execs on the system and cannot see it" },
+        { prefix: sessionTmpDir(id), access: 'allow',
+          why: "this session's own tmp dir (CLAUDE_CODE_TMPDIR), per-session by construction" },
+        // Plan mode's `Write` lands under here (src/planFile.ts), so a deny
+        // breaks plan mode outright for every remote-backed worker. RESIDUAL,
+        // ACCEPTED AND RECORDED (docs/features.md): the directory accumulates
+        // other sessions' plan files and cannot be narrowed to "its own" ahead
+        // of the write, because the CLI chooses the filename. Longer than the
+        // `~/.claude` deny below, so longest-prefix lets it through.
+        { prefix: path.join(os.homedir(), '.claude', 'plans'), access: 'allow',
+          why: "plan mode writes its plan file here" },
+        { prefix: path.join(os.homedir(), '.claude'), access: 'deny',
+          why: "the CLI's own settings, credentials, todos and shell snapshots" },
+        // Every session on this machine's transcripts. A conductor that
+        // legitimately needs one has `get_transcript`, which is not a file tool.
+        { prefix: claudeProjectsRoot(), access: 'deny',
+          why: "every session on this machine's transcripts" },
+        // A plugin skill routinely instructs the model to Read a file under its
+        // own root (`references/*.md`) — that is the named tool call the rule
+        // asks for. These may live outside `projectsRoot`, so this is also the
+        // only entry that adds a host PIN the rest of the table lacks.
+        ...claudePluginDirs.map((prefix): LocalRoot => ({ prefix, access: 'allow',
+          why: 'an enabled plugin\'s own root — its skills instruct the model to read files under it' })),
       ];
+      // ONE TIER TABLE, ONE CONSTRUCTION SITE, TWO CONSUMERS — the hook's deny
+      // surface and the daemon's pins file. Criterion 15 is an IDENTITY claim:
+      // the SAME array goes to both, so they cannot drift into two artifacts.
+      //
+      // Built unconditionally, including where `inProcess` means no chroot
+      // exists: the hook still has to answer, and a session with a redirect but
+      // no table would allow everything.
+      // Resolved ONCE. The narrowest mirror root is the project's own path (the
+      // no-advertisement case, `noMirror`), and spelling that fallback twice is
+      // how the table and the refusals that quote it would come to disagree.
+      const mirrorRoot = mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath;
+      const exclude = mirrorScopeForSession?.exclude ?? [];
+      // RESOLVED ONCE, ABSOLUTE, and used twice: as the CLI's host pin and as
+      // the daemon's marking event. `resolveClaudeBin()` returns a bare
+      // `claude` by default, and a bare name pins nothing and marks nothing.
+      const claudeCommand = resolveOnPath(resolveClaudeBin().command);
+      const tiers = buildTierTable({
+        localRoots,
+        claudeCommand,
+        execPath: process.execPath,
+        selfProjectDir: selfProjectDir(),
+        projectsRoot: projectsRoot(),
+        homeDir: os.homedir(),
+        runDir: fuseRunDir(id),
+        systemPath: redirectPlacement.systemPath,
+        mirrorRoot,
+        exclude,
+      });
       inst.attachRedirect(new SessionRedirect({
         system: redirectPlacement.system,
         systemId: redirectPlacement.systemId,
         systemPath: redirectPlacement.systemPath,
         forwarderUrl: this.bashForwardUrl(id) ?? '',
-        // NO `localRoots` any more: they were the local paths a FILE TOOL could
-        // legitimately name on a remote project, and no file tool is hooked. The
-        // same list still exists — it seeds the union's host tier (see
-        // `localRoots` above and src/systems/fuse/tierTable.ts), which is where
-        // "these specific paths are the orchestrator's" now gets decided.
+        tiers,
+        exclude,
+        mirrorRoot,
         emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
       }), redirectPlacement);
       // The FUSE-union chroot, attached in the same block and gated on the same
@@ -4819,20 +4884,15 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
       //
       // The exemption is `inProcess`: a launcher that runs the CLI inside cc's
       // own process has no subprocess to put in a namespace. See LauncherLike.
-      //
-      // The tier table reads `localRoots` (the array above) rather than
-      // restating it, so the paths a file tool may name and the paths the
-      // daemon serves from the host cannot disagree.
       if (!inst._launcher.inProcess) {
         inst.attachFuse(new FuseSession({
           plan: buildFusePlan({
             instanceId: id,
             cwdInside: cwd,
-            systemPath: redirectPlacement.systemPath,
-            mirrorRoot: mirrorScopeForSession?.mirrorRoot ?? redirectPlacement.systemPath,
-            standInSource: resolveMirrorStandIn(redirectPlacement.systemPath),
-            localRoots,
-            claudeCommand: resolveClaudeBin().command,
+            fakeRemoteRoot: resolveFakeRemoteRoot(),
+            markPath: claudeCommand,
+            // THE SAME ARRAY the redirect above holds, by reference.
+            tiers,
           }),
           ccBootId: BOOT_ID,
           emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
@@ -5430,7 +5490,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     if (!inst) {
       throw httpError(404, 'instance not found');
     }
-    if (inst.proc) await inst.kill({ graceMs: 500 });
+    // UNCONDITIONALLY, because `kill()` is now the one place that reclaims a
+    // session's mount scaffolding and it handles the no-process case itself: an
+    // instance removed after a failed launch still owns a run directory and a
+    // listening control socket, both created BEFORE spawn().
+    await inst.kill({ graceMs: 500 });
     // Independently of the kill: an instance can be removed with no live
     // process (it crashed, or it already exited), and a command it still has
     // running on the remote system would then outlive every reference to the
@@ -5457,7 +5521,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   async removeAllForProject(projectName: string): Promise<number> {
     const victims = [...this.byId.values()].filter(i => i.project === projectName);
     await Promise.all(victims.map(async (i) => {
-      try { if (i.proc) await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
+      // UNCONDITIONALLY, for the same reason remove() does: `kill()` is the
+      // one place that reclaims a session's mount scaffolding and it handles
+      // the no-process case itself. An instance whose launch failed between
+      // prepare() and spawn() still owns a run directory and a LISTENING
+      // control socket, and gating on `proc` leaves both for the orchestrator's
+      // lifetime.
+      try { await i.kill({ graceMs: 200 }); } catch { /* ignore */ }
       try { await i._redirect?.close(); } catch { /* ignore */ }
       // Same reason as remove(): the directory holds this session's command
       // output and nothing else will reap it.

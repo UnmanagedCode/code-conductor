@@ -57,6 +57,9 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     CC_FUSE_CWD: plan.cwdInside,
     CC_FUSE_UID: String(plan.uid),
     CC_FUSE_GID: String(plan.gid),
+    CC_FUSE_CONTROL: plan.controlSock,
+    CC_FUSE_MARK_PATH: plan.markPath,
+    CC_FUSE_REFUSAL_LOG: plan.refusalLog,
     // sudo's `secure_path` replaces PATH even under `-E`, so the PATH the CLI
     // is meant to run with is carried in a name sudo does not know about and
     // restored by the bootstrap immediately before the final exec. Without this
@@ -64,10 +67,6 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     // sudoers' PATH rather than cc's.
     CC_FUSE_PATH: spec.env.PATH ?? '',
   };
-  if (plan.standInSource && plan.standInAt) {
-    env.CC_FUSE_STANDIN_SRC = plan.standInSource;
-    env.CC_FUSE_STANDIN_AT = plan.standInAt;
-  }
   return {
     command: 'sudo',
     args: [

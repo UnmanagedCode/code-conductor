@@ -30,11 +30,20 @@ export const AWAITING_INPUT_MESSAGE =
 // so the model can explore freely without a prompt per call.
 const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 
-// A session on a REMOTE system hooks two tools more, and NOT `Read`: its bytes
-// used to have to be fetched from the system before the CLI opened the file,
-// and under the union mount they are simply there. `Glob` and `Grep` are here
-// as the SECOND guard described below.
-const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Glob|Grep`;
+// A session on a REMOTE system hooks three tools more. `Glob` and `Grep` are
+// here as the SECOND guard described below.
+//
+// `Read` IS HOOKED AGAIN, and not for the reason it used to be: its bytes no
+// longer have to be fetched before the CLI opens the file — the union puts them
+// there — but a Read aimed at a path the union does not serve to this session
+// must meet cc's refusal rather than an -ENOENT it would read as "the file is
+// absent" (src/systems/fuse/tierTable.ts → classifyForTool). It is hooked to
+// REFUSE, never to gate, which is why the broker exempts it from the ask card
+// (REDIRECT_UNGATED_TOOLS, src/hookBroker.ts).
+//
+// EXPORTED so a test can assert that every FILE_TOOLS key is in it: a fifth
+// file tool must fail that assertion rather than silently escape the boundary.
+export const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Glob|Grep|Read`;
 
 // REGISTERED WITH NO CONSUMER TODAY, AND DELIBERATELY SO — do not delete it as
 // dead. It used to carry an Edit's local result back to the system. The union

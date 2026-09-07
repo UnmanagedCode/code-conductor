@@ -29,8 +29,8 @@ import path from 'node:path';
 import { freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
-import { noMirror } from '../src/systems/mirror.ts';
 import { SessionRedirect } from '../src/systems/toolRedirect.ts';
+import { redirectTierOptions } from './tierFixture.mjs';
 
 let home, remote, redirect, root;
 
@@ -45,10 +45,8 @@ async function build({ shellCommandTimeoutMs } = {}) {
     system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: remote.root,
-    sessionRoot: root,
-    mirror: noMirror(remote.root),
+    ...redirectTierOptions({ systemPath: remote.root }),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [],
     emit: () => {},
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
   });

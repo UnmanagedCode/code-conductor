@@ -6,6 +6,13 @@
 //   host    → served from the orchestrator's own filesystem
 //   project → served from the remote tier (the mirror), remote only
 //   hide    → served from neither; the union must not see its own scaffolding
+//   bind    → a directory `bootstrap.sh` bind-mounts the ORCHESTRATOR's own over
+//   fail    → served from neither, because the provider excluded it
+//
+// Each entry also carries `toolAccess`, which is what the HOOK does with a file
+// tool aimed at it (`classifyForTool` below). That is the epic's criterion 15:
+// the daemon's pins file and the hook's deny table are ONE artifact, rendered
+// and read from the same array, so they cannot drift.
 //
 // THE LOAD-BEARING INVARIANT: a host-pinned path keeps its EXACT spelling
 // inside the chroot. That is what lets spawnEnv's HOME and CLAUDE_CODE_TMPDIR,
@@ -13,18 +20,40 @@
 // ride through the wrap unmodified.
 
 import path from 'node:path';
-import { realpathSync } from 'node:fs';
+import { realpathSync, accessSync, constants as fsc } from 'node:fs';
+import { isExcluded, withinPosix, excludedRefusal } from '../mirror.ts';
 
-export type Tier = 'host' | 'project' | 'hide';
+export type Tier = 'host' | 'project' | 'hide' | 'fail' | 'bind';
 
 export interface TierEntry {
   tier: Tier;
   prefix: string;
   // Why this prefix is pinned, carried into the rendered file as a comment so
   // an operator reading a session's pins.txt can tell a derived entry from a
-  // hand-written one.
+  // hand-written one — AND into the refusal a worker reads, so the sentence
+  // that denies a path names the rule that denied it.
+  why: string;
+  // What a FILE TOOL aimed here gets. `project` allows, everything else denies,
+  // EXCEPT a `localRoots`-derived entry, which carries the bit its declaration
+  // gave it (see LocalRoot).
+  toolAccess: 'allow' | 'deny';
+}
+
+// A host-local prefix a redirected session may name, DECLARED rather than
+// listed: `access` is the whole reason this is not a bare string. Every one of
+// these is host-pinned for the daemon either way — a local root the daemon
+// served from the remote would answer about the wrong machine — so the bit says
+// only whether a file TOOL may name it. THE ALLOW SET IS THIS ARRAY AND NOTHING
+// ELSE: there is no second list of allowed prefixes anywhere in cc.
+export interface LocalRoot {
+  prefix: string;
+  access: 'allow' | 'deny';
   why: string;
 }
+
+// The refusal classes. FOUR, and every one of them names Bash: what differs is
+// what each has to say about the answer Bash gives — see the wordings below.
+export type ToolDenyClass = 'excluded' | 'outside-mirror-root' | 'bind-mount' | 'host-pinned';
 
 // UNCONDITIONAL, AND NEVER MERGED INTO THE TIER TABLE. The epic's reasoning,
 // restated once here so a later editor cannot merge them: a provider
@@ -71,7 +100,50 @@ const LOADER_OBJECTS = [
   '/usr/lib/x86_64-linux-gnu/libnss_files.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_systemd.so.2',
   '/usr/lib/x86_64-linux-gnu/gconv',
+  // DERIVED FROM THE REFUSAL LOG, not from a brief. Under the instrument's host
+  // fallback these were served whether pinned or not, so nothing named them
+  // until the `fail` tier made an unpinned NEEDED object -ENOENT:
+  //
+  //     /usr/local/bin/node: error while loading shared libraries:
+  //     libstdc++.so.6: cannot open shared object file
+  //
+  // `libstdc++` and `libgcc_s` are node's own NEEDED set — one layer the S1
+  // brief's six objects did not cover, because S1 never had to load node inside
+  // the union. `libcap.so.2` is libsystemd's, reached through the
+  // `libnss_systemd` dlopen closure already pinned above.
+  '/usr/lib/x86_64-linux-gnu/libstdc++.so.6',
+  '/usr/lib/x86_64-linux-gnu/libgcc_s.so.1',
+  '/usr/lib/x86_64-linux-gnu/libcap.so.2',
 ];
+
+// A PIN'S TARGET IS A SECOND PIN, and this derivation belongs to EVERY pinned
+// leaf rather than to the loader list alone. The tier table matches path
+// STRINGS, and the union's open follows a symlink to a path that has its own
+// tier — so pinning a link while its target stays unpinned is a `fail`-tier
+// -ENOENT at the second hop.
+//
+// The loader list is where it was measured. Pinning `libcap-ng.so.0` while its
+// target `libcap-ng.so.0.0.0` stayed unpinned is what the refusal log named on
+// the first fail-closed launch —
+//
+//     /usr/bin/setpriv: error while loading shared libraries: libcap-ng.so.0:
+//     cannot open shared object file: No such file or directory
+//
+// — and it was invisible under the instrument's host fallback, which served the
+// target whether it was pinned or not.
+//
+// `ETC_PINS` carries the same hazard UNMEASURED HERE: nothing in it is a
+// symlink on this host, but `/etc/resolv.conf` is one to
+// `/run/systemd/resolve/stub-resolv.conf` on any systemd-resolved host, and
+// `/run` is pinned by nothing. Derived rather than waited for, because the
+// symptom is name resolution failing inside the chroot on a machine nobody has
+// run this on yet.
+function realpathsOf(paths: readonly string[]): string[] {
+  return paths.flatMap((p) => {
+    try { const r = realpathSync(p); return r === p ? [] : [r]; }
+    catch { return []; }   // not installed here; the pin that names it costs nothing
+  });
+}
 
 // BOTH SPELLINGS OF EVERY ONE OF THEM, derived rather than hand-doubled so the
 // two lists cannot drift. On a merged-usr host `/lib` and `/lib64` are symlinks
@@ -79,10 +151,9 @@ const LOADER_OBJECTS = [
 // the ELF header of every binary here requests `/lib64/ld-linux-x86-64.so.2`
 // literally, which the `/usr/lib64` spelling does not match. Same class as the
 // interpreter chain, one layer down.
-const LOADER_PINS = [...new Set([
-  ...LOADER_OBJECTS,
-  ...LOADER_OBJECTS.map(p => p.startsWith('/usr/') ? p.slice(4) : p),
-])];
+const LOADER_PINS = [...new Set([...LOADER_OBJECTS, ...realpathsOf(LOADER_OBJECTS)].flatMap(
+  p => p.startsWith('/usr/') ? [p, p.slice(4)] : [p],
+))];
 
 // THE INTERPRETER CHAIN `bootstrap.sh`'S LAST STEP EXECS **INSIDE** THE UNION,
 // as root and before the privilege drop: `chroot $ROOT /bin/sh -c '... exec
@@ -101,11 +172,12 @@ const BOOTSTRAP_CHAIN = [
 ];
 
 export interface TierTableInput {
-  // The host-local paths a redirected session may legitimately reach. cc
-  // already owns this set (see Instance create → SessionRedirect.localRoots);
-  // it is READ here rather than restated, so the pin list and the file-tool
-  // allowance cannot disagree.
-  localRoots: readonly string[];
+  // The host-local prefixes a redirected session may legitimately reach, each
+  // DECLARING whether a file tool may name it. One array, one construction site
+  // (src/instances.ts), two consumers — the daemon's host pins and the hook's
+  // ALLOW set — so the paths the daemon serves from the host and the paths a
+  // tool may name cannot disagree.
+  localRoots: readonly LocalRoot[];
   // The resolved `claude` command (RealClaudeLauncher's, i.e. resolveClaudeBin's
   // `command`) and node's own binary.
   //
@@ -148,6 +220,13 @@ export interface TierTableInput {
   // this outwards. Remote only, no host fallback, which is why it is the
   // advertisement's job to be right about it (src/systems/mirror.ts).
   mirrorRoot: string;
+  // THE PROVIDER'S `exclude` LIST (MirrorScope.exclude), and the SECOND
+  // mechanism — never merged with BIND_MOUNTS above. Each entry inside the
+  // mirror root renders `fail`: served from neither side, and refused at the
+  // file-tool seam too, which is the epic's "fails both surfaces". An exclude
+  // OUTSIDE the mirror root is inert by criterion 4 and renders nothing —
+  // `resolveMirrorScope` has already reported it on the session's stream.
+  exclude: readonly string[];
 }
 
 // The common ancestor of two absolute paths, or null when they share nothing
@@ -164,12 +243,39 @@ function installPrefix(a: string, b: string): string | null {
   return out.length >= 3 ? out.join('/') : null;
 }
 
+// A BARE COMMAND NAME RESOLVED AGAINST CC'S OWN PATH, the way the bootstrap's
+// final `setpriv` resolves it INSIDE the chroot — `wrap.ts` carries cc's PATH
+// through as `CC_FUSE_PATH` and the bootstrap restores it immediately before
+// that exec, so the two lookups see the same list.
+//
+// IT STOPPED BEING OPTIONAL WHEN `T_FAIL` REACHED ENUM INDEX 0. Under the
+// instrument's remote-first-with-host-fallback default an unpinned launcher
+// still ran, from the host, so a bare `claude` costing no pin was invisible.
+// Fail-closed, an unpinned launcher is `-ENOENT` and the CLI cannot exec at
+// all — and `resolveClaudeBin()` returns a bare `claude` by default.
+//
+// '' when nothing on PATH matches: an unresolvable launcher is the caller's
+// refusal to make, not this module's.
+export function resolveOnPath(cmd: string): string {
+  if (!cmd) return '';
+  if (path.isAbsolute(cmd)) return cmd;
+  if (cmd.includes('/')) return path.resolve(cmd);
+  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!dir) continue;
+    const p = path.join(dir, cmd);
+    try { accessSync(p, fsc.X_OK); return p; } catch { /* next entry */ }
+  }
+  return '';
+}
+
 // A launcher binary's pins: the path itself, its realpath, and the install
 // prefix above both. Pinning the leaves alone left every parent directory in an
 // npm-global chain falling back on a getattr (rig/pins.s3.txt); one prefix
 // covers the walk.
 export function binaryPins(bin: string): string[] {
-  if (!bin || !path.isAbsolute(bin)) return [];
+  const abs = resolveOnPath(bin);
+  if (!abs) return [];
+  bin = abs;
   const out = [bin];
   let real = bin;
   try { real = realpathSync(bin); } catch { /* not installed here; pin what we were given */ }
@@ -181,9 +287,16 @@ export function binaryPins(bin: string): string[] {
 
 export function buildTierTable(input: TierTableInput): TierEntry[] {
   const entries: TierEntry[] = [];
+  // `project` is the only tier a file tool may name by tier alone; every other
+  // one denies. A localRoot goes in through `addLocal` instead, carrying the bit
+  // its declaration gave it.
   const add = (tier: Tier, prefix: string, why: string): void => {
     if (!prefix || !path.isAbsolute(prefix)) return;
-    entries.push({ tier, prefix, why });
+    entries.push({ tier, prefix, why, toolAccess: tier === 'project' ? 'allow' : 'deny' });
+  };
+  const addLocal = (r: LocalRoot): void => {
+    if (!r.prefix || !path.isAbsolute(r.prefix)) return;
+    entries.push({ tier: 'host', prefix: r.prefix, why: r.why, toolAccess: r.access });
   };
 
   for (const p of binaryPins(input.claudeCommand)) add('host', p, 'the CLI binary and its install prefix');
@@ -196,13 +309,29 @@ export function buildTierTable(input: TierTableInput): TierEntry[] {
   // $HOME. A pin boundary between a temp file and its rename target produces
   // EXDEV, because renameat2 cannot cross backing stores.
   add('host', input.homeDir, "the CLI's own state — the whole home dir, because its config update straddles it");
-  for (const r of input.localRoots) add('host', r, 'a local root this session\'s file tools may name');
+  for (const r of input.localRoots) addLocal(r);
   for (const b of BOOTSTRAP_CHAIN) for (const p of binaryPins(b)) add('host', p, "the bootstrap's interpreter chain, exec'd inside the union as root");
   for (const p of ETC_PINS) add('host', p, 'identity, name resolution, TLS trust, managed settings');
+  for (const p of realpathsOf(ETC_PINS)) add('host', p, "the target of a pinned /etc symlink — the union's open follows it, and the target has its own tier");
   for (const p of LOADER_PINS) add('host', p, "the loader's NEEDED set and glibc's dlopen closure");
   // Longest prefix wins, so this overrides the store/projects-root host pins
   // above and the union never serves its own scaffolding.
   add('hide', input.runDir, "this session's own mount scaffolding");
+  // THE TWO MECHANISMS, adjacent so the never-merge rule is visible, and in
+  // THIS ORDER because the first occurrence of a prefix wins below: a provider
+  // that excludes `/proc` must still get `bind /proc`, or `bootstrap.sh`'s
+  // `mount --bind` lands on a path the daemon answers -ENOENT for and the
+  // launch dies. The tool is denied either way; which mechanism names the
+  // refusal is the only difference.
+  //
+  // `bind` reaches the daemon at all because those three targets have to EXIST
+  // as directories for the bind to succeed — under the `fail` tier an unpinned
+  // path does not.
+  for (const b of BIND_MOUNTS) add('bind', b, "the orchestrator's own, bind-mounted over the union so the CLI works");
+  for (const e of input.exclude) {
+    if (withinPosix(e, input.mirrorRoot) === null) continue;
+    add('fail', e, `excluded from file mirroring by the system's own advertisement`);
+  }
   // THE REMOTE TIER'S BOUNDARY first, the project inside it second. Both are
   // `project`, and longest-prefix means the project's own entry wins where they
   // differ; naming both keeps a wider advertised root remote-only rather than
@@ -226,4 +355,142 @@ export function renderPinsFile(entries: readonly TierEntry[]): string {
     lines.push(`${e.tier}\t${e.prefix}`);
   }
   return lines.join('\n') + '\n';
+}
+
+// ── THE HOOK'S HALF OF THE ONE ARTIFACT ─────────────────────────────────────
+//
+// `classifyForTool` is what a PreToolUse hook asks about a file tool's path,
+// and it reads THE SAME `TierEntry[]` the pins file was rendered from — that
+// identity is criterion 15's mechanism, and there is no second table to keep in
+// step.
+//
+// IT NEVER TOUCHES THE FILESYSTEM, and that is structural rather than a habit:
+// criterion 11 forbids deciding by probing the mirror. A project path the
+// mirror has not materialised yet is ALLOWED — the union materialises it when
+// the CLI opens it, so a probe would deny exactly the first read of every file.
+
+// The session facts a refusal has to name. `exclude` is the ADVERTISEMENT's
+// list, which is what the excluded refusal quotes: the table says a deny
+// happens, the advertisement says which rule caused it.
+export interface ToolAccessSession {
+  exclude: readonly string[];
+  mirrorRoot: string;
+  systemId: string;
+  systemPath: string;
+}
+
+export type ToolAccessDecision =
+  | { decision: 'allow' }
+  | { decision: 'deny'; class: ToolDenyClass; reason: string };
+
+// Longest prefix wins, matched at a COMPONENT BOUNDARY — the same rule
+// union.c's `tier_of` applies, so the hook and the daemon agree about which
+// entry owns a path. `/tmp/apple` must not match the pin `/tmp/app`.
+//
+// Exported because it answers the DAEMON's question too — "which entry owns
+// this path" — and a test that wanted that answer would otherwise transcribe
+// the rule a third time.
+export function resolveTierEntry(entries: readonly TierEntry[], p: string): TierEntry | null {
+  const len = (e: TierEntry): number => (e.prefix === '/' ? 1 : e.prefix.length);
+  let best: TierEntry | null = null;
+  for (const e of entries) {
+    if (best !== null && len(e) <= len(best)) continue;
+    if (!p.startsWith(e.prefix)) continue;
+    if (e.prefix !== '/' && p.length > e.prefix.length && p[e.prefix.length] !== '/') continue;
+    best = e;
+  }
+  return best;
+}
+
+export function classifyForTool(
+  entries: readonly TierEntry[],
+  session: ToolAccessSession,
+  p: string,
+): ToolAccessDecision {
+  const entry = resolveTierEntry(entries, p);
+  // NO ENTRY AT ALL means outside the remote tier's boundary and outside every
+  // host pin: the mirror root is itself a `project` entry, so nothing inside it
+  // can land here.
+  if (entry === null) {
+    return { decision: 'deny', class: 'outside-mirror-root', reason: outsideMirrorRefusal(p, session) };
+  }
+  if (entry.toolAccess === 'allow') return { decision: 'allow' };
+  switch (entry.tier) {
+    case 'bind':
+      return { decision: 'deny', class: 'bind-mount', reason: bindMountRefusal(p, entry, session.systemId) };
+    case 'fail':
+      // The advertisement names the rule. A `fail` entry exists only because an
+      // exclude produced it, so the lookup cannot miss; the entry's own prefix
+      // is the same string and stands in only to keep this total.
+      return { decision: 'deny', class: 'excluded', reason: excludedRefusal(p, session.systemId, isExcluded(p, session.exclude) ?? entry.prefix) };
+    default:
+      return { decision: 'deny', class: 'host-pinned', reason: hostPinnedRefusal(p, entry, session.systemId) };
+  }
+}
+
+// ── the three refusals `excludedRefusal` (src/systems/mirror.ts) does not cover
+//
+// All four keep ITS anti-ENOENT discipline — cc named as the actor, the act
+// named as a refusal, the PREFIX named so the model generalises, and an explicit
+// "this is not the file being absent" — because the failure mode is the same one
+// in every class: a model that reads a refusal as file-not-found concludes the
+// file is absent instead of using the channel that works.
+//
+// WHERE THEY DIVERGE IS WHETHER THERE **IS** SUCH A CHANNEL, and that is the
+// whole reason there are four wordings rather than one.
+
+// OUTSIDE THE REMOTE TIER'S BOUNDARY. Bash execs on the system and reaches this
+// path, so the channel exists and is named.
+//
+// IT ALSO NAMES THE PROJECT'S OWN TREE, which is what a worker overwhelmingly
+// wanted — a refusal that only says "not that one" costs a call to find out
+// where the files actually are.
+function outsideMirrorRefusal(p: string, session: ToolAccessSession): string {
+  return `cc will not bridge '${p}' to this session: this session's file tools reach system `
+    + `'${session.systemId}' only under '${session.mirrorRoot}', the mirror root that system `
+    + `advertises, and '${p}' is outside it. This project's tree is at '${session.systemPath}', `
+    + `and its files are read and edited there. This is cc refusing to carry the file, NOT the file `
+    + `being absent — cc has not looked, and this says nothing about whether it exists. Bash runs on `
+    + `'${session.systemId}' with the whole filesystem in reach: read it with \`cat\`, change it `
+    + `with \`sed -i\` or a \`>\` redirect there instead.`;
+}
+
+// A BIND MOUNT. The channel exists, and the extra clause is WHOSE KERNEL: this
+// path inside the chroot is the orchestrator's own, so a file tool and a Bash
+// command would answer about different machines, and only one of them is the
+// machine the worker is asking about.
+function bindMountRefusal(p: string, entry: TierEntry, systemId: string): string {
+  return `cc will not bridge '${p}' to this session: '${entry.prefix}' inside this session is the `
+    + `ORCHESTRATOR's own — ${entry.why} — so a file tool aimed there would answer about the `
+    + `orchestrator's kernel and not about system '${systemId}'. This is cc refusing to carry the `
+    + `file, NOT the file being absent — cc has not looked. Bash runs on '${systemId}' and answers `
+    + `the same question about the right kernel: read it with \`cat\` there instead.`;
+}
+
+// A HOST PIN, and the session's own hidden scaffolding with it. Like the other
+// three, it names Bash — and unlike them it has to say WHICH MACHINE Bash
+// answers from, because here the same path exists on both.
+//
+// WHY IT NAMES BASH AT ALL. A dead-end wording buys no concealment: the worker
+// can `ls ~/` through Bash and reach the system's home directory whether this
+// sentence mentions it or not. What the dead end actually cost was the worker's
+// next move — it left the agent stuck without preventing anything.
+//
+// WHY THE REMOTE QUALIFIER IS LOAD-BEARING AND NOT DECORATION. A path pinned
+// here is pinned because the ORCHESTRATOR needs it: `~/.claude`, the cc
+// checkout, `/etc/nsswitch.conf`. Bash execs on the SYSTEM, so `cat` there
+// resolves the same string against the system's own filesystem and answers with
+// a different file. For an OS path that is exactly right — a question about the
+// system's name resolution wants the system's `/etc/hosts`. For a cc-shaped
+// path it is a real file that is not cc's, and an unqualified "use Bash" would
+// have the agent read it as authoritative. Saying which machine answers is what
+// keeps the same sentence true in both cases.
+function hostPinnedRefusal(p: string, entry: TierEntry, systemId: string): string {
+  return `cc will not bridge '${p}' to this session: '${entry.prefix}' is pinned to the `
+    + `ORCHESTRATOR's machine (${entry.why}) so the local CLI can run there, and this session's `
+    + `file tools do not carry it. This is cc refusing to carry the file, NOT the file being `
+    + `absent — cc has not looked, and this says nothing about whether it exists. Bash runs ON `
+    + `SYSTEM '${systemId}', not on the orchestrator: \`cat '${p}'\` there answers with system `
+    + `'${systemId}''s own file at that path IF IT HAS ONE, which is the right answer for a `
+    + `question about '${systemId}' and is NOT the orchestrator's copy this refusal is about.`;
 }

@@ -167,9 +167,11 @@ The *rule* — env-gated opt-in tests are outside mutation proof — is in the R
 the data and the derivation.
 
 **§5.1 Snapshot of the gates — as of `acfad1d`, a starting point to re-derive, not a fact to trust.**
-Re-confirmed while writing this doc (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
-sort -u` → exactly these four, and a full `npm test` run's 13 skips partition into them with no
-remainder):
+Re-derived at card 2026-0355 (`grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/*.test.mjs |
+sort -u`) → **six**, not the four this table listed: `RUN_FUSE_LIFECYCLE` and `RUN_DOCKER_SYSTEM`
+were added after the snapshot. `RUN_CLI_CONTRACT` is a **seventh** and the grep above misses it —
+it is read in `tests/cliContractCase.mjs`, a shared helper rather than a `*.test.mjs`, so re-derive
+with `grep -rhoE "process\.env\.(RUN|SKIP)[A-Z_]+" tests/` to see it.
 
 | Env flag | Surface left unproven |
 |---|---|
@@ -177,11 +179,74 @@ remainder):
 | `RUN_REAL_OLLAMA` | `ollama launch claude … --version` forwarding claude's stdout/exit code (`claudeShellEnv`) |
 | `RUN_PLAYWRIGHT` | real-browser UI behaviour, one test each — main-bar reset (`main-bar-reset-browser`), plugin app-switcher landing (`plugin-switch-browser`), plugin version-select width (`plugin-version-select-width`) |
 | `RUN_TTS_INSTALL_TESTS` | Piper voice install flow and its 409-while-running guard (`settings-tts`). **Note the name:** the file reads this flag into a local const called `RUN_INSTALL`; `RUN_INSTALL` is not an env var. |
+| `RUN_FUSE_LIFECYCLE` | the FUSE-union chroot END TO END — real `sudo -n unshare`, a real mount, a real chroot, and a second process inside the namespace (`fuse-lifecycle.real`). Needs passwordless sudo, `/dev/fuse`, `fusectl` and a working `gcc` + `libfuse3-dev`. **NARROWED at card 2026-0355 by the policy split**: `policy.h` includes no libfuse header, so `tests/fuse-union-policy.test.mjs` now proves the tier resolution, the ancestor derivation, the synthetic node, the marking policy, the resolution cache, the frame codec and the refusal log deterministically (see the capability row below). What is left here, and is genuinely only observable here: that the libfuse op bodies CALL the policy (R3); `route()`'s host arm and its no-fallback rule (R2); that `mount --bind` succeeds onto a synthetic node (R3); the socket transport itself and that a dead cc is REPORTED as an error rather than wedging the mount (R6). **`-EIO` on a dead cc is NOT in that set** — the driver's `b12` drives it deterministically through the injected transport. **And two claims no arm covers at all**, recorded rather than assigned to one: that `fuse_get_context()->pid` is a TID in practice (S1 §6 Q1's measurement is real; the instrument that produced it was deleted by ledger row D2), and that the marking event fires on the CLI's own first read of its binary (no longer load-bearing — `bootstrap.sh` fires it deliberately). `src/systems/fuse/PROVENANCE.md` → "The policy split" carries the same two-kind split at the source. |
+| `RUN_DOCKER_SYSTEM` | the docker-backed `System` provider against a real daemon (`systems-docker`). Needs a docker socket. |
+| `RUN_CLI_CONTRACT` | the real-`claude` CLI-behaviour contract cases (`systems-cli-*.real`), read through `tests/cliContractCase.mjs`. Deliberately left UNSET by `npm run gate:systems` — see its header for the pricing. |
+
+### §5.1c A16's sha256 latch BLANKET-KILLS EVERY C MUTANT — scope C mutants narrowly
+
+`src/systems/fuse/union.c.sha256` pins the digests of `union.c` and `policy.h`, and
+`tests/fuse-lifecycle.test.mjs`'s **A16** asserts them. That latch is a **deliberate-edit
+disclosure**, not behavioural coverage — and it fires for *any* byte changed in either file.
+
+**Consequence for a prover:** a C mutant run at whole-suite scope is killed by A16 whatever it
+did, so its failure set is attribution-free and a KILLED verdict says nothing about whether the
+behaviour is covered. Measured on card 2026-0355: `abandon_claim`'s two mutants were killed
+**only** by A16, and the function had no behavioural coverage anywhere, real-mount arms included.
+
+**How to run C mutants so the verdict means something:**
+- Scope every C mutant to the tests that should catch it (`expectFail`/`expectPass`), never the
+  whole suite — `{tests}` derives from the mutant's own refs (§5.1a), so a narrow scope excludes
+  A16 automatically.
+- If A16 is in the failure set, treat the mutant as **unattributed** and re-run it narrower
+  rather than recording KILLED.
+- The deterministic home for a C behaviour is `tests/fuse-union-policy.test.mjs` — it drives
+  `tests/fixtures/union-policy-driver.c` against `policy.h` with no mount, and its cases do not
+  read the sha pin. A behaviour reachable only from `union.c` op bodies has no such home; that
+  is why `policy.h` exists and why logic keeps moving into it.
+
+
+**§5.1b The CAPABILITY gate, which is a different animal from an env flag.**
+
+`tests/fuse-union-policy.test.mjs` compiles `tests/fixtures/union-policy-driver.c` and skips when it
+cannot. It is NOT env-gated — nothing opts into it — so it runs by default on any host with a
+toolchain, and a prover reading a `SURVIVED` from a mutant in `policy.h` or `union.c` must
+**check the toolchain before filing it**: a silently skipped C test is indistinguishable from a
+passing one.
+
+| gate | exact detection | what a skip means |
+|---|---|---|
+| C toolchain | `detectToolchain()` in `src/systems/fuse/build.ts` — `gcc --version`, then `pkg-config --cflags fuse3` and `pkg-config --libs fuse3` | the PRODUCT could not have built the daemon either. It is the same function `ensureUnionBinary()` builds through, deliberately: a second, more permissive probe would let the test skip where the product would have compiled |
+
+Confirm it in one line before filing:
+
+```bash
+gcc --version >/dev/null && pkg-config --exists fuse3 && echo "toolchain present — a C SURVIVED is real"
+```
+
+The file prints `fuse-union-policy: SKIPPED — no toolchain: <reason>` on stderr when it skips, and
+the reason is `detectToolchain()`'s own.
 
 Enabling any of them needs something a review environment does not have (the real
 `claude`/`ollama` binary plus auth plus network; a Chromium install via the `code-playwright`
 sibling; a network voice download), so the whole set is out of scope for mutation proof — report
 such a claim as unprovable-by-this-harness rather than mutating it.
+
+**§5.1a What `{tests}` resolves to, and it is NOT derived from the mutated file** (measured at card
+2026-0355, `code-mutant` `lib/narrow.mjs` + `lib/adapters/node-test.mjs`). The scope comes from the
+MUTANT's own declared `expectFail` ∪ `expectPass` refs, mapped through the adapter's
+`scopeOf(ref) = splitRef(ref).file` — so it is **language-agnostic about the source**: a mutant in a
+`.c` or `.h` file scopes exactly as a `.ts` one does, to the test files the author named, at file
+granularity. There is no source→test mapping anywhere in the harness, so no `.h` file needs one.
+
+Two consequences worth knowing before filing a verdict:
+- A mutant that declares **neither** `expectFail` nor `expectPass` does not map to "nothing" and
+  does not map to the whole suite: in counted mode `planNarrowing` **throws**
+  (`cannot narrow without at least one entry in expectFail or expectPass`). Only `learn` mode falls
+  back to `baselineCommand`, i.e. the whole `npm test`.
+- `harness/mutation/config.json` therefore has **no scope list to maintain**. `tests/run.mjs`
+  auto-discovers `tests/*.test.mjs`, so a new test file is inside `baselineCommand` the moment it
+  exists, and inside `{tests}` the moment a mutant names it.
 
 **§5.2 The recipe.** The skip count is host- and gate-dependent — re-derive it, don't trust a fixed
 number (13 at measurement time, per §1):

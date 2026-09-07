@@ -25,7 +25,8 @@ import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { addSystem } from '../src/appSettings.ts';
-import { SessionRedirect } from '../src/systems/toolRedirect.ts';
+import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
+import { redirectTierOptions } from './tierFixture.mjs';
 
 const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
 
@@ -43,6 +44,7 @@ async function build({ flags = [], shellCommandTimeoutMs, maxOutputBytes } = {})
     system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: remote.root,
+    ...redirectTierOptions({ systemPath: remote.root }),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
     emit: (ev) => events.push(ev),
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
@@ -409,14 +411,17 @@ test('a forwarded command reports the real exit code', async () => {
 // CLI's tool profile having changed — it is REFUSED by name, not allowed to
 // answer about cc's session root. A search answering about the wrong machine is
 // exactly the leak that makes a worker distrust every other tool result.
-// PINS CRITERION 8 AT THIS LAYER: a file tool is not hooked at all any more.
-// Every one of them passes through untouched, at an ABSOLUTE system path that
-// has no local counterpart and would have been refused outright before — the
-// union serves it, so there is nothing for cc to translate, pull or deny.
-test('file tools pass through untouched, at the system path', async () => {
+// PINS: a file tool aimed INSIDE the project is allowed with nothing added and
+// nothing rewritten — the union serves it, so there is no pull, no push and no
+// translation. S2 hooks these tools to REFUSE the paths the union does not
+// serve (tests/systems-file-tool-refusals.test.mjs); this is the other half,
+// and without it a hook that denied everything would pass that file.
+//
+// ENUMERATED FROM THE EXPORTED MAP rather than transcribed, so a fifth file
+// tool is covered here the moment it is declared.
+test('file tools pass through untouched inside the project', async () => {
   await build();
-  for (const [tool, key] of [['Read', 'file_path'], ['Write', 'file_path'],
-    ['Edit', 'file_path'], ['NotebookEdit', 'notebook_path']]) {
+  for (const [tool, key] of Object.entries(FILE_TOOLS)) {
     const d = await redirect.preToolUse(tool, { [key]: path.join(remote.root, 'src/app.js') });
     assert.deepEqual(d, { decision: 'allow' }, tool);
     // And no note on the way back: there is no write-back to report.
@@ -578,12 +583,10 @@ async function wideRedirect() {
     system: await systemById('widebox', null, 'test'),
     systemId: 'widebox',
     systemPath: remote.root,
-    sessionRoot: image,
     // `/` is the widest mirror there is, and the one every one of these
     // assertions is degenerate without.
-    mirror: { mirrorRoot: '/', exclude: [], offset: remote.root.replace(/^\//, '') },
+    ...redirectTierOptions({ systemPath: remote.root, mirrorRoot: '/' }),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [],
     emit: () => {},
   });
   return { wide, rec, image };

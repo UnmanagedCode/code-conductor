@@ -31,6 +31,8 @@ import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
 import { scanProcesses, membersOf, type ProcRow, type RawScan } from './procScan.ts';
 import { reclaimProcess, type OrphanReclaim } from './orphans.ts';
+import { ControlServer } from './control.ts';
+import { localDirSource, type RemoteSource } from './remoteSource.ts';
 
 export interface Deadlines {
   // Per-step bounds. Every one of them is a BOUND, not a wait: a step that
@@ -552,17 +554,33 @@ export class FuseSession {
   // Resolved by launch() before prepare(), because the compile is async and
   // spawn() is not.
   unionBinary: string | null = null;
+  // THE CONTROL SERVER, owned here because its lifetime is exactly this
+  // session's: it is listening before the daemon starts and closed before
+  // teardown signals anything. `runTeardown` cannot own it — it is a free
+  // function the boot sweep also runs, over a rundir belonging to a process
+  // that no longer exists.
+  #control: ControlServer | null = null;
+  readonly #source: RemoteSource;
 
-  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines> } & Sinks) {
+  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines>; source?: RemoteSource } & Sinks) {
     this.plan = opts.plan;
     this.#ccBootId = opts.ccBootId;
     this.#driver = opts.driver ?? realMountDriver;
     this.#scan = opts.scan;
     this.#sinks = { emit: opts.emit, log: opts.log };
     this.#deadlines = { ...DEFAULT_DEADLINES, ...opts.deadlines };
+    // The S2 fake remote (see resolveFakeRemoteRoot). S3 hands in a
+    // `System`-backed source here instead and deletes `localDirSource`.
+    this.#source = opts.source ?? localDirSource(opts.plan.fakeRemoteRoot);
   }
 
   get ccBootId(): string { return this.#ccBootId; }
+
+  // The live control server, or null once torn down. Exposed because the real
+  // gate has to kill it MID-TURN to measure that a wedged cc becomes -EIO and a
+  // recoverable teardown rather than an unkillable D state (R6) — there is no
+  // other way to produce that state without killing cc itself.
+  get controlServer(): ControlServer | null { return this.#control; }
 
   // The launcher seam's transform for THIS session. A getter rather than a
   // stored closure so a caller that reaches for it before the binary is
@@ -581,7 +599,32 @@ export class FuseSession {
   // without sudo — a root-created intermediate directory would need root to
   // remove. It is also what makes a crash before the handshake recoverable by
   // name: the directory exists and intent.json says whose it is.
-  async prepare(): Promise<void> {
+  // MUTUAL EXCLUSION BETWEEN prepare() AND teardown(), and it is not a
+  // tidy-up — the interleaving loses a whole mount.
+  //
+  // Nothing above serialises them: `_mutating` covers rewind/fork/prune only,
+  // and the instance is in `byId` before `launch()` runs, so a `kill()` can
+  // reach `teardown()` while `launch()` is inside `prepare()`. Interleaved, a
+  // teardown that latches during the `await ControlServer.listen()` leaves
+  // prepare() to assign `#control` afterwards — latched WITH A LIVE SERVER —
+  // and the final teardown then early-returns on the latch, so `runTeardown`
+  // never runs and the mount, the root daemon and the run directory survive to
+  // the next boot sweep. A generation stamp would fix the latch and still let
+  // the two halves interleave; excluding them is what makes the sequential
+  // reasoning that the rest of this class relies on true.
+  #gate: Promise<unknown> = Promise.resolve();
+
+  #exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#gate.then(fn, fn);
+    this.#gate = run.catch(() => {});
+    return run;
+  }
+
+  prepare(): Promise<void> {
+    return this.#exclusive(() => this.#prepare());
+  }
+
+  async #prepare(): Promise<void> {
     const p = this.plan;
     // A RELAUNCH INTO THE SAME RUN DIRECTORY IS ORDINARY: rewind and prune both
     // kill the subprocess and call launch() again on the same Instance, so this
@@ -606,9 +649,24 @@ export class FuseSession {
     await fsp.mkdir(p.root, { recursive: true });
     await fsp.mkdir(p.mirror, { recursive: true });
     await fsp.mkdir(p.fusectl, { recursive: true });
-    if (p.standInAt) await fsp.mkdir(p.standInAt, { recursive: true });
     await fsp.writeFile(p.pinsPath, p.pinsText);
     await fsp.writeFile(p.daemonLog, '');
+    await fsp.writeFile(p.refusalLog, '');
+    // LISTENING BEFORE THE SPAWN, because the daemon probes the socket before
+    // it mounts and refuses if it cannot connect. A relaunch into the same run
+    // directory closes the previous server first — the socket path is the same
+    // file and two listeners on it is one listener plus a leak.
+    await this.#control?.close().catch(() => {});
+    this.#control = await ControlServer.listen({
+      socketPath: p.controlSock,
+      mirror: p.mirror,
+      source: this.#source,
+      // THE SAME ARRAY the pins file was rendered from — criterion 15 reaches
+      // the control server too, or cc would materialise paths the daemon
+      // refuses and the two would disagree about what the session may see.
+      tiers: p.tiers,
+      log: (line) => this.#sinks.log?.warn(line),
+    });
     const intent: FuseIntent = {
       schema: RECORD_SCHEMA,
       instanceId: p.instanceId,
@@ -644,7 +702,28 @@ export class FuseSession {
 
   // Idempotent: the crash path (_handleExit) and the commanded path (kill())
   // both reach it, and on a normal kill_instance both fire.
-  async teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
+  teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
+    return this.#exclusive(() => this.#teardown(closeStdin));
+  }
+
+  async #teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
+    // CLOSED FIRST, AND OUTSIDE THE LATCH.
+    //
+    // First, because every remote-tier op blocks on a reply: a daemon thread
+    // mid-request would otherwise sit in the kernel until its receive timeout,
+    // and dropping the connection turns each blocked call into -EIO at once,
+    // which is what lets the worker's threads leave FUSE and be signalled.
+    //
+    // Outside the latch, because the latch is about not running the teardown
+    // STATE MACHINE twice and says nothing about a socket. With `#exclusive`
+    // above, a latched teardown can no longer be holding a live server — so
+    // this is defence in depth rather than the fix it was described as, and it
+    // costs one no-op await. The leak it was credited with was closed by
+    // `Instance.kill()`'s no-process arm together with `remove()` going through
+    // `kill()` at all; before that pair, `remove()` skipped `kill()` entirely,
+    // so kill's own fix was unreachable from there.
+    await this.#control?.close().catch(() => {});
+    this.#control = null;
     if (this.#tornDown) return { alreadyTornDown: true };
     this.#tornDown = true;
     return runTeardown({
