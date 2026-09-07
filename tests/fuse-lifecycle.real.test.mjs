@@ -374,15 +374,17 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // fallback is the only thing that clears it.
   //
   // WHAT THIS ARM DOES **NOT** CONSTRUCT, stated so it is not read as more than
-  // it is: a FUSE-level deadlock (S3 §A3's W-D1/W-D2). Those need the union's
-  // mountpoint to be reachable by walking its own remote tier, and with the
-  // frozen daemon's self-recursion guard ON — which is its default, and which
-  // this build does not turn off — a remote-side loop is refused by the daemon
-  // rather than deadlocking in it: measured here, the probe ANSWERED for both a
-  // union-root bind and a self-recursive one. The other route to the shape is
-  // the mountpoint lying inside the remote root, and that is refused at
-  // CONFIGURATION time (plan.ts, FUSE_MIRROR_CONTAINS_MOUNT). So the deadlock's
-  // classification is pinned by the deterministic suite's fake driver and by
+  // it is: a FUSE-level deadlock (S3 §A3's W-D1/W-D2). Under S2's geometry
+  // there is no route to one left to construct. A remote-tier op is answered
+  // from `<rundir>/mirror`, a SIBLING of the mountpoint, whose contents cc
+  // materialises over the control socket — so no path the daemon serves is
+  // backed by the union itself. And cc's handler runs OUTSIDE the namespace,
+  // where the mount does not exist at all, so it cannot re-enter it however the
+  // source root is configured. The self-recursion guard survives as a liveness
+  // precondition for a caller in the daemon's own thread group, not as the
+  // thing standing between this arm and a deadlock. So what is pinned here is
+  // the WEDGE class — a busy mount, bounded, reported, then swept — and the
+  // deadlock class is pinned by the deterministic suite's fake driver and by
   // S3's own measurement of the abort, not here.
   test('arm 5 — a live unrecorded namespace member is a bounded, reported wedge the sweep then clears', async () => {
     const before = snapshot(runRoot);
