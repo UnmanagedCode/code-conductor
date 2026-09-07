@@ -19,8 +19,8 @@ import {
 } from './projects.ts';
 import { LOCAL_SYSTEM_ID, isSystemRefusal, projectPlacement, resolveSystem } from './systems/registry.ts';
 import {
-  sessionRootCollisionReason, sessionRootKey, sessionRootKeyCollision,
-} from './systems/sessionRoot.ts';
+  transcriptCollisionReason, transcriptCwdCollision,
+} from './systems/transcriptKey.ts';
 import { classifySpawnError } from './systems/protocol.ts';
 import type { System } from './systems/system.ts';
 
@@ -380,8 +380,10 @@ async function runPostWorktreeHook(system: System, meta: WorktreeMeta): Promise<
   // `bash` a path that exists only on THIS machine — an exit-127 wearing the
   // shape of a broken hook at best, and at worst whatever file happens to sit at
   // that spelling on the system running instead. Shipping the body across would
-  // need a cc-owned place to put a file on the system, which is the session-root
-  // machinery the next phase brings; until then this is a NAMED refusal, and it
+  // need a cc-owned place to put a file on the system. The session-root
+  // machinery that was once going to provide one is DELETED, not pending — a
+  // worker reads the project's tree through the union at its real path — so
+  // this refusal is the standing answer rather than a stopgap. It
   // is reported rather than silently skipped, because a hook that quietly does
   // nothing is the same defect restated. An IN-TREE hook is unaffected — it is
   // already on the system.
@@ -540,30 +542,21 @@ export async function createWorktree(
   // area on another machine to put one in, and inventing one would be a
   // convention the system's owner never agreed to. The dir name already carries
   // the project name, so it is recognisable where it lands.
-  const worktreePath = path.join(
-    proj.system.id !== LOCAL_SYSTEM_ID
-      ? path.dirname(proj.path)
-      : proj.external ? path.join(projectsRoot(), EXTERNAL_DIRNAME) : projectsRoot(),
-    dirName,
-  );
+  const worktreePath = worktreePathFor({ ...proj, system: proj.system.id }, dirName);
   const branch = worktreeBranchName(id);
 
-  // THE SESSION-ROOT KEY THIS WORKTREE WOULD TAKE, checked before any git state
-  // is touched — the reverse of createProject's order, and the other half of
-  // the same pair: a project named `<project>_worktree_<slug>`-with-a-`--` can
+  // THE TRANSCRIPT DIRECTORY THIS WORKTREE WOULD LAND IN, checked before any
+  // git state is touched — the reverse of createProject's order, and the other
+  // half of the same pair: a project named `<project>_worktree_<slug>` can
   // already hold it. `dirName`, not `id`: the stored worktreeName is the
-  // directory name, and that is what the key is built from. No local guard
-  // here — the predicate answers null for a local place, which has no session
-  // root (card 2026-0293 §10).
-  const keyHit = await sessionRootKeyCollision(system.id, projectName, dirName);
+  // directory name, and the cwd is built from that.
+  const candidate = { project: projectName, worktree: dirName, system: system.id, cwd: worktreePath };
+  const keyHit = await transcriptCwdCollision(candidate);
   if (keyHit) {
     throw httpError(
       409,
-      sessionRootCollisionReason(
-        system.id, `worktree '${id}' of project '${projectName}'`,
-        sessionRootKey(projectName, dirName), keyHit,
-      ),
-      { code: 'SESSION_ROOT_COLLISION' },
+      transcriptCollisionReason(`worktree '${id}' of project '${projectName}'`, candidate, keyHit),
+      { code: 'TRANSCRIPT_DIR_COLLISION' },
     );
   }
 
@@ -676,6 +669,22 @@ export async function listWorktrees(projectName: string): Promise<WorktreeMeta[]
 // and no system being down, can change its answer. A registration is what makes
 // a worktree re-derive its target from the parent project — so a registration
 // is what has to be gone before that target may move (setProjectRemote).
+// WHERE A WORKTREE'S DIRECTORY GOES, in one place. `createWorktree` creates it
+// here and the transcript-collision guard derives every registered worktree's
+// cwd with the same call, so the guard cannot disagree with the thing it
+// guards. A placed project's worktrees sit beside it on ITS machine; a local
+// project's sit in cc's projects root, under `.external/` when the project is.
+export function worktreePathFor(
+  proj: { path: string; system: string; external?: boolean }, dirName: string,
+): string {
+  return path.join(
+    proj.system !== LOCAL_SYSTEM_ID
+      ? path.dirname(proj.path)
+      : proj.external ? path.join(projectsRoot(), EXTERNAL_DIRNAME) : projectsRoot(),
+    dirName,
+  );
+}
+
 export async function registeredWorktreeNames(projectName: string): Promise<string[]> {
   try {
     return (await fs.readdir(worktreesStoreRoot(projectName), { withFileTypes: true }))

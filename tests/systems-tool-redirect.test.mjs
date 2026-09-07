@@ -25,7 +25,6 @@ import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { addSystem } from '../src/appSettings.ts';
-import { noMirror } from '../src/systems/mirror.ts';
 import { SessionRedirect } from '../src/systems/toolRedirect.ts';
 
 const RECORDER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recordingProvider.mjs');
@@ -44,10 +43,7 @@ async function build({ flags = [], shellCommandTimeoutMs, maxOutputBytes } = {})
     system: await systemById(remote.id, null, 'test'),
     systemId: remote.id,
     systemPath: remote.root,
-    sessionRoot: root,
-    mirror: noMirror(remote.root),
     forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [path.join(home, 'local-ok')],
     emit: (ev) => events.push(ev),
     ...(shellCommandTimeoutMs === undefined ? {} : { shellCommandTimeoutMs }),
     ...(maxOutputBytes === undefined ? {} : { maxOutputBytes }),
@@ -402,90 +398,32 @@ test('a forwarded command reports the real exit code', async () => {
   assert.equal((await bash("bash -c 'exit 7'")).code, 7);
 });
 
-// PINS: a Read under the session root pulls the system's bytes to the local
-// path FIRST, so the CLI's own local read answers about the system's file.
-test('Read under the session root pulls before the tool runs', async () => {
-  await fs.writeFile(onSystem('greeting.py'), 'print("from the system")\n');
-  const d = await pre('Read', { file_path: inSession('greeting.py') });
-  assert.equal(d.decision, 'allow');
-  assert.equal(d.updatedInput, undefined, 'the path is NOT rewritten — the CLI reads locally');
-  assert.equal(await fs.readFile(inSession('greeting.py'), 'utf8'), 'print("from the system")\n');
-});
 
-// PINS: pull-before-EDIT, which is what makes the mixed Bash-write / Edit case
-// safe — a worker that `sed -i`s through Bash and then Edits the same file is
-// the normal case.
-test('Edit pulls the file again, so a Bash write earlier in the turn is not clobbered', async () => {
-  await fs.writeFile(onSystem('mixed.txt'), 'original\n');
-  await pre('Read', { file_path: inSession('mixed.txt') });
-  await bash("printf 'changed by bash\\n' > mixed.txt");
 
-  await pre('Edit', { file_path: inSession('mixed.txt'), old_string: 'a', new_string: 'b' });
-  assert.equal(await fs.readFile(inSession('mixed.txt'), 'utf8'), 'changed by bash\n');
-});
 
-// PINS: PostToolUse pushes the local result back to the system, and says so.
-test('PostToolUse pushes an edit back to the system and states where it landed', async () => {
-  await fs.writeFile(onSystem('app.js'), 'const a = 1\n');
-  await pre('Edit', { file_path: inSession('app.js'), old_string: '1', new_string: '2' });
-  await fs.writeFile(inSession('app.js'), 'const a = 2\n');
 
-  const note = await post('Edit', { file_path: inSession('app.js') }, { filePath: inSession('app.js') });
-  assert.equal(await fs.readFile(onSystem('app.js'), 'utf8'), 'const a = 2\n');
-  assert.match(note, new RegExp(onSystem('app.js').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.match(note, new RegExp(remote.id));
-});
 
-// PINS: a failed push is a HARD, LOUD failure — it names the divergence on the
-// spot and REFUSES the next write to that path, so a worker can never come away
-// believing an edit reached the system when it did not.
-test('a failed push names the divergence and denies the next write to that path', async () => {
-  await fs.mkdir(onSystem('d'), { recursive: true });
-  await fs.writeFile(onSystem('d/f.txt'), 'system copy\n');
-  await pre('Edit', { file_path: inSession('d/f.txt'), old_string: 'a', new_string: 'b' });
-  await fs.writeFile(inSession('d/f.txt'), 'local edit\n');
-  // Break the push: the parent directory becomes a file on the system.
-  await fs.rm(onSystem('d'), { recursive: true });
-  await fs.writeFile(onSystem('d'), 'not a directory\n');
-
-  const note = await post('Edit', { file_path: inSession('d/f.txt') }, {});
-  assert.match(note, /did not reach/);
-  assert.ok(events.some(e => e.kind === 'system' && JSON.stringify(e).includes('did not reach')),
-    'the failure is surfaced to the operator, not only to the model');
-
-  const denied = await pre('Edit', { file_path: inSession('d/f.txt'), old_string: 'x', new_string: 'y' });
-  assert.equal(denied.decision, 'deny');
-  assert.match(denied.reason, /did not reach/);
-});
-
-// PINS: THE BOUNDARY. A local path with no counterpart on the system and no
-// business being local is REFUSED, not quietly written to cc's disk where Bash
-// can never see it.
-test('a file tool aimed outside the session root is refused by name', async () => {
-  for (const p of [path.join(os.tmpdir(), 'cc-redirect-scratch.txt'), '/etc/hosts', onSystem('greeting.py')]) {
-    const d = await pre('Write', { file_path: p, content: 'x' });
-    assert.equal(d.decision, 'deny', p);
-    assert.match(d.reason, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  }
-});
-
-// PINS: the prefix rule's other half — a path cc KNOWS is local (an attachment
-// under the store, a plan under ~/.claude) passes through untouched. Refusing
-// those would break attachments on a remote project.
-test('a known-local path passes through untouched', async () => {
-  const local = path.join(home, 'local-ok', 'note.txt');
-  await fs.mkdir(path.dirname(local), { recursive: true });
-  await fs.writeFile(local, 'attachment\n');
-  const d = await pre('Read', { file_path: local });
-  assert.equal(d.decision, 'allow');
-  assert.equal(d.updatedInput, undefined);
-});
 
 // PINS THE SECOND GUARD on the one non-negotiable invariant: if Glob or Grep
 // ever reaches the hook — the injected `permissions.deny` having failed, or the
 // CLI's tool profile having changed — it is REFUSED by name, not allowed to
 // answer about cc's session root. A search answering about the wrong machine is
 // exactly the leak that makes a worker distrust every other tool result.
+// PINS CRITERION 8 AT THIS LAYER: a file tool is not hooked at all any more.
+// Every one of them passes through untouched, at an ABSOLUTE system path that
+// has no local counterpart and would have been refused outright before — the
+// union serves it, so there is nothing for cc to translate, pull or deny.
+test('file tools pass through untouched, at the system path', async () => {
+  await build();
+  for (const [tool, key] of [['Read', 'file_path'], ['Write', 'file_path'],
+    ['Edit', 'file_path'], ['NotebookEdit', 'notebook_path']]) {
+    const d = await redirect.preToolUse(tool, { [key]: path.join(remote.root, 'src/app.js') });
+    assert.deepEqual(d, { decision: 'allow' }, tool);
+    // And no note on the way back: there is no write-back to report.
+    assert.equal(await redirect.postToolUse(tool, { [key]: path.join(remote.root, 'src/app.js') }, {}), null, tool);
+  }
+});
+
 test('Glob and Grep are refused by name if they ever reach the hook', async () => {
   for (const tool of ['Glob', 'Grep']) {
     const d = await pre(tool, { pattern: '**/*.js' });
@@ -495,73 +433,9 @@ test('Glob and Grep are refused by name if they ever reach the hook', async () =
   }
 });
 
-// PINS S6: a file tool whose path is not absolute is REFUSED rather than let
-// through. The CLI was measured resolving to absolute before the hook fires, so
-// this is unreachable today — but letting it through meant PreToolUse skipped
-// the pull while PostToolUse would still have pushed, and the invariant should
-// not depend on an undocumented CLI behaviour staying put.
-test('a relative file path is refused rather than passed through unpulled', async () => {
-  for (const tool of ['Read', 'Write', 'Edit']) {
-    const d = await pre(tool, { file_path: 'relative/path.txt' });
-    assert.equal(d.decision, 'deny', `${tool} let a relative path through`);
-    assert.match(d.reason, /absolute/);
-  }
-  const nb = await pre('NotebookEdit', { notebook_path: './nb.ipynb' });
-  assert.equal(nb.decision, 'deny');
-});
 
-// PINS: and nothing is pushed for one either, so the two halves cannot
-// disagree about which paths they handle.
-test('a relative path is never pushed back', async () => {
-  await fs.writeFile(path.join(root, 'rel.txt'), 'local only\n');
-  assert.equal(await post('Edit', { file_path: 'rel.txt' }, {}), null);
-  await assert.rejects(fs.stat(onSystem('rel.txt')), 'nothing was written to the system');
-});
 
-// PINS T2: the push half's ABSOLUTE check, against its own window rather than
-// against a containment test that happens to fire first.
-//
-// The case above is stopped one guard later: `toSystem` resolves a relative path
-// against the test process's cwd, which lies outside the session root, so
-// containment answers null for a reason that has nothing to do with the guard.
-// The two halves can genuinely disagree — a cwd INSIDE the session root gives a
-// relative path a real system mapping — and that is the shape a push must still
-// refuse, because PreToolUse refused the same path and so never pulled it.
-//
-// Driven by making the session root the process's OWN cwd, which is the only way
-// to reach the disagreement without a global chdir. `package.json` is read, never
-// written: with the guard gone it is the repo's file that would land on the
-// system, which is exactly the harm.
-test('a relative path that DOES map into the session root is still not pushed', async () => {
-  const here = new SessionRedirect({
-    system: await systemById(remote.id, null, 'test'),
-    systemId: remote.id,
-    systemPath: remote.root,
-    sessionRoot: process.cwd(),
-    mirror: noMirror(remote.root),
-    forwarderUrl: 'http://127.0.0.1:1/api/instances/x/bash-forward',
-    localRoots: [],
-    emit: () => {},
-  });
-  try {
-    // The premise: relative here really does map onto the system.
-    assert.ok(here.map.toSystem(path.resolve('package.json')) !== null,
-      'the fixture reaches the disagreement — an absolute spelling of this path maps');
 
-    assert.equal(await here.postToolUse('Write', { file_path: 'package.json' }, {}), null,
-      'a relative path is refused by the push half itself');
-    await assert.rejects(fs.stat(onSystem('package.json')), 'the repo file never reached the system');
-  } finally { await here.close(); }
-});
-
-// PINS: R2's annotation is TARGETED — it fires only when the output actually
-// shows a system path, so the model is not fed a note on every command.
-test('a Bash result is annotated only when it actually shows a system path', async () => {
-  const shown = await post('Bash', {}, { stdout: `cwd is ${remote.root}\n`, stderr: '' });
-  assert.ok(shown && shown.includes(remote.id));
-
-  assert.equal(await post('Bash', {}, { stdout: 'all tests passed\n', stderr: '' }), null);
-});
 
 // T3 — A LIVE PRE-EXISTING DEFECT, FOUND WHILE PLANNING THIS CARD AND FIXED ON
 // IT. `SessionRedirect.close()` did not reap an in-flight command in the
@@ -684,15 +558,6 @@ test('a redirect keeps working after close(), because a rewind calls it too', as
   assert.equal(after.stdout.trim(), 'after', 'the next command runs normally, not ECANCELLED');
 });
 
-// PINS: `@mention` pre-hydration pulls the named file into the session root
-// BEFORE the prompt reaches the CLI — the CLI expands a mention with no hook,
-// so a file that is not already local is simply absent from the turn.
-test('@mention pre-hydration pulls the named files before the prompt is sent', async () => {
-  await fs.mkdir(onSystem('docs'), { recursive: true });
-  await fs.writeFile(onSystem('docs/spec.md'), '# the spec\n');
-  await redirect.hydrateMentions('please read @docs/spec.md and @nope/missing.md then stop');
-  assert.equal(await fs.readFile(inSession('docs/spec.md'), 'utf8'), '# the spec\n');
-});
 
 // ── A WIDE MIRROR: the two things it would silently break (card 2026-0259) ──
 //
@@ -724,25 +589,6 @@ async function wideRedirect() {
   return { wide, rec, image };
 }
 
-// PINS 8b: the Bash annotation's needle is the PROJECT's path, not the mirror
-// root. Under `mirrorRoot: '/'` the mirror root is a substring of essentially
-// every path any command prints, so a needle taken from the map would attach
-// R2's deliberately targeted note to every single Bash call.
-//
-// NOT CLAIMING: that the annotation's wording is right — the existing test
-// above owns that.
-test('a wide mirror does not turn the targeted Bash annotation into an every-command one', async () => {
-  const { wide } = await wideRedirect();
-  try {
-    // Output full of `/` and naming no project path: silent.
-    assert.equal(await wide.postToolUse('Bash', {}, { stdout: '/usr/bin/env\n/etc/hosts\n', stderr: '' }), null);
-    assert.equal(await wide.postToolUse('Bash', {}, { stdout: '/\n', stderr: '' }), null);
-    // Output naming the project path: exactly one note, naming the project.
-    const note = await wide.postToolUse('Bash', {}, { stdout: `cwd is ${remote.root}\n`, stderr: '' });
-    assert.ok(note && note.includes(remote.root), note);
-    assert.ok(!note.includes('Paths under / in'), 'and it names the project, not the mirror root');
-  } finally { await wide.close(); }
-});
 
 // PINS 8c: EVERY COMMAND runs from the PROJECT root under a wide mirror, not
 // from the mirror root. Asserted on the `exec` frame's `cwd` ON THE WIRE — a
@@ -769,21 +615,3 @@ test('a wide mirror still runs every command at the project root', async () => {
   } finally { await wide.close(); }
 });
 
-// PINS 8d: an `@mention` is resolved against the CLI's OWN cwd — the project's
-// directory inside the image — not against the image root. Under a wide mirror
-// those are different directories, and resolving against the wrong one pulls a
-// file nobody named.
-//
-// NOT CLAIMING: that the CLI expands the mention the same way; that is measured
-// CLI behaviour the hydration exists to serve.
-test('a mention resolves against the CLI cwd, not the image root', async () => {
-  const { wide, image } = await wideRedirect();
-  try {
-    await fs.writeFile(path.join(remote.root, 'NOTES.md'), 'project notes\n');
-    await wide.hydrateMentions('please read @NOTES.md');
-    assert.equal(await fs.readFile(path.join(image, remote.root.replace(/^\//, ''), 'NOTES.md'), 'utf8'),
-      'project notes\n', 'it landed at the project\'s place inside the image');
-    await assert.rejects(fs.readFile(path.join(image, 'NOTES.md')),
-      'and not at the image root, which is a different directory entirely');
-  } finally { await wide.close(); }
-});

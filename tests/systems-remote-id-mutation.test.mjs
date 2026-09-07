@@ -27,11 +27,11 @@ import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem, seedRepo } from './remoteSystem.mjs';
 import {
-  adoptProject, createProject, projectStoreDir, resolveProjectDir, setProjectRemote,
+  adoptProject, createProject, listProjects, projectStoreDir, resolveProjectDir, setProjectRemote,
+  orchStoreRoot,
 } from '../src/projects.ts';
 import { createWorktree } from '../src/worktrees.ts';
 import { disposeSystemHandles, projectPlacement } from '../src/systems/registry.ts';
-import { composeSessionRoot, sessionRootPath } from '../src/systems/sessionRoot.ts';
 import { systemById } from '../src/systems/registry.ts';
 import { getOrCompute, projectCacheKey, _resetForTest } from '../src/projectsCache.ts';
 
@@ -63,14 +63,11 @@ describe('changing a project target', () => {
     return path.join(sandbox, name);
   };
 
-  // A REAL session root, composed the way a spawn composes one. Asserting about
+  // NOTE: there is no local session root to compose any more; a refused change
+  // is asserted on the RECORD it did not write, which is the only artefact.
+  // (was: a real session root, composed the way a spawn composes one) —
   // a root that was never created would be vacuous — the whole question is
   // whether an existing one survives.
-  const composeRootFor = async (systemPath, worktree = null) => composeSessionRoot({
-    system: await systemById(remote.id, 'a', 'test'),
-    systemId: remote.id, systemPath, project: 'app', worktree,
-  });
-  const manifestOf = (worktree = null) => `${sessionRootPath(remote.id, 'app', worktree)}.manifest.json`;
 
   // ── The happy change ─────────────────────────────────────────────────
 
@@ -134,9 +131,6 @@ describe('changing a project target', () => {
     // Real roots for the project AND its worktree: the removal a permitted
     // change performs is one call plus a loop over the registered worktrees, so
     // both have to be shown surviving.
-    const { root } = await composeRootFor(tree);
-    const { root: wtRoot } = await composeRootFor(tree, wt.worktreeName);
-    assert.equal(await exists(manifestOf()), true, 'the fixture really composed a root');
 
     await assert.rejects(
       () => setProjectRemote('app', 'b', NO_INSTANCES),
@@ -155,9 +149,6 @@ describe('changing a project target', () => {
     // registered worktrees exist — the state where destroying one does the most
     // damage. Nothing else in this file would notice the removal being reordered
     // above the guard.
-    assert.equal(await exists(root), true, "a refused change keeps the project's session root");
-    assert.equal(await exists(manifestOf()), true, 'and its manifest');
-    assert.equal(await exists(wtRoot), true, "and the worktree's, which the removal loop would take too");
   });
 
   // ── Verify before persist ────────────────────────────────────────────
@@ -167,8 +158,6 @@ describe('changing a project target', () => {
   test('an unknown target refuses REMOTE_NOT_FOUND and writes nothing', async () => {
     const tree = await seed();
     const before = await readRecord('app');
-    const { root } = await composeRootFor(tree);
-    assert.equal(await exists(manifestOf()), true, 'the fixture really composed a root');
 
     await assert.rejects(
       () => setProjectRemote('app', 'typo', NO_INSTANCES),
@@ -179,8 +168,6 @@ describe('changing a project target', () => {
     // by the verify-before-persist check, which sits between the guard and the
     // removal. A removal reordered above only the verify would clear the 409
     // test above and still be caught here.
-    assert.equal(await exists(root), true, 'a refused change keeps the session root');
-    assert.equal(await exists(manifestOf()), true, 'and its manifest');
   });
 
   // PINS: a provider with no `remotes` capability refuses by name at set time,
@@ -212,24 +199,23 @@ describe('changing a project target', () => {
 
   // ── What a permitted change invalidates ──────────────────────────────
 
-  // PINS: the session root and its manifest are removed up front. A root left
-  // behind holds the OLD target's CLAUDE.md, CONVENTIONS.md and cached content
-  // at local paths the write-back would then push to the NEW target — a
-  // clobber that is invisible from either side.
-  test("a permitted change removes the project's session root and manifest", async () => {
+  // PINS: A PERMITTED CHANGE LEAVES NOTHING LOCAL BEHIND, because there is
+  // nothing local to leave. This used to assert that the project's session root
+  // and manifest were REMOVED up front — a root left behind held the OLD
+  // target's CLAUDE.md and cached content at local paths a write-back would then
+  // push to the NEW target, a clobber invisible from either side. Under the
+  // union there is no cc-owned copy of the old target's bytes at all, so the
+  // clobber is unreachable rather than cleaned up.
+  test('a permitted change leaves no cc-owned copy of the old target', async () => {
     const tree = await seedRepo(path.join(sandbox, 'app'));
     assert.equal((await adoptProject('app', tree, { system: remote.id, remoteId: 'a' })).ok, true);
-    const { root } = await composeSessionRoot({
-      system: await systemById(remote.id, 'a', 'test'),
-      systemId: remote.id, systemPath: tree, project: 'app', worktree: null,
-    });
-    const manifest = `${sessionRootPath(remote.id, 'app', null)}.manifest.json`;
-    assert.equal(await exists(manifest), true, 'the fixture really composed a root');
+    const sessionsDir = path.join(orchStoreRoot(), 'systems', remote.id, 'sessions');
+    assert.equal(await exists(sessionsDir), false, 'a session root existed before the change');
 
     await setProjectRemote('app', 'b', NO_INSTANCES);
 
-    assert.equal(await exists(root), false, "the project's session root is gone");
-    assert.equal(await exists(manifest), false, 'and so is its manifest');
+    assert.equal(await exists(sessionsDir), false, 'the change created one');
+    assert.equal((await listProjects()).find(p => p.name === 'app')?.remoteId, 'b', 'the change did not take');
   });
 
   // PINS: the git-facts cache is invalidated, so the next read measures the new

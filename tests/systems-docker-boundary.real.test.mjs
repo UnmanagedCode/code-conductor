@@ -25,6 +25,15 @@
 // ENVIRONMENT. Nothing here is measured about SSH, about a genuinely remote
 // host, about latency, or about a foreign libc or toolchain — no assertion or
 // comment in this file may be read as covering any of them.
+//
+// DOUBLY OPT-IN SINCE THE FUSE-UNION GEOMETRY. This suite needs `RUN_DOCKER_SYSTEM=1`
+// AND a host that can mount the union — `sudo -n`, `/dev/fuse`, `fusectl`, gcc and
+// libfuse3 headers, the same set `tests/fuse-lifecycle.real.test.mjs` asserts. The
+// union is mandatory for a remote-backed worker, and this is the ONE suite that
+// crosses a real machine boundary: a worker here runs at the project's path
+// INSIDE the container, which does not exist on the host, so a run that bypassed
+// the union would be asserting the wrong geometry rather than testing the right
+// one. A host without FUSE gets the criterion-9 refusal, by name.
 
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,7 +46,6 @@ import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs
 import { addSystem } from '../src/appSettings.ts';
 import { adoptProject } from '../src/projects.ts';
 import { disposeSystemHandles, systemById } from '../src/systems/registry.ts';
-import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 
 const ENABLED = process.env.RUN_DOCKER_SYSTEM === '1';
 const IMAGE = process.env.CC_DOCKER_IMAGE ?? 'node:24-slim';
@@ -150,7 +158,7 @@ describe('a worker across a real machine boundary', { skip: !ENABLED }, () => {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     instId = r.body.id;
-    root = sessionRootPath('ctrbox', 'app', null);
+    root = '/app';
     await waitFor(() => instances.get(instId).status === 'idle');
   });
 
@@ -521,8 +529,8 @@ describe('a worker whose session mirrors the whole container filesystem', { skip
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'wide', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     instId = r.body.id;
-    root = sessionRootPath('widebox', 'wide', null);
-    cwd = path.join(root, 'app');
+    root = '/app';
+    cwd = root;
     await waitFor(() => instances.get(instId).status === 'idle');
   });
 

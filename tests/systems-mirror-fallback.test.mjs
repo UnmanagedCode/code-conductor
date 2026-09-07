@@ -26,7 +26,8 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { bindRemoteSystem } from './remoteSystem.mjs';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, localSystem, systemById } from '../src/systems/registry.ts';
-import { composeSessionRoot } from '../src/systems/sessionRoot.ts';
+import { resolveMirrorScope } from '../src/systems/mirror.ts';
+import { orchStoreRoot } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RECORDER = path.join(__dirname, 'fixtures', 'recordingProvider.mjs');
@@ -85,63 +86,35 @@ describe('a provider that advertises no mirror', () => {
     const sys = await systemById('box', null, 'test');
     assert.equal(sys.handshake.capabilities.remoteDescriptors, false);
 
-    await composeSessionRoot({ system: sys, systemId: 'box', systemPath: tree, project: 'app' });
+    // The one call the create path makes on this axis. A provider without the
+    // capability must be answered from cc's own default, never asked.
+    const { scope } = resolveMirrorScope({
+      systemId: 'box', project: 'app', systemPath: tree, advertisement: await sys.mirror(),
+    });
+    assert.equal(scope.mirrorRoot, tree);
 
     const frames = await wire(rec);
     assert.ok(frames.length > 0, 'the recorder really saw traffic');
     assert.deepEqual(frames.filter(f => f.type === 'describeRemote'), []);
   });
 
-  // PINS the three geometry facts D-P7-10 form 3 names, directly: the offset is
-  // zero, the CLI's cwd IS the session root, and the exclude list the path map
-  // is built on is empty. The layout is enumerated by hand.
-  //
-  // NOT CLAIMING: that no string anywhere changed. D-P7-9 records one
-  // deliberate refusal-wording change on this path.
-  test('the composed root has offset zero, cwd === root, and no exclusions', async () => {
+  // PINS THE ABSENT-BEHAVIOUR, which survived the geometry and CHANGED MEANING:
+  // it used to mean "offset zero, the CLI's cwd IS the image root". It now means
+  // THE NARROWEST MIRROR ROOT — the project's own path — which is the remote
+  // tier's boundary, with nothing excluded.
+  test('no advertisement means the narrowest mirror root: the project path', async () => {
     const tree = await seedTree(await fs.realpath(await mkdtemp('cc-remote-')));
     const remote = await bindRemoteSystem();
-    const composed = await composeSessionRoot({
-      system: await systemById(remote.id, null, 'test'),
-      systemId: remote.id, systemPath: tree, project: 'app',
+    const sys = await systemById(remote.id, null, 'test');
+    const { scope, inert } = resolveMirrorScope({
+      systemId: remote.id, project: 'app', systemPath: tree, advertisement: await sys.mirror(),
     });
 
-    assert.equal(composed.mirror.offset, '');
-    assert.equal(composed.cwd, composed.root);
-    assert.equal(composed.mirror.mirrorRoot, tree);
-    assert.deepEqual(composed.mirror.exclude, []);
-    assert.deepEqual(composed.notes, []);
-
-    // The layout, written out rather than snapshotted.
-    assert.deepEqual(await listTree(composed.root), [
-      '.claude/settings.json',
-      '.claude/skills/deploy/SKILL.md',
-      'CLAUDE.md',
-      'CONVENTIONS.md',
-    ].sort());
-    assert.equal(await fs.readFile(path.join(composed.root, 'CLAUDE.md'), 'utf8'),
-      '@CONVENTIONS.md\nproject notes\n');
-    assert.equal(await fs.readFile(path.join(composed.root, 'CONVENTIONS.md'), 'utf8'), 'rules\n');
-  });
-
-  // PINS: cc's own machine advertises nothing, unconditionally — the
-  // in-process implementation, and only it.
-  //
-  // NOT CLAIMING: anything about what a provider standing in for `local` under
-  // CC_LOCAL_SYSTEM_PROVIDER advertises, which is why the guard below is here.
-  // Nor is this what keeps `npm run gate:systems` off a `--mirror`
-  // configuration: that reason is an id-level one and lives in the gate's own
-  // header — mirror() is unreachable for the id `local` whatever class backs it,
-  // and a `--mirror` gate row was measured to receive ZERO `describeRemote`
-  // frames across the whole suite (card 2026-0266).
-  test('the local system advertises no mirror', async () => {
-    const { LocalSystem } = await import('../src/systems/localSystem.ts');
-    assert.deepEqual(await new LocalSystem().mirror(), { mirrorRoot: null, exclude: [] });
-    // And the live handle the registry hands out answers the same way when it
-    // is the in-process one.
-    const live = localSystem();
-    if (live instanceof LocalSystem) {
-      assert.deepEqual(await live.mirror(), { mirrorRoot: null, exclude: [] });
-    }
+    assert.deepEqual(scope, { mirrorRoot: tree, exclude: [] });
+    assert.deepEqual(inert, []);
+    // AND NO LOCAL IMAGE OF IT. The whole point of the retirement: cc composes
+    // nothing under the store, so there is nothing here to have an offset into.
+    assert.equal(await fs.stat(path.join(orchStoreRoot(), 'systems', remote.id, 'sessions'))
+      .then(() => true, () => false), false);
   });
 });

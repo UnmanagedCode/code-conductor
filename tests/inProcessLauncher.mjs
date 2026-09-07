@@ -75,6 +75,13 @@ class FakeChildProcess extends EventEmitter {
 // paths, plan file) is read from the `env` handed to each launch, exactly as the
 // real subprocess reads process.env. Ignores `command` (there is no binary).
 export class InProcessClaudeLauncher {
+  // THE ONE EXEMPTION FROM THE FUSE-UNION CHROOT, declared structurally rather
+  // than through the environment: this launcher runs the CLI inside cc's own
+  // process, so there is no subprocess to put in a mount namespace and a
+  // mandatory wrap would wait forever on a handshake that cannot arrive. It
+  // cannot be selected in production. See LauncherLike.inProcess.
+  inProcess = true;
+
   launch({ command, args, cwd, env }) {
     const child = new FakeChildProcess();
     // Defer all engine activity: the parent wires up readline + 'exit'/'error'

@@ -72,7 +72,7 @@ export interface ExecOptions {
   // output WHOLE — a clipped-but-successful parse would be read as the truth,
   // which is worse than a reported failure. It rides on `runGit`
   // (src/worktrees.ts), on the session-root config-surface walk
-  // (src/systems/sessionRoot.ts) and on every redirected shell command
+  // (src/systems/bashRules.ts) and on every redirected shell command
   // (src/systems/providerShell.ts); omitting it means unbounded retention in
   // this process.
   maxBufferBytes?: number;
@@ -198,7 +198,7 @@ export interface WriteFileOptions {
   //
   // It is also the SYMLINK-SAFE write: a rename replaces the link itself, where
   // a plain write follows it to whatever it points at. The write-back path
-  // (src/systems/fileBridge.ts) depends on that.
+  // the provider conformance suite depends on that.
   atomic?: boolean;
   // POSIX permission bits for the written file, as fs.Stats.mode reports them
   // (the file-type bits are ignored). Set it to KEEP a mode: an atomic write
@@ -252,7 +252,7 @@ export interface System {
   chmod(p: string, mode: number): Promise<void>;
 
   // ── The mirror advertisement ───────────────────────────────────────
-  // How much of THIS TARGET's filesystem cc's session root is the local image
+  // How much of THIS TARGET's filesystem the union's remote tier is the image
   // of, and which prefixes cc must not carry (src/systems/mirror.ts,
   // docs/systems-protocol.md §2.1). `{mirrorRoot: null, exclude: []}` means the
   // target advertises nothing, which is every provider that predates the frame

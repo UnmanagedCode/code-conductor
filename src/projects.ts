@@ -840,22 +840,20 @@ export async function renameWorkspace(oldName: string, newName: string): Promise
   return { renamed: true, name: newV, movedProjects: members };
 }
 
-// Why registering PROJECT `name` on `systemId` would put two places on one
-// session root, or null when it would not. Both creation paths ask, because a
-// name can be free and its key still taken: `--` is legal inside a project
-// name, so `p--p_worktree_w` computes the key worktree `p_worktree_w` of
-// project `p` computes (card 2026-0293 §10). createWorktree asks the same
+// Why registering PROJECT `name` would put two places in one CLI transcript
+// directory, or null when it would not. Both creation paths ask, because a name
+// can be free and its cwd still collide: a project named `p_worktree_w` lands
+// where worktree `w` of project `p` does. createWorktree asks the same
 // predicate directly for the other half of the pair.
 //
-// Lazy import for the same projects.ts <-> systems/sessionRoot.ts circular edge
-// removeSessionRoot's callers sit on.
-async function projectKeyCollisionReason(systemId: string, name: string): Promise<string | null> {
-  const { sessionRootCollisionReason, sessionRootKey, sessionRootKeyCollision } =
-    await import('./systems/sessionRoot.ts');
-  const hit = await sessionRootKeyCollision(systemId, name, null);
-  return hit === null
-    ? null
-    : sessionRootCollisionReason(systemId, `project '${name}'`, sessionRootKey(name, null), hit);
+// Lazy import for the projects.ts ↔ systems/transcriptKey.ts circular edge:
+// that module enumerates places through listProjects, which lives here.
+async function projectKeyCollisionReason(systemId: string, name: string, cwd: string): Promise<string | null> {
+  const { transcriptCollisionReason, transcriptCwdCollision } =
+    await import('./systems/transcriptKey.ts');
+  const candidate = { project: name, worktree: null, system: systemId, cwd };
+  const hit = await transcriptCwdCollision(candidate);
+  return hit === null ? null : transcriptCollisionReason(`project '${name}'`, candidate, hit);
 }
 
 export async function createProject(
@@ -891,12 +889,14 @@ export async function createProject(
   if (await heldNameReason(name)) {
     throw httpError(409, `project '${name}' already exists`);
   }
-  // A name is free and still unusable when its SESSION-ROOT KEY is already
-  // taken on this system. Only for a placement — a local project has no
-  // session root, so there is no key to take.
-  if (placement) {
-    const why = await projectKeyCollisionReason(placement.system, name);
-    if (why) throw httpError(409, why, { code: 'SESSION_ROOT_COLLISION' });
+  // A name is free and still unusable when the CLI's TRANSCRIPT DIRECTORY for
+  // its working directory is already taken — by any place, on any system. Not
+  // placement-only any more: a remote cwd is now the project's real path on its
+  // system rather than something under cc's store, so it can collide with a
+  // local project's path.
+  {
+    const why = await projectKeyCollisionReason(placement?.system ?? LOCAL_SYSTEM_ID, name, full);
+    if (why) throw httpError(409, why, { code: 'TRANSCRIPT_DIR_COLLISION' });
   }
   try {
     await system.mkdir(full);
@@ -975,7 +975,26 @@ function validatePlacementInput(
   }
   if (!p) throw httpError(400, `system '${id}' was named without a systemPath — cc has no default location on another machine`);
   if (!path.isAbsolute(p)) throw httpError(400, `systemPath must be absolute (got '${p}')`);
-  return { system: id, remoteId: remote, systemPath: p };
+  // NORMALISED, NOT MERELY TRIMMED, and this is a correctness fix rather than
+  // tidiness. The value is stored verbatim and is the candidate the transcript
+  // guard compares, so `/srv/app/` and `/srv/app` — one directory — encoded
+  // differently and did NOT collide: two projects could take one CLI transcript
+  // directory and interleave their sessions in it. It is also what the adopt
+  // duplicate check compares against a realpath'd string.
+  //
+  // POSIX, always: this is a path on the SYSTEM's filesystem, which A4 fixes at
+  // `/`, so `path.posix` and not the host's `path` — a Windows-hosted cc must
+  // not fold `/srv/app` into `\srv\app`. The trailing slash is stripped after
+  // normalising (`normalize` keeps it), except at the root itself.
+  return { system: id, remoteId: remote, systemPath: normalizeSystemPath(p) };
+}
+
+// ONE spelling per directory, in the system's own path space. Exported because
+// migrations/0034 closes already-stored records with the same rule, and the
+// transcript guard derives `samePath` from it.
+export function normalizeSystemPath(p: string): string {
+  const n = path.posix.normalize(p);
+  return n.length > 1 && n.endsWith('/') ? n.slice(0, -1) : n;
 }
 
 // The most a caller may name a target with. DELIBERATELY NOT `isSlug`: a remote
@@ -1047,7 +1066,7 @@ export async function setProjectRemote(
     throw httpError(
       409,
       `project '${name}' cannot change target while it has ${parts.join(' and ')}. `
-      + `A live session's shells and session root are coherent only against the target they were opened on, `
+      + `A live session's shells and union mount are coherent only against the target they were opened on, `
       + `and a worktree re-derives its target from this project. Clear them first.`,
       { code: 'PROJECT_PLACEMENT_IN_USE', systemRefusal: true, instances, worktrees },
     );
@@ -1057,14 +1076,9 @@ export async function setProjectRemote(
   // does not serve refuses here, with nothing written.
   await systemById(placement.system, next, `project '${name}'`);
 
-  // The session root was pulled from the OLD target. Removing it here is what
-  // stops the next spawn reading that target's CLAUDE.md, CONVENTIONS.md and
-  // cached content and pushing edits of them to the new one. composeSessionRoot
-  // re-checks the manifest anyway — belt and braces for a root left behind by a
-  // crash mid-change, or written before the field existed.
-  const { removeSessionRoot } = await import('./systems/sessionRoot.ts');
-  await removeSessionRoot(placement.system, name, null);
-  for (const wt of worktrees) await removeSessionRoot(placement.system, name, wt);
+  // Nothing local to clean up: under the FUSE-union geometry a remote session
+  // reads the project's tree through the union at its real path on the system,
+  // so retargeting leaves no cc-owned copy of the old target's bytes behind.
 
   await writeProjectRecord(name, { remoteId: next });
   // The cached git facts were measured on the target the project just left.
@@ -1354,9 +1368,10 @@ export async function adoptProject(
 
   // The same check createProject makes, in this path's RETURNED-refusal shape,
   // and BEFORE writeProjectRecord below so a refused adopt writes nothing.
-  if (placement) {
-    const why = await projectKeyCollisionReason(placement.system, name);
-    if (why) return { ok: false, code: 'SESSION_ROOT_COLLISION', reason: why };
+  {
+    const why = await projectKeyCollisionReason(
+      placement?.system ?? LOCAL_SYSTEM_ID, name, real);
+    if (why) return { ok: false, code: 'TRANSCRIPT_DIR_COLLISION', reason: why };
   }
 
   if (placement) {
@@ -1598,15 +1613,13 @@ async function loadWorktreesFor(projectName: string): Promise<WorktreeMeta[]> {
   return listWorktrees(projectName);
 }
 
-// ONE PLACE a session could have run: a project or one of its worktrees, with
-// every cwd that place admits. `primary` and `fallback` are the two PASSES of
-// findSessionLocation's probe, not two guesses at one path — see the precedence
-// rule on it.
+// ONE PLACE a session could have run: a project or one of its worktrees, and
+// the cwd it admits. A LIST rather than a string because the probe walks it, and
+// because a place that cannot be located contributes an empty one.
 interface SessionPlace {
   project: string;
   worktreeName: string | null;
   primary: string[];
-  fallback: string[];
 }
 
 // Look up which project (and optionally which worktree) owns a given
@@ -1625,34 +1638,15 @@ interface SessionPlace {
 // (card 2026-0292). It is NOT a public field: `GET /sessions/:id/locate`
 // projects the body explicitly so it stays in-process.
 //
-// WHICH CWDS A PLACE ADMITS depends on where its tree is. A LOCAL place admits
-// exactly its tree path — the CLI ran there. A place on a SYSTEM admits its
-// local SESSION ROOTS (`sessionRootCwds`): the CLI is always local, so a session
-// on another machine's tree still ran in a cc-owned directory here, and the
-// tree path names a directory on a host cc never had a cwd in.
+// WHICH CWD A PLACE ADMITS is now the same question wherever its tree is: the
+// CLI ran at the place's own path, on whatever machine that is. A remote
+// session used to run in a cc-owned local session root, so a place admitted a
+// SET of candidate cwds; under the chroot it runs at the project's real path
+// and admits exactly one.
 //
-// TWO PASSES, WITH GLOBAL PRECEDENCE. Pass 1 sweeps every place's `primary`
-// (local tree paths, remote session roots). Pass 2 sweeps only the remote
-// places' `fallback` — the raw path on the system, which is exactly the probe
-// this function ran before session roots existed.
-//   - Pass 2 is KEPT because the state it serves is REACHABLE: adopt a project
-//     locally at P, accrue sessions in that tree, unregister it, re-adopt it on
-//     a system whose path is also P. Those older transcripts are genuinely that
-//     project's and nothing else finds them. Its WORKTREE half serves no state
-//     cc's own operations produce — `deleteProject`'s cascade unregisters a
-//     project's worktrees and `setProjectRemote` refuses while any exist, so no
-//     supported sequence leaves a remote worktree registration whose tree once
-//     held local sessions — and is kept as defence in depth, uniformly with the
-//     project half rather than as a special case.
-//   - It is STRICTLY LAST, globally rather than per-project, because a remote
-//     place's tree path can collide (via encodeCwd, or by naming the same
-//     string) with a LOCAL project's real cwd — and there the raw answer is
-//     wrong while a session-root answer elsewhere is right. Demoting it below
-//     every primary everywhere cures that by precedence, deleting nothing.
-// A session-root answer must therefore never lose to a raw remote-tree-path
-// answer, for any id, under any project ordering. Local places contribute
-// nothing to pass 2, so a local project's set and order are what they were.
-//
+// ONE PASS. The second pass — the raw path on the system, which a remote place
+// used to offer only as a fallback — is now the primary, so the two collapsed
+// into each other.
 // WHAT THIS NEEDS FROM THE SYSTEM. THE ONE HOME for this contract — the sites
 // that care (`src/mcp/handlers.ts`'s disk branch, `docs/architecture.md`,
 // tests/systems-remote-session-location.test.mjs) point here instead of keeping
@@ -1662,9 +1656,9 @@ interface SessionPlace {
 //   NOT "a box that is down cannot change what this returns" — it can.
 //
 // Almost every candidate cwd is computed from cc's own store and disk:
-// `listProjects` (store-derived for a remote row), `sessionRootPath`,
-// `mirrorOffsets`, a realpath of cc's own store — and the transcripts are on
-// cc's own disk. ONE INPUT IS NOT, the WORKTREE STORE. `loadWorktreesFor` is
+// `listProjects` (store-derived for a remote row) and `worktreePathFor` — and
+// the transcripts are on cc's own disk, because the CLI is always local even
+// when its cwd names another machine's tree. ONE INPUT IS NOT, the WORKTREE STORE. `loadWorktreesFor` is
 // `listWorktrees`, which runs `git worktree list` THROUGH the project's system
 // and then lets the answer PRUNE any registration the box no longer reports,
 // while SWALLOWING the box's refusal when it cannot answer (so every
@@ -1707,28 +1701,15 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
     }
   } catch { /* .conduct doesn't exist yet — skip */ }
 
-  // Lazy import for the same projects.ts ↔ systems/sessionRoot.ts circular edge
-  // the two worktrees imports sit on — sessionRoot.ts imports orchStoreRoot from
-  // this module.
-  const { sessionRootCwds } = await import('./systems/sessionRoot.ts');
-
-  // One place, composed. `sysPath` is null for a listed remote row with no
-  // placement — which contributes no primary, only its fallback. A remote row's
-  // `path` IS its `systemPath` (listProjects), but `systemPath` is the field
-  // that NAMES the meaning, so the project's row is asked with that one.
+  // One place, one cwd, whatever machine it is on. Under the FUSE-union geometry
+  // a remote session runs at the project's real path on its system, and a remote
+  // row's `path` IS that path (listProjects) — so local and remote compose
+  // identically and there is no search space to enumerate any more.
   const compose = async (
     proj: ProjectInfo, worktreeName: string | null, treePath: string, sysPath: string | null,
-  ): Promise<SessionPlace> => {
-    if (proj.system === LOCAL_SYSTEM_ID) {
-      return { project: proj.name, worktreeName, primary: [treePath], fallback: [] };
-    }
-    return {
-      project: proj.name,
-      worktreeName,
-      primary: sysPath ? await sessionRootCwds(proj.system, proj.name, worktreeName, sysPath) : [],
-      fallback: [treePath],
-    };
-  };
+  ): Promise<SessionPlace> => ({
+    project: proj.name, worktreeName, primary: [sysPath ?? treePath],
+  });
 
   // THE PLACE LIST IS COMPOSED LAZILY, IN PROBE ORDER, AND MEMOISED — and the
   // laziness is load-bearing rather than a micro-optimisation. Composing a
@@ -1797,12 +1778,6 @@ export async function findSessionLocation(sessionId: string): Promise<{ project:
       for (const pl of await worktreePlaces(i)) {
         const atWt = await first(pl, pl.primary);
         if (atWt) return atWt;
-      }
-    }
-    for (let i = 0; i < projects.length; i++) {
-      for (const pl of [await rootPlace(i), ...await worktreePlaces(i)]) {
-        const hitHere = await first(pl, pl.fallback);
-        if (hitHere) return hitHere;
       }
     }
     return null;

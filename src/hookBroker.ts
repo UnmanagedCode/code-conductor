@@ -6,10 +6,13 @@
 // dependency arrow one-way.
 //
 // It answers two hook events. `PreToolUse` is the original: auto-allow, or hold
-// the response open behind an ask-mode permission card. `PostToolUse` exists
-// only for a session redirected to another system, and carries the write-back
-// note back to the model as `additionalContext` — the only channel there is,
-// since a tool result can be annotated but never replaced.
+// the response open behind an ask-mode permission card. `PostToolUse` is
+// registered only for a session redirected to another system and is a RESERVED
+// S3 SEAM with no consumer today: the union writes through, so there is nothing
+// to report back. It stays wired because S3's lazy per-open mirror pushes at
+// `release`, which can fail AFTER the tool has already returned success, and
+// `additionalContext` is the only channel that can put that in front of the
+// worker in band — a tool result can be annotated but never replaced.
 
 import type { Response } from 'express';
 import type { RedirectDecision } from './systems/toolRedirect.ts';
@@ -71,15 +74,6 @@ export interface HookRedirector {
   postToolUse(toolName: string, toolInput: Record<string, unknown>, toolResponse: unknown): Promise<string | null>;
 }
 
-// Tools a REDIRECTED session hooks for a reason other than permission, and
-// which must therefore not raise an ask card. `Read` is here because its bytes
-// have to be fetched from the system before the CLI opens the file; gating it
-// would start prompting on reads that never prompted before. Scoped to
-// redirected sessions: with no redirector attached the gate below tests no tool
-// name at all. The exemption is this list and nothing else — a tool hooked
-// later gates unless it is added here, rather than falling through a hole
-// (card 2026-0339).
-const REDIRECT_UNGATED_TOOLS = new Set(['Read']);
 
 interface PendingCallback {
   res: Response;
@@ -179,7 +173,11 @@ export class HookBroker {
   ): void {
     const toolUseId = envelope?.tool_use_id;
     const mode = this._getMode();
-    if (mode !== 'ask' || (redirected && REDIRECT_UNGATED_TOOLS.has(toolName))) {
+    // No redirect exemption any more. It existed for `Read`, which a redirected
+    // session hooked only to fetch bytes before the CLI opened the file — a
+    // PreToolUse the union made unnecessary, so `Read` is no longer hooked at
+    // all and there is nothing left to exempt.
+    if (mode !== 'ask') {
       respondAllow(res, updatedInput);
       return;
     }

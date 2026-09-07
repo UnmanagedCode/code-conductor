@@ -166,7 +166,7 @@ export interface Capabilities {
   // is the worst failure available here.
   remotes: boolean;
   // The provider answers `describeRemote` with the MIRROR ADVERTISEMENT for a
-  // target — how much of its filesystem cc's session root is the local image
+  // target — how much of its filesystem the union's remote tier is the image
   // of, and which prefixes cc must not carry (§2.1). Absent → cc never sends
   // the frame, the session root is the project root's image exactly as before,
   // and no path is excluded.

@@ -153,12 +153,12 @@ export class LocalSystem implements System {
   }
 
   // cc's OWN machine advertises nothing, unconditionally. A session on a local
-  // project is not redirected at all — there is no session root and no map to
+  // project is not redirected at all — there is no union mount and no tier table to
   // widen — so there is nothing here for an advertisement to mean.
   //
   // AND NOTHING CALLS IT, as a property of the ID rather than of this class:
-  // mirror()'s only consumer is composeSessionRoot (src/sessionRoot.ts), and
-  // both of its call sites sit behind a redirect placement gated on
+  // mirror()'s only consumer is the create path's resolveMirrorScope
+  // (src/instances.ts), which sits behind a redirect placement gated on
   // `id !== LOCAL_SYSTEM_ID` (src/instances.ts). So a `local` handle is never
   // asked for a mirror even when a provider is standing in for this class.
   async mirror(): Promise<MirrorAdvertisement> {

@@ -24,8 +24,9 @@ import { adoptProject, orchStoreRoot } from '../src/projects.ts';
 import { sessionTmpDir, sweepSessionTmpDirs } from '../src/instances.ts';
 import { attachmentsDir } from '../src/worktrees.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { sessionRootPath } from '../src/systems/sessionRoot.ts';
 import { composeProjectConventionsDoc } from '../src/projectClaudeMd.ts';
+
+const exists = (p) => fs.access(p).then(() => true, () => false);
 
 // Run a command string the way the CLI's Bash tool runs one: through a shell,
 // on cc's machine. For a redirected session that string IS the forwarder
@@ -75,7 +76,7 @@ describe('a worker session on a remote system', () => {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     instId = r.body.id;
-    root = sessionRootPath(remote.id, 'app', null);
+    root = tree;
     await waitFor(() => instances.get(instId).status === 'idle');
     r0 = await api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
       session_id: 's', hook_event_name: 'PreToolUse', tool_use_id: 'tu0',
@@ -95,22 +96,19 @@ describe('a worker session on a remote system', () => {
   const onSystem = (rel) => path.join(tree, rel);
   const inSession = (rel) => path.join(root, rel);
 
-  // PINS: the session's cwd is the local session root and it holds the config
-  // surface pulled from the system — the CLI reads CLAUDE.md and `.claude/**`
-  // with no hook, so anything not pulled here is simply absent from the prompt.
-  test('the session root is composed from the system before the CLI starts', async () => {
-    assert.equal(instances.get(instId).cwd, root);
-    // Byte-identical to the system's copy — the local one is a read-only
-    // snapshot of it, not a second document. (Adoption regenerated it on the
-    // system, so its body is cc's composed conventions rather than the seed.)
-    assert.equal(
-      await fs.readFile(inSession('CONVENTIONS.md'), 'utf8'),
-      await fs.readFile(onSystem('CONVENTIONS.md'), 'utf8'),
-    );
-    assert.match(await fs.readFile(inSession('CONVENTIONS.md'), 'utf8'), /^<!-- cc:conventions/);
-    assert.match(await fs.readFile(inSession('CLAUDE.md'), 'utf8'), /^@CONVENTIONS\.md$/m);
-    // The tree itself is NOT mirrored.
-    await assert.rejects(fs.readFile(inSession('ONLY-ON-SYSTEM.txt')));
+  // PINS CRITERION 8: the session's cwd IS the project's tree on its system.
+  // Nothing is composed, nothing is copied, and the config surface the CLI reads
+  // implicitly is simply the project's own — no allow-list walk decides what it
+  // gets to see.
+  test("the CLI's cwd is the tree on the system, and nothing is composed", async () => {
+    assert.equal(instances.get(instId).cwd, tree);
+    assert.match(await fs.readFile(onSystem('CONVENTIONS.md'), 'utf8'), /^<!-- cc:conventions/);
+    assert.match(await fs.readFile(onSystem('CLAUDE.md'), 'utf8'), /^@CONVENTIONS\.md$/m);
+    // THE WHOLE TREE, not a pulled subset: the file the allow-list walk left
+    // behind is now simply there, because the filesystem decides.
+    assert.equal(await fs.readFile(onSystem('ONLY-ON-SYSTEM.txt'), 'utf8'), 'system side\n');
+    // And NO session root under the store — the geometry is gone, not unused.
+    assert.equal(await exists(path.join(orchStoreRoot(), 'systems', remote.id, 'sessions')), false);
   });
 
   // PINS B4 AT THE SPAWN: a session whose pulled settings turn hooks off is
@@ -181,8 +179,9 @@ describe('a worker session on a remote system', () => {
     const argv = instances.get(instId)._spawnArgv;
     const settings = JSON.parse(argv[argv.indexOf('--settings') + 1]);
     assert.deepEqual(settings.permissions.deny, ['Glob', 'Grep']);
-    assert.match(settings.hooks.PreToolUse[0].matcher, /\bRead\b/);
-    assert.ok(settings.hooks.PostToolUse);
+    assert.doesNotMatch(settings.hooks.PreToolUse[0].matcher, /\bRead\b/,
+      'Read is hooked — the pull it existed for is gone');
+    assert.ok(settings.hooks.PostToolUse, 'the PostToolUse seam is still registered for S3');
   });
 
   // PINS B5: a worker can read its OWN backgrounded command's interim output.
@@ -232,79 +231,8 @@ describe('a worker session on a remote system', () => {
     await assert.rejects(fs.stat(tmpRoot), 'the session-tmp directory is gone');
   });
 
-  // PINS C1: the file-tool grant is the SPECIFIC paths a session needs, not the
-  // whole cc store. With the store root granted, a worker on a remote project
-  // could read AND write `settings.json`, `conventions/*.json`, every other
-  // project's `project.json` and pulled session roots, every session sidecar
-  // store, `shell-env` bundles, plugin manifests — a reviewer proved the write
-  // half by overwriting cc's real convention store.
-  //
-  // Each path below is one a reviewer enumerated live. Asserted through the real
-  // hook endpoint, and for the WRITE direction too: a deny on Read that let
-  // Write through would be the worse half.
-  test('a worker cannot reach cc own store outside its own two grants', async () => {
-    const store = orchStoreRoot();
-    const forbidden = {
-      'app settings': path.join(store, 'settings.json'),
-      'the convention store': path.join(store, 'conventions', 'workspace.json'),
-      'another project metadata': path.join(store, 'projects', 'other', 'project.json'),
-      'a session sidecar store': path.join(store, 'session-titles.json'),
-      'a shell-env bundle': path.join(store, 'shell-env', 'bundle.json'),
-      'another system pulled session root': path.join(store, 'systems', 'other', 'sessions', 'x', 'CLAUDE.md'),
-    };
-    for (const [what, file] of Object.entries(forbidden)) {
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await fs.writeFile(file, '{"real":"content"}');
-      for (const tool of ['Read', 'Write', 'Edit']) {
-        const d = await hook({ tool_name: tool, tool_input: { file_path: file } });
-        assert.equal(d.body.hookSpecificOutput.permissionDecision, 'deny',
-          `${tool} of ${what} (${file}) must be refused`);
-      }
-      // And nothing touched it.
-      assert.equal(await fs.readFile(file, 'utf8'), '{"real":"content"}');
-    }
-  });
 
-  // PINS C1's other half: another session's task output is refused. The comment
-  // at the tmp-root pin claims "one session must not be able to read another's
-  // task output" — measured, a probe read one and was ALLOWED, with a UUID the
-  // orchestrator hands workers via list_sessions as the only separator.
-  test('a worker cannot read another session task output', async () => {
-    const mine = instances.get(instId)._spawnEnv.CLAUDE_CODE_TMPDIR;
-    const theirs = path.join(orchStoreRoot(), 'session-tmp', 'some-other-instance-id');
-    await fs.mkdir(path.join(theirs, 'tasks'), { recursive: true });
-    const file = path.join(theirs, 'tasks', 'abc.output');
-    await fs.writeFile(file, 'another session output\n');
 
-    const d = await hook({ tool_name: 'Read', tool_input: { file_path: file } });
-    assert.equal(d.body.hookSpecificOutput.permissionDecision, 'deny');
-    // Its OWN is still reachable — the grant is per session, not per feature.
-    const ownFile = path.join(mine, 'tasks', 'own.output');
-    await fs.mkdir(path.dirname(ownFile), { recursive: true });
-    await fs.writeFile(ownFile, 'mine\n');
-    const ok = await hook({ tool_name: 'Read', tool_input: { file_path: ownFile } });
-    assert.equal(ok.body.hookSpecificOutput.permissionDecision, 'allow',
-      ok.body.hookSpecificOutput.permissionDecisionReason);
-  });
-
-  // PINS C1's kept grant: the OWNING project's attachments dir stays allowed.
-  // An attachment is a local file the user handed this session, referenced by
-  // absolute path in the prompt (S24) — refusing it would break attachments on
-  // every remote project.
-  test('the owning project attachments dir stays readable, another project does not', async () => {
-    const mine = path.join(attachmentsDir('app', null), 'shot.png');
-    await fs.mkdir(path.dirname(mine), { recursive: true });
-    await fs.writeFile(mine, 'png bytes');
-    const ok = await hook({ tool_name: 'Read', tool_input: { file_path: mine } });
-    assert.equal(ok.body.hookSpecificOutput.permissionDecision, 'allow',
-      ok.body.hookSpecificOutput.permissionDecisionReason);
-
-    const other = path.join(attachmentsDir('someone-else', null), 'shot.png');
-    await fs.mkdir(path.dirname(other), { recursive: true });
-    await fs.writeFile(other, 'png bytes');
-    const no = await hook({ tool_name: 'Read', tool_input: { file_path: other } });
-    assert.equal(no.body.hookSpecificOutput.permissionDecision, 'deny');
-  });
 
   // PINS C3: the tmp root is reclaimed on the paths that ACTUALLY happen, not
   // only on an explicit DELETE. `remove()` had it; a graceful cc shutdown, a
@@ -362,12 +290,13 @@ describe('a worker session on a remote system', () => {
     assert.equal(ran.code, 0, ran.stderr);
     assert.equal(ran.stdout, 'system side\n');
 
-    // And the other direction: a file that exists only in the session root is
-    // NOT visible to the command, because the command is on the other machine.
-    await fs.writeFile(inSession('ONLY-ON-CC.txt'), 'cc side\n');
-    const miss = await hook({ tool_name: 'Bash', tool_input: { command: 'cat ONLY-ON-CC.txt' } });
+    // And the other direction, which is the CLAIM THAT INVERTED: there is no
+    // cc-only side of this directory any more. A path the command cannot see is
+    // one that is not on the system, and cc no longer keeps a second copy of
+    // the tree for a path to hide in.
+    const miss = await hook({ tool_name: 'Bash', tool_input: { command: 'cat NOWHERE-AT-ALL.txt' } });
     const ran2 = await runAsTheCliWould(miss.body.hookSpecificOutput.updatedInput.command, root);
-    assert.notEqual(ran2.code, 0);
+    assert.notEqual(ran2.code, 0, 'a genuinely absent file still fails');
   });
 
   // PINS: quoting survives the rewrite. The command travels through a shell as
@@ -380,9 +309,8 @@ describe('a worker session on a remote system', () => {
     const ran = await runAsTheCliWould(r.body.hookSpecificOutput.updatedInput.command, root);
     assert.equal(ran.code, 0, ran.stderr);
     assert.equal(ran.stdout, expected);
-    // It landed on the SYSTEM, not in the session root.
+    // It landed on the SYSTEM — which is the one and only place it could.
     assert.equal(await fs.readFile(onSystem('out.txt'), 'utf8'), expected);
-    await assert.rejects(fs.readFile(inSession('out.txt')));
   });
 
   // PINS THE PHASE'S POINT: the worker sees output AS IT ARRIVES. The whole
@@ -440,26 +368,6 @@ describe('a worker session on a remote system', () => {
     assert.match(ran.of('err'), /not redirected to a system/);
   });
 
-  // PINS: the full Read → Edit → write-back round trip over the REST hooks,
-  // with the note that says where it landed.
-  test('Read pulls and Edit pushes back, through the hook endpoint', async () => {
-    await fs.writeFile(onSystem('greeting.js'), 'console.log("Hi")\n');
-
-    const read = await hook({ tool_name: 'Read', tool_input: { file_path: inSession('greeting.js') } });
-    assert.equal(read.body.hookSpecificOutput.permissionDecision, 'allow');
-    assert.equal(await fs.readFile(inSession('greeting.js'), 'utf8'), 'console.log("Hi")\n');
-
-    // The CLI applies the edit itself, locally, at that path.
-    await hook({ tool_name: 'Edit', tool_input: { file_path: inSession('greeting.js'), old_string: 'Hi', new_string: 'Hello' } });
-    await fs.writeFile(inSession('greeting.js'), 'console.log("Hello")\n');
-
-    const post = await api(baseUrl, 'POST', `/api/instances/${instId}/hook-callback`, {
-      hook_event_name: 'PostToolUse', tool_use_id: 'tp1', tool_name: 'Edit',
-      tool_input: { file_path: inSession('greeting.js') }, tool_response: {},
-    });
-    assert.match(post.body.hookSpecificOutput.additionalContext, /Saved to/);
-    assert.equal(await fs.readFile(onSystem('greeting.js'), 'utf8'), 'console.log("Hello")\n');
-  });
 
   // PINS: THE MIXED CASE, which the spike measured as the normal one — a Bash
   // write followed by an Edit on the same file. Both changes survive on the
@@ -579,6 +487,56 @@ describe('a worker session on a remote system', () => {
   // locally. It must say files are read and edited at their LOCAL paths and that
   // system paths appear only in command output.
   
+  // PINS THE `inProcess` DEFAULT — the fail-safe polarity, which had no test.
+  // Both STATED directions were pinned (RealClaudeLauncher declares `false`, the
+  // in-process one declares `true`), but every launcher in the tree declares the
+  // field, so `undefined` never occurred at runtime and nothing held the default.
+  // That default is the whole reason the field is optional: a future launcher
+  // class that omits it must get the union, not skip it — skipping would run a
+  // remote worker unwrapped at a path that need not exist on cc's machine, which
+  // is exactly the state deleting CC_FUSE_WORKERS was meant to make unreachable.
+  //
+  // THE MUTATION THIS MUST DIE UNDER: `!inst._launcher.inProcess` →
+  // `inst._launcher.inProcess === false` in the create path. Under it a launcher
+  // with no field attaches no FuseSession and the assertion below fails.
+  //
+  // The stub's `launch` THROWS, so nothing is spawned and no mount is attempted:
+  // the decision under test is made at CREATE, before launch, and the instance
+  // is registered in `byId` before launch runs — so the create failing is how
+  // this stays fast and hermetic rather than something to work around.
+  test('a launcher that declares no inProcess field still gets the union', async () => {
+    const real = instances._claudeLauncher;
+    instances._claudeLauncher = {
+      launch() { throw new Error('stub launcher: nothing is spawned in this case'); },
+    };
+    // Identified by a DELTA of exactly one against the pre-call key set, not by
+    // `.at(-1)`: this describe registers other instances, and a fallback that
+    // took the newest key could read a leftover from an earlier case and pass
+    // for the wrong reason.
+    const idsBefore = new Set(instances.byId.keys());
+    let id = null;
+    try {
+      const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+      // The create is EXPECTED to fail — at the spawn, or earlier at the FUSE
+      // preflight on a host that cannot mount. Either way the decision has
+      // already been made and recorded on the instance, which is registered
+      // before launch runs.
+      const fresh = [...instances.byId.keys()].filter(k => !idsBefore.has(k));
+      assert.equal(fresh.length, 1,
+        `exactly one instance should have been registered, got ${fresh.length}: ${JSON.stringify(r.body)}`);
+      id = fresh[0];
+      const inst = instances.byId.get(id);
+      assert.notEqual(inst._fuse, null,
+        'a launcher with no `inProcess` field ran a remote worker with NO union');
+      // And the control half, so this is about the field and not about remoteness:
+      // the same project on a launcher that DOES declare `inProcess` gets none.
+      assert.equal(inst._redirect === null, false, 'the session was not redirected at all');
+    } finally {
+      instances._claudeLauncher = real;
+      if (id) { try { await instances.remove(id); } catch { /* the create already failed */ } }
+    }
+  });
+
   test('a remote project discloses its system, and a local one says nothing', async () => {
     const doc = await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } });
     const block = doc.split('# Workspace conventions')[0];
@@ -587,30 +545,34 @@ describe('a worker session on a remote system', () => {
     assert.match(block, /^# System$/m);
     assert.match(block, /\/app.*prod-box/s);
     assert.match(block, /Bash.*run/s);
-    // The correction: local paths for reading and editing, and a prohibition on
-    // opening a system path. A doc that says the opposite is worse than saying
-    // nothing.
+    // THE CORRECTION, and its subject changed with the geometry: the CLI is
+    // chrooted at the system path, so that path IS the working directory. A
+    // prohibition on using it — which is what this doc used to carry — would
+    // forbid the only path that works.
     assert.match(block, /working directory/);
-    assert.match(block, /never at their `\/app` paths/);
-    assert.ok(!/Read `?\/app/.test(block), 'it never suggests reading a system path');
+    assert.match(block, /same path/);
+    assert.ok(!/never at their/.test(block),
+      'the doc still forbids the system path, which is now the working directory');
   
     const local = await composeProjectConventionsDoc([]);
     assert.ok(!/^# System$/m.test(local), 'a local project carries no such section');
   });
   
-  // PINS S5: the pair says nothing false. The earlier wording claimed a system
-  // path "appears only in command output" — and cc's own PostToolUse note puts
-  // one on a tool RESULT ("Saved to /app/… on system '<id>'."), which is not
-  // command output. A worker holding a false statement from its system prompt
-  // has to decide which of the two to trust.
-  test('the disclosure does not claim system paths appear only in command output', async () => {
+  // PINS S5: the pair says nothing false. This is a SYSTEM PROMPT — a worker
+  // holding a false statement from it has to decide which of the two to trust —
+  // and every wording this sentence has had was falsified by a later change, so
+  // the claims it must not make are pinned rather than only the ones it makes.
+  test('the disclosure makes no claim the geometry has falsified', async () => {
     const block = (await composeProjectConventionsDoc([], { system: { id: 'prod-box', path: '/app' } }))
       .split('# Workspace conventions')[0];
+    // Two dead wordings: "appears only in command output", and the local/system
+    // path split that the chroot collapsed.
     assert.ok(!/only in command output/.test(block), block);
-    // The behavioural half survives: never open a system path, and it names the
-    // same file as its local counterpart.
-    assert.match(block, /never/i);
-    assert.match(block, /same file/);
+    assert.ok(!/local path/i.test(block), block);
+    // And it does not claim there is a second spelling to prefer.
+    assert.ok(!/never at their/.test(block), block);
+    // The behavioural half: one path, named as such.
+    assert.match(block, /same path/);
   });
 
   // PINS A DELETION, WHICH IS THE ONLY WAY A DELETION FROM A SYSTEM PROMPT STAYS
@@ -681,7 +643,7 @@ describe('a worker session on a system serving many targets', () => {
     const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     instId = r.body.id;
-    root = sessionRootPath(remote.id, 'app', null);
+    root = tree;
     await waitFor(() => instances.get(instId).status === 'idle');
   });
 

@@ -21,7 +21,6 @@ import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs
 import { seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject } from '../src/projects.ts';
-import { composeSessionRoot } from '../src/systems/sessionRoot.ts';
 import { addSystem, updateSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles, systemById, systemHandleGeneration } from '../src/systems/registry.ts';
 
@@ -271,12 +270,14 @@ describe('a live session across an argv swap', () => {
     assert.ok(hellosBefore > 0, 'the gen1 provider really was launched to serve the baseline');
     await updateSystem('box', { launch: gen2Launch() });
 
-    // It throws at its opening `system.mirror()` → `ensureUp()`, before the
-    // target check and before any pull, so nothing of the pre-swap machine's
-    // config surface reaches the new root.
-    await assert.rejects(() => composeSessionRoot(inst._redirectPlacement),
+    // The advertisement is the first thing a relaunch asks the retained handle
+    // for — `launch()`'s re-advertisement check, which is what would otherwise
+    // let a session continue against a machine that is no longer the one it
+    // started on. It throws at `ensureUp()`, so nothing of the pre-swap
+    // machine's answer is used.
+    await assert.rejects(() => inst._redirectPlacement.system.mirror(),
       (e) => e.code === 'ETRANSPORT',
-      'recomposition refuses on the retained handle rather than re-pulling from MACHINE A');
+      'the retained handle refuses rather than reaching MACHINE A again');
     assert.equal(await hellos(recA), hellosBefore,
       'the gen1 provider command was never launched a second time');
   });
