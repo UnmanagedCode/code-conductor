@@ -62,7 +62,7 @@ export const PROTOCOL_ERROR_CODES = [
 ] as const;
 
 export const FS_ERROR_CODES = [
-  'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC',
+  'ENOENT', 'EACCES', 'EEXIST', 'ENOTDIR', 'EISDIR', 'ENOSPC', 'ENOTEMPTY',
   // The catch-all. It carries the exit code and the RAW stderr verbatim and is
   // surfaced to the user: cc never guesses silently at a message it does not
   // know.
@@ -115,6 +115,11 @@ const STDERR_TABLE: ReadonlyArray<readonly [string, FsErrorCode]> = [
   ['Not a directory', 'ENOTDIR'],
   ['Is a directory', 'EISDIR'],
   ['No space left on device', 'ENOSPC'],
+  // `removeEntry` is NON-RECURSIVE, so this is the answer a caller acts on
+  // rather than a surprise: the mirror may be sparser than the source, and a
+  // directory whose source copy still holds children the worker never
+  // enumerated must fail the op instead of taking them with it.
+  ['Directory not empty', 'ENOTEMPTY'],
 ];
 
 export function classifyStderr(stderr: string): FsErrorCode {

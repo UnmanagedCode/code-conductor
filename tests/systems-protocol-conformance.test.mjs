@@ -428,11 +428,20 @@ for (const config of CAPABILITY_CONFIGS) {
       await fs.writeFile(path.join(dir, 'a file with spaces'), 'x');
       await fs.symlink(path.join(dir, 'sub'), path.join(dir, 'lnk'));
       const entries = (await sys.readDir(dir)).sort((x, y) => x.name.localeCompare(y.name));
-      assert.deepEqual(entries, [
-        { name: 'a file with spaces', kind: 'file' },
-        { name: 'lnk', kind: 'symlink' },
-        { name: 'sub', kind: 'dir' },
-      ], 'a symlink is reported as one, matching fs.readdir(withFileTypes)');
+      assert.deepEqual(entries.map(({ name, kind, target }) => ({ name, kind, target })), [
+        { name: 'a file with spaces', kind: 'file', target: null },
+        { name: 'lnk', kind: 'symlink', target: path.join(dir, 'sub') },
+        { name: 'sub', kind: 'dir', target: null },
+      ], 'a symlink is reported as one WITH ITS TARGET, matching fs.readdir(withFileTypes) plus fs.readlink');
+      // ONE ROUND TRIP CARRIES THE WHOLE ENTRY. A listing that reported name
+      // and kind alone would cost 1 + N round trips to answer the same
+      // question, which across a wire is N latencies.
+      const real = await fs.lstat(path.join(dir, 'a file with spaces'));
+      assert.deepEqual(entries[0], {
+        name: 'a file with spaces', kind: 'file', target: null,
+        size: real.size, mode: (real.mode & 0o7777) | 0o100000, mtimeMs: Math.round(real.mtimeMs),
+      });
+      assert.equal(entries[2].mode & 0o170000, 0o040000, 'a directory carries its type bits too');
       await assert.rejects(() => sys.readDir(path.join(dir, 'a file with spaces')),
         (e) => expectCode(e, 'ENOTDIR', 'readDir of a file'),
         'a file must not read as an empty directory');
@@ -441,15 +450,109 @@ for (const config of CAPABILITY_CONFIGS) {
     });
   });
 
-  test(`${tag} a filename containing a newline is an ERROR, never a silently dropped entry`, async () => {
+  test(`${tag} a filename containing a newline OR A TAB is an ERROR, never a silently dropped entry`, async () => {
     await withSystem(config.flags, async (sys, root) => {
-      const dir = path.join(root, 'weird');
-      await fs.mkdir(dir);
-      await fs.writeFile(path.join(dir, 'plain'), 'x');
-      await fs.writeFile(path.join(dir, 'two\nlines'), 'x');
-      await assert.rejects(() => sys.readDir(dir),
-        (e) => expectCode(e, 'EUNKNOWN', 'a listing cc cannot parse'),
-        'a listing that quietly drops an entry is indistinguishable from one that does not have it');
+      // TWO DIRECTIONS, because the widened `-printf` is parsed by FIELD COUNT:
+      // a newline gives too few fields and a tab gives too many, and a guard
+      // that checked only one bound would let the other through as a
+      // MISATTRIBUTED entry — a name read as a mode, silently.
+      for (const bad of ['two\nlines', 'two\ttabs']) {
+        const dir = path.join(root, `weird-${bad.length}`);
+        await fs.mkdir(dir);
+        await fs.writeFile(path.join(dir, 'plain'), 'x');
+        await fs.writeFile(path.join(dir, bad), 'x');
+        await assert.rejects(() => sys.readDir(dir),
+          (e) => expectCode(e, 'EUNKNOWN', `a listing cc cannot parse (${JSON.stringify(bad)})`),
+          'a listing that quietly drops an entry is indistinguishable from one that does not have it');
+      }
+    });
+  });
+
+  // ── lstat, readlink, symlink, removeEntry: the union transport's four ────
+  test(`${tag} lstat reports a SYMLINK as one, with its target, where stat cannot`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      const f = path.join(root, 'f');
+      await fs.writeFile(f, 'abcdef');
+      await fs.chmod(f, 0o640);
+      await fs.symlink('relative/target', path.join(root, 'link'));
+      await fs.symlink(path.join(root, 'gone'), path.join(root, 'broken'));
+
+      const real = await fs.lstat(f);
+      assert.deepEqual(await sys.lstat(f), {
+        kind: 'file', size: 6, mode: 0o100640, mtimeMs: Math.round(real.mtimeMs), target: null,
+      }, 'a FULL mode — permission bits from %m, type bits from the kind');
+
+      const link = await sys.lstat(path.join(root, 'link'));
+      assert.equal(link.kind, 'symlink', 'stat follows and would say "file"; lstat must not');
+      assert.equal(link.target, 'relative/target');
+      assert.equal(link.mode & 0o170000, 0o120000);
+      // A BROKEN LINK IS PRESENT, and that is the whole difference from `stat`,
+      // whose `-L` reports it absent.
+      assert.equal((await sys.lstat(path.join(root, 'broken'))).kind, 'symlink');
+      assert.equal(await sys.stat(path.join(root, 'broken')), null);
+
+      assert.equal((await sys.lstat(root)).kind, 'dir');
+      assert.equal(await sys.lstat(path.join(root, 'nope')), null, 'ABSENCE IS A VALUE');
+      assert.equal(await sys.lstat(path.join(f, 'x')), null,
+        'and a non-directory component is absence too — there is no entry there');
+    });
+  });
+
+  test(`${tag} readlink, symlink and removeEntry are derived and behave like fs`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      const p = (rel) => path.join(root, rel);
+      await sys.symlink('first', p('sl'));
+      assert.equal(await sys.readlink(p('sl')), 'first');
+      // -f: REPLACES. Without it the second call is EEXIST and every re-link
+      // in the union's reconcile fails.
+      await sys.symlink('second', p('sl'));
+      assert.equal(await sys.readlink(p('sl')), 'second');
+      await fs.writeFile(p('plain'), 'x');
+      await sys.symlink('third', p('plain'));
+      assert.equal(await sys.readlink(p('plain')), 'third');
+      await assert.rejects(() => sys.readlink(p('nope')),
+        (e) => expectCode(e, 'ENOENT', 'readlink of a missing path'));
+
+      // removeEntry: ONE entry, never recursing, never following.
+      await fs.writeFile(p('victim'), 'x');
+      await sys.removeEntry(p('victim'));
+      assert.equal(await sys.lstat(p('victim')), null);
+      await fs.mkdir(p('target'));
+      await sys.symlink(p('target'), p('alias'));
+      await sys.removeEntry(p('alias'));
+      assert.equal(await sys.lstat(p('alias')), null);
+      assert.equal((await sys.lstat(p('target'))).kind, 'dir', 'the link went, the target stayed');
+      await sys.removeEntry(p('target'));
+      assert.equal(await sys.lstat(p('target')), null, 'an EMPTY directory goes');
+
+      await fs.mkdir(p('full'));
+      await fs.writeFile(p('full/kid'), 'x');
+      await assert.rejects(() => sys.removeEntry(p('full')),
+        (e) => expectCode(e, 'ENOTEMPTY', 'removeEntry of a non-empty directory'));
+      // ASSERTED AFTER THE REFUSAL: an `rm -rf` in disguise refuses nothing.
+      assert.deepEqual((await sys.readDir(p('full'))).map(e => e.name), ['kid']);
+
+      // AN ABSENT ENTRY IS THE DECLARED INTENT ALREADY MET — "hold nothing at
+      // p" — so this RESOLVES rather than raising ENOENT.
+      await sys.removeEntry(p('never-existed'));
+    });
+  });
+
+  test(`${tag} writeFileBytes carries a byte a UTF-8 round trip does not survive`, async () => {
+    await withSystem(config.flags, async (sys, root) => {
+      const p = path.join(root, 'bin');
+      const bytes = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x0a, 0x00, 0x80, 0xc3]);
+      await sys.writeFileBytes(p, bytes, { atomic: true, mode: 0o750 });
+      assert.deepEqual(await fs.readFile(p), bytes,
+        'the wire already carries base64 of raw bytes; only cc converting on the way in ever mangled them');
+      assert.deepEqual(await sys.readFileBytes(p), bytes);
+      assert.equal((await fs.stat(p)).mode & 0o7777, 0o750,
+        'and the mode rides the atomic write, so the rename does not reset it');
+      // The control that makes the claim above non-vacuous: the same bytes
+      // through the STRING write come back mangled, which is why the byte
+      // entry point exists at all.
+      await sys.writeFile(path.join(root, 'txt'), bytes.toString('utf8'));
+      assert.notDeepEqual(await fs.readFile(path.join(root, 'txt')), bytes);
     });
   });
 
@@ -646,12 +749,25 @@ test('a provider that does not advertise remotes is never handed a remoteId', { 
 });
 
 test('parseFindLines refuses a malformed entry rather than skipping it', () => {
-  assert.deepEqual(parseFindLines('f\ta\nd\tb\n', '/d'), [
-    { name: 'a', kind: 'file' }, { name: 'b', kind: 'dir' },
+  // `%y\t%m\t%s\t%T@\t%l\t%f` — kind, perms, size, mtime, link target, NAME LAST.
+  assert.deepEqual(parseFindLines('f\t644\t3\t1700000000.5\t\ta\nd\t755\t4096\t1700000001\t\tb\n', '/d'), [
+    { name: 'a', kind: 'file', size: 3, mode: 0o100644, mtimeMs: 1700000000500, target: null },
+    { name: 'b', kind: 'dir', size: 4096, mode: 0o040755, mtimeMs: 1700000001000, target: null },
   ]);
-  assert.deepEqual(parseFindLines('p\tfifo\n', '/d'), [{ name: 'fifo', kind: 'other' }],
-    'an entry that is neither file, dir nor symlink is "other", not a parse failure');
-  assert.throws(() => parseFindLines('f\tone\nstray line\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  assert.deepEqual(parseFindLines('l\t777\t7\t1700000000\tsome/where\tlnk\n', '/d'),
+    [{ name: 'lnk', kind: 'symlink', size: 7, mode: 0o120777, mtimeMs: 1700000000000, target: 'some/where' }],
+    'the target rides the SAME record, so a listing costs one round trip and not 1 + N');
+  assert.deepEqual(parseFindLines('p\t644\t0\t1700000000\t\tfifo\n', '/d'),
+    [{ name: 'fifo', kind: 'other', size: 0, mode: 0o644, mtimeMs: 1700000000000, target: null }],
+    'an entry that is neither file, dir nor symlink is "other", not a parse failure — and carries no type bits');
+  // BOTH BOUNDS, because the guard is a field COUNT: a newline gives too few
+  // and a tab too many, and either would misattribute a name to another field.
+  assert.throws(() => parseFindLines('f\t644\t3\t1\t\tone\nstray line\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  assert.throws(() => parseFindLines('f\t644\t3\t1\t\ttwo\ttabs\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  // A field that is present but not a number is a parse failure too, not a NaN
+  // that flows into a mirror as a size or a mode.
+  assert.throws(() => parseFindLines('f\tzzz\t3\t1\t\ta\n', '/d'), (e) => e.code === 'EUNKNOWN');
+  assert.throws(() => parseFindLines('f\t644\tbig\t1\t\ta\n', '/d'), (e) => e.code === 'EUNKNOWN');
 });
 
 // ── describeRemote: the mirror advertisement (§2.1) ──────────────────
