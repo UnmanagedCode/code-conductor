@@ -360,6 +360,16 @@ describe('the compiled policy driver', { skip }, () => {
     }
     assert.match(bodyOf('rename'), /abandon_claim\(from[\s\S]*abandon_claim\(to/,
       'pt_rename releases only one of the two claims it takes');
+    // WHAT THIS LOOP IS AND IS NOT. It is a PRESENCE grep: b16 proves what an
+    // abandon does, and the real-gate arms exercise one end to end without ever
+    // observing the release. So a future claiming op with a post-READY failure
+    // path that forgets its abandon is caught by nothing here except the name
+    // being absent from its body. No live gap — every claiming op's failure
+    // paths were re-enumerated at this tree — but a weakness of the record, and
+    // one that only bites daemon-side: cc's `#fetch` wrapper releases on any
+    // non-READY reply, so the whole FETCH-side class is backstopped
+    // behaviourally whatever union.c does. See PROVENANCE.md, "what is measured
+    // where".
 
     // ── THE FLAG IS PINNED WHERE IT IS PRODUCED ─────────────────────────────
     //
