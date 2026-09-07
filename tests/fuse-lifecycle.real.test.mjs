@@ -922,11 +922,25 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         assert.match(sx.stdout, /Operation not supported/, `setxattr was accepted: ${sx.stdout}`);
       }
 
+      // A DIRECTORY RENAME REFUSES, and the control below is what makes it a
+      // rule about directories rather than about renames: the file rename
+      // above landed.
+      await fs.mkdir(onSystem('r7-dir-from'), { recursive: true });
+      await fs.writeFile(path.join(onSystem('r7-dir-from'), 'child.txt'), 'INSIDE\n');
+      const dmv = await marked('exec mv "$2" "$3" 2>&1',
+        inChroot('r7-dir-from'), inChroot('r7-dir-to'));
+      assert.match(dmv.stdout, /Operation not supported/,
+        `a directory rename was accepted: ${dmv.stdout} ${dmv.stderr}`);
+      // AND THE SUBTREE IS INTACT — the refusal happens BEFORE the mirror is
+      // touched, so the source keeps both the directory and its children.
+      assert.equal(await fs.readFile(path.join(onSystem('r7-dir-from'), 'child.txt'), 'utf8'), 'INSIDE\n');
+      await assert.rejects(() => fs.access(onSystem('r7-dir-to')));
+
       // Each refusal is in the log by name, so the pin-derivation instrument
       // sees them rather than only the caller.
       const refusals = await refusalsOf(inst.id);
       const notReconcilable = refusals.filter(r => r[2] === 'not-reconcilable').map(r => r[0]);
-      const want = ['chown', 'link', 'mknod'];
+      const want = ['chown', 'link', 'mknod', 'rename'];
       if (/Operation not supported/.test(sx.stdout)) want.push('setxattr');
       assert.deepEqual([...new Set(notReconcilable)].sort(), want.sort());
     } finally {

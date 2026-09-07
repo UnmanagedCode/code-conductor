@@ -18,7 +18,7 @@ import path from 'node:path';
 import { promises as fsp, constants as fsc } from 'node:fs';
 import { withinPosix } from '../mirror.ts';
 import { resolveTierEntry, type TierEntry } from './tierTable.ts';
-import type { RemoteSource } from './remoteSource.ts';
+import { isSourceError, type RemoteSource } from './remoteSource.ts';
 
 // ── the frame codec ─────────────────────────────────────────────────────────
 //
@@ -38,11 +38,18 @@ export const CCU_MAX_PATH = 4096;
 
 export const CCU_OP = { STAT: 1, LIST: 2, FETCH: 3, DIRTY: 4 } as const;
 export const CCU_STATUS = { READY: 0, ABSENT: 1, REFUSED: 2 } as const;
-export const CCU_FLAG_FOR_CREATE = 0x01;
+// OP-SCOPED BITS in one flags byte — each is meaningful for exactly one op, and
+// policy.h carries the same table. They exist because cc cannot tell the
+// worker's intent from its own cache management, so the intent is declared.
+export const CCU_FLAG_FOR_CREATE = 0x01;   // FETCH: the caller will CREATE `path`
+export const CCU_FLAG_FOR_WRITE  = 0x02;   // FETCH: the caller will MUTATE it
+export const CCU_FLAG_REMOVED    = 0x04;   // DIRTY: the worker REMOVED the entry
 
 export interface ControlRequest {
   op: number;
   forCreate: boolean;
+  forWrite: boolean;
+  removed: boolean;
   path: string;
 }
 
@@ -69,6 +76,8 @@ export function decodeRequests(buf: Buffer): DecodeResult {
     frames.push({
       op,
       forCreate: (flags & CCU_FLAG_FOR_CREATE) !== 0,
+      forWrite: (flags & CCU_FLAG_FOR_WRITE) !== 0,
+      removed: (flags & CCU_FLAG_REMOVED) !== 0,
       path: buf.toString('utf8', off + CCU_REQ_HDR, off + CCU_REQ_HDR + pathlen),
     });
     off += CCU_REQ_HDR + pathlen;
@@ -151,7 +160,42 @@ export class ControlServer {
   // distinguishes "created here, not pushed yet" from "deleted on the source" —
   // the mirror alone cannot tell them apart. Self-healing: an entry whose
   // mirror file has since gone is dropped rather than trusted.
-  #local = new Set<string>();
+  // THE CLAIM RECORD, and it is the whole of the intent-declaration fix.
+  //
+  // The mirror is BOTH a cache cc creates, truncates, re-shapes and removes at
+  // will AND the statement of what the worker did — two roles in direct
+  // conflict, because cc cannot tell its own cache management from the worker's
+  // intent. A path is CLAIMED from the `FETCH` that says the caller will mutate
+  // it until the `DIRTY` that says what happened, and while claimed cc stops
+  // being a cache for it: no `#shape`, no truncate, no `#unmirror`, no re-copy,
+  // and no ghost-removal from a parent `LIST`.
+  //
+  // `createdHere` is the older half (a file that exists in the mirror alone, so
+  // an absent source entry is not the source having deleted it) folded into the
+  // same record rather than kept as a second one — their lifetimes are
+  // identical.
+  //
+  // WHAT RELEASES A CLAIM, in full, because a claim that outlives its handle is
+  // a leak with cc's cache disabled underneath it:
+  //   1. the op's own DIRTY, whether it succeeds or fails. Once the reconcile
+  //      has been ATTEMPTED and answered, the window is over and the worker has
+  //      the outcome; holding the claim past that is the sticky behaviour that
+  //      is deliberately 2026-0356's.
+  //   2. `abandon_claim` in the daemon, for an op that took a claim and then
+  //      failed before mutating — otherwise no DIRTY would ever arrive.
+  //   3. this server being dropped. `FuseSession.teardown()` closes it, sets
+  //      `#control = null`, and `runTeardown` then `rm -rf`s the run directory
+  //      including the mirror, so the map and the files it protects die
+  //      together. No claim survives a session.
+  #claimed = new Map<string, { createdHere: boolean }>();
+
+  // Set once `close()` starts. A handler that has already been dequeued must
+  // not act on a mirror that is about to be removed: teardown deletes the run
+  // directory, and a DIRTY running across that would see an absent mirror
+  // entry. It cannot mean a deletion any more (that is declared now), but it
+  // would still fail the op for the wrong reason, and a LIST would unmirror
+  // paths under a directory that is being deleted anyway.
+  #closing = false;
 
   private constructor(server: net.Server, opts: ControlServerOptions) {
     this.#server = server;
@@ -183,7 +227,26 @@ export class ControlServer {
   // Destroys every live connection FIRST. A daemon blocked on a reply then sees
   // the stream end and turns the op into -EIO at once, which is what lets its
   // threads leave FUSE instead of sitting out the receive timeout.
+  // CLOSING IS A DRAIN, NOT A SLAM. Destroying the sockets stops new frames but
+  // does NOT stop a handler that has already been dequeued — and teardown's
+  // next act is `rm -rf` of the run directory. A DIRTY still running across
+  // that would find the mirror gone and fail the op for a reason that has
+  // nothing to do with the worker; a LIST would unmirror paths under a
+  // directory being deleted anyway. So: refuse anything not yet started, then
+  // WAIT for what is in flight before returning to the caller that is about to
+  // delete the tree.
   async close(): Promise<void> {
+    // ORDER MATTERS, and it is: refuse, DRAIN, then destroy.
+    //
+    // `#closing` makes every frame not yet started answer REFUSED/EIO at once,
+    // so a daemon thread blocked on a reply gets a real errno and leaves FUSE —
+    // which is what destroying the sockets first used to achieve, except that
+    // it also reset the connection under handlers that were mid-flight, so
+    // their replies never reached the worker. Draining before the destroy means
+    // an op that was already running is ANSWERED, and the caller that is about
+    // to `rm -rf` the run directory waits for it.
+    this.#closing = true;
+    await Promise.allSettled([...this.#inflight.values()]);
     for (const sock of [...this.#conns]) sock.destroy();
     this.#conns.clear();
     await new Promise<void>((resolve) => this.#server.close(() => resolve()));
@@ -232,6 +295,9 @@ export class ControlServer {
   }
 
   async #handle(req: ControlRequest): Promise<Buffer> {
+    // TEARDOWN AUTHORITY. A vanished mirror root means "cc has no authority
+    // here" and must never be read as an authoritative answer about the source.
+    if (this.#closing) return encodeReply(CCU_STATUS.REFUSED, EIO);
     const dest = this.#mirrorPath(req.path);
     if (dest === null) return encodeReply(CCU_STATUS.REFUSED, EACCES);
     if (!this.#servable(req.path)) {
@@ -242,8 +308,8 @@ export class ControlServer {
       switch (req.op) {
         case CCU_OP.STAT:  return await this.#stat(req.path, dest);
         case CCU_OP.LIST:  return await this.#list(req.path, dest);
-        case CCU_OP.FETCH: return await this.#fetch(req.path, dest, req.forCreate);
-        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest);
+        case CCU_OP.FETCH: return await this.#fetch(req.path, dest, req.forCreate, req.forWrite);
+        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed);
         default:
           this.#opts.log?.(`cc-union control: unknown op ${req.op} for '${req.path}'`);
           return encodeReply(CCU_STATUS.REFUSED, EIO);
@@ -259,36 +325,59 @@ export class ControlServer {
   // listing costs no transfer. The bytes arrive on FETCH.
   async #stat(p: string, dest: string): Promise<Buffer> {
     const st = await this.#opts.source.stat(p);
+    // THE SOURCE COULD NOT BE ASKED. Refusing here is what keeps a transient
+    // EMFILE from unmirroring a live entry — and, once a writable handle is
+    // open on it, from destroying bytes the worker has not pushed.
+    if (isSourceError(st)) return this.#sourceFailed('STAT', p, st.error);
     if (st === null) {
-      if (await this.#localOnly(p, dest)) return encodeReply(CCU_STATUS.READY, 0);
+      if (await this.#createdHereHolds(p, dest)) return encodeReply(CCU_STATUS.READY, 0);
+      // A CLAIMED path the source does not have is the state between a create
+      // or an unlink and its reconcile — report it from the mirror rather than
+      // removing the entry the worker is holding.
+      if (this.#claimHeld(p)) {
+        return (await this.#exists(dest))
+          ? encodeReply(CCU_STATUS.READY, 0)
+          : encodeReply(CCU_STATUS.ABSENT, ENOENT);
+      }
       await this.#unmirror(dest);
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
+    }
+    if (this.#claimHeld(p)) {
+      return (await this.#exists(dest))
+        ? encodeReply(CCU_STATUS.READY, 0)
+        : encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
     await this.#shape(dest, st.kind, st.size, st.mode, st.mtimeMs, st.target);
     return encodeReply(CCU_STATUS.READY, 0);
   }
 
   async #list(p: string, dest: string): Promise<Buffer> {
-    const children = await this.#opts.source.list(p);
-    if (children === null) {
+    const kids = await this.#opts.source.list(p);
+    // A SINGLE FAILED readdir USED TO UNMIRROR THE WHOLE DIRECTORY, and every
+    // pending writable release under it then removed its own source file.
+    if (isSourceError(kids)) return this.#sourceFailed('LIST', p, kids.error);
+    if (kids === null) {
+      if (this.#claimHeld(p)) return encodeReply(CCU_STATUS.READY, 0);
       await this.#unmirror(dest);
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
     await fsp.mkdir(dest, { recursive: true });
-    // A CHILD THE DAEMON WOULD NOT SERVE IS NOT SHAPED, so an excluded path's
-    // name and metadata never reach this machine and never reach the parent's
-    // listing. `union.c`'s readdir suppresses the same classes on the way out;
-    // this is the half that keeps them from being written down at all.
-    const servable = children.filter(c => this.#servable(path.posix.join(p, c.name)));
-    const want = new Set(servable.map(c => c.name));
-    for (const c of servable) {
+    const want = new Set<string>();
+    for (const c of kids) {
+      const child = path.posix.join(p, c.name);
+      // The daemon serves only `project` content from the mirror, so shaping
+      // anything else would put a name in the listing the daemon answers about
+      // from elsewhere — or, for an excluded prefix, would materialise its very
+      // existence and size here. Pinned children are added by the daemon's own
+      // readdir, from the same table.
+      if (!this.#servable(child)) continue;
+      want.add(c.name);
+      if (this.#claimHeld(child)) continue;
       await this.#shape(path.posix.join(dest, c.name), c.kind, c.size, c.mode, c.mtimeMs, c.target);
     }
-    // REMOVE WHAT THE SOURCE NO LONGER HAS, or readdir shows ghosts: a file
-    // deleted on the remote would keep appearing until the session ended.
-    for (const name of await fsp.readdir(dest)) {
-      // A child this session created and has not pushed is NOT a ghost.
-      if (!want.has(name) && !this.#local.has(path.posix.join(p, name))) {
+    for (const name of await fsp.readdir(dest).catch(() => [] as string[])) {
+      const child = path.posix.join(p, name);
+      if (!want.has(name) && !this.#claimHeld(child)) {
         await this.#unmirror(path.posix.join(dest, name));
       }
     }
@@ -301,25 +390,37 @@ export class ControlServer {
   //
   // WHAT THAT DOES NOT COVER, stated here because the sentence used to claim
   // more: it is freshness against the SOURCE, not isolation from this session.
-  // A second FETCH of a path another handle is mid-write on would copy over
-  // its unpushed bytes — the claim record is what stops that, not this.
+  // A CLAIMED path is skipped entirely — a second handle on a path a writer is
+  // mid-write on shares the mirror inode and sees the in-progress bytes, which
+  // is ordinary POSIX and a deliberate, narrow consequence of the claim.
   //
   // `forCreate` means the caller is about to create the path, so the PARENT is
-  // what has to exist.
-  async #fetch(p: string, dest: string, forCreate: boolean): Promise<Buffer> {
+  // what has to exist. `forWrite` means the caller will mutate it, so cc stops
+  // being a cache for it until the matching DIRTY.
+  async #fetch(p: string, dest: string, forCreate: boolean, forWrite: boolean): Promise<Buffer> {
+    // AN ALREADY-CLAIMED PATH IS NOT RE-MATERIALISED — that is the second
+    // handle copying over the first's unpushed bytes. But the FETCH that TAKES
+    // the claim must still materialise: a worker opening an existing file for
+    // write needs its current contents. So the check reads the state BEFORE
+    // this frame's own claim is recorded.
+    if (this.#claimHeld(p)) return encodeReply(CCU_STATUS.READY, 0);
+    if (forWrite) this.#claimed.set(p, { createdHere: false });
     if (forCreate) {
       const parent = await this.#opts.source.stat(path.posix.dirname(p));
+      if (isSourceError(parent)) return this.#sourceFailed('FETCH', p, parent.error);
       if (parent === null) return encodeReply(CCU_STATUS.ABSENT, ENOENT);
       await fsp.mkdir(path.posix.dirname(dest), { recursive: true });
       // The path itself may legitimately not exist yet; an absent source entry
       // is not a refusal here, the create will make it — and cc records that it
       // is about to exist in the mirror alone.
       const self = await this.#opts.source.stat(p);
-      if (self === null) { this.#local.add(p); return encodeReply(CCU_STATUS.READY, 0); }
+      if (isSourceError(self)) return this.#sourceFailed('FETCH', p, self.error);
+      if (self === null) { this.#claimed.set(p, { createdHere: true }); return encodeReply(CCU_STATUS.READY, 0); }
     }
     const st = await this.#opts.source.stat(p);
+    if (isSourceError(st)) return this.#sourceFailed('FETCH', p, st.error);
     if (st === null) {
-      if (await this.#localOnly(p, dest)) return encodeReply(CCU_STATUS.READY, 0);
+      if (await this.#createdHereHolds(p, dest)) return encodeReply(CCU_STATUS.READY, 0);
       await this.#unmirror(dest);
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
@@ -334,11 +435,39 @@ export class ControlServer {
 
   // READY MEANS CC HAS TAKEN OWNERSHIP OF THE PUSH, NOT THAT THE PUSH LANDED
   // — the awaiting half is 2026-0356's. What READY does mean here is that the
-  // copy completed, so a failure is still reported rather than swallowed.
-  async #dirty(p: string, dest: string): Promise<Buffer> {
-    const r = await this.#opts.source.push(dest, p);
-    if (r === 'ok') { this.#local.delete(p); return encodeReply(CCU_STATUS.READY, 0); }
+  // copy completed, so a failure is still reported rather than swallowed, and
+  // the daemon answers it to the worker's `close(2)` through `flush`.
+  //
+  // `removed` IS THE INTENT, DECLARED. An absent mirror entry is never read as
+  // a deletion: it is either an op that already reconciled the path (the claim
+  // is gone, so there is nothing owed) or cc's own cache having lost something
+  // it was holding for a worker — which refuses rather than deleting.
+  async #dirty(p: string, dest: string, removed: boolean): Promise<Buffer> {
+    const claimed = this.#claimed.has(p);
+    let r: 'ok' | { error: string };
+    if (removed) {
+      r = await this.#opts.source.remove(p);
+    } else if (!(await this.#exists(dest))) {
+      if (!claimed) { this.#claimed.delete(p); return encodeReply(CCU_STATUS.READY, 0); }
+      r = { error: `the mirror holds nothing at '${p}', and this session claimed it` };
+    } else {
+      r = await this.#opts.source.push(dest, p);
+    }
+    // RELEASED EITHER WAY. The reconcile has been attempted and answered, so
+    // the window the claim protects is over; keeping it would leave cc's cache
+    // off for the rest of the session.
+    this.#claimed.delete(p);
+    if (r === 'ok') return encodeReply(CCU_STATUS.READY, 0);
     this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
+    return encodeReply(CCU_STATUS.REFUSED, EIO);
+  }
+
+  async #exists(dest: string): Promise<boolean> {
+    try { await fsp.lstat(dest); return true; } catch { return false; }
+  }
+
+  #sourceFailed(op: string, p: string, err: string): Buffer {
+    this.#opts.log?.(`cc-union control: ${op} '${p}' could not reach the source: ${err}`);
     return encodeReply(CCU_STATUS.REFUSED, EIO);
   }
 
@@ -348,14 +477,24 @@ export class ControlServer {
     return resolveTierEntry(this.#opts.tiers, p)?.tier === 'project';
   }
 
-  // 1 = the mirror is holding a file this session created and has not pushed,
-  // so an absent source entry is not the source having deleted it. Drops the
-  // record when the mirror entry has since gone — a locally created file that
-  // was then unlinked leaves nothing to push and nothing to protect.
-  async #localOnly(p: string, dest: string): Promise<boolean> {
-    if (!this.#local.has(p)) return false;
+  // 1 = the worker holds a claim, so cc must not manage this path as a cache.
+  // A PLAIN MAP LOOKUP, with no filesystem probe: the whole point of the claim
+  // is that mirror state stops being evidence about intent while it is held,
+  // so consulting the mirror to decide whether the claim is live would put the
+  // inference straight back. A claimed path whose mirror entry is absent is the
+  // ordinary state between an `unlink` and its `DIRTY`.
+  #claimHeld(p: string): boolean {
+    return this.#claimed.has(p);
+  }
+
+  // 1 = the mirror is holding something this session CREATED and has not
+  // pushed, so an absent SOURCE entry is not the source having deleted it.
+  // This one does probe, and must: it is answering "is there anything here",
+  // not "may cc manage it". A created-then-unlinked path drops the record.
+  async #createdHereHolds(p: string, dest: string): Promise<boolean> {
+    if (!this.#claimed.get(p)?.createdHere) return false;
     try { await fsp.lstat(dest); return true; }
-    catch { this.#local.delete(p); return false; }
+    catch { this.#claimed.delete(p); return false; }
   }
 
   // Make `<mirror>/P` be of `kind`, with the source's mode, size and mtime. A

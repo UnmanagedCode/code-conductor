@@ -25,13 +25,28 @@ export interface RemoteChild extends RemoteStat {
   name: string;
 }
 
+// THE SOURCE COULD NOT BE ASKED — distinct from the source having nothing
+// there. Conflating the two is how a transient EMFILE became an `rm` of a live
+// file: the handler read "absent", removed the mirror entry, and the reconcile
+// then removed the source's.
+export interface SourceError { error: string }
+
+export function isSourceError(x: unknown): x is SourceError {
+  return typeof x === 'object' && x !== null && 'error' in x;
+}
+
 export interface RemoteSource {
   // null ⇒ the source has nothing at this path. Not an error: it is the answer
   // the daemon turns into -ENOENT, and the handler uses it to remove a stale
   // mirror entry so a deleted remote file stops appearing locally.
-  stat(p: string): Promise<RemoteStat | null>;
-  list(p: string): Promise<RemoteChild[] | null>;
+  stat(p: string): Promise<RemoteStat | null | SourceError>;
+  list(p: string): Promise<RemoteChild[] | null | SourceError>;
   fetch(p: string, dest: string): Promise<'ok' | 'absent' | 'refused'>;
+  // MAKE THE SOURCE HOLD NOTHING AT `p`. Split from `push` deliberately: a
+  // removal is DECLARED by the daemon on the frame, never inferred from an
+  // absent mirror entry, so the two intents cannot be confused by a mirror the
+  // handler is also managing as a cache.
+  remove(p: string): Promise<'ok' | { error: string }>;
   // RECONCILE, not "copy this file back": make the source entry at `p` match
   // the MIRROR entry at `src`, whatever the mirror now holds there — including
   // nothing, which is how a deletion lands.
@@ -70,7 +85,12 @@ export function localDirSource(root: string): RemoteSource {
     return withinPosix(abs, root) === null ? null : abs;
   };
 
-  const statAt = async (abs: string): Promise<RemoteStat | null> => {
+  // `null` MEANS THE SOURCE HAS NOTHING THERE, and an error means the source
+  // could not be asked — a distinction the first cut of this file did not make.
+  // Swallowing EMFILE or EACCES into `null` told the handler "absent", which
+  // then removed a live mirror entry and, at the next reconcile, a live SOURCE
+  // file. An error is now its own value and never reaches an absence path.
+  const statAt = async (abs: string): Promise<RemoteStat | null | SourceError> => {
     try {
       const st = await fsp.lstat(abs);
       if (st.isSymbolicLink()) {
@@ -81,24 +101,40 @@ export function localDirSource(root: string): RemoteSource {
       // A device, fifo or socket has no faithful mirror representation, and a
       // regular file standing in for one would answer wrongly about what it is.
       return null;
-    } catch { return null; }
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      // ENOENT/ENOTDIR ARE THE ANSWER, not a failure to get one: the source
+      // genuinely has nothing there. Every other errno means this machine could
+      // not look, and saying "absent" to it is what removed live files.
+      if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+      return { error: `stat '${abs}': ${err.message}` };
+    }
   };
 
   return {
     async stat(p) {
       const abs = resolve(p);
-      return abs === null ? null : statAt(abs);
+      return abs === null ? { error: `'${p}' is outside the remote root` } : statAt(abs);
     },
     async list(p) {
       const abs = resolve(p);
-      if (abs === null) return null;
+      if (abs === null) return { error: `'${p}' is outside the remote root` };
       let names: string[];
       try { names = await fsp.readdir(abs); }
-      catch { return null; }
+      catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        // ENOENT/ENOTDIR are the source genuinely having no directory there.
+        // Anything else is this machine failing to look, and answering
+        // "absent" to it would unmirror the whole directory.
+        if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return null;
+        return { error: `readdir '${abs}': ${err.message}` };
+      }
       const out: RemoteChild[] = [];
       for (const name of names) {
         const st = await statAt(path.posix.join(abs, name));
-        if (st) out.push({ name, ...st });
+        if (st === null) continue;
+        if (isSourceError(st)) return st;
+        out.push({ name, ...st });
       }
       return out;
     },
@@ -106,10 +142,27 @@ export function localDirSource(root: string): RemoteSource {
       const abs = resolve(p);
       if (abs === null) return 'refused';
       const st = await statAt(abs);
+      if (st !== null && isSourceError(st)) return 'refused';
       if (st === null) return 'absent';
       if (st.kind !== 'file') return 'ok';   // the handler already shaped it
       try { await fsp.copyFile(abs, dest); return 'ok'; }
       catch { return 'refused'; }
+    },
+    // A DECLARED removal, never one inferred from an absent mirror entry. The
+    // directory case is NON-RECURSIVE by deliberate choice: the mirror may be
+    // sparser than the source, so removing a directory whose source copy still
+    // holds children the worker never enumerated must refuse ENOTEMPTY and
+    // fail the op. A recursive delete driven by a frame is what that avoids.
+    async remove(p) {
+      const abs = resolve(p);
+      if (abs === null) return { error: `'${p}' is outside the remote root` };
+      try {
+        const cur = await fsp.lstat(abs).catch(() => null);
+        if (cur === null) return 'ok';
+        if (cur.isDirectory()) await fsp.rmdir(abs);
+        else await fsp.unlink(abs);
+        return 'ok';
+      } catch (e) { return { error: (e as Error).message }; }
     },
     async push(src, p) {
       const abs = resolve(p);
@@ -120,17 +173,12 @@ export function localDirSource(root: string): RemoteSource {
           st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null;
         const cur = await fsp.lstat(abs).catch(() => null);
 
-        // THE MIRROR HOLDS NOTHING, so the source must hold nothing. This is
-        // how `unlink` and `rmdir` land, and the removal is NON-RECURSIVE by
-        // deliberate choice: `rmdir` on a source directory the mirror never
-        // fully materialised must refuse ENOTEMPTY and fail the op, not delete
-        // a subtree the worker never saw.
-        if (mirror === null) {
-          if (cur === null) return 'ok';
-          if (cur.isDirectory()) await fsp.rmdir(abs);
-          else await fsp.unlink(abs);
-          return 'ok';
-        }
+        // AN ABSENT MIRROR ENTRY IS NO LONGER A DELETION. `push` is reached
+        // only for a DIRTY whose REMOVED bit is clear, so the mirror is
+        // supposed to be holding the entry; its absence means cc's own cache
+        // lost it, and the caller refuses rather than deleting the source. A
+        // removal comes through `remove` above, declared on the frame.
+        if (mirror === null) return { error: `the mirror holds nothing at '${p}'` };
 
         const kind = kindOf(mirror);
         if (kind === null) return { error: `'${p}' is a kind the mirror cannot carry` };

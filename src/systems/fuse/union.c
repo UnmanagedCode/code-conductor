@@ -568,9 +568,9 @@ static int route(const char *op, const char *path, int for_create, uint8_t fop,
 	return -ENOENT;
 }
 
-#define ROUTE(op, p, create, fop)                       \
+#define ROUTE(op, p, cflags, fop)                       \
 	struct route r;                                 \
-	int rrc = route(op, p, create, fop, &r);        \
+	int rrc = route(op, p, cflags, fop, &r);        \
 	if (rrc)                                        \
 		return rrc;                             \
 	tr(op, p, tier_name(r.tier));                   \
@@ -888,15 +888,50 @@ static int pt_releasedir(const char *path, struct fuse_file_info *fi)
  * this discharges is the weaker, load-bearing half: a project-tier mutation
  * never reports success having landed nowhere.
  */
-static int push_mirror(const char *op, const char *path)
+/*
+ * TELL cc THE MIRROR IS AUTHORITATIVE AT `path`, AND SAY WHICH WAY.
+ *
+ * `removed` is the whole point: cc must never infer a deletion from an absent
+ * mirror entry, because the mirror is also its own cache and it removes stale
+ * entries itself. An op that removed the entry says so; every other op leaves
+ * the bit clear and cc treats a missing entry as ITS OWN failure rather than as
+ * the worker's intent.
+ *
+ * THE RETURN VALUE IS THE OP'S. A reconcile that could not land must not leave
+ * the caller thinking it did (epic criterion 10), so every caller returns this.
+ */
+static int push_mirror(const char *op, const char *path, int removed)
 {
 	int rc;
 
 	cache_invalidate(path);
-	rc = ccu_call(CCU_DIRTY, 0, path);
+	rc = ccu_call(CCU_DIRTY, removed ? CCU_FLAG_REMOVED : 0, path);
 	if (rc)
-		policy_refuse(op, path, "dirty-push-refused");
+		policy_refuse(op, path, removed ? "dirty-remove-refused" : "dirty-push-refused");
 	return rc;
+}
+
+/*
+ * RELEASE THE WRITE CLAIM FOR AN OP THAT TOOK ONE AND THEN FAILED.
+ *
+ * A `FETCH` carrying CCU_FLAG_FOR_WRITE turns cc's cache OFF for that path
+ * until a `DIRTY` arrives. If the op then fails — `openat` refused, the
+ * mutation returned -1 — no DIRTY would ever come and the path would stay
+ * uncached for the life of the session, with cc silently declining to refresh a
+ * mirror copy it is still serving reads from. That is a leak with the cache
+ * disabled underneath it, so the failure path releases the claim explicitly.
+ *
+ * The reconcile it triggers is a no-op in content terms (the op failed, so the
+ * mirror is unchanged) and costs one copy of one file on an error path. The
+ * RESULT IS DELIBERATELY DISCARDED: the caller already has an errno to report,
+ * and replacing it with the reconcile's would tell the worker the wrong thing.
+ */
+static void abandon_claim(const char *path, enum tier tier)
+{
+	if (tier != T_PROJECT)
+		return;
+	cache_invalidate(path);
+	(void)ccu_call(CCU_DIRTY, 0, path);
 }
 
 /*
@@ -953,63 +988,64 @@ static void fd_mark_dirty(uint64_t fh)
 
 static int pt_mkdir(const char *path, mode_t mode)
 {
-	ROUTE("mkdir", path, 1, CCU_FETCH);
+	ROUTE("mkdir", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int rc = mkdirat(r.fd, rp, mode);
 	int e = errno;
 	cred_leave();
-	if (rc == -1) return -e;
-	return r.tier == T_PROJECT ? push_mirror("mkdir", path) : 0;
+	if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+	return r.tier == T_PROJECT ? push_mirror("mkdir", path, 0) : 0;
 }
 
 static int pt_mknod(const char *path, mode_t mode, dev_t rdev)
 {
-	ROUTE("mknod", path, 1, CCU_FETCH);
+	ROUTE("mknod", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	/* -EPERM here, not the shared -EOPNOTSUPP: see refuse_unreconcilable. */
-	if (refuse_unreconcilable("mknod", path, r.tier) != 0) return -EPERM;
+	if (refuse_unreconcilable("mknod", path, r.tier) != 0) { abandon_claim(path, r.tier); return -EPERM; }
 	cred_enter();
 	int rc = mknodat(r.fd, rp, mode, rdev);
 	int e = errno;
 	cred_leave();
-	return rc == -1 ? -e : 0;
+	if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+	return 0;
 }
 
 static int pt_unlink(const char *path)
 {
-	ROUTE("unlink", path, 0, CCU_FETCH);
+	ROUTE("unlink", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int rc = unlinkat(r.fd, rp, 0);
 	int e = errno;
 	cred_leave();
-	if (rc == -1) return -e;
-	return r.tier == T_PROJECT ? push_mirror("unlink", path) : 0;
+	if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+	return r.tier == T_PROJECT ? push_mirror("unlink", path, 1) : 0;
 }
 
 static int pt_rmdir(const char *path)
 {
-	ROUTE("rmdir", path, 0, CCU_FETCH);
+	ROUTE("rmdir", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int rc = unlinkat(r.fd, rp, AT_REMOVEDIR);
 	int e = errno;
 	cred_leave();
-	if (rc == -1) return -e;
-	return r.tier == T_PROJECT ? push_mirror("rmdir", path) : 0;
+	if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+	return r.tier == T_PROJECT ? push_mirror("rmdir", path, 1) : 0;
 }
 
 static int pt_symlink(const char *target, const char *path)
 {
-	ROUTE("symlink", path, 1, CCU_FETCH);
+	ROUTE("symlink", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int rc = symlinkat(target, r.fd, rp);
 	int e = errno;
 	cred_leave();
-	if (rc == -1) return -e;
-	return r.tier == T_PROJECT ? push_mirror("symlink", path) : 0;
+	if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+	return r.tier == T_PROJECT ? push_mirror("symlink", path, 0) : 0;
 }
 
 /*
@@ -1025,26 +1061,60 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	struct route rf, rt;
 	int rc;
 
-	if ((rc = route("rename", from, 0, CCU_FETCH, &rf))) return rc;
-	if ((rc = route("rename", to,   1, CCU_FETCH, &rt))) return rc;
+	if ((rc = route("rename", from, CCU_FLAG_FOR_WRITE, CCU_FETCH, &rf))) return rc;
+	if ((rc = route("rename", to, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH, &rt))) {
+		abandon_claim(from, rf.tier);
+		return rc;
+	}
 	tr("rename", to, tier_name(rt.tier));
-	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
+	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) goto give_up;
 	if (rf.fd != rt.fd) {
 		policy_refuse("rename", to, "xdev-rename");
-		return -EXDEV;
+		rc = -EXDEV;
+		goto give_up;
+	}
+	/*
+	 * A DIRECTORY RENAME REFUSES, and it is the same reason the reconcile's
+	 * removal is non-recursive: `mv dir dir2` is a SUBTREE move, and two
+	 * per-path reconciles cannot express it — the from end would `rmdir` a
+	 * source directory still holding children the mirror never materialised,
+	 * and the to end would create an empty one. Landing it would need a
+	 * recursive delete driven by a frame, removing source subtrees the worker
+	 * never enumerated. Bash `mv` runs on the system and still works; a
+	 * subtree move through the union is S3's if anyone wants it.
+	 */
+	if (rf.tier == T_PROJECT) {
+		struct stat fst;
+
+		if (fstatat(rf.fd, rf.rp, &fst, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(fst.st_mode)) {
+			policy_refuse("rename", from, "not-reconcilable");
+			rc = -EOPNOTSUPP;
+			goto give_up;
+		}
 	}
 	cred_enter();
 	rc = renameat2(rf.fd, rf.rp, rt.fd, rt.rp, flags);
 	int e = errno;
 	cred_leave();
-	if (rc == -1) return -e;
+	if (rc == -1) { rc = -e; goto give_up; }
 	/* BOTH ENDS, in this order: the source's old entry is now absent from the
 	 * mirror and its new one is present, and the reconcile reads each from the
 	 * mirror. A same-tier rename is the only kind that reaches here — the
 	 * cross-tier case is -EXDEV above. */
 	if (rt.tier != T_PROJECT) return 0;
-	if ((rc = push_mirror("rename", from)) != 0) return rc;
-	return push_mirror("rename", to);
+	/* TWO RECONCILES, and the FROM end is a removal — declared, because an
+	 * absent mirror entry there is exactly what cc must not read as its own
+	 * stale copy. A failure of the second leaves the source holding neither
+	 * end; that is recorded in PROVENANCE D13 rather than hidden, and S3
+	 * owns making the divergence sticky. */
+	if ((rc = push_mirror("rename", from, 1)) != 0) return rc;
+	return push_mirror("rename", to, 0);
+
+give_up:
+	/* BOTH claims, since both ends took one. */
+	abandon_claim(from, rf.tier);
+	abandon_claim(to, rt.tier);
+	return rc;
 }
 
 static int pt_link(const char *from, const char *to)
@@ -1077,14 +1147,14 @@ static int pt_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 		return 0;
 	}
 	{
-		ROUTE("chmod", path, 0, CCU_FETCH);
+		ROUTE("chmod", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 		if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 		cred_enter();
 		int rc = fchmodat(r.fd, rp, mode, 0);
 		int e = errno;
 		cred_leave();
-		if (rc == -1) return -e;
-		return r.tier == T_PROJECT ? push_mirror("chmod", path) : 0;
+		if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+		return r.tier == T_PROJECT ? push_mirror("chmod", path, 0) : 0;
 	}
 }
 
@@ -1098,7 +1168,7 @@ static int pt_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_inf
 		return fchown(fd, uid, gid) == -1 ? -errno : 0;
 	}
 	{
-		ROUTE("chown", path, 0, CCU_FETCH);
+		ROUTE("chown", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 		if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 		if ((rrc = refuse_unreconcilable("chown", path, r.tier)) != 0) return rrc;
 		cred_enter();
@@ -1118,7 +1188,7 @@ static int pt_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 		return 0;
 	}
 	{
-		ROUTE("truncate", path, 0, CCU_FETCH);
+		ROUTE("truncate", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 		if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 		cred_enter();
 		int fd = openat(r.fd, rp, O_WRONLY);
@@ -1128,8 +1198,8 @@ static int pt_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 		int rc = ftruncate(fd, size);
 		int e = errno;
 		close(fd);
-		if (rc == -1) return -e;
-		return r.tier == T_PROJECT ? push_mirror("truncate", path) : 0;
+		if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+		return r.tier == T_PROJECT ? push_mirror("truncate", path, 0) : 0;
 	}
 }
 
@@ -1143,26 +1213,26 @@ static int pt_utimens(const char *path, const struct timespec ts[2],
 		return 0;
 	}
 	{
-		ROUTE("utimens", path, 0, CCU_FETCH);
+		ROUTE("utimens", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 		if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 		cred_enter();
 		int rc = utimensat(r.fd, rp, ts, AT_SYMLINK_NOFOLLOW);
 		int e = errno;
 		cred_leave();
-		if (rc == -1) return -e;
-		return r.tier == T_PROJECT ? push_mirror("utimens", path) : 0;
+		if (rc == -1) { abandon_claim(path, r.tier); return -e; }
+		return r.tier == T_PROJECT ? push_mirror("utimens", path, 0) : 0;
 	}
 }
 
 static int pt_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-	ROUTE("create", path, 1, CCU_FETCH);
+	ROUTE("create", path, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
 	cred_enter();
 	int fd = openat(r.fd, rp, fi->flags | O_CREAT, mode);
 	int e = errno;
 	cred_leave();
-	if (fd == -1) return -e;
+	if (fd == -1) { abandon_claim(path, r.tier); return -e; }
 	fd_tier_set(fd, r.tier, 1);
 	fi->fh = fd;
 	return 0;
@@ -1170,14 +1240,20 @@ static int pt_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
 static int pt_open(const char *path, struct fuse_file_info *fi)
 {
-	ROUTE("open", path, 0, CCU_FETCH);
+	/* A WRITABLE HANDLE TAKES THE CLAIM, a read-only one does not: the claim
+	 * turns cc's cache off for this path until the matching DIRTY, and a
+	 * reader has no unpushed bytes to protect. */
+	ROUTE("open", path, (fi->flags & (O_WRONLY | O_RDWR)) ? CCU_FLAG_FOR_WRITE : 0, CCU_FETCH);
 	/* A directory is the only thing a synthetic node ever is. */
 	if (SYNTHETIC(r.tier)) return -EISDIR;
 	cred_enter();
 	int fd = openat(r.fd, rp, fi->flags);
 	int e = errno;
 	cred_leave();
-	if (fd == -1) return -e;
+	if (fd == -1) {
+		if (fi->flags & (O_WRONLY | O_RDWR)) abandon_claim(path, r.tier);
+		return -e;
+	}
 	fd_tier_set(fd, r.tier, (fi->flags & (O_WRONLY | O_RDWR)) != 0);
 	fi->fh = fd;
 	return 0;
@@ -1198,6 +1274,10 @@ static int pt_write(const char *path, const char *buf, size_t size, off_t off,
 {
 	ssize_t n;
 	(void)path;
+	/* RE-ARM THE PUSH. `flush` clears the bit when its reconcile lands, and a
+	 * handle written to again after that owes another one. */
+	if ((int)fi->fh >= 0 && (int)fi->fh < FDTIER_SLOTS)
+		fd_dirty[(int)fi->fh] = 1;
 	n = pwrite((int)fi->fh, buf, size, off);
 	return n == -1 ? -errno : (int)n;
 }
@@ -1213,12 +1293,40 @@ static int pt_statfs(const char *path, struct statvfs *stbuf)
 	return fstatvfs(fd, stbuf) == -1 ? -errno : 0;
 }
 
+/*
+ * THE PUSH LIVES IN `flush`, NOT IN `release`, AND THAT IS EPIC CRITERION 10.
+ *
+ * The kernel DISCARDS `release`'s return value — a reconcile that refused there
+ * would be logged and nowhere else, and `close()` would return 0 to a worker
+ * whose write never reached the system. `flush` is the op whose return value
+ * `close(2)` reports, so that is where a failed reconcile has to be answered.
+ * The worker sees the errno cc chose, which for a refused DIRTY is **EIO**.
+ *
+ * `flush` may fire more than once (each `close` of a duplicated descriptor
+ * calls it), so the dirty bit is CLEARED by a successful push and SET AGAIN by
+ * any later write: one reconcile per batch of writes, each answered to the
+ * `close` that triggered it. `release` keeps a push as a backstop for the fd
+ * that never saw a flush — a killed process — where there is no `close` left to
+ * answer and landing the bytes is the whole of what is owed.
+ */
 static int pt_flush(const char *path, struct fuse_file_info *fi)
 {
-	(void)path;
-	int fd = dup((int)fi->fh);
-	if (fd == -1) return -errno;
-	return close(fd) == -1 ? -errno : 0;
+	int fd = (int)fi->fh;
+	int rc;
+
+	/* The dup/close first, unchanged: it is what reports a write error the
+	 * kernel deferred, and it must be answered whatever the tier. */
+	int probe = dup(fd);
+	if (probe == -1) return -errno;
+	if (close(probe) == -1) return -errno;
+
+	if (fd < 0 || fd >= FDTIER_SLOTS || !fd_dirty[fd] ||
+	    (enum tier)fd_tier[fd] != T_PROJECT)
+		return 0;
+	rc = push_mirror("flush", path, 0);
+	if (rc == 0)
+		fd_dirty[fd] = 0;
+	return rc;
 }
 
 /*
@@ -1238,7 +1346,7 @@ static int pt_release(const char *path, struct fuse_file_info *fi)
 
 	if (fd >= 0 && fd < FDTIER_SLOTS && fd_dirty[fd] &&
 	    (enum tier)fd_tier[fd] == T_PROJECT) {
-		push_mirror("release", path);
+		push_mirror("release", path, 0);
 	}
 	if (fd >= 0 && fd < FDTIER_SLOTS) {
 		fd_tier[fd] = 0;
@@ -1289,10 +1397,10 @@ static void abspath(const struct route *r, const char *path, char *out, size_t n
 static int pt_setxattr(const char *path, const char *name, const char *value,
 		       size_t size, int flags)
 {
-	ROUTE("setxattr", path, 0, CCU_FETCH);
+	ROUTE("setxattr", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	(void)rp;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
-	if ((rrc = refuse_unreconcilable("setxattr", path, r.tier)) != 0) return rrc;
+	if ((rrc = refuse_unreconcilable("setxattr", path, r.tier)) != 0) { abandon_claim(path, r.tier); return rrc; }
 	char abs[PATH_MAX];
 	abspath(&r, path, abs, sizeof(abs));
 	return lsetxattr(abs, name, value, size, flags) == -1 ? -errno : 0;
@@ -1330,10 +1438,10 @@ static int pt_listxattr(const char *path, char *list, size_t size)
 
 static int pt_removexattr(const char *path, const char *name)
 {
-	ROUTE("removexattr", path, 0, CCU_FETCH);
+	ROUTE("removexattr", path, CCU_FLAG_FOR_WRITE, CCU_FETCH);
 	(void)rp;
 	if (SYNTHETIC(r.tier)) return -EOPNOTSUPP;
-	if ((rrc = refuse_unreconcilable("removexattr", path, r.tier)) != 0) return rrc;
+	if ((rrc = refuse_unreconcilable("removexattr", path, r.tier)) != 0) { abandon_claim(path, r.tier); return rrc; }
 	char abs[PATH_MAX];
 	abspath(&r, path, abs, sizeof(abs));
 	return lremovexattr(abs, name) == -1 ? -errno : 0;

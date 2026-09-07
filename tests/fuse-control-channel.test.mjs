@@ -18,7 +18,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
-         CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
+         CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
@@ -221,6 +221,179 @@ describe('the control channel, cc side', () => {
     assert.equal((await call(sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.ABSENT);
   });
 
+  // ── THE FOUR DATA-LOSS ROUTES ─────────────────────────────────────────────
+  //
+  // All four had one root cause: the mirror is BOTH a cache cc manages and the
+  // statement of what the worker did, and cc was inferring the second from the
+  // first. Each test names the mutation it must die under, because a route
+  // closed by a design change with no test that dies without it is not closed.
+
+  // (a) THE WRITE WINDOW. Writes go straight into the mirror inode through the
+  // worker's fd, so between the open's FETCH and the release's DIRTY there is
+  // NO FRAME AT THAT PATH — nothing for the per-path queue to order. Any STAT,
+  // second FETCH, or LIST of the parent used to re-shape the open inode to the
+  // source's size and destroy the unpushed bytes.
+  //
+  // DIES UNDER: dropping the `#claimHolds` guard from `#stat`, from `#fetch`,
+  // or the `#claimed.has(child)` skip from `#list`.
+  test('(a) a claimed path is not re-shaped by a STAT, a LIST or a second FETCH', async () => {
+    const p = '/srv/app/one.txt';
+    await fs.writeFile(at(p), 'SOURCE-SHORT\n');
+
+    // The open: a writable handle takes the claim.
+    assert.equal((await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+    // The worker writes through its fd — more bytes than the source has.
+    const written = 'WORKER-WROTE-MUCH-MORE-THAN-THE-SOURCE-HAS\n';
+    await fs.writeFile(inMirror(p), written);
+
+    // Every frame that used to clobber it, including a LIST of the parent,
+    // which is a DIFFERENT queue key and so never serialised against the write.
+    assert.equal((await call(sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY);
+    assert.equal((await call(sock, CCU_OP.LIST, 0, '/srv/app')).status, CCU_STATUS.READY);
+    assert.equal((await call(sock, CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(inMirror(p), 'utf8'), written,
+      'the unpushed bytes were destroyed while the handle was open');
+
+    // …and the release pushes what the worker actually wrote, not a mix.
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(at(p), 'utf8'), written);
+
+    // NON-VACUITY: once the claim is released the cache resumes, so the guard
+    // is scoped to the window and not a blanket "never re-shape".
+    await fs.writeFile(at(p), 'SOURCE-CHANGED\n');
+    assert.equal((await call(sock, CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'SOURCE-CHANGED\n');
+  });
+
+  // (b) A TRANSIENT READ ERROR IS NOT ABSENCE. `stat`/`list` used to swallow
+  // every errno into `null`; the handler then unmirrored a live entry and the
+  // reconcile deleted the SOURCE file. A single failed `readdir` took the whole
+  // directory with it.
+  //
+  // DIES UNDER: `isSourceError` collapsed back into `null`, in `#stat`,
+  // `#list` or `#fetch`.
+  test('(b) a source that fails once refuses, and removes nothing', async () => {
+    const p = '/srv/app/flaky.txt';
+    await fs.writeFile(at(p), 'REAL\n');
+    let failStat = 0, failList = 0;
+    const base = localDirSource(srcRoot);
+    const flaky = {
+      ...base,
+      stat: async (q) => (failStat-- > 0 ? { error: 'EMFILE: too many open files' } : base.stat(q)),
+      list: async (q) => (failList-- > 0 ? { error: 'EMFILE: too many open files' } : base.list(q)),
+    };
+    const srv = await ControlServer.listen({
+      socketPath: path.join(box, 'flaky.sock'), mirror, source: flaky, tiers, log: () => {},
+    });
+    const c = await connect(srv.socketPath);
+    try {
+      await call(c, CCU_OP.FETCH, 0, p);                       // materialise it
+      assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'REAL\n');
+
+      failStat = 1;
+      const r = await call(c, CCU_OP.STAT, 0, p);
+      assert.equal(r.status, CCU_STATUS.REFUSED, 'a read error was reported as absence');
+      assert.equal(r.err, EIO);
+      assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'REAL\n',
+        'the mirror entry was removed on a transient read error');
+
+      failList = 1;
+      const l = await call(c, CCU_OP.LIST, 0, '/srv/app');
+      assert.equal(l.status, CCU_STATUS.REFUSED);
+      assert.equal(await fs.readFile(inMirror(p), 'utf8'), 'REAL\n',
+        'a failed readdir unmirrored the whole directory');
+
+      // …and the SOURCE file is untouched throughout, which is the loss.
+      assert.equal(await fs.readFile(at(p), 'utf8'), 'REAL\n');
+    } finally { c.destroy(); await srv.close(); }
+  });
+
+  // (c) A RE-MATERIALISE BETWEEN THE MUTATION AND THE RECONCILE. The daemon
+  // unlinks `mirror/p` and sends DIRTY; a STAT arriving between them is a
+  // separate queue entry and used to re-create `p` as a sparse zero-stub, which
+  // the reconcile then copied onto the source — `rm` reporting success, the
+  // dirent surviving, the bytes zeroed.
+  //
+  // DIES UNDER: dropping the `#claimHolds` guard from `#stat`, or inferring the
+  // removal from the mirror instead of reading the REMOVED bit.
+  test('(c) a STAT between the unlink and its reconcile cannot resurrect the path', async () => {
+    const p = '/srv/app/doomed-c.txt';
+    await fs.writeFile(at(p), 'REAL-CONTENT\n');
+    assert.equal((await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+    await fs.rm(inMirror(p));                                   // as pt_unlink would
+
+    // THE INTERLOPER, and what it must answer: the source still has the file,
+    // but the worker has removed it from the mirror, so a claimed path with no
+    // mirror entry is ABSENT — reported from the claim, never re-created. A
+    // zero-stub here is what the reconcile would then copy onto the source.
+    const mid = await call(sock, CCU_OP.STAT, 0, p);
+    assert.equal(mid.status, CCU_STATUS.ABSENT);
+    await assert.rejects(() => fs.access(inMirror(p)),
+      'the claimed path was re-stubbed between the unlink and its reconcile');
+    assert.equal(await fs.readFile(at(p), 'utf8'), 'REAL-CONTENT\n',
+      'the source was touched before the reconcile said so');
+
+    assert.equal((await call(sock, CCU_OP.DIRTY, CCU_FLAG_REMOVED, p)).status, CCU_STATUS.READY);
+    await assert.rejects(() => fs.access(at(p)), 'the deletion did not land');
+  });
+
+  // (d) TEARDOWN MUST NOT MANUFACTURE AN ABSENCE. `close()` destroys sockets
+  // but does not stop an already-dequeued handler, and teardown's next act is
+  // `rm -rf` of the run directory — so a handler running across it saw a mirror
+  // that was being deleted.
+  //
+  // DIES UNDER: dropping the `#inflight` drain from `close()`, or the
+  // `#closing` refusal from `#handle`.
+  test('(d) close() waits for an in-flight handler and refuses anything after it', async () => {
+    const p = '/srv/app/inflight.txt';
+    await fs.writeFile(at(p), 'BEFORE\n');
+    let release; const held = new Promise((r) => { release = r; });
+    let started; const entered = new Promise((r) => { started = r; });
+    let pushed = false;
+    const base = localDirSource(srcRoot);
+    const slow = {
+      ...base,
+      push: async (src, q) => { started(); await held; pushed = true; return base.push(src, q); },
+    };
+    const srv = await ControlServer.listen({
+      socketPath: path.join(box, 'slow.sock'), mirror, source: slow, tiers, log: () => {},
+    });
+    const c = await connect(srv.socketPath);
+    try {
+      await call(c, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p);
+      await fs.writeFile(inMirror(p), 'IN FLIGHT\n');
+      // Caught at creation: `close()` destroys the socket after the drain, so
+      // whether this reply lands is a race the test does not need to win — the
+      // assertion is that the HANDLER ran to completion before close returned.
+      const inFlight = call(c, CCU_OP.DIRTY, 0, p).catch((e) => e);
+      // DETERMINISTIC: wait until the handler is genuinely inside `push`
+      // before closing. Racing `close()` against the frame's arrival would
+      // pass with an empty in-flight map and prove nothing.
+      await entered;
+
+      let closed = false;
+      const closing = srv.close().then(() => { closed = true; });
+      await new Promise((r) => setTimeout(r, 30));
+      assert.equal(closed, false, 'close() returned while a handler was still running');
+      assert.equal(pushed, false);
+
+      release();
+      await closing;
+      assert.equal(pushed, true, 'the in-flight handler was abandoned rather than drained');
+      await inFlight;
+      assert.equal(await fs.readFile(at(p), 'utf8'), 'IN FLIGHT\n');
+
+      // AND NOTHING STARTED AFTER close() ACTS. A frame arriving now is
+      // refused rather than run against a mirror about to be deleted.
+      const c2 = await connect(srv.socketPath).catch(() => null);
+      if (c2) {
+        const late = await call(c2, CCU_OP.STAT, 0, p).catch(() => null);
+        if (late) assert.equal(late.status, CCU_STATUS.REFUSED);
+        c2.destroy();
+      }
+    } finally { c.destroy(); await srv.close().catch(() => {}); }
+  });
+
   // ── THE RECONCILE ─────────────────────────────────────────────────────────
   //
   // `DIRTY` means "the mirror at P is authoritative — make the source match
@@ -248,7 +421,7 @@ describe('the control channel, cc side', () => {
     await fs.writeFile(at(p), 'still here');
     await call(sock, CCU_OP.FETCH, 0, p);
     await fs.rm(inMirror(p));                       // as pt_unlink would
-    const r = await call(sock, CCU_OP.DIRTY, 0, p);
+    const r = await call(sock, CCU_OP.DIRTY, CCU_FLAG_REMOVED, p);
     assert.equal(r.status, CCU_STATUS.READY);
     await assert.rejects(() => fs.access(at(p)), 'the file survived on the source');
   });
@@ -262,7 +435,7 @@ describe('the control channel, cc side', () => {
     await fs.writeFile(path.join(at(p), 'unseen.txt'), 'never mirrored');
     await fs.mkdir(inMirror(p), { recursive: true });
     await fs.rmdir(inMirror(p));                    // as pt_rmdir would
-    const r = await call(sock, CCU_OP.DIRTY, 0, p);
+    const r = await call(sock, CCU_OP.DIRTY, CCU_FLAG_REMOVED, p);
     assert.equal(r.status, CCU_STATUS.REFUSED, 'a subtree the worker never saw was deleted');
     assert.equal(r.err, EIO);
     await fs.access(path.join(at(p), 'unseen.txt'));
@@ -272,7 +445,7 @@ describe('the control channel, cc side', () => {
     await fs.mkdir(at(q), { recursive: true });
     await fs.mkdir(inMirror(q), { recursive: true });
     await fs.rmdir(inMirror(q));
-    assert.equal((await call(sock, CCU_OP.DIRTY, 0, q)).status, CCU_STATUS.READY);
+    assert.equal((await call(sock, CCU_OP.DIRTY, CCU_FLAG_REMOVED, q)).status, CCU_STATUS.READY);
     await assert.rejects(() => fs.access(at(q)));
   });
 
@@ -283,7 +456,7 @@ describe('the control channel, cc side', () => {
     await fs.writeFile(at(from), 'moved bytes');
     await call(sock, CCU_OP.FETCH, 0, from);
     await fs.rename(inMirror(from), inMirror(to));  // as pt_rename would
-    assert.equal((await call(sock, CCU_OP.DIRTY, 0, from)).status, CCU_STATUS.READY);
+    assert.equal((await call(sock, CCU_OP.DIRTY, CCU_FLAG_REMOVED, from)).status, CCU_STATUS.READY);
     assert.equal((await call(sock, CCU_OP.DIRTY, 0, to)).status, CCU_STATUS.READY);
     await assert.rejects(() => fs.access(at(from)), 'the old name survived');
     assert.equal(await fs.readFile(at(to), 'utf8'), 'moved bytes');
@@ -513,10 +686,14 @@ describe('localDirSource — the S2 fake remote', () => {
   // clamp would serve a different file than the one asked about.
   test('a path escaping the root is refused, not clamped', async () => {
     const s = localDirSource(root);
-    assert.equal(await s.stat('/../../etc/passwd'), null);
-    assert.equal(await s.list('/../..'), null);
+    // AN ERROR, NOT `null`. `null` means the source genuinely has nothing at
+    // that path, and the handler removes the mirror entry on it — so an escape
+    // answered `null` would unmirror on the way to refusing.
+    assert.deepEqual(Object.keys(await s.stat('/../../etc/passwd')), ['error']);
+    assert.deepEqual(Object.keys(await s.list('/../..')), ['error']);
     assert.equal(await s.fetch('/../../etc/passwd', path.join(box, 'stolen')), 'refused');
     assert.deepEqual(Object.keys(await s.push(path.join(root, 'a/f'), '/../../escaped')), ['error']);
+    assert.deepEqual(Object.keys(await s.remove('/../../escaped')), ['error']);
     await assert.rejects(() => fs.access(path.join(box, 'stolen')));
   });
 

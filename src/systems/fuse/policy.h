@@ -753,7 +753,28 @@ static inline void cache_invalidate(const char *path)
 enum ccu_op     { CCU_STAT = 1, CCU_LIST = 2, CCU_FETCH = 3, CCU_DIRTY = 4 };
 enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
 
-#define CCU_FLAG_FOR_CREATE 0x01
+/*
+ * THE FLAGS BYTE IS OP-SCOPED. Each bit is meaningful for exactly one op, and
+ * naming which is part of the definition — the byte is one field, not three
+ * independent booleans that every op must answer.
+ *
+ * They exist because CC CANNOT TELL THE WORKER'S INTENT FROM ITS OWN CACHE
+ * MANAGEMENT. The mirror is both a cache cc creates, truncates and removes at
+ * will AND the statement of what the worker did, and those two roles are in
+ * direct conflict: a mirror entry that is gone may mean "the worker deleted it"
+ * or "cc removed a stale copy", and cc was inferring the first from the second.
+ * These two bits make the worker's intent DECLARED instead.
+ */
+#define CCU_FLAG_FOR_CREATE 0x01  /* FETCH: the caller is about to CREATE `path`,
+                                   * so the PARENT is what must exist. */
+#define CCU_FLAG_FOR_WRITE  0x02  /* FETCH: the caller will MUTATE `path`, so cc
+                                   * must stop managing it as a cache until the
+                                   * matching DIRTY — no re-shape, no truncate,
+                                   * no unmirror, no re-copy. */
+#define CCU_FLAG_REMOVED    0x04  /* DIRTY: the worker REMOVED the entry, so the
+                                   * source must lose it. Absence is never
+                                   * inferred from the mirror; it is declared
+                                   * here or it did not happen. */
 
 static inline void ccu_put32(unsigned char *p, uint32_t v)
 {

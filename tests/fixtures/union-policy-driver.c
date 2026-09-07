@@ -439,6 +439,29 @@ static void frame_vectors(void)
 	printf("REQ ");
 	for (i = 0; i < len; i++) printf("%02x", buf[i]);
 	printf("\n");
+
+	/* THE TWO INTENT BITS GO THROUGH THE SAME CROSS-LANGUAGE CHECK. They are
+	 * the only thing standing between cc's cache management and the worker's
+	 * intent, so a silent drift in either direction — a bit cc never sets, a
+	 * bit the daemon reads as another — is a data-loss bug. One vector each,
+	 * plus the pair, because a codec that ORs them into one value passes a
+	 * single-bit vector. */
+	ccu_encode_request(buf, sizeof(buf), CCU_FETCH, CCU_FLAG_FOR_WRITE, "/srv/app/f.txt", &len);
+	printf("REQ_WRITE ");
+	for (i = 0; i < len; i++) printf("%02x", buf[i]);
+	printf("\n");
+
+	ccu_encode_request(buf, sizeof(buf), CCU_FETCH,
+			   CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, "/srv/app/f.txt", &len);
+	printf("REQ_CREATE_WRITE ");
+	for (i = 0; i < len; i++) printf("%02x", buf[i]);
+	printf("\n");
+
+	ccu_encode_request(buf, sizeof(buf), CCU_DIRTY, CCU_FLAG_REMOVED, "/srv/app/f.txt", &len);
+	printf("REQ_REMOVED ");
+	for (i = 0; i < len; i++) printf("%02x", buf[i]);
+	printf("\n");
+
 	canned_reply(CCU_REFUSED, 13);
 	printf("REPLY ");
 	for (i = 0; i < CCU_REPLY_LEN; i++) printf("%02x", canned[i]);

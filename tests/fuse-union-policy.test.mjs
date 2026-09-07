@@ -41,7 +41,8 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { detectToolchain } from '../src/systems/fuse/build.ts';
-import { encodeRequest, encodeReply, decodeRequests, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE } from '../src/systems/fuse/control.ts';
+import { encodeRequest, encodeReply, decodeRequests, CCU_OP, CCU_STATUS,
+  CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED } from '../src/systems/fuse/control.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRIVER_SRC = path.join(HERE, 'fixtures', 'union-policy-driver.c');
@@ -145,16 +146,38 @@ describe('the compiled policy driver', { skip }, () => {
     assert.equal(r.code, 0, r.stderr);
     const hex = Object.fromEntries(r.stdout.split('\n').filter(Boolean).map(l => l.split(' ')));
 
-    const req = encodeRequest(CCU_OP.FETCH, CCU_FLAG_FOR_CREATE, '/srv/app/f.txt');
-    assert.equal(req.toString('hex'), hex.REQ, 'cc encodes a request the daemon would not have');
+    const P = '/srv/app/f.txt';
     const reply = encodeReply(CCU_STATUS.REFUSED, 13);
     assert.equal(reply.toString('hex'), hex.REPLY, 'cc encodes a reply the daemon would refuse');
 
-    // And cc DECODES what the daemon actually emitted, rather than only
-    // producing the same bytes.
-    const decoded = decodeRequests(Buffer.from(hex.REQ, 'hex'));
-    assert.deepEqual(decoded.frames, [{ op: CCU_OP.FETCH, forCreate: true, path: '/srv/app/f.txt' }]);
-    assert.equal(decoded.rest.length, 0);
+    // THE INTENT BITS ARE IN HERE TOO, and they are the only thing between
+    // cc's cache management and the worker's intent — a bit cc never sets or
+    // reads as another is a data-loss bug, not a codec nit. Each alone AND the
+    // pair, because a codec that ORs them into one value passes single-bit
+    // vectors.
+    const vectors = [
+      ['REQ', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE, { forCreate: true, forWrite: false, removed: false }],
+      ['REQ_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, { forCreate: false, forWrite: true, removed: false }],
+      ['REQ_CREATE_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE,
+        { forCreate: true, forWrite: true, removed: false }],
+      ['REQ_REMOVED', CCU_OP.DIRTY, CCU_FLAG_REMOVED, { forCreate: false, forWrite: false, removed: true }],
+    ];
+    for (const [name, op, flags, want] of vectors) {
+      assert.ok(hex[name], `the C side printed no ${name} vector`);
+      // cc ENCODES the same bytes…
+      assert.equal(encodeRequest(op, flags, P).toString('hex'), hex[name],
+        `cc encodes a ${name} the daemon would not have`);
+      // …and DECODES what the daemon actually emitted, rather than only
+      // producing the same bytes.
+      const decoded = decodeRequests(Buffer.from(hex[name], 'hex'));
+      assert.deepEqual(decoded.frames, [{ op, path: P, ...want }], name);
+      assert.equal(decoded.rest.length, 0);
+    }
+
+    // THE VECTORS ARE DISTINCT. Four identical byte strings would satisfy
+    // every assertion above.
+    assert.equal(new Set(vectors.map(([n]) => hex[n])).size, vectors.length,
+      'two flag vectors encode to the same bytes');
   });
 
   // WHICH OP BODIES ASK. `policy_mutation_check` owns the EROFS answer and
@@ -264,6 +287,18 @@ describe('the compiled policy driver', { skip }, () => {
       assert.match(body, /fd_tier_set\(/, `pt_${op} does not mark its fd, so release cannot push`);
     }
     assert.match(bodyOf('release'), /push_mirror\(/, 'pt_release stopped pushing');
+    // AND THE PUSH THAT close(2) ACTUALLY SEES. The kernel discards release's
+    // return value, so a reconcile answered only there is a refusal the worker
+    // never learns about — criterion 10. `flush` is where close(2) reads from.
+    assert.match(bodyOf('flush'), /push_mirror\(/,
+      'the push is not in flush, so a refused reconcile cannot reach close(2)');
+    // EVERY CLAIMING OP RELEASES ITS CLAIM WHEN IT FAILS, or the path stays
+    // uncached for the session with cc still serving reads from the mirror.
+    for (const op of [...PUSHES.filter(o => o !== 'rename'), 'create', 'open', 'mknod']) {
+      assert.match(bodyOf(op), /abandon_claim\(/, `pt_${op} leaks its write claim on failure`);
+    }
+    assert.match(bodyOf('rename'), /abandon_claim\(from[\s\S]*abandon_claim\(to/,
+      'pt_rename releases only one of the two claims it takes');
 
     // THE PARTITION: the two lists are disjoint and together are exactly the
     // mutating set the previous test enumerates, minus the two that go through
