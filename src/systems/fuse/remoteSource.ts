@@ -32,6 +32,20 @@ export interface RemoteSource {
   stat(p: string): Promise<RemoteStat | null>;
   list(p: string): Promise<RemoteChild[] | null>;
   fetch(p: string, dest: string): Promise<'ok' | 'absent' | 'refused'>;
+  // RECONCILE, not "copy this file back": make the source entry at `p` match
+  // the MIRROR entry at `src`, whatever the mirror now holds there — including
+  // nothing, which is how a deletion lands.
+  //
+  // That generality is what lets the whole set of mutating ops land through the
+  // ONE `DIRTY` frame instead of a frame per op. The daemon mutates the mirror
+  // and then says "the mirror at P is now authoritative"; every op it can
+  // express — create, write, truncate, chmod, utimens, mkdir, symlink, unlink,
+  // rmdir, and each end of a rename — is that one sentence.
+  //
+  // ITS DOMAIN IS EXACTLY WHAT `RemoteStat` CAN EXPRESS: file, dir, symlink,
+  // absent. An op outside that — a device node, a hard link, an ownership
+  // change — cannot be reconciled and is REFUSED by the daemon rather than
+  // applied to the mirror alone (see union.c's `push_mirror` callers).
   push(src: string, p: string): Promise<'ok' | { error: string }>;
 }
 
@@ -101,13 +115,53 @@ export function localDirSource(root: string): RemoteSource {
       const abs = resolve(p);
       if (abs === null) return { error: `'${p}' is outside the remote root` };
       try {
-        // MODE CARRIED ACROSS, and it has to be: an atomic write ends in a
-        // rename, and a rename hands the replacement fresh permissions, so an
-        // edited shell script silently loses its executable bit otherwise.
-        const st = await fsp.stat(src);
+        const mirror = await fsp.lstat(src).catch(() => null);
+        const kindOf = (st: import('node:fs').Stats): string | null =>
+          st.isSymbolicLink() ? 'symlink' : st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null;
+        const cur = await fsp.lstat(abs).catch(() => null);
+
+        // THE MIRROR HOLDS NOTHING, so the source must hold nothing. This is
+        // how `unlink` and `rmdir` land, and the removal is NON-RECURSIVE by
+        // deliberate choice: `rmdir` on a source directory the mirror never
+        // fully materialised must refuse ENOTEMPTY and fail the op, not delete
+        // a subtree the worker never saw.
+        if (mirror === null) {
+          if (cur === null) return 'ok';
+          if (cur.isDirectory()) await fsp.rmdir(abs);
+          else await fsp.unlink(abs);
+          return 'ok';
+        }
+
+        const kind = kindOf(mirror);
+        if (kind === null) return { error: `'${p}' is a kind the mirror cannot carry` };
         await fsp.mkdir(path.posix.dirname(abs), { recursive: true });
+        // A source entry of the WRONG KIND is replaced, not adjusted — a file
+        // that became a directory cannot be chmod'd into one.
+        if (cur && kindOf(cur) !== kind) {
+          if (cur.isDirectory()) await fsp.rmdir(abs);
+          else await fsp.unlink(abs);
+        }
+        if (kind === 'symlink') {
+          await fsp.rm(abs, { force: true });
+          await fsp.symlink(await fsp.readlink(src), abs);
+          return 'ok';
+        }
+        if (kind === 'dir') {
+          await fsp.mkdir(abs, { recursive: true });
+          await fsp.chmod(abs, mirror.mode & 0o7777);
+          return 'ok';
+        }
+        // MODE AND TIMES COME FROM THE MIRROR ENTRY, because the mirror entry
+        // is what "make the source match it" means — not because they survive
+        // an atomic write. They do not: a tmp+rename INSIDE the mirror hands
+        // the replacement fresh permissions, so the mirror's own mode is
+        // already the post-rename one and copying it cannot restore the
+        // original. Remembering the pre-edit mode across that rename is a
+        // different mechanism and is S3's (docs/architecture.md → "What
+        // `fileBridge` carried, and where it has to land again").
         await fsp.copyFile(src, abs);
-        await fsp.chmod(abs, st.mode & 0o7777);
+        await fsp.chmod(abs, mirror.mode & 0o7777);
+        await fsp.utimes(abs, new Date(mirror.atimeMs), new Date(mirror.mtimeMs));
         return 'ok';
       } catch (e) { return { error: (e as Error).message }; }
     },

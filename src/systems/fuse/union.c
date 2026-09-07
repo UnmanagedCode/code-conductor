@@ -787,6 +787,68 @@ static int pt_releasedir(const char *path, struct fuse_file_info *fi)
 	return 0;
 }
 
+/*
+ * TELL cc THE MIRROR IS AUTHORITATIVE AT `path`, and answer with whatever it
+ * says. Called after a mutating op has changed the mirror, so the reconcile
+ * sees the post-mutation state — including its ABSENCE, which is how an unlink
+ * or an rmdir lands.
+ *
+ * A FAILED RECONCILE FAILS THE OP. The mirror is then ahead of the source and
+ * the caller is told so; making that divergence STICKY — refusing every later
+ * write to the path until a re-fetch resyncs it — is a separate mechanism and
+ * is S3's (docs/architecture.md → "A failed push is loud and sticky"). What
+ * this discharges is the weaker, load-bearing half: a project-tier mutation
+ * never reports success having landed nowhere.
+ */
+static int push_mirror(const char *op, const char *path)
+{
+	int rc;
+
+	cache_invalidate(path);
+	rc = ccu_call(CCU_DIRTY, 0, path);
+	if (rc)
+		policy_refuse(op, path, "dirty-push-refused");
+	return rc;
+}
+
+/*
+ * WHAT THE RECONCILE CANNOT EXPRESS, REFUSED RATHER THAN APPLIED TO THE MIRROR
+ * ALONE. Its domain is exactly what `RemoteStat` models — file, directory,
+ * symlink, absent (src/systems/fuse/remoteSource.ts). Three ops fall outside
+ * it, and each would otherwise succeed against the mirror and reach the system
+ * never:
+ *
+ *   mknod   a device, fifo or socket. `localDirSource.stat` already reports
+ *           one as absent — there is no faithful mirror representation, and a
+ *           regular file standing in for one answers wrongly about what it is.
+ *   link    a hard link is an ALIAS, and a reconcile copies. Landing it as a
+ *           second independent file would silently break the aliasing the
+ *           caller asked for, which is worse than refusing it.
+ *   chown   the system's uid/gid space is not the orchestrator's, and choosing
+ *           a mapping is a decision S3 owns. No RemoteSource method carries
+ *           ownership at all.
+ *
+ * -EPERM rather than -EROFS: the tier is writable and other ops on it succeed,
+ * so this is the operation being unavailable, not the filesystem being
+ * read-only.
+ */
+static int refuse_unreconcilable(const char *op, const char *path, enum tier t)
+{
+	if (t != T_PROJECT)
+		return 0;
+	policy_refuse(op, path, "not-reconcilable");
+	return -EPERM;
+}
+
+/* An open fd whose METADATA changed still owes a push, and pt_release already
+ * sends one for a handle marked dirty — so marking is the whole of it. */
+static void fd_mark_dirty(uint64_t fh)
+{
+	int fd = (int)fh;
+	if (fd >= 0 && fd < FDTIER_SLOTS && (enum tier)fd_tier[fd] == T_PROJECT)
+		fd_dirty[fd] = 1;
+}
+
 /* ── mutations ──────────────────────────────────────────────────────────── */
 /*
  * EROFS ON EVERY SYNTHETIC AND BIND NODE, BEFORE ANY FD IS CHOSEN, AND EROFS
@@ -804,13 +866,15 @@ static int pt_mkdir(const char *path, mode_t mode)
 	int rc = mkdirat(r.fd, rp, mode);
 	int e = errno;
 	cred_leave();
-	return rc == -1 ? -e : 0;
+	if (rc == -1) return -e;
+	return r.tier == T_PROJECT ? push_mirror("mkdir", path) : 0;
 }
 
 static int pt_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 	ROUTE("mknod", path, 1, CCU_FETCH);
 	if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
+	if ((rrc = refuse_unreconcilable("mknod", path, r.tier)) != 0) return rrc;
 	cred_enter();
 	int rc = mknodat(r.fd, rp, mode, rdev);
 	int e = errno;
@@ -826,7 +890,8 @@ static int pt_unlink(const char *path)
 	int rc = unlinkat(r.fd, rp, 0);
 	int e = errno;
 	cred_leave();
-	return rc == -1 ? -e : 0;
+	if (rc == -1) return -e;
+	return r.tier == T_PROJECT ? push_mirror("unlink", path) : 0;
 }
 
 static int pt_rmdir(const char *path)
@@ -837,7 +902,8 @@ static int pt_rmdir(const char *path)
 	int rc = unlinkat(r.fd, rp, AT_REMOVEDIR);
 	int e = errno;
 	cred_leave();
-	return rc == -1 ? -e : 0;
+	if (rc == -1) return -e;
+	return r.tier == T_PROJECT ? push_mirror("rmdir", path) : 0;
 }
 
 static int pt_symlink(const char *target, const char *path)
@@ -848,7 +914,8 @@ static int pt_symlink(const char *target, const char *path)
 	int rc = symlinkat(target, r.fd, rp);
 	int e = errno;
 	cred_leave();
-	return rc == -1 ? -e : 0;
+	if (rc == -1) return -e;
+	return r.tier == T_PROJECT ? push_mirror("symlink", path) : 0;
 }
 
 /*
@@ -876,7 +943,14 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	rc = renameat2(rf.fd, rf.rp, rt.fd, rt.rp, flags);
 	int e = errno;
 	cred_leave();
-	return rc == -1 ? -e : 0;
+	if (rc == -1) return -e;
+	/* BOTH ENDS, in this order: the source's old entry is now absent from the
+	 * mirror and its new one is present, and the reconcile reads each from the
+	 * mirror. A same-tier rename is the only kind that reaches here — the
+	 * cross-tier case is -EXDEV above. */
+	if (rt.tier != T_PROJECT) return 0;
+	if ((rc = push_mirror("rename", from)) != 0) return rc;
+	return push_mirror("rename", to);
 }
 
 static int pt_link(const char *from, const char *to)
@@ -888,6 +962,7 @@ static int pt_link(const char *from, const char *to)
 	if ((rc = route("link", to,   1, CCU_FETCH, &rt))) return rc;
 	tr("link", to, tier_name(rt.tier));
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
+	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
 	if (rf.fd != rt.fd) {
 		policy_refuse("link", to, "xdev-rename");
 		return -EXDEV;
@@ -903,7 +978,9 @@ static int pt_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	if (fi && fi->fh) {
 		tr("chmod", path, "fh");
-		return fchmod((int)fi->fh, mode) == -1 ? -errno : 0;
+		if (fchmod((int)fi->fh, mode) == -1) return -errno;
+		fd_mark_dirty(fi->fh);
+		return 0;
 	}
 	{
 		ROUTE("chmod", path, 0, CCU_FETCH);
@@ -912,19 +989,24 @@ static int pt_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 		int rc = fchmodat(r.fd, rp, mode, 0);
 		int e = errno;
 		cred_leave();
-		return rc == -1 ? -e : 0;
+		if (rc == -1) return -e;
+		return r.tier == T_PROJECT ? push_mirror("chmod", path) : 0;
 	}
 }
 
 static int pt_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
 {
 	if (fi && fi->fh) {
+		int fd = (int)fi->fh;
 		tr("chown", path, "fh");
-		return fchown((int)fi->fh, uid, gid) == -1 ? -errno : 0;
+		if (fd >= 0 && fd < FDTIER_SLOTS && (enum tier)fd_tier[fd] == T_PROJECT)
+			return refuse_unreconcilable("chown", path, T_PROJECT);
+		return fchown(fd, uid, gid) == -1 ? -errno : 0;
 	}
 	{
 		ROUTE("chown", path, 0, CCU_FETCH);
 		if ((rrc = policy_mutation_check(r.tier)) != 0) return rrc;
+		if ((rrc = refuse_unreconcilable("chown", path, r.tier)) != 0) return rrc;
 		cred_enter();
 		int rc = fchownat(r.fd, rp, uid, gid, AT_SYMLINK_NOFOLLOW);
 		int e = errno;
@@ -937,7 +1019,9 @@ static int pt_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
 	if (fi && fi->fh) {
 		tr("truncate", path, "fh");
-		return ftruncate((int)fi->fh, size) == -1 ? -errno : 0;
+		if (ftruncate((int)fi->fh, size) == -1) return -errno;
+		fd_mark_dirty(fi->fh);
+		return 0;
 	}
 	{
 		ROUTE("truncate", path, 0, CCU_FETCH);
@@ -950,7 +1034,8 @@ static int pt_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 		int rc = ftruncate(fd, size);
 		int e = errno;
 		close(fd);
-		return rc == -1 ? -e : 0;
+		if (rc == -1) return -e;
+		return r.tier == T_PROJECT ? push_mirror("truncate", path) : 0;
 	}
 }
 
@@ -959,7 +1044,9 @@ static int pt_utimens(const char *path, const struct timespec ts[2],
 {
 	if (fi && fi->fh) {
 		tr("utimens", path, "fh");
-		return futimens((int)fi->fh, ts) == -1 ? -errno : 0;
+		if (futimens((int)fi->fh, ts) == -1) return -errno;
+		fd_mark_dirty(fi->fh);
+		return 0;
 	}
 	{
 		ROUTE("utimens", path, 0, CCU_FETCH);
@@ -968,7 +1055,8 @@ static int pt_utimens(const char *path, const struct timespec ts[2],
 		int rc = utimensat(r.fd, rp, ts, AT_SYMLINK_NOFOLLOW);
 		int e = errno;
 		cred_leave();
-		return rc == -1 ? -e : 0;
+		if (rc == -1) return -e;
+		return r.tier == T_PROJECT ? push_mirror("utimens", path) : 0;
 	}
 }
 
@@ -1056,9 +1144,7 @@ static int pt_release(const char *path, struct fuse_file_info *fi)
 
 	if (fd >= 0 && fd < FDTIER_SLOTS && fd_dirty[fd] &&
 	    (enum tier)fd_tier[fd] == T_PROJECT) {
-		cache_invalidate(path);
-		if (ccu_call(CCU_DIRTY, 0, path) != 0)
-			policy_refuse("release", path, "dirty-push-refused");
+		push_mirror("release", path);
 	}
 	if (fd >= 0 && fd < FDTIER_SLOTS) {
 		fd_tier[fd] = 0;

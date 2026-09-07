@@ -51,6 +51,10 @@ export interface LocalRoot {
   why: string;
 }
 
+// The refusal classes. FOUR, and every one of them names Bash: what differs is
+// what each has to say about the answer Bash gives — see the wordings below.
+export type ToolDenyClass = 'excluded' | 'outside-mirror-root' | 'bind-mount' | 'host-pinned';
+
 // UNCONDITIONAL, AND NEVER MERGED INTO THE TIER TABLE. The epic's reasoning,
 // restated once here so a later editor cannot merge them: a provider
 // advertising no excludes would otherwise lose /proc bind-mounting (and
@@ -365,8 +369,6 @@ export function renderPinsFile(entries: readonly TierEntry[]): string {
 // mirror has not materialised yet is ALLOWED — the union materialises it when
 // the CLI opens it, so a probe would deny exactly the first read of every file.
 
-export type ToolDenyClass = 'excluded' | 'outside-mirror-root' | 'bind-mount' | 'host-pinned';
-
 // The session facts a refusal has to name. `exclude` is the ADVERTISEMENT's
 // list, which is what the excluded refusal quotes: the table says a deny
 // happens, the advertisement says which rule caused it.
@@ -465,16 +467,30 @@ function bindMountRefusal(p: string, entry: TierEntry, systemId: string): string
     + `the same question about the right kernel: read it with \`cat\` there instead.`;
 }
 
-// A HOST PIN (or the session's own hidden scaffolding) — A DEAD END, and it says
-// so. This one deliberately does NOT point at Bash and must never name it: Bash
-// execs on the system, which cannot see the orchestrator's own files either, so
-// naming it would cost the worker a wasted call and its trust in the next
-// refusal. What the worker needs to know is that there is nothing to try.
+// A HOST PIN, and the session's own hidden scaffolding with it. Like the other
+// three, it names Bash — and unlike them it has to say WHICH MACHINE Bash
+// answers from, because here the same path exists on both.
+//
+// WHY IT NAMES BASH AT ALL. A dead-end wording buys no concealment: the worker
+// can `ls ~/` through Bash and reach the system's home directory whether this
+// sentence mentions it or not. What the dead end actually cost was the worker's
+// next move — it left the agent stuck without preventing anything.
+//
+// WHY THE REMOTE QUALIFIER IS LOAD-BEARING AND NOT DECORATION. A path pinned
+// here is pinned because the ORCHESTRATOR needs it: `~/.claude`, the cc
+// checkout, `/etc/nsswitch.conf`. Bash execs on the SYSTEM, so `cat` there
+// resolves the same string against the system's own filesystem and answers with
+// a different file. For an OS path that is exactly right — a question about the
+// system's name resolution wants the system's `/etc/hosts`. For a cc-shaped
+// path it is a real file that is not cc's, and an unqualified "use Bash" would
+// have the agent read it as authoritative. Saying which machine answers is what
+// keeps the same sentence true in both cases.
 function hostPinnedRefusal(p: string, entry: TierEntry, systemId: string): string {
-  return `cc will not bridge '${p}' to this session: '${entry.prefix}' is the orchestrator's own `
-    + `(${entry.why}), pinned to the orchestrator's machine, while this project's files live on `
-    + `system '${systemId}'. NO channel this session has reaches '${p}' on the system — every `
-    + `command this session runs, runs on '${systemId}' — so there is nothing here to retry through `
-    + `another tool. This is cc refusing to carry the file, NOT the file being absent — cc has not `
-    + `looked, and this says nothing about whether it exists.`;
+  return `cc will not bridge '${p}' to this session: '${entry.prefix}' is pinned to the `
+    + `ORCHESTRATOR's machine (${entry.why}) so the local CLI can run there, and this session's `
+    + `file tools do not carry it. This is cc refusing to carry the file, NOT the file being `
+    + `absent — cc has not looked, and this says nothing about whether it exists. Bash runs ON `
+    + `SYSTEM '${systemId}', not on the orchestrator: \`cat '${p}'\` there answers with system `
+    + `'${systemId}''s own file at that path, which is the right answer for a question about `
+    + `'${systemId}' and is NOT the orchestrator's copy this refusal is about.`;
 }

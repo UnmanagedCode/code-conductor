@@ -7,14 +7,19 @@
 // clause rather than by a `/deny/` match — the decision and the sentence are
 // both the deliverable.
 //
-// THERE ARE FOUR WORDINGS AND NOT ONE because the four classes differ on
-// whether a channel to the path exists at all:
-//   excluded / outside the mirror root / a bind mount  — Bash execs on the
-//     system and reaches the path, so each names Bash.
-//   host-pinned (and the session's own hidden scaffolding) — a DEAD END. Bash
-//     execs on the system too, which cannot see the orchestrator's own files,
-//     so naming it would cost the worker a wasted call and its trust in the
-//     next refusal.
+// THERE ARE FOUR WORDINGS AND NOT ONE. Every one of them points at Bash — that
+// is uniform — and what differs is what each has to say about the answer Bash
+// gives:
+//   excluded / outside the mirror root  — Bash execs on the system and reaches
+//     the path under no such restriction. `outside` additionally names the
+//     project's own tree, which is what the worker actually wanted.
+//   a bind mount                        — additionally WHOSE KERNEL, because a
+//     file tool there would answer about the orchestrator's.
+//   host-pinned (and this session's scaffolding) — additionally WHICH MACHINE,
+//     because the same path exists on both. A shell on the system returns the
+//     system's file at that path: right for an /etc question, and emphatically
+//     not cc's copy for a cc-shaped path. An unqualified "use Bash instead"
+//     would have the agent read that real file as the one cc refused.
 //
 // EVERYTHING HERE IS DECIDED IN MEMORY. `classifyForTool` never opens a file,
 // and one test below asserts that structurally rather than by inspection.
@@ -22,7 +27,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { buildTierTable, renderPinsFile, classifyForTool, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
+import { buildTierTable, renderPinsFile, classifyForTool, resolveTierEntry, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { buildFusePlan } from '../src/systems/fuse/plan.ts';
 import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
 import { withinPosix } from '../src/systems/mirror.ts';
@@ -94,6 +99,29 @@ const neverClaimsAbsence = (reason) => {
   for (const bad of ABSENCE_CLAIMS) assert.doesNotMatch(reason, bad, reason);
 };
 
+// THE SECOND RULE EVERY REFUSAL OBEYS, and the one the host-pin wording turns
+// on: a refusal that points at Bash must say WHICH MACHINE Bash answers from.
+//
+// It matters most exactly where the same path exists on both. `cat ~/.claude/…`
+// through Bash returns a real file — the SYSTEM's, not cc's — and an
+// unqualified "use Bash instead" would have the agent read it as the file cc
+// just refused. The qualifier is what keeps one sentence true for an `/etc`
+// path (where the system's copy IS what was wanted) and for a cc-shaped path
+// (where it is emphatically not).
+//
+// Enumerated as a FAMILY on both sides, not as one instance: the pointer may be
+// spelled `Bash runs on 'x'` or `Bash runs ON SYSTEM 'x'`, and either satisfies
+// it only when the system id is inside the same sentence as `Bash`.
+const namesBashOnTheSystem = (reason, systemId) => {
+  assert.match(reason, /\bBash\b/, `no Bash pointer at all: ${reason}`);
+  const sentences = reason.split(/(?<=\.)\s+/).filter(x => /\bBash\b/.test(x));
+  assert.ok(sentences.length > 0, reason);
+  assert.ok(
+    sentences.some(x => x.includes(`'${systemId}'`)),
+    `the Bash pointer does not name the machine it answers from: ${sentences.join(' | ')}`,
+  );
+};
+
 describe('the four file-tool refusals', () => {
   // A1 — PINS every clause of the excluded refusal, restored verbatim from the
   // deleted file bridge (a83bb40d^:src/systems/mirror.ts). Each clause earns its
@@ -134,6 +162,61 @@ describe('the four file-tool refusals', () => {
     // against one wording four times.
     assert.deepEqual([...seen].sort(),
       ['bind-mount', 'excluded', 'host-pinned', 'outside-mirror-root']);
+  });
+
+  // A2b — PINS the OTHER uniform rule, and it replaces a BAN that used to sit
+  // on the host-pinned wording. Every one of the four points at Bash, and every
+  // one names the machine Bash answers from. The host pin was the exception —
+  // a dead end that never mentioned Bash — and it is not any more: the dead end
+  // bought no concealment (a worker reaches the system's home through `ls ~/`
+  // regardless) while costing the agent its next move.
+  test('A2b: every refusal points at Bash and names the machine Bash answers from', () => {
+    const { classify, input } = fixture();
+    const seen = new Set();
+    for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
+      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      const r = classify(p);
+      assert.equal(r.decision, 'deny', p);
+      namesBashOnTheSystem(r.reason, SYSTEM_ID);
+      seen.add(r.class);
+    }
+    assert.deepEqual([...seen].sort(),
+      ['bind-mount', 'excluded', 'host-pinned', 'outside-mirror-root']);
+  });
+
+  // …AND THAT RULE'S OWN DISCRIMINATION, same shape as the absence rule's below.
+  // A wording that says only "use Bash" is the failure the qualifier exists to
+  // prevent, so the rule must reject it — otherwise the rule is satisfied by
+  // the very sentence it was added to forbid.
+  test('the Bash-pointer rule rejects a wording that drops the machine', () => {
+    const intact = fixture().classify('/home/node/.claude/settings.json').reason;
+    // THE MUTANTS HAVE TO DROP THE MACHINE, not merely reword around it. A
+    // first cut of this test replaced only the opening clause and left
+    // `'prod-box'` standing later in the same sentence — the rule passed it,
+    // correctly, and the weak mutant was the defect. Sentence-level surgery.
+    const sentences = intact.split(/(?<=\.)\s+/);
+    const bashAt = sentences.findIndex(x => /\bBash\b/.test(x));
+    assert.ok(bashAt >= 0, intact);
+    const swap = (replacement) =>
+      sentences.map((x, i) => (i === bashAt ? replacement : x)).filter(Boolean).join(' ');
+    const mutants = [
+      // The failure the qualifier exists to prevent, in the owner's own words.
+      swap('Use Bash instead.'),
+      swap('Bash runs under no such restriction: read it with `cat` there instead.'),
+      // The pointer removed outright, which leaves the agent with no channel.
+      swap(''),
+    ];
+    for (const m of mutants) {
+      assert.throws(() => namesBashOnTheSystem(m, SYSTEM_ID), /AssertionError/,
+        `the rule accepted a wording with no machine named: ${m.slice(-120)}`);
+    }
+    // And it accepts every shipped wording, so it is discriminating rather than
+    // merely strict.
+    const { classify, input } = fixture();
+    for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
+      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      namesBashOnTheSystem(classify(p).reason, SYSTEM_ID);
+    }
   });
 
   // THE GUARD'S OWN DISCRIMINATION, asserted rather than hand-run once.
@@ -232,24 +315,34 @@ describe('the four file-tool refusals', () => {
     }
   });
 
-  // A4 — PINS the DEAD-END wording, and its absence of `Bash` is the assertion
-  // that matters: Bash execs on the system and cannot see the orchestrator's
-  // `~/.claude` either, so pointing at it would be a lie that costs the worker a
-  // call. Reusing `excludedRefusal` here passes every other assertion in this
-  // file and fails this one.
-  test('A4: a host-pinned path is a dead end, and never names Bash', () => {
+  // A4 — PINS the host-pin wording, and the assertion that matters is now the
+  // REMOTE QUALIFIER rather than the ban that used to be here.
+  //
+  // The ban is gone because the dead end it enforced prevented nothing: a
+  // worker reaches the system's `~/` through Bash whether the sentence mentions
+  // it or not. What replaces it is the property that makes naming Bash safe
+  // here — the wording states which machine Bash answers from, so an agent
+  // reading the system's copy of a cc-shaped path cannot take it for cc's.
+  //
+  // Reusing `excludedRefusal` for this class still fails: that wording names no
+  // orchestrator and no pin prefix.
+  test('A4: a host-pinned path names Bash AND the machine Bash answers from', () => {
     const { classify, input } = fixture();
     const reason = denied(classify('/home/node/.claude/settings.json'), 'host-pinned');
-    assert.doesNotMatch(reason, /Bash/, reason);
     assert.match(reason, /'\/home\/node\/.claude'/, 'it names the prefix');
     assert.match(reason, /settings/, "it names the class, from the entry's own `why`");
-    assert.match(reason, /NO channel/);
+    assert.match(reason, /ORCHESTRATOR/, 'it says whose machine the pin is on');
+    namesBashOnTheSystem(reason, SYSTEM_ID);
+    // THE CLAUSE THAT KEEPS THE POINTER HONEST: it must not offer Bash as a
+    // route to the SAME file. Naming the system's own copy as a different file
+    // is what stops the agent reading it as authoritative.
+    assert.match(reason, /is NOT the orchestrator's copy/, reason);
     neverClaimsAbsence(reason);
 
     // The session's own hidden scaffolding is the same class and the same
-    // wording — it is the orchestrator's, and nothing reaches it either.
+    // wording — the pin is the orchestrator's either way.
     const hidden = denied(classify(path.join(input.runDir, 'pins.txt')), 'host-pinned');
-    assert.doesNotMatch(hidden, /Bash/, hidden);
+    namesBashOnTheSystem(hidden, SYSTEM_ID);
     assert.match(hidden, /scaffolding/);
   });
 
@@ -331,6 +424,74 @@ describe('the four file-tool refusals', () => {
     assert.ok(allows > 0 && denies > 0, `${allows} allow / ${denies} deny`);
     assert.deepEqual(classify('/opt/novel-allow/x'), { decision: 'allow' });
     denied(classify('/opt/novel-deny/x'), 'host-pinned');
+  });
+
+  // A21 — THE GATE ITSELF, over the WHOLE TABLE, because the owner calls it the
+  // most important property in the system: a file tool aimed at any host-pinned
+  // path must DENY, and the `localRoots` allow bit must be the only way a
+  // non-project path becomes tool-readable.
+  //
+  // A8 already proves the allow set is DERIVED from `localRoots`. What A8
+  // cannot say is that no OTHER entry allows — it iterates the declaration, so
+  // a stray `toolAccess: 'allow'` on an `/etc` pin is invisible to it. This
+  // iterates the TABLE, which is the other direction, and it is the direction
+  // the owner's invariant is stated in: *no local file served as if it were a
+  // remote file*.
+  //
+  // NON-VACUITY IS THE WHOLE RISK HERE, so three things are asserted about the
+  // enumeration itself and not only about its members: that the table is large,
+  // that both outcomes occur, and that the allow set computed FROM THE TABLE is
+  // exactly the one the declaration asked for — set equality, so a missing
+  // entry and an extra one both fail.
+  test('A21: every non-project entry denies, and the allow set is exactly the declaration', () => {
+    const { classify, input } = fixture();
+    const tiers = buildTierTable(input);
+
+    // A path under each entry, at a component boundary so longest-prefix picks
+    // that entry and not a shorter one. Entries that a LONGER entry shadows are
+    // skipped by construction: `resolveTierEntry` is asked which entry owns the
+    // probe, and only the ones it names are judged here.
+    const owned = new Map();
+    for (const e of tiers) {
+      const probe = e.prefix === '/' ? '/probe-a21.txt' : path.join(e.prefix, 'probe-a21.txt');
+      const owner = resolveTierEntry(tiers, probe);
+      if (owner?.prefix !== e.prefix) continue;      // shadowed; its own probe judges it
+      owned.set(e.prefix, { entry: e, probe });
+    }
+    assert.ok(owned.size >= 40, `only ${owned.size} entries were reachable by their own probe`);
+
+    const allowedPrefixes = new Set();
+    let denies = 0;
+    for (const { entry, probe } of owned.values()) {
+      const d = classify(probe);
+      if (d.decision === 'allow') { allowedPrefixes.add(entry.prefix); continue; }
+      denies++;
+      // Every deny carries a wording, and every wording obeys both rules.
+      assert.ok(d.reason && d.reason.length > 80, `${entry.prefix}: ${d.reason}`);
+      neverClaimsAbsence(d.reason);
+      namesBashOnTheSystem(d.reason, SYSTEM_ID);
+    }
+    assert.ok(denies > 30, `only ${denies} entries denied`);
+
+    // THE SET EQUALITY. The only prefixes that allow are the `project` entries
+    // and the `localRoots` that declared `allow` — computed from the table on
+    // one side and from the declaration on the other.
+    const wantAllowed = new Set([
+      ...tiers.filter(e => e.tier === 'project').map(e => e.prefix),
+      ...input.localRoots.filter(r => r.access === 'allow').map(r => r.prefix),
+    ].filter(pfx => owned.has(pfx)));
+    assert.deepEqual([...allowedPrefixes].sort(), [...wantAllowed].sort());
+
+    // And no `host`, `hide`, `bind` or `fail` entry carries an allow bit at all,
+    // which is the invariant one layer below the decision: `classifyForTool`
+    // reads `toolAccess`, so a stray bit would allow before any wording is
+    // chosen. Stated over the table, with the declaration's allows excluded by
+    // name rather than by tier.
+    const declaredAllow = new Set(input.localRoots.filter(r => r.access === 'allow').map(r => r.prefix));
+    for (const e of tiers) {
+      if (e.tier === 'project' || declaredAllow.has(e.prefix)) continue;
+      assert.equal(e.toolAccess, 'deny', `${e.tier} ${e.prefix} carries toolAccess: allow`);
+    }
   });
 
   // A9 — PINS longest-prefix resolution across the WHOLE table, which is what

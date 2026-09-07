@@ -221,6 +221,110 @@ describe('the control channel, cc side', () => {
     assert.equal((await call(sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.ABSENT);
   });
 
+  // ── THE RECONCILE ─────────────────────────────────────────────────────────
+  //
+  // `DIRTY` means "the mirror at P is authoritative — make the source match
+  // it", and that generality is what lets every mutating op land through ONE
+  // frame instead of a frame per op. These are its branches. Each one is a
+  // project-tier mutation that, before this, changed the mirror and reached the
+  // system never.
+
+  // mkdir. Dies if the reconcile only handles files.
+  test('DIRTY lands a directory the mirror gained', async () => {
+    const p = '/srv/app/newdir';
+    await fs.mkdir(inMirror(p), { recursive: true });
+    await fs.chmod(inMirror(p), 0o750);
+    const r = await call(sock, CCU_OP.DIRTY, 0, p);
+    assert.equal(r.status, CCU_STATUS.READY);
+    const st = await fs.lstat(at(p));
+    assert.equal(st.isDirectory(), true, 'the directory never reached the source');
+    assert.equal(st.mode & 0o777, 0o750);
+  });
+
+  // unlink. Dies if an absent mirror entry is treated as "nothing to do" —
+  // which is what let `rm` report success while the file resurrected.
+  test('DIRTY lands a deletion the mirror made', async () => {
+    const p = '/srv/app/doomed.txt';
+    await fs.writeFile(at(p), 'still here');
+    await call(sock, CCU_OP.FETCH, 0, p);
+    await fs.rm(inMirror(p));                       // as pt_unlink would
+    const r = await call(sock, CCU_OP.DIRTY, 0, p);
+    assert.equal(r.status, CCU_STATUS.READY);
+    await assert.rejects(() => fs.access(at(p)), 'the file survived on the source');
+  });
+
+  // rmdir, and the reason the removal is NON-RECURSIVE. The mirror may be
+  // sparser than the source, so a source directory with children the worker
+  // never saw must refuse rather than be deleted — and the op then fails.
+  test('DIRTY refuses to delete a source directory the mirror never fully held', async () => {
+    const p = '/srv/app/deep';
+    await fs.mkdir(at(p), { recursive: true });
+    await fs.writeFile(path.join(at(p), 'unseen.txt'), 'never mirrored');
+    await fs.mkdir(inMirror(p), { recursive: true });
+    await fs.rmdir(inMirror(p));                    // as pt_rmdir would
+    const r = await call(sock, CCU_OP.DIRTY, 0, p);
+    assert.equal(r.status, CCU_STATUS.REFUSED, 'a subtree the worker never saw was deleted');
+    assert.equal(r.err, EIO);
+    await fs.access(path.join(at(p), 'unseen.txt'));
+    // …and an EMPTY one does land, so the refusal above is the non-empty case
+    // and not a blanket inability.
+    const q = '/srv/app/empty';
+    await fs.mkdir(at(q), { recursive: true });
+    await fs.mkdir(inMirror(q), { recursive: true });
+    await fs.rmdir(inMirror(q));
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, q)).status, CCU_STATUS.READY);
+    await assert.rejects(() => fs.access(at(q)));
+  });
+
+  // rename, which is two reconciles: the old name is absent from the mirror and
+  // the new one is present, exactly as `pt_rename` pushes both ends.
+  test('DIRTY on both ends lands a rename', async () => {
+    const from = '/srv/app/before.txt', to = '/srv/app/after.txt';
+    await fs.writeFile(at(from), 'moved bytes');
+    await call(sock, CCU_OP.FETCH, 0, from);
+    await fs.rename(inMirror(from), inMirror(to));  // as pt_rename would
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, from)).status, CCU_STATUS.READY);
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, to)).status, CCU_STATUS.READY);
+    await assert.rejects(() => fs.access(at(from)), 'the old name survived');
+    assert.equal(await fs.readFile(at(to), 'utf8'), 'moved bytes');
+  });
+
+  // chmod and utimens: the reconcile carries mode AND times, because "make the
+  // source match the mirror entry" is what it means.
+  test('DIRTY lands a mode and an mtime change', async () => {
+    const p = '/srv/app/perm.sh';
+    await fs.writeFile(at(p), '#!/bin/sh\n');
+    await call(sock, CCU_OP.FETCH, 0, p);
+    await fs.chmod(inMirror(p), 0o755);
+    await fs.utimes(inMirror(p), new Date(60_000), new Date(60_000));
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+    const st = await fs.stat(at(p));
+    assert.equal(st.mode & 0o777, 0o755);
+    assert.equal(Math.floor(st.mtimeMs), 60_000);
+  });
+
+  // symlink, the fourth kind RemoteStat can express.
+  test('DIRTY lands a symlink, and re-points one that moved', async () => {
+    const p = '/srv/app/newlink';
+    await fs.symlink('one.txt', inMirror(p));
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readlink(at(p)), 'one.txt');
+    await fs.rm(inMirror(p)); await fs.symlink('two.txt', inMirror(p));
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+    assert.equal(await fs.readlink(at(p)), 'two.txt');
+  });
+
+  // A source entry of the WRONG KIND is replaced, not adjusted — a file that
+  // became a directory in the mirror cannot be chmod'd into one on the source.
+  test('DIRTY replaces a source entry whose kind changed', async () => {
+    const p = '/srv/app/wasfile';
+    await fs.writeFile(at(p), 'a file');
+    await fs.rm(inMirror(p), { force: true });
+    await fs.mkdir(inMirror(p), { recursive: true });
+    assert.equal((await call(sock, CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+    assert.equal((await fs.lstat(at(p))).isDirectory(), true);
+  });
+
   // PINS: a mirror entry of the WRONG KIND is replaced, not adjusted — a
   // directory that became a file on the source cannot be chmod'd into one.
   test('a kind change replaces the mirror entry', async () => {

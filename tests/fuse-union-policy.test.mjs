@@ -180,4 +180,61 @@ describe('the compiled policy driver', { skip }, () => {
     assert.equal(src.match(/policy_mutation_check\(/g).length, MUTATING.length + 2,
       `expected one call per mutating op plus rename/link's second end; ${bodies.length} pt_ ops in the file`);
   });
+
+  // AND THAT EVERY PROJECT-TIER MUTATION EITHER LANDS OR REFUSES — the bar M1
+  // closes to. The partition is asserted as a PARTITION: each op appears in
+  // exactly one list, the two lists together are the whole mutating set, and no
+  // op body reaches its syscall without one of the two calls.
+  //
+  // Weaker than an execution test and named as such. What each half is worth:
+  // the RECONCILE's own branches — dir, absent, symlink, mode+mtime, kind
+  // change — are driven deterministically in `fuse-control-channel.test.mjs`;
+  // that the frame reaches cc and the bytes reach the system is real-gate R3
+  // and R7. This is the enumeration between them, and it is the part a
+  // per-op-body execution test cannot give without a real CLI.
+  test('every project-tier mutation either pushes or refuses, and the split is a partition', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    // LANDS: mutates the mirror, then tells cc the mirror is authoritative.
+    const PUSHES = ['mkdir', 'unlink', 'rmdir', 'symlink', 'rename', 'chmod', 'truncate', 'utimens'];
+    // REFUSES: outside what `RemoteStat` can express, so it cannot be
+    // reconciled and must not be applied to the mirror alone.
+    const REFUSES = ['mknod', 'link', 'chown'];
+    // `create`/`open` land through `pt_release`'s own push, which is why they
+    // are in neither list — asserted, so the exemption is not a silent gap.
+    const VIA_RELEASE = ['create', 'open'];
+
+    const bodyOf = (op) => {
+      const at = src.indexOf(`static int pt_${op}(`);
+      assert.ok(at > 0, `pt_${op} is missing`);
+      const next = src.indexOf('\nstatic ', at + 1);
+      return src.slice(at, next === -1 ? src.length : next);
+    };
+
+    for (const op of PUSHES) {
+      const body = bodyOf(op);
+      assert.match(body, /push_mirror\(/, `pt_${op} mutates the mirror and pushes nothing`);
+      assert.doesNotMatch(body, /refuse_unreconcilable\(/, `pt_${op} is in both lists`);
+    }
+    for (const op of REFUSES) {
+      const body = bodyOf(op);
+      assert.match(body, /refuse_unreconcilable\(/, `pt_${op} succeeds against the mirror alone`);
+      assert.doesNotMatch(body, /push_mirror\(/, `pt_${op} is in both lists`);
+    }
+    for (const op of VIA_RELEASE) {
+      const body = bodyOf(op);
+      assert.doesNotMatch(body, /push_mirror\(|refuse_unreconcilable\(/,
+        `pt_${op} should land through pt_release's push, not its own`);
+      assert.match(body, /fd_tier_set\(/, `pt_${op} does not mark its fd, so release cannot push`);
+    }
+    assert.match(bodyOf('release'), /push_mirror\(/, 'pt_release stopped pushing');
+
+    // THE PARTITION: the two lists are disjoint and together are exactly the
+    // mutating set the previous test enumerates, minus the two that go through
+    // release. A new mutating op lands in neither and fails here.
+    const covered = [...PUSHES, ...REFUSES, ...VIA_RELEASE].sort();
+    assert.equal(new Set(covered).size, covered.length, 'an op is in two lists');
+    assert.deepEqual(covered,
+      ['chmod', 'chown', 'create', 'link', 'mkdir', 'mknod', 'open', 'rename', 'rmdir',
+        'symlink', 'truncate', 'unlink', 'utimens'].sort());
+  });
 });

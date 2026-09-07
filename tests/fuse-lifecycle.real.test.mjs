@@ -824,6 +824,101 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     await assert.rejects(() => fs.stat(fuseRunDir(inst.id)), 'the run directory was not reclaimed');
   });
 
+  // ── R7 ───────────────────────────────────────────────────────────────────
+  // PINS M1's bar: NO PROJECT-TIER MUTATION SILENTLY SUCCEEDS. Either it lands
+  // on the source or it refuses.
+  //
+  // THE TECHNIQUE, and it buys a second thing: `exec` REPLACES the process,
+  // keeping its pid, thread group and start time — so a shell that marks itself
+  // with `[ -e "$MARK" ]` and then `exec`s into `mkdir` hands the mark to an
+  // external binary. Without it every probe here would be an unmarked child
+  // answering -ENOENT for the right reason and reading as the wrong one.
+  //
+  // It therefore also measures criterion 5's STICKINESS ACROSS EXEC, which the
+  // unit driver cannot reach (it has no exec) and nothing else pins: the CLI's
+  // own launch depends on it, because bootstrap.sh marks the shell that later
+  // execs into the CLI.
+  test('R7 — every project-tier mutation lands on the system or refuses', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const mark = inside(record, inst._fuse.plan.markPath);
+      const onSystem = (rel) => path.join(fakeRemote, box, 'app', rel);
+      const inChroot = (rel) => inside(record, path.join(box, 'app', rel));
+      // `$1` is always the mark path; the op is exec'd so it inherits the mark.
+      const marked = (script, ...args) => inNs(record.anchorPid,
+        `[ -e "$1" ]; ${script}`, mark, ...args);
+
+      // THE PRECONDITION THIS WHOLE ARM RESTS ON, asserted first: the mark
+      // really does survive the exec. Without it every result below is the
+      // unmarked answer and the arm proves nothing.
+      const survives = await marked('exec cat "$2"', inChroot('remote-marker.txt'));
+      assert.match(survives.stdout, /SYSTEM-SIDE-PROJECT-FILE/,
+        `the mark did not survive exec, so no probe below is marked: ${survives.stderr}`);
+
+      // mkdir LANDS.
+      const md = await marked('exec mkdir "$2"', inChroot('r7-dir'));
+      assert.equal(md.ok, true, `mkdir refused: ${md.stderr}`);
+      await waitFor(async () => (await fs.lstat(onSystem('r7-dir')).catch(() => null))?.isDirectory() === true,
+        { timeout: 15_000 });
+
+      // unlink LANDS — and this is the case the bar was written for: `rm`
+      // reporting success while the file resurrected on the next read.
+      await fs.writeFile(onSystem('r7-doomed.txt'), 'ON THE SYSTEM\n');
+      const rm = await marked('exec rm "$2"', inChroot('r7-doomed.txt'));
+      assert.equal(rm.ok, true, `rm refused: ${rm.stderr}`);
+      await waitFor(async () => await fs.access(onSystem('r7-doomed.txt')).then(() => false, () => true),
+        { timeout: 15_000 });
+      // …and it does not come back. A fresh marked read must not find it.
+      const gone = await marked('exec cat "$2"', inChroot('r7-doomed.txt'));
+      assert.equal(gone.ok, false, `the deleted file resurrected: ${gone.stdout}`);
+
+      // rename LANDS at both ends.
+      await fs.writeFile(onSystem('r7-from.txt'), 'MOVED\n');
+      const mv = await marked('exec mv "$2" "$3"', inChroot('r7-from.txt'), inChroot('r7-to.txt'));
+      assert.equal(mv.ok, true, `mv refused: ${mv.stderr}`);
+      await waitFor(async () =>
+        (await fs.readFile(onSystem('r7-to.txt'), 'utf8').catch(() => '')).includes('MOVED')
+        && await fs.access(onSystem('r7-from.txt')).then(() => false, () => true),
+        { timeout: 15_000 });
+
+      // chmod LANDS, executable bit and all.
+      await fs.writeFile(onSystem('r7-mode.sh'), '#!/bin/sh\n');
+      await fs.chmod(onSystem('r7-mode.sh'), 0o644);
+      const cm = await marked('exec chmod 755 "$2"', inChroot('r7-mode.sh'));
+      assert.equal(cm.ok, true, `chmod refused: ${cm.stderr}`);
+      await waitFor(async () => ((await fs.stat(onSystem('r7-mode.sh'))).mode & 0o777) === 0o755,
+        { timeout: 15_000 });
+
+      // AND THE THREE THE RECONCILE CANNOT EXPRESS REFUSE, rather than
+      // succeeding against the mirror and reaching the system never.
+      await fs.writeFile(onSystem('r7-link-src.txt'), 'x\n');
+      const ln = await marked('exec ln "$2" "$3" 2>&1', inChroot('r7-link-src.txt'), inChroot('r7-link-dst.txt'));
+      assert.match(ln.stdout, /Operation not permitted/, `a hard link was accepted: ${ln.stdout} ${ln.stderr}`);
+      await assert.rejects(() => fs.access(onSystem('r7-link-dst.txt')),
+        'the hard link reached the system as a second file');
+
+      const mk = await marked('exec mkfifo "$2" 2>&1', inChroot('r7-fifo'));
+      assert.match(mk.stdout, /Operation not permitted/, `a fifo was accepted: ${mk.stdout}`);
+      await assert.rejects(() => fs.access(onSystem('r7-fifo')));
+
+      // chown needs root to get past the kernel's own check, so it runs there.
+      const ch = await inNsRoot(record.anchorPid, '[ -e "$1" ]; exec chown 0:0 "$2" 2>&1',
+        mark, inChroot('remote-marker.txt'));
+      assert.match(ch.stdout, /Operation not permitted/, `chown was accepted: ${ch.stdout}`);
+
+      // Each refusal is in the log by name, so the pin-derivation instrument
+      // sees them rather than only the caller.
+      const refusals = await refusalsOf(inst.id);
+      const notReconcilable = refusals.filter(r => r[2] === 'not-reconcilable').map(r => r[0]);
+      assert.deepEqual([...new Set(notReconcilable)].sort(), ['chown', 'link', 'mknod']);
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R7');
+  });
+
   // ── ARM 7 ────────────────────────────────────────────────────────────────
   // PINS: nothing this run started is still running, established WITHOUT
   // reading mount.json. Ordered last in the file so it sees every earlier arm's
