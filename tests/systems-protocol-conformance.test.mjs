@@ -31,7 +31,7 @@ import {
 const BOUND = conformanceRemoteId() === null ? {} : { remoteId: conformanceRemoteId() };
 const FLAG_TARGET = conformanceRemoteId() === null ? '' : `${conformanceRemoteId()}=`;
 import { rmrf } from './rmrf.mjs';
-import { msFromNanos } from '../src/systems/system.ts';
+import { msFromNanos, msFromFindStamp } from '../src/systems/system.ts';
 
 // Every taxonomy code this file provokes for real. The last test checks the
 // union against the exported lists, so a new code cannot be added to the
@@ -767,6 +767,59 @@ test('a provider that does not advertise remotes is never handed a remoteId', { 
     sys.dispose();
     await rmrf(dir);
   }
+});
+
+// THE ONE PLACE THE mtime FORMULA IS OBSERVED INDEPENDENTLY, and it exists
+// because routing everything through `msFromNanos` closed a flake by removing
+// the only such observation.
+//
+// Before that, three assertion sites computed their own oracle as
+// `Math.round(fs.Stats.mtimeMs)` — which disagreed with the implementation
+// about once in 5000, so they flaked. Routing them through `msFromNanos` fixed
+// the flake and made oracle and implementation MUTATE TOGETHER: after it, no
+// agreement assertion anywhere could see the formula change at all, and both
+// implementations route through the same function too. Two mutants — the
+// compound float `Math.round(secs*1000 + nanos/1e6)`, the exact formula this
+// repo documents as wrong, and `Math.round` → `Math.floor` — survived the whole
+// suite with zero test delta.
+//
+// SO THESE ARE LITERALS. Deriving the expectation from `msFromNanos` is what
+// made those invisible; an oracle that mutates with its subject is not one.
+// Each value is chosen for the mutant it separates, and the two are disjoint:
+//
+//   1788783387.216499885 → the compound float carries a half-millisecond
+//     across the boundary that the integer form does not (…217 vs …216). Kills
+//     the compound mutant; `floor` agrees here and is invisible to it.
+//   1788783387.216500000 → an exact .5, where round goes up and floor does not
+//     (…217 vs …216). Kills the floor mutant; the compound form agrees.
+//   5.999999600 → rounds up to a full 1000 ms, i.e. the carry into the next
+//     second, which needs no special case because `secs*1000 + 1000` IS it.
+//     Kills floor a second way, and pins the carry.
+test('msFromNanos is pinned to LITERALS, because every other observation of it mutates with it', () => {
+  assert.equal(msFromNanos(1788783387, 216499885), 1788783387216,
+    'the compound float `Math.round(secs*1000 + nanos/1e6)` answers …217 here');
+  assert.equal(msFromNanos(1788783387, 216500000), 1788783387217,
+    'an exact half-millisecond rounds UP; `Math.floor` answers …216');
+  assert.equal(msFromNanos(5, 999999600), 6000,
+    'a nanosecond value that rounds to a full second needs no carry; `Math.floor` answers 5999');
+  // The ordinary cases, so a mutant cannot pass by being right only at the edges.
+  assert.equal(msFromNanos(0, 0), 0);
+  assert.equal(msFromNanos(1, 1000000), 1001);
+  assert.equal(msFromNanos(1700000000, 500000000), 1700000000500);
+});
+
+// The string half of the same derivation: `find -printf '%T@'` is
+// `seconds.nanoseconds` with TEN fractional digits on GNU (nanoseconds × 10),
+// and it is parsed as two integers precisely so the float above never appears.
+// Literals again, and the first row is the compound mutant's own value written
+// as `find` would print it.
+test('msFromFindStamp parses two integers out of the stamp, never one float', () => {
+  assert.equal(msFromFindStamp('1788783387.2164998850'), 1788783387216);
+  assert.equal(msFromFindStamp('1788783387.2165000000'), 1788783387217);
+  assert.equal(msFromFindStamp('1700000000'), 1700000000000, 'a stamp with no fraction is whole seconds');
+  assert.equal(msFromFindStamp('1700000000.5'), 1700000000500, 'a short fraction is padded, not read as nanoseconds');
+  assert.equal(msFromFindStamp('not a stamp'), null, 'an unparseable stamp is null, never NaN flowing into a mirror');
+  assert.equal(msFromFindStamp(''), null);
 });
 
 test('parseFindLines refuses a malformed entry rather than skipping it', () => {

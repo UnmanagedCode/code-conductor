@@ -164,8 +164,20 @@ export function systemSource(system: System, opts: { log?: (line: string) => voi
         // non-empty directory refuses ENOTEMPTY here exactly as
         // `localDirSource`'s `rmdir` does.
         //
-        //   file over a directory  → EISDIR    (the rename cannot land)
-        //   dir/symlink over a file or directory → EEXIST / EISDIR
+        // WHAT ACTUALLY REACHES HERE, in the shape this file has today, is
+        // EISDIR ALONE: a file whose source copy is a directory, where the
+        // atomic write's rename cannot land.
+        //
+        // EEXIST AND ENOTDIR ARE UNPRODUCEABLE AS THIS STANDS, and that is
+        // written down rather than discovered again: `ln -sfnT`'s `-f`
+        // REPLACES whatever entry it finds (providerSystem.ts), and the dir
+        // arm above pre-cleans a wrong-kind entry before `mkdir`, so neither
+        // path can raise them. They are KEPT because each is one token in a
+        // condition and each becomes live again the moment either of those two
+        // shapes changes — dropping `-f`, or dropping the pre-clean — and a
+        // guard that has to be re-derived after such a change is a guard that
+        // will be missing. A mutant of the EEXIST arm is therefore EQUIVALENT,
+        // not surviving.
         //
         // Retried ONCE. A second failure is the answer.
         const code = e instanceof SystemError ? e.code : null;

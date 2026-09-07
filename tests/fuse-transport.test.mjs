@@ -660,9 +660,20 @@ describe('the launch probe — is the box still there, asked now', () => {
   const runDirs = async () => new Set(await fs.readdir(fuseRunRoot()).catch(() => []));
 
   // PINS: a box that has gone away refuses the SPAWN by name, before anything
-  // is created for it.
-  // DIES UNDER: dropping the probe; running it after `prepare()`, which the
-  // run-directory assertion catches and the status code alone would not.
+  // is created for it — the refusal's WORDING and its ORDERING.
+  //
+  // DIES UNDER: running the probe after `prepare()` — caught by the
+  // run-directory assertion, which the status code alone would not catch; and
+  // any change to the clauses asserted below.
+  //
+  // IT DOES *NOT* DIE UNDER dropping the live probe, and the earlier comment
+  // claiming so was wrong — measured. `_assertRemoteMountable` makes a second
+  // call the dead box also refuses (the mirror-root `lstat`), which
+  // re-produces this refusal identically: same wording, same 502, same absent
+  // run directory. The real killers of the two probe mutants are **T17**,
+  // which counts the probe's own frame, and **T16b**, which asserts the clause
+  // only the ENOREMOTE branch writes. A stated mechanism that does not hold is
+  // what a future editor preserves, so it is named here rather than left.
   test('T16 — a box that stopped refuses the spawn 502 FUSE_REMOTE_UNREACHABLE, creating nothing', async () => {
     const f = await fixture();
     // The machine goes away AFTER cc has connected and adopted — the exact
