@@ -61,7 +61,12 @@ describe('a mirror advertisement that moves under a live session', () => {
   //
   // `mirror` is the FIRST advertisement — empty string means "advertise
   // nothing", which composes the project-anchored geometry (offset '').
-  async function fixture({ sub, mirror }) {
+  //
+  // `exclude` is a list of paths RELATIVE TO THE BOX, advertised as excludes.
+  // It exists for the `fail`-pin arm at the end of this file: an exclude inside
+  // the mirror root is the ONLY thing that renders a `fail` line, and this is
+  // the only fixture in `npm test` that mounts for real.
+  async function fixture({ sub, mirror, exclude = [] }) {
     const id = `movable${++n}`;
     const project = `app${n}`;
     const box = await mkdtemp('cc-0279-');
@@ -75,7 +80,8 @@ describe('a mirror advertisement that moves under a live session', () => {
     await fs.writeFile(mirrorFile, mirror === '' ? '' : path.join(box, mirror));
     await addSystem({
       id, label: id,
-      launch: ['node', FIXTURE, '--mirror-file', mirrorFile, '--pid-file', pidFile],
+      launch: ['node', FIXTURE, '--mirror-file', mirrorFile, '--pid-file', pidFile,
+        ...exclude.flatMap((rel) => ['--advertise-exclude', path.join(box, rel)])],
     });
     assert.equal((await adoptProject(project, projPath, { system: id })).ok, true);
 
@@ -186,5 +192,55 @@ describe('a mirror advertisement that moves under a live session', () => {
     await assert.rejects(() => instances.respawn(f.inst.id),
       (e) => e.code === 'MIRROR_ADVERTISEMENT_CHANGED' && e.statusCode === 501);
     assert.equal(f.inst.cwd, f.projPath, 'the session moved anyway');
+  });
+
+  // ── the `fail` pin arm ──────────────────────────────────────────────
+  //
+  // PINS THAT THE DAEMON PARSES A `fail` PIN AT ALL, and it lands here because
+  // this is the ONLY fixture in `npm test` that mounts for real.
+  //
+  // WHY IT EXISTS: a mutation round removed `pins_load`'s `fail` arm on its own
+  // and the whole suite stayed GREEN — 3 pass, 0 fail. `bind` needs no help,
+  // because bind lines render on every mount; `fail` renders only when a
+  // provider advertises an exclude INSIDE its mirror root, and no arm above
+  // advertises one. So the arm cc added specifically to stop a deployment dying
+  // with `unknown kind 'fail'` was itself deletable with a green suite. Fixture
+  // GEOMETRY was the gap, not a missing assertion.
+  //
+  // WHAT IT ASSERTS, and the boundary is deliberate: that a `fail` line really
+  // rendered (a cc-side artifact fact), and that THE MOUNT COMES UP. NOTHING
+  // about what the daemon then does with that pin. Phase A's `fail` entries have
+  // no `route()` case and take the frozen `default:` arm — a real, recorded
+  // behaviour window that H5 closes (src/systems/fuse/PROVENANCE.md D1) — so an
+  // expectation about routing here would outlive the change that should kill it.
+  // This matters MORE because Phase B rewrites that arm: without this, H5 lands
+  // on unmeasured ground.
+  //
+  // GEOMETRY: mirror root `<box>/nest`, project `<box>/nest/app`, exclude
+  // `<box>/nest/other` — inside the root (so it is active, not inert) and
+  // outside the project (so it is not MIRROR_EXCLUDE_COVERS_PROJECT).
+  test('a `fail` pin from an advertised exclude still mounts', async () => {
+    const f = await fixture({ sub: 'nest/app', mirror: 'nest', exclude: ['nest/other'] });
+    const excluded = path.join(f.box, 'nest', 'other');
+
+    // The advertisement really carried it, and cc really kept it active —
+    // without this the arm could pass having rendered no `fail` line at all,
+    // which is the state that let the mutant survive.
+    assert.deepEqual(f.inst._mirrorScope.exclude, [excluded]);
+    const rules = f.inst._fuse.plan.pinsText.split('\n').filter((l) => l && !l.startsWith('#'));
+    assert.ok(rules.includes(`fail\t${excluded}`),
+      `no fail line was rendered, so the daemon never parsed one: ${rules.join(' | ')}`);
+    // …and bind lines are there too, so this arm covers both new kinds on one
+    // real mount rather than trading one for the other.
+    for (const b of ['/proc', '/sys', '/dev']) {
+      assert.ok(rules.includes(`bind\t${b}`), `${b} lost its bind line`);
+    }
+
+    // THE CLAIM: the daemon accepted the file and the union came up. `fixture`
+    // has already asserted the 201 and waited for `idle`; the mount record is
+    // the direct evidence, and a parse refusal would have died before it.
+    assert.notEqual(f.inst.pid, null, 'no worker started');
+    assert.equal(f.inst._fuse.record?.stage, 'mounted',
+      'the union never reached the mounted handshake');
   });
 });

@@ -25,6 +25,7 @@ import path from 'node:path';
 import { buildTierTable, renderPinsFile, classifyForTool, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { buildFusePlan } from '../src/systems/fuse/plan.ts';
 import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
+import { withinPosix } from '../src/systems/mirror.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 
 const SYSTEM_ID = 'prod-box';
@@ -171,6 +172,38 @@ describe('the four file-tool refusals', () => {
       '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
       neverClaimsAbsence(classify(p).reason);
     }
+  });
+
+  // THE DELIBERATELY-LEGAL HALF, mutated rather than eyeballed.
+  //
+  // `absent` and `exists` must stay OUT of the ban family, because the
+  // contract's own anti-ENOENT clauses are "NOT the file being absent" and
+  // "says nothing about whether it exists" — a family that banned either would
+  // forbid the very wording it protects. Round 2 left that resting on the
+  // accept-half holding by inspection: no mutant added `absent` to the family.
+  //
+  // So the over-tight family is DATA here: adding either word must make the
+  // shipped wordings fail. That is what makes the accept-half load-bearing
+  // instead of decorative, and it fails at authoring time if a future editor
+  // tightens the family onto the contract.
+  test('banning `absent` or `exists` would reject the contract, so the accept-half bites', () => {
+    const { classify, input } = fixture();
+    const shipped = ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
+      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]
+      .map((p) => classify(p).reason);
+
+    for (const [word, overTight] of [['absent', /\babsent\b/i], ['exists', /\bexists\b/i]]) {
+      const family = [...ABSENCE_CLAIMS, overTight];
+      const rejected = shipped.filter((r) => family.some((bad) => bad.test(r)));
+      assert.ok(rejected.length > 0,
+        `banning \`${word}\` rejected NO shipped wording, so the carve-out is not load-bearing `
+        + `and the accept-half would not have caught it`);
+    }
+    // And the honest scope of that: `absent` is in EVERY shipped wording,
+    // `exists` in most — so the carve-out is protecting live text, not a
+    // hypothetical.
+    assert.equal(shipped.filter((r) => /\babsent\b/i.test(r)).length, shipped.length);
+    assert.ok(shipped.filter((r) => /\bexists\b/i.test(r)).length >= 4);
   });
 
   // A3 — PINS that the refusal covers the WHOLE tool family, reads and writes
@@ -374,6 +407,49 @@ describe('the four file-tool refusals', () => {
     // …and the excluded path is then merely inside the project, i.e. allowed,
     // which is the control proving the exclude denial above came from `exclude`.
     assert.deepEqual(noExcludes.classify('/srv/app/secrets/x'), { decision: 'allow' });
+  });
+
+  // A12-COMPETING — PINS first-occurrence-wins AT THE SEAM, where the fixture
+  // above cannot reach it.
+  //
+  // WHY THIS EXISTS: a mutation round reordered `buildTierTable`'s two `add`
+  // loops (fail before bind) and killed only the pins-file assertion — A11/A12
+  // stayed GREEN. The reason is geometry: the default fixture's mirror root is
+  // `/srv`, so its excluded `/proc` is OUTSIDE the root and inert by criterion 4,
+  // and no `fail /proc` entry is ever built to compete with `bind /proc`. The
+  // hook half of the never-merge rule was proved on one surface only.
+  //
+  // HERE THEY GENUINELY COMPETE: the mirror root is `/`, so the excluded `/proc`
+  // IS inside it and a `fail /proc` entry really would be built — first
+  // occurrence is the only thing deciding which survives.
+  //
+  // THE MUTATION THIS MUST DIE UNDER: swapping the BIND_MOUNTS and exclude loops
+  // in buildTierTable. Under it dedupe keeps `fail /proc`, the hook answers
+  // `excluded` instead of `bind-mount`, and the launch loses the directory
+  // `bootstrap.sh` binds over.
+  test('A12-competing: with a wide mirror root, bind still wins /proc at the seam', () => {
+    const wide = fixture({ mirrorRoot: '/', exclude: ['/proc', '/srv/app/secrets'] });
+
+    // The exclude is genuinely active here — NOT inert — which is the whole
+    // difference from the fixture above. Without this the case would silently
+    // degenerate back into the uncompeted one.
+    assert.notEqual(withinPosix('/proc', '/'), null, 'the exclude must be inside the mirror root');
+
+    // THE SEAM: bind wins, so the worker is told whose kernel it would have read
+    // rather than that the path was excluded.
+    const reason = denied(wide.classify('/proc/cpuinfo'), 'bind-mount');
+    assert.match(reason, /kernel/, reason);
+    // …and the OTHER exclude, which is not a bind mount, still answers by the
+    // exclude mechanism — so this is about the collision and not about `fail`
+    // having stopped working.
+    denied(wide.classify('/srv/app/secrets/x'), 'excluded');
+
+    // AND THE SAME CLAIM ON THE RENDERED FILE, in the one place both entries
+    // compete, so criterion 3 is proved on both surfaces from one fixture.
+    const lines = renderPinsFile(wide.tiers).split('\n').filter((l) => l && !l.startsWith('#'));
+    assert.ok(lines.includes('bind\t/proc'), lines.join(' | '));
+    assert.ok(!lines.includes('fail\t/proc'), 'the fail spelling shadowed the bind one');
+    assert.ok(lines.includes('fail\t/srv/app/secrets'), 'the non-colliding exclude lost its fail line');
   });
 
   // A13 — PINS criterion 4's third clause AT THE SEAM: an exclude outside the
