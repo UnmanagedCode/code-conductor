@@ -554,7 +554,8 @@ export function buildTools(): Tool[] {
             description:
               'Base the new worktree on this existing worktree of the project instead of the project\'s HEAD, ' +
               'so it syncs against and merges into that worktree — how a multi-task feature integrates as a unit ' +
-              'before landing. Depth is capped at one: a worktree that is itself based on another is refused as a base.',
+              'before landing. Chains are allowed to any depth, but a base can neither sync nor merge while anything ' +
+              'descends from it — land and delete a chain leaf-first.',
           },
           name: {
             type: 'string',

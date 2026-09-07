@@ -140,7 +140,11 @@ export function renderProjects(projects: unknown): string {
       const cells = wts.map(w => [
         String(dash(w.worktreeName)),
         `br ${dash(w.branch)}`,
-        `base ${dash(w.baseBranch)}@${shortSha(w.baseSha)}`,
+        // Mirrors renderWorktrees below. Without it a chain is invisible on the
+        // conductor's primary recon call: rows carry only their base BRANCH, so
+        // `main -> feature -> task` reads as three unrelated worktrees.
+        `base ${dash(w.baseBranch)}@${shortSha(w.baseSha)}` +
+          (typeof w.baseWorktree === 'string' && w.baseWorktree ? ` ← ${w.baseWorktree}` : ''),
         aheadBehind(w.mergeStatus),
         `sessions ${dash(asRow(w.sessions).count ?? 0)}`,
         `created ${ts(w.createdAt)}`,

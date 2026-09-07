@@ -9,6 +9,11 @@
 //   - WORKTREE_HAS_DEPENDENTS gates sync/merge/delete over worktree RECORDS, is
 //     unconditional on ahead/behind, precedes WORKTREE_BEHIND, and applies to
 //     the worktree being synced/merged and never to the merge TARGET — T3-T5, T12
+//   - chains nest to any depth: the gate still fires direct-child-first at every
+//     level, the LIST it hands back is the whole subtree deepest-first, and the
+//     nested merges survive the unwind — T6, T6b, T6c
+//   - acyclicity, which the old depth cap used to guarantee for free, now rests
+//     solely on baseWorktree having one write site — T6d
 //   - the delete gate holds on all three surfaces (service layer, MCP soft
 //     channel, REST), leaves dir + record + branch intact, is cleared by
 //     deleting the children, and is overridden by force — T14-T18
@@ -327,23 +332,225 @@ test('T5b: merge refuses with dependents even when it would otherwise succeed', 
 });
 
 // ---------------------------------------------------------------------------
-// T6 — depth cap.
+// T6 — basing on a derived worktree is legal, and records the DIRECT edge.
 // ---------------------------------------------------------------------------
-test('T6: a worktree based on a derived worktree is refused, leaving nothing behind', async () => {
+test('T6: a worktree can be based on a derived worktree, recording its direct base', async () => {
   const { feature, tasks } = await makeFeature('demo', { tasks: 1 });
+  const task = tasks[0];
+  const taskHead = await headSha(task.worktreePath);
   const countBefore = (await listWorktrees('demo')).length;
 
+  const deep = await createWorktree('demo', { baseWorktree: task.worktreeName });
+
+  assert.equal(deep.baseWorktree, task.worktreeName);
+  assert.equal(deep.baseBranch, task.branch);
+  assert.equal(deep.baseSha, taskHead);
+  assert.equal(deep.parentPath, task.worktreePath);
+  // Still the ROOT project at depth 2, exactly as at depth 1 (T8) — listWorktrees
+  // filters on it, so a base's name here would hide the row from every listing.
+  assert.equal(deep.parentProject, 'demo');
+  assert.equal((await listWorktrees('demo')).length, countBefore + 1);
+
+  // The stored edge is ONE hop: the depth-2 record names its direct base, never
+  // the base of its base. That is what keeps the direct-child gate the first to
+  // fire at every level, however deep the chain runs.
+  assert.deepEqual(await listDependentWorktrees('demo', task.worktreeName), [deep.worktreeName]);
+  // The LIST, unlike the edge, is transitive — and deepest-first.
+  assert.deepEqual(
+    await listDependentWorktrees('demo', feature.worktreeName),
+    [deep.worktreeName, task.worktreeName],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// T6b — acceptance for the whole change: a depth-3 chain refuses at every
+//       level, then unwinds leaf-first with every nested merge intact.
+// ---------------------------------------------------------------------------
+test('T6b: a depth-3 chain refuses at every level, then lands leaf-first with all merges intact', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const a = await createWorktree('demo', { name: 'a' });
+  const b = await createWorktree('demo', { baseWorktree: a.worktreeName, name: 'b' });
+  const c = await createWorktree('demo', { baseWorktree: b.worktreeName, name: 'c' });
+  // Concurrent work at all three levels: each is ahead of its own base and
+  // behind it too, which is the shape the unwind has to survive.
+  await commitFile(a.worktreePath, 'a.js', 'export const a = 1;\n', 'a work');
+  await commitFile(b.worktreePath, 'b.js', 'export const b = 1;\n', 'b work');
+  await commitFile(c.worktreePath, 'c.js', 'export const c = 1;\n', 'c work');
+
+  // --- the six refusals. Depth changes what the list SAYS, never whether the
+  // operation is allowed: the direct child blocks before the grandchild is
+  // reachable, at both interior levels.
+  const aHead = await headSha(a.worktreePath);
+  for (const op of [syncWorktree, mergeWorktreeIntoParent]) {
+    const r = await op('demo', a.worktreeName);
+    assert.equal(r.ok, false, `${op.name}(a) should refuse: ${JSON.stringify(r)}`);
+    assert.equal(r.code, 'WORKTREE_HAS_DEPENDENTS');
+    assert.deepEqual(r.dependents, [c.worktreeName, b.worktreeName]);
+  }
   await assert.rejects(
-    () => createWorktree('demo', { baseWorktree: tasks[0].worktreeName }),
+    () => removeWorktree('demo', a.worktreeName),
     (e) => {
-      assert.equal(e.statusCode, 400);
-      assert.match(e.message, /is itself based on/);
-      assert.ok(e.message.includes(feature.worktreeName), 'message should name the base of the base');
+      assert.equal(e.statusCode, 409);
+      assert.ok(e.message.includes(b.worktreeName) && e.message.includes(c.worktreeName), e.message);
       return true;
     },
   );
-  // Refused before `git worktree add`, so no partial worktree is registered.
-  assert.equal((await listWorktrees('demo')).length, countBefore);
+  for (const op of [syncWorktree, mergeWorktreeIntoParent]) {
+    const r = await op('demo', b.worktreeName);
+    assert.equal(r.ok, false, `${op.name}(b) should refuse: ${JSON.stringify(r)}`);
+    assert.equal(r.code, 'WORKTREE_HAS_DEPENDENTS');
+    assert.deepEqual(r.dependents, [c.worktreeName], 'b has exactly one dependent, at any depth');
+  }
+  await assert.rejects(
+    () => removeWorktree('demo', b.worktreeName),
+    (e) => { assert.equal(e.statusCode, 409); assert.ok(e.message.includes(c.worktreeName)); return true; },
+  );
+  // Refused before any git mutation, at depth 2 as at depth 1.
+  assert.equal(await headSha(a.worktreePath), aHead);
+
+  // --- the leaf-first unwind. c is a leaf, so it is free.
+  assert.equal((await syncWorktree('demo', c.worktreeName)).action, 'rebased');
+  assert.equal((await mergeWorktreeIntoParent('demo', c.worktreeName)).ok, true);
+  await removeWorktree('demo', c.worktreeName);
+
+  // b now carries c's merge commit — and its own sync must not flatten it.
+  // This is invariant 3 at depth 2: the level T1 covers only at depth 1.
+  assert.equal(await mergeCommitCount(b.worktreePath, b.branch, a.branch), 1);
+  assert.equal((await syncWorktree('demo', b.worktreeName)).action, 'rebased');
+  assert.equal(
+    await mergeCommitCount(b.worktreePath, b.branch, a.branch), 1,
+    "c's merge commit was flattened by b's rebase (is --rebase-merges still there?)",
+  );
+  assert.equal((await mergeWorktreeIntoParent('demo', b.worktreeName)).ok, true);
+  await removeWorktree('demo', b.worktreeName);
+
+  assert.equal((await syncWorktree('demo', a.worktreeName)).ok, true);
+  const landed = await mergeWorktreeIntoParent('demo', a.worktreeName);
+  assert.equal(landed.ok, true, `landing a failed: ${JSON.stringify(landed)}`);
+
+  // THREE merge commits on main, nested: merge(c) inside merge(b) inside
+  // merge(a). Any flattening rebase anywhere in the unwind leaves fewer.
+  assert.equal(await mergeCommitCount(repoPath, 'main'), 3);
+  const firstParent = (await git(repoPath, 'log', '--first-parent', '--format=%s', '-1', 'main')).stdout.trim();
+  assert.match(firstParent, /^Merge branch 'code-conductor\/a'/);
+  for (const f of ['a.js', 'b.js', 'c.js']) {
+    assert.equal(await exists(path.join(repoPath, f)), true, `${f} did not reach main`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// T6c — the refusal's repair instruction is complete and directly followable.
+// ---------------------------------------------------------------------------
+test('T6c: the refusal names the whole subtree deepest-first, and that order is followable', async () => {
+  const repoPath = await makeRealRepo('demo');
+  const a = await createWorktree('demo', { name: 'a' });
+  const b = await createWorktree('demo', { baseWorktree: a.worktreeName, name: 'b' });
+  const c = await createWorktree('demo', { baseWorktree: b.worktreeName, name: 'c' });
+  await commitFile(repoPath, 'main.js', 'export const m = 1;\n', 'main moves on');
+
+  const refused = await syncWorktree('demo', a.worktreeName);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'WORKTREE_HAS_DEPENDENTS');
+  // THE defect this pins. With direct children only, this said "the base for 1
+  // other worktree(s) — b"; the caller obeyed, and delete(b) was then refused
+  // for c. The first refusal has to name the real blocker.
+  assert.deepEqual(refused.dependents, [c.worktreeName, b.worktreeName]);
+  assert.match(refused.reason, /2 other worktree\(s\)/);
+  assert.ok(refused.reason.includes(c.worktreeName), refused.reason);
+  assert.ok(refused.reason.includes(b.worktreeName), refused.reason);
+  // Deepest-first is the DELETE order, so the emitted order is the instruction.
+  assert.ok(
+    refused.reason.indexOf(c.worktreeName) < refused.reason.indexOf(b.worktreeName),
+    `reason lists the subtree in the wrong order: ${refused.reason}`,
+  );
+
+  // Follow it verbatim, in the order given: each delete succeeds first time, no
+  // intermediate refusal, and the operation that was blocked now runs.
+  for (const name of refused.dependents) await removeWorktree('demo', name);
+  const synced = await syncWorktree('demo', a.worktreeName);
+  assert.equal(synced.ok, true, `sync still refused after following the repair: ${JSON.stringify(synced)}`);
+  assert.equal(synced.action, 'fast-forwarded');
+});
+
+// ---------------------------------------------------------------------------
+// T6d — acyclicity pin. Every walk-free guard in worktrees.ts, and the one walk
+//       that now exists, assume the base graph has no cycles. Until this change
+//       the depth cap guaranteed that for free; now the ONLY thing guaranteeing
+//       it is that `baseWorktree` is written at exactly one site — at creation,
+//       naming a record that already exists, so creation order is a topological
+//       order. A re-parenting API would silently make cycles reachable, and no
+//       behavioural test can see that coming. Source scan, fail-by-default, on
+//       the model of tests/session-lineage-chokepoint.test.mjs.
+// ---------------------------------------------------------------------------
+const SRC_ROOT = path.join(__dirname, '..');
+
+// Every place `baseWorktree` may appear as a written property, file → the exact
+// normalised snippets allowed there. A new one fails until it is either removed
+// or justified here.
+const BASE_WORKTREE_WRITES = {
+  // THE write site: the WorktreeMeta literal in createWorktree. Its value is the
+  // already-resolved base's canonical worktreeName, and the record it names was
+  // read out of the store moments earlier — which is the whole acyclicity proof.
+  'src/worktrees.ts': ['baseWorktree: baseWorktreeName'],
+  // Caller ARGUMENT plumbing, not a record write: forwards an unresolved caller
+  // string down into createWorktree, which resolves it before recording it.
+  'src/mcp/handlers.ts': ['baseWorktree: args.baseWorktree'],
+  // MCP input-schema property declarations (create_worktree, spawn_instance).
+  'src/mcp/tools.ts': ['baseWorktree: {'],
+};
+
+async function tsSourceFiles() {
+  const out = [];
+  async function walk(rel) {
+    for (const entry of await fs.readdir(path.join(SRC_ROOT, rel), { withFileTypes: true })) {
+      const child = path.posix.join(rel, entry.name);
+      if (entry.isDirectory()) await walk(child);
+      else if (entry.name.endsWith('.ts')) out.push(child);
+    }
+  }
+  await walk('src');
+  out.push('server.ts');
+  return out;
+}
+
+// Prose in module headers names the field freely and must stay free to.
+const stripLineComments = (src) => src.split('\n')
+  .map(l => { const at = l.indexOf('//'); return at === -1 ? l : l.slice(0, at); })
+  .join('\n');
+
+test('T6d: baseWorktree is written at exactly one site, so the base graph is a DAG by construction', async () => {
+  const files = await tsSourceFiles();
+  assert.ok(files.length > 40, `expected the whole src tree, walked only ${files.length} files`);
+
+  const violations = [];
+  let allowedSeen = 0;
+  for (const rel of files) {
+    const src = stripLineComments(await fs.readFile(path.join(SRC_ROOT, rel), 'utf8'));
+    const allowed = BASE_WORKTREE_WRITES[rel] ?? [];
+    // Property-with-a-value. `baseWorktree?: string` type declarations carry the
+    // `?` before the colon and so never match.
+    for (const m of src.match(/\bbaseWorktree:\s*\S+/g) ?? []) {
+      const normalised = m.replace(/[,;]+$/, '');
+      if (allowed.includes(normalised)) { allowedSeen++; continue; }
+      violations.push(`${rel}: ${normalised}`);
+    }
+    // Mutation of an existing record — the shape a re-parenting API would take.
+    for (const m of src.match(/\.baseWorktree\s*=[^=]/g) ?? []) {
+      violations.push(`${rel}: ${m.trim()}`);
+    }
+  }
+
+  assert.deepEqual(
+    violations, [],
+    'baseWorktree gained a write site — cycles are now reachable and every guard in src/worktrees.ts assumes they are not',
+  );
+  // Non-vacuity: the scanner must actually be matching. If the regex or the walk
+  // broke, this fails instead of passing on an empty set.
+  const expected = Object.values(BASE_WORKTREE_WRITES).flat().length;
+  assert.ok(
+    allowedSeen >= expected,
+    `matched only ${allowedSeen} allowed sites, expected >= ${expected} — the scanner is not seeing the source`,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -462,12 +669,6 @@ test('T9: MCP create_worktree takes name/baseWorktree; refusals keep their chann
   assert.equal(task.baseWorktree, 'demo_worktree_auth');
   assert.equal(task.baseBranch, 'code-conductor/auth');
 
-  // Depth cap surfaces as an error (prose + BAD_REQUEST), like every other
-  // create_worktree refusal.
-  const capped = await callTool('create_worktree', { project: 'demo', baseWorktree: task.worktree });
-  assert.equal(capped.isError, true);
-  assert.equal(JSON.parse(capped.content[1].text).code, 'BAD_REQUEST');
-
   // A business refusal is soft: no isError, and the reason reaches the caller
   // un-reworded — proving it is minted once in the git layer, not per surface.
   const refused = await callTool('merge_worktree', { project: 'demo', worktree: 'demo_worktree_auth' });
@@ -477,6 +678,15 @@ test('T9: MCP create_worktree takes name/baseWorktree; refusals keep their chann
   assert.equal(body.code, 'WORKTREE_HAS_DEPENDENTS');
   assert.deepEqual(body.dependents, [task.worktree]);
   assert.ok(body.reason.includes(task.worktree));
+
+  // Depth 2 over the same surface — the SCHEMA path takes a derived base too,
+  // not just the git layer. Last, so the dependents assertions above are read
+  // against the same one-task shape they were written for.
+  const deep = unwrap(await callTool('create_worktree', {
+    project: 'demo', baseWorktree: task.worktree,
+  }));
+  assert.equal(deep.baseWorktree, task.worktree);
+  assert.equal(deep.baseBranch, task.branch);
 });
 
 // ---------------------------------------------------------------------------
@@ -501,7 +711,7 @@ test('T11: list_worktrees header carries no parentPath, and marks a derived row'
 });
 
 // ---------------------------------------------------------------------------
-// T10 — acceptance: the two-level history shape on the project's branch.
+// T10 — acceptance: the depth-1 nested history shape on the project's branch.
 // ---------------------------------------------------------------------------
 test('T10: a landed feature yields main <- merge(feature) <- merge(task)', async () => {
   const { repoPath, feature, tasks } = await makeFeature('demo', { name: 'auth', tasks: 1 });
