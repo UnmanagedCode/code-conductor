@@ -28,6 +28,10 @@ import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { fuseRunRoot } from '../src/systems/fuse/plan.ts';
+import net from 'node:net';
+import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE } from '../src/systems/fuse/control.ts';
+import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
+import { tierFixtureInput } from './tierFixture.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const RECORDER = path.join(HERE, 'recordingProvider.mjs');
@@ -291,6 +295,173 @@ describe('systemSource — the remote source over a real System handle', () => {
       assert.deepEqual(got, { error: `the mirror holds nothing at '${path.join(dest, 'live')}'` });
       assert.equal(await fs.readFile(path.join(dest, 'live'), 'utf8'), 'THE SOURCE STILL HAS THIS',
         'an absent mirror entry must never be read as a deletion');
+    });
+  });
+});
+
+// ── PER-OPEN REVALIDATE ─────────────────────────────────────────────────────
+//
+// Before this, EVERY open of a project file copied the whole file: `#shape`
+// could skip re-truncating a stub whose size and ms-mtime matched, but the copy
+// after it ran unconditionally. Against a local directory that is a `copyFile`;
+// across a wire it is the whole file, per open, for the life of the session.
+//
+// BOTH DIRECTIONS ARE THE TEST, and they are each other's control: a skip that
+// is unconditional passes the first arm and fails the second, and a copy that
+// is unconditional does the reverse. Asserted on `readFile` FRAMES, because the
+// bytes are correct either way and only the wire can tell them apart.
+describe('per-open revalidate — the mirror is not re-downloaded for nothing', () => {
+
+  // One request, one reply. Settles on a clean FIN too (card 2026-0371).
+  function call(sock, op, flags, p) {
+    return new Promise((resolve, reject) => {
+      let buf = Buffer.alloc(0);
+      const done = (fn, v) => {
+        sock.off('data', onData); sock.off('error', onErr);
+        sock.off('end', onEnd); sock.off('close', onEnd);
+        fn(v);
+      };
+      const onErr = (e) => done(reject, e);
+      const onEnd = () => done(reject, new Error(`control socket closed with no reply to op ${op} '${p}'`));
+      const onData = (c) => {
+        buf = Buffer.concat([buf, c]);
+        if (buf.length < 14) return;
+        done(resolve, { status: buf[4], err: buf.readInt32BE(6) });
+      };
+      sock.on('data', onData); sock.on('error', onErr);
+      sock.on('end', onEnd); sock.on('close', onEnd);
+      sock.write(encodeRequest(op, flags, p));
+    });
+  }
+
+  // A real ControlServer on a real socket, over `systemSource` on a recorded
+  // reference provider — so a frame count here is the transport's, not a mock's.
+  async function rig(fn) {
+    const box = await fs.realpath(await mkdtemp('cc-reval-'));
+    const log = path.join(box, 'frames.log');
+    const src = path.join(box, 'srv', 'app');
+    const mirror = path.join(box, 'mirror');
+    await fs.mkdir(src, { recursive: true });
+    await fs.mkdir(mirror, { recursive: true });
+    const sys = handle({ log });
+    let server, sock;
+    try {
+      await sys.connect();
+      server = await ControlServer.listen({
+        socketPath: path.join(box, 'control.sock'),
+        mirror,
+        source: systemSource(sys),
+        tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
+      });
+      sock = await new Promise((res, rej) => {
+        const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
+      });
+      const reads = async () => (await frames(log))['c2p:readFile'] ?? 0;
+      return await fn({ src, mirror, sock, call: (op, flags, p) => call(sock, op, flags, p), reads });
+    } finally {
+      sock?.destroy();
+      await server?.close();
+      sys.dispose();
+    }
+  }
+
+  // PINS: an unchanged source file is fetched ONCE, and a changed one is
+  // fetched again. Two arms, each the other's control.
+  // DIES UNDER: skipping unconditionally (arm 2 fails); copying
+  // unconditionally, i.e. not adding revalidate at all (arm 1 fails).
+  test('T9 — a second FETCH of an unchanged file transfers nothing; a changed one transfers again', async () => {
+    await rig(async ({ src, mirror, call, reads }) => {
+      const p = path.join(src, 'note.txt');
+      await fs.writeFile(p, 'FIRST');
+      const base = await reads();
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), base + 1, 'the cold open must transfer');
+      assert.equal(await fs.readFile(path.join(mirror, p), 'utf8'), 'FIRST');
+
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), base + 1, 'the WARM open re-downloaded a file that had not changed');
+      assert.equal(await fs.readFile(path.join(mirror, p), 'utf8'), 'FIRST');
+
+      // A source-side change, at a DIFFERENT SIZE and a later mtime — the two
+      // fields the fingerprint carries.
+      await fs.writeFile(p, 'SECOND WRITE, LONGER');
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), base + 2, 'a changed source file was served stale');
+      assert.equal(await fs.readFile(path.join(mirror, p), 'utf8'), 'SECOND WRITE, LONGER');
+    });
+  });
+
+  // PINS: the fingerprint carries the MIRROR INODE, and that is what makes it
+  // sound rather than merely fast. Source size and mtime alone would let cc
+  // skip a copy for a mirror entry that is no longer the one it recorded —
+  // serving whatever now sits at that path as though it were fresh.
+  // DIES UNDER: dropping `ino` from the fingerprint.
+  test('T10 — a mirror entry replaced under cc is fetched again, though the source never moved', async () => {
+    await rig(async ({ src, mirror, call, reads }) => {
+      const p = path.join(src, 'note.txt');
+      await fs.writeFile(p, 'SOURCE BYTES');
+      const base = await reads();
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), base + 1);
+
+      // REPLACE the mirror entry at the same path, same size and same mtime,
+      // different inode — which is exactly what a rename over it produces.
+      const dest = path.join(mirror, p);
+      const was = await fs.stat(dest);
+      const tmp = `${dest}.other`;
+      await fs.writeFile(tmp, 'IMPOSTOR!!!');
+      await fs.utimes(tmp, was.atime, was.mtime);
+      await fs.rename(tmp, dest);
+      assert.notEqual((await fs.stat(dest)).ino, was.ino, 'the fixture did not actually replace the inode');
+
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), base + 2, 'cc served a mirror entry it had not put there as fresh');
+      assert.equal(await fs.readFile(dest, 'utf8'), 'SOURCE BYTES');
+    });
+  });
+
+  // PINS: a file over the protocol cap is refused BEFORE ANY TRANSFER, and the
+  // frame count is the assertion rather than the failure — checking after the
+  // read also fails, with EFBIG from the provider, which is the same reply
+  // reached at the cost of a 32 MiB attempt.
+  // DIES UNDER: omitting the check; moving it after `source.fetch`.
+  //
+  // The worker gets EFBIG, which is a NAMED errno rather than the -EIO a
+  // generic refusal would produce. The prose refusal that names the cap and
+  // points at Bash is Phase B's.
+  test('T7b — a FETCH above MAX_FILE_BYTES is refused with no transfer attempted', async () => {
+    await rig(async ({ src, call, reads }) => {
+      const { MAX_FILE_BYTES } = await import('../src/systems/protocol.ts');
+      const p = path.join(src, 'huge.bin');
+      // Sparse: the SIZE is what is over the cap, and writing 32 MiB of real
+      // bytes to prove a refusal would be the slowest case in the suite.
+      const fh = await fs.open(p, 'w');
+      try { await fh.truncate(MAX_FILE_BYTES + 1); } finally { await fh.close(); }
+      const base = await reads();
+      const r = await call(CCU_OP.FETCH, 0, p);
+      assert.equal(r.status, CCU_STATUS.REFUSED);
+      assert.equal(r.err, 27, 'EFBIG — a named errno, not the generic EIO a catch-all refusal gives');
+      assert.equal(await reads(), base, 'cc tried to pull a file it had already decided it could not carry');
+    });
+  });
+
+  // PINS: revalidate NEVER reaches a claimed path. `#fetch`'s claim
+  // short-circuit precedes `#fetchBody` and therefore precedes every source
+  // call, the freshness check included — which is what keeps the new behaviour
+  // out of the two-handle window (the plan's §7.2, leg 3).
+  // DIES UNDER: moving the freshness check ahead of the claim short-circuit;
+  // recording a fingerprint for a claimed path.
+  test('T10b — a claimed path reaches no source call at all, freshness check included', async () => {
+    await rig(async ({ src, call, reads }) => {
+      const p = path.join(src, 'held.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      const held = await reads();
+      // Everything about the source changes under the claim; nothing may move.
+      await fs.writeFile(p, 'CHANGED UNDER THE CLAIM, MUCH LONGER');
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).status, CCU_STATUS.READY);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), held, 'a claimed path was re-materialised over the worker\'s bytes');
     });
   });
 });

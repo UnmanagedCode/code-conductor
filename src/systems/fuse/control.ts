@@ -19,6 +19,7 @@ import { promises as fsp, constants as fsc } from 'node:fs';
 import { withinPosix } from '../mirror.ts';
 import { resolveTierEntry, type TierEntry } from './tierTable.ts';
 import { isSourceError, type RemoteSource } from './remoteSource.ts';
+import { MAX_FILE_BYTES } from '../protocol.ts';
 
 // ── the frame codec ─────────────────────────────────────────────────────────
 //
@@ -110,7 +111,7 @@ export function encodeReply(status: number, err: number): Buffer {
 
 // ── the handler ─────────────────────────────────────────────────────────────
 
-const ENOENT = 2, EIO = 5, EACCES = 13;
+const ENOENT = 2, EIO = 5, EACCES = 13, EFBIG = 27;
 
 export interface ControlServerOptions {
   socketPath: string;
@@ -188,6 +189,26 @@ export class ControlServer {
   //      including the mirror, so the map and the files it protects die
   //      together. No claim survives a session.
   #claimed = new Map<string, { createdHere: boolean }>();
+
+  // THE REVALIDATE FINGERPRINT: what the SOURCE held at `p` the last time cc
+  // materialised it, plus the identity of the MIRROR entry that is carrying it.
+  // `#fetchBody` copies only when this does not match.
+  //
+  // THE MIRROR INODE IS WHAT MAKES IT SOUND, not what makes it fast. Source
+  // size and mtime alone would let cc skip a copy for a mirror entry it is no
+  // longer the author of — one re-shaped under it, or replaced by a rename —
+  // and serve whatever now sits at that path as though it were fresh. The inode
+  // changes in every one of those cases and in none of the safe ones.
+  //
+  // WHAT IT RESTS ON, recorded rather than assumed: millisecond mtime.
+  // `find -printf '%T@'` is seconds.nanoseconds on GNU and `code-system`'s
+  // baseline probe already refuses a target whose `stat` drops sub-second
+  // precision. A source file rewritten within one mtime tick AT AN IDENTICAL
+  // SIZE is missed; the window is nanoseconds, and it is named here rather than
+  // defended against.
+  //
+  // Per-session, like the mirror it describes: both die with this server.
+  #fresh = new Map<string, { size: number; mtimeMs: number; ino: bigint }>();
 
   // Set once `close()` starts. A handler that has already been dequeued must
   // not act on a mirror that is about to be removed: teardown deletes the run
@@ -384,9 +405,11 @@ export class ControlServer {
     return encodeReply(CCU_STATUS.READY, 0);
   }
 
-  // ALWAYS COPIES, with no revalidation shortcut: `#shape` may skip a file
-  // whose size and ms-floored mtime already match, but the copy below runs
-  // regardless, so an open sees the source's current bytes.
+  // COPIES WHEN THE SOURCE HAS MOVED, and not otherwise. Every open used to
+  // transfer the whole file: `#shape` could skip re-truncating a stub whose
+  // size and ms-floored mtime matched, but the copy after it ran regardless.
+  // Against a local directory that is a `copyFile`; across a wire it is the
+  // whole file, per open, for the life of the session.
   //
   // WHAT THAT DOES NOT COVER, stated here because the sentence used to claim
   // more: it is freshness against the SOURCE, not isolation from this session.
@@ -447,13 +470,54 @@ export class ControlServer {
       await this.#unmirror(dest);
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
+    // THE ORDER IS THE POLICY: stat → shape → cap → freshness → copy. `#shape`
+    // already leaves alone a file whose size and ms-mtime match, so it and the
+    // freshness check agree — but putting freshness FIRST would skip a `#shape`
+    // that a kind change needs.
     await this.#shape(dest, st.kind, st.size, st.mode, st.mtimeMs, st.target);
     if (st.kind !== 'file') return encodeReply(CCU_STATUS.READY, 0);
+    // THE PROVIDER'S OWN CAP, CHECKED BEFORE A BYTE MOVES. `readFileBytes`
+    // would refuse EFBIG having transferred nothing anyway, but the size is
+    // already in hand from the stat above, so cc refuses without spending the
+    // round trip.
+    if (st.size > MAX_FILE_BYTES) {
+      this.#opts.log?.(`cc-union control: FETCH '${p}' refused: ${st.size} bytes exceeds the `
+        + `${MAX_FILE_BYTES}-byte protocol cap, so cc cannot materialise it`);
+      return encodeReply(CCU_STATUS.REFUSED, EFBIG);
+    }
+    if (await this.#stillFresh(p, dest, st)) return encodeReply(CCU_STATUS.READY, 0);
     const got = await this.#opts.source.fetch(p, dest);
     if (got === 'absent') return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     if (got === 'refused') return encodeReply(CCU_STATUS.REFUSED, EACCES);
     await fsp.chmod(dest, st.mode).catch(() => {});
+    await this.#record(p, dest, st);
     return encodeReply(CCU_STATUS.READY, 0);
+  }
+
+  // 1 = the mirror entry at `dest` is the one cc put there for exactly these
+  // source bytes, so re-copying them would move a file to no effect.
+  //
+  // ONE LOCAL `lstat` — no source call, which is the whole saving. `bigint:true`
+  // because an inode number can exceed 2^53 on a large filesystem and a Number
+  // comparison would then answer "same" for two different files.
+  async #stillFresh(p: string, dest: string, st: { size: number; mtimeMs: number }): Promise<boolean> {
+    const seen = this.#fresh.get(p);
+    if (!seen || seen.size !== st.size || seen.mtimeMs !== st.mtimeMs) return false;
+    try {
+      const cur = await fsp.lstat(dest, { bigint: true });
+      return cur.ino === seen.ino;
+    } catch { return false; }
+  }
+
+  async #record(p: string, dest: string, st: { size: number; mtimeMs: number }): Promise<void> {
+    try {
+      const cur = await fsp.lstat(dest, { bigint: true });
+      this.#fresh.set(p, { size: st.size, mtimeMs: st.mtimeMs, ino: cur.ino });
+    } catch {
+      // A mirror entry that has already gone is not a fingerprint worth
+      // keeping: the next FETCH must copy, which is what NOT recording means.
+      this.#fresh.delete(p);
+    }
   }
 
   // READY MEANS CC HAS TAKEN OWNERSHIP OF THE PUSH, NOT THAT THE PUSH LANDED
