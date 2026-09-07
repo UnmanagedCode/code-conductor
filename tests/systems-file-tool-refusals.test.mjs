@@ -364,8 +364,8 @@ describe('the four file-tool refusals', () => {
       forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
     });
     const plan = buildFusePlan({
-      instanceId: 'inst-1', cwdInside: SYSTEM_PATH, systemPath: SYSTEM_PATH,
-      standInSource: null, tiers,
+      instanceId: 'inst-1', cwdInside: SYSTEM_PATH,
+      fakeRemoteRoot: '/', markPath: '/usr/local/bin/claude', tiers,
     });
     assert.equal(redirect.tiers, plan.tiers, 'the hook and the plan hold different arrays');
     assert.equal(plan.tiers, tiers);
