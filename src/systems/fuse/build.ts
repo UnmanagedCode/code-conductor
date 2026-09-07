@@ -5,10 +5,10 @@
 // intrusive to `node_modules` than a native addon would be.
 //
 // CONTENT-ADDRESSED on the source + the compiler flags, so editing `union.c`
-// rebuilds and a stale binary is impossible. (`union.c` is a byte-identical
-// port of the frozen S3 instrument — see PROVENANCE.md — so in S1 that address
-// is constant; the addressing is what makes S2's edit safe rather than a
-// deployment problem.)
+// rebuilds and a stale binary is impossible. That is what makes editing the
+// daemon safe rather than a deployment problem — `union.c` is a FORK of the
+// frozen S3 instrument and diverges from it by design now (see PROVENANCE.md's
+// ledger), so the address moves with every row added there.
 
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';

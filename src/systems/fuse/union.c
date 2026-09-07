@@ -181,7 +181,22 @@
 
 /* ── tier table ─────────────────────────────────────────────────────────── */
 
-enum tier { T_DEFAULT = 0, T_HOST, T_PROJECT, T_HIDE };
+/*
+ * S2 PHASE A APPENDS T_BIND AND T_FAIL, AND APPENDS THEM DELIBERATELY.
+ *
+ * cc's pins file now carries the kinds `bind` and `fail`
+ * (src/systems/fuse/tierTable.ts), and pins_load below rejects any kind it does
+ * not know -- so without these two members the daemon exits before mounting and
+ * every launch dies. That is the whole reason this edit exists: the SCHEMA, not
+ * the routing.
+ *
+ * T_DEFAULT STAYS AT INDEX 0. Moving T_FAIL there -- which is what makes an
+ * unmatched path fail-closed instead of remote-first -- is S2's port (H3/H5),
+ * reviewed together with the route() change that gives it meaning. Until then
+ * neither new member has a route() case, so both take the `default:` arm; see
+ * PROVENANCE.md for the one behaviour window that follows and what closes it.
+ */
+enum tier { T_DEFAULT = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_FAIL };
 
 static const char *tier_name(enum tier t)
 {
@@ -189,6 +204,8 @@ static const char *tier_name(enum tier t)
 	case T_HOST:    return "host";
 	case T_PROJECT: return "project";
 	case T_HIDE:    return "hide";
+	case T_BIND:    return "bind";
+	case T_FAIL:    return "fail";
 	default:        return "default";
 	}
 }
@@ -286,6 +303,8 @@ static void pins_load(const char *file)
 		if      (strcmp(kind, "host")    == 0) pin_add(T_HOST,    prefix);
 		else if (strcmp(kind, "project") == 0) pin_add(T_PROJECT, prefix);
 		else if (strcmp(kind, "hide")    == 0) pin_add(T_HIDE,    prefix);
+		else if (strcmp(kind, "bind")    == 0) pin_add(T_BIND,    prefix);
+		else if (strcmp(kind, "fail")    == 0) pin_add(T_FAIL,    prefix);
 		else {
 			fprintf(stderr, "fuse-union-s3: pins: unknown kind '%s'\n", kind);
 			exit(1);

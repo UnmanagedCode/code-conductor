@@ -690,10 +690,12 @@ describe('the tier table', () => {
 // Each of these is a value cc renders or hands to a frozen daemon, where the
 // consequence of a drift is invisible from every other assertion in the suite.
 describe('the mount literals', () => {
-  // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. `union.c` is a
-  // byte-identical port of the frozen spike instrument (PROVENANCE.md); editing
-  // it without regenerating the pin in the same commit is the drift this
-  // catches. Needs no compiler, so it runs everywhere.
+  // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. `union.c` is a fork of
+  // the frozen spike instrument and diverges from it by design, one PROVENANCE.md
+  // ledger row at a time; editing it without regenerating the pin in the same
+  // commit is the undisclosed drift this catches. Needs no compiler, so it runs
+  // everywhere — and it iterates the pin file's ROWS, so it covers `policy.h`
+  // the moment Phase B adds a second line.
   test('A16: union.c.sha256 matches the source it pins', async () => {
     const { createHash } = await import('node:crypto');
     const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
