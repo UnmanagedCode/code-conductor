@@ -45,12 +45,14 @@ export const CCU_STATUS = { READY: 0, ABSENT: 1, REFUSED: 2 } as const;
 export const CCU_FLAG_FOR_CREATE = 0x01;   // FETCH: the caller will CREATE `path`
 export const CCU_FLAG_FOR_WRITE  = 0x02;   // FETCH: the caller will MUTATE it
 export const CCU_FLAG_REMOVED    = 0x04;   // DIRTY: the worker REMOVED the entry
+export const CCU_FLAG_RELEASE_ONLY = 0x08; // DIRTY: release the claim, carry nothing
 
 export interface ControlRequest {
   op: number;
   forCreate: boolean;
   forWrite: boolean;
   removed: boolean;
+  releaseOnly: boolean;
   path: string;
 }
 
@@ -79,6 +81,7 @@ export function decodeRequests(buf: Buffer): DecodeResult {
       forCreate: (flags & CCU_FLAG_FOR_CREATE) !== 0,
       forWrite: (flags & CCU_FLAG_FOR_WRITE) !== 0,
       removed: (flags & CCU_FLAG_REMOVED) !== 0,
+      releaseOnly: (flags & CCU_FLAG_RELEASE_ONLY) !== 0,
       path: buf.toString('utf8', off + CCU_REQ_HDR, off + CCU_REQ_HDR + pathlen),
     });
     off += CCU_REQ_HDR + pathlen;
@@ -108,6 +111,17 @@ export function encodeReply(status: number, err: number): Buffer {
   out.writeUInt32BE(0, 10);
   return out;
 }
+
+// ── the per-path fault record ───────────────────────────────────────────────
+//
+// A PATH THIS SESSION COULD NOT RECONCILE, OR CANNOT CARRY AT ALL. Two kinds,
+// and they differ in what stays reachable: a diverged path is still READABLE —
+// the mirror holds the worker's own unpushed bytes and that is the recovery
+// channel the refusal points at — while an over-cap path was never
+// materialised at all, so there is nothing to read.
+export type Fault =
+  | { kind: 'diverged'; detail: string; refuses: 'writes' }
+  | { kind: 'over-cap'; size: number; cap: number; refuses: 'all' };
 
 // ── the handler ─────────────────────────────────────────────────────────────
 
@@ -210,6 +224,23 @@ export class ControlServer {
   // Per-session, like the mirror it describes: both die with this server.
   #fresh = new Map<string, { size: number; mtimeMs: number; ino: bigint }>();
 
+  // p → the mode the SOURCE had when cc last looked, and the mirror inode that
+  // was carrying it. `#fresh` already holds the inode; this holds the mode.
+  //
+  // THE DISCRIMINATOR IS THE INODE, and it has to be. A rename over the target
+  // REPLACES the mirror entry, so the mode cc is about to push is the tmp
+  // file's fresh 0644 and the pre-edit 0755 is gone. A deliberate `chmod` KEEPS
+  // the inode, so the mirror's mode is the one the worker asked for and
+  // restoring anything would discard it. "Always restore" breaks chmod; "never
+  // restore" breaks Edit. The inode separates them with no guessing.
+  #mode = new Map<string, { mode: number; ino: bigint }>();
+
+  // A PATH THIS SESSION COULD NOT RECONCILE, OR CANNOT CARRY AT ALL. Sticky for
+  // the session's life and cleared by NOTHING: cc cannot resync without
+  // destroying the bytes the worker wrote, and the per-session mirror dies with
+  // the session, so the fault dies with it too.
+  #faults = new Map<string, Fault>();
+
   // Set once `close()` starts. A handler that has already been dequeued must
   // not act on a mirror that is about to be removed: teardown deletes the run
   // directory, and a DIRTY running across that would see an absent mirror
@@ -244,6 +275,28 @@ export class ControlServer {
   }
 
   get socketPath(): string { return this.#opts.socketPath; }
+
+  // ── what the hook reads ──────────────────────────────────────────────────
+  //
+  // The two accessors `SessionRedirect` is wired to. They are READ-ONLY on the
+  // record: nothing outside this class sets or clears a fault, so the hook
+  // cannot become a second author of the state it reports.
+
+  // The fault standing against `p`, or null. A plain map lookup and no
+  // filesystem probe — the mirror is cc's cache and says nothing about whether
+  // a reconcile landed.
+  faultAt(p: string): Fault | null {
+    return this.#faults.get(p) ?? null;
+  }
+
+  // Await whatever frame is in flight for `p`, so a caller that reads
+  // `faultAt` immediately afterwards reads a SETTLED state rather than a racing
+  // one. Never rejects: the frame's own reply carries its outcome, and a
+  // handler that threw has already been turned into a REFUSED reply for the
+  // daemon — this is the wait, not a second error channel.
+  async settle(p: string): Promise<void> {
+    await this.#inflight.get(p)?.then(() => {}, () => {});
+  }
 
   // Destroys every live connection FIRST. A daemon blocked on a reply then sees
   // the stream end and turns the op into -EIO at once, which is what lets its
@@ -330,7 +383,7 @@ export class ControlServer {
         case CCU_OP.STAT:  return await this.#stat(req.path, dest);
         case CCU_OP.LIST:  return await this.#list(req.path, dest);
         case CCU_OP.FETCH: return await this.#fetch(req.path, dest, req.forCreate, req.forWrite);
-        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed, req.forWrite);
+        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed, req.forWrite, req.releaseOnly);
         default:
           this.#opts.log?.(`cc-union control: unknown op ${req.op} for '${req.path}'`);
           return encodeReply(CCU_STATUS.REFUSED, EIO);
@@ -431,6 +484,17 @@ export class ControlServer {
   // invisible for the rest of the session. One wrapper, so a failure path
   // added later cannot forget.
   async #fetch(p: string, dest: string, forCreate: boolean, forWrite: boolean): Promise<Buffer> {
+    // THE FAULT GATE, AHEAD OF THE CLAIM SHORT-CIRCUIT AND OF EVERY SOURCE
+    // CALL. A diverged path refuses a WRITE open and lets a READ through — the
+    // read is served from the claim below, out of the mirror, and those
+    // preserved bytes are the recovery channel the refusal names. An over-cap
+    // path refuses both, because cc never materialised it and has nothing to
+    // serve.
+    const fault = this.#faults.get(p);
+    if (fault !== undefined && (fault.refuses === 'all' || forWrite)) {
+      this.#opts.log?.(`cc-union control: FETCH '${p}' refused: ${fault.kind}`);
+      return encodeReply(CCU_STATUS.REFUSED, fault.kind === 'over-cap' ? EFBIG : EIO);
+    }
     if (this.#claimHeld(p)) return encodeReply(CCU_STATUS.READY, 0);
     let reply: Buffer;
     try {
@@ -486,6 +550,10 @@ export class ControlServer {
     if (st.size > MAX_FILE_BYTES) {
       this.#opts.log?.(`cc-union control: FETCH '${p}' refused: ${st.size} bytes exceeds the `
         + `${MAX_FILE_BYTES}-byte protocol cap, so cc cannot materialise it`);
+      // RECORDED, so the FILE TOOL can be refused by name before the worker
+      // opens the path at all. Without the record the only channel is the
+      // daemon's EFBIG, which reaches the model as a bare errno.
+      this.#faults.set(p, { kind: 'over-cap', size: st.size, cap: MAX_FILE_BYTES, refuses: 'all' });
       return encodeReply(CCU_STATUS.REFUSED, EFBIG);
     }
     if (await this.#stillFresh(p, dest, st)) return encodeReply(CCU_STATUS.READY, 0);
@@ -512,14 +580,19 @@ export class ControlServer {
     } catch { return false; }
   }
 
-  async #record(p: string, dest: string, st: { size: number; mtimeMs: number }): Promise<void> {
+  async #record(p: string, dest: string, st: { size: number; mtimeMs: number; mode: number }): Promise<void> {
     try {
       const cur = await fsp.lstat(dest, { bigint: true });
       this.#fresh.set(p, { size: st.size, mtimeMs: st.mtimeMs, ino: cur.ino });
+      // THE MODE LEDGER IS WRITTEN WHERE THE MODE IS OBSERVED, from the same
+      // `lstat` that fingerprints the entry — so the recorded mode and the
+      // recorded inode are the same observation and cannot disagree.
+      this.#mode.set(p, { mode: st.mode, ino: cur.ino });
     } catch {
       // A mirror entry that has already gone is not a fingerprint worth
       // keeping: the next FETCH must copy, which is what NOT recording means.
       this.#fresh.delete(p);
+      this.#mode.delete(p);
     }
   }
 
@@ -537,7 +610,19 @@ export class ControlServer {
   // claim is KEPT: `flush` fires per `close` of a duplicated descriptor while
   // the original stays open, and releasing there left the next write batch on
   // that handle unprotected. `release` sends it clear, and is the only releaser.
-  async #dirty(p: string, dest: string, removed: boolean, stillOpen = false): Promise<Buffer> {
+  async #dirty(p: string, dest: string, removed: boolean, stillOpen = false,
+               releaseOnly = false): Promise<Buffer> {
+    // RELEASE_ONLY, AND IT IS ANSWERED BEFORE ANY SOURCE CALL. The handle is
+    // closing and its `flush` already landed the bytes, so the releasing frame
+    // has nothing left to carry — without this every written file uploaded
+    // twice. It DOES NOT CLEAR A FAULT, and the two directions are consistent:
+    // a diverged `flush` returned non-zero, so the daemon's `fd_dirty` is
+    // still set and `release` sends a FULL reconcile, which fails again and
+    // leaves the fault standing.
+    if (releaseOnly) {
+      this.#claimed.delete(p);
+      return encodeReply(CCU_STATUS.READY, 0);
+    }
     const claimed = this.#claimed.has(p);
     let r: 'ok' | { error: string };
     if (removed) {
@@ -546,7 +631,27 @@ export class ControlServer {
       if (!claimed) { this.#claimed.delete(p); return encodeReply(CCU_STATUS.READY, 0); }
       r = { error: `the mirror holds nothing at '${p}', and this session claimed it` };
     } else {
+      await this.#restoreMode(p, dest);
       r = await this.#opts.source.push(dest, p);
+      if (r !== 'ok') {
+        // A FAILED PUSH IS LOUD AND STICKY, AND THE CLAIM IS KEPT — which is
+        // what makes the worker's unpushed bytes survive. Dropping the claim
+        // here would put cc back in charge of the path as a cache, and the
+        // next `STAT` or parent `LIST` would re-shape the mirror entry to the
+        // SOURCE's stale size, destroying the only copy of what the worker
+        // wrote. Reads keep working and serve those bytes; writes are refused
+        // by the fault gate in `#fetch`.
+        //
+        // RECORDED ON THE PUSH BRANCH ONLY, and that is not an oversight: the
+        // refusal's wording promises the local copy is intact and readable,
+        // which is true exactly here. A failed `remove`, and a claimed path
+        // whose mirror entry has vanished under cc, cannot honour that
+        // sentence and are released as before.
+        this.#faults.set(p, { kind: 'diverged', detail: r.error, refuses: 'writes' });
+        this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
+        return encodeReply(CCU_STATUS.REFUSED, EIO);
+      }
+      await this.#adoptWriteMtime(p, dest);
     }
     // RELEASED EITHER WAY once the handle is gone — success or failure. The
     // reconcile has been attempted and answered, so the window the claim
@@ -556,6 +661,60 @@ export class ControlServer {
     if (r === 'ok') return encodeReply(CCU_STATUS.READY, 0);
     this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
     return encodeReply(CCU_STATUS.REFUSED, EIO);
+  }
+
+  // MODE PRESERVATION ACROSS THE WRITE ROUND TRIP. An atomic write ends in a
+  // `rename`, and a rename hands the replacement file the TMP file's fresh
+  // 0644 — so pushing the mirror entry's own mode would silently strip a
+  // 0755 script of its executable bit.
+  //
+  // CHMOD THE MIRROR, DO NOT PASS A MODE THROUGH `push`. `RemoteSource.push`
+  // keeps its signature so both sources behave identically; the invariant
+  // `#shape` maintains — the mirror entry's mode is the source's — is RESTORED
+  // rather than bypassed; and the property becomes observable on this machine,
+  // so a test can assert the mirror as well as the source.
+  //
+  // A path with no recorded source mode is a file the worker created, and it
+  // pushes the mirror's own mode. Correct.
+  async #restoreMode(p: string, dest: string): Promise<void> {
+    const rec = this.#mode.get(p);
+    if (rec === undefined) return;
+    let cur: import('node:fs').BigIntStats;
+    try { cur = await fsp.lstat(dest, { bigint: true }); } catch { return; }
+    // A REGULAR FILE OR NOTHING, and the test is not defensive: `chmod` FOLLOWS
+    // a symlink, so a mirror entry that is now a LINK at a path cc recorded a
+    // file mode against would land that mode on the link's TARGET — another
+    // file in the mirror, whose own recorded mode then disagrees with its entry
+    // and whose next push carries the wrong one. A kind change is not a mode
+    // change and there is nothing here to preserve.
+    if (!cur.isFile()) return;
+    // SAME INODE ⇒ THE WORKER'S OWN CHMOD, and restoring would discard it.
+    if (cur.ino === rec.ino) return;
+    await fsp.chmod(dest, rec.mode).catch(() => {});
+  }
+
+  // ONE ROUND TRIP ON THE WRITE PATH THAT SAVES A WHOLE DOWNLOAD ON THE NEXT
+  // READ. `push` is an atomic write, so the source entry comes out with a
+  // FRESH mtime that cc's fingerprint has never seen — and the following open
+  // would re-download the file the worker just wrote. cc re-stats the source,
+  // stamps the mirror entry with the mtime the source now carries, and records
+  // the pair.
+  //
+  // The mirror is stamped rather than the source: setting the SOURCE's mtime to
+  // the mirror's would misreport when the source changed, which build tools on
+  // that machine depend on.
+  async #adoptWriteMtime(p: string, dest: string): Promise<void> {
+    // THE KIND TEST IS LOCAL, so a directory or symlink reconcile pays NOTHING
+    // for a fingerprint only a file has. Asking the source would have cost a
+    // round trip per directory mutation to learn what the mirror entry already
+    // says.
+    let cur: import('node:fs').Stats;
+    try { cur = await fsp.lstat(dest); } catch { this.#fresh.delete(p); return; }
+    if (!cur.isFile()) return;
+    const st = await this.#opts.source.stat(p);
+    if (isSourceError(st) || st === null || st.kind !== 'file') { this.#fresh.delete(p); return; }
+    await fsp.utimes(dest, new Date(st.mtimeMs), new Date(st.mtimeMs)).catch(() => {});
+    await this.#record(p, dest, st);
   }
 
   async #exists(dest: string): Promise<boolean> {

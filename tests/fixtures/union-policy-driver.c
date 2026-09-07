@@ -462,6 +462,16 @@ static void frame_vectors(void)
 	for (i = 0; i < len; i++) printf("%02x", buf[i]);
 	printf("\n");
 
+	/* THE FOURTH BIT, and it goes through the same cross-language check for
+	 * the same reason: a bit cc never sets means every written file uploads
+	 * twice, and a bit cc reads as another means a release that reconciles
+	 * nothing when it owed a full copy. Both are data-path defects, not
+	 * codec nits. */
+	ccu_encode_request(buf, sizeof(buf), CCU_DIRTY, CCU_FLAG_RELEASE_ONLY, "/srv/app/f.txt", &len);
+	printf("REQ_RELEASE_ONLY ");
+	for (i = 0; i < len; i++) printf("%02x", buf[i]);
+	printf("\n");
+
 	canned_reply(CCU_REFUSED, 13);
 	printf("REPLY ");
 	for (i = 0; i < CCU_REPLY_LEN; i++) printf("%02x", canned[i]);

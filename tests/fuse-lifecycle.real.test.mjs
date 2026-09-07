@@ -1201,6 +1201,177 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     assertNoResidue(before, runRoot, null, 'R9');
   });
 
+  // ── R10 ──────────────────────────────────────────────────────────────────
+  // MODE PRESERVATION AT THE REAL MOUNT, through the syscall sequence an
+  // atomic edit actually makes.
+  //
+  // THE NUMBERING: the plan calls this R9, which the merged 2026-0373 arm
+  // already holds. R10/R11 here are the plan's R9 and its R10+R11.
+  //
+  // WHY IT WORKS THROUGH A RENAME AND NOT ONLY THROUGH A WRITE: `pt_rename`
+  // routes the DESTINATION with FOR_CREATE|FOR_WRITE, so cc FETCHes the 0755
+  // target and records its mode against the mirror inode carrying it. The
+  // rename then replaces that inode with the tmp file's, cc sees the inode
+  // change on the reconcile, and restores. Nothing here tells cc a mode — the
+  // ledger is populated by the ordinary open, which is what makes the
+  // mechanism inode-driven rather than hint-driven.
+  test('R10 — an atomic rename over a 0755 target leaves the system copy 0755', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const mark = inside(record, inst._fuse.plan.markPath);
+      const onSystem = (rel) => path.join(fakeRemote, box, 'app', rel);
+      const inChroot = (rel) => inside(record, path.join(box, 'app', rel));
+      const marked = (script, ...args) => inNs(record.anchorPid,
+        `[ -e "$1" ]; ${script}`, mark, ...args);
+
+      await fs.writeFile(onSystem('r10-mode.sh'), '#!/bin/sh\necho one\n');
+      await fs.chmod(onSystem('r10-mode.sh'), 0o755);
+
+      // ONE MARKED SHELL, ONE REDIRECTION. `>` is performed by the shell's own
+      // thread group, so the create is marked; the new file takes the shell's
+      // umask, which is what strips the mode in the first place.
+      const mk = await marked('echo two > "$2"', inChroot('r10-tmp'));
+      assert.equal(mk.ok, true, `the marked create refused: ${mk.stderr}`);
+      const tmpMode = (await fs.stat(onSystem('r10-tmp'))).mode & 0o777;
+      assert.notEqual(tmpMode, 0o755,
+        `the tmp file already came out 0755 (${tmpMode.toString(8)}), so there is nothing to restore `
+        + 'and this arm cannot fail');
+
+      // A SECOND MARKED SHELL, exec\'ing into `mv` — R7 proves the mark
+      // survives exec, which is what makes an external binary marked here.
+      const mv = await marked('exec mv "$2" "$3"', inChroot('r10-tmp'), inChroot('r10-mode.sh'));
+      assert.equal(mv.ok, true, `the marked rename refused: ${mv.stdout} ${mv.stderr}`);
+
+      await waitFor(async () =>
+        (await fs.readFile(onSystem('r10-mode.sh'), 'utf8').catch(() => '')).includes('two'),
+        { timeout: 15_000 });
+      assert.equal((await fs.stat(onSystem('r10-mode.sh'))).mode & 0o777, 0o755,
+        'the atomic rename stripped the system copy\'s executable bit');
+      // AND THE TMP END IS GONE FROM THE SYSTEM, so the rename landed as a move
+      // rather than as a copy that left its scratch file behind.
+      await assert.rejects(() => fs.access(onSystem('r10-tmp')),
+        'the tmp file is still on the system — the from-end reconcile did not land');
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R10');
+  });
+
+  // ── R11 ──────────────────────────────────────────────────────────────────
+  // CRITERION 10 END TO END WITH A REAL PUSH FAILURE, and the fault surface it
+  // produces. The plan's R10 and R11, in one arm because they are one state:
+  // the divergence has to exist before the tool refusal can be asked about.
+  //
+  // THE WEDGE IS A NON-EMPTY DIRECTORY AT THE SOURCE PATH, and it is the one
+  // shape that fails and STAYS failed: `push`'s wrong-kind repair calls
+  // `rmdir`, which refuses ENOTEMPTY, so the reconcile cannot recover. A
+  // permission wedge would not separate the open from the push (cc copies the
+  // source mode onto the mirror, so anything stopping the push stops the open),
+  // and R7's mirror-removal wedge is a DIFFERENT branch — cc deliberately does
+  // not record a fault for it, because that refusal's wording promises an
+  // intact local copy and there is none.
+  //
+  // NOT R7's ARM AGAIN: R7 pins that close(2) reports EIO. This pins what
+  // happens AFTERWARDS — the fault is recorded, the worker's bytes survive, and
+  // the tool surface refuses the next write by name.
+  test('R11 — a push that cannot land diverges the path, and the tool surface refuses it by name', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker();
+    try {
+      const record = await readRecord(inst.id);
+      const mark = inside(record, inst._fuse.plan.markPath);
+      const onSystem = (rel) => path.join(fakeRemote, box, 'app', rel);
+      const inChroot = (rel) => inside(record, path.join(box, 'app', rel));
+      const unionPath = path.join(box, 'app', 'r11-diverge.txt');
+
+      await fs.writeFile(onSystem('r11-diverge.txt'), 'ORIGINAL\n');
+
+      // Open, write, hold — then wedge the SOURCE while the handle is still
+      // open, so the open succeeded and only the reconcile fails.
+      const NODE_PROBE = [
+        'const fs=require("fs");',
+        'const fd=fs.openSync(process.argv[1],"w");',
+        'fs.writeSync(fd,"WORKER BYTES\\n");',
+        'const t=Date.now(); while(Date.now()-t<4000);',
+        'try{fs.closeSync(fd)}catch(e){console.log("CLOSE_ERR:"+e.code);process.exit(3)}',
+        'console.log("CLOSE_OK")',
+      ].join('');
+      const mirrorCopy = path.join(fuseRunDir(inst.id), 'mirror', unionPath);
+      const writer = inNs(record.anchorPid,
+        '[ -e "$1" ]; exec "$3" -e "$4" "$2"',
+        mark, inChroot('r11-diverge.txt'), inside(record, inst._fuse.plan.markPath), NODE_PROBE);
+      await waitFor(async () =>
+        (await fs.readFile(mirrorCopy, 'utf8').catch(() => '')).includes('WORKER BYTES'),
+        { timeout: 15_000 });
+      await fs.rm(onSystem('r11-diverge.txt'));
+      await fs.mkdir(path.join(onSystem('r11-diverge.txt'), 'occupied'), { recursive: true });
+      await fs.writeFile(path.join(onSystem('r11-diverge.txt'), 'occupied', 'x'), 'y\n');
+
+      const w = await writer;
+      assert.match(w.stdout, /CLOSE_ERR:EIO/,
+        `close(2) did not report the refused reconcile: ${w.stdout} ${w.stderr}`);
+
+      // 1. THE FAULT IS RECORDED, on the session's own control server.
+      const fault = inst._fuse.controlServer.faultAt(unionPath);
+      assert.ok(fault, 'the push failed and the session recorded no fault');
+      assert.equal(fault.kind, 'diverged');
+
+      // 2. THE WORKER'S BYTES SURVIVE. The claim is kept, so cc's own cache
+      //    management cannot re-shape the mirror entry away — and a marked
+      //    READ of the path still serves them.
+      const read = await inNs(record.anchorPid, '[ -e "$1" ]; read L < "$2"; echo "$L"',
+        mark, inChroot('r11-diverge.txt'));
+      assert.match(read.stdout, /WORKER BYTES/,
+        `a diverged path stopped serving the bytes the refusal promises: ${read.stdout} ${read.stderr}`);
+
+      // 3. A SECOND WRITE OPEN IS REFUSED AT THE SYSCALL.
+      const REOPEN = [
+        'const fs=require("fs");',
+        'try{fs.closeSync(fs.openSync(process.argv[1],"w"))}catch(e){console.log("OPEN_ERR:"+e.code);process.exit(3)}',
+        'console.log("OPEN_OK")',
+      ].join('');
+      const again = await inNs(record.anchorPid,
+        '[ -e "$1" ]; exec "$3" -e "$4" "$2"',
+        mark, inChroot('r11-diverge.txt'), inside(record, inst._fuse.plan.markPath), REOPEN);
+      assert.match(again.stdout, /OPEN_ERR:EIO/,
+        `a diverged path accepted a second write: ${again.stdout} ${again.stderr}`);
+
+      // 4. THE FAULT SURFACE, AT THE HOOK, TWO-DIRECTIONALLY. `Read` is
+      //    ALLOWED — which is only possible because the tier gate allows this
+      //    path — and `Write` at the SAME path is refused by the fault, naming
+      //    the file. That pair is the proof the plan asks for: a path
+      //    `classifyForTool` allows, refused by `preToolUse`.
+      const redirect = inst._redirect;
+      assert.ok(redirect, 'the session has no redirect, so the hook surface cannot be asked');
+      assert.deepEqual(await redirect.preToolUse('Read', { file_path: unionPath }),
+        { decision: 'allow' },
+        'the tier gate denies this path, so a Write denial below would prove nothing about faults');
+      const d = await redirect.preToolUse('Write', { file_path: unionPath });
+      assert.equal(d.decision, 'deny');
+      assert.match(d.reason, new RegExp(unionPath.replace(/[.*+?^$()|[\]\\]/g, '\\$&')),
+        'the refusal does not name the file');
+      assert.match(d.reason, /have diverged/);
+      assert.match(d.reason, /Bash runs ON SYSTEM 'fusebox'/,
+        'the refusal does not point at Bash on the system');
+
+      // 5. AND THE SAME SENTENCE REACHES THE WORKER IN BAND, through the only
+      //    channel a post-return failure has.
+      const note = await redirect.postToolUse('Write', { file_path: unionPath }, { ok: true });
+      assert.match(String(note), /have diverged/,
+        'a reconcile that failed after the tool returned reached the worker nowhere');
+
+      // 6. THE SYSTEM COPY WAS NEVER OVERWRITTEN — the wedge is still there,
+      //    intact, which is what "cc will not overwrite the system's copy"
+      //    means.
+      assert.equal(await fs.readFile(path.join(onSystem('r11-diverge.txt'), 'occupied', 'x'), 'utf8'), 'y\n');
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R11');
+  });
+
   // ── ARM 7 ────────────────────────────────────────────────────────────────
   // PINS: nothing this run started is still running, established WITHOUT
   // reading mount.json. Ordered last in the file so it sees every earlier arm's

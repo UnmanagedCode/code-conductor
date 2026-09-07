@@ -45,12 +45,14 @@ const ASK_GATED_TOOL_MATCHER = 'Edit|Write|NotebookEdit|Bash';
 // file tool must fail that assertion rather than silently escape the boundary.
 export const REDIRECT_PRE_TOOL_MATCHER = `${ASK_GATED_TOOL_MATCHER}|Glob|Grep|Read`;
 
-// REGISTERED WITH NO CONSUMER TODAY, AND DELIBERATELY SO — do not delete it as
-// dead. It used to carry an Edit's local result back to the system. The union
-// writes through, so there is nothing to carry; but S3's lazy per-open mirror
-// pushes at `release`, which can fail AFTER the tool has already returned
-// success, and this is the only seam that can put that failure in front of the
-// worker in band. `SessionRedirect.postToolUse` says the same at its end.
+// AND ITS CONSUMER IS `SessionRedirect.postToolUse`, which reports a reconcile
+// that refused AFTER the tool already returned success — the push cc issues
+// from the daemon's `flush` can fail, and `additionalContext` is the only
+// channel that puts that in front of the worker in band rather than in a log.
+//
+// `Read` IS ABSENT FROM THIS ONE and present in the pre-tool matcher above,
+// and the asymmetry is the point: a read-only open pushes nothing, so it has
+// no reconcile to report.
 const REDIRECT_POST_TOOL_MATCHER = ASK_GATED_TOOL_MATCHER;
 
 // The two tools that read the filesystem and CANNOT be redirected: a PreToolUse

@@ -30,6 +30,8 @@ import path from 'node:path';
 import { buildTierTable, renderPinsFile, classifyForTool, resolveTierEntry, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { buildFusePlan } from '../src/systems/fuse/plan.ts';
 import { SessionRedirect, FILE_TOOLS } from '../src/systems/toolRedirect.ts';
+import { divergedRefusal, overCapRefusal, refusesTool } from '../src/systems/fuse/faultRefusals.ts';
+import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
 import { withinPosix } from '../src/systems/mirror.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 
@@ -672,5 +674,245 @@ describe('the four file-tool refusals', () => {
     });
     assert.deepEqual(await redirect.preToolUse('TodoWrite', { file_path: '/home/node/.claude/x' }),
       { decision: 'allow' });
+  });
+});
+
+// ── THE FIFTH AND SIXTH SENTENCES, ON A SEPARATE SURFACE ────────────────────
+//
+// Divergence and over-cap are STATEFUL — they exist only because a specific
+// path failed to reconcile earlier in this session — so they are NOT
+// `ToolDenyClass` members and a reader still counts FOUR tier wordings. They
+// keep the same clause discipline, and the tests below use THIS FILE'S OWN
+// rules (`neverClaimsAbsence`, `namesBashOnTheSystem`) rather than a second
+// transcription of them.
+describe('the fault refusals — divergence and over-cap', () => {
+  const DIVERGED = { kind: 'diverged', detail: 'writeFile EACCES', refuses: 'writes' };
+  const OVER_CAP = { kind: 'over-cap', size: MAX_FILE_BYTES + 7, cap: MAX_FILE_BYTES, refuses: 'all' };
+  const P = '/srv/app/src/main.js';
+
+  // A redirect whose fault surface answers `fault` for `P` and nothing for any
+  // other path — so an assertion that a REFUSAL came from the fault surface
+  // and not from the tier gate can be made by changing the path alone.
+  const redirectWith = (fault, over = {}) => {
+    const { tiers, session } = fixture(over);
+    return new SessionRedirect({
+      system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
+      systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
+      tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
+      forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      faultAt: (p) => (p === P ? fault : null),
+      settle: async () => {},
+    });
+  };
+
+  // PINS: the diverged wording carries every clause — cc as the actor, the act
+  // as a refusal, the PATH, the explicit not-absent clause, and Bash named WITH
+  // the machine it answers from — and the inversion-mutant set proves each rule
+  // it is checked against can actually fail.
+  // DIES UNDER: dropping any clause; an inverted Bash pointer; a wording that
+  // reads as file-not-found.
+  test('T21: the diverged refusal carries every clause, and the rules that say so can fail', () => {
+    const reason = divergedRefusal(P, DIVERGED, SYSTEM_ID);
+    assert.match(reason, /^cc will not write/, 'cc is not named as the actor refusing');
+    assert.match(reason, new RegExp(`'${P.replace(/\//g, '\\/')}'`), 'the file is not named');
+    assert.match(reason, new RegExp(`'${SYSTEM_ID}'`));
+    assert.match(reason, /NOT the file being absent/);
+    assert.match(reason, /cc has not looked/);
+    // THE CAUSE, quoted from the fault record rather than described — a
+    // refusal that cannot say WHY the push failed cannot be acted on.
+    assert.match(reason, /writeFile EACCES/, 'the recorded cause is not in the sentence');
+    // THE RECOVERY CHANNEL, both halves: the local copy still reads, and the
+    // change can be landed by hand on the system.
+    assert.match(reason, /local copy is intact and readable/);
+    assert.match(reason, /`sed -i`/);
+    // NEVER "cannot" FOR THE ACT ITSELF. `will not` is the whole distinction
+    // between a refusal and a failure, and a model acts differently on each.
+    assert.doesNotMatch(reason, /^cc cannot/);
+    neverClaimsAbsence(reason);
+    namesBashOnTheSystem(reason, SYSTEM_ID);
+
+    // AND THE RULES DISCRIMINATE, in the shape this file already uses for the
+    // four: each mutant drops or inverts exactly one clause and MUST throw, so
+    // a rule that had gone vacuous is caught here rather than trusted.
+    const sentences = reason.split(/(?<=\.)\s+/);
+    const bashAt = sentences.findIndex(x => /\bBash\b/.test(x));
+    assert.ok(bashAt >= 0, reason);
+    const swap = (r) => sentences.map((x, i) => (i === bashAt ? r : x)).filter(Boolean).join(' ');
+    for (const m of [
+      // No machine at all.
+      swap('Use Bash instead.'),
+      // The pointer gone, which leaves the agent with no channel.
+      swap(''),
+      // THE INVERSION, which carries the system id and says the opposite.
+      swap(`Bash runs on the orchestrator, not on system '${SYSTEM_ID}': use \`cat\` there.`),
+    ]) {
+      assert.throws(() => namesBashOnTheSystem(m, SYSTEM_ID), /AssertionError/,
+        `the Bash rule accepted: ${m.slice(-120)}`);
+    }
+    // …and the absence rule, against a wording that keeps every positive
+    // clause and adds the claim the whole discipline exists to forbid.
+    assert.throws(() => neverClaimsAbsence(`${reason} cc could not find it.`), /AssertionError/,
+      'the absence rule accepted a wording that claims the file was not found');
+    // No file name — the clause a model needs to know WHICH file is poisoned.
+    assert.doesNotMatch(reason.replace(new RegExp(P.replace(/\//g, '\\/'), 'g'), 'X'),
+      new RegExp(P.replace(/\//g, '\\/')), 'the file-name check is satisfied by something else');
+  });
+
+  // PINS: the over-cap refusal names THE CAP and the file's own size, points at
+  // Bash on the system, and names the channel that works — a RANGE read.
+  // Without the cap in the sentence a worker retries; with it, it uses `sed -n`.
+  // DIES UNDER: dropping the cap; dropping the size; dropping Bash; a wording
+  // that reads as file-not-found.
+  test('T22: the over-cap refusal names the cap, the size and Bash', () => {
+    const reason = overCapRefusal(P, OVER_CAP, SYSTEM_ID);
+    assert.match(reason, /^cc will not carry/);
+    // PINNED AGAINST THE CONSTANT, not a literal — the cap is
+    // `MAX_FILE_BYTES` and this is the same number the daemon enforces.
+    assert.match(reason, new RegExp(`\\b${MAX_FILE_BYTES}\\b`), 'the cap is not in the sentence');
+    assert.match(reason, new RegExp(`\\b${MAX_FILE_BYTES + 7}\\b`), 'the file\'s own size is not named');
+    assert.match(reason, new RegExp(`'${P.replace(/\//g, '\\/')}'`));
+    assert.match(reason, /NOT the file being absent/);
+    assert.match(reason, /`sed -n`/, 'the channel that works — a RANGE read — is not named');
+    neverClaimsAbsence(reason);
+    namesBashOnTheSystem(reason, SYSTEM_ID);
+  });
+
+  // PINS: `classifyForTool` does not know faults exist. On a diverged path it
+  // still returns a bare allow, and `ToolDenyClass`'s set is still the same
+  // FOUR — so the stateful surface did not become a fifth tier wording.
+  // DIES UNDER: consulting the fault record inside `classifyForTool`; adding a
+  // fifth deny class.
+  test('T23: classifyForTool is stateless, and the deny classes are still four', () => {
+    const { classify } = fixture();
+    assert.deepEqual(classify(P), { decision: 'allow' },
+      'classifyForTool learned about faults — the tier surface is no longer stateless');
+    // The same two-directional set the four wordings are pinned by, restated
+    // here because THIS is the change that could have grown it.
+    const { classify: c2, input } = fixture();
+    const seen = new Set();
+    for (const p of ['/srv/app/secrets/key.pem', '/opt/elsewhere/x', '/proc/cpuinfo',
+      '/home/node/.claude/settings.json', path.join(input.runDir, 'pins.txt')]) {
+      seen.add(c2(p).class);
+    }
+    assert.deepEqual([...seen].sort(),
+      ['bind-mount', 'excluded', 'host-pinned', 'outside-mirror-root']);
+    // AND A FAULT-DRIVEN DENIAL CARRIES NO CLASS AT ALL, which is what keeps
+    // that array a four-element one however many faults exist.
+    assert.equal(Object.hasOwn(
+      { decision: 'deny', reason: divergedRefusal(P, DIVERGED, SYSTEM_ID) }, 'class'), false);
+  });
+
+  // PINS: THE ORDERING RULING ITSELF, two-directionally. A path that is BOTH
+  // diverged AND denied by the tier table gets the TIER refusal — so the fault
+  // surface is provably second and cannot be a bypass route — while the same
+  // fault at an ALLOWED path does produce the fault refusal, which is what
+  // makes the first half non-vacuous.
+  // DIES UNDER: consulting the fault record first (the excluded path comes back
+  // with the diverged wording).
+  test('T24: a path that is both diverged and tier-denied gets the TIER refusal', async () => {
+    // The fault surface answers for the EXCLUDED path here, so if it were
+    // consulted first it would win.
+    const { tiers, session } = fixture();
+    const EXCLUDED = '/srv/app/secrets/key.pem';
+    const redirect = new SessionRedirect({
+      system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
+      systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
+      tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
+      forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      faultAt: () => DIVERGED,
+      settle: async () => {},
+    });
+    const d = await redirect.preToolUse('Write', { file_path: EXCLUDED });
+    assert.equal(d.decision, 'deny');
+    assert.match(d.reason, /excluded from file mirroring/,
+      'the fault surface answered ahead of the tier gate — that is a bypass route by construction');
+    assert.doesNotMatch(d.reason, /have diverged/);
+
+    // THE OTHER DIRECTION, which is what stops the above passing because the
+    // fault surface is never consulted at all: at a path the TIER GATE ALLOWS,
+    // the same fault does refuse.
+    const ok = await redirect.preToolUse('Write', { file_path: P });
+    assert.equal(ok.decision, 'deny');
+    assert.match(ok.reason, /have diverged/, 'the fault surface is not consulted anywhere');
+  });
+
+  // PINS: a diverged path stays READABLE through the tool surface too, and an
+  // over-cap one does not — the two `refuses` values are distinguished, and
+  // `Read` is the one tool the diverged wording's recovery clause depends on.
+  // DIES UNDER: collapsing `refuses` to a single value; refusing Read on a
+  // diverged path (the promised recovery channel is destroyed).
+  test('T24b: divergence refuses every file tool but Read; over-cap refuses Read too', async () => {
+    const div = redirectWith(DIVERGED), cap = redirectWith(OVER_CAP);
+    const keyOf = (t) => FILE_TOOLS[t];
+    assert.deepEqual(await div.preToolUse('Read', { [keyOf('Read')]: P }), { decision: 'allow' },
+      'a diverged path stopped being readable — the refusal now promises a channel it closed');
+    for (const t of Object.keys(FILE_TOOLS).filter(x => x !== 'Read')) {
+      const d = await div.preToolUse(t, { [keyOf(t)]: P });
+      assert.equal(d.decision, 'deny', t);
+      assert.match(d.reason, /have diverged/, t);
+    }
+    for (const t of Object.keys(FILE_TOOLS)) {
+      const d = await cap.preToolUse(t, { [keyOf(t)]: P });
+      assert.equal(d.decision, 'deny', `${t} was allowed on an over-cap path`);
+      assert.match(d.reason, /too large/, t);
+    }
+    // AND THE PREDICATE ITSELF, at the level it is written: `writes` is the
+    // COMPLEMENT of Read, so a tool name this file has never heard of is
+    // refused rather than allowed through.
+    assert.equal(refusesTool(DIVERGED, 'Read'), false);
+    assert.equal(refusesTool(DIVERGED, 'SomeFutureWriteTool'), true,
+      'an unknown tool escapes a diverged path — the predicate is a transcription, not a complement');
+    assert.equal(refusesTool(OVER_CAP, 'Read'), true);
+  });
+
+  // PINS: `postToolUse` reports a fault that landed AFTER the tool returned,
+  // and it AWAITS the path's in-flight frame before deciding — the note has to
+  // report a settled state, not a racing one. Also pins the two no-ops: a tool
+  // cc does not own, and a clean path.
+  // DIES UNDER: dropping the `await` (the note is null while the frame is still
+  // in flight); returning null unconditionally; reporting on a non-file tool.
+  test('T25b: postToolUse awaits the path, then reports the fault as a note', async () => {
+    let settled = false;
+    let fault = null;
+    // `landsOnSettle` is what `settle` will publish. Kept separate from
+    // `fault` so the no-fault arm below can have a settle that resolves and
+    // publishes NOTHING — otherwise the first arm's fault leaks into it and
+    // that arm asserts against a value it did not choose.
+    let landsOnSettle = null;
+    const { tiers, session } = fixture();
+    const redirect = new SessionRedirect({
+      system: { execOneShot: async () => ({ code: 0, stdout: '', stderr: '' }) },
+      systemId: SYSTEM_ID, systemPath: SYSTEM_PATH,
+      tiers, exclude: session.exclude, mirrorRoot: session.mirrorRoot,
+      forwarderUrl: 'http://127.0.0.1:1/x', emit: () => {},
+      // THE FAULT ONLY EXISTS ONCE `settle` HAS RESOLVED, which is what makes
+      // the await load-bearing rather than decorative: a `postToolUse` that
+      // read the record without waiting sees null and reports nothing.
+      faultAt: () => fault,
+      settle: async (p) => {
+        assert.equal(p, P, 'settle was asked about a different path than the tool named');
+        await new Promise(r => setImmediate(r));
+        settled = true;
+        fault = landsOnSettle;
+      },
+    });
+    landsOnSettle = DIVERGED;
+    const note = await redirect.postToolUse('Write', { file_path: P }, { ok: true });
+    assert.equal(settled, true, 'postToolUse decided before the path had settled');
+    assert.ok(note, 'a fault that landed after the tool returned reached the worker nowhere');
+    assert.match(note, /have diverged/);
+    namesBashOnTheSystem(note, SYSTEM_ID);
+
+    // NO NOTE WITHOUT A FAULT, and no note for a tool cc does not own — a
+    // `postToolUse` that always spoke would annotate every successful write.
+    fault = null; landsOnSettle = null; settled = false;
+    assert.equal(await redirect.postToolUse('Write', { file_path: P }, { ok: true }), null);
+    assert.equal(settled, true, 'the clean arm did not settle either, so it proves nothing');
+    fault = DIVERGED; settled = false;
+    assert.equal(await redirect.postToolUse('TodoWrite', { file_path: P }, { ok: true }), null,
+      'a tool with no file path was given a file-path note');
+    assert.equal(settled, false, 'a non-file tool was awaited anyway');
+    assert.equal(await redirect.postToolUse('Write', { file_path: 'relative/x' }, { ok: true }), null,
+      'a relative path was classified rather than ignored');
   });
 });

@@ -805,6 +805,20 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
                                    * source must lose it. Absence is never
                                    * inferred from the mirror; it is declared
                                    * here or it did not happen. */
+#define CCU_FLAG_RELEASE_ONLY 0x08 /* DIRTY: release the claim and reconcile
+                                   * NOTHING. The handle is closing and a
+                                   * `flush` already landed its bytes, so the
+                                   * releasing frame has nothing left to carry.
+                                   * Without it every written file uploads
+                                   * TWICE — once at `flush`, once at
+                                   * `release` — because the releasing frame is
+                                   * also a reconciling one (PROVENANCE D13d).
+                                   *
+                                   * A DEDICATED BIT, NOT A FLAG COMBINATION:
+                                   * one bit, one meaning, on one op, which is
+                                   * the discipline this table already states.
+                                   * Encoding it as the absence of the other
+                                   * bits would make the wire unreadable. */
 
 static inline void ccu_put32(unsigned char *p, uint32_t v)
 {

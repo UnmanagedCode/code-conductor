@@ -16,6 +16,11 @@
 //                    provider — the whole NDJSON → base64 → 64 KiB chunking
 //                    path, deterministic and in-repo, which isolates the
 //                    PROTOCOL's cost from a container's.
+//   --case write-close  M3: one written file's close sequence — the `flush`
+//                    that lands the bytes and the `release` that drops the
+//                    claim — with `--release-only {on,off}`. `off` is the
+//                    BEFORE picture (a flags-0 release frame) and is a
+//                    BENCH-ONLY switch, never a product knob.
 //   --arm docker     the real `cc-box` handle. Needs the container up; its
 //                    fixtures are built ON THE BOX through the same handle,
 //                    because there is no shared filesystem to build them on.
@@ -28,7 +33,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
+import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_REPLY_LEN,
+  CCU_FLAG_FOR_WRITE, CCU_FLAG_RELEASE_ONLY } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
 import { systemSource } from '../src/systems/fuse/systemSource.ts';
 import { ProviderSystem } from '../src/systems/providerSystem.ts';
@@ -54,6 +60,9 @@ const RUNS = Number(opt('--runs', '30'));
 const SIZES = opt('--sizes', '1k,64k,1m').split(',');
 const CHILDREN = opt('--children', '1,10,50,200').split(',').map(Number);
 const SHAPE = opt('--shape', 'one-call');
+// M3's before/after switch. `on` is what the daemon sends; `off` reproduces the
+// pre-RELEASE_ONLY release frame. BENCH ONLY.
+const RELEASE_ONLY = opt('--release-only', 'on') !== 'off';
 
 const BYTES = { '1k': 1024, '64k': 64 * 1024, '1m': 1024 * 1024, '8m': 8 * 1024 * 1024, '32m': 32 * 1024 * 1024 };
 const sizeOf = (s) => BYTES[s] ?? Number(s);
@@ -266,7 +275,56 @@ async function list() {
   }
 }
 
-const CASES = { 'fetch-cold': fetchCold, 'fetch-warm': fetchWarm, list };
+// M3 — THE DOUBLE RECONCILE'S SECOND COPY. One written file's close sequence:
+// the `flush` that lands the bytes, then the `release` that drops the claim.
+//
+// `--release-only off` IS A BENCH-ONLY SWITCH AND NEVER A PRODUCT KNOB. It
+// sends the release as a flags-0 DIRTY — the shape `pt_release` sent before
+// CCU_FLAG_RELEASE_ONLY existed — so the before-picture is DRIVEN here rather
+// than remembered. It is exactly the frame a handle whose `flush` never ran
+// still sends, which is why the product can keep the backstop and lose the
+// duplicate at the same time.
+async function writeClose() {
+  const releaseFlag = RELEASE_ONLY ? CCU_FLAG_RELEASE_ONLY : 0;
+  for (const label of SIZES) {
+    const bytes = Buffer.alloc(sizeOf(label), 0x61);
+    await rig(async ({ src, mirror, sock, put }) => {
+      // ONE CLOSE SEQUENCE on a fresh path: open-for-write, the worker's bytes
+      // into the mirror, then flush + release. `put` seeds the SOURCE so the
+      // open is an ordinary open of an existing file rather than a create.
+      const once = async (i) => {
+        const p = path.posix.join(src, `wc-${label}-${i}`);
+        await put(p, bytes);
+        if (await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p) !== CCU_STATUS.READY) {
+          throw new Error(`FETCH ${p} refused`);
+        }
+        await fs.writeFile(path.join(mirror, p), bytes);
+        const t = performance.now();
+        if (await call(sock, CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p) !== CCU_STATUS.READY) {
+          throw new Error(`flush ${p} refused`);
+        }
+        if (await call(sock, CCU_OP.DIRTY, releaseFlag, p) !== CCU_STATUS.READY) {
+          throw new Error(`release ${p} refused`);
+        }
+        return performance.now() - t;
+      };
+      await once('warm');
+      const ms = [];
+      for (let i = 0; i < RUNS; i++) ms.push(await once(i));
+      row(`${label}/release-only=${RELEASE_ONLY ? 'on' : 'off'}`, stats(ms));
+      // ONE OBSERVED close sequence's frames: `writeFile` 1 with the bit, 2
+      // without. A count by arithmetic is not a measurement.
+      if (LOG) {
+        const before = await frameCounts();
+        await once('counted');
+        console.log(`${CASE}\t${ARM}\t${label}/release-only=${RELEASE_ONLY ? 'on' : 'off'}`
+          + `\tframes=${JSON.stringify(frameDelta(before, await frameCounts()))}`);
+      }
+    });
+  }
+}
+
+const CASES = { 'fetch-cold': fetchCold, 'fetch-warm': fetchWarm, list, 'write-close': writeClose };
 const run = CASES[CASE];
 if (!run) {
   console.error(`unknown --case ${CASE}; one of ${Object.keys(CASES).join(', ')}`);

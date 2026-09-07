@@ -31,6 +31,11 @@
 //                              only for the case where the answer must survive
 //                              a restart and change with it
 //   --advertise-exclude <abs>  an advertised exclude entry (repeatable)
+//   --exclude-file <path>      advertised excludes, one absolute path per line,
+//                              read ONCE at startup for the same reason
+//                              --mirror-file is: the list must be able to
+//                              change with a RESTART and not within a
+//                              generation
 //   --extra-field              add a field cc has never heard of to the
 //                              `remoteDescriptor` answer
 //   --frame-log <path>         append every frame this fixture writes, so a
@@ -96,10 +101,21 @@ const ignorePrune = takeFlag('--ignore-prune');
 const deadFile = takeValue('--dead-file');
 const probeLog = takeValue('--probe-log');
 const exclude = takeAll('--advertise-exclude');
+const excludeFile = takeValue('--exclude-file');
 let mirrorRoot = takeValue('--advertise-mirror');
 
 if (mirrorRoot === null && mirrorFile !== null) {
   try { mirrorRoot = readFileSync(mirrorFile, 'utf8').trim() || null; } catch { /* advertise nothing */ }
+}
+// READ ONCE, for the same reason `--mirror-file` is: cc memoises the
+// advertisement per connection generation, so a list that changed within one
+// would model something that cannot happen. One entry per line.
+if (excludeFile !== null) {
+  try {
+    for (const line of readFileSync(excludeFile, 'utf8').split('\n')) {
+      if (line.trim() !== '') exclude.push(line.trim());
+    }
+  } catch { /* advertise no excludes */ }
 }
 if (pidFile) writeFileSync(pidFile, String(process.pid));
 

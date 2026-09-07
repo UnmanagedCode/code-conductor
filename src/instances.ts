@@ -4933,6 +4933,13 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         exclude,
         mirrorRoot,
         emit: (ev: unknown) => inst._emitUi(ev as UiEvent),
+        // THE FAULT SURFACE, READ LAZILY THROUGH THE INSTANCE. The redirect is
+        // constructed here and the FuseSession a few lines below it, so a
+        // direct reference would capture `null`; and a session that is rewound
+        // gets a NEW control server under the SAME redirect, so a captured one
+        // would go stale. Both are why these are getters and not values.
+        faultAt: (p) => inst._fuse?.controlServer?.faultAt(p) ?? null,
+        settle: (p) => inst._fuse?.controlServer?.settle(p) ?? Promise.resolve(),
       }), redirectPlacement);
       // The FUSE-union chroot, attached in the same block and gated on the same
       // `remote` boolean, so a session cannot end up with one and not the other.

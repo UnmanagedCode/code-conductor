@@ -44,7 +44,8 @@ const probeCount = async (log) =>
 import { fuseRunRoot } from '../src/systems/fuse/plan.ts';
 import { assertRemoteLive } from '../src/systems/registry.ts';
 import net from 'node:net';
-import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE } from '../src/systems/fuse/control.ts';
+import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE,
+  CCU_FLAG_RELEASE_ONLY } from '../src/systems/fuse/control.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
@@ -408,60 +409,71 @@ describe('systemSource — the remote source over a real System handle', () => {
 // is unconditional passes the first arm and fails the second, and a copy that
 // is unconditional does the reverse. Asserted on `readFile` FRAMES, because the
 // bytes are correct either way and only the wire can tell them apart.
+// One request, one reply. Settles on a clean FIN too (card 2026-0371).
+function call(sock, op, flags, p) {
+  return new Promise((resolve, reject) => {
+    let buf = Buffer.alloc(0);
+    const done = (fn, v) => {
+      sock.off('data', onData); sock.off('error', onErr);
+      sock.off('end', onEnd); sock.off('close', onEnd);
+      fn(v);
+    };
+    const onErr = (e) => done(reject, e);
+    const onEnd = () => done(reject, new Error(`control socket closed with no reply to op ${op} '${p}'`));
+    const onData = (c) => {
+      buf = Buffer.concat([buf, c]);
+      if (buf.length < 14) return;
+      done(resolve, { status: buf[4], err: buf.readInt32BE(6) });
+    };
+    sock.on('data', onData); sock.on('error', onErr);
+    sock.on('end', onEnd); sock.on('close', onEnd);
+    sock.write(encodeRequest(op, flags, p));
+  });
+}
+
+// A real ControlServer on a real socket, over `systemSource` on a recorded
+// reference provider — so a frame count here is the transport's, not a mock's.
+async function rig(fn) {
+  const box = await fs.realpath(await mkdtemp('cc-reval-'));
+  const log = path.join(box, 'frames.log');
+  const src = path.join(box, 'srv', 'app');
+  const mirror = path.join(box, 'mirror');
+  await fs.mkdir(src, { recursive: true });
+  await fs.mkdir(mirror, { recursive: true });
+  const sys = handle({ log });
+  let server, sock;
+  try {
+    await sys.connect();
+    server = await ControlServer.listen({
+      socketPath: path.join(box, 'control.sock'),
+      mirror,
+      source: systemSource(sys),
+      tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
+    });
+    sock = await new Promise((res, rej) => {
+      const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
+    });
+    const reads = async () => (await frames(log))['c2p:readFile'] ?? 0;
+    const writes = async () => (await frames(log))['c2p:writeFile'] ?? 0;
+    // EVERY cc→provider FRAME, whatever its type. A refusal that claims to
+    // have touched the source at all cannot be caught by a per-type count:
+    // the derivations ride `exec:argv`, the transfers ride
+    // `readFile`/`writeFile`, and "no round trip happened" is a claim about
+    // the sum.
+    const wire = async () => Object.entries(await frames(log))
+      .filter(([k]) => k.startsWith('c2p:'))
+      .reduce((n, [, v]) => n + v, 0);
+    return await fn({ src, mirror, sock, server,
+      call: (op, flags, p) => call(sock, op, flags, p), reads, writes, wire });
+  } finally {
+    sock?.destroy();
+    await server?.close();
+    sys.dispose();
+  }
+}
+
 describe('per-open revalidate — the mirror is not re-downloaded for nothing', () => {
 
-  // One request, one reply. Settles on a clean FIN too (card 2026-0371).
-  function call(sock, op, flags, p) {
-    return new Promise((resolve, reject) => {
-      let buf = Buffer.alloc(0);
-      const done = (fn, v) => {
-        sock.off('data', onData); sock.off('error', onErr);
-        sock.off('end', onEnd); sock.off('close', onEnd);
-        fn(v);
-      };
-      const onErr = (e) => done(reject, e);
-      const onEnd = () => done(reject, new Error(`control socket closed with no reply to op ${op} '${p}'`));
-      const onData = (c) => {
-        buf = Buffer.concat([buf, c]);
-        if (buf.length < 14) return;
-        done(resolve, { status: buf[4], err: buf.readInt32BE(6) });
-      };
-      sock.on('data', onData); sock.on('error', onErr);
-      sock.on('end', onEnd); sock.on('close', onEnd);
-      sock.write(encodeRequest(op, flags, p));
-    });
-  }
-
-  // A real ControlServer on a real socket, over `systemSource` on a recorded
-  // reference provider — so a frame count here is the transport's, not a mock's.
-  async function rig(fn) {
-    const box = await fs.realpath(await mkdtemp('cc-reval-'));
-    const log = path.join(box, 'frames.log');
-    const src = path.join(box, 'srv', 'app');
-    const mirror = path.join(box, 'mirror');
-    await fs.mkdir(src, { recursive: true });
-    await fs.mkdir(mirror, { recursive: true });
-    const sys = handle({ log });
-    let server, sock;
-    try {
-      await sys.connect();
-      server = await ControlServer.listen({
-        socketPath: path.join(box, 'control.sock'),
-        mirror,
-        source: systemSource(sys),
-        tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
-      });
-      sock = await new Promise((res, rej) => {
-        const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
-      });
-      const reads = async () => (await frames(log))['c2p:readFile'] ?? 0;
-      return await fn({ src, mirror, sock, call: (op, flags, p) => call(sock, op, flags, p), reads });
-    } finally {
-      sock?.destroy();
-      await server?.close();
-      sys.dispose();
-    }
-  }
 
   // PINS: an unchanged source file is fetched ONCE, and a changed one is
   // fetched again. Two arms, each the other's control.
@@ -599,6 +611,342 @@ describe('per-open revalidate — the mirror is not re-downloaded for nothing', 
 // assertable — and the two arms that needed a SUCCESSFUL probe are driven
 // directly rather than through a spawn, because reaching one through
 // `POST /api/instances` means a real mount.
+// ── THE WRITE PATH'S SEMANTICS ──────────────────────────────────────────────
+//
+// Mode preservation, the per-path fault record, and the double reconcile. All
+// three are driven through a REAL ControlServer over the REAL transport, and
+// every one of them is asserted on a value the product PRODUCED — the source
+// file's own mode, the frame count on the wire, the fault record read back off
+// the server — rather than on a reply status that would be the same either way.
+describe("the write path — mode, faults and the double reconcile", () => {
+
+  // Put the source entry at `p` into a shape a push cannot land on, and cannot
+  // recover from either. A NON-EMPTY DIRECTORY is the one shape that fails
+  // twice: `writeFileBytes(atomic)`'s rename onto a directory is EISDIR, and
+  // `systemSource.push`'s single retry then calls the NON-RECURSIVE
+  // `removeEntry`, which refuses ENOTEMPTY. A plain directory would be
+  // repaired by that retry and the push would SUCCEED.
+  //
+  // The transport stays up throughout, which is what makes the later
+  // "no frame reached the source" assertions non-vacuous — a killed provider
+  // would give a frame count of zero for the wrong reason.
+  async function wedgeSource(p) {
+    await fs.rm(p, { force: true });
+    await fs.mkdir(path.join(p, 'child.d'), { recursive: true });
+    await fs.writeFile(path.join(p, 'child.d', 'x'), 'occupied');
+  }
+
+  const modeOf = async (p) => (await fs.lstat(p)).mode & 0o7777;
+
+  // PINS: mode preservation across the write round trip, AND its counter-arm.
+  // A rename over the mirror target REPLACES the inode, so the mode cc is
+  // about to push is the tmp file's fresh 0644 — cc restores the source's
+  // recorded 0755 first. An explicit chmod KEEPS the inode, so the mirror's
+  // mode is the one the worker asked for and cc must push it unchanged.
+  // DIES UNDER: removing the inode discriminator; "always restore" (the
+  // counter-arm's 0700 comes back 0755); "never restore" (the main arm's 0755
+  // comes back 0644); chmod'ing the source instead of the mirror (the mirror
+  // assertion fails).
+  test('T11 — a rename over the target keeps the source mode; a chmod at the same inode replaces it', async () => {
+    await rig(async ({ src, mirror, call }) => {
+      const p = path.join(src, 'run.sh');
+      await fs.writeFile(p, '#!/bin/sh\necho one\n');
+      await fs.chmod(p, 0o755);
+      const dest = path.join(mirror, p);
+
+      // ── MAIN ARM: create-write-rename, which is what an atomic Edit is.
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      assert.equal(await modeOf(dest), 0o755, 'the mirror entry did not take the source mode');
+      const tmp = `${dest}.tmp`;
+      await fs.writeFile(tmp, '#!/bin/sh\necho two\n', { mode: 0o644 });
+      await fs.chmod(tmp, 0o644);
+      const before = (await fs.lstat(dest)).ino;
+      await fs.rename(tmp, dest);
+      assert.notEqual((await fs.lstat(dest)).ino, before,
+        'the fixture did not replace the mirror inode, so the discriminator is never exercised');
+      assert.equal(await modeOf(dest), 0o644,
+        'the fixture did not actually strip the mode — there is nothing for cc to restore');
+
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await modeOf(p), 0o755,
+        'the atomic write stripped the source file\'s executable bit');
+      // AND THE MIRROR, because cc restores the invariant `#shape` maintains
+      // rather than bypassing it with a mode passed through `push`.
+      assert.equal(await modeOf(dest), 0o755, 'the mirror entry was left carrying the tmp file\'s mode');
+      assert.equal(await fs.readFile(p, 'utf8'), '#!/bin/sh\necho two\n', 'the bytes did not land');
+
+      // ── COUNTER-ARM, AND IT IS THE LOAD-BEARING HALF. Same path, same
+      // recorded mode, and the ONLY difference is that the inode is unchanged:
+      // this is a deliberate chmod by the worker and cc must not undo it.
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      const held = (await fs.lstat(dest)).ino;
+      await fs.chmod(dest, 0o700);
+      assert.equal((await fs.lstat(dest)).ino, held,
+        'chmod changed the inode, which would make this arm a copy of the main one');
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await modeOf(p), 0o700,
+        'cc restored a mode the worker had deliberately changed at the same inode');
+    });
+  });
+
+  // PINS: the mode restore fires ONLY for a regular file. `fsp.chmod` FOLLOWS a
+  // symlink, so a mirror entry that is now a link at a path cc recorded a file
+  // mode against would have its mode landed on the link's TARGET — some other
+  // file in the mirror, whose own recorded mode then disagrees with its entry
+  // and whose next push carries the wrong one.
+  // DIES UNDER: dropping the regular-file test from `#restoreMode` (the
+  // target's mode below comes back 0755).
+  test('T11b — a mirror entry that became a symlink is not chmod\'d through', async () => {
+    await rig(async ({ src, mirror, call }) => {
+      const p = path.join(src, 'was-a-file');
+      const other = path.join(src, 'innocent');
+      await fs.writeFile(p, 'ORIGINAL');
+      await fs.chmod(p, 0o755);
+      await fs.writeFile(other, 'DO NOT TOUCH');
+      await fs.chmod(other, 0o600);
+
+      // Both materialised: `p` claimed for write (so its 0755 is in the mode
+      // ledger), `other` merely read (so it is in the mirror to be pointed at).
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      assert.equal((await call(CCU_OP.FETCH, 0, other)).status, CCU_STATUS.READY);
+      const destOther = path.join(mirror, other);
+      assert.equal((await fs.lstat(destOther)).mode & 0o7777, 0o600,
+        'the fixture did not materialise the target at 0600, so a 0755 below would prove nothing');
+
+      // The worker replaces the claimed path with a symlink to the other file,
+      // BY RENAME. `rm` then `symlink` is what a first cut did and it made this
+      // case VACUOUS: the freed inode number was handed straight back to the
+      // new symlink, the recorded inode matched, and the restore never ran —
+      // a green that exercised nothing. A rename holds both inodes at once, so
+      // the new one cannot be the old one.
+      const dest = path.join(mirror, p);
+      const wasIno = (await fs.lstat(dest)).ino;
+      const tmpLink = `${dest}.link`;
+      await fs.symlink(destOther, tmpLink);
+      await fs.rename(tmpLink, dest);
+      assert.equal((await fs.lstat(dest)).isSymbolicLink(), true);
+      assert.notEqual((await fs.lstat(dest)).ino, wasIno,
+        'the mirror inode did not change, so the restore is skipped and this arm proves nothing');
+
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+      assert.equal((await fs.lstat(destOther)).mode & 0o7777, 0o600,
+        'the mode restore followed the symlink and landed 0755 on a file nobody named');
+    });
+  });
+
+  // PINS: a failed push is loud and STICKY, in all four of its halves — the
+  // reply is REFUSED/EIO, the fault is RECORDED on the server, the CLAIM IS
+  // KEPT so the worker's unpushed bytes survive a following STAT, and a second
+  // write open is refused WITHOUT A SINGLE FRAME reaching the source.
+  // DIES UNDER: logging without recording the fault (faultAt is null);
+  // releasing the claim on failure (the STAT re-shapes and the worker's bytes
+  // are destroyed); allowing the second write open; refusing it only after a
+  // source call (the wire delta is non-zero).
+  test('T12 — a failed push records a diverged fault, keeps the claim, and refuses the next write', async () => {
+    await rig(async ({ src, mirror, call, server, wire }) => {
+      const p = path.join(src, 'note.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      const dest = path.join(mirror, p);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+
+      // The worker's bytes, in the mirror, unpushed.
+      const WORKER = 'BYTES ONLY THIS SESSION HAS';
+      await fs.writeFile(dest, WORKER);
+      await wedgeSource(p);
+
+      const d = await call(CCU_OP.DIRTY, 0, p);
+      assert.equal(d.status, CCU_STATUS.REFUSED, 'a push that could not land reported success');
+      assert.equal(d.err, 5, 'EIO — the errno `flush` answers to close(2)');
+
+      // 1. THE FAULT IS RECORDED, read off the server rather than inferred
+      //    from the reply — the reply alone is what "logging without
+      //    recording" also produces.
+      const fault = server.faultAt(p);
+      assert.ok(fault, 'the push failed and no fault was recorded');
+      assert.equal(fault.kind, 'diverged');
+      assert.equal(fault.refuses, 'writes');
+      assert.match(fault.detail, /\S/, 'the fault carries no detail, so the refusal can name no cause');
+
+      // 2. THE CLAIM IS KEPT, and the worker's bytes therefore survive cc's
+      //    own cache management. A STAT is the exact op that re-shapes a
+      //    path cc still manages, and the source is now a DIRECTORY — so a
+      //    released claim would replace the file with one.
+      assert.equal((await call(CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await fs.readFile(dest, 'utf8'), WORKER,
+        'the only copy of what the worker wrote was destroyed by cc\'s own re-shape');
+
+      // 3. THE NEXT WRITE OPEN IS REFUSED, BEFORE ANY SOURCE CALL.
+      const at = await wire();
+      const again = await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p);
+      assert.equal(again.status, CCU_STATUS.REFUSED, 'a diverged path accepted a second write');
+      assert.equal(again.err, 5);
+      assert.equal(await wire(), at,
+        'the refusal reached the source anyway — it is not ahead of every source call');
+    });
+  });
+
+  // PINS: a diverged path stays READABLE, and serves the preserved bytes. That
+  // is the recovery channel the refusal wording points at, so refusing all
+  // access would destroy the thing the sentence promises.
+  // DIES UNDER: refusing every op for a diverged path (`refuses` ignored, or
+  // the gate not consulting it).
+  test('T13 — a read-only open of a diverged path succeeds and serves the worker\'s bytes', async () => {
+    await rig(async ({ src, mirror, call, server }) => {
+      const p = path.join(src, 'note.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      const dest = path.join(mirror, p);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      const WORKER = 'RECOVERABLE CONTENT';
+      await fs.writeFile(dest, WORKER);
+      await wedgeSource(p);
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.REFUSED);
+      assert.equal(server.faultAt(p)?.kind, 'diverged');
+
+      const r = await call(CCU_OP.FETCH, 0, p);
+      assert.equal(r.status, CCU_STATUS.READY, 'a diverged path stopped being readable');
+      assert.equal(await fs.readFile(dest, 'utf8'), WORKER,
+        'the read succeeded but served something other than the preserved bytes');
+    });
+  });
+
+  // PINS: CCU_FLAG_RELEASE_ONLY. The releasing frame after a flush that
+  // already landed carries NOTHING — so a written file uploads ONCE, not twice
+  // — and it still RELEASES the claim, which is the only thing that drops one.
+  // DIES UNDER: cc ignoring the flag (two writeFile frames); cc treating a
+  // release-only frame as not releasing (the claim survives and the following
+  // STAT no longer re-shapes).
+  test('T14 — a flush then a RELEASE_ONLY release pushes once and still drops the claim', async () => {
+    await rig(async ({ src, mirror, call, writes }) => {
+      const p = path.join(src, 'note.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      const dest = path.join(mirror, p);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(dest, 'WRITTEN THROUGH THE UNION');
+      const base = await writes();
+
+      // The daemon's `flush`: FOR_WRITE on a DIRTY means the handle is still
+      // open, so this reconciles and keeps the claim.
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      assert.equal(await writes(), base + 1, 'the flush did not push');
+      assert.equal(await fs.readFile(p, 'utf8'), 'WRITTEN THROUGH THE UNION');
+
+      // The daemon's `release` for a handle whose flush already landed.
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY, p)).status, CCU_STATUS.READY);
+      assert.equal(await writes(), base + 1,
+        'the releasing frame uploaded the whole file a second time');
+
+      // AND THE CLAIM IS GONE, observed the only way it can be from out here:
+      // a STAT re-shapes a path cc manages and short-circuits on one it does
+      // not. The source is changed to a DIFFERENT SIZE, so the re-shape is
+      // observable on the mirror entry.
+      await fs.writeFile(p, 'A MUCH LONGER SOURCE FILE THAN BEFORE');
+      assert.equal((await call(CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY);
+      assert.equal((await fs.lstat(dest)).size, (await fs.lstat(p)).size,
+        'the STAT did not re-shape the mirror entry, so the release never dropped the claim');
+    });
+  });
+
+  // PINS: the post-push mtime adoption costs ONE source round trip for a FILE
+  // and NONE for a directory — the kind test is a LOCAL `lstat`, not a remote
+  // stat. Asserted as a frame count, because the reconcile succeeds either way
+  // and only the wire can tell the two apart.
+  // DIES UNDER: dropping the local kind test (the directory arm gains an
+  // `exec:argv`); dropping the adoption entirely (the file arm loses one, and
+  // the following open re-downloads what the worker just wrote — the second
+  // arm below).
+  test('T14b — a directory reconcile costs no source stat, and a file write is not re-downloaded', async () => {
+    await rig(async ({ src, mirror, call, reads, wire }) => {
+      // ── THE DIRECTORY ARM. `mkdir` through the union reconciles a dir.
+      const d = path.join(src, 'a-dir');
+      await fs.mkdir(d);
+      assert.equal((await call(CCU_OP.STAT, 0, d)).status, CCU_STATUS.READY);
+      await fs.chmod(path.join(mirror, d), 0o700);
+      const beforeDir = await wire();
+      assert.equal((await call(CCU_OP.DIRTY, 0, d)).status, CCU_STATUS.READY);
+      const dirFrames = (await wire()) - beforeDir;
+      // THREE, AND THEY ARE ALL THE PUSH'S OWN: `systemSource.push`'s dir arm
+      // is `lstat` (the wrong-kind probe) + `mkdir -p` + `chmod`. A FOURTH
+      // would be a source stat taken for a fingerprint only a FILE has — which
+      // is what the local kind test in `#adoptWriteMtime` exists to avoid, and
+      // what a mutant removing it puts back.
+      assert.equal(dirFrames, 3,
+        `a directory reconcile cost ${dirFrames} source round trips, not the push's own 3`);
+
+      // ── THE FILE ARM, and the saving it buys. Write through the union, then
+      //    open the path again: the source's mtime is FRESH after the atomic
+      //    write, so without the adoption the fingerprint misses and the whole
+      //    file comes back down.
+      const p2 = path.join(src, 'written.txt');
+      await fs.writeFile(p2, 'ORIGINAL');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p2)).status, CCU_STATUS.READY);
+      await fs.writeFile(path.join(mirror, p2), 'WRITTEN THROUGH THE UNION');
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY | 0, p2)).status, CCU_STATUS.READY,
+        'the flush is the frame under test, so it must not be a release-only one');
+      assert.equal((await call(CCU_OP.DIRTY, 0, p2)).status, CCU_STATUS.READY);
+      const afterPush = await reads();
+      assert.equal((await call(CCU_OP.FETCH, 0, p2)).status, CCU_STATUS.READY);
+      assert.equal(await reads(), afterPush,
+        'the open after a write re-downloaded the file the worker had just written');
+      assert.equal(await fs.readFile(path.join(mirror, p2), 'utf8'), 'WRITTEN THROUGH THE UNION');
+    });
+  });
+
+  // PINS: the killed-process backstop. A releasing frame from a handle whose
+  // `flush` NEVER RAN carries no RELEASE_ONLY bit, and cc must push it — there
+  // is no close(2) left to answer and landing the bytes is the whole of what is
+  // owed. This is the consumer half of union.c's `fd_dirty[fd] ? 0 : …`.
+  // DIES UNDER: cc treating every release as release-only (zero pushes, and
+  // the bytes are silently lost).
+  test('T15 — a release with no flags pushes, because nothing has landed yet', async () => {
+    await rig(async ({ src, mirror, call, writes }) => {
+      const p = path.join(src, 'note.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      const dest = path.join(mirror, p);
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(dest, 'NEVER FLUSHED');
+      const base = await writes();
+
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(await writes(), base + 1,
+        'a release that had nothing landed before it pushed nothing — the bytes are lost');
+      assert.equal(await fs.readFile(p, 'utf8'), 'NEVER FLUSHED');
+    });
+  });
+
+  // PINS: the over-cap fault is RECORDED where the cap is enforced, so a file
+  // tool can be refused by name before the worker ever opens the path — and it
+  // refuses BOTH directions, because cc never materialised the file and has
+  // nothing to serve a reader either.
+  // DIES UNDER: refusing without recording (faultAt is null, and the tool
+  // refusal has nothing to report); recording it with `refuses: 'writes'` (the
+  // read arm below succeeds and serves a zero-length stub).
+  test('T12b — an over-cap FETCH records a fault that refuses reads as well as writes', async () => {
+    await rig(async ({ src, call, server, wire }) => {
+      const p = path.join(src, 'huge.bin');
+      const fh = await fs.open(p, 'w');
+      try { await fh.truncate(MAX_FILE_BYTES + 1); } finally { await fh.close(); }
+      assert.equal((await call(CCU_OP.FETCH, 0, p)).err, 27);
+
+      const fault = server.faultAt(p);
+      assert.ok(fault, 'the cap refused and recorded nothing, so no tool can be told why');
+      assert.equal(fault.kind, 'over-cap');
+      assert.equal(fault.refuses, 'all');
+      // THE NUMBERS THE REFUSAL WORDING QUOTES, pinned where they are
+      // produced. `cap` is MAX_FILE_BYTES and `size` is the file's own.
+      assert.equal(fault.cap, MAX_FILE_BYTES);
+      assert.equal(fault.size, MAX_FILE_BYTES + 1);
+
+      // AND IT IS STICKY AND TOTAL: the next open — read OR write — is
+      // refused with no frame reaching the source.
+      const at = await wire();
+      const r = await call(CCU_OP.FETCH, 0, p);
+      assert.equal(r.status, CCU_STATUS.REFUSED, 'an over-cap path was served on a second look');
+      assert.equal(r.err, 27);
+      assert.equal(await wire(), at, 'the second refusal went to the source anyway');
+    });
+  });
+});
+
 describe('the launch probe — is the box still there, asked now', () => {
   const FIXTURE = path.join(HERE, 'fixtures', 'mirrorFixtureProvider.mjs');
   // See mirror-geometry-follow's fixture fact 1: bootServer({realProcess:true})

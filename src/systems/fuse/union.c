@@ -330,7 +330,14 @@ static void mark_maybe(const char *path)
 static FILE           *trace_fp = NULL;
 static pthread_mutex_t trace_mu = PTHREAD_MUTEX_INITIALIZER;
 
-static void tr(const char *op, const char *path, const char *tier)
+/*
+ * `cflags` IS THE FRAME INTENT THE OP DECLARED — the same CCU_FLAG_* byte the
+ * FETCH carried — and it is in the line because a trace that cannot separate a
+ * READ open from a WRITE open cannot answer the two-handle question the epic
+ * carries as a standing condition (PROVENANCE D13c, measurement M6). `0` where
+ * the op sent no frame of its own, which is every `fh` branch below.
+ */
+static void tr(const char *op, const char *path, const char *tier, unsigned cflags)
 {
 	const struct fuse_context *ctx;
 	char comm[24];
@@ -346,9 +353,9 @@ static void tr(const char *op, const char *path, const char *tier)
 
 	pthread_mutex_lock(&trace_mu);
 	fprintf(trace_fp,
-		"%s\t%s\ttier=%s pid=%d uid=%d gid=%d tgid=%d ppid=%d "
+		"%s\t%s\ttier=%s cflags=%u pid=%d uid=%d gid=%d tgid=%d ppid=%d "
 		"comm=%s mark=%d exe=%s cmd=%s\n",
-		op, path, tier, (int)ctx->pid, (int)ctx->uid,
+		op, path, tier, cflags, (int)ctx->pid, (int)ctx->uid,
 		(int)ctx->gid, (int)tgid, (int)ppid, comm, mark_of(tgid), exe, cmd);
 	pthread_mutex_unlock(&trace_mu);
 }
@@ -603,7 +610,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	int rrc = route(op, p, cflags, fop, &r);        \
 	if (rrc)                                        \
 		return rrc;                             \
-	tr(op, p, tier_name(r.tier));                   \
+	tr(op, p, tier_name(r.tier), (unsigned)(cflags)); \
 	const char *rp = r.rp;
 
 /* ── operations ─────────────────────────────────────────────────────────── */
@@ -626,7 +633,7 @@ static int pt_getattr(const char *path, struct stat *st, struct fuse_file_info *
 {
 	int rc;
 	if (fi && fi->fh) {
-		tr("getattr", path, "fh");
+		tr("getattr", path, "fh", 0);
 		return fstat((int)fi->fh, st) == -1 ? -errno : 0;
 	}
 	{
@@ -1127,7 +1134,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 		abandon_claim(from, rf.tier);
 		return rc;
 	}
-	tr("rename", to, tier_name(rt.tier));
+	tr("rename", to, tier_name(rt.tier), CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE);
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) goto give_up;
 	if (rf.fd != rt.fd) {
 		policy_refuse("rename", to, "xdev-rename");
@@ -1189,7 +1196,7 @@ static int pt_link(const char *from, const char *to)
 	 * the parent exist for a host-tier link. */
 	if ((rc = route("link", from, 0, CCU_FETCH, &rf))) return rc;
 	if ((rc = route("link", to, CCU_FLAG_FOR_CREATE, CCU_FETCH, &rt))) return rc;
-	tr("link", to, tier_name(rt.tier));
+	tr("link", to, tier_name(rt.tier), CCU_FLAG_FOR_CREATE);
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
 	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
 	if (rf.fd != rt.fd) {
@@ -1206,7 +1213,7 @@ static int pt_link(const char *from, const char *to)
 static int pt_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	if (fi && fi->fh) {
-		tr("chmod", path, "fh");
+		tr("chmod", path, "fh", 0);
 		if (fchmod((int)fi->fh, mode) == -1) return -errno;
 		fd_mark_dirty(fi->fh);
 		return 0;
@@ -1227,7 +1234,7 @@ static int pt_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_inf
 {
 	if (fi && fi->fh) {
 		int fd = (int)fi->fh;
-		tr("chown", path, "fh");
+		tr("chown", path, "fh", 0);
 		if (fd >= 0 && fd < FDTIER_SLOTS && (enum tier)fd_tier[fd] == T_PROJECT)
 			/* The fh branch took no claim — no FETCH was sent. */
 			return refuse_unreconcilable("chown", path, T_PROJECT);
@@ -1248,7 +1255,7 @@ static int pt_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_inf
 static int pt_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
 	if (fi && fi->fh) {
-		tr("truncate", path, "fh");
+		tr("truncate", path, "fh", 0);
 		if (ftruncate((int)fi->fh, size) == -1) return -errno;
 		fd_mark_dirty(fi->fh);
 		return 0;
@@ -1273,7 +1280,7 @@ static int pt_utimens(const char *path, const struct timespec ts[2],
 		      struct fuse_file_info *fi)
 {
 	if (fi && fi->fh) {
-		tr("utimens", path, "fh");
+		tr("utimens", path, "fh", 0);
 		if (futimens((int)fi->fh, ts) == -1) return -errno;
 		fd_mark_dirty(fi->fh);
 		return 0;
@@ -1424,17 +1431,21 @@ static int pt_release(const char *path, struct fuse_file_info *fi)
 	 * whether or not anything is dirty — a `flush` that already pushed left
 	 * the claim standing deliberately, and nothing else would ever drop it.
 	 *
-	 * THE COST, named rather than hidden: a file written and then closed
-	 * reconciles TWICE — once at `flush`, once here — because the releasing
-	 * frame is also a reconciling one. Encoding "release without
-	 * reconciling" as a flag COMBINATION would remove the second copy and
-	 * make the wire unreadable; in S2 the source is a local directory so the
-	 * copy is cheap, and S3 owns the write path and will revisit batching
-	 * there regardless.
+	 * AND IT NO LONGER RE-UPLOADS WHAT `flush` ALREADY LANDED. Against a
+	 * local directory the second copy was cheap; against a real transport it
+	 * is a second whole-file upload per written file, which is not a
+	 * magnitude question (PROVENANCE D13d).
+	 *
+	 * THE KILLED-PROCESS BACKSTOP IS PRESERVED BY THE CONDITION ITSELF, not
+	 * by a second test bolted beside it. A handle whose `flush` never ran —
+	 * or whose `flush` refused — still has fd_dirty set, so it sends a FULL
+	 * reconcile, which is the whole of what is owed when there is no
+	 * `close(2)` left to answer.
 	 */
 	if (fd >= 0 && fd < FDTIER_SLOTS && fd_claimed[fd] &&
 	    (enum tier)fd_tier[fd] == T_PROJECT) {
-		push_mirror("release", path, 0);
+		push_mirror_flags("release", path,
+				  fd_dirty[fd] ? 0 : CCU_FLAG_RELEASE_ONLY);
 	}
 	if (fd >= 0 && fd < FDTIER_SLOTS) {
 		fd_tier[fd] = 0;
