@@ -13,7 +13,8 @@
 //     level, the LIST it hands back is the whole subtree deepest-first, and the
 //     nested merges survive the unwind — T6, T6b, T6c
 //   - acyclicity, which the old depth cap used to guarantee for free, now rests
-//     solely on baseWorktree having one write site — T6d
+//     solely on baseWorktree having one write site — T6d — and the walk survives
+//     a cycle anyway, hand-edited into the store — T6e
 //   - the delete gate holds on all three surfaces (service layer, MCP soft
 //     channel, REST), leaves dir + record + branch intact, is cleared by
 //     deleting the children, and is overridden by force — T14-T18
@@ -22,12 +23,13 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { api, bootServer, freshProjectsRoot, rmrf } from './helpers.mjs';
 import {
   createWorktree, getWorktree, listWorktrees, listDependentWorktrees,
   syncWorktree, mergeWorktreeIntoParent, removeWorktree, buildRebasePrompt,
 } from '../src/worktrees.ts';
+import { worktreeStoreDir } from '../src/projects.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -1018,4 +1020,81 @@ test('T22: create strips one <project>_worktree_ prefix before slugifying', asyn
     () => createWorktree('demo', { name: 'demo_worktree_' }),
     (e) => { assert.equal(e.statusCode, 400); assert.match(e.message, /no usable characters/); return true; },
   );
+});
+
+// ---------------------------------------------------------------------------
+// T6e — the `seen` guard: a cyclic base graph terminates instead of looping.
+//
+//       The cycle is written straight into the meta store rather than built
+//       through the API, because createWorktree cannot produce one — single
+//       write site, topological creation order, which is exactly what T6d pins.
+//       Hand-edited state is the only way this shape arises today, and it is the
+//       shape a re-parenting API would make routine.
+//
+//       RUN IN A CHILD PROCESS WITH A DEADLINE, deliberately. The walk is
+//       synchronous, so without the guard it never yields to the event loop and
+//       an in-process `{ timeout }` can never fire: the runner would WEDGE
+//       rather than go red, and a wedged suite reports nothing at all. A bounded
+//       child turns non-termination into one named failing assertion.
+// ---------------------------------------------------------------------------
+const CYCLE_PROBE_MS = 20_000;
+const WORKTREES_MODULE = pathToFileURL(path.join(__dirname, '..', 'src', 'worktrees.ts')).href;
+
+test('T6e: a cyclic base graph terminates and returns a bounded set', { timeout: CYCLE_PROBE_MS + 20_000 }, async () => {
+  await makeRealRepo('demo');
+  const a = await createWorktree('demo', { name: 'a' });
+  const b = await createWorktree('demo', { baseWorktree: a.worktreeName, name: 'b' });
+
+  // Close the loop: b already names a as its base, so pointing a at b makes
+  // a -> b -> a. Both are REAL git worktrees, so listWorktrees' git filter keeps
+  // both records — a fabricated directory would be pruned and walk nothing.
+  const metaFile = (name) => path.join(worktreeStoreDir('demo', name), 'worktree.json');
+  const meta = JSON.parse(await fs.readFile(metaFile(a.worktreeName), 'utf8'));
+  await fs.writeFile(metaFile(a.worktreeName),
+    JSON.stringify({ ...meta, baseWorktree: b.worktreeName }, null, 2) + '\n');
+
+  // Premise, asserted rather than assumed: the records really do form a cycle.
+  const registered = await listWorktrees('demo');
+  assert.equal(registered.length, 2, 'precondition: both worktrees still register');
+  assert.equal(registered.find(w => w.worktreeName === a.worktreeName).baseWorktree, b.worktreeName);
+  assert.equal(registered.find(w => w.worktreeName === b.worktreeName).baseWorktree, a.worktreeName);
+
+  const probe = path.join(home, 'cycle-probe.mjs');
+  await fs.writeFile(probe, [
+    `const { listDependentWorktrees } = await import(${JSON.stringify(WORKTREES_MODULE)});`,
+    `const out = await listDependentWorktrees('demo', ${JSON.stringify(a.worktreeName)});`,
+    'process.stdout.write(JSON.stringify(out));',
+  ].join('\n') + '\n');
+
+  const run = () => new Promise((resolve, reject) => {
+    execFile(process.execPath, [probe], { encoding: 'utf8', timeout: CYCLE_PROBE_MS, env: process.env },
+      (err, stdout, stderr) => {
+        if (err) { err.stdout = stdout; err.stderr = stderr; reject(err); }
+        else resolve(stdout);
+      });
+  });
+
+  let stdout;
+  try {
+    stdout = await run();
+  } catch (e) {
+    assert.fail(e.killed
+      ? `listDependentWorktrees did not terminate on a cyclic base graph within ${CYCLE_PROBE_MS}ms — is the seen guard still there?`
+      : `cycle probe failed: ${e.stderr || e.message}`);
+  }
+
+  // THE invariant: it returned, and the result is bounded by the record count —
+  // every record visited at most once. Not an exact membership, which would only
+  // restate the BFS's own traversal order back at it.
+  const dependents = JSON.parse(stdout);
+  assert.ok(Array.isArray(dependents), `probe returned ${stdout}`);
+  // Non-vacuity: the walk has to have ENTERED the cycle. An empty result would
+  // satisfy the bound below while proving nothing — that is what a pruned
+  // registration or a failed name resolution looks like.
+  assert.ok(dependents.length >= 1, 'the walk never reached the cycle, so termination proves nothing');
+  assert.ok(
+    dependents.length <= registered.length,
+    `walk revisited records: ${dependents.length} results from ${registered.length} worktrees`,
+  );
+  assert.ok(!dependents.includes(a.worktreeName), 'the walk came back round to its own root');
 });
