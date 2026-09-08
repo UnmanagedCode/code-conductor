@@ -1521,6 +1521,15 @@ static void b28_cwd_input_validated(void)
 	CHECK(policy_cwd_normalised("/root/app3") == 1, "and a plain absolute path");
 	CHECK(policy_cwd_normalised("/a") == 1, "and a one-component one");
 
+	/* REFUSED, BUT NOT BY THE CLAUSE THAT NAMES IT — and the plan's case table
+	 * claimed the opposite ("accept a trailing slash ⇒ predicate case dies").
+	 * Measured false: deleting `policy_cwd_normalised`'s trailing-slash clause
+	 * leaves this green, because a trailing slash leaves an EMPTY FINAL
+	 * COMPONENT and the `end == c` clause refuses that. So this assertion pins
+	 * the OUTCOME and no single clause; the C clause is redundant-by-
+	 * construction and deliberately kept. The same conceptual check one layer
+	 * up, in `buildFusePlan`, IS load-bearing — see policy_cwd_normalised's own
+	 * comment for why the two differ. */
 	CHECK(policy_cwd_normalised("/root/app3/") == 0, "a TRAILING slash is refused");
 	CHECK(policy_cwd_normalised("/root//app3") == 0, "so is a doubled slash");
 	CHECK(policy_cwd_normalised("//root") == 0, "including a leading doubled slash");

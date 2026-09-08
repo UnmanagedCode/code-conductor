@@ -114,6 +114,115 @@ function bodyOfIn(src, op) {
   return src.slice(at, next === -1 ? src.length : next);
 }
 
+// ── THE STRIPPER, ON SYNTHETIC INPUT AND NOT ON THE REAL SOURCES ───────────
+//
+// UNSKIPPED, because it needs no toolchain — and SYNTHETIC, because that is the
+// whole point. Three mutants of `stripCComments` survived a mutation run while
+// the derivation below stayed green at 40/40, and every one of them survived
+// for the same reason: the real sources do not happen to contain the construct
+// the branch exists for. A non-vacuity block that asserts only "it removed
+// something and kept the call sites" cannot see any of them.
+//
+// What each survivor would have done to input the derivation does not read
+// TODAY — which is what makes them latent traps rather than dead code:
+//
+//   `if (c === '"' || c === "'")` → `if (false)`   stops tracking literals, so
+//       a `//` INSIDE A STRING opens a line comment and everything after it on
+//       that line is destroyed. `union.c` really has one (`'//'` in a string at
+//       the time of writing); the moment a `policy_event(` call lands near such
+//       a literal, the derivation reads mangled text.
+//   `src[k] === '\n' ? '\n' : ' '` → `' '`         blanks newlines inside block
+//       comments, so LINE STRUCTURE collapses. Offsets survive — a space is one
+//       byte, like the newline it replaced — which is exactly why a length
+//       assertion cannot see it. The derivation's `lastIndexOf('\n', at)` then
+//       finds a line start somewhere back inside the comment, and the
+//       `static inline void` definition test reads the wrong text.
+//   `stop = end + 2` → `stop = end`                leaves the `*/` terminator
+//       behind for every block comment.
+describe('stripCComments — the comment stripper the kind derivation runs on', () => {
+  // ONE FIXTURE, EVERY BRANCH. Line-numbered in the assertions below, so a
+  // failure names the construct rather than an offset.
+  const LINES = [
+    'static const char *sep = "//";',                  // 0: `//` inside a string
+    "static const char *odd = '/*';",                  // 1: `/*` inside a quote
+    'static const char *frag = "/* kept */";',         // 2: a `*/` that must SURVIVE
+    '/* a block comment',                              // 3: opens…
+    ' * with an inner line',                           // 4:
+    ' */',                                             // 5: …and closes
+    'int keep = 1; // a real line comment',            // 6: a real line comment
+    "char esc = '\\'';",                               // 7: an escaped quote
+    'int tail = 2;',                                   // 8: must survive it all
+  ];
+  const SRC = LINES.join('\n') + '\n';
+  const out = stripCComments(SRC);
+  const got = out.split('\n');
+
+  // PINS: LITERAL TRACKING. A quote's contents are copied verbatim, so neither
+  // `//` nor `/*` inside one opens anything — and the code AFTER it on the same
+  // line survives.
+  // DIES UNDER: `if (c === '"' || c === "'")` → `if (false)`, which blanks from
+  // the `//` in line 0 to end of line and destroys the `;`.
+  test('a `//` or `/*` inside a quote opens nothing, and the line survives it', () => {
+    assert.equal(got[0], LINES[0], 'a string containing `//` was treated as a comment');
+    assert.equal(got[1], LINES[1], 'a quote containing `/*` was treated as a comment');
+    assert.equal(got[7], LINES[7], 'an escaped quote ended the literal early');
+    // AND THE FAR SIDE OF THE WHOLE FIXTURE. Under the `/*`-in-a-quote mutant
+    // the run opens at line 1 and closes at line 2's `*/`, so line 2's code is
+    // eaten; under the `//` mutant line 0 loses its tail. Either way this is
+    // the load-bearing check that no run escaped its construct.
+    assert.equal(got[2], LINES[2], 'a `*/` inside a string did not survive');
+    assert.equal(got[8], LINES[8], 'the text after every construct was destroyed');
+  });
+
+  // PINS: LINE STRUCTURE, which is what makes a position in the stripped text
+  // index the original. Asserted as LINE COUNT and per-line boundaries, NOT as
+  // total length — the mutant preserves length exactly.
+  // DIES UNDER: `src[k] === '\n' ? '\n' : ' '` → `' '`, which merges lines 3–5.
+  test('block-comment newlines are preserved, so lines still line up', () => {
+    assert.equal(got.length, SRC.split('\n').length,
+      'the stripper changed the LINE COUNT, so `lastIndexOf("\\n", at)` no longer '
+      + 'finds the line a position is on');
+    // The three comment lines are blanked to whitespace but each is still its
+    // own line, with its original width.
+    for (const i of [3, 4, 5]) {
+      assert.match(got[i], /^ *$/, `line ${i} was not blanked: ${JSON.stringify(got[i])}`);
+      assert.equal(got[i].length, LINES[i].length, `line ${i} changed width`);
+    }
+    // And offsets really do still index the original — the property the line
+    // structure exists to support.
+    assert.equal(out.length, SRC.length, 'offsets shifted');
+    assert.equal(out.indexOf('int tail'), SRC.indexOf('int tail'), 'a position moved');
+  });
+
+  // PINS: THE TERMINATOR IS CONSUMED. Counted rather than asserted absent,
+  // because line 2's STRING legitimately contains one and must keep it.
+  // DIES UNDER: `stop = end + 2` → `stop = end`, which leaves the block
+  // comment's own `*/` in the output and makes the count 2.
+  test('a block comment takes its `*/` with it, and a string keeps its own', () => {
+    assert.equal((out.match(/\*\//g) ?? []).length, 1,
+      `exactly one \`*/\` survives — the one inside the string on line 2: ${JSON.stringify(out)}`);
+    assert.ok(out.includes('"/* kept */"'), 'the string literal lost its content');
+  });
+
+  // PINS: line comments really are removed — the branch the real sources never
+  // exercise in code text, which is why a mutant on it was waived as dead.
+  // DIES UNDER: dropping the `c === '/' && d === '/'` branch.
+  test('a real line comment is blanked, and its code is kept', () => {
+    assert.ok(!out.includes('a real line comment'), 'the line comment survived');
+    assert.match(got[6], /^int keep = 1; +$/, JSON.stringify(got[6]));
+  });
+
+  // PINS: an UNTERMINATED block comment does not run off the end or throw. The
+  // derivation asserts on unterminated CALL SITES, so the stripper must hand it
+  // well-formed text to make that assertion mean anything.
+  test('an unterminated block comment is blanked to the end, without throwing', () => {
+    const un = stripCComments('int a = 1;\n/* never closed\nint b = 2;\n');
+    assert.match(un.split('\n')[0], /^int a = 1;$/);
+    assert.ok(!un.includes('int b'), 'text inside an unterminated comment survived');
+    assert.equal(un.length, 'int a = 1;\n/* never closed\nint b = 2;\n'.length);
+  });
+});
+
 describe('the compiled policy driver', { skip }, () => {
   let bin;
 

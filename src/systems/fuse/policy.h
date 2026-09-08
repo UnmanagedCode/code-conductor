@@ -1331,8 +1331,23 @@ static inline int policy_cwd_normalised(const char *p)
 		return 0;
 	if (p[1] == '\0')
 		return 1;                       /* "/" is normalised */
+	/* A TRAILING SLASH — AND THIS CLAUSE IS REDUNDANT *HERE*, DELIBERATELY
+	 * KEPT, AND LOAD-BEARING ONE LAYER UP. Measured by mutation: deleting it
+	 * leaves the whole suite green, because a trailing slash always leaves an
+	 * EMPTY FINAL COMPONENT and the loop below refuses that at `end == c`.
+	 * It stays because it names the shape a reader is looking for, and it is
+	 * one comparison.
+	 *
+	 * DO NOT CARRY THE REDUNDANCY ACROSS TO `buildFusePlan`, WHERE THE SAME
+	 * CONCEPTUAL CHECK IS THE ONLY THING REFUSING THIS SHAPE. Its predicate is
+	 * `endsWith('/') || includes('//') || split('/').some(c => c === '.' ||
+	 * c === '..')` — and for `/srv/app/` the split's empty final component is
+	 * neither `.` nor `..` and there is no `//`, so dropping `endsWith` there
+	 * makes cc ACCEPT a trailing slash. The prover measured that mutant killed
+	 * by two tests. Same idea, opposite status, because the two predicates
+	 * enumerate components differently. */
 	if (p[strlen(p) - 1] == '/')
-		return 0;                       /* a trailing slash */
+		return 0;
 	for (c = p; *c; ) {
 		const char *end;
 

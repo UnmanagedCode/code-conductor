@@ -242,6 +242,14 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   //
   // `FUSE_REMOTE_ROOT_CONTAINS_MIRROR` below is the precedent for both the
   // placement and the wording.
+  // `endsWith('/')` IS LOAD-BEARING HERE, AND IS REDUNDANT IN THE DAEMON'S OWN
+  // `policy_cwd_normalised` — an asymmetry worth knowing before "simplifying"
+  // either side to match the other. This predicate enumerates components with
+  // `split('/')`, whose empty final component is neither `.` nor `..`, and
+  // `/srv/app/` contains no `//` — so without `endsWith` cc would ACCEPT a
+  // trailing slash. The C predicate walks components with `strchr` and refuses
+  // an empty one at `end == c`, which already covers it. Both measured by
+  // mutation: this clause is killed by two tests, the C one by none.
   const cwd = input.cwdInside;
   if (!cwd.startsWith('/') || (cwd !== '/' && (cwd.endsWith('/') || cwd.includes('//')
       || cwd.split('/').some(c => c === '.' || c === '..')))) {
