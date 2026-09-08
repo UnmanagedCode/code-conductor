@@ -711,8 +711,34 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // A CHILD of a synthetic dir is a different answer, and worth pinning
       // beside it: unpinned, so fail-closed -ENOENT rather than EROFS. The two
       // together say the synthetic tree is a scaffold and not a writable one.
-      const child = await inNsRoot(record.anchorPid, 'mkdir "$1" 2>&1 || true', inside(record, '/usr/nope'));
-      assert.match(child.stdout, /No such file or directory/, `an unpinned path under a synthetic dir was created: ${child.stdout}`);
+      //
+      // MARKED, AND CARD 2026-0382 IS WHY. This probe used to be an unmarked
+      // root shell running `mkdir`, and `fail → host` for an unmarked caller
+      // turned it into a real `mkdir /usr/nope` ON THE ORCHESTRATOR'S HOST —
+      // measured, and the directory was there afterwards. `fail`-closed is now
+      // the MARKED CLI's answer alone, so this is the caller that has to make
+      // the assertion; R13 pins the unmarked side, where being served the host
+      // is the decision rather than a leak.
+      //
+      // IT HAS TO BE A SHELL REDIRECTION for the same reason the project-write
+      // control below does: `mkdir` is an external binary and therefore its own
+      // unmarked thread group, so a marked shell cannot lend it the mark. `> `
+      // is performed by the shell itself.
+      const child = await inNsRoot(record.anchorPid,
+        '[ -e "$1" ]; { echo x > "$2"; } 2>&1 || true',
+        inside(record, inst._fuse.plan.markPath), inside(record, '/usr/nope'));
+      // BOTH WORDINGS, because the probe is a shell REDIRECTION rather than
+      // `mkdir` (see above) and dash spells ENOENT on an `open(O_CREAT)` as
+      // `Directory nonexistent` while coreutils spells it `No such file or
+      // directory`. The ERRNO is the same; the host check below is the oracle
+      // that does not depend on either spelling.
+      assert.match(child.stdout, /No such file or directory|Directory nonexistent/,
+        `an unpinned path under a synthetic dir was created: ${child.stdout}`);
+      // AND NOTHING LANDED ON THE ORCHESTRATOR, checked directly rather than
+      // inferred from the shell's message: a create that reached the host root
+      // would have made `/usr/nope` for real.
+      await assert.rejects(() => fs.access('/usr/nope'),
+        'the create reached the ORCHESTRATOR\'s own /usr — the marked CLI was served the host at `fail`');
       // THE CONTROL THAT MAKES BOTH NON-VACUOUS: a write at a PROJECT path
       // succeeds, so EROFS and ENOENT above are those nodes' answers and not a
       // blanket read-only mount.
@@ -1540,10 +1566,29 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   //   (c) the run directory is STILL -ENOENT — `hide` is not substituted
   //   (d) a project-tier file is STILL denied, with the row to prove it
   //   (e) NO `unpinned-fail-closed` row is attributable to (a) or (b)
+  //   (f) A WRITE at an unpinned path LANDS ON THE ORCHESTRATOR
   //
-  // MUTANTS: substitute T_HIDE ⇒ (c) dies; leave T_FAIL unsubstituted ⇒ (a) and
-  // (b) die; substitute T_PROJECT ⇒ (d) dies; emit `deny` for the substitution
-  // ⇒ (e) dies.
+  // (f) IS PINNED BECAUSE IT IS A DECISION AND NOT AN ACCIDENT, AND IT WAS
+  // MEASURED HERE RATHER THAN DERIVED. `host` is a passthrough, so `fail →
+  // host` gives an unmarked caller the host's WRITE side too — and the host's
+  // own permissions at the caller's uid become the ONLY gate, where before this
+  // card every unpinned path answered -ENOENT to everyone.
+  //
+  // Both ends of that were measured on this host. As ROOT: R3's own probe — an
+  // unmarked root shell — created `/usr/nope` on the orchestrator for real, and
+  // the directory was still there afterwards. At UID 1000: a write into a
+  // world-writable unpinned temp directory lands, and the file is readable from
+  // cc's own process; a write into a 0555 synthetic ancestor does not, because
+  // `default_permissions` refuses it before the daemon is asked.
+  //
+  // So an unprivileged worker's reach into the ORCHESTRATOR's filesystem is
+  // exactly "what uid 1000 could write there anyway, at any path cc did not
+  // pin". That is a real widening and it is recorded in docs/architecture.md
+  // beside the substitution, not left for a reader to derive from this arm.
+  //
+  // MUTANTS: substitute T_HIDE ⇒ (c) dies; leave T_FAIL unsubstituted ⇒ (a),
+  // (b) and (f) die; substitute T_PROJECT ⇒ (d) dies; emit `deny` for the
+  // substitution ⇒ (e) dies.
   test('R13 — an unmarked caller is served the host at `fail`, and nowhere else', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker('chroot', 'appx');
@@ -1614,6 +1659,37 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.ok(rowFor(path.join(proj, 'remote-marker.txt'))
         .some(r => r[0] === 'deny' && r[3] === 'unmarked-project-denied'),
         `(d) produced no deny/unmarked-project-denied row: ${JSON.stringify(events)}`);
+
+      // (f) THE WRITE SIDE, MEASURED AT THE ORCHESTRATOR'S OWN FILESYSTEM.
+      // `<box>/hostwrite` is under the gate's temp dir and covered by no pin, so
+      // it is T_FAIL — and the probe checks the file cc's own process can see,
+      // not the shell's exit code, because only the former says the bytes
+      // crossed. At uid 1000 into a uid-1000-owned temp dir, which is the reach
+      // an unprivileged worker actually has.
+      //
+      // THE DIRECTORY HAS TO BE GENUINELY UNPINNED, AND `<box>` IS NOT —
+      // measured, because it looked like the obvious fixture. `<box>/app` and
+      // `<box>/appx` are `project` pins, so `<box>` is a STRICT ANCESTOR and
+      // therefore `T_SYNTH`: it reported `555 0 0` and `default_permissions`
+      // refused the write at uid 1000 before the daemon was asked. That is the
+      // synthetic tier behaving correctly and says nothing about the
+      // substitution. A fresh temp dir with no pin under it is `T_FAIL`.
+      const openDir = await mkdtemp('cc-r13-hostwrite-');
+      await fs.chmod(openDir, 0o777);
+      const hostWrite = path.join(openDir, 'landed.txt');
+      const f = await unmarked('echo HOST-WRITE-LANDED > "$1" && echo WROTE', inside(record, hostWrite));
+      assert.match(f.stdout, /WROTE/,
+        `the unmarked write was refused, so \`fail → host\` is not the passthrough (a) and (b) `
+        + `read through: ${f.stdout} ${f.stderr}`);
+      assert.equal(await fs.readFile(hostWrite, 'utf8'), 'HOST-WRITE-LANDED\n',
+        'the write did not reach the ORCHESTRATOR\'s own filesystem, checked from cc\'s own '
+        + 'process rather than from the shell\'s exit code — only the former says the bytes crossed');
+      // AND IT IS LOGGED, so the reach is observable rather than silent.
+      assert.ok((await eventsOf(inst.id)).some(r => r[0] === 'served' && r[2] === hostWrite
+        && r[3] === 'unmarked-host-served'),
+        'the unmarked write reached the orchestrator with no row naming the path');
+      await fs.rm(openDir, { recursive: true, force: true });
+
       console.log(`fuse gate [R13] ${events.length} event rows; served `
         + JSON.stringify(events.filter(r => r[0] === 'served').map(r => r[2]).slice(0, 24)));
     } finally {
