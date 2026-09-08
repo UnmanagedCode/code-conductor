@@ -15,8 +15,8 @@ import assert from 'node:assert/strict';
 import { promises as fs, rmSync } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { runTeardown, DEFAULT_DEADLINES } from '../src/systems/fuse/session.ts';
-import { buildTierTable, renderPinsFile, binaryPins, resolveOnPath, resolveTierEntry, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
+import { runTeardown, DEFAULT_DEADLINES, describePolicyEvents, parsePolicyEvents } from '../src/systems/fuse/session.ts';
+import { buildTierTable, renderPinsFile, binaryPins, resolveOnPath, resolveTierEntry, suggestPin, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { wrapLaunch } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
 import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
@@ -820,6 +820,189 @@ describe('the tier table', () => {
 //
 // Each of these is a value cc renders or hands to a frozen daemon, where the
 // consequence of a drift is invisible from every other assertion in the suite.
+// ── FROM A LOGGED DENIAL TO A PIN ENTRY (card 2026-0382, step 4) ────────────
+//
+// The daemon's event log is the instrument the pin list is DERIVED from, and
+// `runTeardown` used to `rm -rf` it with the run directory. These pin the
+// harvest, the suggestion and the wording.
+describe('the policy event harvest', () => {
+  let prev, storeRoot;
+  before(async () => {
+    prev = process.env.PROJECTS_ROOT;
+    storeRoot = path.join(await mkdtemp('cc-fuse-events-'), 'projects');
+    process.env.PROJECTS_ROOT = storeRoot;
+  });
+  after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
+
+  const EVENTS = [
+    'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed',
+    'deny\topen\t/etc/machine-id\tunpinned-fail-closed',
+    'deny\tgetattr\t/usr/bin/git\tunpinned-fail-closed',
+    'deny\tgetattr\t/var/opt/thing\tunpinned-fail-closed',
+    'served\tgetattr\t/run/user/1000\tunmarked-host-served',
+    'deny\tgetattr\t/srv/app/f.txt\tunmarked-project-denied',
+  ].join('\n') + '\n';
+
+  // PINS: `suggestPin` names the array that OWNS each shape of path, and the
+  // loader entry is the `/usr/`-prefixed spelling.
+  //
+  // THE CANONICALISATION IS LOAD-BEARING, NOT COSMETIC. `LOADER_PINS` derives
+  // the `/lib` spelling AND the realpath from whatever is in `LOADER_OBJECTS`,
+  // so an entry added in the `/lib` spelling leaves the closure open — which is
+  // exactly the `libcap-ng.so.0.0.0` failure tierTable.ts's own comment records.
+  // DIES UNDER: dropping the `/usr/` canonicalisation; collapsing two lists into
+  // one; guessing a list for a path no array owns.
+  test('suggestPin names the owning array, and the loader entry is the /usr/ spelling', () => {
+    assert.deepEqual(suggestPin('/lib/x86_64-linux-gnu/libtinfo.so.6'),
+      { list: 'LOADER_OBJECTS', entry: '/usr/lib/x86_64-linux-gnu/libtinfo.so.6', note: suggestPin('/lib/x86_64-linux-gnu/libtinfo.so.6').note });
+    assert.equal(suggestPin('/lib64/ld-linux-x86-64.so.2').entry, '/usr/lib64/ld-linux-x86-64.so.2');
+    // Already canonical: unchanged, never double-prefixed.
+    assert.equal(suggestPin('/usr/lib/x86_64-linux-gnu/libm.so.6').entry, '/usr/lib/x86_64-linux-gnu/libm.so.6');
+    // A `.so` by NAME anywhere, and a loader-dir path by LOCATION even with no
+    // `.so` suffix — `gconv` is a directory and carries none.
+    assert.equal(suggestPin('/opt/vendor/libfoo.so.3.1').list, 'LOADER_OBJECTS');
+    assert.equal(suggestPin('/usr/lib/x86_64-linux-gnu/gconv/UTF-16.so').list, 'LOADER_OBJECTS');
+    assert.equal(suggestPin('/lib/x86_64-linux-gnu/gconv').list, 'LOADER_OBJECTS');
+    assert.equal(suggestPin('/etc/machine-id').list, 'ETC_PINS');
+    assert.equal(suggestPin('/etc/machine-id').entry, '/etc/machine-id');
+    for (const b of ['/bin/tar', '/sbin/ldconfig', '/usr/bin/git', '/usr/sbin/nologin'])
+      assert.equal(suggestPin(b).list, 'BOOTSTRAP_CHAIN', b);
+    // NO GUESS where no array owns the path — a wrong array is worse than none,
+    // because the entry lands where the derivations do not apply and the path
+    // stays refused for a reason the log no longer explains.
+    assert.equal(suggestPin('/var/opt/thing').list, null);
+    assert.match(suggestPin('/var/opt/thing').note, /localRoots/);
+    // EVERY SUGGESTION CARRIES THE RESTART CAVEAT, because the pin list is read
+    // at the next spawn AFTER an orchestrator restart and nothing else says so.
+    for (const p of ['/etc/x', '/lib/x.so', '/bin/x', '/var/x'])
+      assert.match(suggestPin(p).note, /restart/, p);
+  });
+
+  // PINS: the harvest happens BEFORE the reclaim, so the store-wide log has the
+  // rows even though the run directory is gone.
+  // DIES UNDER: moving the harvest after `fsp.rm(rundir)`; harvesting only on
+  // the wedged path.
+  test('the harvest lands in the store BEFORE the run directory is reclaimed', async () => {
+    const { rundir, record } = await seedRun();
+    await fs.writeFile(path.join(rundir, 'events.log'), EVENTS);
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    // NON-VACUITY: the reclaim really happened, so "the store has the rows" is
+    // a statement about ordering rather than about a directory that survived.
+    assert.equal(report.removedRunDir, true, `the run directory was not reclaimed: ${JSON.stringify(report)}`);
+    await assert.rejects(() => fs.access(path.join(rundir, 'events.log')));
+
+    const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+    const store = await fs.readFile(fuseEventStore(), 'utf8');
+    // FILTERED ON THIS SESSION'S id, because the store is APPEND-ONLY and
+    // shared: every test in this block adds to it, and a length assertion over
+    // the whole file would depend on the order they ran in. The instance id
+    // column is also what makes a harvested row attributable at all.
+    const rows = store.split('\n').filter(Boolean).map(l => l.split('\t'))
+      .filter(r => r[1] === record.instanceId);
+    assert.equal(rows.length, 6, store);
+    // `<iso8601> <instanceId> <kind> <op> <path> <list> <entry>`
+    const libtinfo = rows.find(r => r[4] === '/lib/x86_64-linux-gnu/libtinfo.so.6');
+    assert.ok(libtinfo, store);
+    assert.match(libtinfo[0], /^\d{4}-\d\d-\d\dT/);
+    assert.equal(libtinfo[1], record.instanceId);
+    assert.equal(libtinfo[2], 'deny');
+    assert.equal(libtinfo[5], 'LOADER_OBJECTS');
+    assert.equal(libtinfo[6], '/usr/lib/x86_64-linux-gnu/libtinfo.so.6');
+    // …and the report carries the distinct paths, so a caller need not re-read.
+    assert.deepEqual(report.eventPaths, [
+      '/lib/x86_64-linux-gnu/libtinfo.so.6', '/etc/machine-id', '/usr/bin/git',
+      '/var/opt/thing', '/run/user/1000', '/srv/app/f.txt',
+    ]);
+  });
+
+  // PINS: a pin is suggested for `deny`/`unpinned-fail-closed` AND FOR NOTHING
+  // ELSE. A `served` row's path already came from the host and a
+  // project-tier denial is not a pin-list gap, so suggesting a pin for either
+  // sends the reader to change the wrong thing.
+  // DIES UNDER: dropping the kind test; dropping the reason test.
+  test('a pin is suggested only for a deny/unpinned-fail-closed row', async () => {
+    const { rundir, record } = await seedRun();
+    await fs.writeFile(path.join(rundir, 'events.log'), EVENTS);
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+    const rows = (await fs.readFile(fuseEventStore(), 'utf8')).split('\n').filter(Boolean)
+      .map(l => l.split('\t'))
+      .filter(r => r[1] === record.instanceId
+        && (r[4] === '/run/user/1000' || r[4] === '/srv/app/f.txt'));
+    assert.equal(rows.length, 2, JSON.stringify(rows));
+    for (const r of rows)
+      assert.deepEqual([r[5], r[6]], ['', ''],
+        `${r[2]}/${r[3]} at ${r[4]} was given a pin suggestion, which points at the wrong repair`);
+    // And the SENTENCE keeps the same split: the served row appears, without a
+    // pin instruction attached to it.
+    const line = describePolicyEvents(parsePolicyEvents(EVENTS), '/store/events.log');
+    assert.match(line, /no pin needed — the op succeeded/);
+    assert.match(line, /unmarked-host-served \/run\/user\/1000/);
+    assert.doesNotMatch(line, /add \/run\/user\/1000/);
+  });
+
+  // PINS: the emitted line NAMES PATHS. The failure it replaces was a real gate
+  // report of `unpinned-fail-closed: 60` where the 60 were ONE missing library —
+  // a count named nothing anybody could act on.
+  // DIES UNDER: reporting a tally instead of the paths; dropping the store path.
+  test('the emitted line names paths and the store file, never a bare count', () => {
+    const line = describePolicyEvents(parsePolicyEvents(EVENTS), '/store/events.log');
+    assert.match(line, /\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6/);
+    assert.match(line, /add \/usr\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6.*to LOADER_OBJECTS in src\/systems\/fuse\/tierTable\.ts and restart cc/);
+    assert.match(line, /add \/etc\/machine-id to ETC_PINS/);
+    assert.match(line, /full event log at \/store\/events\.log/);
+    // Nothing at all is not a line, so a clean session emits nothing.
+    assert.equal(describePolicyEvents([], '/store/events.log'), null);
+  });
+
+  // PINS: the inline list is CAPPED at 20 distinct paths and then says how many
+  // more and where they are. Bounded output was the owner's requirement; a
+  // truncation that did not say it truncated would be the same defect as a count.
+  // DIES UNDER: removing the cap; dropping the `+K more` clause.
+  test('the line caps the inline paths at 20 and says where the rest are', () => {
+    const many = Array.from({ length: 31 }, (_, i) => `deny\tgetattr\t/etc/p${i}\tunpinned-fail-closed`).join('\n');
+    const line = describePolicyEvents(parsePolicyEvents(many), '/store/events.log');
+    const named = [...line.matchAll(/\/etc\/p(\d+)/g)].map(m => Number(m[1]));
+    // Each of the 20 appears twice — once in the refused list, once in the
+    // ETC_PINS instruction — and no 21st appears at all.
+    assert.deepEqual([...new Set(named)].sort((a, b) => a - b), Array.from({ length: 20 }, (_, i) => i));
+    assert.match(line, /\(\+11 more; full list at \/store\/events\.log\)/);
+  });
+
+  // PINS: `_awaitFuseMount` reads the event log BEFORE `fuse.teardown()`, which
+  // deletes it — the case the owner named. A spawn that died of a missing pin
+  // used to carry stderr alone, and stderr says "cannot open shared object file"
+  // without saying which array to add the object to.
+  // DIES UNDER: moving the read after the teardown; dropping the interpolation.
+  test('a failed mount names the refused paths and the array to add them to', async () => {
+    const rundir = await mkdtemp('cc-fuse-awaitmount-');
+    const log = path.join(rundir, 'events.log');
+    await fs.writeFile(log, 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n');
+    let tornDown = false;
+    const self = {
+      id: 'inst-await', proc: null, _stderr: '  libtinfo.so.6: cannot open shared object file  ',
+      _fuse: {
+        plan: { rundir },
+        awaitHandshake: async () => null,
+        // THE TEARDOWN REALLY DESTROYS IT, which is what makes the ordering
+        // claim falsifiable rather than a comment: read after this and the
+        // message carries nothing.
+        teardown: async () => { tornDown = true; await fs.rm(log, { force: true }); },
+      },
+    };
+    await assert.rejects(() => Instance.prototype._awaitFuseMount.call(self), (e) => {
+      assert.equal(e.code, 'FUSE_MOUNT_FAILED');
+      assert.match(e.message, /libtinfo\.so\.6: cannot open shared object file/, 'stderr was dropped');
+      assert.match(e.message, /the daemon refused: \/lib\/x86_64-linux-gnu\/libtinfo\.so\.6/, e.message);
+      assert.match(e.message, /add \/usr\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6 to LOADER_OBJECTS/, e.message);
+      return true;
+    });
+    assert.equal(tornDown, true, 'the half-built session was not torn down');
+  });
+});
+
 describe('the mount literals', () => {
   // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. `union.c` is a fork of
   // the frozen spike instrument and diverges from it by design, one PROVENANCE.md

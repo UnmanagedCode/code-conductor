@@ -61,9 +61,9 @@ import { createWorktree, getWorktree, debugBaseDir, attachmentsDir } from './wor
 import { LOCAL_SYSTEM_ID, assertRemoteLive } from './systems/registry.ts';
 import { BOOT_ID } from './bootId.ts';
 import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
-import { buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
+import { EVENT_LOG_NAME, buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
 import { buildTierTable, resolveOnPath, type LocalRoot } from './systems/fuse/tierTable.ts';
-import { FuseSession } from './systems/fuse/session.ts';
+import { FuseSession, describePolicyEvents, parsePolicyEvents } from './systems/fuse/session.ts';
 import { localDirSource } from './systems/fuse/remoteSource.ts';
 import { systemSource } from './systems/fuse/systemSource.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
@@ -1864,12 +1864,23 @@ export class Instance extends EventEmitter implements InstanceLike {
     const rec = await fuse.awaitHandshake(() => this.proc !== null);
     if (rec) return;
     const stderr = this._stderr.trim();
+    // WHAT THE DAEMON REFUSED, READ BEFORE TEARDOWN — which deletes the run
+    // directory and the event log with it. This is the case the owner named: a
+    // spawn that died of a missing pin used to carry stderr alone, and stderr
+    // says "cannot open shared object file" without saying which list to add
+    // the object to. Best-effort: a failed read must not replace the mount
+    // failure with a read failure.
+    let events = '';
+    try {
+      const text = await fsp.readFile(path.join(fuse.plan.rundir, EVENT_LOG_NAME), 'utf8').catch(() => '');
+      events = describePolicyEvents(parsePolicyEvents(text)) ?? '';
+    } catch { /* the diagnostic is not a reason to change the failure */ }
     // Tear the half-built session down before throwing, or its mount and its
     // daemon outlive the launch that created them.
     await fuse.teardown(() => { try { this.proc?.stdin?.end(); } catch { /* gone */ } }).catch(() => {});
     throw httpError(500, this.proc
-      ? `FUSE_MOUNT_FAILED: the union did not mount for session ${this.id} within the handshake deadline${stderr ? `: ${stderr}` : ''}`
-      : `FUSE_MOUNT_FAILED: the mount bootstrap for session ${this.id} exited before mounting${stderr ? `: ${stderr}` : ''}`,
+      ? `FUSE_MOUNT_FAILED: the union did not mount for session ${this.id} within the handshake deadline${stderr ? `: ${stderr}` : ''}${events ? ` — ${events}` : ''}`
+      : `FUSE_MOUNT_FAILED: the mount bootstrap for session ${this.id} exited before mounting${stderr ? `: ${stderr}` : ''}${events ? ` — ${events}` : ''}`,
       { code: 'FUSE_MOUNT_FAILED' });
   }
 

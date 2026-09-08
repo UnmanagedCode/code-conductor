@@ -285,6 +285,77 @@ export function binaryPins(bin: string): string[] {
   return out;
 }
 
+// ── FROM A LOGGED DENIAL TO A PIN ENTRY ─────────────────────────────────────
+//
+// THE OWNER'S MECHANISM, NOT A FALLBACK: "I want one method that works. I'm
+// fine with a list plus a logging system, allowing the user (or a Claude
+// session) to update the list." The daemon's event log names the path; this
+// says which of the three arrays in THIS file to put it in and in which
+// spelling. No runtime derivation, ever — the suggestion is text a human or a
+// session applies.
+//
+// IT LIVES HERE BECAUSE THIS FILE OWNS THE ARRAYS. A copy anywhere else would
+// be a second source of truth for a mapping whose whole value is naming the
+// real one.
+//
+// THE FOUR-STEP UPDATE PATH, which the emitted line states so nobody has to
+// know it: (1) the arrays are `LOADER_OBJECTS`, `ETC_PINS`, `BOOTSTRAP_CHAIN`
+// in this file, and there is no second copy in cc; (2) add the `entry` to the
+// `list`; (3) `buildTierTable` runs per spawn and `renderPinsFile` writes
+// `<rundir>/pins.txt`, which the daemon parses at mount — so the change takes
+// effect on the NEXT SPAWN AFTER AN ORCHESTRATOR RESTART, because cc holds this
+// module in memory; (4) `npm test` re-runs the tier-table tests, which pin both
+// spellings, the realpath closure and the install-prefix derivation.
+export interface PinSuggestion {
+  list: 'LOADER_OBJECTS' | 'ETC_PINS' | 'BOOTSTRAP_CHAIN' | null;
+  // The exact string to add to `list`, which is NOT always the path the daemon
+  // refused — see the `/usr/` canonicalisation below.
+  entry: string;
+  note: string;
+}
+
+const LIB_DIRS = ['/lib/', '/lib64/', '/usr/lib/', '/usr/lib64/'];
+const BIN_DIRS = ['/bin/', '/sbin/', '/usr/bin/', '/usr/sbin/'];
+
+// THE `/usr/`-PREFIXED SPELLING, AND IT IS LOAD-BEARING RATHER THAN TIDY.
+// `LOADER_PINS` derives the `/lib` spelling AND the realpath from whatever is
+// in `LOADER_OBJECTS`, so an entry added in the `/lib` spelling leaves the
+// closure open — which is exactly the `libcap-ng.so.0.0.0` failure this file's
+// own comment records. Adding the `/usr/` spelling gets both spellings and the
+// realpath; adding the other one gets neither.
+function usrSpelling(p: string): string {
+  return p.startsWith('/lib/') || p.startsWith('/lib64/') ? `/usr${p}` : p;
+}
+
+export function suggestPin(refusedPath: string): PinSuggestion {
+  const restart = 'the pin list is read at the next spawn AFTER an orchestrator restart — cc holds src/systems/fuse/tierTable.ts in memory';
+  if (refusedPath.startsWith('/etc/')) {
+    return { list: 'ETC_PINS', entry: refusedPath, note: restart };
+  }
+  // A SHARED OBJECT BY NAME **OR** BY LOCATION. The name test catches a
+  // versioned soname anywhere; the location test catches everything else the
+  // loader reaches for (a `gconv` directory, an NSS module's data file) that
+  // carries no `.so` suffix at all.
+  if (/\.so(\.\d+)*$/.test(path.basename(refusedPath)) || LIB_DIRS.some(d => refusedPath.startsWith(d))) {
+    return {
+      list: 'LOADER_OBJECTS',
+      entry: usrSpelling(refusedPath),
+      note: `add the /usr/-prefixed spelling: LOADER_PINS derives the /lib spelling AND the realpath from it, so the other spelling leaves the closure open. Then ${restart}`,
+    };
+  }
+  if (BIN_DIRS.some(d => refusedPath.startsWith(d))) {
+    return { list: 'BOOTSTRAP_CHAIN', entry: refusedPath, note: `binaryPins derives its realpath and install prefix. Then ${restart}` };
+  }
+  // NO GUESS, AND IT NAMES EVERY PLACE A HUMAN MIGHT PUT IT. A wrong array is
+  // worse than no suggestion: the entry lands somewhere the derivations do not
+  // apply and the path stays refused for a reason the log no longer explains.
+  return {
+    list: null,
+    entry: refusedPath,
+    note: `no array in src/systems/fuse/tierTable.ts obviously owns this path — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots (which are declared at the ONE construction site, src/instances.ts). Then ${restart}`,
+  };
+}
+
 export function buildTierTable(input: TierTableInput): TierEntry[] {
   const entries: TierEntry[] = [];
   // `project` is the only tier a file tool may name by tier alone; every other
