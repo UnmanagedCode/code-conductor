@@ -26,8 +26,12 @@
  *            DAEMON's identity and breaks a bun single-file executable).
  *   hide     ENOENT, and suppressed from the parent's readdir. The union's own
  *            scaffolding, which it must not serve through itself.
- *   fail     ENOENT on both sides, because the system's advertisement excluded
- *            it. Also refused at cc's file-tool seam, so it fails both surfaces.
+ *   fail     ENOENT on both sides FOR THE MARKED CLI, because the system's
+ *            advertisement excluded it or no pin covers it. Also refused at
+ *            cc's file-tool seam, so it fails both surfaces. THE ONE
+ *            CALLER-SENSITIVE CLASS: for an UNMARKED caller it is substituted
+ *            to `host` (policy_caller_tier, policy.h) and a
+ *            `served/unmarked-host-served` row names the path.
  *   synth    DERIVED, never written in the pins file: the ancestors of every
  *            pin, so a pinned leaf is reachable without its parents being
  *            served from anywhere. Read-only, fixed attributes.
@@ -36,7 +40,16 @@
  * returns index 0 for a path no pin matches. The instrument's index 0 was
  * remote-first with a host fallback; that fallback is the "one path, two
  * answers" this architecture exists to remove, and deleting it is why the
- * refusal log below is the instrument the pin list is derived from.
+ * event log below is the instrument the pin list is derived from.
+ *
+ * THE `fail` → `host` SUBSTITUTION FOR AN UNMARKED CALLER IS NOT THAT FALLBACK
+ * COMING BACK, and the difference is mechanical rather than a matter of degree:
+ * it is host-ONLY, keyed on the CALLER and never on the outcome, deterministic,
+ * and it fires at exactly one tier. Nothing is tried and then retried
+ * elsewhere; at `fail` the marked side has no answer at all, so there is no
+ * second answer for one path to have. Which side served an op is always
+ * knowable — from the trace's `tier=`/`mark=` columns, and by name from the
+ * event log.
  *
  * ── the caller mark ─────────────────────────────────────────────────────────
  *
@@ -44,8 +57,10 @@
  * CLI's own binary. The mark is sticky, survives exec, is keyed on the TGID and
  * is revalidated against /proc field 22 on every check so a recycled pid cannot
  * inherit it. An UNMARKED caller at a project path gets -ENOENT: never the
- * remote's copy, never the host's. Host-pinned and bind-mounted paths are
- * served to marked and unmarked callers alike. policy.h states the ordering.
+ * remote's copy, never the host's — with the cwd chain (policy_cwd_exempt) as
+ * the sole exemption, `getattr` only. Host-pinned and bind-mounted paths are
+ * served to marked and unmarked callers alike, and an unmarked caller at `fail`
+ * is served the host. policy.h states the ordering.
  *
  * ── the control channel ─────────────────────────────────────────────────────
  *
@@ -83,7 +98,7 @@
  * one tgid, because ancestry — the only key that could describe "the CLI and
  * its children" — is unknowable exactly when it matters (S1 §6 Q2).
  *
- * The trace and the refusal log record PATHS ONLY, never content, so a
+ * The trace and the event log record PATHS ONLY, never content, so a
  * credential path may appear in them and a credential never does.
  *
  * ── known limit, recorded rather than defended against ──────────────────────
@@ -91,7 +106,7 @@
  * A readdir of a `project` directory lists the mirror's children only, so a
  * host pin NESTED inside a project prefix is reachable by name but absent from
  * its parent's listing. It cannot arise at the default mirror root (the
- * project's own remote path); it can at an advertised root of "/". The refusal
+ * project's own remote path); it can at an advertised root of "/". The event
  * log is the instrument that would surface it.
  *
  * ── environment ─────────────────────────────────────────────────────────────
@@ -102,11 +117,13 @@
  *   CC_UNION_CONTROL     cc's control socket                  (required)
  *   CC_UNION_MARK_PATH   the path whose resolution marks a thread group
  *                                                             (required)
+ *   CC_UNION_CWD         the CLI's cwd INSIDE the chroot, normalised — the
+ *                        chain an unmarked caller may traverse (required)
  *   CC_UNION_MNT         the mountpoint, hidden implicitly (recursion guard)
  *   CC_UNION_TRACE       every path the kernel asks about, with caller identity
- *   CC_UNION_REFUSALS    the refusal log — the instrument the pin list is
- *                        derived from, and the thing that must be empty by the
- *                        end
+ *   CC_UNION_EVENTS      the policy event log — <kind>\t<op>\t<path>\t<reason>,
+ *                        the instrument the pin list is derived from, and the
+ *                        channel whose `deny` rows must be empty by the end
  */
 #define FUSE_USE_VERSION 31
 #define _GNU_SOURCE
@@ -543,7 +560,11 @@ static void fd_tier_set(int fd, enum tier t, int writable)
  *
  * There is no `default:` arm and there is no host fallback. The switch below is
  * exhaustive over `enum tier`; anything that reaches past it — T_FAIL, and any
- * member a later edit adds — fails closed and says so in the refusal log.
+ * member a later edit adds — fails closed and says so in the event log.
+ *
+ * T_FAIL REACHES THAT FALL-THROUGH ONLY FOR A MARKED CALLER now: the
+ * caller-sensitive substitution above rewrote it to T_HOST for an unmarked one,
+ * so `unpinned-fail-closed` is the marked CLI's reason alone.
  */
 /*
  * `cflags` IS THE WHOLE FLAGS BYTE, PASSED THROUGH UNTOUCHED — not a boolean.
@@ -568,6 +589,15 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	 * is a host-tier op, so a mark set after dispatch would never fire. */
 	mark_maybe(path);
 
+	/* THE ONE CALLER-SENSITIVE TIER — policy.h owns the whole decision and the
+	 * log row; this only asks. Placed here rather than inside an arm because
+	 * the substitution has to happen BEFORE dispatch: the T_HOST arm below is
+	 * what gives the substituted route its host fd. The /proc read is paid
+	 * only where the answer can differ. */
+	if (policy_tier_is_caller_sensitive(r->tier))
+		r->tier = policy_caller_tier(op, path, r->tier,
+			policy_is_marked_tid((pid_t)fuse_get_context()->pid));
+
 	switch (r->tier) {
 	case T_HIDE:
 		return -ENOENT;
@@ -589,10 +619,10 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 			/* Liveness, not policy: the one answer that cannot
 			 * re-enter this daemon. */
 			r->fd = host_fd;
-			policy_refuse(op, path, "self-recursion");
+			policy_event(EV_SERVED, op, path, "self-recursion");
 			return 0;
 		}
-		/* THE NARROW CWD EXEMPTION — policy.h owns the whole
+		/* THE CWD-CHAIN EXEMPTION — policy.h owns the whole
 		 * decision; this only asks and dispatches. */
 		if (policy_cwd_exempt(op, path, (pid_t)fuse_get_context()->pid)) {
 			r->tier = T_CWD;
@@ -614,7 +644,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	case T_FAIL:
 		break;
 	}
-	policy_refuse(op, path, "unpinned-fail-closed");
+	policy_event(EV_DENY, op, path, "unpinned-fail-closed");
 	return -ENOENT;
 }
 
@@ -651,7 +681,7 @@ static int pt_getattr(const char *path, struct stat *st, struct fuse_file_info *
 	}
 	{
 		ROUTE("getattr", path, 0, CCU_STAT);
-		/* The one op the narrow cwd exemption allows, and the only op
+		/* The one op the cwd-chain exemption allows, and the only op
 		 * body T_CWD ever reaches.
 		 *
 		 * BEFORE SYNTHETIC(), AND THE ORDER IS INERT TODAY — SYNTHETIC()
@@ -804,7 +834,7 @@ static void pinned_children_collect(void *ctx, const char *name, const char *ful
 		/* AN HONEST BOUND. Silently dropping names would lose them from
 		 * `ls` while `stat` kept working — this function's own defect,
 		 * at scale. The log is the instrument that would show it. */
-		policy_refuse("readdir", full, "pinned-children-truncated");
+		policy_event(EV_SERVED, "readdir", full, "pinned-children-truncated");
 		return;
 	}
 	/* Bounded copies rather than snprintf: both sources are already
@@ -1001,8 +1031,8 @@ static int push_mirror_flags(const char *op, const char *path, uint8_t flags)
 	cache_invalidate(path);
 	rc = ccu_call(CCU_DIRTY, flags, path);
 	if (rc)
-		policy_refuse(op, path,
-			      (flags & CCU_FLAG_REMOVED) ? "dirty-remove-refused" : "dirty-push-refused");
+		policy_event(EV_DENY, op, path,
+			     (flags & CCU_FLAG_REMOVED) ? "dirty-remove-refused" : "dirty-push-refused");
 	return rc;
 }
 
@@ -1045,7 +1075,7 @@ static int refuse_unreconcilable(const char *op, const char *path, enum tier t)
 	int rc = policy_unreconcilable(t);
 
 	if (rc)
-		policy_refuse(op, path, "not-reconcilable");
+		policy_event(EV_DENY, op, path, "not-reconcilable");
 	return rc;
 }
 
@@ -1150,7 +1180,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	tr("rename", to, tier_name(rt.tier), rt.intent);
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) goto give_up;
 	if (rf.fd != rt.fd) {
-		policy_refuse("rename", to, "xdev-rename");
+		policy_event(EV_DENY, "rename", to, "xdev-rename");
 		rc = -EXDEV;
 		goto give_up;
 	}
@@ -1168,7 +1198,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 		struct stat fst;
 
 		if (fstatat(rf.fd, rf.rp, &fst, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(fst.st_mode)) {
-			policy_refuse("rename", from, "not-reconcilable");
+			policy_event(EV_DENY, "rename", from, "not-reconcilable");
 			rc = -EOPNOTSUPP;
 			goto give_up;
 		}
@@ -1213,7 +1243,7 @@ static int pt_link(const char *from, const char *to)
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
 	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
 	if (rf.fd != rt.fd) {
-		policy_refuse("link", to, "xdev-rename");
+		policy_event(EV_DENY, "link", to, "xdev-rename");
 		return -EXDEV;
 	}
 	cred_enter();
@@ -1627,12 +1657,13 @@ int main(int argc, char *argv[])
 	const char *pf = getenv("CC_UNION_PINS");
 	const char *mp = getenv("CC_UNION_MNT");
 	const char *tp = getenv("CC_UNION_TRACE");
-	const char *fp = getenv("CC_UNION_REFUSALS");
+	const char *fp = getenv("CC_UNION_EVENTS");
 	int probe;
 
 	self_tgid     = getpid();
 	mark_path     = getenv("CC_UNION_MARK_PATH");
 	control_path  = getenv("CC_UNION_CONTROL");
+	cwd_path      = getenv("CC_UNION_CWD");
 
 	if (!rr || !pf) {
 		fprintf(stderr, "cc-union: REFUSED — CC_UNION_REMOTE and "
@@ -1657,6 +1688,31 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CONTROL is required; "
 				"without cc's control socket no remote path can be "
 				"materialised\n");
+		return 1;
+	}
+	/*
+	 * THE CWD IS THE PROJECT TIER'S ONLY DOOR FOR AN UNMARKED CALLER, and it
+	 * plays the same structural role as the mark path: one input enables the
+	 * project tier at all, this one enables ENTRY to it. `policy_cwd_component`
+	 * answers 0 for every path when this is NULL, so the chain — the project
+	 * root included — would be denied and the bootstrap would die at its `cd`.
+	 * A DEFAULT WOULD BE WORSE THAN THE REFUSAL: it would silently un-exempt
+	 * the project root and regress card 2026-0373 while looking like it worked.
+	 */
+	if (!cwd_path) {
+		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CWD is required; "
+				"without it no directory component of the CLI's cwd is "
+				"exempt and every unmarked spawn dies at its chdir\n");
+		return 1;
+	}
+	/* NORMALISED, NOT NORMALISABLE. cc owns this input (`plan.cwdInside`), so a
+	 * non-normalised value is a cc defect; resolving `..` correctly would need
+	 * the filesystem, because a component may be a symlink. `buildFusePlan`
+	 * asserts the same thing at configuration time. */
+	if (!policy_cwd_normalised(cwd_path)) {
+		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CWD=%s is not a normalised "
+				"absolute path (no '//', no trailing '/', no '.' or '..' "
+				"component)\n", cwd_path);
 		return 1;
 	}
 	if (pthread_key_create(&control_key, control_close) != 0) {
@@ -1705,17 +1761,17 @@ int main(int argc, char *argv[])
 		setvbuf(trace_fp, NULL, _IOLBF, 0);
 	}
 	if (fp) {
-		if (!(refusal_fp = fopen(fp, "a"))) {
-			fprintf(stderr, "cc-union: refusal log %s: %s\n", fp, strerror(errno));
+		if (!(event_fp = fopen(fp, "a"))) {
+			fprintf(stderr, "cc-union: event log %s: %s\n", fp, strerror(errno));
 			return 1;
 		}
-		setvbuf(refusal_fp, NULL, _IOLBF, 0);
+		setvbuf(event_fp, NULL, _IOLBF, 0);
 	}
 
 	fprintf(stderr, "cc-union: host=%s mirror=%s pins=%zu synth=%zu "
-		"markpath=%s control=%s tgid=%d\n",
+		"markpath=%s control=%s cwd=%s tgid=%d\n",
 		host_root, remote_root, npins, nancs, mark_path, control_path,
-		(int)self_tgid);
+		cwd_path, (int)self_tgid);
 
 	umask(0);
 	return fuse_main(argc, argv, &pt_ops, NULL);

@@ -39,7 +39,8 @@ import { killPids } from './procTree.mjs';
 import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { fuseRunDir, fuseRunRoot } from '../src/systems/fuse/plan.ts';
+import { EVENT_LOG_NAME, fuseRunDir, fuseRunRoot } from '../src/systems/fuse/plan.ts';
+import { resolveTierEntry } from '../src/systems/fuse/tierTable.ts';
 import { scanProcesses, orphansUnder } from '../src/systems/fuse/procScan.ts';
 import { assertFuseAvailable } from '../src/systems/fuse/preflight.ts';
 
@@ -160,6 +161,32 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
     await addSystem({ id: 'fusebox', label: 'fusebox', launch: ['node', FIXTURE] });
     assert.equal((await adoptProject('app', path.join(box, 'app'), { system: 'fusebox' })).ok, true);
+
+    // ── A SECOND SYSTEM, WHOSE ADVERTISEMENT CARRIES AN `exclude` ───────────
+    //
+    // R13(a) needs a prefix that is `fail` BY AN EXPLICIT PIN rather than by
+    // being unnamed, and an exclude is the only thing that renders one
+    // (`buildTierTable`). It has to be a second system: the exclude reaches the
+    // table only when the provider advertises the mirror capability at all
+    // (`advertises` in mirrorFixtureProvider.mjs is `mirrorRoot !== null ||
+    // …`), so switching `fusebox` on would change the mirror-scope source for
+    // every arm above.
+    //
+    // The advertised root is the project's own path — the same value the default
+    // resolves to — so the ONLY difference from `fusebox` is the exclude.
+    await seedRepo(path.join(box, 'appx'));
+    await fs.writeFile(path.join(box, 'appx', 'remote-marker.txt'), 'HOST-SIDE-COPY\n');
+    // THE EXCLUDED PREFIX EXISTS ON THE HOST AND NOT ON THE SYSTEM, which is
+    // what makes R13(a) non-vacuous: a read that succeeds can only have come
+    // from the host, and the marked side has no copy to have served.
+    await fs.mkdir(path.join(box, 'appx', 'excluded'), { recursive: true });
+    await fs.writeFile(path.join(box, 'appx', 'excluded', 'host.txt'), 'HOST-SIDE-EXCLUDED\n');
+    await fs.mkdir(path.join(fakeRemote, box, 'appx'), { recursive: true });
+    await fs.writeFile(path.join(fakeRemote, box, 'appx', 'remote-marker.txt'), 'SYSTEM-SIDE-PROJECT-FILE\n');
+    await addSystem({ id: 'fuseboxx', label: 'fuseboxx', launch: ['node', FIXTURE,
+      '--advertise-mirror', path.join(box, 'appx'),
+      '--advertise-exclude', path.join(box, 'appx', 'excluded')] });
+    assert.equal((await adoptProject('appx', path.join(box, 'appx'), { system: 'fuseboxx' })).ok, true);
   });
 
   // THE LEAK CHECK THAT DOES NOT READ A RECORD, and the reason there is one: a
@@ -207,9 +234,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // the CLI binary is faulted in through the union with attr_timeout=0,
   // entry_timeout=0 and no kernel cache. See TURN_TIMEOUT_MS.
   const TURN_TIMEOUT_MS = 120_000;
-  async function spawnWorker(where = 'chroot') {
+  async function spawnWorker(where = 'chroot', project = 'app') {
     const tSpawn = Date.now();
-    const r = await api(baseUrl, 'POST', '/api/instances', { project: 'app', mode: 'bypassPermissions' });
+    const r = await api(baseUrl, 'POST', '/api/instances', { project, mode: 'bypassPermissions' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const inst = instances.get(r.body.id);
     await waitFor(() => inst.status === 'idle', { timeout: TURN_TIMEOUT_MS });
@@ -544,8 +571,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // and the mark path are written in.
   const inside = (record, p) => path.join(record.root, p);
 
-  const refusalsOf = async (instanceId) =>
-    (await fs.readFile(path.join(fuseRunDir(instanceId), 'refusals.log'), 'utf8').catch(() => ''))
+  // THE DAEMON'S POLICY EVENT LOG, split into `[kind, op, path, reason]`. The
+  // KIND is the first column and every filter below derives from it rather than
+  // from a hand-maintained list of reason strings — `self-recursion` and
+  // `pinned-children-truncated` are `served` rows, so a reason enumeration was
+  // already wrong here.
+  const eventsOf = async (instanceId) =>
+    (await fs.readFile(path.join(fuseRunDir(instanceId), EVENT_LOG_NAME), 'utf8').catch(() => ''))
       .split('\n').filter(Boolean).map(l => l.split('\t'));
 
   // ── R1 ───────────────────────────────────────────────────────────────────
@@ -638,9 +670,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         'the host pin did not answer with the orchestrator’s own file');
 
       // And the denial is in the log, by name.
-      const refusals = await refusalsOf(inst.id);
-      assert.ok(refusals.some(r => r[2] === 'unmarked-project-denied'),
-        `no unmarked-project-denied entry: ${JSON.stringify(refusals)}`);
+      const events = await eventsOf(inst.id);
+      assert.ok(events.some(r => r[0] === 'deny' && r[3] === 'unmarked-project-denied'),
+        `no deny/unmarked-project-denied entry: ${JSON.stringify(events)}`);
     } finally {
       await instances.remove(inst.id);
     }
@@ -679,8 +711,34 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // A CHILD of a synthetic dir is a different answer, and worth pinning
       // beside it: unpinned, so fail-closed -ENOENT rather than EROFS. The two
       // together say the synthetic tree is a scaffold and not a writable one.
-      const child = await inNsRoot(record.anchorPid, 'mkdir "$1" 2>&1 || true', inside(record, '/usr/nope'));
-      assert.match(child.stdout, /No such file or directory/, `an unpinned path under a synthetic dir was created: ${child.stdout}`);
+      //
+      // MARKED, AND CARD 2026-0382 IS WHY. This probe used to be an unmarked
+      // root shell running `mkdir`, and `fail → host` for an unmarked caller
+      // turned it into a real `mkdir /usr/nope` ON THE ORCHESTRATOR'S HOST —
+      // measured, and the directory was there afterwards. `fail`-closed is now
+      // the MARKED CLI's answer alone, so this is the caller that has to make
+      // the assertion; R13 pins the unmarked side, where being served the host
+      // is the decision rather than a leak.
+      //
+      // IT HAS TO BE A SHELL REDIRECTION for the same reason the project-write
+      // control below does: `mkdir` is an external binary and therefore its own
+      // unmarked thread group, so a marked shell cannot lend it the mark. `> `
+      // is performed by the shell itself.
+      const child = await inNsRoot(record.anchorPid,
+        '[ -e "$1" ]; { echo x > "$2"; } 2>&1 || true',
+        inside(record, inst._fuse.plan.markPath), inside(record, '/usr/nope'));
+      // BOTH WORDINGS, because the probe is a shell REDIRECTION rather than
+      // `mkdir` (see above) and dash spells ENOENT on an `open(O_CREAT)` as
+      // `Directory nonexistent` while coreutils spells it `No such file or
+      // directory`. The ERRNO is the same; the host check below is the oracle
+      // that does not depend on either spelling.
+      assert.match(child.stdout, /No such file or directory|Directory nonexistent/,
+        `an unpinned path under a synthetic dir was created: ${child.stdout}`);
+      // AND NOTHING LANDED ON THE ORCHESTRATOR, checked directly rather than
+      // inferred from the shell's message: a create that reached the host root
+      // would have made `/usr/nope` for real.
+      await assert.rejects(() => fs.access('/usr/nope'),
+        'the create reached the ORCHESTRATOR\'s own /usr — the marked CLI was served the host at `fail`');
       // THE CONTROL THAT MAKES BOTH NON-VACUOUS: a write at a PROJECT path
       // succeeds, so EROFS and ENOENT above are those nodes' answers and not a
       // blanket read-only mount.
@@ -697,9 +755,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         '[ -e "$1" ]; echo PUSHED > "$2" && echo MADE',
         inside(record, inst._fuse.plan.markPath), inside(record, probe));
       if (!/MADE/.test(wok.stdout)) {
-        const rl = (await refusalsOf(inst.id)).map(r => r.join('\t')).join('\n');
+        const rl = (await eventsOf(inst.id)).map(r => r.join('\t')).join('\n');
         const mdir = await fs.readdir(path.join(fuseRunDir(inst.id), 'mirror', box, 'app')).catch(e => String(e));
-        assert.fail(`the union refused a project write: ${wok.stdout} ${wok.stderr}\nrefusals:\n${rl}\nmirror <box>/app: ${JSON.stringify(mdir)}`);
+        assert.fail(`the union refused a project write: ${wok.stdout} ${wok.stderr}\nevents:\n${rl}\nmirror <box>/app: ${JSON.stringify(mdir)}`);
       }
 
       // AND THE PUSH LANDED ON THE SYSTEM. `pt_release` sends DIRTY for a
@@ -718,31 +776,46 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
   // ── R4 ───────────────────────────────────────────────────────────────────
   // PINS the acceptance the spike used and the loop plan §13 K1 iterates
-  // against: after a full turn the refusal log contains nothing the CLI NEEDED.
+  // against: after a full turn the event log DENIES nothing the CLI NEEDED.
   //
-  // "Needed" is made falsifiable rather than left to judgement: no entry may
+  // "Needed" is made falsifiable rather than left to judgement: no DENIAL may
   // name a path the worker went on to fail over — the turn completed — and no
-  // entry may carry a reason that means cc could not answer
-  // (`control-unavailable`) or would not (`control-refused`). Entries that
+  // denial may carry a reason that means cc could not answer
+  // (`control-unavailable`) or would not (`control-refused`). Denials that
   // remain are negative lookups, which answer identically pinned or not, and
-  // they are PRINTED so the next derivation iteration has its input.
-  test('R4 — after a full turn the refusal log names nothing the worker needed', async () => {
+  // every row is PRINTED so the next derivation iteration has its input.
+  //
+  // BOTH FILTERS ARE `deny`-SCOPED, AND THAT IS THE KIND COLUMN EARNING ITS
+  // KEEP rather than tidiness. `self-recursion` is a `served` row that fires
+  // ONLY at the project tier, so it sits inside the project tree by
+  // construction — under the old reason-blind project-tree filter it would have
+  // read as "a project path was refused" when the op in fact succeeded from
+  // `host_fd`. The exclusion is structural now: no reader here enumerates
+  // reason strings to decide what is a denial.
+  test('R4 — after a full turn the event log denies nothing the worker needed', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
     try {
-      const refusals = await refusalsOf(inst.id);
-      console.log(`fuse gate [R4] refusal log after one turn (${refusals.length} entries):\n`
-        + refusals.map(r => '  ' + r.join('\t')).join('\n'));
-      const fatal = refusals.filter(r => r[2] === 'control-unavailable' || r[2] === 'control-refused');
+      const events = await eventsOf(inst.id);
+      console.log(`fuse gate [R4] event log after one turn (${events.length} rows):\n`
+        + events.map(r => '  ' + r.join('\t')).join('\n'));
+      const denials = events.filter(r => r[0] === 'deny');
+      const fatal = denials.filter(r => r[3] === 'control-unavailable' || r[3] === 'control-refused');
       assert.deepEqual(fatal, [], `cc failed to answer for: ${JSON.stringify(fatal)}`);
       // A fail-closed path INSIDE the project tree would mean the tier table
       // and the mirror root disagree, which is the one class the loop cannot
       // dismiss as a negative lookup.
-      const inProject = refusals.filter(r => r[1].startsWith(path.join(box, 'app')));
-      assert.deepEqual(inProject, [], `a project path was refused: ${JSON.stringify(inProject)}`);
+      const inProject = denials.filter(r => r[2].startsWith(path.join(box, 'app')));
+      assert.deepEqual(inProject, [], `a project path was denied: ${JSON.stringify(inProject)}`);
+      // EVERY ROW CARRIES ONE OF THE TWO KINDS, so a third kind — which would
+      // silently fall out of the `deny` filter above and stop being checked at
+      // all — reds here.
+      const kinds = [...new Set(events.map(r => r[0]))].sort();
+      assert.deepEqual(kinds.filter(k => k !== 'deny' && k !== 'served'), [],
+        `the event log carries a kind that is neither deny nor served: ${JSON.stringify(kinds)}`);
       // NON-VACUITY: the log is a live instrument, not an empty file that would
       // satisfy every filter above. R2 proves it records; here it must exist.
-      await fs.access(path.join(fuseRunDir(inst.id), 'refusals.log'));
+      await fs.access(path.join(fuseRunDir(inst.id), EVENT_LOG_NAME));
     } finally {
       await instances.remove(inst.id);
     }
@@ -984,8 +1057,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
       // Each refusal is in the log by name, so the pin-derivation instrument
       // sees them rather than only the caller.
-      const refusals = await refusalsOf(inst.id);
-      const notReconcilable = refusals.filter(r => r[2] === 'not-reconcilable').map(r => r[0]);
+      const events = await eventsOf(inst.id);
+      const notReconcilable = events.filter(r => r[0] === 'deny' && r[3] === 'not-reconcilable').map(r => r[1]);
       const want = ['chown', 'link', 'mknod', 'rename'];
       if (haveSetfattr) want.push('setxattr');
       assert.deepEqual([...new Set(notReconcilable)].sort(), want.sort());
@@ -1028,6 +1101,14 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     // IN THE FAKE REMOTE, so it genuinely exists on "the system": a refusal at
     // a path the source does not have would prove absence, not policy.
     await fs.mkdir(path.join(fakeRemote, proj, SUB), { recursive: true });
+    // AND ON THE HOST, WHICH IS WHAT MAKES (b) NON-VACUOUS. `before()` seeds a
+    // real host tree at the project's own spelling, so (c), (d) and (e) already
+    // fail against a wrong substitution — but (b) did not: `cwd-sub` existed in
+    // the fake remote ONLY, so a caller wrongly served the host would have got
+    // ENOENT there anyway and the arm would have passed for the wrong reason.
+    // With the host-side directory present, correct = ENOENT (denied) and
+    // broken = the chdir succeeds.
+    await fs.mkdir(path.join(box, 'app', SUB), { recursive: true });
     // (e) reads the daemon's OWN output, through the PRODUCT'S OWN TRACE
     // SWITCH. `resolveTraceEnabled()` keys exactly on '1' and is read by
     // `buildFusePlan` IN THIS PROCESS at spawn time (instances.ts:4965), so
@@ -1053,8 +1134,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.equal(res.a.status, 0, `the spawn at the project root failed: ${JSON.stringify(res.a)}`);
       assert.equal(res.a.out, inside(record, proj), JSON.stringify(res.a));
 
-      // (b) A PROJECT-TIER DIRECTORY THAT IS NOT THE ROOT STAYS DENIED. The
-      // ruling is the exact project pin and nothing under it.
+      // (b) A PROJECT-TIER DIRECTORY THAT IS NOT ON THE CWD CHAIN STAYS DENIED.
+      // The exemption widened to the cwd's own directory COMPONENTS (card
+      // 2026-0382), and `<proj>/cwd-sub` is a CHILD of the cwd rather than an
+      // ancestor of it — so the widening does not reach it. The host-side
+      // `<box>/app/cwd-sub` created above is the decoy that makes this a real
+      // denial rather than an incidental absence.
       assert.equal(res.b.err, 'ENOENT', `a spawn inside the project tree survived: ${JSON.stringify(res.b)}`);
 
       // (c) A FILE IN THE PROJECT TREE STAYS DENIED — and this is also the
@@ -1073,7 +1158,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
       // (e) THE DAEMON SAID SO ITSELF, rather than the decision being read off
       // a shell's exit code: the routed tier is in the trace, and the root is
-      // NOT in the refusal log while the two paths under it are.
+      // NOT in the event log while the two paths under it are.
       // THE PLAN'S OWN PATH, not one this arm chose: `buildFusePlan` puts the
       // trace at `<rundir>/trace.log` (plan.ts:233) and `wrapLaunch` hands
       // exactly that to the worker as `CC_FUSE_TRACE_LOG` (wrap.ts:88). Read
@@ -1127,12 +1212,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         `THE DAEMON RAN AND EMITTED NO unmarked tier=cwd ROW for ${proj} — the exemption did not `
         + `fire, or route() assigned another tier (${rows.length} rows traced): `
         + rows.filter(l => l.includes(proj)).slice(-8).join(' | '));
-      const refusals = await refusalsOf(inst.id);
-      assert.deepEqual(refusals.filter(r => r[1] === proj && r[2] === 'unmarked-project-denied'), [],
+      const events = await eventsOf(inst.id);
+      assert.deepEqual(events.filter(r => r[2] === proj && r[3] === 'unmarked-project-denied'), [],
         'the project root was refused to the unmarked caller after all');
       for (const denied of [path.join(proj, SUB), path.join(proj, 'remote-marker.txt')]) {
-        assert.ok(refusals.some(r => r[1] === denied && r[2] === 'unmarked-project-denied'),
-          `no unmarked-project-denied for ${denied}: ${JSON.stringify(refusals)}`);
+        assert.ok(events.some(r => r[0] === 'deny' && r[2] === denied && r[3] === 'unmarked-project-denied'),
+          `no deny/unmarked-project-denied for ${denied}: ${JSON.stringify(events)}`);
       }
     } finally {
       // NESTED, so a throw from `remove` cannot leave CC_FUSE_TRACE set for
@@ -1374,6 +1459,243 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       await instances.remove(inst.id);
     }
     assertNoResidue(before, runRoot, null, 'R11');
+  });
+
+  // ── R12 ──────────────────────────────────────────────────────────────────
+  // THE PRE-MARK WINDOW IS HOST-AND-SYNTHETIC ONLY, and that is what closes
+  // S2 §9.1's straddle hazard in production.
+  //
+  // THE LABEL. Plan 2026-0382 §Step 6 calls this arm's CONTENT R10 and the next
+  // one R11; both labels are already taken in this file by different work that
+  // landed on them first (the atomic-rename mode arm and the divergence arm).
+  // So R12 here is the plan's R10 and R13 is the plan's R11, by the same
+  // convention R10's own header records for its collision with R9.
+  //
+  // WHAT IT PINS: the CLI's thread group makes NO union op before the marking
+  // event whose tier is `project`, `fail`, `hide` or `cwd`. `bootstrap.sh`
+  // fires the mark as the first statement of the chroot'd script, so the window
+  // is bounded by dash's startup — measured at 65 pre-mark ops over 16 distinct
+  // paths, identical across two independent runs, every one `host` or `synth`,
+  // and 12 of them touched again post-mark with none resolving `project`,
+  // `fail` or `hide`.
+  //
+  // THAT ORDERING CARRIES A CORRECTNESS PROPERTY AND IS PROTECTED BY A COMMENT.
+  // `tests/fuse-lifecycle.test.mjs`'s `2c` pins the statement order in the
+  // script text (ungated); this pins the CONSEQUENCE at the mount.
+  //
+  // MUTANT: move the mark below the `cd` ⇒ a pre-mark `tier=cwd` row appears
+  // for the project root ⇒ this dies. (And the launch dies too, which is why
+  // 2c pins the text as well: a mutant that only reorders is caught twice.)
+  //
+  // THE TRACE COMES FROM THE PRODUCT'S OWN SWITCH, `CC_FUSE_TRACE=1`, read by
+  // `resolveTraceEnabled()` in THIS process at spawn time — never a raw
+  // `CC_UNION_TRACE`, which bootstrap.sh deliberately unsets on an untraced
+  // spawn.
+  test('R12 — the CLI’s pre-mark window resolves only host and synthetic tiers', async () => {
+    const before = snapshot(runRoot);
+    const prevTrace = process.env.CC_FUSE_TRACE;
+    process.env.CC_FUSE_TRACE = '1';
+    let inst;
+    try {
+      inst = await spawnWorker();
+      const record = await readRecord(inst.id);
+      const trace = await fs.readFile(path.join(fuseRunDir(inst.id), 'trace.log'), 'utf8').catch(() => '');
+      const rows = trace.split('\n').filter(Boolean);
+      assert.ok(rows.length > 0,
+        'THE TRACE INSTRUMENT DID NOT RUN — see R8 for the four links in the product\'s trace '
+        + 'chain and why a failed fopen is not a cause (the daemon refuses to mount instead)');
+
+      // THE CLI'S OWN THREAD GROUP, from the record rather than from a guess:
+      // `bootstrapPid` is the pid every link execs into, so it IS the CLI's.
+      const mine = rows.filter(l => new RegExp(`\\btgid=${record.bootstrapPid}\\b`).test(l));
+      assert.ok(mine.length > 0,
+        `no traced op is attributed to the CLI's thread group ${record.bootstrapPid} — `
+        + `the record names a pid the trace never saw (${rows.length} rows)`);
+
+      const firstMarked = mine.findIndex(l => /\bmark=1\b/.test(l));
+      assert.ok(firstMarked > 0,
+        `the marking event never fired for tgid ${record.bootstrapPid}, or fired on its very `
+        + `first op — both make the pre-mark window unmeasurable: ${mine.slice(0, 4).join(' | ')}`);
+      const pre = mine.slice(0, firstMarked);
+      const post = mine.slice(firstMarked);
+
+      // NON-VACUITY, BOTH SIDES. A window of zero would satisfy the tier
+      // assertion below trivially, and no post-mark ops would mean the split
+      // found the wrong pid.
+      assert.ok(pre.length > 0,
+        'the pre-mark window is empty, so the tier assertion below is vacuous');
+      assert.ok(post.length > 0, 'no post-mark ops — the split is not a split');
+
+      const tierOf = (l) => l.match(/\ttier=([a-z]+) /)?.[1] ?? '?';
+      const ALLOWED = new Set(['host', 'synth', 'bind', 'fh']);
+      const offside = pre.filter(l => !ALLOWED.has(tierOf(l)));
+      assert.deepEqual(offside.map(l => l.split('\t').slice(0, 3).join(' ')), [],
+        'A PRE-MARK OP RESOLVED A CALLER-SENSITIVE TIER. The CLI\'s thread group reached '
+        + '`project`, `fail`, `hide` or `cwd` BEFORE the marking event, which is S2 §9.1\'s '
+        + 'straddle hazard reopened: the same path would answer one way to the pre-mark ops '
+        + 'and another to the post-mark ones, from one caller. The likely cause is a statement '
+        + 'inserted above `[ -e "$5" ]` in bootstrap.sh\'s chroot script, or the `cd` moved '
+        + `above it. Baseline: 65 pre-mark ops over 16 distinct paths, all host or synth. `
+        + `This run: ${pre.length} pre-mark, ${post.length} post-mark.`);
+      const paths = new Set(pre.map(l => l.split('\t')[1]));
+      console.log(`fuse gate [R12] pre-mark ops ${pre.length} over ${paths.size} distinct paths `
+        + `(baseline 65 / 16); post-mark ${post.length}; tiers `
+        + JSON.stringify([...new Set(pre.map(tierOf))].sort()));
+    } finally {
+      try {
+        if (inst) await instances.remove(inst.id);
+      } finally {
+        if (prevTrace === undefined) delete process.env.CC_FUSE_TRACE;
+        else process.env.CC_FUSE_TRACE = prevTrace;
+      }
+    }
+    assertNoResidue(before, runRoot, null, 'R12');
+  });
+
+  // ── R13 ──────────────────────────────────────────────────────────────────
+  // AN UNMARKED CALLER READS THE HOST AT `fail`, AND NOWHERE ELSE. Card
+  // 2026-0382's whole behavioural change, at the mount.
+  //
+  // This arm runs against project `appx`, whose system ADVERTISES AN EXCLUDE —
+  // the only way a prefix becomes `fail` by an explicit pin rather than by
+  // being unnamed (`buildTierTable`). So (a) and (b) between them cover both
+  // origins of `T_FAIL`, which `route()` cannot distinguish and must not.
+  //
+  //   (a) a host file under an EXPLICITLY EXCLUDED prefix reads
+  //   (b) a host file under an UNPINNED prefix reads
+  //   (c) the run directory is STILL -ENOENT — `hide` is not substituted
+  //   (d) a project-tier file is STILL denied, with the row to prove it
+  //   (e) NO `unpinned-fail-closed` row is attributable to (a) or (b)
+  //   (f) A WRITE at an unpinned path LANDS ON THE ORCHESTRATOR
+  //
+  // (f) IS PINNED BECAUSE IT IS A DECISION AND NOT AN ACCIDENT, AND IT WAS
+  // MEASURED HERE RATHER THAN DERIVED. `host` is a passthrough, so `fail →
+  // host` gives an unmarked caller the host's WRITE side too — and the host's
+  // own permissions at the caller's uid become the ONLY gate, where before this
+  // card every unpinned path answered -ENOENT to everyone.
+  //
+  // Both ends of that were measured on this host. As ROOT: R3's own probe — an
+  // unmarked root shell — created `/usr/nope` on the orchestrator for real, and
+  // the directory was still there afterwards. At UID 1000: a write into a
+  // world-writable unpinned temp directory lands, and the file is readable from
+  // cc's own process; a write into a 0555 synthetic ancestor does not, because
+  // `default_permissions` refuses it before the daemon is asked.
+  //
+  // So an unprivileged worker's reach into the ORCHESTRATOR's filesystem is
+  // exactly "what uid 1000 could write there anyway, at any path cc did not
+  // pin". That is a real widening and it is recorded in docs/architecture.md
+  // beside the substitution, not left for a reader to derive from this arm.
+  //
+  // MUTANTS: substitute T_HIDE ⇒ (c) dies; leave T_FAIL unsubstituted ⇒ (a),
+  // (b) and (f) die; substitute T_PROJECT ⇒ (d) dies; emit `deny` for the
+  // substitution ⇒ (e) dies.
+  test('R13 — an unmarked caller is served the host at `fail`, and nowhere else', async () => {
+    const before = snapshot(runRoot);
+    const inst = await spawnWorker('chroot', 'appx');
+    try {
+      const record = await readRecord(inst.id);
+      const proj = path.join(box, 'appx');
+      // UNMARKED: no `[ -e "$mark" ]`. One token of difference from R2's marked
+      // probe, so nothing else about the caller can explain the answers.
+      const unmarked = (script, ...args) => inNs(record.anchorPid, script, ...args);
+
+      // (a) AN EXPLICITLY EXCLUDED PREFIX. The host has the file and the fake
+      // remote does not, so a successful read can only be the host's — and the
+      // MARKED side has nothing there at all, which is why this is not a
+      // one-path-two-answers case.
+      const excluded = inside(record, path.join(proj, 'excluded', 'host.txt'));
+      const a = await unmarked('read l < "$1" || exit 7; echo "$l"', excluded);
+      assert.equal(a.ok, true, `an unmarked caller was denied at an EXCLUDED prefix: ${a.stderr}`);
+      assert.match(a.stdout, /HOST-SIDE-EXCLUDED/, `${a.stdout} ${a.stderr}`);
+      // AND THE TABLE REALLY SAYS `fail` THERE, read off the artifact the
+      // daemon parsed rather than assumed from the advertisement.
+      const pins = await fs.readFile(path.join(fuseRunDir(inst.id), 'pins.txt'), 'utf8');
+      assert.ok(pins.split('\n').includes(`fail\t${path.join(proj, 'excluded')}`),
+        `the excluded prefix is not a \`fail\` pin, so (a) proves nothing about the fail tier:\n${pins}`);
+
+      // (b) AN UNPINNED PREFIX. `/var/…` is named by no pin at all, so it is
+      // T_FAIL at enum index 0 — the other origin of the same tier.
+      const varFile = '/var/lib/dpkg/status';
+      const hostVar = await fs.readFile(varFile, 'utf8').catch(() => null);
+      assert.ok(hostVar !== null, `${varFile} is missing on this host, so (b) cannot be measured`);
+      assert.equal(resolveTierEntry(inst._redirect.tiers, varFile), null,
+        `${varFile} is covered by a pin, so it is not the unpinned case this sub-arm needs`);
+      const b = await unmarked('read l < "$1" || exit 7; echo "$l"', inside(record, varFile));
+      assert.equal(b.ok, true, `an unmarked caller was denied at an UNPINNED prefix: ${b.stderr}`);
+      assert.equal(b.stdout.trim(), hostVar.split('\n')[0].trim(),
+        'the unpinned path did not answer with the orchestrator’s own file');
+
+      // (c) `hide` IS NOT SUBSTITUTED. The run directory is where the mirror
+      // lives — the only place remote bytes exist on this machine — and cc's
+      // control socket is its sibling. R5 pins this for its own reasons; here
+      // it is the control that says the substitution did not widen past `fail`.
+      const hidden = inside(record, fuseRunDir(inst.id));
+      const c = await unmarked('[ -e "$1" ] && echo REACHED || echo ENOENT', hidden);
+      assert.match(c.stdout, /ENOENT/,
+        `the run directory became reachable to an unmarked caller: ${c.stdout} ${c.stderr}`);
+
+      // (d) `project` IS NOT SUBSTITUTED — the owner's ruling, at the mount.
+      // The host tree at the project's own spelling is the decoy: a wrong
+      // substitution returns HOST-SIDE-COPY instead of failing.
+      const projFile = inside(record, path.join(proj, 'remote-marker.txt'));
+      const d = await unmarked('read l < "$1" || exit 7; echo "$l"', projFile);
+      assert.equal(d.ok, false, `an unmarked caller was served a project file: ${d.stdout}`);
+      assert.doesNotMatch(d.stdout, /HOST-SIDE-COPY|SYSTEM-SIDE-PROJECT-FILE/,
+        'an unmarked caller got bytes from one side or the other at a project path');
+
+      // (e) THE LOG SAYS THE SAME THING. The two host-served paths are `served`
+      // rows and NOT `unpinned-fail-closed` — that reason is the marked CLI's
+      // alone now — and the project path is a `deny` row by name.
+      const events = await eventsOf(inst.id);
+      const rowFor = (p) => events.filter(r => r[2] === p);
+      for (const [label, p] of [['(a) the excluded file', path.join(proj, 'excluded', 'host.txt')],
+        ['(b) the unpinned file', varFile]]) {
+        assert.deepEqual(rowFor(p).filter(r => r[3] === 'unpinned-fail-closed'), [],
+          `${label} produced an unpinned-fail-closed row, which is the MARKED CLI's reason: ${JSON.stringify(rowFor(p))}`);
+        assert.ok(rowFor(p).some(r => r[0] === 'served' && r[3] === 'unmarked-host-served'),
+          `${label} produced no served/unmarked-host-served row, so the substitution is unobservable `
+          + `to a maintainer: ${JSON.stringify(events)}`);
+      }
+      assert.ok(rowFor(path.join(proj, 'remote-marker.txt'))
+        .some(r => r[0] === 'deny' && r[3] === 'unmarked-project-denied'),
+        `(d) produced no deny/unmarked-project-denied row: ${JSON.stringify(events)}`);
+
+      // (f) THE WRITE SIDE, MEASURED AT THE ORCHESTRATOR'S OWN FILESYSTEM.
+      // `<box>/hostwrite` is under the gate's temp dir and covered by no pin, so
+      // it is T_FAIL — and the probe checks the file cc's own process can see,
+      // not the shell's exit code, because only the former says the bytes
+      // crossed. At uid 1000 into a uid-1000-owned temp dir, which is the reach
+      // an unprivileged worker actually has.
+      //
+      // THE DIRECTORY HAS TO BE GENUINELY UNPINNED, AND `<box>` IS NOT —
+      // measured, because it looked like the obvious fixture. `<box>/app` and
+      // `<box>/appx` are `project` pins, so `<box>` is a STRICT ANCESTOR and
+      // therefore `T_SYNTH`: it reported `555 0 0` and `default_permissions`
+      // refused the write at uid 1000 before the daemon was asked. That is the
+      // synthetic tier behaving correctly and says nothing about the
+      // substitution. A fresh temp dir with no pin under it is `T_FAIL`.
+      const openDir = await mkdtemp('cc-r13-hostwrite-');
+      await fs.chmod(openDir, 0o777);
+      const hostWrite = path.join(openDir, 'landed.txt');
+      const f = await unmarked('echo HOST-WRITE-LANDED > "$1" && echo WROTE', inside(record, hostWrite));
+      assert.match(f.stdout, /WROTE/,
+        `the unmarked write was refused, so \`fail → host\` is not the passthrough (a) and (b) `
+        + `read through: ${f.stdout} ${f.stderr}`);
+      assert.equal(await fs.readFile(hostWrite, 'utf8'), 'HOST-WRITE-LANDED\n',
+        'the write did not reach the ORCHESTRATOR\'s own filesystem, checked from cc\'s own '
+        + 'process rather than from the shell\'s exit code — only the former says the bytes crossed');
+      // AND IT IS LOGGED, so the reach is observable rather than silent.
+      assert.ok((await eventsOf(inst.id)).some(r => r[0] === 'served' && r[2] === hostWrite
+        && r[3] === 'unmarked-host-served'),
+        'the unmarked write reached the orchestrator with no row naming the path');
+      await fs.rm(openDir, { recursive: true, force: true });
+
+      console.log(`fuse gate [R13] ${events.length} event rows; served `
+        + JSON.stringify(events.filter(r => r[0] === 'served').map(r => r[2]).slice(0, 24)));
+    } finally {
+      await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'R13');
   });
 
   // ── ARM 7 ────────────────────────────────────────────────────────────────

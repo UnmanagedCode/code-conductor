@@ -15,8 +15,8 @@ import assert from 'node:assert/strict';
 import { promises as fs, rmSync } from 'node:fs';
 import path from 'node:path';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { runTeardown, DEFAULT_DEADLINES } from '../src/systems/fuse/session.ts';
-import { buildTierTable, renderPinsFile, binaryPins, resolveOnPath, resolveTierEntry, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
+import { runTeardown, DEFAULT_DEADLINES, describePolicyEvents, parsePolicyEvents } from '../src/systems/fuse/session.ts';
+import { buildTierTable, renderPinsFile, binaryPins, resolveOnPath, resolveTierEntry, suggestPin, BIND_MOUNTS } from '../src/systems/fuse/tierTable.ts';
 import { wrapLaunch } from '../src/systems/fuse/wrap.ts';
 import { assertFuseAvailable, REQUIRED_BINARIES } from '../src/systems/fuse/preflight.ts';
 import { parseProcStat, unescapeMountPath } from '../src/systems/fuse/driver.ts';
@@ -444,7 +444,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     fusectl: '/store/run/inst-1/fusectl', pinsPath: '/store/run/inst-1/pins.txt',
     intentPath: '/store/run/inst-1/intent.json', recordPath: '/store/run/inst-1/mount.json',
     daemonLog: '/store/run/inst-1/daemon.log',
-    refusalLog: '/store/run/inst-1/refusals.log',
+    eventLog: '/store/run/inst-1/events.log',
     controlSock: '/store/run/inst-1/control.sock',
     markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'allow_other,attr_timeout=0',
@@ -609,15 +609,23 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     assert.equal(w.env.CC_FUSE_PATH, '/opt/bin:/usr/bin');
   });
 
-  // PINS: the three things the daemon REFUSES TO MOUNT without, carried by
-  // name. `bootstrap.sh` renames each into the daemon's own CC_UNION_* prefix,
-  // and a missing one is a launch that dies in the mount-wait loop rather than
-  // at a named refusal.
-  test('carries the control socket, the mark path and the refusal log', () => {
+  // PINS: the things the daemon REFUSES TO MOUNT without, carried by name.
+  // `bootstrap.sh` renames each into the daemon's own CC_UNION_* prefix, and a
+  // missing one is a launch that dies in the mount-wait loop rather than at a
+  // named refusal. The EVENT LOG is not one of those — the daemon mounts
+  // without it and simply records nothing — but it rides the same channel and a
+  // missing one costs the whole pin-derivation instrument.
+  test('carries the control socket, the mark path, the cwd and the event log', () => {
     const w = wrapped();
     assert.equal(w.env.CC_FUSE_CONTROL, plan.controlSock);
     assert.equal(w.env.CC_FUSE_MARK_PATH, plan.markPath);
-    assert.equal(w.env.CC_FUSE_REFUSAL_LOG, plan.refusalLog);
+    assert.equal(w.env.CC_FUSE_EVENT_LOG, plan.eventLog);
+    // THE CWD IS NOW A MOUNT PRECONDITION TOO (`CC_UNION_CWD`), because the
+    // cwd-chain exemption REPLACED the exact-pin test: without it every
+    // component is denied and the launch dies at the `cd`, project root
+    // included. It rides as `CC_FUSE_CWD`, which `wrapLaunch` already set for
+    // the bootstrap's own `cd`.
+    assert.equal(w.env.CC_FUSE_CWD, plan.cwdInside);
   });
 });
 
@@ -812,6 +820,270 @@ describe('the tier table', () => {
 //
 // Each of these is a value cc renders or hands to a frozen daemon, where the
 // consequence of a drift is invisible from every other assertion in the suite.
+// ── FROM A LOGGED DENIAL TO A PIN ENTRY (card 2026-0382, step 4) ────────────
+//
+// The daemon's event log is the instrument the pin list is DERIVED from, and
+// `runTeardown` used to `rm -rf` it with the run directory. These pin the
+// harvest, the suggestion and the wording.
+describe('the policy event harvest', () => {
+  let prev, storeRoot;
+  before(async () => {
+    prev = process.env.PROJECTS_ROOT;
+    storeRoot = path.join(await mkdtemp('cc-fuse-events-'), 'projects');
+    process.env.PROJECTS_ROOT = storeRoot;
+  });
+  after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
+
+  const EVENTS = [
+    'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed',
+    'deny\topen\t/etc/machine-id\tunpinned-fail-closed',
+    'deny\tgetattr\t/usr/bin/git\tunpinned-fail-closed',
+    'deny\tgetattr\t/var/opt/thing\tunpinned-fail-closed',
+    'served\tgetattr\t/run/user/1000\tunmarked-host-served',
+    'deny\tgetattr\t/srv/app/f.txt\tunmarked-project-denied',
+  ].join('\n') + '\n';
+
+  // PINS: `suggestPin` names the array that OWNS each shape of path, and the
+  // loader entry is the `/usr/`-prefixed spelling.
+  //
+  // THE CANONICALISATION IS LOAD-BEARING, NOT COSMETIC. `LOADER_PINS` derives
+  // the `/lib` spelling AND the realpath from whatever is in `LOADER_OBJECTS`,
+  // so an entry added in the `/lib` spelling leaves the closure open — which is
+  // exactly the `libcap-ng.so.0.0.0` failure tierTable.ts's own comment records.
+  // DIES UNDER: dropping the `/usr/` canonicalisation; collapsing two lists into
+  // one; guessing a list for a path no array owns.
+  test('suggestPin names the owning array, and the loader entry is the /usr/ spelling', () => {
+    assert.deepEqual(suggestPin('/lib/x86_64-linux-gnu/libtinfo.so.6'),
+      { list: 'LOADER_OBJECTS', entry: '/usr/lib/x86_64-linux-gnu/libtinfo.so.6', note: suggestPin('/lib/x86_64-linux-gnu/libtinfo.so.6').note });
+    assert.equal(suggestPin('/lib64/ld-linux-x86-64.so.2').entry, '/usr/lib64/ld-linux-x86-64.so.2');
+    // Already canonical: unchanged, never double-prefixed.
+    assert.equal(suggestPin('/usr/lib/x86_64-linux-gnu/libm.so.6').entry, '/usr/lib/x86_64-linux-gnu/libm.so.6');
+    // A `.so` by NAME anywhere, and a loader-dir path by LOCATION even with no
+    // `.so` suffix — `gconv` is a directory and carries none.
+    assert.equal(suggestPin('/opt/vendor/libfoo.so.3.1').list, 'LOADER_OBJECTS');
+    assert.equal(suggestPin('/usr/lib/x86_64-linux-gnu/gconv/UTF-16.so').list, 'LOADER_OBJECTS');
+    assert.equal(suggestPin('/lib/x86_64-linux-gnu/gconv').list, 'LOADER_OBJECTS');
+    assert.equal(suggestPin('/etc/machine-id').list, 'ETC_PINS');
+    assert.equal(suggestPin('/etc/machine-id').entry, '/etc/machine-id');
+    for (const b of ['/bin/tar', '/sbin/ldconfig', '/usr/bin/git', '/usr/sbin/nologin'])
+      assert.equal(suggestPin(b).list, 'BOOTSTRAP_CHAIN', b);
+    // NO GUESS where no array owns the path — a wrong array is worse than none,
+    // because the entry lands where the derivations do not apply and the path
+    // stays refused for a reason the log no longer explains.
+    assert.equal(suggestPin('/var/opt/thing').list, null);
+    assert.match(suggestPin('/var/opt/thing').note, /localRoots/);
+    // EVERY SUGGESTION CARRIES THE RESTART CAVEAT, because the pin list is read
+    // at the next spawn AFTER an orchestrator restart and nothing else says so.
+    for (const p of ['/etc/x', '/lib/x.so', '/bin/x', '/var/x'])
+      assert.match(suggestPin(p).note, /restart/, p);
+  });
+
+  // PINS: the harvest happens BEFORE the reclaim, so the store-wide log has the
+  // rows even though the run directory is gone.
+  // DIES UNDER: moving the harvest after `fsp.rm(rundir)`; harvesting only on
+  // the wedged path.
+  test('the harvest lands in the store BEFORE the run directory is reclaimed', async () => {
+    const { rundir, record } = await seedRun();
+    await fs.writeFile(path.join(rundir, 'events.log'), EVENTS);
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    // NON-VACUITY: the reclaim really happened, so "the store has the rows" is
+    // a statement about ordering rather than about a directory that survived.
+    assert.equal(report.removedRunDir, true, `the run directory was not reclaimed: ${JSON.stringify(report)}`);
+    await assert.rejects(() => fs.access(path.join(rundir, 'events.log')));
+
+    const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+    const store = await fs.readFile(fuseEventStore(), 'utf8');
+    // FILTERED ON THIS SESSION'S id, because the store is APPEND-ONLY and
+    // shared: every test in this block adds to it, and a length assertion over
+    // the whole file would depend on the order they ran in. The instance id
+    // column is also what makes a harvested row attributable at all.
+    const rows = store.split('\n').filter(Boolean).map(l => l.split('\t'))
+      .filter(r => r[1] === record.instanceId);
+    assert.equal(rows.length, 6, store);
+    // `<iso8601> <instanceId> <kind> <op> <path> <list> <entry>`
+    const libtinfo = rows.find(r => r[4] === '/lib/x86_64-linux-gnu/libtinfo.so.6');
+    assert.ok(libtinfo, store);
+    assert.match(libtinfo[0], /^\d{4}-\d\d-\d\dT/);
+    assert.equal(libtinfo[1], record.instanceId);
+    assert.equal(libtinfo[2], 'deny');
+    assert.equal(libtinfo[5], 'LOADER_OBJECTS');
+    assert.equal(libtinfo[6], '/usr/lib/x86_64-linux-gnu/libtinfo.so.6');
+    // …and the report carries the distinct paths, so a caller need not re-read.
+    assert.deepEqual(report.eventPaths, [
+      '/lib/x86_64-linux-gnu/libtinfo.so.6', '/etc/machine-id', '/usr/bin/git',
+      '/var/opt/thing', '/run/user/1000', '/srv/app/f.txt',
+    ]);
+  });
+
+  // PINS: THE HARVEST DEDUPES ON `(path, reason)`, EXACTLY AS THE DAEMON DOES —
+  // and the daemon really does write two rows for one path, because two
+  // CALLERS can reach it. Observed in real gate runs: `/var` carries
+  // `deny`/`unpinned-fail-closed` from the marked CLI and
+  // `served`/`unmarked-host-served` from an unmarked one.
+  //
+  // A PATH-ONLY KEY DEFEATS THE LOG'S WHOLE PURPOSE, which is why this is a bug
+  // and not a tidiness question: `pinSuggestionFor` fires only on
+  // `deny`/`unpinned-fail-closed`, so whenever the `served` row happened to be
+  // written first the `deny` row was dropped and **the store carried no pin
+  // suggestion for a path the CLI's own denial had asked for**. Nothing said so;
+  // the row simply was not there.
+  //
+  // This deliberately departs from plan §4a's "one row per distinct path" —
+  // recorded on the card — because the log exists so a pin suggestion reaches a
+  // human, and a path-keyed row can silently be the wrong one of the two.
+  //
+  // DIES UNDER: keying the harvest on the path alone (either row order);
+  // keying it on `(kind, path, reason)` would NOT die here and is not claimed —
+  // see `b13`'s note on why that mutant is semantics-preserving.
+  test('the harvest keeps both reasons for one path, as the daemon does', async () => {
+    // BOTH ORDERS, in two sessions, because a path-only key keeps whichever row
+    // came FIRST — so one order alone passes against the bug half the time.
+    for (const [label, rows] of [
+      ['served first', ['served\tgetattr\t/var\tunmarked-host-served',
+                        'deny\tgetattr\t/var\tunpinned-fail-closed']],
+      ['deny first', ['deny\tgetattr\t/var\tunpinned-fail-closed',
+                      'served\tgetattr\t/var\tunmarked-host-served']],
+    ]) {
+      // The PARSE, where the dedupe lives.
+      const parsed = parsePolicyEvents(rows.join('\n') + '\n');
+      assert.deepEqual(parsed.map(r => `${r.kind}/${r.reason}`).sort(),
+        ['deny/unpinned-fail-closed', 'served/unmarked-host-served'],
+        `${label}: the harvest dropped one of the two reasons for /var`);
+      // …and a THIRD row repeating a (path, reason) pair is still one row, so
+      // this widened the key rather than removing the dedupe.
+      const withDup = parsePolicyEvents([...rows, rows[0]].join('\n') + '\n');
+      assert.equal(withDup.length, 2, `${label}: the (path, reason) dedupe is gone`);
+
+      // AND THE CONSEQUENCE, end to end at the store, which is what the bug
+      // actually cost: the pin suggestion for /var is present.
+      const { rundir, record } = await seedRun();
+      await fs.writeFile(path.join(rundir, 'events.log'), rows.join('\n') + '\n');
+      const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+      const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+      const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+      const stored = (await fs.readFile(fuseEventStore(), 'utf8')).split('\n').filter(Boolean)
+        .map(l => l.split('\t')).filter(r => r[1] === record.instanceId);
+      assert.equal(stored.length, 2, `${label}: ${JSON.stringify(stored)}`);
+      const deny = stored.find(r => r[2] === 'deny');
+      assert.ok(deny, `${label}: the deny row for /var never reached the store`);
+      assert.deepEqual([deny[5], deny[6]], ['UNDECIDED', '/var'],
+        `${label}: the deny row reached the store with no pin suggestion`);
+      // The served row is still there and still carries none.
+      const served = stored.find(r => r[2] === 'served');
+      assert.deepEqual([served[5], served[6]], ['', ''], label);
+      // `eventPaths` stays a DISTINCT-PATH list — it is a path list, and its one
+      // consumer (the boot sweep) asks only whether it is empty.
+      assert.deepEqual(report.eventPaths, ['/var'], label);
+      // And the sentence names the repair, which is the half the bug removed.
+      assert.match(report.notes.find(n => n.startsWith('cc-fuse: ')) ?? '',
+        /no array in src\/systems\/fuse\/tierTable\.ts obviously owns \/var/, label);
+    }
+  });
+
+  // PINS: a pin is suggested for `deny`/`unpinned-fail-closed` AND FOR NOTHING
+  // ELSE. A `served` row's path already came from the host and a
+  // project-tier denial is not a pin-list gap, so suggesting a pin for either
+  // sends the reader to change the wrong thing.
+  // DIES UNDER: dropping the REASON test — `/srv/app/f.txt` is a `deny` row, so
+  // it would gain suggestion columns the assertions below require to be empty.
+  //
+  // NOT `dropping the kind test`, and I claimed it for a round before checking.
+  // `pinSuggestionFor`'s kind test is REDUNDANT GIVEN THE INVARIANT: every
+  // reason maps to exactly one kind (source-derived, both directions, in
+  // tests/fuse-union-policy.test.mjs), and `unpinned-fail-closed` is always
+  // `deny` — so no event the daemon can produce has that reason under another
+  // kind, and removing the test changes nothing for any input. It stays in the
+  // code as a LOCAL contract, so the function's precondition is readable
+  // without reaching across files for the invariant; it is not mutation-pinned
+  // and is not claimed to be. Same shape as `b13`'s dedupe-key entry.
+  test('a pin is suggested only for a deny/unpinned-fail-closed row', async () => {
+    const { rundir, record } = await seedRun();
+    await fs.writeFile(path.join(rundir, 'events.log'), EVENTS);
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+    const rows = (await fs.readFile(fuseEventStore(), 'utf8')).split('\n').filter(Boolean)
+      .map(l => l.split('\t'))
+      .filter(r => r[1] === record.instanceId
+        && (r[4] === '/run/user/1000' || r[4] === '/srv/app/f.txt'));
+    assert.equal(rows.length, 2, JSON.stringify(rows));
+    for (const r of rows)
+      assert.deepEqual([r[5], r[6]], ['', ''],
+        `${r[2]}/${r[3]} at ${r[4]} was given a pin suggestion, which points at the wrong repair`);
+    // And the SENTENCE keeps the same split: the served row appears, without a
+    // pin instruction attached to it.
+    const line = describePolicyEvents(parsePolicyEvents(EVENTS), '/store/events.log');
+    assert.match(line, /no pin needed — the op succeeded/);
+    assert.match(line, /unmarked-host-served \/run\/user\/1000/);
+    assert.doesNotMatch(line, /add \/run\/user\/1000/);
+  });
+
+  // PINS: the emitted line NAMES PATHS. The failure it replaces was a real gate
+  // report of `unpinned-fail-closed: 60` where the 60 were ONE missing library —
+  // a count named nothing anybody could act on.
+  // DIES UNDER: reporting a tally instead of the paths; dropping the store path.
+  test('the emitted line names paths and the store file, never a bare count', () => {
+    const line = describePolicyEvents(parsePolicyEvents(EVENTS), '/store/events.log');
+    assert.match(line, /\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6/);
+    assert.match(line, /add \/usr\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6.*to LOADER_OBJECTS in src\/systems\/fuse\/tierTable\.ts and restart cc/);
+    assert.match(line, /add \/etc\/machine-id to ETC_PINS/);
+    assert.match(line, /full event log at \/store\/events\.log/);
+    // Nothing at all is not a line, so a clean session emits nothing.
+    assert.equal(describePolicyEvents([], '/store/events.log'), null);
+  });
+
+  // PINS: the inline list is CAPPED at 20 ROWS and then says how many more and
+  // where they are. Bounded output was the owner's requirement; a truncation
+  // that did not say it truncated would be the same defect as a count.
+  //
+  // ROWS, NOT PATHS — the harvest key is `(path, reason)`, so a path carrying
+  // two deny reasons occupies two slots. This fixture gives each row its own
+  // path, so the two units coincide here and the assertion reads either way;
+  // the wording says rows because that is what the code counts.
+  // DIES UNDER: removing the cap; dropping the `+K more` clause.
+  test('the line caps the inline rows at 20 and says where the rest are', () => {
+    const many = Array.from({ length: 31 }, (_, i) => `deny\tgetattr\t/etc/p${i}\tunpinned-fail-closed`).join('\n');
+    const line = describePolicyEvents(parsePolicyEvents(many), '/store/events.log');
+    const named = [...line.matchAll(/\/etc\/p(\d+)/g)].map(m => Number(m[1]));
+    // Each of the 20 appears twice — once in the refused list, once in the
+    // ETC_PINS instruction — and no 21st appears at all.
+    assert.deepEqual([...new Set(named)].sort((a, b) => a - b), Array.from({ length: 20 }, (_, i) => i));
+    assert.match(line, /\(\+11 more; full list at \/store\/events\.log\)/);
+  });
+
+  // PINS: `_awaitFuseMount` reads the event log BEFORE `fuse.teardown()`, which
+  // deletes it — the case the owner named. A spawn that died of a missing pin
+  // used to carry stderr alone, and stderr says "cannot open shared object file"
+  // without saying which array to add the object to.
+  // DIES UNDER: moving the read after the teardown; dropping the interpolation.
+  test('a failed mount names the refused paths and the array to add them to', async () => {
+    const rundir = await mkdtemp('cc-fuse-awaitmount-');
+    const log = path.join(rundir, 'events.log');
+    await fs.writeFile(log, 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n');
+    let tornDown = false;
+    const self = {
+      id: 'inst-await', proc: null, _stderr: '  libtinfo.so.6: cannot open shared object file  ',
+      _fuse: {
+        plan: { rundir },
+        awaitHandshake: async () => null,
+        // THE TEARDOWN REALLY DESTROYS IT, which is what makes the ordering
+        // claim falsifiable rather than a comment: read after this and the
+        // message carries nothing.
+        teardown: async () => { tornDown = true; await fs.rm(log, { force: true }); },
+      },
+    };
+    await assert.rejects(() => Instance.prototype._awaitFuseMount.call(self), (e) => {
+      assert.equal(e.code, 'FUSE_MOUNT_FAILED');
+      assert.match(e.message, /libtinfo\.so\.6: cannot open shared object file/, 'stderr was dropped');
+      assert.match(e.message, /the daemon refused: \/lib\/x86_64-linux-gnu\/libtinfo\.so\.6/, e.message);
+      assert.match(e.message, /add \/usr\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6 to LOADER_OBJECTS/, e.message);
+      return true;
+    });
+    assert.equal(tornDown, true, 'the half-built session was not torn down');
+  });
+});
+
 describe('the mount literals', () => {
   // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. `union.c` is a fork of
   // the frozen spike instrument and diverges from it by design, one PROVENANCE.md
@@ -836,6 +1108,97 @@ describe('the mount literals', () => {
       assert.equal(createHash('sha256').update(buf).digest('hex'), want,
         `${name} changed without its sha256 pin being regenerated`);
     }
+  });
+
+  // A16b — PINS THE DAEMON'S THREE MOUNT PRECONDITIONS AT THE ONLY LAYER THAT
+  // ENFORCES THEM. `main()` is not reachable from the policy fixture (it needs
+  // libfuse, a real socket and a real mount), so each refusal is pinned from
+  // the source, beside A16 and for A16's reason.
+  //
+  // `CC_UNION_CWD` IS NEW WITH 2026-0382 AND THE ABSENCE OF A DEFAULT IS THE
+  // POINT. The cwd-chain exemption REPLACED the exact-pin test rather than
+  // being disjoined with it, so a missing cwd un-exempts the project root as
+  // well as the chain — regressing card 2026-0373 while looking exactly like a
+  // working mount. A default would be worse than the refusal.
+  test('A16b: the daemon refuses to mount without the mark path, the control socket or the cwd', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
+    const src = await readFile(path.join(dir, 'union.c'), 'utf8');
+    for (const v of ['CC_UNION_MARK_PATH', 'CC_UNION_CONTROL', 'CC_UNION_CWD']) {
+      assert.match(src, new RegExp(`REFUSED — ${v} is required`),
+        `union.c no longer refuses to mount without ${v}`);
+    }
+    // AND THE CWD IS VALIDATED, NOT ONLY PRESENT — because the failure a
+    // non-normalised spelling produces is diagnosable only from inside the
+    // chroot. A '//' or a '.'/'..' component matches the INTERMEDIATE
+    // components and then fails on the cwd ITSELF, so without this the daemon
+    // mounts and the chdir walks the whole chain and dies at its destination. A
+    // trailing slash matches every component and is refused on ownership of the
+    // input rather than on a broken comparison. `b28` pins both halves; the
+    // mount refusal below is what replaces the far-away failure with a named
+    // one.
+    assert.match(src, /if \(!policy_cwd_normalised\(cwd_path\)\) \{/,
+      'union.c no longer validates CC_UNION_CWD at mount time');
+    // NO DEFAULT, asserted as the absence of one: `?:` is how union.c spells a
+    // default (CC_UNION_HOST_ROOT has one), so a `getenv("CC_UNION_CWD") ?: …`
+    // would read as a working mount that silently un-exempts the project root.
+    assert.match(src, /cwd_path\s*= getenv\("CC_UNION_CWD"\);/,
+      'CC_UNION_CWD is read with a default, or not read into cwd_path at all');
+  });
+
+  // 2c — THE BOOTSTRAP'S MARK ORDERING, PINNED AT THE LAYER THAT ENFORCES IT.
+  //
+  // THE INVARIANT: the CLI's thread group makes NO union op before the marking
+  // event except its own interpreter load. That is what keeps S2 §9.1's
+  // straddle hazard closed in production — measured at 65 pre-mark ops over 16
+  // distinct paths, every one of them `host` or `synth`, zero resolving
+  // `project`, `fail` or `hide`.
+  //
+  // THE ENFORCING LAYER FOR A SHELL SCRIPT'S STATEMENT ORDER IS THE SCRIPT
+  // TEXT, so this is a source-text test and needs no sudo and no mount. It runs
+  // in plain `npm test`, which is where a reordering would otherwise go
+  // unnoticed until the real gate.
+  //
+  // Firing the mark HOST-SIDE, before the chroot exec, would empty the window
+  // entirely — and was ruled out because it would make dash's own pins
+  // load-bearing again. It would COST pins. So the ordering is what is pinned.
+  //
+  // DIES UNDER: moving the mark below the `cd`; inserting ANY command above it;
+  // deleting it.
+  test('2c: bootstrap.sh fires the marking event as its FIRST chroot statement, before the cd', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const src = await readFile(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'systems', 'fuse', 'bootstrap.sh'), 'utf8');
+    // The single-quoted script body of the final `exec "$CHROOT_BIN" … /bin/sh -c '…'`.
+    const at = src.indexOf('exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c \'');
+    assert.ok(at > 0, 'the final chroot exec is not the shape this test pins — re-anchor or repair');
+    const open = src.indexOf("'", at);
+    const close = src.indexOf("'", open + 1);
+    assert.ok(close > open, 'the chroot script body is unterminated');
+    const body = src.slice(open + 1, close);
+    // Statements only: comments, blank lines and the leading indentation go.
+    const stmts = body.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+    assert.ok(stmts.length >= 4, `the chroot script body was not parsed: ${JSON.stringify(stmts)}`);
+    // 1. THE MARK IS THE FIRST STATEMENT. A plain existence test, because the
+    //    daemon marks on RESOLUTION — a stat is the whole event.
+    assert.equal(stmts[0], '[ -e "$5" ] || :',
+      'the marking event is not the FIRST statement of the chroot script — every union op this '
+      + 'thread group makes before it is an UNMARKED op on the pid that becomes the CLI');
+    // 2. AND THE cd IS STRICTLY AFTER IT. Without the mark the first union op
+    //    this pid makes is the `cd` into the project tree, unmarked, and the
+    //    launch dies "cwd does not exist inside the chroot" before the CLI runs.
+    const cd = stmts.findIndex(l => l.startsWith('cd "$2"'));
+    assert.ok(cd > 0, `the chroot script no longer cds to the CLI's cwd: ${JSON.stringify(stmts)}`);
+    assert.ok(cd > 0 && stmts.indexOf(stmts[0]) === 0 && cd > stmts.indexOf(stmts[0]),
+      'the `cd` is not strictly after the marking event');
+    // 3. `$5` IS THE MARK PATH, positionally — the argument list is what makes
+    //    `[ -e "$5" ]` mean anything at all, and a reordering there would make
+    //    the mark stat probe some other path while still passing (1) and (2).
+    const argv = src.slice(close + 1).split('\n')[0];
+    assert.match(argv, /^ sh "\$SETPRIV_BIN" "\$CC_FUSE_CWD" "\$CC_FUSE_UID" "\$CC_FUSE_GID" "\$CC_FUSE_MARK_PATH" "\$@"$/,
+      `the chroot script's positional arguments changed, so "$5" is no longer the mark path and `
+      + `"$2" no longer the cwd: ${argv}`);
   });
 
   // A17 — PINS the mount options as LITERALS. Every one is load-bearing and
@@ -956,6 +1319,102 @@ describe('the configuration-time containment refusal', () => {
   // staging area to the worker as remote content. IN PRODUCTION THERE IS NO
   // ROOT AT ALL — a path P from the daemon IS the path on the system — so this
   // guards the override, which is what it always guarded.
+
+  // ── THE CWD, AT CONFIGURATION TIME ────────────────────────────────────────
+  //
+  // PINS: `buildFusePlan` refuses a non-normalised `cwdInside`, with
+  // `FUSE_REMOTE_ROOT_CONTAINS_MIRROR` as the precedent for both the placement
+  // and the wording.
+  //
+  // THE DEFECT IT REPLACES. `plan.cwdInside` becomes the daemon's
+  // `CC_UNION_CWD`, and `policy_cwd_component` compares it to each candidate
+  // byte for byte at a component boundary. A doubled slash — or a `.`/`..`
+  // component — matches every INTERMEDIATE component and then fails on the cwd
+  // itself, so the chdir walks the whole chain and dies at its destination,
+  // which is the hardest shape to diagnose from outside the chroot.
+  //
+  // NEITHER LAYER NORMALISES, AND BOTH REFUSE. cc owns this input, so any other
+  // spelling is a cc defect; and resolving `..` correctly needs the filesystem,
+  // because a component may be a symlink. The daemon's own refusal is pinned by
+  // A16b; the driver's predicate by `b28`. This is the layer where the failure
+  // is legible — the daemon's arrives inside the bootstrap's mount-wait loop.
+  //
+  // DIES UNDER: deleting the check; accepting a trailing slash; accepting a
+  // `..` component; refusing a dotfile-named component (which would refuse a
+  // real cwd, `~/.claude/worktrees/x` being the obvious one).
+  //
+  // AND THE MESSAGE IS PINNED PER SHAPE, WHICH IS WHY THE OLD ASSERTION WAS NOT
+  // ENOUGH. `/component by component/` survived BOTH the false sentence
+  // ("a non-normalised spelling matches nothing and every chdir fails") and its
+  // correction, so restoring the false one passed every arm. The refused class
+  // has THREE mechanisms under `policy_cwd_component` and no clause is true of
+  // all of them, so the assertions below check the universal GROUND of refusal
+  // plus the mechanism for the shape at hand — and, for the trailing slash,
+  // that the message does NOT make the refuted claim.
+  const CWD_MECHANISM = {
+    '/srv/app/':    /still matches every component/,
+    '/srv//app':    /match the INTERMEDIATE components and then fail on the cwd ITSELF/,
+    '/srv/./app':   /match the INTERMEDIATE components and then fail on the cwd ITSELF/,
+    '/srv/../app':  /match the INTERMEDIATE components and then fail on the cwd ITSELF/,
+    'srv/app':      /match NO component of any path except '\/'/,
+    '':             /match NO component of any path except '\/'/,
+  };
+  for (const [bad, mechanism] of Object.entries(CWD_MECHANISM)) {
+    test(`A20w: buildFusePlan refuses a non-normalised cwd ${JSON.stringify(bad)}`, async () => {
+      const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+      assert.throws(() => buildFusePlan({ ...planArgs, cwdInside: bad, sourceOverrideRoot: null }), (e) => {
+        assert.equal(e.code, 'FUSE_CWD_NOT_NORMALISED');
+        assert.equal(e.statusCode, 501);
+        assert.ok(e.message.includes(bad === '' ? "''" : bad), e.message);
+        // THE UNIVERSAL GROUND, and it is what the false sentence never said:
+        // cc owns the value, so the repair is at the caller…
+        assert.match(e.message, /cc owns this value/, e.message);
+        // …and NOT in the daemon, with the reason. An operator who "fixes" a
+        // `//` cwd by normalising in the daemon has written the one repair the
+        // design forbids, because `..` cannot be resolved through a symlink.
+        assert.match(e.message, /Do NOT normalise it in the daemon/, e.message);
+        assert.match(e.message, /may be a symlink/, e.message);
+        // THE MECHANISM FOR THIS SHAPE, not an umbrella.
+        assert.match(e.message, mechanism, e.message);
+        return true;
+      });
+    });
+  }
+
+  // PINS THE REFUTED CLAIM AS REFUTED, at the one shape that disproves it. A
+  // trailing slash matches EVERY component — `b28` measures it — so any message
+  // saying a non-normalised spelling "matches nothing" or that "every chdir
+  // fails" is false here.
+  //
+  // WHICH ROLLBACK REDS WHAT, counted rather than asserted loosely. APPENDING
+  // the false clause to the current message reds THIS ARM ALONE, through its
+  // two `doesNotMatch` clauses below — the six per-shape arms above carry only
+  // positive mechanism regexes, which still match with a false clause added.
+  // RESTORING the whole pre-correction message additionally reds those six,
+  // since it contains none of their mechanism wording. So this arm is the only
+  // thing standing between the codebase and the additive form of the
+  // regression, which is the form three rounds of this ticket actually took.
+  test('A20w: the trailing-slash refusal does not claim the comparison breaks', async () => {
+    const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+    assert.throws(() => buildFusePlan({ ...planArgs, cwdInside: '/srv/app/', sourceOverrideRoot: null }), (e) => {
+      assert.doesNotMatch(e.message, /matches nothing|matches no component/, e.message);
+      assert.doesNotMatch(e.message, /every chdir/, e.message);
+      // And it says the true thing instead: nothing downstream fails, which is
+      // why the refusal rests on ownership of the input.
+      assert.match(e.message, /nothing downstream would fail visibly/, e.message);
+      return true;
+    });
+  });
+
+  // THE POSITIVE CONTROL, without which every arm above passes against an
+  // unconditional throw — and the dotfile case, which a naive `.`-component
+  // test would wrongly refuse.
+  for (const good of ['/', '/srv/app', '/root/.claude/worktrees/x', '/srv/..hidden']) {
+    test(`A20w: …and accepts the normalised cwd ${JSON.stringify(good)}`, async () => {
+      const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+      assert.equal(buildFusePlan({ ...planArgs, cwdInside: good, sourceOverrideRoot: null }).cwdInside, good);
+    });
+  }
 
   // Arm (b). Mutation it must die under: deleting the containment check.
   test('A20b: a non-/ remote root containing the mirror is refused', async () => {
@@ -1340,7 +1799,7 @@ describe('FuseSession lifecycle', () => {
     fusectl: path.join(rundir, 'fusectl'), pinsPath: path.join(rundir, 'pins.txt'),
     intentPath: path.join(rundir, 'intent.json'), recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
-    refusalLog: path.join(rundir, 'refusals.log'),
+    eventLog: path.join(rundir, 'events.log'),
     controlSock: path.join(rundir, 'control.sock'),
     markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'o', tiers: [], pinsText: '# pins\n',
@@ -1822,7 +2281,104 @@ describe('the boot sweep', () => {
     }));
     return dir;
   };
+  // AN INTENT-ONLY ENTRY — a crash BEFORE the bootstrap's handshake, which is
+  // the shape the sweep exists for. It matters here because `runTeardown` then
+  // pushes a `NO-RECORD: …` note ALONGSIDE the harvest's `cc-fuse: …` one, and
+  // that is the only shape in which the operator line's `cc-fuse: ` filter has
+  // two notes to choose between.
+  const seedIntentOnly = async (id) => {
+    const dir = path.join(runRoot, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'intent.json'), JSON.stringify({
+      schema: 1, instanceId: id, ccBootId: 'old', rundir: dir,
+      root: path.join(dir, 'root'), mirror: path.join(dir, 'mirror'),
+      fusectl: path.join(dir, 'fusectl'), spawnedAt: 1,
+    }));
+    return dir;
+  };
   const emptyScan = async () => ({ ok: true, raw: '' });
+
+  // PINS: A CRASHED SESSION'S POLICY EVENTS REACH THE OPERATOR LOG — plan §4b's
+  // THIRD surface, and the only one that can serve this case. The other two are
+  // the session's own stderr stream and the spawn-failure message, and a
+  // session lost to a crash has neither: its stream is gone and no launch is
+  // waiting. This boot is the one place its events are ever read aloud.
+  //
+  // ON THE CLEAN PATH SPECIFICALLY. The wedged arm already prints `notes`, so
+  // asserting there would pass against a deleted block; a reclaimed session
+  // prints only the `reclaimed …` line unless this fires.
+  // DIES UNDER: deleting the `!report.wedged && report.eventPaths.length` block
+  // in sweep.ts; dropping the `eventPaths.length` condition (the second arm
+  // below counts the lines); dropping the `cc-fuse: ` filter (the THIRD arm,
+  // which is the only shape where `notes` carries anything else); moving the
+  // harvest after the reclaim (the log would be gone and `eventPaths` empty).
+  //
+  // NOT `dropping the filter so it prints nothing` — that was claimed for one
+  // round and is behaviour-identical wherever `notes` holds the event sentence
+  // ALONE, which is every mount.json-backed session. The third arm is what
+  // makes the filter's mutant distinguishable at all.
+  test('a crashed session’s policy events reach the operator log', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const EVENTS = 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n';
+    const sweep = async () => {
+      const warned = [];
+      const reports = await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => warned.push(a.join(' ')) } });
+      return { warned, reports };
+    };
+
+    // ── 1. THE LINE EXISTS, ON THE CLEAN PATH, AND CARRIES THE REPAIR ───────
+    const dir = await seedEntry('events-1');
+    await fs.writeFile(path.join(dir, 'events.log'), EVENTS);
+    const a = await sweep();
+    // The precondition: this is the CLEAN path, so the wedged arm — which
+    // prints `notes` wholesale — is not what produced the line below.
+    assert.equal(a.reports[0].wedged, false, JSON.stringify(a.reports[0]));
+    assert.equal(a.reports[0].removedRunDir, true);
+    const line = a.warned.find(w => w.includes('libtinfo.so.6'));
+    assert.ok(line, `no operator-log line named the refused path: ${a.warned.join(' | ')}`);
+    // AND IT CARRIES THE REPAIR, not just the path — the whole point of the
+    // surface is that stderr already said "cannot open shared object file".
+    assert.match(line, /add \/usr\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6 to LOADER_OBJECTS/, line);
+    assert.ok(line.includes('events-1'), `the line does not name the session: ${line}`);
+
+    // ── 2. A SESSION WITH NO EVENTS PRINTS EXACTLY ONE LINE ─────────────────
+    // COUNTED, not filtered, and that is the difference between this and the
+    // control it replaces. Asserting merely that no line mentions
+    // `tierTable.ts` passes against a dropped `eventPaths.length` condition,
+    // because the emitted line would then be `cc-fuse sweep: <id> — ` with an
+    // empty join — present, and matching no content assertion. The COUNT sees
+    // it.
+    await seedIntentOnly('events-2');
+    const b = await sweep();
+    const forB = b.warned.filter(w => w.includes('events-2'));
+    assert.equal(forB.length, 1,
+      `a session with no events should print only its reclaim line: ${JSON.stringify(forB)}`);
+    assert.match(forB[0], /reclaimed events-2|events-2 →/, forB[0]);
+
+    // ── 3. THE `cc-fuse: ` FILTER, IN THE ONE SHAPE THAT CAN SEE IT ─────────
+    // An INTENT-ONLY directory is a crash before the handshake, and
+    // `runTeardown` pushes `NO-RECORD: no mount.json …` for it — so `notes`
+    // holds a second entry and the filter has something to exclude. Without the
+    // filter that sentence rides into the operator's pin instruction, which is
+    // where a reader looks for a path to add to an array.
+    const dir3 = await seedIntentOnly('events-3');
+    await fs.writeFile(path.join(dir3, 'events.log'), EVENTS);
+    const c = await sweep();
+    const line3 = c.warned.find(w => w.includes('events-3') && w.includes('libtinfo.so.6'));
+    assert.ok(line3, `the intent-only session emitted no event line: ${c.warned.join(' | ')}`);
+    // The note really is there to be excluded — asserted on the report, so this
+    // arm cannot pass vacuously against a runTeardown that stopped pushing it.
+    const report3 = c.reports.find(r => r.instanceId === 'events-3');
+    // CLEAN, ASSERTED — and this one is load-bearing rather than tidy: the
+    // WEDGED arm joins `notes` WHOLESALE, so a wedged events-3 would emit a
+    // line containing both `libtinfo.so.6` and `NO-RECORD`, and the filter
+    // assertion below would be reading the wrong line entirely.
+    assert.equal(report3.wedged, false, JSON.stringify(report3));
+    assert.ok(report3.notes.some(n => n.startsWith('NO-RECORD:')),
+      `the intent-only path no longer produces a NO-RECORD note, so the filter has nothing to exclude and this arm proves nothing: ${JSON.stringify(report3.notes)}`);
+    assert.doesNotMatch(line3, /NO-RECORD/,
+      `the operator line carries an unfiltered note: ${line3}`);
+  });
 
   // PINS: a dead entry is reclaimed and reported. An instance id is a fresh
   // uuid per process, so everything here at boot is dead by construction.

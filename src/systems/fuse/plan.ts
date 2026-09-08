@@ -35,6 +35,20 @@ export function fuseRunDir(instanceId: string): string {
   return path.join(fuseRunRoot(), instanceId);
 }
 
+// THE PER-SESSION EVENT LOG'S FILENAME, in one place because three layers name
+// it: `buildFusePlan` (the daemon's `CC_UNION_EVENTS`), `runTeardown`'s harvest,
+// and the boot sweep reading a crashed session's copy.
+export const EVENT_LOG_NAME = 'events.log';
+
+// THE STORE-WIDE EVENT LOG — where a session's rows are appended before its run
+// directory is reclaimed. A SIBLING of `run/`, deliberately: `run/<id>` is
+// destroyed with the session and this is the only record that outlives it, which
+// is what makes a pin derivable after the fact rather than only while the
+// session is up.
+export function fuseEventStore(): string {
+  return path.join(orchStoreRoot(), 'systems', 'fuse', EVENT_LOG_NAME);
+}
+
 export function fuseBinDir(): string {
   return path.join(orchStoreRoot(), 'systems', 'fuse', 'bin');
 }
@@ -96,11 +110,13 @@ export interface FusePlan {
   intentPath: string;
   recordPath: string;
   daemonLog: string;
-  // THE REFUSAL LOG the daemon writes (`CC_UNION_REFUSALS`) — every fail-closed
-  // path, every unmarked denial, every refused control reply. It is the
-  // instrument the pin list is derived from and the thing that must be empty by
-  // the end; the real gate reads it (R4).
-  refusalLog: string;
+  // THE POLICY EVENT LOG the daemon writes (`CC_UNION_EVENTS`) —
+  // `<kind>\t<op>\t<path>\t<reason>` per distinct (path, reason). It is the
+  // instrument the pin list is derived from, and the channel whose `deny` rows
+  // must be empty by the end; the real gate reads it (R4). Harvested into
+  // `fuseEventStore()` by `runTeardown` immediately before the run directory is
+  // reclaimed, because the reclaim would otherwise destroy the evidence.
+  eventLog: string;
   // The cwd the bootstrap `cd`s to INSIDE the chroot. A host-pinned path keeps
   // its exact spelling, which is why this is simply the CLI's cwd.
   cwdInside: string;
@@ -204,6 +220,62 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   // descends, and the chain from the projects root down to `runDir` is `host`,
   // so no frame ever names the mirror's parent. `tests/fuse-lifecycle.test.mjs`
   // asserts both halves against the real table.
+  // CONFIGURATION-TIME REFUSAL: THE CWD MUST BE A NORMALISED ABSOLUTE PATH.
+  //
+  // THE GROUND OF REFUSAL IS THAT CC OWNS THE INPUT, AND IT COVERS THE WHOLE
+  // CLASS. `plan.cwdInside` is cc's own value, so any non-normalised spelling is
+  // a cc defect and the repair belongs at the caller.
+  //
+  // THE CONSEQUENCE IS PER SHAPE, AND THERE IS NO SINGLE TRUE UMBRELLA — which
+  // is why the message below branches. `policy_cwd_component` compares
+  // `CC_UNION_CWD` to each candidate byte for byte with a component-boundary
+  // check, so a DOUBLED SLASH or a `.`/`..` component bites at the LAST
+  // component: `/srv//app` matches `/` and `/srv` and then fails on the cwd
+  // itself. A TRAILING slash matches every component and breaks nothing at all.
+  // `b28` pins both halves behaviourally.
+  //
+  // REFUSED HERE AND IN THE DAEMON, NOT NORMALISED IN EITHER. cc owns this
+  // input, so a non-normalised value is a cc defect; and resolving `..`
+  // correctly needs the filesystem, because a component may be a symlink. This
+  // is the layer where the failure is legible — the daemon's own refusal
+  // arrives inside the bootstrap's mount-wait loop.
+  //
+  // `FUSE_REMOTE_ROOT_CONTAINS_MIRROR` below is the precedent for both the
+  // placement and the wording.
+  // `endsWith('/')` IS LOAD-BEARING HERE, AND IS REDUNDANT IN THE DAEMON'S OWN
+  // `policy_cwd_normalised` — an asymmetry worth knowing before "simplifying"
+  // either side to match the other. This predicate enumerates components with
+  // `split('/')`, whose empty final component is neither `.` nor `..`, and
+  // `/srv/app/` contains no `//` — so without `endsWith` cc would ACCEPT a
+  // trailing slash. The C predicate walks components with `strchr` and refuses
+  // an empty one at `end == c`, which already covers it. Both measured by
+  // mutation: this clause is killed by two tests, the C one by none.
+  const cwd = input.cwdInside;
+  if (!cwd.startsWith('/') || (cwd !== '/' && (cwd.endsWith('/') || cwd.includes('//')
+      || cwd.split('/').some(c => c === '.' || c === '..')))) {
+    // THE GROUND OF REFUSAL IS PRIMARY AND UNIVERSAL; THE CONSEQUENCE IS NAMED
+    // PER MECHANISM, AND THERE ARE THREE.
+    //
+    // Four drafts of this sentence looked for one consequence true of the whole
+    // refused class. There is none, and the class has three distinct mechanisms
+    // under `policy_cwd_component`'s byte-for-byte comparison — so an umbrella
+    // clause is false for at least one member whichever way it is phrased. The
+    // refusal therefore rests on cc owning the input, which covers every member,
+    // and a mechanism line is appended only for the shape at hand.
+    const rel = !cwd.startsWith('/');
+    const trailing = !rel && cwd !== '/' && cwd.endsWith('/');
+    const why = rel
+      // Not absolute: `strncmp(cwd_path, path, len)` fails for every candidate
+      // except `/`, which the predicate answers before comparing anything.
+      ? `Not being absolute, it would match NO component of any path except '/' itself, so an unmarked spawn's chdir would die at the first real component.`
+      : trailing
+        // The boundary test reads the trailing '/' as the separator it wants.
+        ? `This spelling still matches every component, so nothing downstream would fail visibly — which is exactly why it is refused here rather than tolerated: a value cc did not mean to produce is a defect wherever it happens to be harmless.`
+        // '//', '.' and '..' all diverge from the candidate mid-string.
+        : `It would also match the INTERMEDIATE components and then fail on the cwd ITSELF, so an unmarked spawn's chdir would walk the whole chain and die at its destination — the hardest shape to diagnose from outside the chroot.`;
+    throw httpError(501, `FUSE_CWD_NOT_NORMALISED: this session's cwd inside the chroot is '${cwd}', which is not a normalised absolute path (no '//', no trailing '/', no '.' or '..' component). cc owns this value — it is plan.cwdInside, not anything the system or the operator supplied — so any other spelling is a cc DEFECT and the repair belongs at the caller that produced it. Do NOT normalise it in the daemon instead: '..' cannot be resolved correctly without touching the filesystem, because a component may be a symlink. ${why}`, { code: 'FUSE_CWD_NOT_NORMALISED' });
+  }
+
   const override = input.sourceOverrideRoot;
   const inside = override === null || override === '/' ? null : withinPosix(mirror, override);
   if (inside !== null) {
@@ -220,7 +292,7 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     intentPath: path.join(rundir, 'intent.json'),
     recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
-    refusalLog: path.join(rundir, 'refusals.log'),
+    eventLog: path.join(rundir, EVENT_LOG_NAME),
     controlSock: path.join(rundir, 'control.sock'),
     markPath: input.markPath,
     cwdInside: input.cwdInside,

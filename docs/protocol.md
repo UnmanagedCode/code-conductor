@@ -492,3 +492,42 @@ Because a `spawn` ledger event needs the new worker's sessionId — which does n
 ## Plugin system
 
 The plugin manifest schema, reverse proxy (`/plugins/<id>/*`), bridge protocol, `/api/plugins` REST surface, **child MCP wire contract**, Plugin Library, and compliance checklist have moved to [docs/plugins.md](plugins.md).
+
+## The FUSE-union daemon's policy event log
+
+A **file format with real readers**, which is why it is here and not only in [architecture.md](architecture.md): the real gate's `R4` filters it, `RUN_FUSE_APP3` tallies it, `runTeardown` harvests it, and an operator (or a Claude session) derives the pin list from it. `docs/architecture.md` → "The FUSE-union chroot" carries the *why*; this is the contract.
+
+**Two artifacts, one row shape plus provenance.**
+
+| | path | row |
+|---|---|---|
+| per session | `<rundir>/events.log`, written by the daemon (`CC_UNION_EVENTS`, `policy_event` in `policy.h`) | `<kind>\t<op>\t<path>\t<reason>` |
+| store-wide | `orchStoreRoot()/systems/fuse/events.log` (`fuseEventStore()`), appended by `runTeardown` immediately before the run directory is reclaimed | `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<suggested list>\t<suggested entry>` |
+
+- **Deduped on `(path, reason)`**, never on the op and never on the kind. The kind is a **function of the reason** (set-compared against both C sources in both directions by `tests/fuse-union-policy.test.mjs`), so it is a derived field: on any emission the daemon can produce the two keys partition identically and the choice is **unobservable**. It is left out because a key should carry no derived field. **What that costs, named:** a defect emitting one reason under *both* kinds would collapse to a single row rather than showing two — acceptable only because the one-kind-per-reason property is checked at the **call sites**, where it is decidable, and never inferred from a row count here.
+- **The last two store columns are for `deny`/`unpinned-fail-closed` rows only** and are empty otherwise: a pin does not fix an `unmarked-host-served` row, whose path already came from the host. `suggestPin` (`src/systems/fuse/tierTable.ts`) is the mapping.
+- **PATHS ONLY, never content.** A credential path may appear in either; a credential never does.
+- **Append-only, never rotated.** The store-wide file is the only record that outlives a session.
+- **Unstable by design**, like the rest of cc's surface: `enum ev_kind` and the reason set change with their callers.
+
+**EXACTLY TWO KINDS, and `R4`'s whole filter is `kind === 'deny'`** — a third would silently fall out of it and stop being checked at all. `enum ev_kind { EV_DENY = 0, EV_SERVED }`, rendered by `ev_kind_name`:
+
+- `deny` — the op was **refused**; the caller has a negative errno.
+- `served` — the op **succeeded**, but not the way the tier table said.
+
+**EVERY REASON, WITH ITS KIND.** Derived from every `policy_event(` call site in `union.c` and `policy.h` and set-compared **in both directions** by `tests/fuse-union-policy.test.mjs`, so a new reason with no classification is a test failure rather than an unclassified row.
+
+| reason | kind | emitted where, and what the caller got |
+|---|---|---|
+| `unpinned-fail-closed` | `deny` | `route()`'s fall-through, `-ENOENT`. **The MARKED CLI's alone** since card 2026-0382 — an unmarked caller at `fail` is substituted to `host` before the switch |
+| `unmarked-project-denied` | `deny` | `policy_project_route`'s mark check, `-ENOENT`. **A live production denial**, not defence in depth: it is the only thing closing the project tree to an unmarked caller. Observed at the real CLI as unmarked `git` dying at `<proj>/.git` |
+| `control-unavailable` | `deny` | cc could not be reached, `-EIO` |
+| `remote-absent` | `deny` | the remote does not have it, `-ENOENT` |
+| `control-refused` | `deny` | cc would not carry it, `-EACCES` |
+| `not-reconcilable` | `deny` | outside `DIRTY`'s domain (`mknod`, `link`, `chown`, a directory rename), `-EOPNOTSUPP` |
+| `xdev-rename` | `deny` | the two routed ends are on different backing stores, `-EXDEV` |
+| `dirty-push-refused` | `deny` | the reconcile could not land; the op returns cc's errno |
+| `dirty-remove-refused` | `deny` | as above, for a removal |
+| `self-recursion` | `served` | the daemon's own thread group at a project path — served from `host_fd`, **returns 0**. A liveness precondition, not a routing policy |
+| `pinned-children-truncated` | `served` | a `readdir` past `MAX_PINNED_CHILDREN`; the listing **succeeds** with a name dropped |
+| `unmarked-host-served` | `served` | an unmarked caller was routed to the host at an unpinned path (card 2026-0382). Fires on the **substitution**, whatever the host read then does — the host's own ENOENT is not a policy event and `route()` cannot know it. ~20 per shell startup; 535 rows over one real-CLI turn |

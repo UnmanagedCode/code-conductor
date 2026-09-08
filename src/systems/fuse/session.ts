@@ -26,7 +26,8 @@ import { promises as fsp } from 'node:fs';
 import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
-import { RECORD_SCHEMA } from './plan.ts';
+import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore } from './plan.ts';
+import { suggestPin } from './tierTable.ts';
 import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
 import { scanProcesses, membersOf, type ProcRow, type RawScan } from './procScan.ts';
@@ -93,7 +94,142 @@ export interface TeardownReport {
   strayConnections: number;
   wedged: boolean;
   removedRunDir: boolean;
+  // THE DAEMON'S POLICY EVENTS, harvested from `<rundir>/events.log`
+  // IMMEDIATELY BEFORE the run directory is reclaimed — the reclaim is what used
+  // to destroy the only record of a fail-closed path. One entry per DISTINCT
+  // PATH, in the order the daemon first wrote it — narrower than the harvested
+  // ROWS, which are keyed `(path, reason)` because two callers can reach one
+  // path with two reasons. This is a path list and its one consumer (the boot
+  // sweep) asks only whether it is empty.
+  eventPaths: string[];
   notes: string[];
+}
+
+// One row of the daemon's event log: `<kind>\t<op>\t<path>\t<reason>`.
+export interface PolicyEventRow { kind: string; op: string; path: string; reason: string }
+
+// THE HARVEST. Reads a session's event log and APPENDS it to the store-wide one
+// so the evidence outlives the run directory.
+//
+// `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<suggested list>\t<suggested entry>`
+//
+// THE LAST TWO COLUMNS ARE FOR `deny`/`unpinned-fail-closed` ROWS ONLY, and the
+// scoping is not cosmetic: a pin does not fix an `unmarked-host-served` row —
+// that path already came from the host — so suggesting one would send the reader
+// to change the wrong thing.
+//
+// DEDUPED ON `(path, reason)`, THE DAEMON'S OWN KEY, AND NOT ON THE PATH.
+// THE PATH-KEYED VERSION WAS A REAL DEFECT and the reason is worth keeping: the
+// daemon writes two rows for one path whenever two CALLERS reach it, which
+// happens routinely — `/var` carries `deny`/`unpinned-fail-closed` from the
+// marked CLI and `served`/`unmarked-host-served` from an unmarked one, observed
+// in real gate runs. A path key kept whichever row was written FIRST, so when
+// the `served` row won, the `deny` row was dropped and the store carried NO PIN
+// SUGGESTION for a path the CLI's own denial had asked for. Nothing said so; the
+// row simply was not there — which defeats the one thing this log is for.
+//
+// This departs from plan §4a's "one row per distinct path" deliberately (owner,
+// recorded on card 2026-0382). Matching the daemon's key is also what makes the
+// two artifacts comparable at all.
+//
+// BEST-EFFORT THROUGHOUT. `runTeardown` never rejects, and a store the harvest
+// cannot write is not a reason to abandon a mount.
+export function parsePolicyEvents(text: string): PolicyEventRow[] {
+  const seen = new Set<string>();
+  const out: PolicyEventRow[] = [];
+  for (const line of text.split('\n')) {
+    if (line === '') continue;
+    const [kind, op, p, reason] = line.split('\t');
+    if (!kind || !op || !p || !reason) continue;
+    const key = `${p}\t${reason}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ kind, op, path: p, reason });
+  }
+  return out;
+}
+
+// A PIN FIXES EXACTLY ONE KIND OF ROW: a `deny`/`unpinned-fail-closed` one. A
+// `served`/`unmarked-host-served` path already came from the host, and a
+// project-tier denial is not a pin-list gap — a suggestion on either sends the
+// reader to change the wrong thing.
+//
+// THE `kind` TEST IS REDUNDANT AND KEPT ANYWAY, said so that nobody credits it
+// with coverage it cannot have: every reason maps to exactly one kind
+// (source-derived and set-compared in both directions by
+// tests/fuse-union-policy.test.mjs), so `unpinned-fail-closed` is always
+// `deny` and no input the daemon can produce distinguishes dropping it. It is
+// a LOCAL contract — this function's precondition is legible without reaching
+// across files for that invariant — and the REASON test is the one a fixture
+// kills.
+export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string } | null {
+  if (row.kind !== 'deny' || row.reason !== 'unpinned-fail-closed') return null;
+  const s = suggestPin(row.path);
+  return { list: s.list ?? 'UNDECIDED', entry: s.entry };
+}
+
+async function harvestEvents(rundir: string, instanceId: string): Promise<PolicyEventRow[]> {
+  const text = await fsp.readFile(path.join(rundir, EVENT_LOG_NAME), 'utf8').catch(() => '');
+  const rows = parsePolicyEvents(text);
+  if (rows.length === 0) return rows;
+  const at = new Date().toISOString();
+  const store = fuseEventStore();
+  const body = rows.map((r) => {
+    const s = pinSuggestionFor(r);
+    return [at, instanceId, r.kind, r.op, r.path, s?.list ?? '', s?.entry ?? ''].join('\t');
+  }).join('\n') + '\n';
+  await fsp.mkdir(path.dirname(store), { recursive: true }).catch(() => {});
+  await fsp.appendFile(store, body).catch(() => {});
+  return rows;
+}
+
+// CAPPED, NEVER COUNTED, and the cap is the whole shape of the sentence. The
+// failure this replaces was a real gate report of `unpinned-fail-closed: 60`
+// where the 60 were ONE missing library — a count named nothing a maintainer
+// could act on. So: up to 20 ROWS per kind inline, then how many more and where
+// the full list is.
+//
+// ROWS AND NOT PATHS, since the harvest key gained the reason: a path carrying
+// two deny reasons occupies two of the twenty. That is the right unit anyway —
+// the cap exists to bound the OUTPUT, and rows are what the output is made of.
+const EVENT_LINE_CAP = 20;
+
+export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath = fuseEventStore()): string | null {
+  if (rows.length === 0) return null;
+  const denials = rows.filter(r => r.kind === 'deny');
+  const parts: string[] = [];
+  if (denials.length) {
+    const shown = denials.slice(0, EVENT_LINE_CAP);
+    const more = denials.length - shown.length;
+    parts.push(`the daemon refused: ${shown.map(r => r.path).join(', ')}`
+      + (more > 0 ? ` (+${more} more; full list at ${storePath})` : ''));
+    // THE REPAIR, GROUPED BY THE ARRAY THAT OWNS IT, because that is the edit
+    // the reader has to make. `suggestPin` (tierTable.ts) owns the mapping and
+    // the restart caveat.
+    const byList = new Map<string, string[]>();
+    for (const r of shown) {
+      const s = pinSuggestionFor(r);
+      if (!s) continue;
+      if (!byList.has(s.list)) byList.set(s.list, []);
+      byList.get(s.list)!.push(s.entry);
+    }
+    for (const [list, entries] of byList) {
+      parts.push(list === 'UNDECIDED'
+        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${entries.join(', ')} — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots`
+        : `add ${entries.join(', ')} to ${list} in src/systems/fuse/tierTable.ts and restart cc`);
+    }
+  }
+  const served = rows.filter(r => r.kind === 'served');
+  if (served.length) {
+    const shown = served.slice(0, EVENT_LINE_CAP);
+    const more = served.length - shown.length;
+    // NO PIN SUGGESTED FOR THESE, and the wording says why: the op succeeded.
+    parts.push(`served off the tier table (no pin needed — the op succeeded): `
+      + shown.map(r => `${r.reason} ${r.path}`).join(', ')
+      + (more > 0 ? ` (+${more} more)` : ''));
+  }
+  parts.push(`full event log at ${storePath}`);
+  return `cc-fuse: ${parts.join('; ')}`;
 }
 
 interface Sinks {
@@ -199,7 +335,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     unmounted: [], lazyUnmounted: [],
     abort: 'skipped', minor: null,
     residualMounts: [], strayConnections: 0,
-    wedged: false, removedRunDir: false, notes,
+    wedged: false, removedRunDir: false, eventPaths: [], notes,
   };
 
   // THE MACHINE NEVER REJECTS. Every step below is bounded and has a failure
@@ -468,6 +604,33 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     report.enumerated = false;
   }
 
+  // ── 7b. HARVEST THE EVIDENCE BEFORE THE RECLAIM DESTROYS IT.
+  //
+  //        `rm -rf <rundir>` below takes the event log with it, and that log is
+  //        the ONLY record of a fail-closed path: refusals are not traced
+  //        (`tr()` runs only after `route()` returns 0). So the harvest happens
+  //        here, before step 8 branches — ONE insertion point covering both the
+  //        clean and the wedged path, and covering a session lost to a crash
+  //        too, because `sweepFuseSessions` reaches this same function at the
+  //        next boot.
+  //
+  //        OUTSIDE THE try/catch ABOVE ON PURPOSE: the contained-throw path sets
+  //        `wedged` and falls through to here, and a session whose teardown threw
+  //        is exactly one whose events a maintainer wants.
+  try {
+    const rows = await harvestEvents(rundir, report.instanceId);
+    report.eventPaths = [...new Set(rows.map(r => r.path))];
+    const line = describePolicyEvents(rows);
+    if (line) {
+      // The session's own stream — what an operator watching this session is
+      // already looking at — and the orchestrator log, which survives its death.
+      try { input.emit?.({ kind: 'system', subtype: 'stderr', data: { line } }); } catch { /* the session may already be gone */ }
+      notes.push(line);
+    }
+  } catch (e) {
+    notes.push(`the event log could not be harvested: ${(e as Error).message}`);
+  }
+
   // ── 8. reclaim, or KEEP THE RECORD so the next boot sweep re-reports the
   //       wedge rather than silently rediscovering it.
   if (report.wedged) {
@@ -653,7 +816,7 @@ export class FuseSession {
     await fsp.mkdir(p.fusectl, { recursive: true });
     await fsp.writeFile(p.pinsPath, p.pinsText);
     await fsp.writeFile(p.daemonLog, '');
-    await fsp.writeFile(p.refusalLog, '');
+    await fsp.writeFile(p.eventLog, '');
     // Created EMPTY here for the same reason the other two are: the daemon runs
     // as root and appends, so a file cc did not create first would be
     // root-owned and teardown could not reclaim the tree without sudo.

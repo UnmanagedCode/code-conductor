@@ -516,7 +516,7 @@ static void b12_errno(void)
 }
 
 /*
- * ── B14: the control failures each name themselves in the refusal log ─────
+ * ── B14: the control failures each name themselves in the event log ───────
  *
  * R4 asserts the ABSENCE of `control-unavailable` and `control-refused` after a
  * real turn, which is vacuously true if neither is ever written. These are the
@@ -533,8 +533,8 @@ static void b14_control_reasons(void)
 	int n_absent = 0, n_refused = 0, n_unavail = 0, n_unmarked = 0;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	refusal_fp = fdopen(fd, "w+");
-	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
 
 	pin("project\t/srv/app");
 	anc_build();
@@ -552,55 +552,85 @@ static void b14_control_reasons(void)
 	proc_set(5000, 5000, 88);
 	CHECK(policy_project_route("getattr", "/srv/app/d", 5000, CCU_STAT, 0) == -ENOENT, "unmarked denies");
 
-	rewind(refusal_fp);
-	while (fgets(line, sizeof(line), refusal_fp)) {
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
 		if (strstr(line, "\tremote-absent\n"))            n_absent++;
 		if (strstr(line, "\tcontrol-refused\n"))          n_refused++;
 		if (strstr(line, "\tcontrol-unavailable\n"))      n_unavail++;
 		if (strstr(line, "\tunmarked-project-denied\n"))  n_unmarked++;
+		/* EVERY ONE OF THESE IS A DENIAL, so every row here carries kind
+		 * `deny`. Asserted per row rather than by counting, so a single
+		 * mis-kinded reason cannot hide behind three correct ones. */
+		CHECK(strncmp(line, "deny\t", 5) == 0,
+		      "a control failure is kind `deny`: %s", line);
 	}
 	CHECK(n_absent == 1, "ABSENT is logged as remote-absent (%d)", n_absent);
 	CHECK(n_refused == 1, "REFUSED is logged as control-refused (%d)", n_refused);
 	CHECK(n_unavail == 1, "a dead channel is logged as control-unavailable (%d)", n_unavail);
 	CHECK(n_unmarked == 1, "an unmarked caller is logged as unmarked-project-denied (%d)", n_unmarked);
-	fclose(refusal_fp);
-	refusal_fp = NULL;
+	fclose(event_fp);
+	event_fp = NULL;
 	unlink(tmpl);
 }
 
-/* ── B13: the refusal log records each (path, reason) exactly once ───────── */
+/* ── B13: the event log records each (path, reason) exactly once ────────── */
 static void b13_refusals(void)
 {
 	char tmpl[] = "/tmp/cc-policy-refusalsXXXXXX";
 	int fd = mkstemp(tmpl);
 	char line[512];
-	int n_ax = 0, n_ay = 0, n_bx = 0, total = 0;
+	int n_ax = 0, n_ay = 0, n_bx = 0, n_cz = 0, total = 0;
 	FILE *rd;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	refusal_fp = fdopen(fd, "w+");
-	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
 
-	policy_refuse("getattr", "/a", "x");
-	policy_refuse("getattr", "/a", "x");        /* same op, same pair */
-	policy_refuse("open",    "/a", "x");        /* DIFFERENT op, same pair */
-	policy_refuse("getattr", "/a", "y");        /* same path, different reason */
-	policy_refuse("getattr", "/b", "x");        /* different path, same reason */
+	policy_event(EV_DENY,   "getattr", "/a", "x");
+	policy_event(EV_DENY,   "getattr", "/a", "x");      /* same op, same pair */
+	policy_event(EV_DENY,   "open",    "/a", "x");      /* DIFFERENT op, same pair */
+	policy_event(EV_DENY,   "getattr", "/a", "y");      /* same path, different reason */
+	policy_event(EV_DENY,   "getattr", "/b", "x");      /* different path, same reason */
+	policy_event(EV_SERVED, "getattr", "/c", "z");      /* the other kind */
 
-	rewind(refusal_fp);
-	rd = refusal_fp;
+	rewind(event_fp);
+	rd = event_fp;
 	while (fgets(line, sizeof(line), rd)) {
 		total++;
-		if (strstr(line, "\t/a\tx\n")) n_ax++;
-		if (strstr(line, "\t/a\ty\n")) n_ay++;
-		if (strstr(line, "\t/b\tx\n")) n_bx++;
+		if (strstr(line, "deny\tgetattr\t/a\tx\n"))   n_ax++;
+		if (strstr(line, "deny\tgetattr\t/a\ty\n"))   n_ay++;
+		if (strstr(line, "deny\tgetattr\t/b\tx\n"))   n_bx++;
+		if (strstr(line, "served\tgetattr\t/c\tz\n")) n_cz++;
 	}
 	CHECK(n_ax == 1, "(/a, x) is recorded exactly once across THREE calls, got %d", n_ax);
 	CHECK(n_ay == 1, "(/a, y) — a different reason for the same path is its own entry");
 	CHECK(n_bx == 1, "(/b, x) — a different path is its own entry");
-	CHECK(total == 3, "three distinct pairs, three lines, got %d", total);
-	fclose(refusal_fp);
-	refusal_fp = NULL;
+	CHECK(n_cz == 1, "an EV_SERVED row is written with kind `served` (%d)", n_cz);
+	CHECK(total == 4, "four distinct pairs, four lines, got %d", total);
+	/* THE KIND IS THE FIRST COLUMN AND THE ROW IS FOUR COLUMNS. Asserted on the
+	 * shape rather than only through the strstr needles above, which a row that
+	 * appended the kind LAST would also satisfy. */
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), rd)) {
+		int tabs = 0;
+		char *t;
+		for (t = line; *t; t++) if (*t == '\t') tabs++;
+		CHECK(tabs == 3, "the row has exactly three tabs — kind, op, path, reason (%d): %s",
+		      tabs, line);
+		CHECK(strncmp(line, "deny\t", 5) == 0 || strncmp(line, "served\t", 7) == 0,
+		      "the FIRST column is the kind: %s", line);
+	}
+	/* WHAT THIS CASE DELIBERATELY DOES NOT PIN, so nobody credits it with the
+	 * kind's place in the dedupe key. The key is (path, reason) and NOT
+	 * (kind, path, reason), and that choice is UNOBSERVABLE: every reason maps
+	 * to exactly one kind — derived from both C sources and set-compared in
+	 * both directions by tests/fuse-union-policy.test.mjs — so the two keys
+	 * partition every emission this daemon can produce identically, and no
+	 * mutant can distinguish them. An assertion here would either duplicate
+	 * the (/a, x) count above or manufacture a cross-kind emission the daemon
+	 * cannot make. See policy_event's own comment for what that costs. */
+	fclose(event_fp);
+	event_fp = NULL;
 	unlink(tmpl);
 }
 
@@ -621,7 +651,7 @@ static void b0_parse(void)
 	CHECK(strstr(policy_err, "unknown kind") != NULL, "and says so: %s", policy_err);
 	{
 		/* AND `cwd` IS REJECTED THE SAME WAY. This is the STRUCTURAL
-		 * proof that the narrow cwd exemption can never enter the
+		 * proof that the cwd-chain exemption can never enter the
 		 * artifact the hook's tier table shares: T_CWD is derived in C
 		 * by route(), so no pins file can name it and no `cwd` entry can
 		 * reach `renderPinsFile`'s consumers. */
@@ -750,7 +780,7 @@ static void b15_unreconcilable(void)
 	      "the read-only and the unrepresentable answers are distinguishable");
 }
 
-/* ── B17: the narrow cwd exemption ──────────────────────────────────────── */
+/* ── B17: the cwd exemption at the project root ─────────────────────────── */
 /*
  * THIS LAYER IS MANDATORY AND THE REAL GATE CANNOT SUBSTITUTE FOR IT.
  * `MOUNT_OPTS` carries `default_permissions`, so through a real mount the
@@ -774,8 +804,8 @@ static void b17_cwd_exempt(int argc, char **argv)
 	int calls;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	refusal_fp = fdopen(fd, "w+");
-	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
 
 	pin("project\t/srv/app");              /* pins[0] */
 	pin("host\t/etc");                     /* pins[1] */
@@ -783,6 +813,11 @@ static void b17_cwd_exempt(int argc, char **argv)
 	 * node were ever filled from a host stat it would answer -ENOENT here. */
 	pin("project\t/zzz-no-such-root-on-this-host/app");   /* pins[2] */
 	anc_build();
+	/* THE CWD, AS A SEAM. It lives in policy.h precisely so this fixture can
+	 * assign it; union.c reads it from CC_UNION_CWD and refuses to mount
+	 * without it. Here the cwd IS the project root, which is the default
+	 * configuration and what makes b17 the root-only case that b22 widens. */
+	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);               /* an unmarked thread group */
 	proc_set(600, 600, 222);               /* the one we mark */
 	policy_mark_tid(600);
@@ -828,28 +863,40 @@ static void b17_cwd_exempt(int argc, char **argv)
 	CHECK(st.st_uid == 0 && st.st_gid == 0, "uid and gid are 0");
 	CHECK(st.st_size == 0, "size is 0");
 	CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0, "all three times are 0");
-	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + 0,
-	      "the inode comes from the pin table, at the pin's own index");
+	/* THE INODE IS THE CHAIN'S OWN SUB-RANGE, not policy_bind_ino's. Written
+	 * as the arithmetic rather than as a number so the three sub-ranges' bases
+	 * stay visible; b27 pins the disjointness. `/srv/app` is at depth 2. */
+	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + npins + 2,
+	      "the inode is in the cwd chain's sub-range, at the component's depth");
+	CHECK(st.st_ino != policy_bind_ino("/srv/app"),
+	      "and NOT the exact-pin inode — the two ranges are distinct");
 	CHECK(policy_cwd_getattr("/etc", &st) == -ENOENT,
-	      "an exact HOST pin gets no cwd node");
+	      "a path off the cwd chain gets no cwd node, host pin or not");
 	CHECK(policy_cwd_exempt("getattr", "/etc", 500) == 0,
 	      "and an unmarked caller is not exempted at one");
 
 	/* ── C7: it touches no filesystem and asks nobody ───────────────── */
+	/* THE CWD MOVES for this check alone: the point is that the node answers
+	 * for a path that DOES NOT EXIST ON THIS HOST, so the cwd has to be that
+	 * path. Restored below, because the cache arithmetic that follows is about
+	 * `/srv/app`. */
+	cwd_path = "/zzz-no-such-root-on-this-host/app";
 	CHECK(policy_cwd_getattr("/zzz-no-such-root-on-this-host/app", &st) == 0,
-	      "a project pin over a nonexistent host path still answers");
+	      "a cwd over a nonexistent host path still answers");
 	CHECK((st.st_mode & 07777) == 0111 && S_ISDIR(st.st_mode),
 	      "with the same fixed mode (got %o)", st.st_mode);
 	CHECK(st.st_nlink == 2 && st.st_uid == 0 && st.st_gid == 0 && st.st_size == 0,
 	      "and the same fixed nlink, ownership and size");
 	CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0, "and the same zero times");
-	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + 2, "and its own pin's inode");
+	CHECK(st.st_ino == SYNTH_INO_BASE + MAX_ANC + npins + 2,
+	      "and its own depth's inode in the chain sub-range");
 	CHECK(policy_cwd_exempt("getattr", "/zzz-no-such-root-on-this-host/app", 500) == 1,
 	      "and it is exempt without the path existing");
 	CHECK(policy_cwd_getattr("/nowhere/at/all", &st) == -ENOENT,
-	      "a path carrying NO pin at all gets no cwd node either");
+	      "a path off the chain gets no cwd node either");
 	CHECK(policy_cwd_exempt("getattr", "/nowhere/at/all", 500) == 0,
 	      "and an unmarked caller is not exempted at one");
+	cwd_path = "/srv/app";
 	CHECK(xport_calls == calls,
 	      "NO CONTROL FRAME for any unmarked op (%d)", xport_calls);
 
@@ -898,10 +945,10 @@ static void b17_cwd_exempt(int argc, char **argv)
 	      "from the cache, with no second round trip — which is what an entry "
 	      "written by the exemption would have done to the call above (%d)", xport_calls);
 
-	/* THE REFUSAL LOG: the two paths under the root are refused BY NAME, and
+	/* THE EVENT LOG: the two paths under the root are refused BY NAME, and
 	 * the root itself is not refused at all. */
-	rewind(refusal_fp);
-	while (fgets(line, sizeof(line), refusal_fp)) {
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
 		if (strstr(line, "\tunmarked-project-denied\n") == NULL) continue;
 		if (strstr(line, "\t/srv/app/src\t"))       n_sub++;
 		if (strstr(line, "\t/srv/app/README.md\t")) n_file++;
@@ -910,37 +957,631 @@ static void b17_cwd_exempt(int argc, char **argv)
 	CHECK(n_file == 1, "the file's denial is logged unmarked-project-denied (%d)", n_file);
 	CHECK(n_sub == 1, "so is the subdirectory's (%d)", n_sub);
 	CHECK(n_root == 0, "and the project ROOT is refused to nobody (%d)", n_root);
-	fclose(refusal_fp);
-	refusal_fp = NULL;
+	fclose(event_fp);
+	event_fp = NULL;
 	unlink(tmpl);
 }
 
-/* ── B18: the wide advertised mirror root is NOT repaired by the exemption ── */
+/* ── B18: the wide advertised mirror root IS repaired by the widening ────── */
 /*
- * RESIDUAL 2 OF CARD 2026-0373, RECORDED AS A TEST RATHER THAN AS PROSE.
+ * THE PRIMARY PROOF OF THE CWD-CHAIN WIDENING, and it lives at the policy layer
+ * because a mount test cannot see it: `default_permissions` makes the KERNEL
+ * refuse the unmarked `opendir` against the 0111 node before the daemon's own
+ * op allow-list is ever asked.
  *
- * When a provider advertises `mirrorRoot: '/'`, `buildTierTable` emits TWO
- * project pins instead of the deduped one, so an intermediate directory such as
- * `/srv` matches the `/` pin by longest prefix: project tier with NO EXACT PIN,
- * therefore not exempt, and a chdir to `/srv/app` still dies at `/srv`. The
- * ruling's words are exact — every project-tier directory that is not the root
- * stays denied — so this is not widened here. It is a pre-existing gap in a
- * configuration the defect was never measured in (the default deduplicates to
- * one pin), and it is tracked by card 2026-0375.
+ * INVERTED FROM WHAT IT ASSERTED BEFORE, and the inversion IS the evidence card
+ * 2026-0375 is closed. When a provider advertises `mirrorRoot: '/'`,
+ * `buildTierTable` emits TWO project pins, so an intermediate directory such as
+ * `/srv` matches the `/` pin by longest prefix: project tier with NO EXACT PIN.
+ * Under the old `pin_exact` test that made it not exempt, and a chdir to
+ * `/srv/app` died one component early at `/srv`. The 2026-09-08 owner amendment
+ * exempts every directory component of the cwd, so that chdir must now succeed
+ * — and this case asserts the exemption at `/srv` where it used to assert the
+ * denial.
+ *
+ * The residual was created by 2026-0373's narrowness and removed by a ruling,
+ * not by a defect fix. 2026-0382 absorbs 2026-0375.
  */
 static void b18_cwd_wide_mirror(void)
 {
 	pin("project\t/");
 	pin("project\t/srv/app");
 	anc_build();
+	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);
 
 	CHECK(tier_of("/srv") == T_PROJECT, "an intermediate dir is project tier by longest prefix");
 	CHECK(pin_exact("/srv") == NULL, "with no exact pin of its own");
-	CHECK(policy_cwd_exempt("getattr", "/srv", 500) == 0,
-	      "so it is NOT exempt, and a chdir through it still dies");
-	CHECK(policy_cwd_exempt("getattr", "/", 500) == 1, "both EXACT pins are exempt: /");
-	CHECK(policy_cwd_exempt("getattr", "/srv/app", 500) == 1, "and /srv/app");
+	/* THE INVERSION. `pin_exact` said no; the chain predicate says yes. */
+	CHECK(policy_cwd_exempt("getattr", "/srv", 500) == 1,
+	      "so it IS exempt as a cwd chain component, and the chdir through it lives");
+	CHECK(policy_cwd_exempt("getattr", "/", 500) == 1, "so is the root: /");
+	CHECK(policy_cwd_exempt("getattr", "/srv/app", 500) == 1, "and the cwd itself");
+	/* AND NO FURTHER. A sibling of the intermediate component, a child of the
+	 * cwd and an unrelated project-tier path all stay denied — the widening is
+	 * to the chain, not to the tier. */
+	CHECK(policy_cwd_exempt("getattr", "/srvX", 500) == 0, "a sibling of /srv is not");
+	CHECK(policy_cwd_exempt("getattr", "/srv/other", 500) == 0, "nor a sibling of the cwd");
+	CHECK(policy_cwd_exempt("getattr", "/srv/app/sub", 500) == 0, "nor a child of the cwd");
+	CHECK(policy_cwd_exempt("getattr", "/etc", 500) == 0, "nor an unrelated project-tier dir");
+}
+
+/* ── B19: the caller-tier matrix, all seven tiers × {marked, unmarked} ───── */
+/*
+ * THE RULING IN ONE TRUTH TABLE. Identity everywhere EXCEPT (unmarked, T_FAIL),
+ * which becomes T_HOST.
+ *
+ * THE LOOP BOUND CANNOT SILENTLY UNDER-COVER. `tier_name` (policy.h) switches
+ * over `enum tier` with no `default:` arm, so an eighth member fails the
+ * `-Wall -Werror` compile of this very fixture before any assertion runs. The
+ * member NAMES are pinned in tests/fuse-union-policy.test.mjs against the enum
+ * declaration itself.
+ */
+static void b19_caller_tier_matrix(void)
+{
+	int t;
+	int seen_fail_sub = 0, seen_identity = 0;
+
+	for (t = 0; t <= (int)T_CWD; t++) {
+		enum tier ti = (enum tier)t;
+		enum tier marked   = policy_caller_tier("getattr", "/p", ti, 1);
+		enum tier unmarked = policy_caller_tier("getattr", "/p", ti, 0);
+
+		/* THE MARKED SIDE IS IDENTITY AT EVERY TIER. A substitution that
+		 * fired for the CLI too would serve it the host at `fail`, which
+		 * is the "one path, two answers" the epic removed. */
+		CHECK(marked == ti, "marked: %s is unchanged (got %s)",
+		      tier_name(ti), tier_name(marked));
+		if (ti == T_FAIL) {
+			CHECK(unmarked == T_HOST,
+			      "unmarked: fail → host (got %s)", tier_name(unmarked));
+			seen_fail_sub = 1;
+		} else {
+			/* project, hide, bind, synth, host, cwd — EVERY ONE
+			 * unchanged, and each for its own reason: project is the
+			 * owner's ruling, hide is what keeps the mirror and the
+			 * control socket unreachable, bind is resolved by unmarked
+			 * `mount` before the mark fires. */
+			CHECK(unmarked == ti, "unmarked: %s is unchanged (got %s)",
+			      tier_name(ti), tier_name(unmarked));
+			seen_identity++;
+		}
+	}
+	/* NON-VACUITY: the loop really drove seven tiers and really saw the one
+	 * substitution, so an empty or short loop cannot read as a pass. */
+	CHECK(seen_fail_sub == 1, "the T_FAIL row was driven");
+	CHECK(seen_identity == 6, "and the other six were too (%d)", seen_identity);
+}
+
+/* ── B20: the caller-sensitive set is EXACTLY {T_FAIL} ──────────────────── */
+/*
+ * SEPARATE FROM B19 BECAUSE THE PREDICATE IS SEPARATE, and route() consults it
+ * BEFORE the map: a tier wrongly in this set pays two /proc reads per op and
+ * hands `policy_caller_tier` a tier it was not asked about, while a tier
+ * wrongly out of it can never be substituted no matter what the map says.
+ */
+static void b20_caller_sensitive_set(void)
+{
+	int t;
+	int n_sensitive = 0;
+
+	for (t = 0; t <= (int)T_CWD; t++) {
+		enum tier ti = (enum tier)t;
+		int want = (ti == T_FAIL);
+		CHECK(policy_tier_is_caller_sensitive(ti) == want,
+		      "%s is %scaller-sensitive", tier_name(ti), want ? "" : "NOT ");
+		if (policy_tier_is_caller_sensitive(ti))
+			n_sensitive++;
+	}
+	CHECK(n_sensitive == 1, "exactly one tier is caller-sensitive (%d)", n_sensitive);
+}
+
+/* ── B21: for an unmarked caller, only the PROJECT tier denies ──────────── */
+/*
+ * THE OTHER HALF OF THE RULING, READ OFF THE LOG RATHER THAN OFF A RETURN
+ * VALUE. Card 2026-0382's title said "never consults the tier table at all";
+ * the owner narrowed it to one tier, and this is the narrowing asserted from
+ * the side a maintainer sees: driving every tier through the substitution
+ * writes NO `deny` row at all, and the only denial an unmarked caller can take
+ * inside policy.h is `policy_project_route`'s mark check.
+ */
+static void b21_unmarked_refused_only_at_project(void)
+{
+	char tmpl[] = "/tmp/cc-policy-b21XXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[512];
+	int t, n_deny = 0, n_served = 0, n_project_deny = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	pin("project\t/srv/app");
+	anc_build();
+	cwd_path = "/srv/app";
+	proc_set(500, 500, 111);               /* unmarked, and stays unmarked */
+
+	/* EVERY TIER, one distinct path each so the dedupe cannot collapse rows
+	 * and hide one. */
+	for (t = 0; t <= (int)T_CWD; t++) {
+		char path[64];
+		snprintf(path, sizeof(path), "/probe-%d", t);
+		(void)policy_caller_tier("getattr", path, (enum tier)t, 0);
+	}
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		if (strncmp(line, "deny\t", 5) == 0)     n_deny++;
+		if (strncmp(line, "served\t", 7) == 0)   n_served++;
+	}
+	CHECK(n_deny == 0, "the substitution denies at NO tier (%d deny rows)", n_deny);
+	CHECK(n_served == 1, "and it serves at exactly one — T_FAIL (%d served rows)", n_served);
+
+	/* AND THE ONE DENIAL THERE IS. Non-vacuity for the zero above: an
+	 * unmarked caller CAN be denied, at the project tier, and the sink this
+	 * case reads really does record. */
+	CHECK(policy_project_route("getattr", "/srv/app/f", 500, CCU_STAT, 0) == -ENOENT,
+	      "an unmarked caller at a project path is still denied");
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp))
+		if (strstr(line, "deny\tgetattr\t/srv/app/f\tunmarked-project-denied\n"))
+			n_project_deny++;
+	CHECK(n_project_deny == 1, "and the denial is logged deny/unmarked-project-denied (%d)",
+	      n_project_deny);
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── B22: the cwd chain's EXTENT, and both directions of the sibling trap ── */
+/*
+ * THE FIXTURE IS A PREFIX-SHARING SIBLING, IN BOTH DIRECTIONS, AND THAT IS THE
+ * WHOLE POINT OF THE CASE. A case built from unrelated paths passes under the
+ * naive `strncmp` this guard exists to reject and proves nothing.
+ *
+ * The two directions are rejected by DIFFERENT MECHANICS, so a case exercising
+ * one proves half the guard:
+ *   cwd /root/app3, path /root/app   → rejected by the BOUNDARY test
+ *                                      (`cwd_path[9] == '3'`)
+ *   cwd /root/app,  path /root/app3  → rejected by `strncmp` itself, which
+ *                                      meets cwd's '\0' against '3'
+ */
+static void b22_cwd_chain_extent(void)
+{
+	pin("project\t/");
+	pin("project\t/root/app3");
+	anc_build();
+	proc_set(500, 500, 111);               /* unmarked */
+	proc_set(600, 600, 222);
+	policy_mark_tid(600);
+
+	cwd_path = "/root/app3";
+	/* ── ON the chain ──────────────────────────────────────────────── */
+	CHECK(policy_cwd_component("/") == 1, "/ is on the chain");
+	CHECK(policy_cwd_component("/root") == 1, "and the intermediate component");
+	CHECK(policy_cwd_component("/root/app3") == 1, "and the cwd itself");
+	/* ── OFF it — the sibling trap, direction one ───────────────────── */
+	CHECK(policy_cwd_component("/root/app") == 0,
+	      "/root/app is a SIBLING sharing a prefix — the boundary check is the "
+	      "only thing rejecting it");
+	CHECK(policy_cwd_component("/root/ap") == 0, "and so is /root/ap");
+	CHECK(policy_cwd_component("/roo") == 0, "and /roo, a prefix of a component");
+	CHECK(policy_cwd_component("/root/app3x") == 0, "and /root/app3x");
+	CHECK(policy_cwd_component("/root/app3/sub") == 0,
+	      "a CHILD of the cwd is not a component — the chain is upward only");
+	CHECK(policy_cwd_component("/root/other") == 0, "nor an unrelated sibling");
+	CHECK(policy_cwd_component("relative/app3") == 0, "nor a relative path");
+
+	/* ── the sibling trap, DIRECTION TWO: the same pair reversed ────── */
+	cwd_path = "/root/app";
+	CHECK(policy_cwd_component("/root/app3") == 0,
+	      "with cwd /root/app the LONGER sibling /root/app3 is off the chain — "
+	      "rejected by strncmp, not by the boundary test");
+	CHECK(policy_cwd_component("/root/app") == 1, "while the cwd itself is on it");
+	CHECK(policy_cwd_component("/root") == 1, "and its parent");
+
+	/* ── the whole conjunction, through policy_cwd_exempt ───────────── */
+	cwd_path = "/root/app3";
+	CHECK(policy_cwd_exempt("getattr", "/root", 500) == 1,
+	      "an unmarked caller may getattr an intermediate component");
+	CHECK(policy_cwd_exempt("getattr", "/root/app", 500) == 0,
+	      "and not its prefix-sharing sibling");
+	CHECK(policy_cwd_exempt("readdir", "/root", 500) == 0,
+	      "the op allow-list still holds on a chain component");
+	CHECK(policy_cwd_exempt("getattr", "/root", 600) == 0,
+	      "and a MARKED caller is still not exempted anywhere on the chain");
+
+	/* ── NO CWD AT ALL IS FAIL-CLOSED, and union.c refuses to mount on
+	 *    it precisely because this is what it would mean: the project root
+	 *    itself un-exempted, and card 2026-0373 regressed. ───────────── */
+	cwd_path = NULL;
+	CHECK(policy_cwd_component("/") == 0, "with no cwd injected, / is not a component");
+	CHECK(policy_cwd_component("/root/app3") == 0, "nor is the project root");
+	CHECK(policy_cwd_exempt("getattr", "/root/app3", 500) == 0,
+	      "so nothing is exempt and every unmarked chdir dies");
+}
+
+/* ── B24: every reason maps to exactly ONE kind, at the policy.h sites ──── */
+/*
+ * THE KIND IS PINNED WHERE IT IS PRODUCED — read back out of the sink, never
+ * asserted against a second transcription of the classification.
+ *
+ * THIS CASE COVERS THE FOUR REASONS policy.h EMITS plus the new substitution.
+ * The other seven live in union.c op bodies no deterministic fixture can reach;
+ * their kinds are pinned by a SOURCE-DERIVED two-directional set equality in
+ * tests/fuse-union-policy.test.mjs, which reads every `policy_event(` call site
+ * in both C sources. Split deliberately, and stated so neither half is credited
+ * with the other's coverage.
+ */
+static void b24_event_kinds(void)
+{
+	char tmpl[] = "/tmp/cc-policy-b24XXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[512];
+	int i, rows = 0;
+	static const struct { const char *reason; const char *kind; } want[] = {
+		{ "unmarked-project-denied", "deny"   },
+		{ "control-unavailable",     "deny"   },
+		{ "remote-absent",           "deny"   },
+		{ "control-refused",         "deny"   },
+		{ "unmarked-host-served",    "served" },
+	};
+	int found[5] = { 0, 0, 0, 0, 0 };
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	pin("project\t/srv/app");
+	anc_build();
+	cwd_path = "/srv/app";
+	proc_set(4000, 4000, 77);
+	policy_mark_tid(4000);
+	proc_set(5000, 5000, 88);              /* unmarked */
+
+	/* One emission per reason, each at its own path so nothing dedupes. */
+	(void)policy_project_route("getattr", "/srv/app/unmarked", 5000, CCU_STAT, 0);
+	xport_fail = 1;
+	(void)policy_project_route("getattr", "/srv/app/dead", 4000, CCU_STAT, 0);
+	xport_fail = 0;
+	canned_reply(CCU_ABSENT, 0);
+	(void)policy_project_route("getattr", "/srv/app/absent", 4000, CCU_STAT, 0);
+	canned_reply(CCU_REFUSED, 0);
+	(void)policy_project_route("getattr", "/srv/app/refused", 4000, CCU_STAT, 0);
+	(void)policy_caller_tier("getattr", "/unpinned/thing", T_FAIL, 0);
+
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		rows++;
+		for (i = 0; i < (int)(sizeof(want) / sizeof(want[0])); i++) {
+			char needle[128];
+			snprintf(needle, sizeof(needle), "\t%s\n", want[i].reason);
+			if (!strstr(line, needle))
+				continue;
+			found[i]++;
+			CHECK(strncmp(line, want[i].kind, strlen(want[i].kind)) == 0
+			      && line[strlen(want[i].kind)] == '\t',
+			      "`%s` is kind `%s`: %s", want[i].reason, want[i].kind, line);
+		}
+	}
+	for (i = 0; i < (int)(sizeof(want) / sizeof(want[0])); i++)
+		CHECK(found[i] == 1, "`%s` was emitted exactly once (%d)",
+		      want[i].reason, found[i]);
+	/* SET EQUALITY, THE OTHER DIRECTION: five emissions, five rows and no
+	 * sixth — so a reason this table does not name cannot slip through
+	 * unclassified. */
+	CHECK(rows == (int)(sizeof(want) / sizeof(want[0])),
+	      "five reasons, five rows, nothing unclassified (%d)", rows);
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── B25: the substitution is logged at `fail`, and ONLY at `fail` ──────── */
+/*
+ * THE SUBSTITUTION'S COST, PAID. After `fail → host` an unmarked caller's
+ * missing object writes no `deny` row at all — the host's ENOENT is not a
+ * policy event, and route() could not know about it anyway. So the row fires on
+ * the SUBSTITUTION itself, whatever the subsequent host read does, and it means
+ * "an unmarked caller was routed to the host at an unpinned path" — which is
+ * precisely the fact the pin list is derived from.
+ *
+ * AND IT IS `served`, NOT `deny`: the op was not refused. A `deny` here would
+ * put an every-shell-startup path into R4's fatal filter.
+ */
+static void b25_substitution_logged_at_fail_only(void)
+{
+	char tmpl[] = "/tmp/cc-policy-b25XXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[512];
+	int n_served_a = 0, n_served_b = 0, n_any_project = 0, n_deny_project = 0, rows = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	pin("project\t/srv/app");
+	anc_build();
+	cwd_path = "/srv/app";
+	proc_set(500, 500, 111);               /* unmarked */
+
+	/* TWICE at one path, once at another: the row is per DISTINCT path, which
+	 * is what bounds the volume to roughly twenty per shell startup rather
+	 * than to the op count. */
+	(void)policy_caller_tier("getattr", "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0);
+	(void)policy_caller_tier("open",    "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0);
+	(void)policy_caller_tier("getattr", "/var/other", T_FAIL, 0);
+	/* AND AT THE PROJECT TIER, which must produce a DENIAL and no `served`
+	 * row — the ruling read from the log's side. */
+	CHECK(policy_project_route("getattr", "/srv/app/f", 500, CCU_STAT, 0) == -ENOENT,
+	      "the project tier still denies an unmarked caller");
+
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		rows++;
+		if (strstr(line, "served\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunmarked-host-served\n"))
+			n_served_a++;
+		if (strstr(line, "served\tgetattr\t/var/other\tunmarked-host-served\n"))
+			n_served_b++;
+		if (strstr(line, "\t/srv/app/f\t")) {
+			n_any_project++;
+			if (strncmp(line, "deny\t", 5) == 0) n_deny_project++;
+		}
+	}
+	CHECK(n_served_a == 1, "one served row per distinct path, across two ops (%d)", n_served_a);
+	CHECK(n_served_b == 1, "and the second distinct path has its own (%d)", n_served_b);
+	CHECK(n_any_project == 1, "the project path produced exactly one row (%d)", n_any_project);
+	CHECK(n_deny_project == 1, "and it is a DENY row, never a served one (%d)", n_deny_project);
+	CHECK(rows == 3, "three rows in total, so nothing extra was emitted (%d)", rows);
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── B26: the cwd node is traverse-only, at EVERY chain component ────────── */
+/*
+ * THE MODE WHERE IT IS PRODUCED, and the op allow-list where nothing can mask
+ * it. Through a real mount `default_permissions` + `0111` makes the KERNEL
+ * refuse an unmarked `opendir` before the daemon is asked, so the daemon's own
+ * allow-list — the unconditional gate, and the only one for a caller with
+ * CAP_DAC_READ_SEARCH — is invisible there. A masked guard is
+ * mutation-unkillable: this fixture is the only layer that can prove it.
+ *
+ * `argv[2..]` are op names, handed over by the .mjs from the SAME literal the
+ * source-shape test set-compares against union.c's own routed ops — so an op
+ * added there without being classified fails rather than silently joining the
+ * allow-list.
+ */
+static void b26_cwd_traverse_only(int argc, char **argv)
+{
+	static const char *chain[] = { "/", "/root", "/root/app3" };
+	char tmpl[] = "/tmp/cc-policy-b26XXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[512];
+	struct stat st;
+	size_t c;
+	int i, n_readdir = 0, n_opendir = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	/* A WIDE ADVERTISED ROOT, so every chain component really is project tier
+	 * and `policy_project_route` is the function that would answer it. */
+	pin("project\t/");
+	pin("project\t/root/app3");
+	anc_build();
+	cwd_path = "/root/app3";
+	proc_set(500, 500, 111);               /* unmarked */
+
+	for (c = 0; c < sizeof(chain) / sizeof(chain[0]); c++) {
+		const char *p = chain[c];
+
+		CHECK(policy_cwd_getattr(p, &st) == 0, "%s answers", p);
+		CHECK(S_ISDIR(st.st_mode),
+		      "%s is a DIRECTORY — the kernel refuses chdir on anything else "
+		      "with ENOTDIR before the mode is read at all", p);
+		CHECK((st.st_mode & 07777) == 0111,
+		      "%s is 0111, enter-and-not-read (got %o)", p, st.st_mode & 07777);
+		CHECK(st.st_nlink == 2,
+		      "%s reports nlink 2 — the minimum for any directory, so the "
+		      "number of remote SUBDIRECTORIES is not disclosed", p);
+		CHECK(st.st_uid == 0 && st.st_gid == 0,
+		      "%s is root:root, so no owner bit widens it for any uid", p);
+		CHECK(st.st_size == 0, "%s reports size 0", p);
+		CHECK(st.st_atime == 0 && st.st_mtime == 0 && st.st_ctime == 0,
+		      "%s reports all three times as 0", p);
+
+		/* THE OP ALLOW-LIST, ON A CHAIN COMPONENT AND NOT ONLY THE ROOT. */
+		CHECK(policy_cwd_exempt("getattr", p, 500) == 1, "%s: getattr is exempt", p);
+		CHECK(policy_cwd_exempt("readdir", p, 500) == 0,
+		      "%s: readdir is NOT — a listing is the content of the directory", p);
+		CHECK(policy_cwd_exempt("opendir", p, 500) == 0,
+		      "%s: neither is opendir", p);
+		for (i = 2; i < argc; i++)
+			CHECK(policy_cwd_exempt(argv[i], p, 500) == 0,
+			      "%s: `%s` is not exempt", p, argv[i]);
+	}
+
+	/* AND WHAT HAPPENS TO THE REFUSED OPS: route()'s T_PROJECT arm falls
+	 * through to policy_project_route, which denies and names it. */
+	CHECK(policy_project_route("readdir", "/root", 500, CCU_STAT, 0) == -ENOENT,
+	      "a readdir of a chain component is denied");
+	CHECK(policy_project_route("opendir", "/root/app3", 500, CCU_STAT, 0) == -ENOENT,
+	      "and so is an opendir of the cwd");
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		if (strstr(line, "deny\treaddir\t/root\tunmarked-project-denied\n"))       n_readdir++;
+		if (strstr(line, "deny\topendir\t/root/app3\tunmarked-project-denied\n"))  n_opendir++;
+	}
+	CHECK(n_readdir == 1, "the refused readdir is logged unmarked-project-denied (%d)", n_readdir);
+	CHECK(n_opendir == 1, "and so is the refused opendir (%d)", n_opendir);
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── B27: every chain component gets a DISTINCT inode, in its own range ─── */
+/*
+ * WHY THIS MATTERS, and the justification is something that FIRES rather than
+ * the `getcwd` story §3b measured as false:
+ *
+ *   1. `use_ino = 1` is the daemon's own stated invariant (`pt_init`: "A union
+ *      must not invent st_ino… synthetic nodes supply their own from the
+ *      ancestor table, in a range no real filesystem here hands out"). Distinct
+ *      nodes get distinct inodes is a contract this file already makes.
+ *   2. `test -ef` compares (st_dev, st_ino) and is REACHABLE under this ruling:
+ *      measured at two `stat` calls and no readdir, which is exactly what an
+ *      exempted component allows. Under a collision `[ /root -ef /root/app3 ]`
+ *      would answer TRUE, which is plainly false.
+ *
+ * `getcwd(2)` does NOT observe it — measured on glibc 2.41, it answers from the
+ * dentry cache and emits no getdents — and `chdir(2)` compares no inodes. Named
+ * here so the property is defended by the mechanisms that actually exercise it.
+ */
+static void b27_cwd_ino_distinct(void)
+{
+	static const char *chain[] = { "/", "/root", "/root/app3" };
+	unsigned long long ino[3];
+	size_t i, j;
+
+	pin("project\t/");                     /* pins[0] */
+	pin("project\t/root/app3");            /* pins[1] */
+	pin("bind\t/proc");                    /* pins[2] */
+	anc_build();
+	cwd_path = "/root/app3";
+
+	for (i = 0; i < 3; i++) {
+		struct stat st;
+		/* POISONED, NOT ZEROED. A mutant that returns 0 without writing the
+		 * node would hand back 0xAAAA… here — outside every asserted range
+		 * — where a zero-init would have looked like a plausible inode. */
+		memset(&st, 0xAA, sizeof(st));
+		CHECK(policy_cwd_getattr(chain[i], &st) == 0, "%s answers", chain[i]);
+		ino[i] = (unsigned long long)st.st_ino;
+	}
+
+	/* ── PAIRWISE DISTINCT. `/root` has no exact pin, which is exactly the
+	 *    case `policy_bind_ino` would collapse onto its single fallback. ── */
+	for (i = 0; i < 3; i++)
+		for (j = i + 1; j < 3; j++)
+			CHECK(ino[i] != ino[j], "%s and %s have distinct inodes (%llu vs %llu)",
+			      chain[i], chain[j], ino[i], ino[j]);
+	CHECK(pin_exact("/root") == NULL,
+	      "/root carries NO exact pin — the case policy_bind_ino collapses");
+	CHECK(ino[1] != policy_bind_ino("/root"),
+	      "so the chain inode is NOT policy_bind_ino's shared fallback (%llu)", ino[1]);
+
+	/* ── AND THE THREE SUB-RANGES ARE DISJOINT. Three ranges over one base
+	 *    is the arithmetic that silently overlaps after an edit. ───────── */
+	for (i = 0; i < 3; i++) {
+		CHECK(ino[i] >= SYNTH_INO_BASE + MAX_ANC + npins,
+		      "%s is past BOTH the ancestor range and the %zu-entry pin range (%llu)",
+		      chain[i], npins, ino[i]);
+		CHECK(ino[i] < SYNTH_INO_BASE + MAX_ANC + npins + PATH_MAX,
+		      "and inside the chain sub-range, which PATH_MAX bounds (%llu)", ino[i]);
+	}
+	/* The ancestor range's own top and the pin range's own top, so the
+	 * boundaries are asserted against the neighbours rather than only against
+	 * a lower bound. */
+	CHECK(nancs <= MAX_ANC, "the ancestor range holds %zu entries", nancs);
+	for (i = 0; i < npins; i++)
+		CHECK(policy_bind_ino(pins[i].prefix) < SYNTH_INO_BASE + MAX_ANC + npins,
+		      "the exact-pin inode for %s is below the chain sub-range", pins[i].prefix);
+}
+
+/* ── B28: CC_UNION_CWD is REFUSED when it is not normalised ─────────────── */
+/*
+ * SPLIT BY LAYER, DELIBERATELY. The predicate lives in policy.h and is driven
+ * here; the MOUNT REFUSAL is in `union.c`'s `main()`, unreachable from this
+ * fixture, and is pinned by a source-text assertion beside A16; and
+ * `buildFusePlan`'s configuration-time assertion is a unit test in
+ * tests/fuse-lifecycle.test.mjs. Three layers, three pins, each at the layer
+ * that enforces it.
+ *
+ * A DOUBLED SLASH — OR A `.`/`..` COMPONENT — IS THE CASE THAT BITES, and it
+ * bites at the LAST component: with `cwd = /root//app3`, `policy_cwd_component`
+ * matches `/` and `/root` and then fails on the cwd ITSELF, because the
+ * comparison meets the spelling's second '/' against `a`. So the chdir walks
+ * every intermediate component and dies at its destination, which is the
+ * hardest shape to diagnose from the outside. Asserted below rather than
+ * asserted ABOUT.
+ *
+ * A TRAILING SLASH IS DIFFERENT AND IS REFUSED ANYWAY. `cwd = /root/app3/`
+ * still matches every component, because the boundary test reads the trailing
+ * '/' as the separator it is looking for — so this half of the predicate buys
+ * no behavioural rescue and is here because CC OWNS THE INPUT: `plan.cwdInside`
+ * is already absolute and normalised, so any other spelling is a cc defect and
+ * the right response is a loud refusal rather than a silent repair. That is
+ * also why the whole predicate refuses instead of normalising — resolving `..`
+ * correctly needs the filesystem, because a component may be a symlink.
+ */
+static void b28_cwd_input_validated(void)
+{
+	CHECK(policy_cwd_normalised("/") == 1, "/ is normalised");
+	CHECK(policy_cwd_normalised("/root/app3") == 1, "and a plain absolute path");
+	CHECK(policy_cwd_normalised("/a") == 1, "and a one-component one");
+
+	/* REFUSED, BUT NOT BY THE CLAUSE THAT NAMES IT — and the plan's case table
+	 * claimed the opposite ("accept a trailing slash ⇒ predicate case dies").
+	 * Measured false: deleting `policy_cwd_normalised`'s trailing-slash clause
+	 * leaves this green, because a trailing slash leaves an EMPTY FINAL
+	 * COMPONENT and the `end == c` clause refuses that. So this assertion pins
+	 * the OUTCOME and no single clause; the C clause is redundant-by-
+	 * construction and deliberately kept. The same conceptual check one layer
+	 * up, in `buildFusePlan`, IS load-bearing — see policy_cwd_normalised's own
+	 * comment for why the two differ. */
+	CHECK(policy_cwd_normalised("/root/app3/") == 0, "a TRAILING slash is refused");
+	CHECK(policy_cwd_normalised("/root//app3") == 0, "so is a doubled slash");
+	CHECK(policy_cwd_normalised("//root") == 0, "including a leading doubled slash");
+	CHECK(policy_cwd_normalised("/root/./app3") == 0, "so is a `.` component");
+	CHECK(policy_cwd_normalised("/root/../app3") == 0, "and a `..` component");
+	CHECK(policy_cwd_normalised("/root/..") == 0, "and a trailing `..`");
+	CHECK(policy_cwd_normalised("/root/.") == 0, "and a trailing `.`");
+	CHECK(policy_cwd_normalised("root/app3") == 0, "a RELATIVE path is refused");
+	CHECK(policy_cwd_normalised("") == 0, "and so is the empty string");
+	CHECK(policy_cwd_normalised(NULL) == 0, "and NULL — the unset variable");
+
+	/* NOT REJECTED, AND THAT IS DELIBERATE: a component that merely BEGINS
+	 * with a dot is an ordinary directory name, and refusing `/root/.claude`
+	 * would refuse a real cwd. */
+	CHECK(policy_cwd_normalised("/root/.claude") == 1,
+	      "a dotfile-named component is normal, not a `.` component");
+	CHECK(policy_cwd_normalised("/root/..hidden") == 1, "and so is `..hidden`");
+
+	/* AND THE CONSEQUENCE THE REFUSAL EXISTS FOR, asserted rather than
+	 * asserted-about. A doubled slash matches every INTERMEDIATE component and
+	 * then fails on the cwd itself, so the chdir dies at its destination —
+	 * which is exactly the failure `union.c`'s mount refusal replaces with a
+	 * named one. */
+	cwd_path = "/root//app3";
+	CHECK(policy_cwd_component("/root") == 1,
+	      "a doubled-slash cwd still matches the intermediate component");
+	CHECK(policy_cwd_component("/root/app3") == 0,
+	      "and then fails on the CWD ITSELF, so the chdir dies at its destination");
+	/* THE OTHER HALF, AND IT IS THE HONEST ONE: a trailing slash matches
+	 * everything, so refusing it buys no behavioural rescue. It is refused
+	 * because a non-normalised input is a cc defect, not because the
+	 * comparison breaks on it. */
+	cwd_path = "/root/app3/";
+	CHECK(policy_cwd_component("/root/app3") == 1,
+	      "a TRAILING-slash cwd still matches the cwd — the boundary test reads "
+	      "the trailing '/' as the separator, so this spelling is refused on "
+	      "ownership of the input rather than on a broken comparison");
+	CHECK(policy_cwd_component("/root") == 1, "and its intermediate components too");
+
+	/* THE THIRD MECHANISM, AND THERE ARE EXACTLY THREE IN THE REFUSED CLASS.
+	 * `buildFusePlan`'s 501 names a consequence PER SHAPE because no clause is
+	 * true of all three, and this is the one the other two are not: a
+	 * NON-ABSOLUTE cwd matches "/" — answered before any comparison — and
+	 * nothing else at all, so the chdir dies at the FIRST real component
+	 * rather than at its destination. Driven here because the message claims
+	 * it and this is the layer that decides it. */
+	cwd_path = "srv/app";
+	CHECK(policy_cwd_component("/") == 1,
+	      "a non-absolute cwd still matches / — the predicate answers it before "
+	      "comparing anything");
+	CHECK(policy_cwd_component("/srv") == 0, "but NOT the first real component");
+	CHECK(policy_cwd_component("/srv/app") == 0, "and not the cwd's own spelling");
 }
 
 int main(int argc, char **argv)
@@ -970,6 +1611,15 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b16-abandon"))   b16_abandon();
 	else if (!strcmp(c, "b17-cwd-exempt")) b17_cwd_exempt(argc, argv);
 	else if (!strcmp(c, "b18-cwd-wide-mirror")) b18_cwd_wide_mirror();
+	else if (!strcmp(c, "b19-caller-tier-matrix")) b19_caller_tier_matrix();
+	else if (!strcmp(c, "b20-caller-sensitive-set")) b20_caller_sensitive_set();
+	else if (!strcmp(c, "b21-unmarked-refused-only-at-project")) b21_unmarked_refused_only_at_project();
+	else if (!strcmp(c, "b22-cwd-chain-extent")) b22_cwd_chain_extent();
+	else if (!strcmp(c, "b24-event-kinds")) b24_event_kinds();
+	else if (!strcmp(c, "b25-substitution-logged-at-fail-only")) b25_substitution_logged_at_fail_only();
+	else if (!strcmp(c, "b26-cwd-traverse-only")) b26_cwd_traverse_only(argc, argv);
+	else if (!strcmp(c, "b27-cwd-ino-distinct")) b27_cwd_ino_distinct();
+	else if (!strcmp(c, "b28-cwd-input-validated")) b28_cwd_input_validated();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
 

@@ -18,6 +18,50 @@
 // inside the chroot. That is what lets spawnEnv's HOME and CLAUDE_CODE_TMPDIR,
 // the inline --settings / --mcp-config JSON and every --plugin-dir argument
 // ride through the wrap unmodified.
+//
+// ── WHAT THE LIST HAS TO COVER SINCE CARD 2026-0382, AND WHAT IT NO LONGER DOES
+//
+// THE LIST DOES NOT SHRINK — IT STOPS GROWING. `fail → host` for an unmarked
+// caller (`policy_caller_tier`, policy.h) means the arrays below have to cover
+// **the CLI's own execution closure and nothing else**: its NEEDED set, its
+// dlopen closure, its settings, its temp paths. They no longer have to grow
+// when somebody installs a new tool on the host, which is what every past
+// addition here was — a new shell, a new binary, a new library that some
+// UNMARKED subprocess reached for. Nothing below is deleted, and the reason is
+// the next paragraph.
+//
+// EVERY ENTRY STAYS, BECAUSE "DEAD" IS CONFIGURATION-DEPENDENT. A pin is dead
+// only if every path it covers is read exclusively by an unmarked caller — and
+// only under the DEFAULT `mirrorRoot` (= the project's own path). Under an
+// advertised `mirrorRoot: '/'`, `add('project', '/')` covers everything
+// unpinned, `tier_of` can never return `T_FAIL`, the substitution never fires,
+// and every entry below is load-bearing again. Measured by building the real
+// table both ways.
+//
+// The split, from the measured pre-mark window plus `ldd`, recorded rather than
+// acted on:
+//   DEAD (default config only)  BOOTSTRAP_CHAIN's `/bin/sh`, `/usr/bin/sh`,
+//     `/bin/dash`, `/usr/bin/dash` — the shell loads at pre-mark ops 18–44 and
+//     no marked caller ever execs it. `/bin/bash`, `/usr/bin/bash` were already
+//     dead: `bootstrap.sh` execs `/bin/sh`.
+//   LOAD-BEARING  everything else, and each for a measured reason — `setpriv`
+//     execs AFTER the mark in the same tgid; `ld-linux` and `libc` are measured
+//     on both sides of it; node's own NEEDED set and glibc's dlopen closure are
+//     all post-mark; `/etc/ld.so.cache` and `/etc/passwd`/`/etc/group` are the
+//     marked CLI's and setpriv's; `/etc/hosts` and the TLS trust are the marked
+//     CLI's own DNS and TLS. `/etc/ld.so.preload` and `/etc/claude-code` are
+//     pinned on the HAZARD rather than on a measurement — a remote-supplied one
+//     would preload a remote object into a host binary, or inject settings into
+//     the CLI — and that stays an inference, said so here.
+//
+// A THIRD CLASS, OUTSIDE THESE THREE ARRAYS AND LOAD-BEARING FOR THE RULING:
+// the whole-`$HOME` pin, the whole-`projectsRoot` pin and the `sessionTmpDir`
+// localRoot are JOINTLY what keep the cross-mark handoff class empty — the
+// CLI's shell snapshot (marked CLI writes, unmarked per-call shell reads at
+// exec), its cwd breadcrumb and its `<tmpdir>/<encoded-cwd>/<sid>/tasks/` all
+// sit inside them. Narrowing any of the three reopens one-path-two-answers for
+// a CLI-internal file. `$HOME` has two reasons not to narrow now: that, and the
+// EXDEV rename its own comment below records.
 
 import path from 'node:path';
 import { realpathSync, accessSync, constants as fsc } from 'node:fs';
@@ -100,7 +144,7 @@ const LOADER_OBJECTS = [
   '/usr/lib/x86_64-linux-gnu/libnss_files.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_systemd.so.2',
   '/usr/lib/x86_64-linux-gnu/gconv',
-  // DERIVED FROM THE REFUSAL LOG, not from a brief. Under the instrument's host
+  // DERIVED FROM THE EVENT LOG, not from a brief. Under the instrument's host
   // fallback these were served whether pinned or not, so nothing named them
   // until the `fail` tier made an unpinned NEEDED object -ENOENT:
   //
@@ -283,6 +327,77 @@ export function binaryPins(bin: string): string[] {
   const prefix = installPrefix(path.dirname(bin), path.dirname(real));
   if (prefix) out.push(prefix);
   return out;
+}
+
+// ── FROM A LOGGED DENIAL TO A PIN ENTRY ─────────────────────────────────────
+//
+// THE OWNER'S MECHANISM, NOT A FALLBACK: "I want one method that works. I'm
+// fine with a list plus a logging system, allowing the user (or a Claude
+// session) to update the list." The daemon's event log names the path; this
+// says which of the three arrays in THIS file to put it in and in which
+// spelling. No runtime derivation, ever — the suggestion is text a human or a
+// session applies.
+//
+// IT LIVES HERE BECAUSE THIS FILE OWNS THE ARRAYS. A copy anywhere else would
+// be a second source of truth for a mapping whose whole value is naming the
+// real one.
+//
+// THE FOUR-STEP UPDATE PATH, which the emitted line states so nobody has to
+// know it: (1) the arrays are `LOADER_OBJECTS`, `ETC_PINS`, `BOOTSTRAP_CHAIN`
+// in this file, and there is no second copy in cc; (2) add the `entry` to the
+// `list`; (3) `buildTierTable` runs per spawn and `renderPinsFile` writes
+// `<rundir>/pins.txt`, which the daemon parses at mount — so the change takes
+// effect on the NEXT SPAWN AFTER AN ORCHESTRATOR RESTART, because cc holds this
+// module in memory; (4) `npm test` re-runs the tier-table tests, which pin both
+// spellings, the realpath closure and the install-prefix derivation.
+export interface PinSuggestion {
+  list: 'LOADER_OBJECTS' | 'ETC_PINS' | 'BOOTSTRAP_CHAIN' | null;
+  // The exact string to add to `list`, which is NOT always the path the daemon
+  // refused — see the `/usr/` canonicalisation below.
+  entry: string;
+  note: string;
+}
+
+const LIB_DIRS = ['/lib/', '/lib64/', '/usr/lib/', '/usr/lib64/'];
+const BIN_DIRS = ['/bin/', '/sbin/', '/usr/bin/', '/usr/sbin/'];
+
+// THE `/usr/`-PREFIXED SPELLING, AND IT IS LOAD-BEARING RATHER THAN TIDY.
+// `LOADER_PINS` derives the `/lib` spelling AND the realpath from whatever is
+// in `LOADER_OBJECTS`, so an entry added in the `/lib` spelling leaves the
+// closure open — which is exactly the `libcap-ng.so.0.0.0` failure this file's
+// own comment records. Adding the `/usr/` spelling gets both spellings and the
+// realpath; adding the other one gets neither.
+function usrSpelling(p: string): string {
+  return p.startsWith('/lib/') || p.startsWith('/lib64/') ? `/usr${p}` : p;
+}
+
+export function suggestPin(refusedPath: string): PinSuggestion {
+  const restart = 'the pin list is read at the next spawn AFTER an orchestrator restart — cc holds src/systems/fuse/tierTable.ts in memory';
+  if (refusedPath.startsWith('/etc/')) {
+    return { list: 'ETC_PINS', entry: refusedPath, note: restart };
+  }
+  // A SHARED OBJECT BY NAME **OR** BY LOCATION. The name test catches a
+  // versioned soname anywhere; the location test catches everything else the
+  // loader reaches for (a `gconv` directory, an NSS module's data file) that
+  // carries no `.so` suffix at all.
+  if (/\.so(\.\d+)*$/.test(path.basename(refusedPath)) || LIB_DIRS.some(d => refusedPath.startsWith(d))) {
+    return {
+      list: 'LOADER_OBJECTS',
+      entry: usrSpelling(refusedPath),
+      note: `add the /usr/-prefixed spelling: LOADER_PINS derives the /lib spelling AND the realpath from it, so the other spelling leaves the closure open. Then ${restart}`,
+    };
+  }
+  if (BIN_DIRS.some(d => refusedPath.startsWith(d))) {
+    return { list: 'BOOTSTRAP_CHAIN', entry: refusedPath, note: `binaryPins derives its realpath and install prefix. Then ${restart}` };
+  }
+  // NO GUESS, AND IT NAMES EVERY PLACE A HUMAN MIGHT PUT IT. A wrong array is
+  // worse than no suggestion: the entry lands somewhere the derivations do not
+  // apply and the path stays refused for a reason the log no longer explains.
+  return {
+    list: null,
+    entry: refusedPath,
+    note: `no array in src/systems/fuse/tierTable.ts obviously owns this path — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots (which are declared at the ONE construction site, src/instances.ts). Then ${restart}`,
+  };
 }
 
 export function buildTierTable(input: TierTableInput): TierEntry[] {

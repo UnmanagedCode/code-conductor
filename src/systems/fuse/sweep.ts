@@ -61,6 +61,15 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
       } else {
         log.warn(`cc-fuse sweep: reclaimed ${name} (daemon ${report.daemonPid ?? '?'} ${report.terminalState}, unmounted ${report.unmounted.length}, reclaimed by marker ${report.markerReclaimed.length})`);
       }
+      // WHAT THE DAEMON REFUSED, ON THE OPERATOR LOG. A session lost to a crash
+      // never reached `runTeardown`'s own emit — its event stream is gone — so
+      // this boot is the only place its policy events are ever read aloud.
+      // `runTeardown` has already appended them to the store-wide log and put
+      // the sentence on `notes`; the wedged arm above prints notes, the clean one
+      // does not, so this covers the clean path without printing twice.
+      if (!report.wedged && report.eventPaths.length) {
+        log.warn(`cc-fuse sweep: ${name} — ${report.notes.filter(n => n.startsWith('cc-fuse: ')).join(' | ')}`);
+      }
       // Reported, NEVER acted on: S3 §A5 measured stale minors (56, 59) that
       // freed nothing, survived abort and were inert. A count of fusectl
       // entries is not a count of live daemons, so aborting an unrecorded one

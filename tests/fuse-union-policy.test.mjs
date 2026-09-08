@@ -48,6 +48,7 @@ import { encodeRequest, encodeReply, decodeRequests, CCU_OP, CCU_STATUS,
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRIVER_SRC = path.join(HERE, 'fixtures', 'union-policy-driver.c');
 const UNION_C = path.join(HERE, '..', 'src', 'systems', 'fuse', 'union.c');
+const POLICY_H = path.join(HERE, '..', 'src', 'systems', 'fuse', 'policy.h');
 
 const tools = await detectToolchain();
 const skip = tools.ok ? false : `no toolchain: ${tools.reason}`;
@@ -61,6 +62,50 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+// C COMMENTS BLANKED, OFFSETS PRESERVED — every comment byte becomes a space
+// (newlines kept), so a scanner over the result still reports positions that
+// index the original.
+//
+// IT IS NOT TIDINESS: a source-text derivation that cannot tell code from prose
+// counts the PROSE. This one caught it — a `policy_event(` written inside
+// policy.h's own explanatory comment was parsed as a call site and read as an
+// unterminated one, because a comment has no argument list to close. Any
+// derivation below that talks about "call sites" therefore runs on the stripped
+// text, and the string/char-literal states are tracked so a literal containing
+// `//` or `/*` is not mistaken for a comment opener.
+function stripCComments(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i], d = src[i + 1];
+    if (c === '"' || c === "'") {
+      const q = c;
+      out += c; i++;
+      while (i < n) {
+        if (src[i] === '\\') { out += src.slice(i, i + 2); i += 2; continue; }
+        out += src[i];
+        if (src[i] === q) { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === '/' && d === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? n : end + 2;
+      for (let k = i; k < stop; k++) out += src[k] === '\n' ? '\n' : ' ';
+      i = stop;
+      continue;
+    }
+    if (c === '/' && d === '/') {
+      while (i < n && src[i] !== '\n') { out += ' '; i++; }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 // One body extractor, shared by both source-shape tests.
 function bodyOfIn(src, op) {
   const at = src.indexOf(`static int pt_${op}(`);
@@ -68,6 +113,115 @@ function bodyOfIn(src, op) {
   const next = src.indexOf('\nstatic ', at + 1);
   return src.slice(at, next === -1 ? src.length : next);
 }
+
+// ── THE STRIPPER, ON SYNTHETIC INPUT AND NOT ON THE REAL SOURCES ───────────
+//
+// UNSKIPPED, because it needs no toolchain — and SYNTHETIC, because that is the
+// whole point. Three mutants of `stripCComments` survived a mutation run while
+// the derivation below stayed green at 40/40, and every one of them survived
+// for the same reason: the real sources do not happen to contain the construct
+// the branch exists for. A non-vacuity block that asserts only "it removed
+// something and kept the call sites" cannot see any of them.
+//
+// What each survivor would have done to input the derivation does not read
+// TODAY — which is what makes them latent traps rather than dead code:
+//
+//   `if (c === '"' || c === "'")` → `if (false)`   stops tracking literals, so
+//       a `//` INSIDE A STRING opens a line comment and everything after it on
+//       that line is destroyed. `union.c` really has one (`'//'` in a string at
+//       the time of writing); the moment a `policy_event(` call lands near such
+//       a literal, the derivation reads mangled text.
+//   `src[k] === '\n' ? '\n' : ' '` → `' '`         blanks newlines inside block
+//       comments, so LINE STRUCTURE collapses. Offsets survive — a space is one
+//       byte, like the newline it replaced — which is exactly why a length
+//       assertion cannot see it. The derivation's `lastIndexOf('\n', at)` then
+//       finds a line start somewhere back inside the comment, and the
+//       `static inline void` definition test reads the wrong text.
+//   `stop = end + 2` → `stop = end`                leaves the `*/` terminator
+//       behind for every block comment.
+describe('stripCComments — the comment stripper the kind derivation runs on', () => {
+  // ONE FIXTURE, EVERY BRANCH. Line-numbered in the assertions below, so a
+  // failure names the construct rather than an offset.
+  const LINES = [
+    'static const char *sep = "//";',                  // 0: `//` inside a string
+    "static const char *odd = '/*';",                  // 1: `/*` inside a quote
+    'static const char *frag = "/* kept */";',         // 2: a `*/` that must SURVIVE
+    '/* a block comment',                              // 3: opens…
+    ' * with an inner line',                           // 4:
+    ' */',                                             // 5: …and closes
+    'int keep = 1; // a real line comment',            // 6: a real line comment
+    "char esc = '\\'';",                               // 7: an escaped quote
+    'int tail = 2;',                                   // 8: must survive it all
+  ];
+  const SRC = LINES.join('\n') + '\n';
+  const out = stripCComments(SRC);
+  const got = out.split('\n');
+
+  // PINS: LITERAL TRACKING. A quote's contents are copied verbatim, so neither
+  // `//` nor `/*` inside one opens anything — and the code AFTER it on the same
+  // line survives.
+  // DIES UNDER: `if (c === '"' || c === "'")` → `if (false)`, which blanks from
+  // the `//` in line 0 to end of line and destroys the `;`.
+  test('a `//` or `/*` inside a quote opens nothing, and the line survives it', () => {
+    assert.equal(got[0], LINES[0], 'a string containing `//` was treated as a comment');
+    assert.equal(got[1], LINES[1], 'a quote containing `/*` was treated as a comment');
+    assert.equal(got[7], LINES[7], 'an escaped quote ended the literal early');
+    // AND THE FAR SIDE OF THE WHOLE FIXTURE. Under the `/*`-in-a-quote mutant
+    // the run opens at line 1 and closes at line 2's `*/`, so line 2's code is
+    // eaten; under the `//` mutant line 0 loses its tail. Either way this is
+    // the load-bearing check that no run escaped its construct.
+    assert.equal(got[2], LINES[2], 'a `*/` inside a string did not survive');
+    assert.equal(got[8], LINES[8], 'the text after every construct was destroyed');
+  });
+
+  // PINS: LINE STRUCTURE, which is what makes a position in the stripped text
+  // index the original. Asserted as LINE COUNT and per-line boundaries, NOT as
+  // total length — the mutant preserves length exactly.
+  // DIES UNDER: `src[k] === '\n' ? '\n' : ' '` → `' '`, which merges lines 3–5.
+  test('block-comment newlines are preserved, so lines still line up', () => {
+    assert.equal(got.length, SRC.split('\n').length,
+      'the stripper changed the LINE COUNT, so `lastIndexOf("\\n", at)` no longer '
+      + 'finds the line a position is on');
+    // The three comment lines are blanked to whitespace but each is still its
+    // own line, with its original width.
+    for (const i of [3, 4, 5]) {
+      assert.match(got[i], /^ *$/, `line ${i} was not blanked: ${JSON.stringify(got[i])}`);
+      assert.equal(got[i].length, LINES[i].length, `line ${i} changed width`);
+    }
+    // And offsets really do still index the original — the property the line
+    // structure exists to support.
+    assert.equal(out.length, SRC.length, 'offsets shifted');
+    assert.equal(out.indexOf('int tail'), SRC.indexOf('int tail'), 'a position moved');
+  });
+
+  // PINS: THE TERMINATOR IS CONSUMED. Counted rather than asserted absent,
+  // because line 2's STRING legitimately contains one and must keep it.
+  // DIES UNDER: `stop = end + 2` → `stop = end`, which leaves the block
+  // comment's own `*/` in the output and makes the count 2.
+  test('a block comment takes its `*/` with it, and a string keeps its own', () => {
+    assert.equal((out.match(/\*\//g) ?? []).length, 1,
+      `exactly one \`*/\` survives — the one inside the string on line 2: ${JSON.stringify(out)}`);
+    assert.ok(out.includes('"/* kept */"'), 'the string literal lost its content');
+  });
+
+  // PINS: line comments really are removed — the branch the real sources never
+  // exercise in code text, which is why a mutant on it was waived as dead.
+  // DIES UNDER: dropping the `c === '/' && d === '/'` branch.
+  test('a real line comment is blanked, and its code is kept', () => {
+    assert.ok(!out.includes('a real line comment'), 'the line comment survived');
+    assert.match(got[6], /^int keep = 1; +$/, JSON.stringify(got[6]));
+  });
+
+  // PINS: an UNTERMINATED block comment does not run off the end or throw. The
+  // derivation asserts on unterminated CALL SITES, so the stripper must hand it
+  // well-formed text to make that assertion mean anything.
+  test('an unterminated block comment is blanked to the end, without throwing', () => {
+    const un = stripCComments('int a = 1;\n/* never closed\nint b = 2;\n');
+    assert.match(un.split('\n')[0], /^int a = 1;$/);
+    assert.ok(!un.includes('int b'), 'text inside an unterminated comment survived');
+    assert.equal(un.length, 'int a = 1;\n/* never closed\nint b = 2;\n'.length);
+  });
+});
 
 describe('the compiled policy driver', { skip }, () => {
   let bin;
@@ -125,7 +279,13 @@ describe('the compiled policy driver', { skip }, () => {
                       'return -EACCES, or let T_BIND through'],
     // `or serve the host` is NOT reachable from here: the host arm is
     // `route()`'s (union.c), which no unit fixture can call. Real gate R2.
-    ['b7-unmarked',   'an unmarked caller at a project path gets -ENOENT and sends no frame',
+    // RE-SCOPED BY 2026-0382 and the entry says so: this guard used to be
+    // defence in depth behind a wider plan in which `project` was substituted
+    // to `host` for an unmarked caller. The owner narrowed the substitution to
+    // `fail` alone, so `policy_project_route`'s mark check is THE LIVE
+    // PRODUCTION MECHANISM again — the only thing denying an unmarked caller at
+    // a project path. Same assertion, load-bearing for a different reason.
+    ['b7-unmarked',   'an unmarked caller at a project path gets -ENOENT and sends no frame — the LIVE mechanism, not defence in depth',
                       'delete the mark check in policy_project_route'],
     ['b8-reuse',      'a marked tgid whose field-22 starttime moved loses the mark',
                       "delete mark_of's starttime comparison"],
@@ -139,17 +299,57 @@ describe('the compiled policy driver', { skip }, () => {
     // there is no host fd in this file. Real gate R6 owns it.
     ['b12-errno',     'ABSENT→ENOENT, REFUSED→EACCES, dead or truncated channel→EIO',
                       'swap ABSENT→EACCES, or drop the reply-status switch'],
-    ['b14-reasons',   'each control failure names itself in the refusal log, and the three are distinguished',
+    ['b14-reasons',   'each control failure names itself in the event log as a `deny` row, and the three are distinguished',
                       'collapse remote-absent and control-refused into one reason'],
-    ['b13-refusals',  'the refusal log records each (path, reason) exactly once',
-                      'drop the dedupe, or key it on op as well'],
+    ['b13-refusals',  'the event log records each (path, reason) exactly once, as four columns with the KIND first',
+                      'drop the dedupe, or key it on op as well; append the kind instead of leading with it'],
+    // NOT `add the kind to the dedupe key` — that mutant is SEMANTICS-
+    // PRESERVING and therefore unkillable anywhere. Every reason maps to
+    // exactly one kind (the source-derived set equality below), so the kind is
+    // a function of the reason and the two keys partition identically. Listed
+    // as a mutant for one round; removed rather than "killed", because the only
+    // way to kill it would be to assert on a cross-kind emission the daemon
+    // cannot produce.
     ['b16-abandon',   'a project-tier abandon sends a RELEASE_ONLY DIRTY and drops the cached decision; no other tier sends anything',
                       'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit or a BARE ZERO (which cc cannot tell from a killed handle\'s release); widen the tier test'],
-    ['b17-cwd-exempt', 'an unmarked caller may getattr the EXACT project root and nothing else, from a fixed 0111 node, with no frame',
-                      'make the exemption unconditional; swap pin_exact for tier_of; widen the op test past getattr; 0111 → 0555'],
+    ['b17-cwd-exempt', 'an unmarked caller may getattr the cwd (here the project root) and nothing inside it, from a fixed 0111 node in the chain inode sub-range, with no frame and no cache entry',
+                      'make the exemption unconditional; swap the chain predicate for tier_of; widen the op test past getattr; 0111 → 0555; route the inode through policy_bind_ino'],
+    // INVERTED BY 2026-0382, WHICH ABSORBS 2026-0375. It used to record the
+    // residual as a test; the 2026-09-08 amendment closes it, so the case now
+    // asserts the exemption where it asserted the denial. This is the PRIMARY
+    // proof of the widening, and it lives here because a mount test cannot see
+    // it: `default_permissions` makes the kernel refuse the unmarked `opendir`
+    // before the daemon's op allow-list is asked.
     ['b18-cwd-wide-mirror',
-                      'a project-tier directory with no EXACT pin is not exempt, so a WIDE advertised mirror root is not repaired (residual 2)',
-                      'widen the exemption to tier_of, which would silently close a residual this card did not rule on'],
+                      'under a WIDE advertised mirror root an intermediate project-tier directory with no exact pin IS exempt as a cwd chain component, so the chdir lives (2026-0375 closed)',
+                      'restore the pin_exact test ⇒ /srv stops being exempt and the chdir dies one component early again; widen to tier_of ⇒ a child of the cwd becomes exempt'],
+    ['b19-caller-tier-matrix',
+                      'all 7 tiers × {marked, unmarked}: identity everywhere EXCEPT (unmarked, fail) → host',
+                      'T_PROJECT → T_HOST for unmarked (the owner ruling violated — the headline mutant); T_HIDE → T_HOST (the confinement hole); T_BIND → T_HOST (breaks the three bind targets); let the MARKED branch substitute'],
+    ['b20-caller-sensitive-set',
+                      'policy_tier_is_caller_sensitive is true for EXACTLY {T_FAIL}, over all seven enum values',
+                      'add T_PROJECT to the set; add T_HIDE; drop T_FAIL; `return 1` for everything'],
+    ['b21-unmarked-refused-only-at-project',
+                      'for an unmarked caller the substitution denies at NO tier, and the only denial policy.h can give one is policy_project_route’s',
+                      'make the substitution emit a `deny` row at T_FAIL; make T_PROJECT stop denying'],
+    ['b22-cwd-chain-extent',
+                      'the cwd chain is ancestor-or-equal AT A COMPONENT BOUNDARY — both directions of the prefix-sharing sibling trap, and an unset cwd exempts nothing',
+                      "drop the `/`-boundary check ⇒ /root/app and /roo become exempt for a cwd of /root/app3; use tier_of instead of the chain ⇒ a child becomes exempt; drop the op check; return T_CWD for a marked caller; make policy_cwd_component answer for a NULL cwd_path ⇒ the unset-cwd arm dies. NOT `default cwd_path in main()` — that mutant lives in union.c, which this fixture cannot reach; A16b's no-default source pin is what kills it"],
+    ['b26-cwd-traverse-only',
+                      'every chain component reports exactly S_IFDIR|0111, nlink 2, uid/gid 0, size 0, all three times 0 — and the op allow-list is {getattr}, with the refusal named in the log',
+                      '0111 → 0555 (the ruling violated in the mode bits); drop the strcmp(op,"getattr") ⇒ readdir becomes exempt; change the allowed op to "opendir"; S_IFDIR → S_IFREG; nlink → the real child count'],
+    ['b27-cwd-ino-distinct',
+                      'every chain component gets a DISTINCT st_ino, and the chain sub-range is disjoint from both the ancestor range and the exact-pin range',
+                      'route the chain through policy_bind_ino ⇒ every unpinned component collapses to SYNTH_INO_BASE + MAX_ANC; drop the `npins` term ⇒ the chain overlaps the pin range'],
+    ['b28-cwd-input-validated',
+                      'the cwd normalisation predicate rejects a trailing `/`, a `//` and a `.`/`..` component, and accepts a dotfile-named one',
+                      'accept a doubled slash ⇒ the cwd itself stops matching and every chdir dies at its destination; accept a `..` component; reject a dotfile-named component ⇒ a real cwd is refused'],
+    ['b24-event-kinds',
+                      'each reason policy.h emits carries exactly one kind, read back out of the sink, and five emissions produce five rows',
+                      'classify unmarked-host-served as `deny` (it would join R4’s fatal filter); classify unmarked-project-denied as `served`'],
+    ['b25-substitution-logged-at-fail-only',
+                      'an unmarked caller at `fail` emits exactly one served/unmarked-host-served row PER DISTINCT PATH; at `project` it emits a deny row and no served row',
+                      'emit `served` at T_PROJECT (the ruling violated, from the log’s side); drop the row at T_FAIL; emit `deny` for the substitution; key the dedupe on op as well ⇒ two rows for one path'],
     ['b15-unreconcilable',
                       "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP, and a host-tier one does not",
                       '`return -EOPNOTSUPP` → `return 0`; the T_PROJECT test flipped or widened to every tier; EOPNOTSUPP collapsed into EROFS'],
@@ -249,7 +449,7 @@ describe('the compiled policy driver', { skip }, () => {
     'listxattr', 'mkdir', 'mknod', 'open', 'opendir', 'readlink', 'removexattr',
     'rename', 'rmdir', 'setxattr', 'statfs', 'symlink', 'truncate', 'unlink', 'utimens'];
 
-  test('the cwd exemption allows getattr and nothing else, and the set is union.c’s own', async () => {
+  test('the cwd exemption allows getattr and nothing else, at every chain component, and the set is union.c’s own', async () => {
     const src = await fs.readFile(UNION_C, 'utf8');
     const routed = [...src.matchAll(/\b(?:ROUTE|route)\("([a-z]+)"/g)].map(m => m[1]);
     assert.ok(routed.length > 20, `union.c's ops were not parsed: ${routed.length}`);
@@ -294,13 +494,22 @@ describe('the compiled policy driver', { skip }, () => {
         `union.c routes an op through a NON-LITERAL name, so the allow-list cannot see it: route(${t}`);
     assert.equal(nonLiteral.length, STRUCTURAL.length,
       `expected exactly ${STRUCTURAL.length} structural route( sites, got ${nonLiteral.length}`);
-    // …and every one of them is actually refused by the predicate.
-    const r = await run(bin, ['b17-cwd-exempt', ...NOT_EXEMPT_OPS]);
-    assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
-    const lines = r.stdout.split('\n').filter(Boolean);
-    assert.ok(lines.every(l => l.startsWith('ok ')), r.stdout);
-    for (const op of NOT_EXEMPT_OPS)
-      assert.ok(lines.some(l => l.includes(`\`${op}\` is not exempt`)), `${op} was not driven`);
+    // …and every one of them is actually refused by the predicate — at the
+    // project root (b17) AND at every other component of the cwd chain (b26).
+    // BOTH, because the exemption widened: an allow-list that held at the root
+    // and leaked at an intermediate component would pass b17 alone.
+    for (const [id, want] of [['b17-cwd-exempt', 1], ['b26-cwd-traverse-only', 3]]) {
+      const r = await run(bin, [id, ...NOT_EXEMPT_OPS]);
+      assert.equal(r.code, 0, `${id}:\n${r.stdout}\n${r.stderr}`);
+      const lines = r.stdout.split('\n').filter(Boolean);
+      assert.ok(lines.every(l => l.startsWith('ok ')), r.stdout);
+      for (const op of NOT_EXEMPT_OPS) {
+        const n = lines.filter(l => l.includes(`\`${op}\` is not exempt`)).length;
+        assert.equal(n, want,
+          `${id} drove \`${op}\` against ${n} paths, expected ${want} — the op list reached `
+          + 'fewer chain components than the case has');
+      }
+    }
   });
 
   // ── C8: WHERE union.c ASKS, AND WHERE IT DISPATCHES ────────────────────────
@@ -346,6 +555,176 @@ describe('the compiled policy driver', { skip }, () => {
     assert.ok(arm.indexOf('policy_cwd_exempt(') < arm.indexOf('policy_project_route('),
       'INVARIANT: the exemption is asked BEFORE policy_project_route — after it, the unmarked '
       + 'denial has already returned and the exemption can never fire');
+  });
+
+  // ── THE EVENT LOG'S KIND CLASSIFICATION, DERIVED AND SET-COMPARED ─────────
+  //
+  // DISTRUST THE HAND-MAINTAINED ENUMERATION — which is the whole reason the
+  // kind became a column. One side of this comparison is READ OFF THE C SOURCE
+  // (every `policy_event(` call site in both files, with its kind and its
+  // reason expression); the other is the table below. Compared in BOTH
+  // directions, so neither a reason with no table entry nor a table entry
+  // naming no reason can survive.
+  //
+  // WHY A SOURCE PIN AND NOT A BEHAVIOURAL ONE. `b24` reads the kinds back out
+  // of the sink for the five reasons policy.h emits — pinned where they are
+  // PRODUCED. The other seven live in `union.c` op bodies that no deterministic
+  // fixture can reach (there is no libfuse here and no host fd), so their only
+  // enforcing layer is the source. The split is stated so neither half is
+  // credited with the other's coverage.
+  //
+  // `served` MEANS "THE OP SUCCEEDED, BUT NOT THE WAY THE TIER TABLE SAID", and
+  // getting one of these wrong is a live defect rather than a label:
+  // R4's fatal filter is `kind === 'deny'`, so a `served` row mis-kinded
+  // `deny` reds the gate on an ordinary shell startup, and a `deny` row
+  // mis-kinded `served` drops out of the check that the pin list is derived
+  // from.
+  const EVENT_KINDS = {
+    // ── deny: the caller got a negative errno ───────────────────────────────
+    'unpinned-fail-closed':      'EV_DENY',   // route()'s fall-through, -ENOENT
+    'unmarked-project-denied':   'EV_DENY',   // policy_project_route's mark check
+    'control-unavailable':       'EV_DENY',   // -EIO
+    'remote-absent':             'EV_DENY',   // -ENOENT
+    'control-refused':           'EV_DENY',   // -EACCES
+    'not-reconcilable':          'EV_DENY',   // -EOPNOTSUPP
+    'xdev-rename':               'EV_DENY',   // -EXDEV
+    'dirty-push-refused':        'EV_DENY',   // push_mirror_flags returns the op's rc
+    'dirty-remove-refused':      'EV_DENY',
+    // ── served: the op succeeded, off the tier table's script ───────────────
+    // Returns 0 with `host_fd` — a liveness precondition, not a refusal. It is
+    // the row that made `refusals.log` a false name.
+    'self-recursion':            'EV_SERVED',
+    // The readdir SUCCEEDS; a name past MAX_PINNED_CHILDREN is dropped from it.
+    'pinned-children-truncated': 'EV_SERVED',
+    // 2026-0382: an unmarked caller was routed to the host at an unpinned path.
+    'unmarked-host-served':      'EV_SERVED',
+  };
+
+  test('every reason the daemon emits carries exactly one kind, and the set matches both ways', async () => {
+    const raw = { 'union.c': await fs.readFile(UNION_C, 'utf8'), 'policy.h': await fs.readFile(POLICY_H, 'utf8') };
+    // COMMENTS BLANKED FIRST — see stripCComments. Both files DISCUSS
+    // `policy_event(` in prose, and a raw scan reads those as call sites.
+    const srcs = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, stripCComments(v)]));
+    // NON-VACUITY OF THE STRIP ITSELF: it must remove something and must not
+    // remove the code. A stripper that returned '' would make every derivation
+    // below pass by finding nothing.
+    for (const [name, v] of Object.entries(srcs)) {
+      assert.ok(v.length === raw[name].length, `${name}: the strip changed the offsets`);
+      assert.ok(v.includes('policy_event('), `${name}: the strip removed the call sites too`);
+      assert.ok(!/\bDEDUPE KEY\b/.test(v), `${name}: the strip left comment prose behind`);
+    }
+    // Reason → the set of kinds the SOURCE emits it under, and where.
+    const found = new Map();
+    for (const [name, src] of Object.entries(srcs)) {
+      let at = 0;
+      for (;;) {
+        at = src.indexOf('policy_event(', at);
+        if (at < 0) break;
+        // The definition itself is not a call site.
+        const lineStart = src.lastIndexOf('\n', at) + 1;
+        if (/static inline void\s*$/.test(src.slice(lineStart, at))) { at += 1; continue; }
+        // Split the argument list on TOP-LEVEL commas, so the ternary reason
+        // expression at `push_mirror_flags` (one argument, two literals) is not
+        // shredded and the op-name literals cannot be mistaken for reasons.
+        let i = at + 'policy_event('.length, depth = 0;
+        const args = ['']; 
+        for (; i < src.length; i++) {
+          const ch = src[i];
+          if (ch === '(') depth++;
+          else if (ch === ')') { if (depth === 0) break; depth--; }
+          if (ch === ',' && depth === 0) { args.push(''); continue; }
+          args[args.length - 1] += ch;
+        }
+        assert.ok(i < src.length, `an unterminated policy_event( call site in ${name}`);
+        assert.equal(args.length, 4,
+          `policy_event takes (kind, op, path, reason); ${name} has a call site with ${args.length} arguments: ${args.join('|')}`);
+        const kind = args[0].trim();
+        assert.match(kind, /^EV_(DENY|SERVED)$/,
+          `${name}: a policy_event call site passes a non-literal kind '${kind}', so this derivation cannot see it`);
+        const reasons = [...args[3].matchAll(/"([a-z][a-z-]*)"/g)].map(m => m[1]);
+        assert.ok(reasons.length > 0,
+          `${name}: a policy_event call site has no literal reason: ${args[3].trim()}`);
+        for (const r of reasons) {
+          if (!found.has(r)) found.set(r, new Set());
+          found.get(r).add(kind);
+        }
+        at = i;
+      }
+    }
+    // NON-VACUITY: the parse ran and found real call sites.
+    assert.ok(found.size >= 10, `the policy_event call sites were not parsed: ${found.size}`);
+
+    // 1. EXACTLY ONE KIND PER REASON, derived purely from the code — nothing
+    //    below is consulted for this half.
+    const multi = [...found].filter(([, ks]) => ks.size !== 1).map(([r, ks]) => `${r}: ${[...ks].join('+')}`);
+    assert.deepEqual(multi, [], 'these reasons are emitted under more than one kind');
+
+    // 2. SET EQUALITY, BOTH DIRECTIONS.
+    assert.deepEqual([...found.keys()].sort(), Object.keys(EVENT_KINDS).sort(),
+      'the reasons union.c/policy.h emit and the reasons EVENT_KINDS classifies differ — '
+      + 'add the new reason with its kind, or drop the entry that names none');
+
+    // 3. AND THE KIND ITSELF AGREES, per reason.
+    for (const [reason, kinds] of found)
+      assert.equal([...kinds][0], EVENT_KINDS[reason], `${reason} is emitted as ${[...kinds][0]}`);
+
+    // 4. `ev_kind_name` MAPS BOTH AND NOTHING ELSE, so the column an operator
+    //    (and R4) filters on cannot silently gain a third value: the switch has
+    //    no `default:` arm, and a third enumerator would fail the -Werror
+    //    compile of the driver fixture before any of this ran.
+    const kindDecl = raw['policy.h'].match(/enum ev_kind \{[^}]*\}/);
+    assert.ok(kindDecl, 'enum ev_kind is gone from policy.h');
+    assert.equal(kindDecl[0], 'enum ev_kind { EV_DENY = 0, EV_SERVED }',
+      'enum ev_kind gained or lost a member — R4 filters on exactly these two');
+  });
+
+  // ── THE CALLER-SENSITIVE SUBSTITUTION'S CALL SITE ─────────────────────────
+  //
+  // `b19`/`b20` drive the two predicates directly, so a call site that was
+  // never added — or that asks with the wrong id, or in the wrong place — is
+  // invisible to them. Same reason `route()`'s flags byte and the cwd
+  // exemption's call site are pinned from the source.
+  test('route() substitutes the caller-sensitive tier, after the mark and before dispatch', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    assert.match(src,
+      /if \(policy_tier_is_caller_sensitive\(r->tier\)\)\s*\n\s*r->tier = policy_caller_tier\(op, path, r->tier,\s*\n\s*policy_is_marked_tid\(\(pid_t\)fuse_get_context\(\)->pid\)\);/,
+      'INVARIANT: route() asks policy_tier_is_caller_sensitive and reassigns r->tier from '
+      + 'policy_caller_tier with the CALLING THREAD id — the call site is missing, takes a '
+      + 'different id, or drops the reassignment');
+    // AFTER THE MARKING EVENT. `mark_maybe` is what makes the CLI's own thread
+    // group marked at all; asking the mark before it fires would substitute the
+    // host for the CLI's very first op.
+    const body = src.slice(src.indexOf('static int route('), src.indexOf('#define ROUTE('));
+    for (const needle of ['mark_maybe(path);', 'policy_tier_is_caller_sensitive(', 'switch (r->tier) {'])
+      assert.ok(body.includes(needle), `route() no longer contains ${needle}`);
+    assert.ok(body.indexOf('mark_maybe(path);') < body.indexOf('policy_tier_is_caller_sensitive('),
+      'INVARIANT: the substitution is asked AFTER the marking event — before it, the CLI is '
+      + 'unmarked on its own first op and would be served the host at `fail`');
+    // AND BEFORE THE SWITCH, because the T_HOST arm is what gives the
+    // substituted route its host fd. Inside an arm it could not reach one.
+    assert.ok(body.indexOf('policy_tier_is_caller_sensitive(') < body.indexOf('switch (r->tier) {'),
+      'INVARIANT: the substitution happens BEFORE the tier switch, so the T_HOST arm assigns '
+      + 'the substituted route its host fd');
+    // THE `fail` FALL-THROUGH IS STILL THE ONLY PLACE `unpinned-fail-closed` IS
+    // WRITTEN, so the reason really is the marked CLI's alone.
+    assert.equal((src.match(/"unpinned-fail-closed"/g) ?? []).length, 1,
+      'unpinned-fail-closed is emitted from more than one place');
+  });
+
+  // ── THE TIER ENUM'S MEMBER SET ────────────────────────────────────────────
+  //
+  // `b19` and `b20` iterate `0 .. T_CWD`, so a member APPENDED after T_CWD
+  // would be uncovered by both. `tier_name`'s default-less switch makes that a
+  // -Werror compile failure of the driver fixture — but a member added WITH a
+  // switch arm would compile and slip past the loops silently, and its
+  // caller-sensitivity would be nobody's decision. Pinned at the declaration.
+  test('enum tier has exactly the seven members the caller-tier matrix drives', async () => {
+    const src = await fs.readFile(POLICY_H, 'utf8');
+    const decl = src.match(/enum tier \{[^}]*\}/);
+    assert.ok(decl, 'enum tier is gone from policy.h');
+    assert.equal(decl[0], 'enum tier { T_FAIL = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH, T_CWD }',
+      'enum tier changed: b19/b20 iterate 0..T_CWD, so a member appended past T_CWD is driven by '
+      + 'neither and its caller-sensitivity was never decided');
   });
 
   // ── T19b: THE TRACE SEPARATES A READ OPEN FROM A WRITE OPEN ────────────────
