@@ -1558,6 +1558,21 @@ static void b28_cwd_input_validated(void)
 	      "a TRAILING-slash cwd still matches the cwd — the boundary test reads "
 	      "the trailing '/' as the separator, so this spelling is refused on "
 	      "ownership of the input rather than on a broken comparison");
+	CHECK(policy_cwd_component("/root") == 1, "and its intermediate components too");
+
+	/* THE THIRD MECHANISM, AND THERE ARE EXACTLY THREE IN THE REFUSED CLASS.
+	 * `buildFusePlan`'s 501 names a consequence PER SHAPE because no clause is
+	 * true of all three, and this is the one the other two are not: a
+	 * NON-ABSOLUTE cwd matches "/" — answered before any comparison — and
+	 * nothing else at all, so the chdir dies at the FIRST real component
+	 * rather than at its destination. Driven here because the message claims
+	 * it and this is the layer that decides it. */
+	cwd_path = "srv/app";
+	CHECK(policy_cwd_component("/") == 1,
+	      "a non-absolute cwd still matches / — the predicate answers it before "
+	      "comparing anything");
+	CHECK(policy_cwd_component("/srv") == 0, "but NOT the first real component");
+	CHECK(policy_cwd_component("/srv/app") == 0, "and not the cwd's own spelling");
 }
 
 int main(int argc, char **argv)

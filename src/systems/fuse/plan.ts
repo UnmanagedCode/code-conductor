@@ -222,13 +222,17 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   // asserts both halves against the real table.
   // CONFIGURATION-TIME REFUSAL: THE CWD MUST BE A NORMALISED ABSOLUTE PATH.
   //
-  // It becomes the daemon's `CC_UNION_CWD`, and `policy_cwd_component` compares
-  // it to each candidate byte for byte with a component-boundary check. A
-  // DOUBLED SLASH — or a `.`/`..` component — is the case that bites, and it
-  // bites at the LAST component: `/srv//app` matches `/` and `/srv` and then
-  // fails on the cwd itself, so the chdir walks the whole chain and dies at its
-  // destination. A trailing slash still matches everything and is refused only
-  // because cc owns this input; the daemon's `b28` case pins both halves.
+  // THE GROUND OF REFUSAL IS THAT CC OWNS THE INPUT, AND IT COVERS THE WHOLE
+  // CLASS. `plan.cwdInside` is cc's own value, so any non-normalised spelling is
+  // a cc defect and the repair belongs at the caller.
+  //
+  // THE CONSEQUENCE IS PER SHAPE, AND THERE IS NO SINGLE TRUE UMBRELLA — which
+  // is why the message below branches. `policy_cwd_component` compares
+  // `CC_UNION_CWD` to each candidate byte for byte with a component-boundary
+  // check, so a DOUBLED SLASH or a `.`/`..` component bites at the LAST
+  // component: `/srv//app` matches `/` and `/srv` and then fails on the cwd
+  // itself. A TRAILING slash matches every component and breaks nothing at all.
+  // `b28` pins both halves behaviourally.
   //
   // REFUSED HERE AND IN THE DAEMON, NOT NORMALISED IN EITHER. cc owns this
   // input, so a non-normalised value is a cc defect; and resolving `..`
@@ -241,7 +245,27 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   const cwd = input.cwdInside;
   if (!cwd.startsWith('/') || (cwd !== '/' && (cwd.endsWith('/') || cwd.includes('//')
       || cwd.split('/').some(c => c === '.' || c === '..')))) {
-    throw httpError(501, `FUSE_CWD_NOT_NORMALISED: this session's cwd inside the chroot is '${cwd}', which is not a normalised absolute path (no '//', no trailing '/', no '.' or '..' component). The daemon compares it component by component against every path an unmarked spawn traverses, and a non-normalised spelling breaks that comparison in a way that is hard to read from inside the chroot: a '//' or a '.'/'..' component matches the INTERMEDIATE components and then fails on the cwd itself, so the chdir walks the whole chain and dies at its destination. Fix the spelling here — cc owns this value; do NOT normalise it in the daemon, which cannot resolve '..' through a symlink without touching the filesystem.`, { code: 'FUSE_CWD_NOT_NORMALISED' });
+    // THE GROUND OF REFUSAL IS PRIMARY AND UNIVERSAL; THE CONSEQUENCE IS NAMED
+    // PER MECHANISM, AND THERE ARE THREE.
+    //
+    // Four drafts of this sentence looked for one consequence true of the whole
+    // refused class. There is none, and the class has three distinct mechanisms
+    // under `policy_cwd_component`'s byte-for-byte comparison — so an umbrella
+    // clause is false for at least one member whichever way it is phrased. The
+    // refusal therefore rests on cc owning the input, which covers every member,
+    // and a mechanism line is appended only for the shape at hand.
+    const rel = !cwd.startsWith('/');
+    const trailing = !rel && cwd !== '/' && cwd.endsWith('/');
+    const why = rel
+      // Not absolute: `strncmp(cwd_path, path, len)` fails for every candidate
+      // except `/`, which the predicate answers before comparing anything.
+      ? `Not being absolute, it would match NO component of any path except '/' itself, so an unmarked spawn's chdir would die at the first real component.`
+      : trailing
+        // The boundary test reads the trailing '/' as the separator it wants.
+        ? `This spelling still matches every component, so nothing downstream would fail visibly — which is exactly why it is refused here rather than tolerated: a value cc did not mean to produce is a defect wherever it happens to be harmless.`
+        // '//', '.' and '..' all diverge from the candidate mid-string.
+        : `It would also match the INTERMEDIATE components and then fail on the cwd ITSELF, so an unmarked spawn's chdir would walk the whole chain and die at its destination — the hardest shape to diagnose from outside the chroot.`;
+    throw httpError(501, `FUSE_CWD_NOT_NORMALISED: this session's cwd inside the chroot is '${cwd}', which is not a normalised absolute path (no '//', no trailing '/', no '.' or '..' component). cc owns this value — it is plan.cwdInside, not anything the system or the operator supplied — so any other spelling is a cc DEFECT and the repair belongs at the caller that produced it. Do NOT normalise it in the daemon instead: '..' cannot be resolved correctly without touching the filesystem, because a component may be a symlink. ${why}`, { code: 'FUSE_CWD_NOT_NORMALISED' });
   }
 
   const override = input.sourceOverrideRoot;

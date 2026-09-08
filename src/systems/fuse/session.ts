@@ -149,6 +149,19 @@ export function parsePolicyEvents(text: string): PolicyEventRow[] {
   return out;
 }
 
+// A PIN FIXES EXACTLY ONE KIND OF ROW: a `deny`/`unpinned-fail-closed` one. A
+// `served`/`unmarked-host-served` path already came from the host, and a
+// project-tier denial is not a pin-list gap — a suggestion on either sends the
+// reader to change the wrong thing.
+//
+// THE `kind` TEST IS REDUNDANT AND KEPT ANYWAY, said so that nobody credits it
+// with coverage it cannot have: every reason maps to exactly one kind
+// (source-derived and set-compared in both directions by
+// tests/fuse-union-policy.test.mjs), so `unpinned-fail-closed` is always
+// `deny` and no input the daemon can produce distinguishes dropping it. It is
+// a LOCAL contract — this function's precondition is legible without reaching
+// across files for that invariant — and the REASON test is the one a fixture
+// kills.
 export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string } | null {
   if (row.kind !== 'deny' || row.reason !== 'unpinned-fail-closed') return null;
   const s = suggestPin(row.path);
@@ -173,8 +186,12 @@ async function harvestEvents(rundir: string, instanceId: string): Promise<Policy
 // CAPPED, NEVER COUNTED, and the cap is the whole shape of the sentence. The
 // failure this replaces was a real gate report of `unpinned-fail-closed: 60`
 // where the 60 were ONE missing library — a count named nothing a maintainer
-// could act on. So: up to 20 distinct paths inline, then how many more and where
+// could act on. So: up to 20 ROWS per kind inline, then how many more and where
 // the full list is.
+//
+// ROWS AND NOT PATHS, since the harvest key gained the reason: a path carrying
+// two deny reasons occupies two of the twenty. That is the right unit anyway —
+// the cap exists to bound the OUTPUT, and rows are what the output is made of.
 const EVENT_LINE_CAP = 20;
 
 export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath = fuseEventStore()): string | null {
