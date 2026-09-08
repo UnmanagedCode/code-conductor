@@ -1042,7 +1042,7 @@ describe('the policy event harvest', () => {
   // path, so the two units coincide here and the assertion reads either way;
   // the wording says rows because that is what the code counts.
   // DIES UNDER: removing the cap; dropping the `+K more` clause.
-  test('the line caps the inline paths at 20 and says where the rest are', () => {
+  test('the line caps the inline rows at 20 and says where the rest are', () => {
     const many = Array.from({ length: 31 }, (_, i) => `deny\tgetattr\t/etc/p${i}\tunpinned-fail-closed`).join('\n');
     const line = describePolicyEvents(parsePolicyEvents(many), '/store/events.log');
     const named = [...line.matchAll(/\/etc\/p(\d+)/g)].map(m => Number(m[1]));
@@ -1384,7 +1384,16 @@ describe('the configuration-time containment refusal', () => {
   // PINS THE REFUTED CLAIM AS REFUTED, at the one shape that disproves it. A
   // trailing slash matches EVERY component — `b28` measures it — so any message
   // saying a non-normalised spelling "matches nothing" or that "every chdir
-  // fails" is false here. This is the arm the deleted sentence would red.
+  // fails" is false here.
+  //
+  // WHICH ROLLBACK REDS WHAT, counted rather than asserted loosely. APPENDING
+  // the false clause to the current message reds THIS ARM ALONE, through its
+  // two `doesNotMatch` clauses below — the six per-shape arms above carry only
+  // positive mechanism regexes, which still match with a false clause added.
+  // RESTORING the whole pre-correction message additionally reds those six,
+  // since it contains none of their mechanism wording. So this arm is the only
+  // thing standing between the codebase and the additive form of the
+  // regression, which is the form three rounds of this ticket actually took.
   test('A20w: the trailing-slash refusal does not claim the comparison breaks', async () => {
     const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
     assert.throws(() => buildFusePlan({ ...planArgs, cwdInside: '/srv/app/', sourceOverrideRoot: null }), (e) => {
@@ -1397,7 +1406,7 @@ describe('the configuration-time containment refusal', () => {
     });
   });
 
-  // THE POSITIVE CONTROL, without which every arm above passes against an  // THE POSITIVE CONTROL, without which every arm above passes against an
+  // THE POSITIVE CONTROL, without which every arm above passes against an
   // unconditional throw — and the dotfile case, which a naive `.`-component
   // test would wrongly refuse.
   for (const good of ['/', '/srv/app', '/root/.claude/worktrees/x', '/srv/..hidden']) {
@@ -2371,7 +2380,7 @@ describe('the boot sweep', () => {
       `the operator line carries an unfiltered note: ${line3}`);
   });
 
-  // PINS: a dead entry is reclaimed and reported.  // PINS: a dead entry is reclaimed and reported. An instance id is a fresh
+  // PINS: a dead entry is reclaimed and reported. An instance id is a fresh
   // uuid per process, so everything here at boot is dead by construction.
   test('reclaims a dead record and says what it did', async () => {
     const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
