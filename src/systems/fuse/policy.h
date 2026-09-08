@@ -60,15 +60,20 @@
  * for everything cc did not name. The spike instrument this file forked from
  * put T_DEFAULT there — remote-first with a host fallback — and that fallback
  * is the "one path, two answers" the epic exists to remove. Fail-closed by
- * construction: an unpinned path is served from neither side.
+ * construction: an unpinned path is served from neither side TO THE MARKED CLI.
+ *
+ * IT IS ALSO THE ONE CALLER-SENSITIVE CLASS. For an UNMARKED caller
+ * `policy_caller_tier` substitutes T_HOST, because `fail` is a statement about
+ * cc's pin list and an unmarked caller was never going to be served the remote.
+ * That set is `{T_FAIL}` exactly — see policy_tier_is_caller_sensitive.
  *
  * T_SYNTH is DERIVED, never parsed from the pins file: `pins_load` rejects it
  * as an unknown kind. See the ancestor derivation below for why it has to
  * exist at all.
  *
- * T_CWD is the SECOND derived class and the ONLY CALLER-DEPENDENT one: the
- * narrow cwd exemption (below) assigns it in `route()` for an unmarked caller
- * at the exact project pin, and nowhere else. `pins_load` rejects `cwd` as an
+ * T_CWD is the SECOND derived class: the cwd-chain exemption (below) assigns it
+ * in `route()` for an unmarked caller at a directory component of the CLI's
+ * cwd, and nowhere else. `pins_load` rejects `cwd` as an
  * unknown kind exactly as it rejects `synth`, and `resolve_class` never returns
  * it — so it cannot enter the pins file the hook's tier table is rendered from.
  * Appended, so T_FAIL keeps index 0.
@@ -333,17 +338,36 @@ static inline int policy_synth_getattr(const char *path, struct stat *st)
 	 * how the pin set is inspected. The cwd node is a directory an unmarked
 	 * spawn may ENTER AND NOT READ. Unifying them would either hand an
 	 * unmarked caller the project root's listing or take traversal away from
-	 * the ancestors. */
+	 * the ancestors.
+	 *
+	 * THE PRESSURE TO UNIFY IS NEW, AND THE ARGUMENT NOW CUTS BOTH WAYS.
+	 * Since the cwd exemption widened to the whole chain, both classes are
+	 * ANCESTOR DIRECTORIES and a simplification pass will want them merged.
+	 * Downward (ancestors adopt 0111) makes them traverse-only and breaks a
+	 * MARKED caller's listing — `policy_synth_children` exists precisely so
+	 * a pinned leaf is reachable, and 0555 is what lets that listing happen
+	 * under default_permissions. Upward (T_CWD adopts 0555) hands an unmarked
+	 * caller read-and-list on the cwd chain, which is "the content of these
+	 * remote directories" — the precise thing the 2026-09-08 amendment
+	 * forbade. And it breaks MECHANICALLY too: T_CWD is deliberately NOT in
+	 * the ancestor set, so a node routed here would find no entry and answer
+	 * -ENOENT (see pt_getattr's ordering comment, union.c). */
 	policy_fixed_dir(st, 0555, ino);
 	return 0;
 }
 
 /*
- * THE INODE OF AN EXACTLY-PINNED NODE, for the two fixed-node classes that need
- * one. A `bind` target: bootstrap.sh mounts the orchestrator's own /proc, /sys
+ * THE INODE OF AN EXACTLY-PINNED NODE, for the ONE fixed-node class that needs
+ * one: a `bind` target. bootstrap.sh mounts the orchestrator's own /proc, /sys
  * and /dev over these three, and a bind target has to exist as a directory
- * first. And the cwd node the narrow exemption serves. Neither is in the
- * ancestor set (both carry an exact pin), so they take an index past its end.
+ * first. It is not in the ancestor set (it carries an exact pin), so it takes an
+ * index past its end.
+ *
+ * IT DOES NOT SERVE THE CWD NODE, AND MUST NOT BE MADE TO. It returns ONE
+ * shared fallback for anything unpinned, and the cwd chain covers intermediate
+ * components with no exact pin — so every one of them would report the same
+ * st_ino. `policy_cwd_ino` has its own disjoint sub-range for exactly that
+ * reason; see its comment for what observes the difference.
  */
 static inline unsigned long long policy_bind_ino(const char *path)
 {
@@ -1062,20 +1086,103 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
 	(void)ccu_call(CCU_DIRTY, CCU_FLAG_RELEASE_ONLY, path);
 }
 
-/* ── the narrow cwd exemption ───────────────────────────────────────────── */
+/* ── the one caller-sensitive tier ──────────────────────────────────────── */
 /*
- * AN UNMARKED CALLER MAY RESOLVE THE PROJECT ROOT DIRECTORY, AND NOTHING INSIDE IT.
+ * THE TIER TABLE CLASSIFIES FOR EVERYONE. AN UNMARKED CALLER TAKES NO
+ * TIER-DERIVED ROUTING OR REFUSAL DECISION AT `fail` AND AT NO OTHER TIER:
+ * `fail` → `host`.
+ *
+ * WHY `fail` AND ONLY `fail`. `fail` means "no pin covers this", which is a
+ * statement about the CLI's PIN LIST — not about a caller that was never going
+ * to be served the remote. Every shell, hook, forwarder and MCP subprocess in
+ * the chroot is a fresh, permanently unmarked thread group, and before this the
+ * pin list had to cover every object every one of them loads: that is why
+ * `libtinfo.so.6` killed `bash` although marking never enters it, and why the
+ * list grew each time a new host tool appeared. A project path is pinned BY
+ * CONSTRUCTION (`add('project', systemPath, …)`), so the project tier never was
+ * a source of that growth — all of it was `fail`.
+ *
+ * `project` IS NOT HERE, BY RULING (owner, 2026-09-08). An unmarked caller at
+ * the project path gets NEITHER read NOR write, and `policy_cwd_exempt` below
+ * is the sole exemption. Do not add it in either direction.
+ *
+ * `hide`, `bind`, `synth` and `host` are not here either, and each for its own
+ * reason rather than by omission: `hide` is what keeps the mirror and cc's
+ * control socket unreachable; `bind` is resolved by UNMARKED `mount` for
+ * /proc, /sys and /dev before the marking event ever fires, so substituting it
+ * breaks every launch; `synth` answers a fixed stat that reads nothing; `host`
+ * already IS the host.
+ *
+ * THE ENOENT AT THE FAR SIDE IS THE HOST'S OWN ANSWER, not a policy denial, and
+ * that is the one thing the substitution costs: an unmarked caller's missing
+ * object writes no `deny` row. So `policy_caller_tier` logs the SUBSTITUTION
+ * itself — see below.
+ *
+ * KEPT HERE RATHER THAN INLINE IN route() so the set is drivable from the unit
+ * fixture, where no kernel gate can mask it.
+ */
+static inline int policy_tier_is_caller_sensitive(enum tier t)
+{
+	return t == T_FAIL;
+}
+
+/*
+ * THE RETURNED TIER IS A FUNCTION OF (t, marked) AND NOTHING ELSE — a 7×2 truth
+ * table over the tier enum and the mark, identity everywhere except
+ * (unmarked, T_FAIL).
+ *
+ * `op` AND `path` ARE FOR THE LOG ROW ALONE, and keeping them out of the
+ * DECISION is a property to preserve: an op-sensitive map would give
+ * `pt_rename`'s and `pt_link`'s two routed paths different answers and
+ * manufacture an EXDEV that S2 §8 already measured as a footgun (`mv` masks
+ * it, `rename(2)` does not).
+ *
+ * THE ROW FIRES ON THE SUBSTITUTION, NOT ON THE OUTCOME of the host read that
+ * follows — which is also all this function can know. It therefore means "an
+ * unmarked caller was routed to the host at an unpinned path", which is exactly
+ * the fact a maintainer needs, and it is `served` rather than `deny` because
+ * the op was not refused. Volume is bounded by distinct paths (the log dedupes
+ * on (path, reason)).
+ */
+static inline enum tier policy_caller_tier(const char *op, const char *path,
+					   enum tier t, int marked)
+{
+	if (t != T_FAIL || marked)
+		return t;
+	policy_event(EV_SERVED, op, path, "unmarked-host-served");
+	return T_HOST;
+}
+
+/* ── the cwd-chain exemption ────────────────────────────────────────────── */
+/*
+ * AN UNMARKED CALLER MAY TRAVERSE THE DIRECTORY COMPONENTS OF THE CLI'S CWD,
+ * AND READ NOTHING — not the files under them, and not their listings.
  *
  * WHY IT HAS TO EXIST. A spawn chdir()s into the CLI's cwd IN THE FORKED CHILD,
  * before it execs — so the caller is a new, unmarked thread group, and the
  * project-tier denial kills the process before its own image runs. Every child
  * the CLI spawns at its own cwd died of this (card 2026-0373).
  *
- * WHY IT IS EXACTLY THIS NARROW. Marking exists to stop a custom backend
- * template's proxy setup, spawned by the CLI before `claude` runs, from reading
- * remote bytes. A directory a spawn ENTERS is not a channel for reading bytes.
- * A file is, and so is a listing. So: the exact project root, `getattr` alone,
+ * WHY IT IS THE WHOLE CHAIN AND NOT THE PROJECT ROOT ALONE (owner amendment,
+ * 2026-09-08: "I'm fine with allowing the read of the full traversed cwd of the
+ * remote. Just the directories. Not the files or the content of these remote
+ * directories."). A chdir walks EVERY component, and under an advertised
+ * `mirrorRoot: '/'` the intermediate ones are project-tier with no exact pin —
+ * so a chdir to `<systemPath>` died one component early at, say, `/srv`. That
+ * was card 2026-0375, and this replaces the exact-pin test rather than being
+ * disjoined with it: the narrower sufficient form, since the exact project pin
+ * should not be exempt when the CLI never chdirs there.
+ *
+ * WHY IT IS STILL NARROW. Marking exists to stop a custom backend template's
+ * proxy setup, spawned by the CLI before `claude` runs, from reading remote
+ * bytes. A directory a spawn ENTERS is not a channel for reading bytes. A file
+ * is, and so is a listing. So: the cwd's directory components, `getattr` alone,
  * a fixed traverse-only node, and no control frame.
+ *
+ * THE EXTENT NEEDS NO EXTRA CONDITION. Nothing says "only components that would
+ * otherwise be denied", because this is consulted INSIDE route()'s T_PROJECT
+ * arm and nowhere else — under the default `mirrorRoot` the shallow components
+ * resolve T_SYNTH and never reach it.
  *
  * FOUR CONDITIONS, ALL NECESSARY, AND THIS IS THE WHOLE DECISION — union.c's
  * route() only asks. Keeping the conjunction here is what makes it provable from
@@ -1084,13 +1191,160 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
  * ADDING AN OP HERE ALSO MEANS GIVING THAT OP'S BODY A T_CWD ARM. The op
  * enumeration in tests/fuse-union-policy.test.mjs is what forces the decision.
  */
+
+/* THE CWD, INJECTED ONCE, COMPARED PER OP. Same shape as `mark_path`: one
+ * string, no derived table, so NOTHING CAN GO STALE when the cwd changes —
+ * there is no component list to leave behind.
+ *
+ * IT LIVES HERE AND NOT IN union.c, AND THAT IS A DESIGN REQUIREMENT. The unit
+ * fixture compiles policy.h alone and assigns this directly as a seam, the way
+ * it assigns `policy_proc`, `policy_clock` and `ccu_xport`; a variable in
+ * union.c is undrivable, which is exactly why `mark_path`'s own event is
+ * COVERED NOWHERE. Do not repeat that placement.
+ *
+ * NULL IS FAIL-CLOSED AND union.c REFUSES TO MOUNT ON IT: with no cwd every
+ * component is denied, project root included, so a default would silently
+ * un-exempt 2026-0373's fix while looking like it worked. `main()` refuses,
+ * alongside CC_UNION_MARK_PATH and CC_UNION_CONTROL and for the same class of
+ * reason — one input enables the project tier at all, this one enables entry to
+ * it. */
+static const char *cwd_path = NULL;
+
+/*
+ * `path` IS AN ANCESTOR-OR-EQUAL OF THE CWD, AT A COMPONENT BOUNDARY — "/", the
+ * cwd itself, or any directory between them. Never a sibling, never a child.
+ *
+ * THE BOUNDARY CHECK IS NOT DEFENSIVE TIDINESS: it is the C spelling of the
+ * rule `withinPosix` (src/systems/mirror.ts) keeps by going through
+ * `path.posix.relative` rather than a string prefix, so that `/app-backup` is
+ * not inside `/app`. The trap is identical here in the other direction — for a
+ * cwd of `/root/app3` the candidate `/root/app` IS a string prefix, and a bare
+ * strncmp would exempt a directory that is not on the chain at all. C has no
+ * path.posix.relative, so this is that rule.
+ *
+ * BOTH DIRECTIONS OF THE SIBLING TRAP ARE REJECTED, BY DIFFERENT MECHANICS, and
+ * a case that exercises one proves half the guard: `path = /root/app` against
+ * `cwd = /root/app3` is rejected by `cwd_path[9] == '3'`; `path = /root/app3`
+ * against `cwd = /root/app` is rejected by `strncmp` itself, which meets
+ * `cwd`'s '\0' against '3'. `b22` drives both.
+ */
+static inline int policy_cwd_component(const char *path)
+{
+	size_t len;
+
+	if (!cwd_path || path[0] != '/')
+		return 0;
+	if (path[1] == '\0')
+		/* "/" — every absolute cwd's first component, and the one case
+		 * the boundary test below cannot express. */
+		return 1;
+	len = strlen(path);
+	return strncmp(cwd_path, path, len) == 0
+	    && (cwd_path[len] == '/' || cwd_path[len] == '\0');
+}
+
+/*
+ * THE CWD NODE'S INODE, IN ITS OWN SUB-RANGE, KEYED ON THE COMPONENT'S POSITION
+ * IN THE CHAIN — which is ordered, bounded by PATH_MAX, and derived rather than
+ * tabulated.
+ *
+ * NOT `policy_bind_ino`, AND THAT IS THE MOST LIKELY WAY THIS WIDENING GOES
+ * QUIETLY WRONG. `policy_bind_ino` scans for an EXACT pin and returns ONE
+ * shared fallback for anything unpinned — its own comment states the assumption
+ * it loses here ("Neither is in the ancestor set (both carry an exact pin)").
+ * A widened chain covers intermediate components that have NO exact pin, so
+ * every one of them would report the same st_ino.
+ *
+ * WHAT OBSERVES IT, because the justification has to be something that fires:
+ *   1. `use_ino = 1` is this daemon's OWN stated invariant (pt_init: "A union
+ *      must not invent st_ino… synthetic nodes supply their own from the
+ *      ancestor table, in a range no real filesystem here hands out"). Distinct
+ *      nodes get distinct inodes is a contract this file already makes.
+ *   2. `test -ef` compares (st_dev, st_ino) and needs only two `stat` calls and
+ *      no readdir — measured — so it is REACHABLE under this ruling. Under a
+ *      collision `[ /root -ef /root/app3 ]` would answer TRUE, which is false.
+ *
+ * NOT `getcwd`, and that correction is recorded so nobody re-derives the wrong
+ * reason: measured on glibc 2.41, `getcwd(2)` answers from the dentry cache and
+ * emits no getdents at all, and `chdir(2)` compares no inodes — so glibc's
+ * userspace (dev, ino) fallback is never reached. (If `getcwd(2)` ever DID fail
+ * it would need to readdir each parent, which this ruling denies; no inode
+ * scheme fixes that, and it is an accepted limit of a traverse-only node.)
+ *
+ * DISJOINT FROM BOTH NEIGHBOURING RANGES, and the `npins` term is what makes
+ * the second half true: ancestors take SYNTH_INO_BASE + idx (idx < MAX_ANC),
+ * exact pins take SYNTH_INO_BASE + MAX_ANC + i (i < npins), and the chain
+ * starts past both. Three sub-ranges over one base is exactly the arithmetic
+ * that silently overlaps after an edit, so `b27` pins the disjointness.
+ */
+static inline unsigned long long policy_cwd_ino(const char *path)
+{
+	unsigned long long depth = 0;
+	const char *c;
+
+	/* The component's DEPTH: 0 for "/", else one per '/'. Distinct per
+	 * component of one chain by construction — a chain has exactly one
+	 * component at each depth. */
+	if (path[1] != '\0')
+		for (c = path; *c; c++)
+			if (*c == '/')
+				depth++;
+	return SYNTH_INO_BASE + MAX_ANC + (unsigned long long)npins + depth;
+}
+
+/*
+ * CC_UNION_CWD IS REFUSED WHEN IT IS NOT NORMALISED, NEVER NORMALISED HERE.
+ * Three reasons and the third decides it: normalising means writing a path
+ * canonicaliser in C, which is new code with its own bugs; `..` cannot be
+ * resolved correctly without touching the filesystem, because a component may
+ * be a symlink; and CC OWNS THE INPUT — `plan.cwdInside` is already absolute,
+ * so a non-normalised value is a cc DEFECT and the right response is a loud
+ * refusal. `buildFusePlan` asserts the same thing at configuration time, where
+ * the failure is legible.
+ *
+ * A DOUBLED SLASH — OR A `.`/`..` COMPONENT — IS THE CASE THAT BITES, and it
+ * bites at the LAST component: `cwd = /root//app3` matches `/` and `/root` and
+ * then fails on the cwd ITSELF, so a chdir walks the whole chain and dies at
+ * its destination. A TRAILING slash, by contrast, still matches everything —
+ * the boundary test reads it as the separator it wants — so that half of the
+ * predicate buys no behavioural rescue and is here purely because a
+ * non-normalised input is a cc defect. `b28` asserts both, and asserted the
+ * trailing-slash claim down from the stronger one first stated here.
+ */
+static inline int policy_cwd_normalised(const char *p)
+{
+	const char *c;
+
+	if (!p || p[0] != '/')
+		return 0;
+	if (p[1] == '\0')
+		return 1;                       /* "/" is normalised */
+	if (p[strlen(p) - 1] == '/')
+		return 0;                       /* a trailing slash */
+	for (c = p; *c; ) {
+		const char *end;
+
+		c++;                            /* past the '/' */
+		end = strchr(c, '/');
+		if (!end)
+			end = c + strlen(c);
+		if (end == c)
+			return 0;                       /* "//" */
+		if ((end - c == 1 && c[0] == '.') ||
+		    (end - c == 2 && c[0] == '.' && c[1] == '.'))
+			return 0;                       /* "." or ".." */
+		c = end;
+	}
+	return 1;
+}
+
 static inline int policy_cwd_exempt(const char *op, const char *path, pid_t tid)
 {
-	const struct pin *p = pin_exact(path);
-
-	/* EXACTLY a project pin. A path UNDER one is a file or a subdirectory and
-	 * stays denied, which is why this is pin_exact and not tier_of. */
-	if (!p || p->tier != T_PROJECT)
+	/* A DIRECTORY COMPONENT OF THE CWD. A path UNDER one is a file or a
+	 * subdirectory and stays denied, which is why this is the chain
+	 * predicate and not `tier_of`. THE TIER STATEMENT IS THE CALLER'S:
+	 * route() asks this only inside its T_PROJECT arm. */
+	if (!policy_cwd_component(path))
 		return 0;
 	if (strcmp(op, "getattr") != 0)
 		return 0;
@@ -1101,24 +1355,34 @@ static inline int policy_cwd_exempt(const char *op, const char *path, pid_t tid)
 }
 
 /*
- * THE PROJECT ROOT AS AN UNMARKED CALLER SEES IT: 0111 root:root, nlink 2, size
- * 0, all three times 0, and an inode from the pin table.
+ * A CWD COMPONENT AS AN UNMARKED CALLER SEES IT: 0111 root:root, nlink 2, size
+ * 0, all three times 0, and an inode from the chain's own sub-range. EVERY FIELD
+ * IS A POLICY VALUE, not a placeholder:
  *
- * 0111 AND NOT 0555, AND THAT IS THE RULING IN THE MODE BITS. `d--x--x--x` says
- * "you may enter, you may not read" — so with default_permissions the KERNEL
- * refuses an unmarked `opendir` before this daemon is ever asked, and `stat`
- * succeeding while a listing refuses is a coherent POSIX shape rather than the
- * one-caller-two-answers defect criterion 1 exists to remove. The daemon's op
- * allow-list above is the second gate, and it is the only one for a caller with
- * CAP_DAC_READ_SEARCH.
+ *   S_IFDIR      REQUIRED, not cosmetic. The kernel refuses `chdir` on a
+ *                non-directory with ENOTDIR before the mode is considered at
+ *                all, so the file type IS the traversal.
+ *   0111         `d--x--x--x` says "you may enter, you may not read" — so with
+ *                default_permissions the KERNEL refuses an unmarked `opendir`
+ *                before this daemon is asked, and `stat` succeeding while a
+ *                listing refuses is a coherent POSIX shape rather than the
+ *                one-caller-two-answers defect criterion 1 exists to remove.
+ *                The daemon's op allow-list above is the second gate, and it is
+ *                the only one for a caller with CAP_DAC_READ_SEARCH.
+ *   nlink 2      A DELIBERATE UNDERSTATEMENT, and the second half of the
+ *                ruling: 2 is the minimum for any directory (`.` and `..`),
+ *                and a truthful nlink would disclose HOW MANY SUBDIRECTORIES
+ *                the remote directory has — which is "the content of these
+ *                remote directories".
+ *   uid/gid 0    with mode 0111, unambiguously traverse-only for EVERY uid:
+ *                nobody owns it, so no owner-bit path widens it.
+ *   times, size  all 0 — no timing or size signal about the remote.
  */
 static inline int policy_cwd_getattr(const char *path, struct stat *st)
 {
-	const struct pin *p = pin_exact(path);
-
-	if (!p || p->tier != T_PROJECT)
+	if (!policy_cwd_component(path))
 		return -ENOENT;
-	policy_fixed_dir(st, 0111, policy_bind_ino(path));
+	policy_fixed_dir(st, 0111, policy_cwd_ino(path));
 	return 0;
 }
 

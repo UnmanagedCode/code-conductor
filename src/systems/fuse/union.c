@@ -26,8 +26,12 @@
  *            DAEMON's identity and breaks a bun single-file executable).
  *   hide     ENOENT, and suppressed from the parent's readdir. The union's own
  *            scaffolding, which it must not serve through itself.
- *   fail     ENOENT on both sides, because the system's advertisement excluded
- *            it. Also refused at cc's file-tool seam, so it fails both surfaces.
+ *   fail     ENOENT on both sides FOR THE MARKED CLI, because the system's
+ *            advertisement excluded it or no pin covers it. Also refused at
+ *            cc's file-tool seam, so it fails both surfaces. THE ONE
+ *            CALLER-SENSITIVE CLASS: for an UNMARKED caller it is substituted
+ *            to `host` (policy_caller_tier, policy.h) and a
+ *            `served/unmarked-host-served` row names the path.
  *   synth    DERIVED, never written in the pins file: the ancestors of every
  *            pin, so a pinned leaf is reachable without its parents being
  *            served from anywhere. Read-only, fixed attributes.
@@ -38,14 +42,25 @@
  * answers" this architecture exists to remove, and deleting it is why the
  * event log below is the instrument the pin list is derived from.
  *
+ * THE `fail` → `host` SUBSTITUTION FOR AN UNMARKED CALLER IS NOT THAT FALLBACK
+ * COMING BACK, and the difference is mechanical rather than a matter of degree:
+ * it is host-ONLY, keyed on the CALLER and never on the outcome, deterministic,
+ * and it fires at exactly one tier. Nothing is tried and then retried
+ * elsewhere; at `fail` the marked side has no answer at all, so there is no
+ * second answer for one path to have. Which side served an op is always
+ * knowable — from the trace's `tier=`/`mark=` columns, and by name from the
+ * event log.
+ *
  * ── the caller mark ─────────────────────────────────────────────────────────
  *
  * A thread group is marked the first time it resolves $CC_UNION_MARK_PATH — the
  * CLI's own binary. The mark is sticky, survives exec, is keyed on the TGID and
  * is revalidated against /proc field 22 on every check so a recycled pid cannot
  * inherit it. An UNMARKED caller at a project path gets -ENOENT: never the
- * remote's copy, never the host's. Host-pinned and bind-mounted paths are
- * served to marked and unmarked callers alike. policy.h states the ordering.
+ * remote's copy, never the host's — with the cwd chain (policy_cwd_exempt) as
+ * the sole exemption, `getattr` only. Host-pinned and bind-mounted paths are
+ * served to marked and unmarked callers alike, and an unmarked caller at `fail`
+ * is served the host. policy.h states the ordering.
  *
  * ── the control channel ─────────────────────────────────────────────────────
  *
@@ -102,6 +117,8 @@
  *   CC_UNION_CONTROL     cc's control socket                  (required)
  *   CC_UNION_MARK_PATH   the path whose resolution marks a thread group
  *                                                             (required)
+ *   CC_UNION_CWD         the CLI's cwd INSIDE the chroot, normalised — the
+ *                        chain an unmarked caller may traverse (required)
  *   CC_UNION_MNT         the mountpoint, hidden implicitly (recursion guard)
  *   CC_UNION_TRACE       every path the kernel asks about, with caller identity
  *   CC_UNION_EVENTS      the policy event log — <kind>\t<op>\t<path>\t<reason>,
@@ -544,6 +561,10 @@ static void fd_tier_set(int fd, enum tier t, int writable)
  * There is no `default:` arm and there is no host fallback. The switch below is
  * exhaustive over `enum tier`; anything that reaches past it — T_FAIL, and any
  * member a later edit adds — fails closed and says so in the event log.
+ *
+ * T_FAIL REACHES THAT FALL-THROUGH ONLY FOR A MARKED CALLER now: the
+ * caller-sensitive substitution above rewrote it to T_HOST for an unmarked one,
+ * so `unpinned-fail-closed` is the marked CLI's reason alone.
  */
 /*
  * `cflags` IS THE WHOLE FLAGS BYTE, PASSED THROUGH UNTOUCHED — not a boolean.
@@ -567,6 +588,15 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	/* THE MARKING EVENT, before tier dispatch: reading the CLI's own binary
 	 * is a host-tier op, so a mark set after dispatch would never fire. */
 	mark_maybe(path);
+
+	/* THE ONE CALLER-SENSITIVE TIER — policy.h owns the whole decision and the
+	 * log row; this only asks. Placed here rather than inside an arm because
+	 * the substitution has to happen BEFORE dispatch: the T_HOST arm below is
+	 * what gives the substituted route its host fd. The /proc read is paid
+	 * only where the answer can differ. */
+	if (policy_tier_is_caller_sensitive(r->tier))
+		r->tier = policy_caller_tier(op, path, r->tier,
+			policy_is_marked_tid((pid_t)fuse_get_context()->pid));
 
 	switch (r->tier) {
 	case T_HIDE:
@@ -1633,6 +1663,7 @@ int main(int argc, char *argv[])
 	self_tgid     = getpid();
 	mark_path     = getenv("CC_UNION_MARK_PATH");
 	control_path  = getenv("CC_UNION_CONTROL");
+	cwd_path      = getenv("CC_UNION_CWD");
 
 	if (!rr || !pf) {
 		fprintf(stderr, "cc-union: REFUSED — CC_UNION_REMOTE and "
@@ -1657,6 +1688,31 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CONTROL is required; "
 				"without cc's control socket no remote path can be "
 				"materialised\n");
+		return 1;
+	}
+	/*
+	 * THE CWD IS THE PROJECT TIER'S ONLY DOOR FOR AN UNMARKED CALLER, and it
+	 * plays the same structural role as the mark path: one input enables the
+	 * project tier at all, this one enables ENTRY to it. `policy_cwd_component`
+	 * answers 0 for every path when this is NULL, so the chain — the project
+	 * root included — would be denied and the bootstrap would die at its `cd`.
+	 * A DEFAULT WOULD BE WORSE THAN THE REFUSAL: it would silently un-exempt
+	 * the project root and regress card 2026-0373 while looking like it worked.
+	 */
+	if (!cwd_path) {
+		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CWD is required; "
+				"without it no directory component of the CLI's cwd is "
+				"exempt and every unmarked spawn dies at its chdir\n");
+		return 1;
+	}
+	/* NORMALISED, NOT NORMALISABLE. cc owns this input (`plan.cwdInside`), so a
+	 * non-normalised value is a cc defect; resolving `..` correctly would need
+	 * the filesystem, because a component may be a symlink. `buildFusePlan`
+	 * asserts the same thing at configuration time. */
+	if (!policy_cwd_normalised(cwd_path)) {
+		fprintf(stderr, "cc-union: REFUSED — CC_UNION_CWD=%s is not a normalised "
+				"absolute path (no '//', no trailing '/', no '.' or '..' "
+				"component)\n", cwd_path);
 		return 1;
 	}
 	if (pthread_key_create(&control_key, control_close) != 0) {
@@ -1713,9 +1769,9 @@ int main(int argc, char *argv[])
 	}
 
 	fprintf(stderr, "cc-union: host=%s mirror=%s pins=%zu synth=%zu "
-		"markpath=%s control=%s tgid=%d\n",
+		"markpath=%s control=%s cwd=%s tgid=%d\n",
 		host_root, remote_root, npins, nancs, mark_path, control_path,
-		(int)self_tgid);
+		cwd_path, (int)self_tgid);
 
 	umask(0);
 	return fuse_main(argc, argv, &pt_ops, NULL);

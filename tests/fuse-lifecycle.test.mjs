@@ -846,6 +846,91 @@ describe('the mount literals', () => {
     }
   });
 
+  // A16b — PINS THE DAEMON'S THREE MOUNT PRECONDITIONS AT THE ONLY LAYER THAT
+  // ENFORCES THEM. `main()` is not reachable from the policy fixture (it needs
+  // libfuse, a real socket and a real mount), so each refusal is pinned from
+  // the source, beside A16 and for A16's reason.
+  //
+  // `CC_UNION_CWD` IS NEW WITH 2026-0382 AND THE ABSENCE OF A DEFAULT IS THE
+  // POINT. The cwd-chain exemption REPLACED the exact-pin test rather than
+  // being disjoined with it, so a missing cwd un-exempts the project root as
+  // well as the chain — regressing card 2026-0373 while looking exactly like a
+  // working mount. A default would be worse than the refusal.
+  test('A16b: the daemon refuses to mount without the mark path, the control socket or the cwd', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src', 'systems', 'fuse');
+    const src = await readFile(path.join(dir, 'union.c'), 'utf8');
+    for (const v of ['CC_UNION_MARK_PATH', 'CC_UNION_CONTROL', 'CC_UNION_CWD']) {
+      assert.match(src, new RegExp(`REFUSED — ${v} is required`),
+        `union.c no longer refuses to mount without ${v}`);
+    }
+    // AND THE CWD IS VALIDATED, NOT ONLY PRESENT. A non-normalised spelling
+    // matches no component, so the daemon would mount and every unmarked chdir
+    // would die at its destination with nothing to say why.
+    assert.match(src, /if \(!policy_cwd_normalised\(cwd_path\)\) \{/,
+      'union.c no longer validates CC_UNION_CWD at mount time');
+    // NO DEFAULT, asserted as the absence of one: `?:` is how union.c spells a
+    // default (CC_UNION_HOST_ROOT has one), so a `getenv("CC_UNION_CWD") ?: …`
+    // would read as a working mount that silently un-exempts the project root.
+    assert.match(src, /cwd_path\s*= getenv\("CC_UNION_CWD"\);/,
+      'CC_UNION_CWD is read with a default, or not read into cwd_path at all');
+  });
+
+  // 2c — THE BOOTSTRAP'S MARK ORDERING, PINNED AT THE LAYER THAT ENFORCES IT.
+  //
+  // THE INVARIANT: the CLI's thread group makes NO union op before the marking
+  // event except its own interpreter load. That is what keeps S2 §9.1's
+  // straddle hazard closed in production — measured at 65 pre-mark ops over 16
+  // distinct paths, every one of them `host` or `synth`, zero resolving
+  // `project`, `fail` or `hide`.
+  //
+  // THE ENFORCING LAYER FOR A SHELL SCRIPT'S STATEMENT ORDER IS THE SCRIPT
+  // TEXT, so this is a source-text test and needs no sudo and no mount. It runs
+  // in plain `npm test`, which is where a reordering would otherwise go
+  // unnoticed until the real gate.
+  //
+  // Firing the mark HOST-SIDE, before the chroot exec, would empty the window
+  // entirely — and was ruled out because it would make dash's own pins
+  // load-bearing again. It would COST pins. So the ordering is what is pinned.
+  //
+  // DIES UNDER: moving the mark below the `cd`; inserting ANY command above it;
+  // deleting it.
+  test('2c: bootstrap.sh fires the marking event as its FIRST chroot statement, before the cd', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const src = await readFile(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'systems', 'fuse', 'bootstrap.sh'), 'utf8');
+    // The single-quoted script body of the final `exec "$CHROOT_BIN" … /bin/sh -c '…'`.
+    const at = src.indexOf('exec "$CHROOT_BIN" "$CC_FUSE_ROOT" /bin/sh -c \'');
+    assert.ok(at > 0, 'the final chroot exec is not the shape this test pins — re-anchor or repair');
+    const open = src.indexOf("'", at);
+    const close = src.indexOf("'", open + 1);
+    assert.ok(close > open, 'the chroot script body is unterminated');
+    const body = src.slice(open + 1, close);
+    // Statements only: comments, blank lines and the leading indentation go.
+    const stmts = body.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+    assert.ok(stmts.length >= 4, `the chroot script body was not parsed: ${JSON.stringify(stmts)}`);
+    // 1. THE MARK IS THE FIRST STATEMENT. A plain existence test, because the
+    //    daemon marks on RESOLUTION — a stat is the whole event.
+    assert.equal(stmts[0], '[ -e "$5" ] || :',
+      'the marking event is not the FIRST statement of the chroot script — every union op this '
+      + 'thread group makes before it is an UNMARKED op on the pid that becomes the CLI');
+    // 2. AND THE cd IS STRICTLY AFTER IT. Without the mark the first union op
+    //    this pid makes is the `cd` into the project tree, unmarked, and the
+    //    launch dies "cwd does not exist inside the chroot" before the CLI runs.
+    const cd = stmts.findIndex(l => l.startsWith('cd "$2"'));
+    assert.ok(cd > 0, `the chroot script no longer cds to the CLI's cwd: ${JSON.stringify(stmts)}`);
+    assert.ok(cd > 0 && stmts.indexOf(stmts[0]) === 0 && cd > stmts.indexOf(stmts[0]),
+      'the `cd` is not strictly after the marking event');
+    // 3. `$5` IS THE MARK PATH, positionally — the argument list is what makes
+    //    `[ -e "$5" ]` mean anything at all, and a reordering there would make
+    //    the mark stat probe some other path while still passing (1) and (2).
+    const argv = src.slice(close + 1).split('\n')[0];
+    assert.match(argv, /^ sh "\$SETPRIV_BIN" "\$CC_FUSE_CWD" "\$CC_FUSE_UID" "\$CC_FUSE_GID" "\$CC_FUSE_MARK_PATH" "\$@"$/,
+      `the chroot script's positional arguments changed, so "$5" is no longer the mark path and `
+      + `"$2" no longer the cwd: ${argv}`);
+  });
+
   // A17 — PINS the mount options as LITERALS. Every one is load-bearing and
   // none is observable without a real mount: the daemon runs as root and serves
   // callers of another uid (`allow_other` + `default_permissions`), and FUSE's
@@ -964,6 +1049,52 @@ describe('the configuration-time containment refusal', () => {
   // staging area to the worker as remote content. IN PRODUCTION THERE IS NO
   // ROOT AT ALL — a path P from the daemon IS the path on the system — so this
   // guards the override, which is what it always guarded.
+
+  // ── THE CWD, AT CONFIGURATION TIME ────────────────────────────────────────
+  //
+  // PINS: `buildFusePlan` refuses a non-normalised `cwdInside`, with
+  // `FUSE_REMOTE_ROOT_CONTAINS_MIRROR` as the precedent for both the placement
+  // and the wording.
+  //
+  // THE DEFECT IT REPLACES. `plan.cwdInside` becomes the daemon's
+  // `CC_UNION_CWD`, and `policy_cwd_component` compares it to each candidate
+  // byte for byte at a component boundary. A doubled slash — or a `.`/`..`
+  // component — matches every INTERMEDIATE component and then fails on the cwd
+  // itself, so the chdir walks the whole chain and dies at its destination,
+  // which is the hardest shape to diagnose from outside the chroot.
+  //
+  // NEITHER LAYER NORMALISES, AND BOTH REFUSE. cc owns this input, so any other
+  // spelling is a cc defect; and resolving `..` correctly needs the filesystem,
+  // because a component may be a symlink. The daemon's own refusal is pinned by
+  // A16b; the driver's predicate by `b28`. This is the layer where the failure
+  // is legible — the daemon's arrives inside the bootstrap's mount-wait loop.
+  //
+  // DIES UNDER: deleting the check; accepting a trailing slash; accepting a
+  // `..` component; refusing a dotfile-named component (which would refuse a
+  // real cwd, `~/.claude/worktrees/x` being the obvious one).
+  for (const bad of ['/srv/app/', '/srv//app', '/srv/./app', '/srv/../app', 'srv/app', '']) {
+    test(`A20w: buildFusePlan refuses a non-normalised cwd ${JSON.stringify(bad)}`, async () => {
+      const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+      assert.throws(() => buildFusePlan({ ...planArgs, cwdInside: bad, sourceOverrideRoot: null }), (e) => {
+        assert.equal(e.code, 'FUSE_CWD_NOT_NORMALISED');
+        assert.equal(e.statusCode, 501);
+        assert.ok(e.message.includes(bad === '' ? "''" : bad), e.message);
+        // It says WHY, because the repair is in cc and not on the host.
+        assert.match(e.message, /component by component/);
+        return true;
+      });
+    });
+  }
+
+  // THE POSITIVE CONTROL, without which every arm above passes against an
+  // unconditional throw — and the dotfile case, which a naive `.`-component
+  // test would wrongly refuse.
+  for (const good of ['/', '/srv/app', '/root/.claude/worktrees/x', '/srv/..hidden']) {
+    test(`A20w: …and accepts the normalised cwd ${JSON.stringify(good)}`, async () => {
+      const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+      assert.equal(buildFusePlan({ ...planArgs, cwdInside: good, sourceOverrideRoot: null }).cwdInside, good);
+    });
+  }
 
   // Arm (b). Mutation it must die under: deleting the containment check.
   test('A20b: a non-/ remote root containing the mirror is refused', async () => {

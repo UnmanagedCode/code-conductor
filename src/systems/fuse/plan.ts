@@ -220,6 +220,30 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   // descends, and the chain from the projects root down to `runDir` is `host`,
   // so no frame ever names the mirror's parent. `tests/fuse-lifecycle.test.mjs`
   // asserts both halves against the real table.
+  // CONFIGURATION-TIME REFUSAL: THE CWD MUST BE A NORMALISED ABSOLUTE PATH.
+  //
+  // It becomes the daemon's `CC_UNION_CWD`, and `policy_cwd_component` compares
+  // it to each candidate byte for byte with a component-boundary check. A
+  // DOUBLED SLASH — or a `.`/`..` component — is the case that bites, and it
+  // bites at the LAST component: `/srv//app` matches `/` and `/srv` and then
+  // fails on the cwd itself, so the chdir walks the whole chain and dies at its
+  // destination. A trailing slash still matches everything and is refused only
+  // because cc owns this input; the daemon's `b28` case pins both halves.
+  //
+  // REFUSED HERE AND IN THE DAEMON, NOT NORMALISED IN EITHER. cc owns this
+  // input, so a non-normalised value is a cc defect; and resolving `..`
+  // correctly needs the filesystem, because a component may be a symlink. This
+  // is the layer where the failure is legible — the daemon's own refusal
+  // arrives inside the bootstrap's mount-wait loop.
+  //
+  // `FUSE_REMOTE_ROOT_CONTAINS_MIRROR` below is the precedent for both the
+  // placement and the wording.
+  const cwd = input.cwdInside;
+  if (!cwd.startsWith('/') || (cwd !== '/' && (cwd.endsWith('/') || cwd.includes('//')
+      || cwd.split('/').some(c => c === '.' || c === '..')))) {
+    throw httpError(501, `FUSE_CWD_NOT_NORMALISED: this session's cwd inside the chroot is '${cwd}', which is not a normalised absolute path (no '//', no trailing '/', no '.' or '..' component). The daemon compares it component by component against every path an unmarked spawn traverses, so a non-normalised spelling matches nothing and every chdir in the chroot fails.`, { code: 'FUSE_CWD_NOT_NORMALISED' });
+  }
+
   const override = input.sourceOverrideRoot;
   const inside = override === null || override === '/' ? null : withinPosix(mirror, override);
   if (inside !== null) {
