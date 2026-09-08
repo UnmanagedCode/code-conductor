@@ -97,7 +97,10 @@ export interface TeardownReport {
   // THE DAEMON'S POLICY EVENTS, harvested from `<rundir>/events.log`
   // IMMEDIATELY BEFORE the run directory is reclaimed — the reclaim is what used
   // to destroy the only record of a fail-closed path. One entry per DISTINCT
-  // path, in the order the daemon first wrote it.
+  // PATH, in the order the daemon first wrote it — narrower than the harvested
+  // ROWS, which are keyed `(path, reason)` because two callers can reach one
+  // path with two reasons. This is a path list and its one consumer (the boot
+  // sweep) asks only whether it is empty.
   eventPaths: string[];
   notes: string[];
 }
@@ -105,8 +108,8 @@ export interface TeardownReport {
 // One row of the daemon's event log: `<kind>\t<op>\t<path>\t<reason>`.
 export interface PolicyEventRow { kind: string; op: string; path: string; reason: string }
 
-// THE HARVEST. Reads a session's event log and APPENDS it to the store-wide one,
-// one line per distinct path, so the evidence outlives the run directory.
+// THE HARVEST. Reads a session's event log and APPENDS it to the store-wide one
+// so the evidence outlives the run directory.
 //
 // `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<suggested list>\t<suggested entry>`
 //
@@ -114,6 +117,20 @@ export interface PolicyEventRow { kind: string; op: string; path: string; reason
 // scoping is not cosmetic: a pin does not fix an `unmarked-host-served` row —
 // that path already came from the host — so suggesting one would send the reader
 // to change the wrong thing.
+//
+// DEDUPED ON `(path, reason)`, THE DAEMON'S OWN KEY, AND NOT ON THE PATH.
+// THE PATH-KEYED VERSION WAS A REAL DEFECT and the reason is worth keeping: the
+// daemon writes two rows for one path whenever two CALLERS reach it, which
+// happens routinely — `/var` carries `deny`/`unpinned-fail-closed` from the
+// marked CLI and `served`/`unmarked-host-served` from an unmarked one, observed
+// in real gate runs. A path key kept whichever row was written FIRST, so when
+// the `served` row won, the `deny` row was dropped and the store carried NO PIN
+// SUGGESTION for a path the CLI's own denial had asked for. Nothing said so; the
+// row simply was not there — which defeats the one thing this log is for.
+//
+// This departs from plan §4a's "one row per distinct path" deliberately (owner,
+// recorded on card 2026-0382). Matching the daemon's key is also what makes the
+// two artifacts comparable at all.
 //
 // BEST-EFFORT THROUGHOUT. `runTeardown` never rejects, and a store the harvest
 // cannot write is not a reason to abandon a mount.
@@ -124,8 +141,9 @@ export function parsePolicyEvents(text: string): PolicyEventRow[] {
     if (line === '') continue;
     const [kind, op, p, reason] = line.split('\t');
     if (!kind || !op || !p || !reason) continue;
-    if (seen.has(p)) continue;
-    seen.add(p);
+    const key = `${p}\t${reason}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({ kind, op, path: p, reason });
   }
   return out;
@@ -584,7 +602,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        is exactly one whose events a maintainer wants.
   try {
     const rows = await harvestEvents(rundir, report.instanceId);
-    report.eventPaths = rows.map(r => r.path);
+    report.eventPaths = [...new Set(rows.map(r => r.path))];
     const line = describePolicyEvents(rows);
     if (line) {
       // The session's own stream — what an operator watching this session is

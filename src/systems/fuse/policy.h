@@ -1018,10 +1018,22 @@ static inline int event_dup(const char *key)
 }
 
 /*
- * THE DEDUPE KEY IS (path, reason) AND NOT (kind, path, reason). A reason
- * belongs to exactly one kind — pinned two-directionally by `b24` — so adding
- * the kind to the key could only ever split a row that is already unique, and
- * would hide a mutant that emitted one reason under both kinds.
+ * THE DEDUPE KEY IS (path, reason) AND NOT (kind, path, reason), AND THE CHOICE
+ * IS UNOBSERVABLE RATHER THAN LOAD-BEARING — said plainly, because the opposite
+ * was claimed here and no mutant could have tested it.
+ *
+ * The kind is a FUNCTION of the reason: every reason maps to exactly one kind,
+ * derived from every `policy_event(` call site in both C sources and
+ * set-compared in both directions by `tests/fuse-union-policy.test.mjs`. So on
+ * any emission this daemon can produce the two keys partition identically, and
+ * adding the kind could only split a row that is already unique. It is left out
+ * because a key should carry no derived field.
+ *
+ * WHAT THAT COSTS, NAMED: a defect emitting one reason under BOTH kinds would
+ * collapse to a single row here rather than showing two. That is acceptable
+ * only because the one-kind-per-reason property is checked AT THE CALL SITES,
+ * where it is decidable from the source, and never inferred from a row count in
+ * this log.
  */
 static inline void policy_event(enum ev_kind kind, const char *op,
 				const char *path, const char *reason)

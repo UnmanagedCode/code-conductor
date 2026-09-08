@@ -241,7 +241,7 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
   const cwd = input.cwdInside;
   if (!cwd.startsWith('/') || (cwd !== '/' && (cwd.endsWith('/') || cwd.includes('//')
       || cwd.split('/').some(c => c === '.' || c === '..')))) {
-    throw httpError(501, `FUSE_CWD_NOT_NORMALISED: this session's cwd inside the chroot is '${cwd}', which is not a normalised absolute path (no '//', no trailing '/', no '.' or '..' component). The daemon compares it component by component against every path an unmarked spawn traverses, so a non-normalised spelling matches nothing and every chdir in the chroot fails.`, { code: 'FUSE_CWD_NOT_NORMALISED' });
+    throw httpError(501, `FUSE_CWD_NOT_NORMALISED: this session's cwd inside the chroot is '${cwd}', which is not a normalised absolute path (no '//', no trailing '/', no '.' or '..' component). The daemon compares it component by component against every path an unmarked spawn traverses, and a non-normalised spelling breaks that comparison in a way that is hard to read from inside the chroot: a '//' or a '.'/'..' component matches the INTERMEDIATE components and then fails on the cwd itself, so the chdir walks the whole chain and dies at its destination. Fix the spelling here — cc owns this value; do NOT normalise it in the daemon, which cannot resolve '..' through a symlink without touching the filesystem.`, { code: 'FUSE_CWD_NOT_NORMALISED' });
   }
 
   const override = input.sourceOverrideRoot;

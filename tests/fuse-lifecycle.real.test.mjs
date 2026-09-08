@@ -1158,7 +1158,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
       // (e) THE DAEMON SAID SO ITSELF, rather than the decision being read off
       // a shell's exit code: the routed tier is in the trace, and the root is
-      // NOT in the refusal log while the two paths under it are.
+      // NOT in the event log while the two paths under it are.
       // THE PLAN'S OWN PATH, not one this arm chose: `buildFusePlan` puts the
       // trace at `<rundir>/trace.log` (plan.ts:233) and `wrapLaunch` hands
       // exactly that to the worker as `CC_FUSE_TRACE_LOG` (wrap.ts:88). Read

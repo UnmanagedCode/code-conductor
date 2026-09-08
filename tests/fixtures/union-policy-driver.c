@@ -516,7 +516,7 @@ static void b12_errno(void)
 }
 
 /*
- * ── B14: the control failures each name themselves in the refusal log ─────
+ * ── B14: the control failures each name themselves in the event log ───────
  *
  * R4 asserts the ABSENCE of `control-unavailable` and `control-refused` after a
  * real turn, which is vacuously true if neither is ever written. These are the
@@ -620,10 +620,15 @@ static void b13_refusals(void)
 		CHECK(strncmp(line, "deny\t", 5) == 0 || strncmp(line, "served\t", 7) == 0,
 		      "the FIRST column is the kind: %s", line);
 	}
-	/* THE DEDUPE KEY IS (path, reason) AND NOT (kind, path, reason): the same
-	 * pair under the OTHER kind is still one row. That is what makes a mutant
-	 * emitting one reason under both kinds visible rather than deduped away. */
-	CHECK(n_ax == 1, "and the dedupe is kind-blind — (/a, x) stayed at one row");
+	/* WHAT THIS CASE DELIBERATELY DOES NOT PIN, so nobody credits it with the
+	 * kind's place in the dedupe key. The key is (path, reason) and NOT
+	 * (kind, path, reason), and that choice is UNOBSERVABLE: every reason maps
+	 * to exactly one kind — derived from both C sources and set-compared in
+	 * both directions by tests/fuse-union-policy.test.mjs — so the two keys
+	 * partition every emission this daemon can produce identically, and no
+	 * mutant can distinguish them. An assertion here would either duplicate
+	 * the (/a, x) count above or manufacture a cross-kind emission the daemon
+	 * cannot make. See policy_event's own comment for what that costs. */
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
@@ -646,7 +651,7 @@ static void b0_parse(void)
 	CHECK(strstr(policy_err, "unknown kind") != NULL, "and says so: %s", policy_err);
 	{
 		/* AND `cwd` IS REJECTED THE SAME WAY. This is the STRUCTURAL
-		 * proof that the narrow cwd exemption can never enter the
+		 * proof that the cwd-chain exemption can never enter the
 		 * artifact the hook's tier table shares: T_CWD is derived in C
 		 * by route(), so no pins file can name it and no `cwd` entry can
 		 * reach `renderPinsFile`'s consumers. */
@@ -940,7 +945,7 @@ static void b17_cwd_exempt(int argc, char **argv)
 	      "from the cache, with no second round trip — which is what an entry "
 	      "written by the exemption would have done to the call above (%d)", xport_calls);
 
-	/* THE REFUSAL LOG: the two paths under the root are refused BY NAME, and
+	/* THE EVENT LOG: the two paths under the root are refused BY NAME, and
 	 * the root itself is not refused at all. */
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {

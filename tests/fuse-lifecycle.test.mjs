@@ -916,6 +916,71 @@ describe('the policy event harvest', () => {
     ]);
   });
 
+  // PINS: THE HARVEST DEDUPES ON `(path, reason)`, EXACTLY AS THE DAEMON DOES —
+  // and the daemon really does write two rows for one path, because two
+  // CALLERS can reach it. Observed in real gate runs: `/var` carries
+  // `deny`/`unpinned-fail-closed` from the marked CLI and
+  // `served`/`unmarked-host-served` from an unmarked one.
+  //
+  // A PATH-ONLY KEY DEFEATS THE LOG'S WHOLE PURPOSE, which is why this is a bug
+  // and not a tidiness question: `pinSuggestionFor` fires only on
+  // `deny`/`unpinned-fail-closed`, so whenever the `served` row happened to be
+  // written first the `deny` row was dropped and **the store carried no pin
+  // suggestion for a path the CLI's own denial had asked for**. Nothing said so;
+  // the row simply was not there.
+  //
+  // This deliberately departs from plan §4a's "one row per distinct path" —
+  // recorded on the card — because the log exists so a pin suggestion reaches a
+  // human, and a path-keyed row can silently be the wrong one of the two.
+  //
+  // DIES UNDER: keying the harvest on the path alone (either row order);
+  // keying it on `(kind, path, reason)` would NOT die here and is not claimed —
+  // see `b13`'s note on why that mutant is semantics-preserving.
+  test('the harvest keeps both reasons for one path, as the daemon does', async () => {
+    // BOTH ORDERS, in two sessions, because a path-only key keeps whichever row
+    // came FIRST — so one order alone passes against the bug half the time.
+    for (const [label, rows] of [
+      ['served first', ['served\tgetattr\t/var\tunmarked-host-served',
+                        'deny\tgetattr\t/var\tunpinned-fail-closed']],
+      ['deny first', ['deny\tgetattr\t/var\tunpinned-fail-closed',
+                      'served\tgetattr\t/var\tunmarked-host-served']],
+    ]) {
+      // The PARSE, where the dedupe lives.
+      const parsed = parsePolicyEvents(rows.join('\n') + '\n');
+      assert.deepEqual(parsed.map(r => `${r.kind}/${r.reason}`).sort(),
+        ['deny/unpinned-fail-closed', 'served/unmarked-host-served'],
+        `${label}: the harvest dropped one of the two reasons for /var`);
+      // …and a THIRD row repeating a (path, reason) pair is still one row, so
+      // this widened the key rather than removing the dedupe.
+      const withDup = parsePolicyEvents([...rows, rows[0]].join('\n') + '\n');
+      assert.equal(withDup.length, 2, `${label}: the (path, reason) dedupe is gone`);
+
+      // AND THE CONSEQUENCE, end to end at the store, which is what the bug
+      // actually cost: the pin suggestion for /var is present.
+      const { rundir, record } = await seedRun();
+      await fs.writeFile(path.join(rundir, 'events.log'), rows.join('\n') + '\n');
+      const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+      const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+      const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+      const stored = (await fs.readFile(fuseEventStore(), 'utf8')).split('\n').filter(Boolean)
+        .map(l => l.split('\t')).filter(r => r[1] === record.instanceId);
+      assert.equal(stored.length, 2, `${label}: ${JSON.stringify(stored)}`);
+      const deny = stored.find(r => r[2] === 'deny');
+      assert.ok(deny, `${label}: the deny row for /var never reached the store`);
+      assert.deepEqual([deny[5], deny[6]], ['UNDECIDED', '/var'],
+        `${label}: the deny row reached the store with no pin suggestion`);
+      // The served row is still there and still carries none.
+      const served = stored.find(r => r[2] === 'served');
+      assert.deepEqual([served[5], served[6]], ['', ''], label);
+      // `eventPaths` stays a DISTINCT-PATH list — it is a path list, and its one
+      // consumer (the boot sweep) asks only whether it is empty.
+      assert.deepEqual(report.eventPaths, ['/var'], label);
+      // And the sentence names the repair, which is the half the bug removed.
+      assert.match(report.notes.find(n => n.startsWith('cc-fuse: ')) ?? '',
+        /no array in src\/systems\/fuse\/tierTable\.ts obviously owns \/var/, label);
+    }
+  });
+
   // PINS: a pin is suggested for `deny`/`unpinned-fail-closed` AND FOR NOTHING
   // ELSE. A `served` row's path already came from the host and a
   // project-tier denial is not a pin-list gap, so suggesting a pin for either
@@ -1047,9 +1112,15 @@ describe('the mount literals', () => {
       assert.match(src, new RegExp(`REFUSED — ${v} is required`),
         `union.c no longer refuses to mount without ${v}`);
     }
-    // AND THE CWD IS VALIDATED, NOT ONLY PRESENT. A non-normalised spelling
-    // matches no component, so the daemon would mount and every unmarked chdir
-    // would die at its destination with nothing to say why.
+    // AND THE CWD IS VALIDATED, NOT ONLY PRESENT — because the failure a
+    // non-normalised spelling produces is diagnosable only from inside the
+    // chroot. A '//' or a '.'/'..' component matches the INTERMEDIATE
+    // components and then fails on the cwd ITSELF, so without this the daemon
+    // mounts and the chdir walks the whole chain and dies at its destination. A
+    // trailing slash matches every component and is refused on ownership of the
+    // input rather than on a broken comparison. `b28` pins both halves; the
+    // mount refusal below is what replaces the far-away failure with a named
+    // one.
     assert.match(src, /if \(!policy_cwd_normalised\(cwd_path\)\) \{/,
       'union.c no longer validates CC_UNION_CWD at mount time');
     // NO DEFAULT, asserted as the absence of one: `?:` is how union.c spells a
@@ -2145,6 +2216,44 @@ describe('the boot sweep', () => {
     return dir;
   };
   const emptyScan = async () => ({ ok: true, raw: '' });
+
+  // PINS: A CRASHED SESSION'S POLICY EVENTS REACH THE OPERATOR LOG — plan §4b's
+  // THIRD surface, and the only one that can serve this case. The other two are
+  // the session's own stderr stream and the spawn-failure message, and a
+  // session lost to a crash has neither: its stream is gone and no launch is
+  // waiting. This boot is the one place its events are ever read aloud.
+  //
+  // ON THE CLEAN PATH SPECIFICALLY. The wedged arm already prints `notes`, so
+  // asserting there would pass against a deleted block; a reclaimed session
+  // prints only the `reclaimed …` line unless this fires.
+  // DIES UNDER: deleting the `!report.wedged && report.eventPaths.length` block
+  // in sweep.ts; dropping the `cc-fuse: ` filter so it prints nothing; moving
+  // the harvest after the reclaim (the log would be gone and `eventPaths` empty).
+  test('a crashed session’s policy events reach the operator log', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const dir = await seedEntry('events-1');
+    await fs.writeFile(path.join(dir, 'events.log'),
+      'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n');
+    const warned = [];
+    const reports = await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => warned.push(a.join(' ')) } });
+    // The precondition: this is the CLEAN path, so the wedged arm is not what
+    // produced the line below.
+    assert.equal(reports[0].wedged, false, JSON.stringify(reports[0]));
+    assert.equal(reports[0].removedRunDir, true);
+    const line = warned.find(w => w.includes('libtinfo.so.6'));
+    assert.ok(line, `no operator-log line named the refused path: ${warned.join(' | ')}`);
+    // AND IT CARRIES THE REPAIR, not just the path — the whole point of the
+    // surface is that stderr already said "cannot open shared object file".
+    assert.match(line, /add \/usr\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6 to LOADER_OBJECTS/, line);
+    assert.ok(line.includes('events-1'), `the line does not name the session: ${line}`);
+    // NON-VACUITY: a session with NO events prints no such line, so the
+    // assertion above is about this block and not about the `reclaimed` line.
+    await seedEntry('events-2');
+    const w2 = [];
+    await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => w2.push(a.join(' ')) } });
+    assert.deepEqual(w2.filter(w => w.includes('events-2') && w.includes('tierTable.ts')), [],
+      `a session with no events still printed a pin suggestion: ${w2.join(' | ')}`);
+  });
 
   // PINS: a dead entry is reclaimed and reported. An instance id is a fresh
   // uuid per process, so everything here at boot is dead by construction.

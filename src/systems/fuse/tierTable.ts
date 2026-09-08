@@ -144,7 +144,7 @@ const LOADER_OBJECTS = [
   '/usr/lib/x86_64-linux-gnu/libnss_files.so.2',
   '/usr/lib/x86_64-linux-gnu/libnss_systemd.so.2',
   '/usr/lib/x86_64-linux-gnu/gconv',
-  // DERIVED FROM THE REFUSAL LOG, not from a brief. Under the instrument's host
+  // DERIVED FROM THE EVENT LOG, not from a brief. Under the instrument's host
   // fallback these were served whether pinned or not, so nothing named them
   // until the `fail` tier made an unpinned NEEDED object -ENOENT:
   //

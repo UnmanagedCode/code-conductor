@@ -62,6 +62,50 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+// C COMMENTS BLANKED, OFFSETS PRESERVED — every comment byte becomes a space
+// (newlines kept), so a scanner over the result still reports positions that
+// index the original.
+//
+// IT IS NOT TIDINESS: a source-text derivation that cannot tell code from prose
+// counts the PROSE. This one caught it — a `policy_event(` written inside
+// policy.h's own explanatory comment was parsed as a call site and read as an
+// unterminated one, because a comment has no argument list to close. Any
+// derivation below that talks about "call sites" therefore runs on the stripped
+// text, and the string/char-literal states are tracked so a literal containing
+// `//` or `/*` is not mistaken for a comment opener.
+function stripCComments(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i], d = src[i + 1];
+    if (c === '"' || c === "'") {
+      const q = c;
+      out += c; i++;
+      while (i < n) {
+        if (src[i] === '\\') { out += src.slice(i, i + 2); i += 2; continue; }
+        out += src[i];
+        if (src[i] === q) { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === '/' && d === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? n : end + 2;
+      for (let k = i; k < stop; k++) out += src[k] === '\n' ? '\n' : ' ';
+      i = stop;
+      continue;
+    }
+    if (c === '/' && d === '/') {
+      while (i < n && src[i] !== '\n') { out += ' '; i++; }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 // One body extractor, shared by both source-shape tests.
 function bodyOfIn(src, op) {
   const at = src.indexOf(`static int pt_${op}(`);
@@ -149,7 +193,14 @@ describe('the compiled policy driver', { skip }, () => {
     ['b14-reasons',   'each control failure names itself in the event log as a `deny` row, and the three are distinguished',
                       'collapse remote-absent and control-refused into one reason'],
     ['b13-refusals',  'the event log records each (path, reason) exactly once, as four columns with the KIND first',
-                      'drop the dedupe, or key it on op as well; append the kind instead of leading with it; add the kind to the dedupe key'],
+                      'drop the dedupe, or key it on op as well; append the kind instead of leading with it'],
+    // NOT `add the kind to the dedupe key` — that mutant is SEMANTICS-
+    // PRESERVING and therefore unkillable anywhere. Every reason maps to
+    // exactly one kind (the source-derived set equality below), so the kind is
+    // a function of the reason and the two keys partition identically. Listed
+    // as a mutant for one round; removed rather than "killed", because the only
+    // way to kill it would be to assert on a cross-kind emission the daemon
+    // cannot produce.
     ['b16-abandon',   'a project-tier abandon sends a RELEASE_ONLY DIRTY and drops the cached decision; no other tier sends anything',
                       'delete the ccu_call or the cache_invalidate; give the frame a REMOVED or FOR_WRITE bit or a BARE ZERO (which cc cannot tell from a killed handle\'s release); widen the tier test'],
     ['b17-cwd-exempt', 'an unmarked caller may getattr the cwd (here the project root) and nothing inside it, from a fixed 0111 node in the chain inode sub-range, with no frame and no cache entry',
@@ -174,7 +225,7 @@ describe('the compiled policy driver', { skip }, () => {
                       'make the substitution emit a `deny` row at T_FAIL; make T_PROJECT stop denying'],
     ['b22-cwd-chain-extent',
                       'the cwd chain is ancestor-or-equal AT A COMPONENT BOUNDARY — both directions of the prefix-sharing sibling trap, and an unset cwd exempts nothing',
-                      "drop the `/`-boundary check ⇒ /root/app and /roo become exempt for a cwd of /root/app3; use tier_of instead of the chain ⇒ a child becomes exempt; drop the op check; return T_CWD for a marked caller; default cwd_path to \"\" ⇒ everything or nothing is exempt"],
+                      "drop the `/`-boundary check ⇒ /root/app and /roo become exempt for a cwd of /root/app3; use tier_of instead of the chain ⇒ a child becomes exempt; drop the op check; return T_CWD for a marked caller; make policy_cwd_component answer for a NULL cwd_path ⇒ the unset-cwd arm dies. NOT `default cwd_path in main()` — that mutant lives in union.c, which this fixture cannot reach; A16b's no-default source pin is what kills it"],
     ['b26-cwd-traverse-only',
                       'every chain component reports exactly S_IFDIR|0111, nlink 2, uid/gid 0, size 0, all three times 0 — and the op allow-list is {getattr}, with the refusal named in the log',
                       '0111 → 0555 (the ruling violated in the mode bits); drop the strcmp(op,"getattr") ⇒ readdir becomes exempt; change the allowed op to "opendir"; S_IFDIR → S_IFREG; nlink → the real child count'],
@@ -441,7 +492,18 @@ describe('the compiled policy driver', { skip }, () => {
   };
 
   test('every reason the daemon emits carries exactly one kind, and the set matches both ways', async () => {
-    const srcs = { 'union.c': await fs.readFile(UNION_C, 'utf8'), 'policy.h': await fs.readFile(POLICY_H, 'utf8') };
+    const raw = { 'union.c': await fs.readFile(UNION_C, 'utf8'), 'policy.h': await fs.readFile(POLICY_H, 'utf8') };
+    // COMMENTS BLANKED FIRST — see stripCComments. Both files DISCUSS
+    // `policy_event(` in prose, and a raw scan reads those as call sites.
+    const srcs = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, stripCComments(v)]));
+    // NON-VACUITY OF THE STRIP ITSELF: it must remove something and must not
+    // remove the code. A stripper that returned '' would make every derivation
+    // below pass by finding nothing.
+    for (const [name, v] of Object.entries(srcs)) {
+      assert.ok(v.length === raw[name].length, `${name}: the strip changed the offsets`);
+      assert.ok(v.includes('policy_event('), `${name}: the strip removed the call sites too`);
+      assert.ok(!/\bDEDUPE KEY\b/.test(v), `${name}: the strip left comment prose behind`);
+    }
     // Reason → the set of kinds the SOURCE emits it under, and where.
     const found = new Map();
     for (const [name, src] of Object.entries(srcs)) {
@@ -501,7 +563,7 @@ describe('the compiled policy driver', { skip }, () => {
     //    (and R4) filters on cannot silently gain a third value: the switch has
     //    no `default:` arm, and a third enumerator would fail the -Werror
     //    compile of the driver fixture before any of this ran.
-    const kindDecl = srcs['policy.h'].match(/enum ev_kind \{[^}]*\}/);
+    const kindDecl = raw['policy.h'].match(/enum ev_kind \{[^}]*\}/);
     assert.ok(kindDecl, 'enum ev_kind is gone from policy.h');
     assert.equal(kindDecl[0], 'enum ev_kind { EV_DENY = 0, EV_SERVED }',
       'enum ev_kind gained or lost a member — R4 filters on exactly these two');

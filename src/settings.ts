@@ -113,7 +113,7 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
   // union's project tier has NO host side by design (`policy_project_route` in
   // src/systems/fuse/policy.h), so an unmarked caller there gets `-ENOENT`,
   // never a usable working tree. Guidance derived from that is worse than none.
-  // The narrow cwd exemption (card 2026-0373) changes only WHERE that spawn
+  // The cwd-chain exemption (cards 2026-0373, 2026-0382) changes only WHERE that spawn
   // dies: it now starts, chdir's into the project root, and dies at its first
   // project-tier read instead of at its chdir.
   //

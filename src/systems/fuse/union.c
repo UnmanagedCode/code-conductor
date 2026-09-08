@@ -622,7 +622,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 			policy_event(EV_SERVED, op, path, "self-recursion");
 			return 0;
 		}
-		/* THE NARROW CWD EXEMPTION — policy.h owns the whole
+		/* THE CWD-CHAIN EXEMPTION — policy.h owns the whole
 		 * decision; this only asks and dispatches. */
 		if (policy_cwd_exempt(op, path, (pid_t)fuse_get_context()->pid)) {
 			r->tier = T_CWD;
@@ -681,7 +681,7 @@ static int pt_getattr(const char *path, struct stat *st, struct fuse_file_info *
 	}
 	{
 		ROUTE("getattr", path, 0, CCU_STAT);
-		/* The one op the narrow cwd exemption allows, and the only op
+		/* The one op the cwd-chain exemption allows, and the only op
 		 * body T_CWD ever reaches.
 		 *
 		 * BEFORE SYNTHETIC(), AND THE ORDER IS INERT TODAY — SYNTHETIC()
