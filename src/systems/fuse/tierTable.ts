@@ -18,6 +18,50 @@
 // inside the chroot. That is what lets spawnEnv's HOME and CLAUDE_CODE_TMPDIR,
 // the inline --settings / --mcp-config JSON and every --plugin-dir argument
 // ride through the wrap unmodified.
+//
+// ── WHAT THE LIST HAS TO COVER SINCE CARD 2026-0382, AND WHAT IT NO LONGER DOES
+//
+// THE LIST DOES NOT SHRINK — IT STOPS GROWING. `fail → host` for an unmarked
+// caller (`policy_caller_tier`, policy.h) means the arrays below have to cover
+// **the CLI's own execution closure and nothing else**: its NEEDED set, its
+// dlopen closure, its settings, its temp paths. They no longer have to grow
+// when somebody installs a new tool on the host, which is what every past
+// addition here was — a new shell, a new binary, a new library that some
+// UNMARKED subprocess reached for. Nothing below is deleted, and the reason is
+// the next paragraph.
+//
+// EVERY ENTRY STAYS, BECAUSE "DEAD" IS CONFIGURATION-DEPENDENT. A pin is dead
+// only if every path it covers is read exclusively by an unmarked caller — and
+// only under the DEFAULT `mirrorRoot` (= the project's own path). Under an
+// advertised `mirrorRoot: '/'`, `add('project', '/')` covers everything
+// unpinned, `tier_of` can never return `T_FAIL`, the substitution never fires,
+// and every entry below is load-bearing again. Measured by building the real
+// table both ways.
+//
+// The split, from the measured pre-mark window plus `ldd`, recorded rather than
+// acted on:
+//   DEAD (default config only)  BOOTSTRAP_CHAIN's `/bin/sh`, `/usr/bin/sh`,
+//     `/bin/dash`, `/usr/bin/dash` — the shell loads at pre-mark ops 18–44 and
+//     no marked caller ever execs it. `/bin/bash`, `/usr/bin/bash` were already
+//     dead: `bootstrap.sh` execs `/bin/sh`.
+//   LOAD-BEARING  everything else, and each for a measured reason — `setpriv`
+//     execs AFTER the mark in the same tgid; `ld-linux` and `libc` are measured
+//     on both sides of it; node's own NEEDED set and glibc's dlopen closure are
+//     all post-mark; `/etc/ld.so.cache` and `/etc/passwd`/`/etc/group` are the
+//     marked CLI's and setpriv's; `/etc/hosts` and the TLS trust are the marked
+//     CLI's own DNS and TLS. `/etc/ld.so.preload` and `/etc/claude-code` are
+//     pinned on the HAZARD rather than on a measurement — a remote-supplied one
+//     would preload a remote object into a host binary, or inject settings into
+//     the CLI — and that stays an inference, said so here.
+//
+// A THIRD CLASS, OUTSIDE THESE THREE ARRAYS AND LOAD-BEARING FOR THE RULING:
+// the whole-`$HOME` pin, the whole-`projectsRoot` pin and the `sessionTmpDir`
+// localRoot are JOINTLY what keep the cross-mark handoff class empty — the
+// CLI's shell snapshot (marked CLI writes, unmarked per-call shell reads at
+// exec), its cwd breadcrumb and its `<tmpdir>/<encoded-cwd>/<sid>/tasks/` all
+// sit inside them. Narrowing any of the three reopens one-path-two-answers for
+// a CLI-internal file. `$HOME` has two reasons not to narrow now: that, and the
+// EXDEV rename its own comment below records.
 
 import path from 'node:path';
 import { realpathSync, accessSync, constants as fsc } from 'node:fs';
