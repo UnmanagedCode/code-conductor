@@ -653,7 +653,7 @@ export class FuseSession {
     await fsp.mkdir(p.fusectl, { recursive: true });
     await fsp.writeFile(p.pinsPath, p.pinsText);
     await fsp.writeFile(p.daemonLog, '');
-    await fsp.writeFile(p.refusalLog, '');
+    await fsp.writeFile(p.eventLog, '');
     // Created EMPTY here for the same reason the other two are: the daemon runs
     // as root and appends, so a file cc did not create first would be
     // root-owned and teardown could not reclaim the tree without sudo.

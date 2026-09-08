@@ -39,7 +39,7 @@ import { killPids } from './procTree.mjs';
 import { adoptProject } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { fuseRunDir, fuseRunRoot } from '../src/systems/fuse/plan.ts';
+import { EVENT_LOG_NAME, fuseRunDir, fuseRunRoot } from '../src/systems/fuse/plan.ts';
 import { scanProcesses, orphansUnder } from '../src/systems/fuse/procScan.ts';
 import { assertFuseAvailable } from '../src/systems/fuse/preflight.ts';
 
@@ -544,8 +544,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // and the mark path are written in.
   const inside = (record, p) => path.join(record.root, p);
 
-  const refusalsOf = async (instanceId) =>
-    (await fs.readFile(path.join(fuseRunDir(instanceId), 'refusals.log'), 'utf8').catch(() => ''))
+  // THE DAEMON'S POLICY EVENT LOG, split into `[kind, op, path, reason]`. The
+  // KIND is the first column and every filter below derives from it rather than
+  // from a hand-maintained list of reason strings — `self-recursion` and
+  // `pinned-children-truncated` are `served` rows, so a reason enumeration was
+  // already wrong here.
+  const eventsOf = async (instanceId) =>
+    (await fs.readFile(path.join(fuseRunDir(instanceId), EVENT_LOG_NAME), 'utf8').catch(() => ''))
       .split('\n').filter(Boolean).map(l => l.split('\t'));
 
   // ── R1 ───────────────────────────────────────────────────────────────────
@@ -638,9 +643,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         'the host pin did not answer with the orchestrator’s own file');
 
       // And the denial is in the log, by name.
-      const refusals = await refusalsOf(inst.id);
-      assert.ok(refusals.some(r => r[2] === 'unmarked-project-denied'),
-        `no unmarked-project-denied entry: ${JSON.stringify(refusals)}`);
+      const events = await eventsOf(inst.id);
+      assert.ok(events.some(r => r[0] === 'deny' && r[3] === 'unmarked-project-denied'),
+        `no deny/unmarked-project-denied entry: ${JSON.stringify(events)}`);
     } finally {
       await instances.remove(inst.id);
     }
@@ -697,9 +702,9 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         '[ -e "$1" ]; echo PUSHED > "$2" && echo MADE',
         inside(record, inst._fuse.plan.markPath), inside(record, probe));
       if (!/MADE/.test(wok.stdout)) {
-        const rl = (await refusalsOf(inst.id)).map(r => r.join('\t')).join('\n');
+        const rl = (await eventsOf(inst.id)).map(r => r.join('\t')).join('\n');
         const mdir = await fs.readdir(path.join(fuseRunDir(inst.id), 'mirror', box, 'app')).catch(e => String(e));
-        assert.fail(`the union refused a project write: ${wok.stdout} ${wok.stderr}\nrefusals:\n${rl}\nmirror <box>/app: ${JSON.stringify(mdir)}`);
+        assert.fail(`the union refused a project write: ${wok.stdout} ${wok.stderr}\nevents:\n${rl}\nmirror <box>/app: ${JSON.stringify(mdir)}`);
       }
 
       // AND THE PUSH LANDED ON THE SYSTEM. `pt_release` sends DIRTY for a
@@ -718,31 +723,46 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
   // ── R4 ───────────────────────────────────────────────────────────────────
   // PINS the acceptance the spike used and the loop plan §13 K1 iterates
-  // against: after a full turn the refusal log contains nothing the CLI NEEDED.
+  // against: after a full turn the event log DENIES nothing the CLI NEEDED.
   //
-  // "Needed" is made falsifiable rather than left to judgement: no entry may
+  // "Needed" is made falsifiable rather than left to judgement: no DENIAL may
   // name a path the worker went on to fail over — the turn completed — and no
-  // entry may carry a reason that means cc could not answer
-  // (`control-unavailable`) or would not (`control-refused`). Entries that
+  // denial may carry a reason that means cc could not answer
+  // (`control-unavailable`) or would not (`control-refused`). Denials that
   // remain are negative lookups, which answer identically pinned or not, and
-  // they are PRINTED so the next derivation iteration has its input.
-  test('R4 — after a full turn the refusal log names nothing the worker needed', async () => {
+  // every row is PRINTED so the next derivation iteration has its input.
+  //
+  // BOTH FILTERS ARE `deny`-SCOPED, AND THAT IS THE KIND COLUMN EARNING ITS
+  // KEEP rather than tidiness. `self-recursion` is a `served` row that fires
+  // ONLY at the project tier, so it sits inside the project tree by
+  // construction — under the old reason-blind project-tree filter it would have
+  // read as "a project path was refused" when the op in fact succeeded from
+  // `host_fd`. The exclusion is structural now: no reader here enumerates
+  // reason strings to decide what is a denial.
+  test('R4 — after a full turn the event log denies nothing the worker needed', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
     try {
-      const refusals = await refusalsOf(inst.id);
-      console.log(`fuse gate [R4] refusal log after one turn (${refusals.length} entries):\n`
-        + refusals.map(r => '  ' + r.join('\t')).join('\n'));
-      const fatal = refusals.filter(r => r[2] === 'control-unavailable' || r[2] === 'control-refused');
+      const events = await eventsOf(inst.id);
+      console.log(`fuse gate [R4] event log after one turn (${events.length} rows):\n`
+        + events.map(r => '  ' + r.join('\t')).join('\n'));
+      const denials = events.filter(r => r[0] === 'deny');
+      const fatal = denials.filter(r => r[3] === 'control-unavailable' || r[3] === 'control-refused');
       assert.deepEqual(fatal, [], `cc failed to answer for: ${JSON.stringify(fatal)}`);
       // A fail-closed path INSIDE the project tree would mean the tier table
       // and the mirror root disagree, which is the one class the loop cannot
       // dismiss as a negative lookup.
-      const inProject = refusals.filter(r => r[1].startsWith(path.join(box, 'app')));
-      assert.deepEqual(inProject, [], `a project path was refused: ${JSON.stringify(inProject)}`);
+      const inProject = denials.filter(r => r[2].startsWith(path.join(box, 'app')));
+      assert.deepEqual(inProject, [], `a project path was denied: ${JSON.stringify(inProject)}`);
+      // EVERY ROW CARRIES ONE OF THE TWO KINDS, so a third kind — which would
+      // silently fall out of the `deny` filter above and stop being checked at
+      // all — reds here.
+      const kinds = [...new Set(events.map(r => r[0]))].sort();
+      assert.deepEqual(kinds.filter(k => k !== 'deny' && k !== 'served'), [],
+        `the event log carries a kind that is neither deny nor served: ${JSON.stringify(kinds)}`);
       // NON-VACUITY: the log is a live instrument, not an empty file that would
       // satisfy every filter above. R2 proves it records; here it must exist.
-      await fs.access(path.join(fuseRunDir(inst.id), 'refusals.log'));
+      await fs.access(path.join(fuseRunDir(inst.id), EVENT_LOG_NAME));
     } finally {
       await instances.remove(inst.id);
     }
@@ -984,8 +1004,8 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
       // Each refusal is in the log by name, so the pin-derivation instrument
       // sees them rather than only the caller.
-      const refusals = await refusalsOf(inst.id);
-      const notReconcilable = refusals.filter(r => r[2] === 'not-reconcilable').map(r => r[0]);
+      const events = await eventsOf(inst.id);
+      const notReconcilable = events.filter(r => r[0] === 'deny' && r[3] === 'not-reconcilable').map(r => r[1]);
       const want = ['chown', 'link', 'mknod', 'rename'];
       if (haveSetfattr) want.push('setxattr');
       assert.deepEqual([...new Set(notReconcilable)].sort(), want.sort());
@@ -1127,12 +1147,12 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         `THE DAEMON RAN AND EMITTED NO unmarked tier=cwd ROW for ${proj} — the exemption did not `
         + `fire, or route() assigned another tier (${rows.length} rows traced): `
         + rows.filter(l => l.includes(proj)).slice(-8).join(' | '));
-      const refusals = await refusalsOf(inst.id);
-      assert.deepEqual(refusals.filter(r => r[1] === proj && r[2] === 'unmarked-project-denied'), [],
+      const events = await eventsOf(inst.id);
+      assert.deepEqual(events.filter(r => r[2] === proj && r[3] === 'unmarked-project-denied'), [],
         'the project root was refused to the unmarked caller after all');
       for (const denied of [path.join(proj, SUB), path.join(proj, 'remote-marker.txt')]) {
-        assert.ok(refusals.some(r => r[1] === denied && r[2] === 'unmarked-project-denied'),
-          `no unmarked-project-denied for ${denied}: ${JSON.stringify(refusals)}`);
+        assert.ok(events.some(r => r[0] === 'deny' && r[2] === denied && r[3] === 'unmarked-project-denied'),
+          `no deny/unmarked-project-denied for ${denied}: ${JSON.stringify(events)}`);
       }
     } finally {
       // NESTED, so a throw from `remove` cannot leave CC_FUSE_TRACE set for

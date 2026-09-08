@@ -444,7 +444,7 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     fusectl: '/store/run/inst-1/fusectl', pinsPath: '/store/run/inst-1/pins.txt',
     intentPath: '/store/run/inst-1/intent.json', recordPath: '/store/run/inst-1/mount.json',
     daemonLog: '/store/run/inst-1/daemon.log',
-    refusalLog: '/store/run/inst-1/refusals.log',
+    eventLog: '/store/run/inst-1/events.log',
     controlSock: '/store/run/inst-1/control.sock',
     markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'allow_other,attr_timeout=0',
@@ -609,15 +609,23 @@ describe('wrapLaunch — the pure argv/env/cwd transform', () => {
     assert.equal(w.env.CC_FUSE_PATH, '/opt/bin:/usr/bin');
   });
 
-  // PINS: the three things the daemon REFUSES TO MOUNT without, carried by
-  // name. `bootstrap.sh` renames each into the daemon's own CC_UNION_* prefix,
-  // and a missing one is a launch that dies in the mount-wait loop rather than
-  // at a named refusal.
-  test('carries the control socket, the mark path and the refusal log', () => {
+  // PINS: the things the daemon REFUSES TO MOUNT without, carried by name.
+  // `bootstrap.sh` renames each into the daemon's own CC_UNION_* prefix, and a
+  // missing one is a launch that dies in the mount-wait loop rather than at a
+  // named refusal. The EVENT LOG is not one of those — the daemon mounts
+  // without it and simply records nothing — but it rides the same channel and a
+  // missing one costs the whole pin-derivation instrument.
+  test('carries the control socket, the mark path, the cwd and the event log', () => {
     const w = wrapped();
     assert.equal(w.env.CC_FUSE_CONTROL, plan.controlSock);
     assert.equal(w.env.CC_FUSE_MARK_PATH, plan.markPath);
-    assert.equal(w.env.CC_FUSE_REFUSAL_LOG, plan.refusalLog);
+    assert.equal(w.env.CC_FUSE_EVENT_LOG, plan.eventLog);
+    // THE CWD IS NOW A MOUNT PRECONDITION TOO (`CC_UNION_CWD`), because the
+    // cwd-chain exemption REPLACED the exact-pin test: without it every
+    // component is denied and the launch dies at the `cd`, project root
+    // included. It rides as `CC_FUSE_CWD`, which `wrapLaunch` already set for
+    // the bootstrap's own `cd`.
+    assert.equal(w.env.CC_FUSE_CWD, plan.cwdInside);
   });
 });
 
@@ -1340,7 +1348,7 @@ describe('FuseSession lifecycle', () => {
     fusectl: path.join(rundir, 'fusectl'), pinsPath: path.join(rundir, 'pins.txt'),
     intentPath: path.join(rundir, 'intent.json'), recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
-    refusalLog: path.join(rundir, 'refusals.log'),
+    eventLog: path.join(rundir, 'events.log'),
     controlSock: path.join(rundir, 'control.sock'),
     markPath: '/usr/local/bin/claude',
     cwdInside: '/srv/app', mountOpts: 'o', tiers: [], pinsText: '# pins\n',

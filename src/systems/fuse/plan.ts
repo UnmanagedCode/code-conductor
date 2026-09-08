@@ -35,6 +35,20 @@ export function fuseRunDir(instanceId: string): string {
   return path.join(fuseRunRoot(), instanceId);
 }
 
+// THE PER-SESSION EVENT LOG'S FILENAME, in one place because three layers name
+// it: `buildFusePlan` (the daemon's `CC_UNION_EVENTS`), `runTeardown`'s harvest,
+// and the boot sweep reading a crashed session's copy.
+export const EVENT_LOG_NAME = 'events.log';
+
+// THE STORE-WIDE EVENT LOG — where a session's rows are appended before its run
+// directory is reclaimed. A SIBLING of `run/`, deliberately: `run/<id>` is
+// destroyed with the session and this is the only record that outlives it, which
+// is what makes a pin derivable after the fact rather than only while the
+// session is up.
+export function fuseEventStore(): string {
+  return path.join(orchStoreRoot(), 'systems', 'fuse', EVENT_LOG_NAME);
+}
+
 export function fuseBinDir(): string {
   return path.join(orchStoreRoot(), 'systems', 'fuse', 'bin');
 }
@@ -96,11 +110,13 @@ export interface FusePlan {
   intentPath: string;
   recordPath: string;
   daemonLog: string;
-  // THE REFUSAL LOG the daemon writes (`CC_UNION_REFUSALS`) — every fail-closed
-  // path, every unmarked denial, every refused control reply. It is the
-  // instrument the pin list is derived from and the thing that must be empty by
-  // the end; the real gate reads it (R4).
-  refusalLog: string;
+  // THE POLICY EVENT LOG the daemon writes (`CC_UNION_EVENTS`) —
+  // `<kind>\t<op>\t<path>\t<reason>` per distinct (path, reason). It is the
+  // instrument the pin list is derived from, and the channel whose `deny` rows
+  // must be empty by the end; the real gate reads it (R4). Harvested into
+  // `fuseEventStore()` by `runTeardown` immediately before the run directory is
+  // reclaimed, because the reclaim would otherwise destroy the evidence.
+  eventLog: string;
   // The cwd the bootstrap `cd`s to INSIDE the chroot. A host-pinned path keeps
   // its exact spelling, which is why this is simply the CLI's cwd.
   cwdInside: string;
@@ -220,7 +236,7 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     intentPath: path.join(rundir, 'intent.json'),
     recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
-    refusalLog: path.join(rundir, 'refusals.log'),
+    eventLog: path.join(rundir, EVENT_LOG_NAME),
     controlSock: path.join(rundir, 'control.sock'),
     markPath: input.markPath,
     cwdInside: input.cwdInside,

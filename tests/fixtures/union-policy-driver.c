@@ -533,8 +533,8 @@ static void b14_control_reasons(void)
 	int n_absent = 0, n_refused = 0, n_unavail = 0, n_unmarked = 0;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	refusal_fp = fdopen(fd, "w+");
-	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
 
 	pin("project\t/srv/app");
 	anc_build();
@@ -552,55 +552,80 @@ static void b14_control_reasons(void)
 	proc_set(5000, 5000, 88);
 	CHECK(policy_project_route("getattr", "/srv/app/d", 5000, CCU_STAT, 0) == -ENOENT, "unmarked denies");
 
-	rewind(refusal_fp);
-	while (fgets(line, sizeof(line), refusal_fp)) {
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
 		if (strstr(line, "\tremote-absent\n"))            n_absent++;
 		if (strstr(line, "\tcontrol-refused\n"))          n_refused++;
 		if (strstr(line, "\tcontrol-unavailable\n"))      n_unavail++;
 		if (strstr(line, "\tunmarked-project-denied\n"))  n_unmarked++;
+		/* EVERY ONE OF THESE IS A DENIAL, so every row here carries kind
+		 * `deny`. Asserted per row rather than by counting, so a single
+		 * mis-kinded reason cannot hide behind three correct ones. */
+		CHECK(strncmp(line, "deny\t", 5) == 0,
+		      "a control failure is kind `deny`: %s", line);
 	}
 	CHECK(n_absent == 1, "ABSENT is logged as remote-absent (%d)", n_absent);
 	CHECK(n_refused == 1, "REFUSED is logged as control-refused (%d)", n_refused);
 	CHECK(n_unavail == 1, "a dead channel is logged as control-unavailable (%d)", n_unavail);
 	CHECK(n_unmarked == 1, "an unmarked caller is logged as unmarked-project-denied (%d)", n_unmarked);
-	fclose(refusal_fp);
-	refusal_fp = NULL;
+	fclose(event_fp);
+	event_fp = NULL;
 	unlink(tmpl);
 }
 
-/* ── B13: the refusal log records each (path, reason) exactly once ───────── */
+/* ── B13: the event log records each (path, reason) exactly once ────────── */
 static void b13_refusals(void)
 {
 	char tmpl[] = "/tmp/cc-policy-refusalsXXXXXX";
 	int fd = mkstemp(tmpl);
 	char line[512];
-	int n_ax = 0, n_ay = 0, n_bx = 0, total = 0;
+	int n_ax = 0, n_ay = 0, n_bx = 0, n_cz = 0, total = 0;
 	FILE *rd;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	refusal_fp = fdopen(fd, "w+");
-	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
 
-	policy_refuse("getattr", "/a", "x");
-	policy_refuse("getattr", "/a", "x");        /* same op, same pair */
-	policy_refuse("open",    "/a", "x");        /* DIFFERENT op, same pair */
-	policy_refuse("getattr", "/a", "y");        /* same path, different reason */
-	policy_refuse("getattr", "/b", "x");        /* different path, same reason */
+	policy_event(EV_DENY,   "getattr", "/a", "x");
+	policy_event(EV_DENY,   "getattr", "/a", "x");      /* same op, same pair */
+	policy_event(EV_DENY,   "open",    "/a", "x");      /* DIFFERENT op, same pair */
+	policy_event(EV_DENY,   "getattr", "/a", "y");      /* same path, different reason */
+	policy_event(EV_DENY,   "getattr", "/b", "x");      /* different path, same reason */
+	policy_event(EV_SERVED, "getattr", "/c", "z");      /* the other kind */
 
-	rewind(refusal_fp);
-	rd = refusal_fp;
+	rewind(event_fp);
+	rd = event_fp;
 	while (fgets(line, sizeof(line), rd)) {
 		total++;
-		if (strstr(line, "\t/a\tx\n")) n_ax++;
-		if (strstr(line, "\t/a\ty\n")) n_ay++;
-		if (strstr(line, "\t/b\tx\n")) n_bx++;
+		if (strstr(line, "deny\tgetattr\t/a\tx\n"))   n_ax++;
+		if (strstr(line, "deny\tgetattr\t/a\ty\n"))   n_ay++;
+		if (strstr(line, "deny\tgetattr\t/b\tx\n"))   n_bx++;
+		if (strstr(line, "served\tgetattr\t/c\tz\n")) n_cz++;
 	}
 	CHECK(n_ax == 1, "(/a, x) is recorded exactly once across THREE calls, got %d", n_ax);
 	CHECK(n_ay == 1, "(/a, y) — a different reason for the same path is its own entry");
 	CHECK(n_bx == 1, "(/b, x) — a different path is its own entry");
-	CHECK(total == 3, "three distinct pairs, three lines, got %d", total);
-	fclose(refusal_fp);
-	refusal_fp = NULL;
+	CHECK(n_cz == 1, "an EV_SERVED row is written with kind `served` (%d)", n_cz);
+	CHECK(total == 4, "four distinct pairs, four lines, got %d", total);
+	/* THE KIND IS THE FIRST COLUMN AND THE ROW IS FOUR COLUMNS. Asserted on the
+	 * shape rather than only through the strstr needles above, which a row that
+	 * appended the kind LAST would also satisfy. */
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), rd)) {
+		int tabs = 0;
+		char *t;
+		for (t = line; *t; t++) if (*t == '\t') tabs++;
+		CHECK(tabs == 3, "the row has exactly three tabs — kind, op, path, reason (%d): %s",
+		      tabs, line);
+		CHECK(strncmp(line, "deny\t", 5) == 0 || strncmp(line, "served\t", 7) == 0,
+		      "the FIRST column is the kind: %s", line);
+	}
+	/* THE DEDUPE KEY IS (path, reason) AND NOT (kind, path, reason): the same
+	 * pair under the OTHER kind is still one row. That is what makes a mutant
+	 * emitting one reason under both kinds visible rather than deduped away. */
+	CHECK(n_ax == 1, "and the dedupe is kind-blind — (/a, x) stayed at one row");
+	fclose(event_fp);
+	event_fp = NULL;
 	unlink(tmpl);
 }
 
@@ -774,8 +799,8 @@ static void b17_cwd_exempt(int argc, char **argv)
 	int calls;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
-	refusal_fp = fdopen(fd, "w+");
-	setvbuf(refusal_fp, NULL, _IOLBF, 0);
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
 
 	pin("project\t/srv/app");              /* pins[0] */
 	pin("host\t/etc");                     /* pins[1] */
@@ -900,8 +925,8 @@ static void b17_cwd_exempt(int argc, char **argv)
 
 	/* THE REFUSAL LOG: the two paths under the root are refused BY NAME, and
 	 * the root itself is not refused at all. */
-	rewind(refusal_fp);
-	while (fgets(line, sizeof(line), refusal_fp)) {
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
 		if (strstr(line, "\tunmarked-project-denied\n") == NULL) continue;
 		if (strstr(line, "\t/srv/app/src\t"))       n_sub++;
 		if (strstr(line, "\t/srv/app/README.md\t")) n_file++;
@@ -910,8 +935,8 @@ static void b17_cwd_exempt(int argc, char **argv)
 	CHECK(n_file == 1, "the file's denial is logged unmarked-project-denied (%d)", n_file);
 	CHECK(n_sub == 1, "so is the subdirectory's (%d)", n_sub);
 	CHECK(n_root == 0, "and the project ROOT is refused to nobody (%d)", n_root);
-	fclose(refusal_fp);
-	refusal_fp = NULL;
+	fclose(event_fp);
+	event_fp = NULL;
 	unlink(tmpl);
 }
 

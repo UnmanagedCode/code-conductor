@@ -935,48 +935,82 @@ static inline int ccu_call(uint8_t op, uint8_t flags, const char *path)
 	}
 }
 
-/* ── the refusal log ────────────────────────────────────────────────────── */
+/* ── the policy event log ───────────────────────────────────────────────── */
 /*
- * THE INSTRUMENT THE PIN LIST IS DERIVED FROM, and the thing that must be empty
- * by the end. Every fail-closed path, every REFUSED reply and every unmarked
- * denial lands here, deduplicated on path+reason so a demand-paged 215 MB
+ * THE INSTRUMENT THE PIN LIST IS DERIVED FROM, and the thing whose `deny` rows
+ * must be empty by the end. Every fail-closed path, every REFUSED reply, every
+ * unmarked denial AND every op this daemon served some way OTHER than the way
+ * the tier table said, deduplicated on path+reason so a demand-paged 215 MB
  * binary cannot bury the one line that matters. PATHS ONLY, never content: a
  * credential path may appear in it and a credential never does.
+ *
+ * IT IS NOT A REFUSAL LOG, AND CALLING IT ONE WAS A FALSE CLAIM RATHER THAN A
+ * naming preference. `self-recursion` returns 0 with `host_fd` — the op
+ * SUCCEEDS — and `pinned-children-truncated` drops a name from a readdir that
+ * also succeeds, so two non-denials already sat in a file called
+ * `refusals.log`. Every reader's filter then had to enumerate reason strings by
+ * hand to exclude them, which is the hand-maintained enumeration this epic
+ * keeps being bitten by. THE KIND IS THE FIRST COLUMN so a filter derives from
+ * it instead.
+ *
+ * EXACTLY TWO KINDS, and the boundary is "did the caller get an error":
+ *   EV_DENY    the op was refused — the caller has a negative errno.
+ *   EV_SERVED  the op succeeded, but not the way the tier table said.
+ *
+ * A THIRD KIND WOULD BREAK `R4`, whose whole filter is `kind == deny`.
  */
-static FILE           *refusal_fp = NULL;
-static pthread_mutex_t refusal_mu = PTHREAD_MUTEX_INITIALIZER;
+enum ev_kind { EV_DENY = 0, EV_SERVED };
 
-#define REFUSAL_SLOTS 65536
-static char  *refusal_seen[REFUSAL_SLOTS];
-static size_t refusal_n = 0;
+static inline const char *ev_kind_name(enum ev_kind k)
+{
+	switch (k) {
+	case EV_SERVED: return "served";
+	case EV_DENY:   break;
+	}
+	return "deny";
+}
 
-/* caller holds refusal_mu */
-static inline int refusal_dup(const char *key)
+static FILE           *event_fp = NULL;
+static pthread_mutex_t event_mu = PTHREAD_MUTEX_INITIALIZER;
+
+#define EVENT_SLOTS 65536
+static char  *event_seen[EVENT_SLOTS];
+static size_t event_n = 0;
+
+/* caller holds event_mu */
+static inline int event_dup(const char *key)
 {
 	size_t slot, i;
 
-	if (refusal_n >= REFUSAL_SLOTS / 2)
+	if (event_n >= EVENT_SLOTS / 2)
 		return 0;                       /* full: stop deduping, keep logging */
-	slot = policy_strhash(key) % REFUSAL_SLOTS;
-	for (i = 0; i < REFUSAL_SLOTS; i++) {
-		char **e = &refusal_seen[(slot + i) % REFUSAL_SLOTS];
-		if (!*e) { *e = strdup(key); refusal_n++; return 0; }
+	slot = policy_strhash(key) % EVENT_SLOTS;
+	for (i = 0; i < EVENT_SLOTS; i++) {
+		char **e = &event_seen[(slot + i) % EVENT_SLOTS];
+		if (!*e) { *e = strdup(key); event_n++; return 0; }
 		if (strcmp(*e, key) == 0) return 1;
 	}
 	return 0;
 }
 
-static inline void policy_refuse(const char *op, const char *path, const char *reason)
+/*
+ * THE DEDUPE KEY IS (path, reason) AND NOT (kind, path, reason). A reason
+ * belongs to exactly one kind — pinned two-directionally by `b24` — so adding
+ * the kind to the key could only ever split a row that is already unique, and
+ * would hide a mutant that emitted one reason under both kinds.
+ */
+static inline void policy_event(enum ev_kind kind, const char *op,
+				const char *path, const char *reason)
 {
 	char key[PATH_MAX + 64];
 
-	if (!refusal_fp)
+	if (!event_fp)
 		return;
 	snprintf(key, sizeof(key), "%s\t%s", path, reason);
-	pthread_mutex_lock(&refusal_mu);
-	if (!refusal_dup(key))
-		fprintf(refusal_fp, "%s\t%s\t%s\n", op, path, reason);
-	pthread_mutex_unlock(&refusal_mu);
+	pthread_mutex_lock(&event_mu);
+	if (!event_dup(key))
+		fprintf(event_fp, "%s\t%s\t%s\t%s\n", ev_kind_name(kind), op, path, reason);
+	pthread_mutex_unlock(&event_mu);
 }
 
 /*
@@ -1127,7 +1161,7 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 	 * the mark it no longer holds.
 	 */
 	if (!mark_of(tgid)) {
-		policy_refuse(op, path, "unmarked-project-denied");
+		policy_event(EV_DENY, op, path, "unmarked-project-denied");
 		return -ENOENT;
 	}
 
@@ -1152,12 +1186,12 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 		cache_invalidate(path);
 	else if (fop)
 		cache_put(tgid, path, rc);
-	/* Three distinct reasons, because the refusal log is what the pin list is
+	/* Three distinct reasons, because the event log is what the pin list is
 	 * DERIVED from and "the remote does not have it" is a different finding
 	 * from "cc would not carry it" and from "cc could not be reached". */
-	if (rc == -EIO)         policy_refuse(op, path, "control-unavailable");
-	else if (rc == -ENOENT) policy_refuse(op, path, "remote-absent");
-	else if (rc)            policy_refuse(op, path, "control-refused");
+	if (rc == -EIO)         policy_event(EV_DENY, op, path, "control-unavailable");
+	else if (rc == -ENOENT) policy_event(EV_DENY, op, path, "remote-absent");
+	else if (rc)            policy_event(EV_DENY, op, path, "control-refused");
 	return rc;
 }
 

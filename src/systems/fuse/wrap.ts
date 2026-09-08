@@ -59,7 +59,7 @@ export function wrapLaunch(spec: LaunchSpec, ctx: WrapContext): LaunchSpec {
     CC_FUSE_GID: String(plan.gid),
     CC_FUSE_CONTROL: plan.controlSock,
     CC_FUSE_MARK_PATH: plan.markPath,
-    CC_FUSE_REFUSAL_LOG: plan.refusalLog,
+    CC_FUSE_EVENT_LOG: plan.eventLog,
     // THE TRACE PATH, AND ITS NAME IS NOT THE OPERATOR'S SWITCH.
     //
     // `CC_FUSE_TRACE` is cc's own on/off flag, read by `resolveTraceEnabled`

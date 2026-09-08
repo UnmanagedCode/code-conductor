@@ -36,7 +36,7 @@
  * returns index 0 for a path no pin matches. The instrument's index 0 was
  * remote-first with a host fallback; that fallback is the "one path, two
  * answers" this architecture exists to remove, and deleting it is why the
- * refusal log below is the instrument the pin list is derived from.
+ * event log below is the instrument the pin list is derived from.
  *
  * ── the caller mark ─────────────────────────────────────────────────────────
  *
@@ -83,7 +83,7 @@
  * one tgid, because ancestry — the only key that could describe "the CLI and
  * its children" — is unknowable exactly when it matters (S1 §6 Q2).
  *
- * The trace and the refusal log record PATHS ONLY, never content, so a
+ * The trace and the event log record PATHS ONLY, never content, so a
  * credential path may appear in them and a credential never does.
  *
  * ── known limit, recorded rather than defended against ──────────────────────
@@ -91,7 +91,7 @@
  * A readdir of a `project` directory lists the mirror's children only, so a
  * host pin NESTED inside a project prefix is reachable by name but absent from
  * its parent's listing. It cannot arise at the default mirror root (the
- * project's own remote path); it can at an advertised root of "/". The refusal
+ * project's own remote path); it can at an advertised root of "/". The event
  * log is the instrument that would surface it.
  *
  * ── environment ─────────────────────────────────────────────────────────────
@@ -104,9 +104,9 @@
  *                                                             (required)
  *   CC_UNION_MNT         the mountpoint, hidden implicitly (recursion guard)
  *   CC_UNION_TRACE       every path the kernel asks about, with caller identity
- *   CC_UNION_REFUSALS    the refusal log — the instrument the pin list is
- *                        derived from, and the thing that must be empty by the
- *                        end
+ *   CC_UNION_EVENTS      the policy event log — <kind>\t<op>\t<path>\t<reason>,
+ *                        the instrument the pin list is derived from, and the
+ *                        channel whose `deny` rows must be empty by the end
  */
 #define FUSE_USE_VERSION 31
 #define _GNU_SOURCE
@@ -543,7 +543,7 @@ static void fd_tier_set(int fd, enum tier t, int writable)
  *
  * There is no `default:` arm and there is no host fallback. The switch below is
  * exhaustive over `enum tier`; anything that reaches past it — T_FAIL, and any
- * member a later edit adds — fails closed and says so in the refusal log.
+ * member a later edit adds — fails closed and says so in the event log.
  */
 /*
  * `cflags` IS THE WHOLE FLAGS BYTE, PASSED THROUGH UNTOUCHED — not a boolean.
@@ -589,7 +589,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 			/* Liveness, not policy: the one answer that cannot
 			 * re-enter this daemon. */
 			r->fd = host_fd;
-			policy_refuse(op, path, "self-recursion");
+			policy_event(EV_SERVED, op, path, "self-recursion");
 			return 0;
 		}
 		/* THE NARROW CWD EXEMPTION — policy.h owns the whole
@@ -614,7 +614,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	case T_FAIL:
 		break;
 	}
-	policy_refuse(op, path, "unpinned-fail-closed");
+	policy_event(EV_DENY, op, path, "unpinned-fail-closed");
 	return -ENOENT;
 }
 
@@ -804,7 +804,7 @@ static void pinned_children_collect(void *ctx, const char *name, const char *ful
 		/* AN HONEST BOUND. Silently dropping names would lose them from
 		 * `ls` while `stat` kept working — this function's own defect,
 		 * at scale. The log is the instrument that would show it. */
-		policy_refuse("readdir", full, "pinned-children-truncated");
+		policy_event(EV_SERVED, "readdir", full, "pinned-children-truncated");
 		return;
 	}
 	/* Bounded copies rather than snprintf: both sources are already
@@ -1001,8 +1001,8 @@ static int push_mirror_flags(const char *op, const char *path, uint8_t flags)
 	cache_invalidate(path);
 	rc = ccu_call(CCU_DIRTY, flags, path);
 	if (rc)
-		policy_refuse(op, path,
-			      (flags & CCU_FLAG_REMOVED) ? "dirty-remove-refused" : "dirty-push-refused");
+		policy_event(EV_DENY, op, path,
+			     (flags & CCU_FLAG_REMOVED) ? "dirty-remove-refused" : "dirty-push-refused");
 	return rc;
 }
 
@@ -1045,7 +1045,7 @@ static int refuse_unreconcilable(const char *op, const char *path, enum tier t)
 	int rc = policy_unreconcilable(t);
 
 	if (rc)
-		policy_refuse(op, path, "not-reconcilable");
+		policy_event(EV_DENY, op, path, "not-reconcilable");
 	return rc;
 }
 
@@ -1150,7 +1150,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	tr("rename", to, tier_name(rt.tier), rt.intent);
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) goto give_up;
 	if (rf.fd != rt.fd) {
-		policy_refuse("rename", to, "xdev-rename");
+		policy_event(EV_DENY, "rename", to, "xdev-rename");
 		rc = -EXDEV;
 		goto give_up;
 	}
@@ -1168,7 +1168,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 		struct stat fst;
 
 		if (fstatat(rf.fd, rf.rp, &fst, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(fst.st_mode)) {
-			policy_refuse("rename", from, "not-reconcilable");
+			policy_event(EV_DENY, "rename", from, "not-reconcilable");
 			rc = -EOPNOTSUPP;
 			goto give_up;
 		}
@@ -1213,7 +1213,7 @@ static int pt_link(const char *from, const char *to)
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
 	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
 	if (rf.fd != rt.fd) {
-		policy_refuse("link", to, "xdev-rename");
+		policy_event(EV_DENY, "link", to, "xdev-rename");
 		return -EXDEV;
 	}
 	cred_enter();
@@ -1627,7 +1627,7 @@ int main(int argc, char *argv[])
 	const char *pf = getenv("CC_UNION_PINS");
 	const char *mp = getenv("CC_UNION_MNT");
 	const char *tp = getenv("CC_UNION_TRACE");
-	const char *fp = getenv("CC_UNION_REFUSALS");
+	const char *fp = getenv("CC_UNION_EVENTS");
 	int probe;
 
 	self_tgid     = getpid();
@@ -1705,11 +1705,11 @@ int main(int argc, char *argv[])
 		setvbuf(trace_fp, NULL, _IOLBF, 0);
 	}
 	if (fp) {
-		if (!(refusal_fp = fopen(fp, "a"))) {
-			fprintf(stderr, "cc-union: refusal log %s: %s\n", fp, strerror(errno));
+		if (!(event_fp = fopen(fp, "a"))) {
+			fprintf(stderr, "cc-union: event log %s: %s\n", fp, strerror(errno));
 			return 1;
 		}
-		setvbuf(refusal_fp, NULL, _IOLBF, 0);
+		setvbuf(event_fp, NULL, _IOLBF, 0);
 	}
 
 	fprintf(stderr, "cc-union: host=%s mirror=%s pins=%zu synth=%zu "
