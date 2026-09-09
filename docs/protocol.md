@@ -516,7 +516,7 @@ A **file format with real readers**, which is why it is here and not only in [ar
 
 `pid` is the **calling thread** (`fuse_get_context()->pid`, which S1 measured to be a TID); `tgid` is its thread group — the id the mark, the resolution cache and the dedupe key are all on, and the id `CC_FUSE_TRACE` rows can be joined on. Both are logged because neither substitutes for the other. `comm` and `cmdline` are read from the **tgid**.
 
-**IDENTITY IS SAMPLED AT POLICY TIME**, after the decision and after the dedupe — so it is paid once per distinct row, and it can never change an answer. `exec(2)` replaces `comm`, `cmdline` and `exe` while leaving pid, tgid and start time untouched, so **no validation can make the sample authoritative for the op that triggered it**: a row may name what the process *became*. The header line says so in the file.
+**IDENTITY IS SAMPLED AT POLICY TIME**, after the decision and after the dedupe — so the two /proc reads it costs, `comm` and `cmdline`, are paid once per **distinct row** rather than once per op. The `tgid` read is **not**: the dedupe key needs it, so it happens on every call — the same read `mark_of` and `policy_project_route` already make. Identity can never change an answer. `exec(2)` replaces `comm`, `cmdline` and `exe` while leaving pid, tgid and start time untouched, so **no validation can make the sample authoritative for the op that triggered it**: a row may name what the process *became*. The header line says so in the file.
 
 **ESCAPING — `policy_escape` in `policy.h`, applied to `path`, `comm` and `cmdline`.** `op` and `reason` are C string literals and need none. A `/proc/<pid>/cmdline` is NUL-separated and a `bash -c` argv carries the whole script, newlines included; the instrument this daemon was forked from produced **1662 unparsable rows out of ~3000** for exactly that reason.
 
@@ -540,7 +540,11 @@ A **file format with real readers**, which is why it is here and not only in [ar
 | `\!empty` | the read succeeded and returned zero bytes (a kernel thread, or a zombie) |
 | `\!truncated` | a **suffix** on an otherwise-valid encoded field that hit the cap |
 
-**`cmdline` IS CAPPED AT `POLICY_CMDLINE_MAX` (`policy.h`, 4096 bytes raw).** A cmdline can reach `ARG_MAX`; a log row cannot. A read that fills the buffer gets the `\!truncated` suffix and keeps the bytes it did read, so a reader gets *argv-so-far, truncated* rather than a short argv it would read as complete. Round-trip is exact **up to the cap**, and truncation is never silent.
+**`cmdline` IS CAPPED BY `POLICY_CMDLINE_MAX` (`policy.h`, 4096) — the BUFFER, so the field carries at most 4095 bytes.** A cmdline can reach `ARG_MAX`; a log row cannot. The reader takes `n - 1` so the result is also a C string; a read that fills the buffer gets the `\!truncated` suffix and keeps the bytes it did read, so a reader gets *argv-so-far, truncated* rather than a short argv it would read as complete. Round-trip is exact **up to 4095 bytes**, and truncation is never silent.
+
+**A CMDLINE OF EXACTLY 4095 BYTES IS MARKED TRUNCATED EVEN WHEN IT IS COMPLETE**, and there is no way to tell the two apart: "the read filled the buffer" is the only signal `read(2)` gives, and the alternative — a 4096-byte read to disambiguate — would only move the same ambiguity one byte along. The marker therefore means *at least this much, possibly more*, never *exactly this much was lost*.
+
+**READERS MUST READ THE FILE AS BYTES.** `0x80-0xff` passes through verbatim, so the log is not necessarily valid UTF-8 — a latin-1 filename or a binary argument puts a lone high byte in it, and a `utf8` read replaces it with U+FFFD before any column is formed. `parsePolicyEvents` documents `latin1` as its input contract, and `harvestEvents`, `Instance._awaitFuseMount` and the real gate all read that way; the store is appended as a `Buffer` for the same reason.
 
 **EXACTLY TWO KINDS, and `R4`'s whole filter is `kind === 'deny'`** — a third would silently fall out of it and stop being checked at all. `enum ev_kind { EV_DENY = 0, EV_SERVED }`, rendered by `ev_kind_name`:
 

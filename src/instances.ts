@@ -1872,7 +1872,8 @@ export class Instance extends EventEmitter implements InstanceLike {
     // failure with a read failure.
     let events = '';
     try {
-      const text = await fsp.readFile(path.join(fuse.plan.rundir, EVENT_LOG_NAME), 'utf8').catch(() => '');
+      // `latin1`, because the event log is a BYTE file — see parsePolicyEvents.
+      const text = await fsp.readFile(path.join(fuse.plan.rundir, EVENT_LOG_NAME), 'latin1').catch(() => '');
       events = describePolicyEvents(parsePolicyEvents(text)) ?? '';
     } catch { /* the diagnostic is not a reason to change the failure */ }
     // Tear the half-built session down before throwing, or its mount and its

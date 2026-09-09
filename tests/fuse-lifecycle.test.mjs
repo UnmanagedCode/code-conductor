@@ -931,11 +931,17 @@ describe('the policy event harvest', () => {
     ]);
   });
 
-  // PINS: THE HARVEST DEDUPES ON `(path, reason)`, EXACTLY AS THE DAEMON DOES —
-  // and the daemon really does write two rows for one path, because two
+  // PINS: THE HARVEST DEDUPES ON `(path, reason, tgid)`, EXACTLY AS THE DAEMON
+  // DOES — and the daemon really does write two rows for one path, because two
   // CALLERS can reach it. Observed in real gate runs: `/var` carries
   // `deny`/`unpinned-fail-closed` from the marked CLI and
   // `served`/`unmarked-host-served` from an unmarked one.
+  //
+  // ONE DIMENSION AT A TIME, which is what makes each half attributable: the
+  // two rows below differ in the REASON and in NOTHING ELSE (same path, same
+  // tgid), and the tgid half of the key gets its own arm underneath with the
+  // reason held fixed. Rows that differed in both would be kept apart by either
+  // half and would pin neither.
   //
   // A PATH-ONLY KEY DEFEATS THE LOG'S WHOLE PURPOSE, which is why this is a bug
   // and not a tidiness question: `pinSuggestionFor` fires only on
@@ -955,10 +961,10 @@ describe('the policy event harvest', () => {
     // BOTH ORDERS, in two sessions, because a path-only key keeps whichever row
     // came FIRST — so one order alone passes against the bug half the time.
     for (const [label, rows] of [
-      ['served first', ['served\tgetattr\t/var\tunmarked-host-served\t9\t9\tsh\t/bin/sh',
+      ['served first', ['served\tgetattr\t/var\tunmarked-host-served\t7\t7\tclaude\tclaude',
                         'deny\tgetattr\t/var\tunpinned-fail-closed\t7\t7\tclaude\tclaude']],
       ['deny first', ['deny\tgetattr\t/var\tunpinned-fail-closed\t7\t7\tclaude\tclaude',
-                      'served\tgetattr\t/var\tunmarked-host-served\t9\t9\tsh\t/bin/sh']],
+                      'served\tgetattr\t/var\tunmarked-host-served\t7\t7\tclaude\tclaude']],
     ]) {
       // The PARSE, where the dedupe lives.
       const parsed = parsePolicyEvents(rows.join('\n') + '\n');
@@ -968,7 +974,7 @@ describe('the policy event harvest', () => {
       // …and a THIRD row repeating a (path, reason) pair is still one row, so
       // this widened the key rather than removing the dedupe.
       const withDup = parsePolicyEvents([...rows, rows[0]].join('\n') + '\n');
-      assert.equal(withDup.length, 2, `${label}: the (path, reason) dedupe is gone`);
+      assert.equal(withDup.length, 2, `${label}: the (path, reason, tgid) dedupe is gone`);
 
       // AND THE CONSEQUENCE, end to end at the store, which is what the bug
       // actually cost: the pin suggestion for /var is present.
@@ -994,6 +1000,67 @@ describe('the policy event harvest', () => {
       assert.match(report.notes.find(n => n.startsWith('cc-fuse: ')) ?? '',
         /no array in src\/systems\/fuse\/tierTable\.ts obviously owns \/var/, label);
     }
+  });
+
+  // PINS: THE OTHER HALF OF THE SAME KEY — the TGID — with the reason and the
+  // path held FIXED, so only the caller distinguishes the two rows. The daemon
+  // gained this half in the same commit (card 2026-0389) and the harvest had to
+  // follow: at `(path, reason)` the first caller to reach a path wins the row
+  // and every later one is silently dropped, which would make the identity
+  // columns answer "who asked?" with "whoever happened to be first".
+  // DIES UNDER: dropping the tgid from the parse key (the second caller's row
+  // vanishes); dropping the dedupe entirely (the repeat below survives).
+  test('the harvest keeps one path+reason from two callers as two rows', () => {
+    const R = (tgid, comm) => `deny\tgetattr\t/var\tunpinned-fail-closed\t${tgid}\t${tgid}\t${comm}\t${comm}`;
+    const two = parsePolicyEvents([R(7, 'claude'), R(9, 'sh')].join('\n') + '\n');
+    assert.deepEqual(two.map(r => [r.tgid, r.comm.value]), [[7, 'claude'], [9, 'sh']],
+      'a second thread group at the same (path, reason) was dropped');
+    // …and it is still a DEDUPE: the same caller repeating is one row, so this
+    // widened the key rather than removing it.
+    const dup = parsePolicyEvents([R(7, 'claude'), R(7, 'claude'), R(9, 'sh')].join('\n') + '\n');
+    assert.equal(dup.length, 2, JSON.stringify(dup.map(r => r.tgid)));
+    // THE PID IS NOT IN THE KEY, and that is deliberate: one thread group
+    // reaching a path from two of its THREADS is one finding, not two.
+    const threads = parsePolicyEvents([
+      'deny\tgetattr\t/var\tunpinned-fail-closed\t71\t7\tclaude\tclaude',
+      'deny\tgetattr\t/var\tunpinned-fail-closed\t72\t7\tclaude\tclaude',
+    ].join('\n') + '\n');
+    assert.equal(threads.length, 1, JSON.stringify(threads.map(r => r.pid)));
+  });
+
+  // PINS: A NON-UTF-8 BYTE SURVIVES THE HARVEST UNCHANGED. `policy_escape`
+  // passes `0x80-0xff` through VERBATIM — deliberately, so a UTF-8 path stays
+  // readable — which means the session log is a BYTE file and not necessarily
+  // valid UTF-8: a latin-1 filename or a binary argument puts a lone high byte
+  // in it. Reading it as `utf8` replaces that byte with U+FFFD before
+  // `pathRaw`/`comm.raw`/`cmdline.raw` are formed, so the store — the artifact
+  // that outlives the session and that card 2026-0388's captures are taken
+  // from — carries corrupted evidence.
+  // DIES UNDER: reading the session log as `utf8`; writing the store body as a
+  // string (`appendFile` re-encodes latin1 code units as two UTF-8 bytes).
+  test('the harvest carries a non-UTF-8 byte into the store unchanged', async () => {
+    const { rundir, record } = await seedRun();
+    // 0xff is not valid UTF-8 in ANY position, so a utf8 read cannot preserve it.
+    const P = '/lat\xff1/\xfe.so';
+    const bytes = Buffer.from(
+      `deny\tgetattr\t${P}\tunpinned-fail-closed\t7\t7\tsh\t/bin/sh\\0-c\\0\xff\n`, 'latin1');
+    await fs.writeFile(path.join(rundir, 'events.log'), bytes);
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+    // READ AS BYTES, or this assertion could not see the corruption it is for.
+    const stored = await fs.readFile(fuseEventStore(), 'latin1');
+    const row = stored.split('\n').filter(Boolean).map(l => l.split('\t'))
+      .find(r => r[1] === record.instanceId);
+    assert.ok(row, `nothing was harvested: ${stored.slice(-400)}`);
+    const hex = (v) => Buffer.from(v, 'latin1').toString('hex');
+    assert.equal(hex(row[4]), hex(P), 'the path column lost the high byte');
+    assert.equal(hex(row[8]), hex('/bin/sh\\0-c\\0\xff'), 'the cmdline column lost it');
+    // NON-VACUITY: 0xff really is in the fixture and really is not valid UTF-8,
+    // so `Buffer.from(bytes).toString('utf8')` would have mangled it.
+    assert.ok(bytes.includes(0xff), 'the fixture has no high byte to lose');
+    assert.notEqual(bytes.toString('utf8').indexOf('�'), -1,
+      'the fixture is valid UTF-8, so a utf8 read would not have corrupted it');
   });
 
   // PINS: a pin is suggested for `deny`/`unpinned-fail-closed` AND FOR NOTHING
@@ -1089,8 +1156,9 @@ describe('the policy event harvest', () => {
   // where they are. Bounded output was the owner's requirement; a truncation
   // that did not say it truncated would be the same defect as a count.
   //
-  // ROWS, NOT PATHS — the harvest key is `(path, reason)`, so a path carrying
-  // two deny reasons occupies two slots. This fixture gives each row its own
+  // ROWS, NOT PATHS — the harvest key is `(path, reason, tgid)`, so a path
+  // carrying two deny reasons, or one reason from two thread groups, occupies
+  // two slots. This fixture gives each row its own
   // path, so the two units coincide here and the assertion reads either way;
   // the wording says rows because that is what the code counts.
   // DIES UNDER: removing the cap; dropping the `+K more` clause.

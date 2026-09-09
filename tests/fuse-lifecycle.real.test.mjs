@@ -1088,7 +1088,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     'const run=(bin,args,cwd)=>{const r=spawnSync(bin,args,{cwd,encoding:"utf8"});',
     'return {status:r.status,err:r.error?r.error.code:null,',
     'out:(r.stdout||"").trim(),se:(r.stderr||"").trim()};};',
-    'console.log(JSON.stringify({',
+    // ITS OWN comm, so (f) below compares the daemon's attribution against
+    // something the probe REPORTS rather than against a literal that would go
+    // stale the day node renames its main thread. `spawnSync` forks from this
+    // thread, and the child keeps this comm until it execs — which is why the
+    // (b) denial, taken during the pre-exec chdir, must carry it.
+    'const comm=require("fs").readFileSync("/proc/self/comm","utf8").trim();',
+    'console.log(JSON.stringify({comm,',
     'a:run("/bin/sh",["-c","pwd -P"],root),',
     'b:run("/bin/sh",["-c","pwd -P"],sub),',
     'c:run("/bin/cat",[file],"/"),',
@@ -1241,6 +1247,23 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
           + `exists to catch: ${JSON.stringify(r)}`);
         assert.ok(!r[7].startsWith('\\!'), `nor its cmdline: ${JSON.stringify(r)}`);
       }
+      // …AND IT IS THE RIGHT PROCESS, not merely a readable one. The two
+      // denials have DIFFERENT causes and therefore different callers, and this
+      // is what a wrong attribution — everything credited to the daemon, to the
+      // last caller, or to the parent — cannot survive:
+      //   (b) `<proj>/cwd-sub`      the chdir in the FORKED CHILD, before exec,
+      //                             so it still carries the probe's own comm
+      //   (c) `<proj>/remote-marker.txt`  read by `/bin/cat` AFTER exec
+      const commAt = (p) => (denials.find(r => r[2] === p) ?? [])[6];
+      assert.equal(commAt(path.join(proj, SUB)), res.comm,
+        `the pre-exec chdir denial is not attributed to the probe's own thread group `
+        + `(expected comm ${JSON.stringify(res.comm)}): ${JSON.stringify(denials)}`);
+      assert.equal(commAt(path.join(proj, 'remote-marker.txt')), 'cat',
+        `the file read is not attributed to cat: ${JSON.stringify(denials)}`);
+      // NON-VACUITY: the two really are different processes, so an attribution
+      // that collapsed every row onto one caller could not pass both.
+      assert.notEqual(res.comm, 'cat', 'the probe and its child share a comm, so (f) proves nothing');
+
       // AND THE TRACE CAN BE JOINED TO IT ON THE TGID, which is what makes the
       // two instruments one picture rather than two.
       const tgids = new Set(denials.map(r => r[5]));

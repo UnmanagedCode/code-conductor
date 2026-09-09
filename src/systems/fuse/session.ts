@@ -98,8 +98,8 @@ export interface TeardownReport {
   // IMMEDIATELY BEFORE the run directory is reclaimed — the reclaim is what used
   // to destroy the only record of a fail-closed path. One entry per DISTINCT
   // PATH, in the order the daemon first wrote it — narrower than the harvested
-  // ROWS, which are keyed `(path, reason)` because two callers can reach one
-  // path with two reasons. This is a path list and its one consumer (the boot
+  // ROWS, which are keyed `(path, reason, tgid)` because two callers can reach
+  // one path, with two reasons or with the same one. This is a path list and its one consumer (the boot
   // sweep) asks only whether it is empty.
   eventPaths: string[];
   notes: string[];
@@ -129,13 +129,43 @@ export interface PolicyEventRow {
 
 // THE INVERSE OF `policy_escape` (policy.h), and the ONLY one — the C encoder
 // and this decoder are cross-checked against each other on real daemon output
-// by tests/fuse-union-policy.test.mjs's argv round trip, rather than each
+// by tests/fuse-union-policy.test.mjs's field round trip, rather than each
 // against its own transcription of the format.
-function decodeEscapes(s: string): string {
+//
+// LEFT TO RIGHT, TOKEN BY TOKEN, AND THE DIRECTION IS LOAD-BEARING. Detecting
+// the `\!truncated` marker with a right-to-left `endsWith` is FORGEABLE: a field
+// whose raw bytes end with a literal `\` followed by `!truncated` encodes to
+// `…\\!truncated`, whose last eleven characters spell the marker — so the
+// decoder dropped ten content bytes and reported a COMPLETE read as truncated.
+//
+// The escaper's guarantee is narrower than "the bytes `\!` never appear", and
+// reading it as the wider claim is what produced that defect. What it really
+// guarantees: every `\`-initial token `policy_escape` emits is `\\`, `\t`, `\n`,
+// `\r`, `\0` or `\xHH` — second character always one of `\tnr0x`, never `!` —
+// and it never writes a PARTIAL token (its capacity check runs before the
+// copy). So its output is a complete token sequence, the marker is appended at
+// a token boundary, and `\` is followed by `!` at an ESCAPE-ALIGNED position
+// exactly where a marker was appended and nowhere else. A scan that tracks
+// alignment can use that; one that scans from the right cannot see it.
+//
+// Returns the decoded bytes (one code unit per byte) and whether the field
+// ended in the marker.
+function decodeField(s: string): { value: string; truncated: boolean } {
   let out = '';
   for (let i = 0; i < s.length; i++) {
-    if (s[i] !== '\\') { out += s[i]; continue; }
-    const n = s[++i];
+    const c = s[i];
+    if (c !== '\\') { out += c; continue; }
+    const n = s[i + 1];
+    if (n === '!') {
+      // ESCAPE-ALIGNED `\!` — the encoder cannot produce one, so this is a
+      // marker rather than content.
+      if (s.slice(i) === TRUNC) return { value: out, truncated: true };
+      // Some other `\!` marker, from a daemon newer than this reader. Kept
+      // verbatim rather than dropped, so the row degrades into readable text.
+      out += c;
+      continue;
+    }
+    i++;
     if (n === '\\') out += '\\';
     else if (n === 't') out += '\t';
     else if (n === 'n') out += '\n';
@@ -147,8 +177,10 @@ function decodeEscapes(s: string): string {
     else if (n === undefined) out += '\\';
     else out += '\\' + n;
   }
-  return out;
+  return { value: out, truncated: false };
 }
+
+const decodeEscapes = (s: string): string => decodeField(s).value;
 
 const SENTINELS: Record<string, EventField['status']> =
   { '\\!gone': 'gone', '\\!unreadable': 'unreadable', '\\!empty': 'empty' };
@@ -159,8 +191,7 @@ const TRUNC = '\\!truncated';
 export function decodeEventField(s: string): EventField {
   const sentinel = SENTINELS[s];
   if (sentinel) return { raw: s, value: null, status: sentinel };
-  const truncated = s.endsWith(TRUNC);
-  const value = decodeEscapes(truncated ? s.slice(0, -TRUNC.length) : s);
+  const { value, truncated } = decodeField(s);
   return { raw: s, value, status: truncated ? 'truncated' : 'ok' };
 }
 
@@ -206,6 +237,12 @@ function decodeCmdline(s: string): EventField {
 //
 // BEST-EFFORT THROUGHOUT. `runTeardown` never rejects, and a store the harvest
 // cannot write is not a reason to abandon a mount.
+// `text` MUST BE READ AS `latin1` — one code unit per byte. The escape table
+// passes `0x80-0xff` through VERBATIM, so the log is a BYTE file and a `utf8`
+// read replaces a lone high byte with U+FFFD before any column is formed. Every
+// string on the returned row is therefore BYTES too, not display text;
+// `describePolicyEvents` is the one place they are shown and it reinterprets
+// them there.
 export function parsePolicyEvents(text: string): PolicyEventRow[] {
   const seen = new Set<string>();
   const out: PolicyEventRow[] = [];
@@ -249,7 +286,7 @@ export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: st
 }
 
 async function harvestEvents(rundir: string, instanceId: string): Promise<PolicyEventRow[]> {
-  const text = await fsp.readFile(path.join(rundir, EVENT_LOG_NAME), 'utf8').catch(() => '');
+  const text = await fsp.readFile(path.join(rundir, EVENT_LOG_NAME), 'latin1').catch(() => '');
   const rows = parsePolicyEvents(text);
   if (rows.length === 0) return rows;
   const at = new Date().toISOString();
@@ -263,7 +300,10 @@ async function harvestEvents(rundir: string, instanceId: string): Promise<Policy
       r.comm.raw, r.cmdline.raw, s?.list ?? '', s?.entry ?? ''].join('\t');
   }).join('\n') + '\n';
   await fsp.mkdir(path.dirname(store), { recursive: true }).catch(() => {});
-  await fsp.appendFile(store, body).catch(() => {});
+  // AS BYTES. `body` holds latin1 code units, and a string append would re-encode
+  // every one past 0x7f as two UTF-8 bytes — undoing the byte fidelity the raw
+  // columns exist for.
+  await fsp.appendFile(store, Buffer.from(body, 'latin1')).catch(() => {});
   return rows;
 }
 
@@ -278,6 +318,13 @@ async function harvestEvents(rundir: string, instanceId: string): Promise<Policy
 // the cap exists to bound the OUTPUT, and rows are what the output is made of.
 const EVENT_LINE_CAP = 20;
 
+// A ROW'S STRINGS ARE BYTES (see `parsePolicyEvents`), and this is the only
+// place they are read by a human — so this is where they become text. Applied
+// per field rather than to the assembled sentence: `storePath` is an ordinary
+// JS string that may hold characters past U+00FF, and reinterpreting the whole
+// sentence would corrupt it.
+const asText = (s: string): string => Buffer.from(s, 'latin1').toString('utf8');
+
 export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath = fuseEventStore()): string | null {
   if (rows.length === 0) return null;
   const denials = rows.filter(r => r.kind === 'deny');
@@ -291,7 +338,7 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
     // away in the store file the sentence already names. A recorded absence
     // prints its STATUS (`gone[41231]`), never a plausible-looking name.
     parts.push('the daemon refused: '
-      + shown.map(r => `${r.path} (${r.comm.value ?? r.comm.status}[${r.pid}])`).join(', ')
+      + shown.map(r => `${asText(r.path)} (${asText(r.comm.value ?? r.comm.status)}[${r.pid}])`).join(', ')
       + (more > 0 ? ` (+${more} more; full list at ${storePath})` : ''));
     // THE REPAIR, GROUPED BY THE ARRAY THAT OWNS IT, because that is the edit
     // the reader has to make. `suggestPin` (tierTable.ts) owns the mapping and
@@ -304,9 +351,10 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
       byList.get(s.list)!.push(s.entry);
     }
     for (const [list, entries] of byList) {
+      const named = entries.map(asText).join(', ');
       parts.push(list === 'UNDECIDED'
-        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${entries.join(', ')} — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots`
-        : `add ${entries.join(', ')} to ${list} in src/systems/fuse/tierTable.ts and restart cc`);
+        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${named} — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots`
+        : `add ${named} to ${list} in src/systems/fuse/tierTable.ts and restart cc`);
     }
   }
   const served = rows.filter(r => r.kind === 'served');
@@ -315,7 +363,7 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
     const more = served.length - shown.length;
     // NO PIN SUGGESTED FOR THESE, and the wording says why: the op succeeded.
     parts.push(`served off the tier table (no pin needed — the op succeeded): `
-      + shown.map(r => `${r.reason} ${r.path}`).join(', ')
+      + shown.map(r => `${r.reason} ${asText(r.path)}`).join(', ')
       + (more > 0 ? ` (+${more} more)` : ''));
   }
   parts.push(`full event log at ${storePath}`);

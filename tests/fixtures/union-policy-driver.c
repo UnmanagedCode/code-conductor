@@ -689,7 +689,7 @@ static void b14_control_reasons(void)
 	unlink(tmpl);
 }
 
-/* ── B13: the event log records each (path, reason) exactly once ────────── */
+/* ── B13: one caller's (path, reason) is recorded exactly once ──────────── */
 static void b13_refusals(void)
 {
 	char tmpl[] = "/tmp/cc-policy-refusalsXXXXXX";
@@ -1430,9 +1430,10 @@ static void b25_substitution_logged_at_fail_only(void)
 	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);               /* unmarked */
 
-	/* TWICE at one path, once at another: the row is per DISTINCT path, which
-	 * is what bounds the volume to roughly twenty per shell startup rather
-	 * than to the op count. */
+	/* TWICE at one path, once at another, ONE CALLER THROUGHOUT: the row is
+	 * per distinct (path, thread group), which is what bounds the volume to
+	 * roughly twenty per shell startup rather than to the op count. The
+	 * thread-group half of that key is `b31`'s. */
 	(void)policy_caller_tier("getattr", "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
 	(void)policy_caller_tier("open",    "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
 	(void)policy_caller_tier("getattr", "/var/other", T_FAIL, 0, 500);
@@ -1453,7 +1454,7 @@ static void b25_substitution_logged_at_fail_only(void)
 			if (strncmp(line, "deny\t", 5) == 0) n_deny_project++;
 		}
 	}
-	CHECK(n_served_a == 1, "one served row per distinct path, across two ops (%d)", n_served_a);
+	CHECK(n_served_a == 1, "one served row per distinct path for one caller, across two ops (%d)", n_served_a);
 	CHECK(n_served_b == 1, "and the second distinct path has its own (%d)", n_served_b);
 	CHECK(n_any_project == 1, "the project path produced exactly one row (%d)", n_any_project);
 	CHECK(n_deny_project == 1, "and it is a DENY row, never a served one (%d)", n_deny_project);
@@ -1987,16 +1988,39 @@ static void b32_cwd_row(void)
 	unlink(tmpl);
 }
 
-/* ── argv-vectors: the C encoder's output, for the .mjs decoder to read ──── */
+/* ── field-vectors: the C encoder's output, for the .mjs decoder to read ──── */
 /*
  * THE CROSS-LANGUAGE ROUND TRIP, in the idiom `frame-vectors` already uses: the
- * C side EMITS and PRINTS the bytes it emitted, and `session.ts`'s
- * `decodeEventField` is asserted against those rather than against a second
+ * C side EMITS real rows and PRINTS the raw bytes it put in them, and
+ * `session.ts`'s decoder is asserted against those rather than against a second
  * transcription of the format. A C-only or a JS-only test proves neither half.
+ *
+ * FIVE ROWS, ONE PER SHAPE THE DECODER HAS TO TELL APART: an ordinary argv, the
+ * FORGERY (below), and the three /proc outcomes that are not a value. Before
+ * this only `ok` and `gone` ever crossed the boundary.
+ *
+ * THE FORGERY IS THE POINT OF ROW 2. A field whose RAW bytes END with a literal
+ * `\` followed by `!truncated` encodes to `…\\!truncated` — because `\\` is
+ * escaped first — and a decoder that strips the marker with a right-to-left
+ * `endsWith` reads those last eleven characters as the marker, drops ten
+ * content bytes and reports a COMPLETE read as truncated. The escaper's
+ * guarantee is narrower than "the bytes `\!` never appear": it is that `\` is
+ * never followed by `!` AT AN ESCAPE-ALIGNED POSITION, because every
+ * `\`-initial token it emits is `\\`, `\t`, `\n`, `\r`, `\0` or `\xHH` and it
+ * never writes a partial one. Only an alignment-aware decode can use that.
  *
  * `argv[2]` is the log path, and it is NOT unlinked — the .mjs reads it.
  */
-static void argv_vectors(int argc, char **argv)
+static void print_vec(const char *label, const char *b, size_t n)
+{
+	size_t i;
+	printf("VEC %s ", label);
+	for (i = 0; i < n; i++)
+		printf("%02x", (unsigned char)b[i]);
+	printf("\n");
+}
+
+static void field_vectors(int argc, char **argv)
 {
 	/* NUL-SEPARATED, exactly as /proc/<pid>/cmdline is, trailing NUL and all.
 	 * The middle argument is a `bash -c` script carrying a tab, a newline, a
@@ -2006,31 +2030,62 @@ static void argv_vectors(int argc, char **argv)
 		"/bin/bash\0-c\0echo\thi\nthere \\ \x01\x7f done\0\xc3\xa9\xff\0";
 	static const size_t CMDLEN = sizeof(CMD) - 1;
 	static const char PATHV[] = "/nasty\tpath\nhere";
+	/* THE FORGERY, in all three escaped fields at once. No trailing NUL on the
+	 * cmdline — a capped read has none either, which is the shape that puts a
+	 * `\!truncated` spelling at the very end of a field. */
+	static const char FPATH[] = "/f-forge/\\!truncated";
+	static const char FCOMM[] = "\\!truncated";
+	static const char FCMD[]  = "arg\0tail\\!truncated";
+	static const size_t FCMDLEN = sizeof(FCMD) - 1;
+	static char big[POLICY_CMDLINE_MAX + 1024];
 	size_t i, start;
 	FILE *f;
 
-	if (argc < 3) { fprintf(stderr, "argv-vectors: needs a log path\n"); exit(2); }
-	if (!(f = fopen(argv[2], "w"))) { fprintf(stderr, "argv-vectors: fopen\n"); exit(2); }
+	if (argc < 3) { fprintf(stderr, "field-vectors: needs a log path\n"); exit(2); }
+	if (!(f = fopen(argv[2], "w"))) { fprintf(stderr, "field-vectors: fopen\n"); exit(2); }
 	event_fp = f;
 	setvbuf(event_fp, NULL, _IOLBF, 0);
 
+	/* 1. an ordinary argv, every byte class in it */
 	proc_set(9001, 9001, 77);
 	proc_set_identity(9001, "bash", CMD, CMDLEN);
 	policy_event(EV_DENY, "getattr", PATHV, "unpinned-fail-closed", 9001);
+	/* 2. the forgery */
+	proc_set(9002, 9002, 78);
+	proc_set_identity(9002, FCOMM, FCMD, FCMDLEN);
+	policy_event(EV_DENY, "getattr", FPATH, "unpinned-fail-closed", 9002);
+	/* 3, 4. the two absences that are not `gone` */
+	proc_set(9003, 9003, 79);
+	proc_set_identity_fail(9003, POLICY_PROC_UNREADABLE, POLICY_PROC_UNREADABLE);
+	policy_event(EV_DENY, "getattr", "/f-unreadable", "unpinned-fail-closed", 9003);
+	proc_set(9004, 9004, 80);
+	proc_set_identity(9004, "", "", 0);
+	policy_event(EV_DENY, "getattr", "/f-empty", "unpinned-fail-closed", 9004);
+	/* 5. a REAL truncation, which is what row 2 must not be confused with */
+	memset(big, 'a', sizeof(big));
+	proc_set(9005, 9005, 81);
+	proc_set_identity(9005, "big", big, sizeof(big));
+	policy_event(EV_DENY, "getattr", "/f-trunc", "unpinned-fail-closed", 9005);
 
-	/* THE VECTORS: each argv element, and the path, as hex of the RAW bytes. */
+	/* THE VECTORS: each argv element and each escaped field, as hex of the RAW
+	 * bytes the daemon was given. */
 	for (i = 0, start = 0; i <= CMDLEN; i++) {
 		if (i < CMDLEN && CMD[i] != '\0') continue;
 		if (i == CMDLEN && start == i) break;
-		printf("ARGV ");
-		{ size_t k; for (k = start; k < i; k++) printf("%02x", (unsigned char)CMD[k]); }
-		printf("\n");
+		print_vec("argv", CMD + start, i - start);
 		start = i + 1;
 	}
-	printf("PATH ");
-	for (i = 0; i < sizeof(PATHV) - 1; i++) printf("%02x", (unsigned char)PATHV[i]);
-	printf("\n");
-	printf("COMM 62617368\n");
+	print_vec("path", PATHV, sizeof(PATHV) - 1);
+	print_vec("comm", "bash", 4);
+	print_vec("fpath", FPATH, sizeof(FPATH) - 1);
+	print_vec("fcomm", FCOMM, sizeof(FCOMM) - 1);
+	for (i = 0, start = 0; i <= FCMDLEN; i++) {
+		if (i < FCMDLEN && FCMD[i] != '\0') continue;
+		if (i == FCMDLEN && start == i) break;
+		print_vec("fargv", FCMD + start, i - start);
+		start = i + 1;
+	}
+	printf("TRUNCLEN %d\n", POLICY_CMDLINE_MAX - 1);
 	fclose(event_fp);
 	event_fp = NULL;
 }
@@ -2076,7 +2131,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b31-dedupe-tgid")) b31_dedupe_tgid();
 	else if (!strcmp(c, "b32-cwd-row"))   b32_cwd_row();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
-	else if (!strcmp(c, "argv-vectors"))  argv_vectors(argc, argv);
+	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
 
 	if (failures) fprintf(stderr, "%s: %d of %d assertions FAILED\n", c, failures, checks);

@@ -1047,8 +1047,8 @@ static inline int ccu_call(uint8_t op, uint8_t flags, const char *path)
  * THE INSTRUMENT THE PIN LIST IS DERIVED FROM, and the thing whose `deny` rows
  * must be empty by the end. Every fail-closed path, every REFUSED reply, every
  * unmarked denial AND every op this daemon served some way OTHER than the way
- * the tier table said, deduplicated on path+reason so a demand-paged 215 MB
- * binary cannot bury the one line that matters. PATHS ONLY, never content: a
+ * the tier table said, deduplicated on (path, reason, tgid) so a demand-paged
+ * 215 MB binary cannot bury the one line that matters. PATHS ONLY, never content: a
  * credential path may appear in it and a credential never does.
  *
  * IT IS NOT A REFUSAL LOG, AND CALLING IT ONE WAS A FALSE CLAIM RATHER THAN A
@@ -1220,7 +1220,10 @@ static inline int event_dup(const char *key)
  *
  * IDENTITY IS SAMPLED AT POLICY TIME, AFTER THE DECISION AND AFTER THE DEDUPE.
  * It cannot change any answer — there is no error return and no branch on it —
- * and it is paid once per distinct row rather than once per op. `exec(2)`
+ * and the two /proc reads it costs — comm and cmdline — are paid once per
+ * DISTINCT ROW rather than once per op. The TGID read is NOT: the dedupe key
+ * needs it, so it happens on every call, and it is the same read `mark_of` and
+ * `policy_project_route` already make. `exec(2)`
  * replaces comm and cmdline while leaving pid, tgid and start time untouched,
  * so no validation can make the sample authoritative for the op that triggered
  * it; the header line written by `main()` says so in the file itself.
@@ -1363,8 +1366,8 @@ static inline int policy_tier_is_caller_sensitive(enum tier t)
  * follows — which is also all this function can know. It therefore means "an
  * unmarked caller was routed to the host at an unpinned path", which is exactly
  * the fact a maintainer needs, and it is `served` rather than `deny` because
- * the op was not refused. Volume is bounded by distinct paths (the log dedupes
- * on (path, reason)).
+ * the op was not refused. Volume is bounded by distinct path × thread group
+ * (the log dedupes on (path, reason, tgid)).
  */
 static inline enum tier policy_caller_tier(const char *op, const char *path,
 					   enum tier t, int marked, pid_t tid)

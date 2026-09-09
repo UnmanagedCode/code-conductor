@@ -301,8 +301,8 @@ describe('the compiled policy driver', { skip }, () => {
                       'swap ABSENT→EACCES, or drop the reply-status switch'],
     ['b14-reasons',   'each control failure names itself in the event log as a `deny` row, and the three are distinguished',
                       'collapse remote-absent and control-refused into one reason'],
-    ['b13-refusals',  'the event log records each (path, reason) exactly once, as four columns with the KIND first',
-                      'drop the dedupe, or key it on op as well; append the kind instead of leading with it'],
+    ['b13-refusals',  'the event log records each (path, reason) from one caller exactly once, as EIGHT columns (seven tabs) with the KIND first',
+                      'drop the dedupe, or key it on op as well; append the kind instead of leading with it; drop a column from the row'],
     // NOT `add the kind to the dedupe key` — that mutant is SEMANTICS-
     // PRESERVING and therefore unkillable anywhere. Every reason maps to
     // exactly one kind (the source-derived set equality below), so the kind is
@@ -348,7 +348,7 @@ describe('the compiled policy driver', { skip }, () => {
                       'each reason policy.h emits carries exactly one kind, read back out of the sink, and five emissions produce five rows',
                       'classify unmarked-host-served as `deny` (it would join R4’s fatal filter); classify unmarked-project-denied as `served`'],
     ['b25-substitution-logged-at-fail-only',
-                      'an unmarked caller at `fail` emits exactly one served/unmarked-host-served row PER DISTINCT PATH; at `project` it emits a deny row and no served row',
+                      'an unmarked caller at `fail` emits exactly one served/unmarked-host-served row PER DISTINCT (PATH, THREAD GROUP); at `project` it emits a deny row and no served row',
                       'emit `served` at T_PROJECT (the ruling violated, from the log’s side); drop the row at T_FAIL; emit `deny` for the substitution; key the dedupe on op as well ⇒ two rows for one path'],
     ['b15-unreconcilable',
                       "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP, and a host-tier one does not",
@@ -380,7 +380,7 @@ describe('the compiled policy driver', { skip }, () => {
     const src = await fs.readFile(DRIVER_SRC, 'utf8');
     const dispatched = [...src.matchAll(/strcmp\(c, "([a-z0-9-]+)"\)/g)].map(m => m[1]);
     assert.ok(dispatched.length > 10, `the dispatcher was not parsed: ${dispatched.length}`);
-    const listed = new Set([...CASES.map(([id]) => id), 'frame-vectors', 'argv-vectors']);
+    const listed = new Set([...CASES.map(([id]) => id), 'frame-vectors', 'field-vectors']);
     const orphans = dispatched.filter(id => !listed.has(id));
     assert.deepEqual(orphans, [], 'these driver cases are defined but never run');
     // …and the other direction, so CASES cannot name a case that no longer
@@ -445,55 +445,84 @@ describe('the compiled policy driver', { skip }, () => {
   // Same shape and same reason as the frame codec above: `policy_escape` (C)
   // and `decodeEventField` (session.ts) implement ONE format, and a test that
   // asserted each against its own transcription of that format would pass while
-  // they disagreed. So the C side WRITES A REAL ROW and PRINTS the raw bytes it
-  // put in it, and the TypeScript decoder is asserted against those.
+  // they disagreed. So the C side WRITES REAL ROWS and PRINTS the raw bytes it
+  // put in them, and the TypeScript decoder is asserted against those.
   //
-  // THE FIXTURE IS THE SHAPE THAT BROKE THE PREVIOUS INSTRUMENT: a `bash -c`
-  // argv whose script carries a tab, a newline, a backslash and two control
-  // bytes, plus an element that is not valid UTF-8 — 1662 unparsable rows out
-  // of ~3000, silently dropped by the analysis. Read as `latin1` so a byte is a
-  // code unit and the comparison is on BYTES rather than on a decoding of them.
-  test('the event row round-trips an arbitrary argv into session.ts’s decoder', async () => {
+  // FIVE ROWS, ONE PER SHAPE THE DECODER MUST TELL APART — an ordinary argv,
+  // the FORGERY, and the three /proc outcomes that are not a value. Read as
+  // `latin1` so a byte is a code unit and every comparison is on BYTES rather
+  // than on a decoding of them; `harvestEvents` reads it the same way, so this
+  // test has no property production lacks.
+  test('the event row round-trips every field shape into session.ts’s decoder', async () => {
     const { decodeEventField, parsePolicyEvents } = await import('../src/systems/fuse/session.ts');
-    const dir = await mkdtemp('cc-policy-argv-');
+    const dir = await mkdtemp('cc-policy-fields-');
     const logPath = path.join(dir, 'events.log');
-    const r = await run(bin, ['argv-vectors', logPath]);
+    const r = await run(bin, ['field-vectors', logPath]);
     assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
     const printed = r.stdout.split('\n').filter(Boolean).map(l => l.split(' '));
-    const wantArgv = printed.filter(l => l[0] === 'ARGV').map(l => l[1]);
-    const wantPath = printed.find(l => l[0] === 'PATH')[1];
-    const wantComm = printed.find(l => l[0] === 'COMM')[1];
-    // NON-VACUITY: the fixture really emitted a multi-element argv, so an empty
-    // decode cannot read as agreement.
-    assert.equal(wantArgv.length, 4, `the fixture printed ${wantArgv.length} argv vectors`);
+    const vec = (label) => printed.filter(l => l[0] === 'VEC' && l[1] === label).map(l => l[2]);
+    const one = (label) => { const v = vec(label); assert.equal(v.length, 1, label); return v[0]; };
+    const truncLen = Number(printed.find(l => l[0] === 'TRUNCLEN')[1]);
+    // NON-VACUITY: the fixture really emitted a multi-element argv and a cap,
+    // so an empty decode cannot read as agreement.
+    assert.equal(vec('argv').length, 4, `the fixture printed ${vec('argv').length} argv vectors`);
+    assert.ok(truncLen > 0, `the fixture printed no cap: ${truncLen}`);
 
     const text = await fs.readFile(logPath, 'latin1');
-    const lines = text.split('\n').filter(Boolean).filter(l => !l.startsWith('#'));
-    assert.equal(lines.length, 1, `expected one row, got: ${JSON.stringify(lines)}`);
-    const cols = lines[0].split('\t');
-    // THE ESCAPING IS WHAT MAKES THE SPLIT TOTAL: the path and the cmdline both
-    // contain tabs and newlines, and the row is still eight columns and one line.
-    assert.equal(cols.length, 8, `the row is not eight columns: ${JSON.stringify(cols)}`);
+    const lines = text.split('\n').filter(l => l !== '' && !l.startsWith('#'));
+    assert.equal(lines.length, 5, `expected five rows, got: ${JSON.stringify(lines)}`);
+    for (const l of lines)
+      assert.equal(l.split('\t').length, 8, `a row is not eight columns: ${JSON.stringify(l)}`);
+    const rows = parsePolicyEvents(text);
+    assert.equal(rows.length, 5, JSON.stringify(rows.map(x => x.path)));
+    const byPath = new Map(rows.map(x => [x.path, x]));
+    const hexOf = (v) => Buffer.from(v, 'latin1').toString('hex');
 
-    const hexOf = (s) => Buffer.from(s, 'latin1').toString('hex');
-    // THE FIELD DECODER ALONE, on the cmdline column: every byte the C side
-    // wrote comes back, NUL separators included.
-    const raw = decodeEventField(cols[7]);
-    assert.equal(raw.status, 'ok', JSON.stringify(raw));
-    assert.equal(hexOf(raw.value), wantArgv.join('00') + '00',
-      'the field decoder did not recover the cmdline byte for byte');
-    // …and the PRODUCTION PARSER on the whole row, which is what a reader
-    // actually gets: argv split out, and the path decoded back through its tab
-    // and its newline.
-    const [row] = parsePolicyEvents(text);
-    assert.ok(row, `the parser rejected the daemon's own row: ${JSON.stringify(lines)}`);
-    assert.deepEqual(row.cmdline.argv.map(hexOf), wantArgv,
+    // ── 1. AN ORDINARY ARGV, every byte class in it ──────────────────────────
+    const ok = byPath.get(Buffer.from(one('path'), 'hex').toString('latin1'));
+    assert.ok(ok, `the parser did not recover the nasty path: ${[...byPath.keys()]}`);
+    assert.equal(ok.cmdline.status, 'ok', JSON.stringify(ok.cmdline));
+    assert.deepEqual(ok.cmdline.argv.map(hexOf), vec('argv'),
       'the parser did not recover the argv the C side put on the wire');
-    assert.equal(hexOf(row.path), wantPath,
-      'the path column did not round-trip its tab and newline');
-    assert.equal(hexOf(row.comm.value), wantComm);
-    assert.equal(row.pid, 9001);
-    assert.equal(row.tgid, 9001);
+    assert.equal(hexOf(ok.comm.value), one('comm'));
+    // …and the field decoder ALONE, on the raw column: every byte back,
+    // NUL separators included.
+    const rawCmd = decodeEventField(ok.cmdline.raw);
+    assert.equal(rawCmd.status, 'ok');
+    assert.equal(hexOf(rawCmd.value), vec('argv').join('00') + '00',
+      'the field decoder did not recover the cmdline byte for byte');
+
+    // ── 2. THE FORGERY. Raw bytes ending `\!truncated` escape to `\\!truncated`,
+    //      which a right-to-left `endsWith` reads as the marker — dropping ten
+    //      content bytes and calling a COMPLETE read truncated. All three
+    //      escaped fields carry the shape at once.
+    const forged = byPath.get(Buffer.from(one('fpath'), 'hex').toString('latin1'));
+    assert.ok(forged, `the forging path did not round-trip: ${[...byPath.keys()]}`);
+    assert.equal(hexOf(forged.path), one('fpath'), 'the forging PATH lost bytes');
+    assert.equal(forged.comm.status, 'ok',
+      `a complete comm was reported ${forged.comm.status}: ${JSON.stringify(forged.comm)}`);
+    assert.equal(hexOf(forged.comm.value), one('fcomm'), 'the forging COMM lost bytes');
+    assert.equal(forged.cmdline.status, 'ok',
+      `a complete cmdline was reported ${forged.cmdline.status}: ${JSON.stringify(forged.cmdline)}`);
+    assert.deepEqual(forged.cmdline.argv.map(hexOf), vec('fargv'), 'the forging ARGV lost bytes');
+
+    // ── 3, 4. THE TWO ABSENCES THAT ARE NOT `gone`, decoded as absences ──────
+    const unreadable = byPath.get('/f-unreadable');
+    assert.equal(unreadable.comm.status, 'unreadable', JSON.stringify(unreadable.comm));
+    assert.equal(unreadable.comm.value, null);
+    assert.equal(unreadable.cmdline.status, 'unreadable', JSON.stringify(unreadable.cmdline));
+    assert.equal(unreadable.cmdline.argv, undefined, 'an absence was split into an argv');
+    const empty = byPath.get('/f-empty');
+    assert.equal(empty.comm.status, 'empty', JSON.stringify(empty.comm));
+    assert.equal(empty.cmdline.status, 'empty', JSON.stringify(empty.cmdline));
+
+    // ── 5. A REAL TRUNCATION, which is what row 2 must not be confused with ──
+    const trunc = byPath.get('/f-trunc');
+    assert.equal(trunc.cmdline.status, 'truncated', JSON.stringify(trunc.cmdline).slice(0, 200));
+    assert.equal(trunc.cmdline.value.length, truncLen,
+      'the truncated field did not keep the bytes it did read');
+    assert.match(trunc.cmdline.value, /^a+$/, 'the kept bytes are not the ones read');
+    assert.equal(trunc.comm.status, 'ok', 'the comm of a truncated-cmdline row is unaffected');
   });
 
   // ── C4: THE CWD EXEMPTION'S OP ALLOW-LIST, AS AN ENUMERATION DERIVED FROM
