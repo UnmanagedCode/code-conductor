@@ -135,8 +135,9 @@ export interface FusePlan {
   intentPath: string;
   recordPath: string;
   daemonLog: string;
-  // THE POLICY EVENT LOG the daemon writes (`CC_UNION_EVENTS`) —
-  // `<kind>\t<op>\t<path>\t<reason>` per distinct (path, reason). It is the
+  // THE POLICY EVENT LOG the daemon writes (`CC_UNION_EVENTS`) — a `#` header
+  // line, then `<kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t<comm>\t<cmdline>`
+  // per distinct (path, reason, tgid). It is the
   // instrument the pin list is derived from, and the channel whose `deny` rows
   // must be empty by the end; the real gate reads it (R4). Harvested into
   // `fuseEventStore()` by `runTeardown` immediately before the run directory is

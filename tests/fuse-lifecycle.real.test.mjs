@@ -571,14 +571,16 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   // and the mark path are written in.
   const inside = (record, p) => path.join(record.root, p);
 
-  // THE DAEMON'S POLICY EVENT LOG, split into `[kind, op, path, reason]`. The
-  // KIND is the first column and every filter below derives from it rather than
-  // from a hand-maintained list of reason strings — `self-recursion` and
+  // THE DAEMON'S POLICY EVENT LOG, split into
+  // `[kind, op, path, reason, pid, tgid, comm, cmdline]`. The KIND is the first
+  // column and every filter below derives from it rather than from a
+  // hand-maintained list of reason strings — `self-recursion` and
   // `pinned-children-truncated` are `served` rows, so a reason enumeration was
-  // already wrong here.
+  // already wrong here. The `#` header the daemon writes when it opens the log
+  // is dropped: it carries tabs, so it would split into a plausible-looking row.
   const eventsOf = async (instanceId) =>
     (await fs.readFile(path.join(fuseRunDir(instanceId), EVENT_LOG_NAME), 'utf8').catch(() => ''))
-      .split('\n').filter(Boolean).map(l => l.split('\t'));
+      .split('\n').filter(l => l !== '' && !l.startsWith('#')).map(l => l.split('\t'));
 
   // ── R1 ───────────────────────────────────────────────────────────────────
   // PINS criterion 1: ONE PATH SPELLING. The CLI's cwd inside the chroot, the
@@ -1086,7 +1088,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     'const run=(bin,args,cwd)=>{const r=spawnSync(bin,args,{cwd,encoding:"utf8"});',
     'return {status:r.status,err:r.error?r.error.code:null,',
     'out:(r.stdout||"").trim(),se:(r.stderr||"").trim()};};',
-    'console.log(JSON.stringify({',
+    // ITS OWN comm, so (f) below compares the daemon's attribution against
+    // something the probe REPORTS rather than against a literal that would go
+    // stale the day node renames its main thread. `spawnSync` forks from this
+    // thread, and the child keeps this comm until it execs — which is why the
+    // (b) denial, taken during the pre-exec chdir, must carry it.
+    'const comm=require("fs").readFileSync("/proc/self/comm","utf8").trim();',
+    'console.log(JSON.stringify({comm,',
     'a:run("/bin/sh",["-c","pwd -P"],root),',
     'b:run("/bin/sh",["-c","pwd -P"],sub),',
     'c:run("/bin/cat",[file],"/"),',
@@ -1219,6 +1227,48 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
         assert.ok(events.some(r => r[0] === 'deny' && r[2] === denied && r[3] === 'unmarked-project-denied'),
           `no deny/unmarked-project-denied for ${denied}: ${JSON.stringify(events)}`);
       }
+      // (f) AND THE ROW SAYS WHO ASKED (card 2026-0389). This is the ONLY arm
+      // anywhere with a real /proc behind the identity columns: every other
+      // layer injects the reader, so "the enrichment compiles" and "the
+      // enrichment attributes a real process" are different claims and this is
+      // the second one. The probe runs `node` inside the worker's namespace, so
+      // its thread group is NOT the bootstrap's — what is asserted is that the
+      // row names a LIVE, READABLE process, not a sentinel.
+      const denials = events.filter(r => r[3] === 'unmarked-project-denied'
+        && r[2].startsWith(`${proj}/`));
+      assert.ok(denials.length > 0, `no project denial to attribute: ${JSON.stringify(events)}`);
+      for (const r of denials) {
+        assert.equal(r.length, 8, `the row is not eight columns: ${JSON.stringify(r)}`);
+        assert.match(r[4], /^\d+$/, `pid is not a number: ${JSON.stringify(r)}`);
+        assert.match(r[5], /^\d+$/, `tgid is not a number: ${JSON.stringify(r)}`);
+        assert.ok(!r[6].startsWith('\\!'),
+          `the daemon could not read the caller's comm off a live /proc — the identity `
+          + `columns are structurally present and empty, which is the failure mode this arm `
+          + `exists to catch: ${JSON.stringify(r)}`);
+        assert.ok(!r[7].startsWith('\\!'), `nor its cmdline: ${JSON.stringify(r)}`);
+      }
+      // …AND IT IS THE RIGHT PROCESS, not merely a readable one. The two
+      // denials have DIFFERENT causes and therefore different callers, and this
+      // is what a wrong attribution — everything credited to the daemon, to the
+      // last caller, or to the parent — cannot survive:
+      //   (b) `<proj>/cwd-sub`      the chdir in the FORKED CHILD, before exec,
+      //                             so it still carries the probe's own comm
+      //   (c) `<proj>/remote-marker.txt`  read by `/bin/cat` AFTER exec
+      const commAt = (p) => (denials.find(r => r[2] === p) ?? [])[6];
+      assert.equal(commAt(path.join(proj, SUB)), res.comm,
+        `the pre-exec chdir denial is not attributed to the probe's own thread group `
+        + `(expected comm ${JSON.stringify(res.comm)}): ${JSON.stringify(denials)}`);
+      assert.equal(commAt(path.join(proj, 'remote-marker.txt')), 'cat',
+        `the file read is not attributed to cat: ${JSON.stringify(denials)}`);
+      // NON-VACUITY: the two really are different processes, so an attribution
+      // that collapsed every row onto one caller could not pass both.
+      assert.notEqual(res.comm, 'cat', 'the probe and its child share a comm, so (f) proves nothing');
+
+      // AND THE TRACE CAN BE JOINED TO IT ON THE TGID, which is what makes the
+      // two instruments one picture rather than two.
+      const tgids = new Set(denials.map(r => r[5]));
+      assert.ok(rows.some(l => [...tgids].some(t => new RegExp(`\\btgid=${t}\\b`).test(l))),
+        `no traced op shares a thread group with any event row (${[...tgids].join(',')})`);
     } finally {
       // NESTED, so a throw from `remove` cannot leave CC_FUSE_TRACE set for
       // every arm after this one. Cross-arm env leakage is how a flake gets

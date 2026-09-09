@@ -86,10 +86,126 @@ static ssize_t fake_roundtrip(void *ctx, const unsigned char *req, size_t reqlen
 	return xport_short ? (ssize_t)(CCU_REPLY_LEN - 1) : (ssize_t)CCU_REPLY_LEN;
 }
 
+/*
+ * THE FAKE /proc IDENTITY READERS. `comm` and `cmdline` join `starttime` and
+ * `tgid` on `struct proc_reader` for the same reason those two are injected: a
+ * cmdline carrying a NUL, a newline and a high byte has to be drivable without
+ * forking a process that happens to have one, and the three ABSENCE outcomes
+ * (`gone`, `unreadable`, `empty`) have to be produced on demand rather than
+ * raced for.
+ *
+ * A pid this table does not name reads as GONE, which is what an unset fixture
+ * pid really is.
+ */
+static struct {
+	pid_t  pid;
+	char   comm[64];
+	size_t commlen;
+	char   cmd[POLICY_CMDLINE_MAX + 2048];
+	size_t cmdlen;
+	int    comm_rc;                 /* 0 = report the bytes; else the status */
+	int    cmd_rc;
+} itab[8];
+static size_t nitab = 0;
+
+static size_t itab_slot(pid_t pid)
+{
+	size_t i;
+	for (i = 0; i < nitab; i++)
+		if (itab[i].pid == pid) return i;
+	itab[nitab].pid = pid;
+	itab[nitab].comm_rc = 0;
+	itab[nitab].cmd_rc = 0;
+	return nitab++;
+}
+
+/* `cmd` is COUNTED, never NUL-terminated-and-measured: an argv separator is a
+ * NUL, so strlen would truncate every fixture at its first argument. */
+static void proc_set_identity(pid_t pid, const char *comm, const char *cmd, size_t cmdlen)
+{
+	size_t i = itab_slot(pid);
+	size_t cl = strlen(comm);
+
+	if (cl > sizeof(itab[0].comm)) cl = sizeof(itab[0].comm);
+	memcpy(itab[i].comm, comm, cl);
+	itab[i].commlen = cl;
+	if (cmdlen > sizeof(itab[0].cmd)) cmdlen = sizeof(itab[0].cmd);
+	memcpy(itab[i].cmd, cmd, cmdlen);
+	itab[i].cmdlen = cmdlen;
+	itab[i].comm_rc = 0;
+	itab[i].cmd_rc = 0;
+}
+
+/* The absence half: a reader that fails rather than one that returns bytes. */
+static void proc_set_identity_fail(pid_t pid, int comm_rc, int cmd_rc)
+{
+	size_t i = itab_slot(pid);
+	itab[i].commlen = 0;
+	itab[i].cmdlen = 0;
+	itab[i].comm_rc = comm_rc;
+	itab[i].cmd_rc = cmd_rc;
+}
+
+static int fake_comm(pid_t pid, char *out, size_t n)
+{
+	size_t i, len;
+
+	for (i = 0; i < nitab; i++) {
+		if (itab[i].pid != pid) continue;
+		if (itab[i].comm_rc) return itab[i].comm_rc;
+		len = itab[i].commlen;
+		if (len > n - 1) len = n - 1;
+		memcpy(out, itab[i].comm, len);
+		out[len] = '\0';
+		return (int)len;
+	}
+	return POLICY_PROC_GONE;
+}
+
+/* CAPS EXACTLY AS THE REAL READER DOES — at `n - 1` — so the `\!truncated`
+ * suffix is driven by the same arithmetic in the fixture and in production. */
+static int fake_cmdline(pid_t pid, char *out, size_t n)
+{
+	size_t i, len;
+
+	for (i = 0; i < nitab; i++) {
+		if (itab[i].pid != pid) continue;
+		if (itab[i].cmd_rc) return itab[i].cmd_rc;
+		len = itab[i].cmdlen;
+		if (len > n - 1) len = n - 1;
+		memcpy(out, itab[i].cmd, len);
+		out[len] = '\0';
+		return (int)len;
+	}
+	return POLICY_PROC_GONE;
+}
+
+/* ONE ROW, SPLIT INTO ITS EIGHT COLUMNS IN PLACE. The escaper guarantees no
+ * field carries a raw tab or newline, which is exactly what makes this split
+ * total. Returns the column count. */
+static int split_row(char *line, char **col, int cap)
+{
+	int n = 0;
+	char *p = line, *t;
+
+	t = strchr(p, '\n');
+	if (t) *t = '\0';
+	for (;;) {
+		if (n >= cap) return n;
+		col[n++] = p;
+		if (!(t = strchr(p, '\t'))) break;
+		*t = '\0';
+		p = t + 1;
+	}
+	return n;
+}
+
 static void seams(void)
 {
 	policy_proc.tgid = fake_tgid;
 	policy_proc.starttime = fake_start;
+	policy_proc.comm = fake_comm;
+	policy_proc.cmdline = fake_cmdline;
 	policy_clock = fake_clock;
 	ccu_xport.roundtrip = fake_roundtrip;
 	canned_reply(CCU_READY, 0);
@@ -554,10 +670,10 @@ static void b14_control_reasons(void)
 
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
-		if (strstr(line, "\tremote-absent\n"))            n_absent++;
-		if (strstr(line, "\tcontrol-refused\n"))          n_refused++;
-		if (strstr(line, "\tcontrol-unavailable\n"))      n_unavail++;
-		if (strstr(line, "\tunmarked-project-denied\n"))  n_unmarked++;
+		if (strstr(line, "\tremote-absent\t"))            n_absent++;
+		if (strstr(line, "\tcontrol-refused\t"))          n_refused++;
+		if (strstr(line, "\tcontrol-unavailable\t"))      n_unavail++;
+		if (strstr(line, "\tunmarked-project-denied\t"))  n_unmarked++;
 		/* EVERY ONE OF THESE IS A DENIAL, so every row here carries kind
 		 * `deny`. Asserted per row rather than by counting, so a single
 		 * mis-kinded reason cannot hide behind three correct ones. */
@@ -573,7 +689,7 @@ static void b14_control_reasons(void)
 	unlink(tmpl);
 }
 
-/* ── B13: the event log records each (path, reason) exactly once ────────── */
+/* ── B13: one caller's (path, reason) is recorded exactly once ──────────── */
 static void b13_refusals(void)
 {
 	char tmpl[] = "/tmp/cc-policy-refusalsXXXXXX";
@@ -586,28 +702,32 @@ static void b13_refusals(void)
 	event_fp = fdopen(fd, "w+");
 	setvbuf(event_fp, NULL, _IOLBF, 0);
 
-	policy_event(EV_DENY,   "getattr", "/a", "x");
-	policy_event(EV_DENY,   "getattr", "/a", "x");      /* same op, same pair */
-	policy_event(EV_DENY,   "open",    "/a", "x");      /* DIFFERENT op, same pair */
-	policy_event(EV_DENY,   "getattr", "/a", "y");      /* same path, different reason */
-	policy_event(EV_DENY,   "getattr", "/b", "x");      /* different path, same reason */
-	policy_event(EV_SERVED, "getattr", "/c", "z");      /* the other kind */
+	/* ONE CALLER THROUGHOUT, so this case is about the (path, reason) half of
+	 * the key alone; `b31` drives the tgid half. */
+	proc_set(3100, 3100, 7);
+	proc_set_identity(3100, "sh", "/bin/sh", 7);
+	policy_event(EV_DENY,   "getattr", "/a", "x", 3100);
+	policy_event(EV_DENY,   "getattr", "/a", "x", 3100);   /* same op, same pair */
+	policy_event(EV_DENY,   "open",    "/a", "x", 3100);   /* DIFFERENT op, same pair */
+	policy_event(EV_DENY,   "getattr", "/a", "y", 3100);   /* same path, different reason */
+	policy_event(EV_DENY,   "getattr", "/b", "x", 3100);   /* different path, same reason */
+	policy_event(EV_SERVED, "getattr", "/c", "z", 3100);   /* the other kind */
 
 	rewind(event_fp);
 	rd = event_fp;
 	while (fgets(line, sizeof(line), rd)) {
 		total++;
-		if (strstr(line, "deny\tgetattr\t/a\tx\n"))   n_ax++;
-		if (strstr(line, "deny\tgetattr\t/a\ty\n"))   n_ay++;
-		if (strstr(line, "deny\tgetattr\t/b\tx\n"))   n_bx++;
-		if (strstr(line, "served\tgetattr\t/c\tz\n")) n_cz++;
+		if (strstr(line, "deny\tgetattr\t/a\tx\t"))   n_ax++;
+		if (strstr(line, "deny\tgetattr\t/a\ty\t"))   n_ay++;
+		if (strstr(line, "deny\tgetattr\t/b\tx\t"))   n_bx++;
+		if (strstr(line, "served\tgetattr\t/c\tz\t")) n_cz++;
 	}
 	CHECK(n_ax == 1, "(/a, x) is recorded exactly once across THREE calls, got %d", n_ax);
 	CHECK(n_ay == 1, "(/a, y) — a different reason for the same path is its own entry");
 	CHECK(n_bx == 1, "(/b, x) — a different path is its own entry");
 	CHECK(n_cz == 1, "an EV_SERVED row is written with kind `served` (%d)", n_cz);
 	CHECK(total == 4, "four distinct pairs, four lines, got %d", total);
-	/* THE KIND IS THE FIRST COLUMN AND THE ROW IS FOUR COLUMNS. Asserted on the
+	/* THE KIND IS THE FIRST COLUMN AND THE ROW IS EIGHT COLUMNS. Asserted on the
 	 * shape rather than only through the strstr needles above, which a row that
 	 * appended the kind LAST would also satisfy. */
 	rewind(event_fp);
@@ -615,20 +735,23 @@ static void b13_refusals(void)
 		int tabs = 0;
 		char *t;
 		for (t = line; *t; t++) if (*t == '\t') tabs++;
-		CHECK(tabs == 3, "the row has exactly three tabs — kind, op, path, reason (%d): %s",
-		      tabs, line);
+		CHECK(tabs == 7, "the row has exactly seven tabs — kind, op, path, reason, pid, "
+		      "tgid, comm, cmdline (%d): %s", tabs, line);
 		CHECK(strncmp(line, "deny\t", 5) == 0 || strncmp(line, "served\t", 7) == 0,
 		      "the FIRST column is the kind: %s", line);
 	}
 	/* WHAT THIS CASE DELIBERATELY DOES NOT PIN, so nobody credits it with the
-	 * kind's place in the dedupe key. The key is (path, reason) and NOT
-	 * (kind, path, reason), and that choice is UNOBSERVABLE: every reason maps
-	 * to exactly one kind — derived from both C sources and set-compared in
-	 * both directions by tests/fuse-union-policy.test.mjs — so the two keys
+	 * kind's place in the dedupe key. The key is (path, reason, tgid) and NOT
+	 * (kind, path, reason, tgid), and THAT choice is UNOBSERVABLE: every reason
+	 * maps to exactly one kind — derived from both C sources and set-compared
+	 * in both directions by tests/fuse-union-policy.test.mjs — so the two keys
 	 * partition every emission this daemon can produce identically, and no
 	 * mutant can distinguish them. An assertion here would either duplicate
 	 * the (/a, x) count above or manufacture a cross-kind emission the daemon
-	 * cannot make. See policy_event's own comment for what that costs. */
+	 * cannot make. See policy_event's own comment for what that costs.
+	 *
+	 * THE TGID'S PLACE IN THE KEY IS `b31`'s, and it is the opposite kind of
+	 * claim: dropping it silently discards every caller after the first. */
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
@@ -949,7 +1072,7 @@ static void b17_cwd_exempt(int argc, char **argv)
 	 * the root itself is not refused at all. */
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
-		if (strstr(line, "\tunmarked-project-denied\n") == NULL) continue;
+		if (strstr(line, "\tunmarked-project-denied\t") == NULL) continue;
 		if (strstr(line, "\t/srv/app/src\t"))       n_sub++;
 		if (strstr(line, "\t/srv/app/README.md\t")) n_file++;
 		if (strstr(line, "\t/srv/app\t"))           n_root++;
@@ -1024,8 +1147,8 @@ static void b19_caller_tier_matrix(void)
 
 	for (t = 0; t <= (int)T_CWD; t++) {
 		enum tier ti = (enum tier)t;
-		enum tier marked   = policy_caller_tier("getattr", "/p", ti, 1);
-		enum tier unmarked = policy_caller_tier("getattr", "/p", ti, 0);
+		enum tier marked   = policy_caller_tier("getattr", "/p", ti, 1, 500);
+		enum tier unmarked = policy_caller_tier("getattr", "/p", ti, 0, 500);
 
 		/* THE MARKED SIDE IS IDENTITY AT EVERY TIER. A substitution that
 		 * fired for the CLI too would serve it the host at `fail`, which
@@ -1106,7 +1229,7 @@ static void b21_unmarked_refused_only_at_project(void)
 	for (t = 0; t <= (int)T_CWD; t++) {
 		char path[64];
 		snprintf(path, sizeof(path), "/probe-%d", t);
-		(void)policy_caller_tier("getattr", path, (enum tier)t, 0);
+		(void)policy_caller_tier("getattr", path, (enum tier)t, 0, 500);
 	}
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
@@ -1123,7 +1246,7 @@ static void b21_unmarked_refused_only_at_project(void)
 	      "an unmarked caller at a project path is still denied");
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp))
-		if (strstr(line, "deny\tgetattr\t/srv/app/f\tunmarked-project-denied\n"))
+		if (strstr(line, "deny\tgetattr\t/srv/app/f\tunmarked-project-denied\t"))
 			n_project_deny++;
 	CHECK(n_project_deny == 1, "and the denial is logged deny/unmarked-project-denied (%d)",
 	      n_project_deny);
@@ -1205,7 +1328,8 @@ static void b22_cwd_chain_extent(void)
  * THE KIND IS PINNED WHERE IT IS PRODUCED — read back out of the sink, never
  * asserted against a second transcription of the classification.
  *
- * THIS CASE COVERS THE FOUR REASONS policy.h EMITS plus the new substitution.
+ * THIS CASE COVERS EVERY REASON policy.h EMITS — the four control/mark ones,
+ * the caller-sensitive substitution and the granted cwd traversal.
  * The other seven live in union.c op bodies no deterministic fixture can reach;
  * their kinds are pinned by a SOURCE-DERIVED two-directional set equality in
  * tests/fuse-union-policy.test.mjs, which reads every `policy_event(` call site
@@ -1224,8 +1348,9 @@ static void b24_event_kinds(void)
 		{ "remote-absent",           "deny"   },
 		{ "control-refused",         "deny"   },
 		{ "unmarked-host-served",    "served" },
+		{ "cwd-traversal-served",    "served" },
 	};
-	int found[5] = { 0, 0, 0, 0, 0 };
+	int found[6] = { 0, 0, 0, 0, 0, 0 };
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
 	event_fp = fdopen(fd, "w+");
@@ -1247,14 +1372,15 @@ static void b24_event_kinds(void)
 	(void)policy_project_route("getattr", "/srv/app/absent", 4000, CCU_STAT, 0);
 	canned_reply(CCU_REFUSED, 0);
 	(void)policy_project_route("getattr", "/srv/app/refused", 4000, CCU_STAT, 0);
-	(void)policy_caller_tier("getattr", "/unpinned/thing", T_FAIL, 0);
+	(void)policy_caller_tier("getattr", "/unpinned/thing", T_FAIL, 0, 5000);
+	(void)policy_cwd_exempt("getattr", "/srv/app", 5000);
 
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
 		rows++;
 		for (i = 0; i < (int)(sizeof(want) / sizeof(want[0])); i++) {
 			char needle[128];
-			snprintf(needle, sizeof(needle), "\t%s\n", want[i].reason);
+			snprintf(needle, sizeof(needle), "\t%s\t", want[i].reason);
 			if (!strstr(line, needle))
 				continue;
 			found[i]++;
@@ -1266,11 +1392,11 @@ static void b24_event_kinds(void)
 	for (i = 0; i < (int)(sizeof(want) / sizeof(want[0])); i++)
 		CHECK(found[i] == 1, "`%s` was emitted exactly once (%d)",
 		      want[i].reason, found[i]);
-	/* SET EQUALITY, THE OTHER DIRECTION: five emissions, five rows and no
-	 * sixth — so a reason this table does not name cannot slip through
+	/* SET EQUALITY, THE OTHER DIRECTION: six emissions, six rows and no
+	 * seventh — so a reason this table does not name cannot slip through
 	 * unclassified. */
 	CHECK(rows == (int)(sizeof(want) / sizeof(want[0])),
-	      "five reasons, five rows, nothing unclassified (%d)", rows);
+	      "six reasons, six rows, nothing unclassified (%d)", rows);
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
@@ -1304,12 +1430,13 @@ static void b25_substitution_logged_at_fail_only(void)
 	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);               /* unmarked */
 
-	/* TWICE at one path, once at another: the row is per DISTINCT path, which
-	 * is what bounds the volume to roughly twenty per shell startup rather
-	 * than to the op count. */
-	(void)policy_caller_tier("getattr", "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0);
-	(void)policy_caller_tier("open",    "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0);
-	(void)policy_caller_tier("getattr", "/var/other", T_FAIL, 0);
+	/* TWICE at one path, once at another, ONE CALLER THROUGHOUT: the row is
+	 * per distinct (path, thread group), which is what bounds the volume to
+	 * roughly twenty per shell startup rather than to the op count. The
+	 * thread-group half of that key is `b31`'s. */
+	(void)policy_caller_tier("getattr", "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
+	(void)policy_caller_tier("open",    "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
+	(void)policy_caller_tier("getattr", "/var/other", T_FAIL, 0, 500);
 	/* AND AT THE PROJECT TIER, which must produce a DENIAL and no `served`
 	 * row — the ruling read from the log's side. */
 	CHECK(policy_project_route("getattr", "/srv/app/f", 500, CCU_STAT, 0) == -ENOENT,
@@ -1318,16 +1445,16 @@ static void b25_substitution_logged_at_fail_only(void)
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
 		rows++;
-		if (strstr(line, "served\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunmarked-host-served\n"))
+		if (strstr(line, "served\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunmarked-host-served\t"))
 			n_served_a++;
-		if (strstr(line, "served\tgetattr\t/var/other\tunmarked-host-served\n"))
+		if (strstr(line, "served\tgetattr\t/var/other\tunmarked-host-served\t"))
 			n_served_b++;
 		if (strstr(line, "\t/srv/app/f\t")) {
 			n_any_project++;
 			if (strncmp(line, "deny\t", 5) == 0) n_deny_project++;
 		}
 	}
-	CHECK(n_served_a == 1, "one served row per distinct path, across two ops (%d)", n_served_a);
+	CHECK(n_served_a == 1, "one served row per distinct path for one caller, across two ops (%d)", n_served_a);
 	CHECK(n_served_b == 1, "and the second distinct path has its own (%d)", n_served_b);
 	CHECK(n_any_project == 1, "the project path produced exactly one row (%d)", n_any_project);
 	CHECK(n_deny_project == 1, "and it is a DENY row, never a served one (%d)", n_deny_project);
@@ -1410,8 +1537,8 @@ static void b26_cwd_traverse_only(int argc, char **argv)
 	      "and so is an opendir of the cwd");
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
-		if (strstr(line, "deny\treaddir\t/root\tunmarked-project-denied\n"))       n_readdir++;
-		if (strstr(line, "deny\topendir\t/root/app3\tunmarked-project-denied\n"))  n_opendir++;
+		if (strstr(line, "deny\treaddir\t/root\tunmarked-project-denied\t"))       n_readdir++;
+		if (strstr(line, "deny\topendir\t/root/app3\tunmarked-project-denied\t"))  n_opendir++;
 	}
 	CHECK(n_readdir == 1, "the refused readdir is logged unmarked-project-denied (%d)", n_readdir);
 	CHECK(n_opendir == 1, "and so is the refused opendir (%d)", n_opendir);
@@ -1584,6 +1711,417 @@ static void b28_cwd_input_validated(void)
 	CHECK(policy_cwd_component("/srv/app") == 0, "and not the cwd's own spelling");
 }
 
+/* ── B29: the escaper round-trips every byte class, losing no line ──────── */
+/*
+ * THE ROW IS TAB-SEPARATED AND NEWLINE-TERMINATED, so any field that can carry
+ * an arbitrary byte can DESTROY it. `/proc/<pid>/cmdline` is NUL-separated and
+ * a `bash -c` argv holds the whole script, newlines included: the instrument
+ * this daemon was forked from produced 1662 unparsable rows out of ~3000 for
+ * exactly that reason and the analysis silently dropped them.
+ *
+ * `\\` IS FIRST, AND THAT ORDER IS THE ROUND TRIP. Escaping a tab to `\t`
+ * before escaping the backslash would make a literal `\` followed by `t`
+ * decode back as a tab.
+ */
+static void b29_escape(void)
+{
+	/* Every class in the table, in one string: a plain run, the escape
+	 * character itself, all three line/field breakers, a NUL (the argv
+	 * separator), a low control byte, DEL, and a high-bit UTF-8 sequence. */
+	static const char src[] = {
+		'a', '\\', 'b', '\t', 'c', '\n', 'd', '\r', 'e', '\0', 'f',
+		0x01, 'g', 0x7f, (char)0xc3, (char)0xa9, 'z'
+	};
+	static const char want[] = "a\\\\b\\tc\\nd\\re\\0f\\x01g\\x7f\xc3\xa9z";
+	char enc[256], small[8], exact[6];
+
+	CHECK(policy_escape(enc, sizeof(enc), src, sizeof(src)) == 1,
+	      "the whole string fit");
+	CHECK(strcmp(enc, want) == 0,
+	      "every byte class maps to its own escape (got '%s', want '%s')", enc, want);
+	/* THE PROPERTY THE ROW FORMAT DEPENDS ON, asserted directly rather than
+	 * only through the literal above: nothing that can split a row survives. */
+	CHECK(strchr(enc, '\t') == NULL, "no raw TAB survives the escaper");
+	CHECK(strchr(enc, '\n') == NULL, "no raw NEWLINE survives it");
+	CHECK(strchr(enc, '\r') == NULL, "nor a raw CR");
+	CHECK(strlen(enc) == sizeof(want) - 1,
+	      "and no raw NUL either — the encoded field is one C string (%zu)", strlen(enc));
+	/* HIGH BYTES ARE VERBATIM, so a UTF-8 path stays readable and still
+	 * cannot break the parse. */
+	CHECK(strstr(enc, "\xc3\xa9") != NULL, "a high-bit UTF-8 sequence is passed through");
+
+	/* `\\` FIRST. A literal backslash followed by 't' must NOT collide with a
+	 * real tab — the two encode differently, which is the whole round trip. */
+	{
+		char a[16], b[16];
+		CHECK(policy_escape(a, sizeof(a), "\\t", 2) == 1, "a literal \\ + t encodes");
+		CHECK(policy_escape(b, sizeof(b), "\t", 1) == 1, "and so does a real tab");
+		CHECK(strcmp(a, "\\\\t") == 0, "the literal pair is '\\\\t' (got '%s')", a);
+		CHECK(strcmp(b, "\\t") == 0, "and the tab is '\\t' (got '%s')", b);
+		CHECK(strcmp(a, b) != 0, "so the two are DISTINGUISHABLE on decode");
+	}
+
+	/*
+	 * IT REPORTS A SHORT BUFFER RATHER THAN OVERRUNNING IT, AND TERMINATES
+	 * INSIDE IT — and the second half is the one that needs a poisoned buffer
+	 * to be visible at all.
+	 *
+	 * THE FIT CHECK IS `o + w >= cap` AND THE `=` IS LOAD-BEARING. Under `>` a
+	 * token that lands EXACTLY at `cap` is copied in full and the terminator
+	 * then goes ONE BYTE PAST the buffer, so the field comes back
+	 * unterminated. That matters beyond the overrun: "policy_escape never
+	 * writes a partial token, so its output is a complete token sequence" is
+	 * the premise `session.ts`'s alignment-aware decoder is sound on, and a
+	 * premise whose own unit check cannot see the difference is not pinned.
+	 *
+	 * POISONED, NOT ZEROED, AND NOT MEASURED WITH strlen. `strlen` reads
+	 * happily past the end, so it cannot see a MISSING in-bounds terminator;
+	 * a zero-initialised buffer would hand the mutant the NUL it failed to
+	 * write. `memchr` over exactly `sizeof` is the only form that observes it.
+	 */
+	memset(small, 'Z', sizeof(small));
+	CHECK(policy_escape(small, sizeof(small), "abcdefghijkl", 12) == 0,
+	      "a field that does not fit reports so");
+	CHECK(memchr(small, '\0', sizeof(small)) != NULL,
+	      "and terminates INSIDE the buffer");
+	CHECK(strncmp(small, "abcdefg", 7) == 0,
+	      "keeping the bytes it did fit (%.8s)", small);
+
+	/* THE EXACT-EQUALITY ARM, which is the only one `>` and `>=` disagree on:
+	 * `ab\x01` escapes to `ab` + the four-character `\x01`, so the last token
+	 * ends precisely at cap 6. `>=` stops before it and terminates at index 2;
+	 * `>` copies it, fills the buffer, and puts the terminator at index 6. */
+	memset(exact, 'Z', sizeof(exact));
+	CHECK(policy_escape(exact, sizeof(exact), "ab\x01", 3) == 0,
+	      "a token ending EXACTLY at cap does not fit");
+	CHECK(memchr(exact, '\0', sizeof(exact)) != NULL,
+	      "and the terminator is still inside the buffer");
+	CHECK(strncmp(exact, "ab", 2) == 0 && exact[2] == '\0',
+	      "with the whole four-character escape left off rather than half of it");
+}
+
+/* ── B30: an absent identity is RECORDED, and cannot be forged ──────────── */
+/*
+ * A MISSING FIELD MUST NOT READ AS A VALUE. `exec(2)` and process exit both
+ * race the sample, so `open`/`fopen` of the /proc entry failing is ordinary and
+ * has to be told apart from a process that really has no cmdline (a kernel
+ * thread) and from one the daemon may not read. The escaper never emits `\`
+ * followed by `!`, which is what makes the `\!` namespace unforgeable — driven
+ * below with an argv whose first bytes ARE the sentinel's spelling.
+ */
+static void b30_absence(void)
+{
+	char tmpl[] = "/tmp/cc-policy-b30XXXXXX";
+	int fd = mkstemp(tmpl);
+	static char line[1 << 16];
+	int n_gone = 0, n_unreadable = 0, n_empty = 0, n_literal = 0, n_trunc = 0;
+	static char big[POLICY_CMDLINE_MAX + 1024];
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	proc_set(7001, 7001, 1); proc_set_identity_fail(7001, POLICY_PROC_GONE, POLICY_PROC_GONE);
+	proc_set(7002, 7002, 2); proc_set_identity_fail(7002, POLICY_PROC_UNREADABLE, POLICY_PROC_UNREADABLE);
+	proc_set(7003, 7003, 3); proc_set_identity(7003, "", "", 0);
+	/* AN ARGV THAT SPELLS A SENTINEL. If the encoder let it through verbatim a
+	 * reader could not tell this process from one that had exited. */
+	proc_set(7004, 7004, 4); proc_set_identity(7004, "sh", "\\!gone", 6);
+	/* AND ONE PAST THE CAP: the reader fills the buffer, so the field says so. */
+	memset(big, 'a', sizeof(big));
+	proc_set(7005, 7005, 5); proc_set_identity(7005, "big", big, sizeof(big));
+
+	policy_event(EV_DENY, "getattr", "/p-gone",       "x", 7001);
+	policy_event(EV_DENY, "getattr", "/p-unreadable", "x", 7002);
+	policy_event(EV_DENY, "getattr", "/p-empty",      "x", 7003);
+	policy_event(EV_DENY, "getattr", "/p-literal",    "x", 7004);
+	policy_event(EV_DENY, "getattr", "/p-truncated",  "x", 7005);
+
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		char *col[8];
+		int n = split_row(line, col, 8);
+
+		CHECK(n == 8, "the row has eight columns (%d)", n);
+		if (n != 8) continue;
+		if (strcmp(col[2], "/p-gone") == 0) {
+			n_gone++;
+			CHECK(strcmp(col[6], "\\!gone") == 0 && strcmp(col[7], "\\!gone") == 0,
+			      "an ENOENT /proc read is recorded \\!gone (comm='%s' cmdline='%s')",
+			      col[6], col[7]);
+		}
+		if (strcmp(col[2], "/p-unreadable") == 0) {
+			n_unreadable++;
+			CHECK(strcmp(col[6], "\\!unreadable") == 0 && strcmp(col[7], "\\!unreadable") == 0,
+			      "any other failure is recorded \\!unreadable (comm='%s' cmdline='%s')",
+			      col[6], col[7]);
+		}
+		if (strcmp(col[2], "/p-empty") == 0) {
+			n_empty++;
+			CHECK(strcmp(col[6], "\\!empty") == 0 && strcmp(col[7], "\\!empty") == 0,
+			      "a successful ZERO-BYTE read is recorded \\!empty, not gone "
+			      "(comm='%s' cmdline='%s')", col[6], col[7]);
+		}
+		if (strcmp(col[2], "/p-literal") == 0) {
+			n_literal++;
+			/* THE UNFORGEABILITY. Six raw bytes `\!gone` encode to seven,
+			 * because the leading backslash doubles. */
+			CHECK(strcmp(col[7], "\\\\!gone") == 0,
+			      "an argv that SPELLS a sentinel is escaped, not passed through "
+			      "(got '%s')", col[7]);
+			CHECK(strcmp(col[7], "\\!gone") != 0,
+			      "so it cannot be mistaken for the recorded absence");
+			CHECK(strcmp(col[6], "sh") == 0, "and its comm is the plain value (%s)", col[6]);
+		}
+		if (strcmp(col[2], "/p-truncated") == 0) {
+			size_t l = strlen(col[7]);
+			size_t sl = strlen("\\!truncated");
+			n_trunc++;
+			CHECK(l > sl && strcmp(col[7] + l - sl, "\\!truncated") == 0,
+			      "a cmdline past the cap carries the \\!truncated SUFFIX (%zu bytes)", l);
+			CHECK(col[7][0] == 'a',
+			      "and keeps the bytes it did read rather than collapsing to a sentinel");
+			CHECK(l - sl == POLICY_CMDLINE_MAX - 1,
+			      "exactly the cap's worth, one byte short of the buffer (%zu)", l - sl);
+		}
+	}
+	CHECK(n_gone == 1 && n_unreadable == 1 && n_empty == 1,
+	      "the three absences are DISTINCT values (%d/%d/%d)", n_gone, n_unreadable, n_empty);
+	CHECK(n_literal == 1, "the literal-sentinel row was written (%d)", n_literal);
+	CHECK(n_trunc == 1, "and the over-cap row (%d)", n_trunc);
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── B31: the dedupe key carries the TGID, and pid/tgid are two columns ──── */
+/*
+ * WITHOUT THE TGID IN THE KEY THE ENRICHMENT IS ACTIVELY MISLEADING: the key
+ * was (path, reason), so the FIRST caller to reach a path won the row and every
+ * later one was silently dropped — and the row would then answer "who asked?"
+ * with "whoever happened to be first". Attribution is the point of the column,
+ * so it is the point of the key.
+ */
+static void b31_dedupe_tgid(void)
+{
+	char tmpl[] = "/tmp/cc-policy-b31XXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[4096];
+	int rows = 0, n_8001 = 0, n_8002 = 0, n_order = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	proc_set(8001, 8001, 11); proc_set_identity(8001, "one", "one", 3);
+	proc_set(8002, 8002, 22); proc_set_identity(8002, "two", "two", 3);
+	/* A THREAD, NOT A LEADER: tid 8103 belongs to thread group 8100, which is
+	 * what pins which id lands in which column. */
+	proc_set(8103, 8100, 33); proc_set_identity(8100, "thr", "thr", 3);
+
+	policy_event(EV_DENY, "getattr", "/same", "r", 8001);
+	policy_event(EV_DENY, "getattr", "/same", "r", 8001);   /* same everything */
+	policy_event(EV_DENY, "open",    "/same", "r", 8001);   /* different OP, same key */
+	policy_event(EV_DENY, "getattr", "/same", "r", 8002);   /* DIFFERENT tgid */
+	policy_event(EV_DENY, "getattr", "/thread", "r", 8103);
+
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		char *col[8];
+		int n = split_row(line, col, 8);
+
+		rows++;
+		CHECK(n == 8, "the row has eight columns (%d)", n);
+		if (n != 8) continue;
+		if (strcmp(col[2], "/same") == 0 && strcmp(col[5], "8001") == 0) n_8001++;
+		if (strcmp(col[2], "/same") == 0 && strcmp(col[5], "8002") == 0) n_8002++;
+		if (strcmp(col[2], "/thread") == 0) {
+			n_order++;
+			/* THE COLUMN ORDER IS pid THEN tgid, and a swap is invisible
+			 * to every fixture whose caller is its own thread group. */
+			CHECK(strcmp(col[4], "8103") == 0,
+			      "column 5 is the CALLING THREAD's id (got '%s')", col[4]);
+			CHECK(strcmp(col[5], "8100") == 0,
+			      "and column 6 is its THREAD GROUP — the id the mark and the "
+			      "dedupe key are on (got '%s')", col[5]);
+			CHECK(strcmp(col[6], "thr") == 0,
+			      "and comm is read from the THREAD GROUP (got '%s')", col[6]);
+		}
+	}
+	CHECK(n_8001 == 1, "one (path, reason, tgid) row across three calls (%d)", n_8001);
+	CHECK(n_8002 == 1, "and a SECOND caller at the same (path, reason) gets its own (%d)", n_8002);
+	CHECK(n_order == 1, "the thread row was written once (%d)", n_order);
+	CHECK(rows == 3, "three rows in total, so the dedupe still dedupes (%d)", rows);
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── B32: a GRANTED cwd traversal writes a row naming the caller ─────────── */
+/*
+ * THE EXEMPTION WAS COMPLETELY SILENT, so no capture could show which process
+ * needed which link of the chain — and that question is the whole reason the
+ * identity columns exist. It is `served`: the op succeeded, off the tier
+ * table's script.
+ *
+ * EMITTED ON THE GRANT AND NOWHERE ELSE. All three ways the conjunction can
+ * fail are driven, because a row on a REFUSED traversal would report an
+ * exemption that never happened.
+ */
+static void b32_cwd_row(void)
+{
+	char tmpl[] = "/tmp/cc-policy-b32XXXXXX";
+	int fd = mkstemp(tmpl);
+	char line[4096];
+	int rows = 0, n_grant = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	pin("project\t/");
+	pin("project\t/root/app3");
+	anc_build();
+	cwd_path = "/root/app3";
+	proc_set(500, 500, 111);               /* unmarked */
+	proc_set_identity(500, "sh", "/bin/sh", 7);
+	proc_set(600, 600, 222);
+	proc_set_identity(600, "claude", "claude", 6);
+	policy_mark_tid(600);
+
+	CHECK(policy_cwd_exempt("getattr", "/root", 500) == 1, "the traversal is granted");
+	/* THE THREE REFUSALS, each of which must write nothing. */
+	CHECK(policy_cwd_exempt("getattr", "/root", 600) == 0, "a MARKED caller is not exempt");
+	CHECK(policy_cwd_exempt("readdir", "/root", 500) == 0, "nor is a non-getattr op");
+	CHECK(policy_cwd_exempt("getattr", "/root/other", 500) == 0, "nor an off-chain path");
+
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		char *col[8];
+		int n = split_row(line, col, 8);
+
+		rows++;
+		CHECK(n == 8, "the row has eight columns (%d)", n);
+		if (n != 8) continue;
+		if (strcmp(col[3], "cwd-traversal-served") != 0) continue;
+		n_grant++;
+		CHECK(strcmp(col[0], "served") == 0,
+		      "the granted traversal is kind `served` — the op was not refused (%s)", col[0]);
+		CHECK(strcmp(col[1], "getattr") == 0 && strcmp(col[2], "/root") == 0,
+		      "and names the op and the chain component (%s %s)", col[1], col[2]);
+		CHECK(strcmp(col[5], "500") == 0,
+		      "and the thread group that needed the link (%s)", col[5]);
+		CHECK(strcmp(col[6], "sh") == 0, "with its comm (%s)", col[6]);
+	}
+	CHECK(n_grant == 1, "exactly one cwd-traversal-served row (%d)", n_grant);
+	CHECK(rows == 1, "and NOTHING at all for the three refused traversals (%d rows)", rows);
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+}
+
+/* ── field-vectors: the C encoder's output, for the .mjs decoder to read ──── */
+/*
+ * THE CROSS-LANGUAGE ROUND TRIP, in the idiom `frame-vectors` already uses: the
+ * C side EMITS real rows and PRINTS the raw bytes it put in them, and
+ * `session.ts`'s decoder is asserted against those rather than against a second
+ * transcription of the format. A C-only or a JS-only test proves neither half.
+ *
+ * FIVE ROWS, ONE PER SHAPE THE DECODER HAS TO TELL APART: an ordinary argv, the
+ * FORGERY (below), and the three /proc outcomes that are not a value. Before
+ * this only `ok` and `gone` ever crossed the boundary.
+ *
+ * THE FORGERY IS THE POINT OF ROW 2. A field whose RAW bytes END with a literal
+ * `\` followed by `!truncated` encodes to `…\\!truncated` — because `\\` is
+ * escaped first — and a decoder that strips the marker with a right-to-left
+ * `endsWith` reads those last eleven characters as the marker, drops ten
+ * content bytes and reports a COMPLETE read as truncated. The escaper's
+ * guarantee is narrower than "the bytes `\!` never appear": it is that `\` is
+ * never followed by `!` AT AN ESCAPE-ALIGNED POSITION, because every
+ * `\`-initial token it emits is `\\`, `\t`, `\n`, `\r`, `\0` or `\xHH` and it
+ * never writes a partial one. Only an alignment-aware decode can use that.
+ *
+ * `argv[2]` is the log path, and it is NOT unlinked — the .mjs reads it.
+ */
+static void print_vec(const char *label, const char *b, size_t n)
+{
+	size_t i;
+	printf("VEC %s ", label);
+	for (i = 0; i < n; i++)
+		printf("%02x", (unsigned char)b[i]);
+	printf("\n");
+}
+
+static void field_vectors(int argc, char **argv)
+{
+	/* NUL-SEPARATED, exactly as /proc/<pid>/cmdline is, trailing NUL and all.
+	 * The middle argument is a `bash -c` script carrying a tab, a newline, a
+	 * backslash and two control bytes; the last is a high-bit sequence
+	 * followed by a byte that is not valid UTF-8 at all. */
+	static const char CMD[] =
+		"/bin/bash\0-c\0echo\thi\nthere \\ \x01\x7f done\0\xc3\xa9\xff\0";
+	static const size_t CMDLEN = sizeof(CMD) - 1;
+	static const char PATHV[] = "/nasty\tpath\nhere";
+	/* THE FORGERY, in all three escaped fields at once. No trailing NUL on the
+	 * cmdline — a capped read has none either, which is the shape that puts a
+	 * `\!truncated` spelling at the very end of a field. */
+	static const char FPATH[] = "/f-forge/\\!truncated";
+	static const char FCOMM[] = "\\!truncated";
+	static const char FCMD[]  = "arg\0tail\\!truncated";
+	static const size_t FCMDLEN = sizeof(FCMD) - 1;
+	static char big[POLICY_CMDLINE_MAX + 1024];
+	size_t i, start;
+	FILE *f;
+
+	if (argc < 3) { fprintf(stderr, "field-vectors: needs a log path\n"); exit(2); }
+	if (!(f = fopen(argv[2], "w"))) { fprintf(stderr, "field-vectors: fopen\n"); exit(2); }
+	event_fp = f;
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	/* 1. an ordinary argv, every byte class in it */
+	proc_set(9001, 9001, 77);
+	proc_set_identity(9001, "bash", CMD, CMDLEN);
+	policy_event(EV_DENY, "getattr", PATHV, "unpinned-fail-closed", 9001);
+	/* 2. the forgery */
+	proc_set(9002, 9002, 78);
+	proc_set_identity(9002, FCOMM, FCMD, FCMDLEN);
+	policy_event(EV_DENY, "getattr", FPATH, "unpinned-fail-closed", 9002);
+	/* 3, 4. the two absences that are not `gone` */
+	proc_set(9003, 9003, 79);
+	proc_set_identity_fail(9003, POLICY_PROC_UNREADABLE, POLICY_PROC_UNREADABLE);
+	policy_event(EV_DENY, "getattr", "/f-unreadable", "unpinned-fail-closed", 9003);
+	proc_set(9004, 9004, 80);
+	proc_set_identity(9004, "", "", 0);
+	policy_event(EV_DENY, "getattr", "/f-empty", "unpinned-fail-closed", 9004);
+	/* 5. a REAL truncation, which is what row 2 must not be confused with */
+	memset(big, 'a', sizeof(big));
+	proc_set(9005, 9005, 81);
+	proc_set_identity(9005, "big", big, sizeof(big));
+	policy_event(EV_DENY, "getattr", "/f-trunc", "unpinned-fail-closed", 9005);
+
+	/* THE VECTORS: each argv element and each escaped field, as hex of the RAW
+	 * bytes the daemon was given. */
+	for (i = 0, start = 0; i <= CMDLEN; i++) {
+		if (i < CMDLEN && CMD[i] != '\0') continue;
+		if (i == CMDLEN && start == i) break;
+		print_vec("argv", CMD + start, i - start);
+		start = i + 1;
+	}
+	print_vec("path", PATHV, sizeof(PATHV) - 1);
+	print_vec("comm", "bash", 4);
+	print_vec("fpath", FPATH, sizeof(FPATH) - 1);
+	print_vec("fcomm", FCOMM, sizeof(FCOMM) - 1);
+	for (i = 0, start = 0; i <= FCMDLEN; i++) {
+		if (i < FCMDLEN && FCMD[i] != '\0') continue;
+		if (i == FCMDLEN && start == i) break;
+		print_vec("fargv", FCMD + start, i - start);
+		start = i + 1;
+	}
+	printf("TRUNCLEN %d\n", POLICY_CMDLINE_MAX - 1);
+	fclose(event_fp);
+	event_fp = NULL;
+}
+
 int main(int argc, char **argv)
 {
 	const char *c = argc > 1 ? argv[1] : "";
@@ -1620,7 +2158,12 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b26-cwd-traverse-only")) b26_cwd_traverse_only(argc, argv);
 	else if (!strcmp(c, "b27-cwd-ino-distinct")) b27_cwd_ino_distinct();
 	else if (!strcmp(c, "b28-cwd-input-validated")) b28_cwd_input_validated();
+	else if (!strcmp(c, "b29-escape"))    b29_escape();
+	else if (!strcmp(c, "b30-absence"))   b30_absence();
+	else if (!strcmp(c, "b31-dedupe-tgid")) b31_dedupe_tgid();
+	else if (!strcmp(c, "b32-cwd-row"))   b32_cwd_row();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
+	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }
 
 	if (failures) fprintf(stderr, "%s: %d of %d assertions FAILED\n", c, failures, checks);

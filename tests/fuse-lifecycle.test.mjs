@@ -834,13 +834,20 @@ describe('the policy event harvest', () => {
   });
   after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
 
+  // THE DAEMON'S OWN EIGHT COLUMNS, header line included. `\\0` is the argv
+  // separator and `\\t` an escaped tab, both written the way `policy_escape`
+  // writes them — a fixture in a shape the daemon cannot produce would let the
+  // parser drift away from the producer unnoticed.
+  const EVENT_HEADER = '# cc-union events v2\tkind\top\tpath\treason\tpid\ttgid\tcomm\tcmdline'
+    + " — identity is sampled at POLICY TIME; the process may have exec'd since.";
   const EVENTS = [
-    'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed',
-    'deny\topen\t/etc/machine-id\tunpinned-fail-closed',
-    'deny\tgetattr\t/usr/bin/git\tunpinned-fail-closed',
-    'deny\tgetattr\t/var/opt/thing\tunpinned-fail-closed',
-    'served\tgetattr\t/run/user/1000\tunmarked-host-served',
-    'deny\tgetattr\t/srv/app/f.txt\tunmarked-project-denied',
+    EVENT_HEADER,
+    'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\t4243\t4242\tclaude\tclaude\\0--print',
+    'deny\topen\t/etc/machine-id\tunpinned-fail-closed\t4242\t4242\tclaude\tclaude\\0--print',
+    'deny\tgetattr\t/usr/bin/git\tunpinned-fail-closed\t4242\t4242\tclaude\tclaude\\0--print',
+    'deny\tgetattr\t/var/opt/thing\tunpinned-fail-closed\t4242\t4242\tclaude\tclaude\\0--print',
+    'served\tgetattr\t/run/user/1000\tunmarked-host-served\t5100\t5100\tsh\t/bin/sh\\0-c\\0echo\\thi',
+    'deny\tgetattr\t/srv/app/f.txt\tunmarked-project-denied\t5100\t5100\t\\!gone\t\\!gone',
   ].join('\n') + '\n';
 
   // PINS: `suggestPin` names the array that OWNS each shape of path, and the
@@ -901,14 +908,22 @@ describe('the policy event harvest', () => {
     const rows = store.split('\n').filter(Boolean).map(l => l.split('\t'))
       .filter(r => r[1] === record.instanceId);
     assert.equal(rows.length, 6, store);
-    // `<iso8601> <instanceId> <kind> <op> <path> <list> <entry>`
+    // `<iso8601> <instanceId> <kind> <op> <path> <pid> <tgid> <comm> <cmdline>
+    //  <list> <entry>`
     const libtinfo = rows.find(r => r[4] === '/lib/x86_64-linux-gnu/libtinfo.so.6');
     assert.ok(libtinfo, store);
     assert.match(libtinfo[0], /^\d{4}-\d\d-\d\dT/);
     assert.equal(libtinfo[1], record.instanceId);
     assert.equal(libtinfo[2], 'deny');
-    assert.equal(libtinfo[5], 'LOADER_OBJECTS');
-    assert.equal(libtinfo[6], '/usr/lib/x86_64-linux-gnu/libtinfo.so.6');
+    assert.equal(libtinfo[9], 'LOADER_OBJECTS');
+    assert.equal(libtinfo[10], '/usr/lib/x86_64-linux-gnu/libtinfo.so.6');
+    // THE ACTING PROCESS SURVIVES THE HARVEST — the whole point of the store is
+    // that it outlives the run directory, so an identity the session file had
+    // and the store dropped would answer "who asked?" nowhere.
+    assert.deepEqual([libtinfo[5], libtinfo[6], libtinfo[7]], ['4243', '4242', 'claude']);
+    // …in the DAEMON'S OWN ESCAPED SPELLING, so the store is the session format
+    // plus its provenance columns and a tab inside an argv cannot split a line.
+    assert.equal(libtinfo[8], 'claude\\0--print');
     // …and the report carries the distinct paths, so a caller need not re-read.
     assert.deepEqual(report.eventPaths, [
       '/lib/x86_64-linux-gnu/libtinfo.so.6', '/etc/machine-id', '/usr/bin/git',
@@ -916,11 +931,17 @@ describe('the policy event harvest', () => {
     ]);
   });
 
-  // PINS: THE HARVEST DEDUPES ON `(path, reason)`, EXACTLY AS THE DAEMON DOES —
-  // and the daemon really does write two rows for one path, because two
+  // PINS: THE HARVEST DEDUPES ON `(path, reason, tgid)`, EXACTLY AS THE DAEMON
+  // DOES — and the daemon really does write two rows for one path, because two
   // CALLERS can reach it. Observed in real gate runs: `/var` carries
   // `deny`/`unpinned-fail-closed` from the marked CLI and
   // `served`/`unmarked-host-served` from an unmarked one.
+  //
+  // ONE DIMENSION AT A TIME, which is what makes each half attributable: the
+  // two rows below differ in the REASON and in NOTHING ELSE (same path, same
+  // tgid), and the tgid half of the key gets its own arm underneath with the
+  // reason held fixed. Rows that differed in both would be kept apart by either
+  // half and would pin neither.
   //
   // A PATH-ONLY KEY DEFEATS THE LOG'S WHOLE PURPOSE, which is why this is a bug
   // and not a tidiness question: `pinSuggestionFor` fires only on
@@ -940,10 +961,10 @@ describe('the policy event harvest', () => {
     // BOTH ORDERS, in two sessions, because a path-only key keeps whichever row
     // came FIRST — so one order alone passes against the bug half the time.
     for (const [label, rows] of [
-      ['served first', ['served\tgetattr\t/var\tunmarked-host-served',
-                        'deny\tgetattr\t/var\tunpinned-fail-closed']],
-      ['deny first', ['deny\tgetattr\t/var\tunpinned-fail-closed',
-                      'served\tgetattr\t/var\tunmarked-host-served']],
+      ['served first', ['served\tgetattr\t/var\tunmarked-host-served\t7\t7\tclaude\tclaude',
+                        'deny\tgetattr\t/var\tunpinned-fail-closed\t7\t7\tclaude\tclaude']],
+      ['deny first', ['deny\tgetattr\t/var\tunpinned-fail-closed\t7\t7\tclaude\tclaude',
+                      'served\tgetattr\t/var\tunmarked-host-served\t7\t7\tclaude\tclaude']],
     ]) {
       // The PARSE, where the dedupe lives.
       const parsed = parsePolicyEvents(rows.join('\n') + '\n');
@@ -953,7 +974,7 @@ describe('the policy event harvest', () => {
       // …and a THIRD row repeating a (path, reason) pair is still one row, so
       // this widened the key rather than removing the dedupe.
       const withDup = parsePolicyEvents([...rows, rows[0]].join('\n') + '\n');
-      assert.equal(withDup.length, 2, `${label}: the (path, reason) dedupe is gone`);
+      assert.equal(withDup.length, 2, `${label}: the (path, reason, tgid) dedupe is gone`);
 
       // AND THE CONSEQUENCE, end to end at the store, which is what the bug
       // actually cost: the pin suggestion for /var is present.
@@ -967,11 +988,11 @@ describe('the policy event harvest', () => {
       assert.equal(stored.length, 2, `${label}: ${JSON.stringify(stored)}`);
       const deny = stored.find(r => r[2] === 'deny');
       assert.ok(deny, `${label}: the deny row for /var never reached the store`);
-      assert.deepEqual([deny[5], deny[6]], ['UNDECIDED', '/var'],
+      assert.deepEqual([deny[9], deny[10]], ['UNDECIDED', '/var'],
         `${label}: the deny row reached the store with no pin suggestion`);
       // The served row is still there and still carries none.
       const served = stored.find(r => r[2] === 'served');
-      assert.deepEqual([served[5], served[6]], ['', ''], label);
+      assert.deepEqual([served[9], served[10]], ['', ''], label);
       // `eventPaths` stays a DISTINCT-PATH list — it is a path list, and its one
       // consumer (the boot sweep) asks only whether it is empty.
       assert.deepEqual(report.eventPaths, ['/var'], label);
@@ -979,6 +1000,67 @@ describe('the policy event harvest', () => {
       assert.match(report.notes.find(n => n.startsWith('cc-fuse: ')) ?? '',
         /no array in src\/systems\/fuse\/tierTable\.ts obviously owns \/var/, label);
     }
+  });
+
+  // PINS: THE OTHER HALF OF THE SAME KEY — the TGID — with the reason and the
+  // path held FIXED, so only the caller distinguishes the two rows. The daemon
+  // gained this half in the same commit (card 2026-0389) and the harvest had to
+  // follow: at `(path, reason)` the first caller to reach a path wins the row
+  // and every later one is silently dropped, which would make the identity
+  // columns answer "who asked?" with "whoever happened to be first".
+  // DIES UNDER: dropping the tgid from the parse key (the second caller's row
+  // vanishes); dropping the dedupe entirely (the repeat below survives).
+  test('the harvest keeps one path+reason from two callers as two rows', () => {
+    const R = (tgid, comm) => `deny\tgetattr\t/var\tunpinned-fail-closed\t${tgid}\t${tgid}\t${comm}\t${comm}`;
+    const two = parsePolicyEvents([R(7, 'claude'), R(9, 'sh')].join('\n') + '\n');
+    assert.deepEqual(two.map(r => [r.tgid, r.comm.value]), [[7, 'claude'], [9, 'sh']],
+      'a second thread group at the same (path, reason) was dropped');
+    // …and it is still a DEDUPE: the same caller repeating is one row, so this
+    // widened the key rather than removing it.
+    const dup = parsePolicyEvents([R(7, 'claude'), R(7, 'claude'), R(9, 'sh')].join('\n') + '\n');
+    assert.equal(dup.length, 2, JSON.stringify(dup.map(r => r.tgid)));
+    // THE PID IS NOT IN THE KEY, and that is deliberate: one thread group
+    // reaching a path from two of its THREADS is one finding, not two.
+    const threads = parsePolicyEvents([
+      'deny\tgetattr\t/var\tunpinned-fail-closed\t71\t7\tclaude\tclaude',
+      'deny\tgetattr\t/var\tunpinned-fail-closed\t72\t7\tclaude\tclaude',
+    ].join('\n') + '\n');
+    assert.equal(threads.length, 1, JSON.stringify(threads.map(r => r.pid)));
+  });
+
+  // PINS: A NON-UTF-8 BYTE SURVIVES THE HARVEST UNCHANGED. `policy_escape`
+  // passes `0x80-0xff` through VERBATIM — deliberately, so a UTF-8 path stays
+  // readable — which means the session log is a BYTE file and not necessarily
+  // valid UTF-8: a latin-1 filename or a binary argument puts a lone high byte
+  // in it. Reading it as `utf8` replaces that byte with U+FFFD before
+  // `pathRaw`/`comm.raw`/`cmdline.raw` are formed, so the store — the artifact
+  // that outlives the session and that card 2026-0388's captures are taken
+  // from — carries corrupted evidence.
+  // DIES UNDER: reading the session log as `utf8`; writing the store body as a
+  // string (`appendFile` re-encodes latin1 code units as two UTF-8 bytes).
+  test('the harvest carries a non-UTF-8 byte into the store unchanged', async () => {
+    const { rundir, record } = await seedRun();
+    // 0xff is not valid UTF-8 in ANY position, so a utf8 read cannot preserve it.
+    const P = '/lat\xff1/\xfe.so';
+    const bytes = Buffer.from(
+      `deny\tgetattr\t${P}\tunpinned-fail-closed\t7\t7\tsh\t/bin/sh\\0-c\\0\xff\n`, 'latin1');
+    await fs.writeFile(path.join(rundir, 'events.log'), bytes);
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+    // READ AS BYTES, or this assertion could not see the corruption it is for.
+    const stored = await fs.readFile(fuseEventStore(), 'latin1');
+    const row = stored.split('\n').filter(Boolean).map(l => l.split('\t'))
+      .find(r => r[1] === record.instanceId);
+    assert.ok(row, `nothing was harvested: ${stored.slice(-400)}`);
+    const hex = (v) => Buffer.from(v, 'latin1').toString('hex');
+    assert.equal(hex(row[4]), hex(P), 'the path column lost the high byte');
+    assert.equal(hex(row[8]), hex('/bin/sh\\0-c\\0\xff'), 'the cmdline column lost it');
+    // NON-VACUITY: 0xff really is in the fixture and really is not valid UTF-8,
+    // so `Buffer.from(bytes).toString('utf8')` would have mangled it.
+    assert.ok(bytes.includes(0xff), 'the fixture has no high byte to lose');
+    assert.notEqual(bytes.toString('utf8').indexOf('�'), -1,
+      'the fixture is valid UTF-8, so a utf8 read would not have corrupted it');
   });
 
   // PINS: a pin is suggested for `deny`/`unpinned-fail-closed` AND FOR NOTHING
@@ -1009,7 +1091,7 @@ describe('the policy event harvest', () => {
         && (r[4] === '/run/user/1000' || r[4] === '/srv/app/f.txt'));
     assert.equal(rows.length, 2, JSON.stringify(rows));
     for (const r of rows)
-      assert.deepEqual([r[5], r[6]], ['', ''],
+      assert.deepEqual([r[9], r[10]], ['', ''],
         `${r[2]}/${r[3]} at ${r[4]} was given a pin suggestion, which points at the wrong repair`);
     // And the SENTENCE keeps the same split: the served row appears, without a
     // pin instruction attached to it.
@@ -1033,17 +1115,90 @@ describe('the policy event harvest', () => {
     assert.equal(describePolicyEvents([], '/store/events.log'), null);
   });
 
+  // PINS: THE `#` HEADER LINE IS SKIPPED, and the field test is not what skips
+  // it. The header CONTAINS TABS, so it splits into eight truthy-looking fields
+  // and would parse as a row whose "path" is `# cc-union events v2` — carried
+  // into `eventPaths`, into the operator sentence and into the store.
+  // DIES UNDER: dropping the `startsWith('#')` guard; moving it after the
+  // eight-field test (which the header passes).
+  test('the parser skips the daemon’s header line', () => {
+    const rows = parsePolicyEvents(EVENTS);
+    assert.equal(rows.length, 6, JSON.stringify(rows.map(r => r.path)));
+    assert.deepEqual(rows.filter(r => r.path.startsWith('#')), []);
+    // NON-VACUITY: the header really is in the fixture and really does have
+    // eight tab-separated fields, so the guard has something to do.
+    assert.ok(EVENTS.startsWith('# cc-union events v2\t'), EVENTS.slice(0, 40));
+    assert.ok(EVENT_HEADER.split('\t').length >= 8, EVENT_HEADER);
+  });
+
+  // PINS: THE DENIAL SENTENCE NAMES THE ACTING PROCESS as `comm[pid]`, which is
+  // the whole of what card 2026-0389 bought on this surface — `deny getattr
+  // /bin unpinned-fail-closed` could not tell the bootstrap shell dying at
+  // `exec` from a hook subprocess poking around. The PID is the calling thread's,
+  // which is what the trace can be joined on.
+  // DIES UNDER: dropping the identity from the sentence; printing the cmdline
+  // instead (unbounded — the 20-row cap exists to bound this line); printing a
+  // recorded absence as a plausible name rather than as its status.
+  test('the denial sentence names the acting process, and an absence as an absence', () => {
+    const line = describePolicyEvents(parsePolicyEvents(EVENTS), '/store/events.log');
+    assert.match(line, /\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6 \(claude\[4243\]\)/, line);
+    assert.match(line, /\/usr\/bin\/git \(claude\[4242\]\)/, line);
+    // A `\!gone` comm prints its STATUS. Nothing in the sentence may look like
+    // a process name the reader could go hunting for.
+    assert.match(line, /\/srv\/app\/f\.txt \(gone\[5100\]\)/, line);
+    assert.doesNotMatch(line, /\\!gone/, line);
+    // AND NOT THE CMDLINE, which is unbounded and is one grep away in the file
+    // the sentence already names.
+    assert.doesNotMatch(line, /--print/, line);
+  });
+
+  // PINS: THE OPERATOR SENTENCE RENDERS ITS BYTE FIELDS AS TEXT. A row's
+  // strings are BYTES (`parsePolicyEvents`' input contract), and this sentence
+  // is the one place a human reads them — so `describePolicyEvents` reinterprets
+  // each one latin1→UTF-8 on the way out. Every other fixture in this file is
+  // pure ASCII, where that reinterpretation and the identity coincide, so
+  // nothing else can see it.
+  //
+  // ALL THREE CALL SITES, one per clause of the sentence: the refusal list, the
+  // pin instruction (whose entry `suggestPin` derives from the byte path) and
+  // the served list.
+  // DIES UNDER: dropping `asText`; applying it to the assembled sentence
+  // instead of per field (which would corrupt a `storePath` holding characters
+  // past U+00FF).
+  test('the operator sentence renders a UTF-8 path and comm as text, not as bytes', () => {
+    // LATIN-1 CODE UNITS, exactly what a `latin1` read of the daemon's log
+    // yields: `\xc2\xb5` are the two bytes of `µ` and `\xc3\xa9` of `é`.
+    const HI = [
+      'deny\tgetattr\t/lib/x86_64-linux-gnu/lib\xc2\xb5.so\tunpinned-fail-closed\t7\t7\tcaf\xc3\xa9\tcaf\xc3\xa9',
+      'served\tgetattr\t/run/\xc2\xb5s\tunmarked-host-served\t9\t9\tsh\t/bin/sh',
+    ].join('\n') + '\n';
+    const line = describePolicyEvents(parsePolicyEvents(HI), '/store/events.log');
+    assert.ok(line.includes('the daemon refused: /lib/x86_64-linux-gnu/libµ.so (café[7])'),
+      `the refusal clause did not render as text: ${line}`);
+    assert.ok(line.includes('add /usr/lib/x86_64-linux-gnu/libµ.so to LOADER_OBJECTS'),
+      `the pin instruction did not render as text: ${line}`);
+    assert.ok(line.includes('unmarked-host-served /run/µs'),
+      `the served clause did not render as text: ${line}`);
+    // THE MOJIBAKE TELL, asserted separately: leaving the bytes uninterpreted
+    // prints the lead byte of each sequence as its own latin-1 character.
+    assert.doesNotMatch(line, /[ÂÃ]/, `the sentence carries un-decoded bytes: ${line}`);
+    // NON-VACUITY: the fixture really is multi-byte, so the two renderings
+    // really do differ.
+    assert.notEqual('/lib/x86_64-linux-gnu/lib\xc2\xb5.so', '/lib/x86_64-linux-gnu/libµ.so');
+  });
+
   // PINS: the inline list is CAPPED at 20 ROWS and then says how many more and
   // where they are. Bounded output was the owner's requirement; a truncation
   // that did not say it truncated would be the same defect as a count.
   //
-  // ROWS, NOT PATHS — the harvest key is `(path, reason)`, so a path carrying
-  // two deny reasons occupies two slots. This fixture gives each row its own
+  // ROWS, NOT PATHS — the harvest key is `(path, reason, tgid)`, so a path
+  // carrying two deny reasons, or one reason from two thread groups, occupies
+  // two slots. This fixture gives each row its own
   // path, so the two units coincide here and the assertion reads either way;
   // the wording says rows because that is what the code counts.
   // DIES UNDER: removing the cap; dropping the `+K more` clause.
   test('the line caps the inline rows at 20 and says where the rest are', () => {
-    const many = Array.from({ length: 31 }, (_, i) => `deny\tgetattr\t/etc/p${i}\tunpinned-fail-closed`).join('\n');
+    const many = Array.from({ length: 31 }, (_, i) => `deny\tgetattr\t/etc/p${i}\tunpinned-fail-closed\t7\t7\tclaude\tclaude`).join('\n');
     const line = describePolicyEvents(parsePolicyEvents(many), '/store/events.log');
     const named = [...line.matchAll(/\/etc\/p(\d+)/g)].map(m => Number(m[1]));
     // Each of the 20 appears twice — once in the refused list, once in the
@@ -1060,7 +1215,7 @@ describe('the policy event harvest', () => {
   test('a failed mount names the refused paths and the array to add them to', async () => {
     const rundir = await mkdtemp('cc-fuse-awaitmount-');
     const log = path.join(rundir, 'events.log');
-    await fs.writeFile(log, 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n');
+    await fs.writeFile(log, 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\t7\t7\tclaude\tclaude\n');
     let tornDown = false;
     const self = {
       id: 'inst-await', proc: null, _stderr: '  libtinfo.so.6: cannot open shared object file  ',
@@ -1081,6 +1236,41 @@ describe('the policy event harvest', () => {
       return true;
     });
     assert.equal(tornDown, true, 'the half-built session was not torn down');
+  });
+
+  // PINS: `_awaitFuseMount` READS THE EVENT LOG AS BYTES. It is the third
+  // reader of a file `policy_escape` passes `0x80-0xff` through verbatim, and
+  // the only one whose fixture was pure ASCII — so the byte-file contract went
+  // unobserved here even though `harvestEvents`' copy of it is pinned.
+  //
+  // THE PATH CROSSES BOTH LAYERS, which is why the assertion is on the rendered
+  // message: a `utf8` read decodes `\xc2\xb5` to `µ` too early, and
+  // `describePolicyEvents`' latin1→UTF-8 reinterpretation then turns that single
+  // code unit into U+FFFD. Correct is `µ`; the mutant loses the character
+  // entirely rather than merely mis-spelling it.
+  // DIES UNDER: reading the log as `utf8` here.
+  test('a failed mount renders a UTF-8 path from the byte log, not a replacement char', async () => {
+    const rundir = await mkdtemp('cc-fuse-awaitmount-hi-');
+    const log = path.join(rundir, 'events.log');
+    // WRITTEN AS BYTES, or the fixture could not carry the shape it is for.
+    await fs.writeFile(log, Buffer.from(
+      'deny\tgetattr\t/lib/x86_64-linux-gnu/lib\xc2\xb5.so\tunpinned-fail-closed\t7\t7\tsh\t/bin/sh\n',
+      'latin1'));
+    const self = {
+      id: 'inst-await-hi', proc: null, _stderr: 'libµ.so: cannot open shared object file',
+      _fuse: {
+        plan: { rundir },
+        awaitHandshake: async () => null,
+        teardown: async () => { await fs.rm(log, { force: true }); },
+      },
+    };
+    await assert.rejects(() => Instance.prototype._awaitFuseMount.call(self), (e) => {
+      assert.match(e.message, /the daemon refused: \/lib\/x86_64-linux-gnu\/libµ\.so/, e.message);
+      assert.doesNotMatch(e.message, /�/,
+        `a byte was lost between the read and the sentence: ${e.message}`);
+      assert.doesNotMatch(e.message, /[ÂÃ]/, e.message);
+      return true;
+    });
   });
 });
 
@@ -2319,7 +2509,7 @@ describe('the boot sweep', () => {
   // makes the filter's mutant distinguishable at all.
   test('a crashed session’s policy events reach the operator log', async () => {
     const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
-    const EVENTS = 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n';
+    const EVENTS = 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\t7\t7\tclaude\tclaude\n';
     const sweep = async () => {
       const warned = [];
       const reports = await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => warned.push(a.join(' ')) } });

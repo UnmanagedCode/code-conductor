@@ -98,27 +98,128 @@ export interface TeardownReport {
   // IMMEDIATELY BEFORE the run directory is reclaimed — the reclaim is what used
   // to destroy the only record of a fail-closed path. One entry per DISTINCT
   // PATH, in the order the daemon first wrote it — narrower than the harvested
-  // ROWS, which are keyed `(path, reason)` because two callers can reach one
-  // path with two reasons. This is a path list and its one consumer (the boot
+  // ROWS, which are keyed `(path, reason, tgid)` because two callers can reach
+  // one path, with two reasons or with the same one. This is a path list and its one consumer (the boot
   // sweep) asks only whether it is empty.
   eventPaths: string[];
   notes: string[];
 }
 
-// One row of the daemon's event log: `<kind>\t<op>\t<path>\t<reason>`.
-export interface PolicyEventRow { kind: string; op: string; path: string; reason: string }
+// ONE /proc-SOURCED FIELD OF A ROW — the decoded value, or a RECORDED ABSENCE.
+// `value` is null exactly when the daemon wrote a `\!` sentinel instead of a
+// value, so a missing identity can never be read as a process called `<gone>`.
+// `raw` is the daemon's own escaped bytes, kept so the harvest can write the
+// store in the daemon's format without a second encoder in this language.
+export interface EventField {
+  raw: string;
+  value: string | null;
+  argv?: string[];
+  status: 'ok' | 'gone' | 'unreadable' | 'empty' | 'truncated';
+}
+
+// One row of the daemon's event log:
+// `<kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t<comm>\t<cmdline>`.
+// `pid` is the CALLING THREAD and `tgid` its thread group — the id the mark and
+// the daemon's dedupe key are on. `pathRaw` is the escaped spelling, for the
+// same reason `EventField.raw` exists.
+export interface PolicyEventRow {
+  kind: string; op: string; path: string; pathRaw: string; reason: string;
+  pid: number; tgid: number; comm: EventField; cmdline: EventField;
+}
+
+// THE INVERSE OF `policy_escape` (policy.h), and the ONLY one — the C encoder
+// and this decoder are cross-checked against each other on real daemon output
+// by tests/fuse-union-policy.test.mjs's field round trip, rather than each
+// against its own transcription of the format.
+//
+// LEFT TO RIGHT, TOKEN BY TOKEN, AND THE DIRECTION IS LOAD-BEARING. Detecting
+// the `\!truncated` marker with a right-to-left `endsWith` is FORGEABLE: a field
+// whose raw bytes end with a literal `\` followed by `!truncated` encodes to
+// `…\\!truncated`, whose last eleven characters spell the marker — so the
+// decoder dropped ten content bytes and reported a COMPLETE read as truncated.
+//
+// The escaper's guarantee is narrower than "the bytes `\!` never appear", and
+// reading it as the wider claim is what produced that defect. What it really
+// guarantees: every `\`-initial token `policy_escape` emits is `\\`, `\t`, `\n`,
+// `\r`, `\0` or `\xHH` — second character always one of `\tnr0x`, never `!` —
+// and it never writes a PARTIAL token (its capacity check runs before the
+// copy). So its output is a complete token sequence, the marker is appended at
+// a token boundary, and `\` is followed by `!` at an ESCAPE-ALIGNED position
+// exactly where a marker was appended and nowhere else. A scan that tracks
+// alignment can use that; one that scans from the right cannot see it.
+//
+// Returns the decoded bytes (one code unit per byte) and whether the field
+// ended in the marker.
+function decodeField(s: string): { value: string; truncated: boolean } {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c !== '\\') { out += c; continue; }
+    const n = s[i + 1];
+    if (n === '!') {
+      // ESCAPE-ALIGNED `\!` — the encoder cannot produce one, so this is a
+      // marker rather than content.
+      if (s.slice(i) === TRUNC) return { value: out, truncated: true };
+      // Some other `\!` marker, from a daemon newer than this reader. Kept
+      // verbatim rather than dropped, so the row degrades into readable text.
+      out += c;
+      continue;
+    }
+    i++;
+    if (n === '\\') out += '\\';
+    else if (n === 't') out += '\t';
+    else if (n === 'n') out += '\n';
+    else if (n === 'r') out += '\r';
+    else if (n === '0') out += '\u0000';
+    else if (n === 'x') { out += String.fromCharCode(parseInt(s.slice(i + 1, i + 3), 16)); i += 2; }
+    // Not an escape this encoder emits. Kept verbatim rather than dropped, so a
+    // row from a future daemon degrades into readable text instead of silence.
+    else if (n === undefined) out += '\\';
+    else out += '\\' + n;
+  }
+  return { value: out, truncated: false };
+}
+
+const decodeEscapes = (s: string): string => decodeField(s).value;
+
+const SENTINELS: Record<string, EventField['status']> =
+  { '\\!gone': 'gone', '\\!unreadable': 'unreadable', '\\!empty': 'empty' };
+const TRUNC = '\\!truncated';
+
+// EXPORTED because the cross-language round trip needs it: a decoder
+// transcribed into a test would be a second implementation of the format.
+export function decodeEventField(s: string): EventField {
+  const sentinel = SENTINELS[s];
+  if (sentinel) return { raw: s, value: null, status: sentinel };
+  const { value, truncated } = decodeField(s);
+  return { raw: s, value, status: truncated ? 'truncated' : 'ok' };
+}
+
+// …and a cmdline additionally splits on the decoded NUL, which is what
+// `/proc/<pid>/cmdline` separates argv with. The trailing separator leaves an
+// empty final element; it is dropped rather than reported as an empty argument.
+function decodeCmdline(s: string): EventField {
+  const f = decodeEventField(s);
+  if (f.value === null) return f;
+  const argv = f.value.split('\u0000');
+  if (argv.length && argv[argv.length - 1] === '') argv.pop();
+  return { ...f, argv };
+}
 
 // THE HARVEST. Reads a session's event log and APPENDS it to the store-wide one
 // so the evidence outlives the run directory.
 //
-// `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<suggested list>\t<suggested entry>`
+// `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<pid>\t<tgid>\t<comm>\t<cmdline>
+//  \t<suggested list>\t<suggested entry>` — the session row's own columns, in
+// the daemon's own ESCAPED spelling, plus the two provenance columns in front
+// and the two suggestion columns behind.
 //
 // THE LAST TWO COLUMNS ARE FOR `deny`/`unpinned-fail-closed` ROWS ONLY, and the
 // scoping is not cosmetic: a pin does not fix an `unmarked-host-served` row —
 // that path already came from the host — so suggesting one would send the reader
 // to change the wrong thing.
 //
-// DEDUPED ON `(path, reason)`, THE DAEMON'S OWN KEY, AND NOT ON THE PATH.
+// DEDUPED ON `(path, reason, tgid)`, THE DAEMON'S OWN KEY, AND NOT ON THE PATH.
 // THE PATH-KEYED VERSION WAS A REAL DEFECT and the reason is worth keeping: the
 // daemon writes two rows for one path whenever two CALLERS reach it, which
 // happens routinely — `/var` carries `deny`/`unpinned-fail-closed` from the
@@ -130,21 +231,37 @@ export interface PolicyEventRow { kind: string; op: string; path: string; reason
 //
 // This departs from plan §4a's "one row per distinct path" deliberately (owner,
 // recorded on card 2026-0382). Matching the daemon's key is also what makes the
-// two artifacts comparable at all.
+// two artifacts comparable at all — so the key gained the TGID here in the same
+// commit the daemon's did (card 2026-0389), or the two would silently stop
+// agreeing about what one row is.
 //
 // BEST-EFFORT THROUGHOUT. `runTeardown` never rejects, and a store the harvest
 // cannot write is not a reason to abandon a mount.
+// `text` MUST BE READ AS `latin1` — one code unit per byte. The escape table
+// passes `0x80-0xff` through VERBATIM, so the log is a BYTE file and a `utf8`
+// read replaces a lone high byte with U+FFFD before any column is formed. Every
+// string on the returned row is therefore BYTES too, not display text;
+// `describePolicyEvents` is the one place they are shown and it reinterprets
+// them there.
 export function parsePolicyEvents(text: string): PolicyEventRow[] {
   const seen = new Set<string>();
   const out: PolicyEventRow[] = [];
   for (const line of text.split('\n')) {
     if (line === '') continue;
-    const [kind, op, p, reason] = line.split('\t');
-    if (!kind || !op || !p || !reason) continue;
-    const key = `${p}\t${reason}`;
+    // THE HEADER, WHICH CONTAINS TABS — so the field test below would not catch
+    // it and it would parse as a row naming a path called `# cc-union events v2`.
+    if (line.startsWith('#')) continue;
+    const [kind, op, p, reason, pid, tgid, comm, cmdline] = line.split('\t');
+    if (!kind || !op || !p || !reason || pid === undefined || tgid === undefined
+      || comm === undefined || cmdline === undefined) continue;
+    const key = `${p}\t${reason}\t${tgid}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ kind, op, path: p, reason });
+    out.push({
+      kind, op, path: decodeEscapes(p), pathRaw: p, reason,
+      pid: Number(pid), tgid: Number(tgid),
+      comm: decodeEventField(comm), cmdline: decodeCmdline(cmdline),
+    });
   }
   return out;
 }
@@ -169,17 +286,24 @@ export function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: st
 }
 
 async function harvestEvents(rundir: string, instanceId: string): Promise<PolicyEventRow[]> {
-  const text = await fsp.readFile(path.join(rundir, EVENT_LOG_NAME), 'utf8').catch(() => '');
+  const text = await fsp.readFile(path.join(rundir, EVENT_LOG_NAME), 'latin1').catch(() => '');
   const rows = parsePolicyEvents(text);
   if (rows.length === 0) return rows;
   const at = new Date().toISOString();
   const store = fuseEventStore();
   const body = rows.map((r) => {
     const s = pinSuggestionFor(r);
-    return [at, instanceId, r.kind, r.op, r.path, s?.list ?? '', s?.entry ?? ''].join('\t');
+    // THE DAEMON'S OWN ESCAPED SPELLING, verbatim: the store is the session file
+    // plus two prefix columns and two suffix ones, so a path or an argv carrying
+    // a tab cannot split a store line either.
+    return [at, instanceId, r.kind, r.op, r.pathRaw, r.pid, r.tgid,
+      r.comm.raw, r.cmdline.raw, s?.list ?? '', s?.entry ?? ''].join('\t');
   }).join('\n') + '\n';
   await fsp.mkdir(path.dirname(store), { recursive: true }).catch(() => {});
-  await fsp.appendFile(store, body).catch(() => {});
+  // AS BYTES. `body` holds latin1 code units, and a string append would re-encode
+  // every one past 0x7f as two UTF-8 bytes — undoing the byte fidelity the raw
+  // columns exist for.
+  await fsp.appendFile(store, Buffer.from(body, 'latin1')).catch(() => {});
   return rows;
 }
 
@@ -194,6 +318,13 @@ async function harvestEvents(rundir: string, instanceId: string): Promise<Policy
 // the cap exists to bound the OUTPUT, and rows are what the output is made of.
 const EVENT_LINE_CAP = 20;
 
+// A ROW'S STRINGS ARE BYTES (see `parsePolicyEvents`), and this is the only
+// place they are read by a human — so this is where they become text. Applied
+// per field rather than to the assembled sentence: `storePath` is an ordinary
+// JS string that may hold characters past U+00FF, and reinterpreting the whole
+// sentence would corrupt it.
+const asText = (s: string): string => Buffer.from(s, 'latin1').toString('utf8');
+
 export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath = fuseEventStore()): string | null {
   if (rows.length === 0) return null;
   const denials = rows.filter(r => r.kind === 'deny');
@@ -201,7 +332,13 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
   if (denials.length) {
     const shown = denials.slice(0, EVENT_LINE_CAP);
     const more = denials.length - shown.length;
-    parts.push(`the daemon refused: ${shown.map(r => r.path).join(', ')}`
+    // WHO ASKED, ON THE DENIAL LINE — which is the whole of what card 2026-0389
+    // bought here. `comm[pid]` and not the cmdline: an argv is unbounded, the
+    // 20-row cap exists to bound this sentence, and the full argv is one `grep`
+    // away in the store file the sentence already names. A recorded absence
+    // prints its STATUS (`gone[41231]`), never a plausible-looking name.
+    parts.push('the daemon refused: '
+      + shown.map(r => `${asText(r.path)} (${asText(r.comm.value ?? r.comm.status)}[${r.pid}])`).join(', ')
       + (more > 0 ? ` (+${more} more; full list at ${storePath})` : ''));
     // THE REPAIR, GROUPED BY THE ARRAY THAT OWNS IT, because that is the edit
     // the reader has to make. `suggestPin` (tierTable.ts) owns the mapping and
@@ -214,9 +351,10 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
       byList.get(s.list)!.push(s.entry);
     }
     for (const [list, entries] of byList) {
+      const named = entries.map(asText).join(', ');
       parts.push(list === 'UNDECIDED'
-        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${entries.join(', ')} — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots`
-        : `add ${entries.join(', ')} to ${list} in src/systems/fuse/tierTable.ts and restart cc`);
+        ? `no array in src/systems/fuse/tierTable.ts obviously owns ${named} — decide between LOADER_OBJECTS, ETC_PINS, BOOTSTRAP_CHAIN and the session's localRoots`
+        : `add ${named} to ${list} in src/systems/fuse/tierTable.ts and restart cc`);
     }
   }
   const served = rows.filter(r => r.kind === 'served');
@@ -225,7 +363,7 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
     const more = served.length - shown.length;
     // NO PIN SUGGESTED FOR THESE, and the wording says why: the op succeeded.
     parts.push(`served off the tier table (no pin needed — the op succeeded): `
-      + shown.map(r => `${r.reason} ${r.path}`).join(', ')
+      + shown.map(r => `${r.reason} ${asText(r.path)}`).join(', ')
       + (more > 0 ? ` (+${more} more)` : ''));
   }
   parts.push(`full event log at ${storePath}`);
