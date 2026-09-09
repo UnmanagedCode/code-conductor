@@ -327,6 +327,11 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
 
   const notes: string[] = [];
   const report: TeardownReport = {
+    // The directory name — the instance id's PREFIX (plan.ts's
+    // `fuseRunDirName`), not the whole id. It is only ever the FALLBACK: step 0
+    // below replaces it with the full id from intent.json/mount.json whenever
+    // either is readable, and it survives only for a run directory that has
+    // neither.
     instanceId: path.basename(rundir),
     source: 'NO-RECORD',
     workerPid: null, workerStopped: false, daemonPid: null, anchorPid: null, survivingPids: [],

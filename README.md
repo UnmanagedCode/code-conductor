@@ -143,7 +143,7 @@ Two Systems suites are opt-in because they need something the repo does not ship
 
 **On-disk state you will see.** A worker session on a system leaves **no local image of its tree**. What cc keeps is the mount scaffolding for the session's chroot:
 
-- **`<store>/systems/fuse/run/<instanceId>/`** — one directory per session: the union mountpoint, the remote tier's mount dir, a private `fusectl`, the generated tier table, and the mount record teardown and the boot sweep read. Removed when the session is torn down; **kept, marked and re-reported** when a teardown could not finish.
+- **`<store>/systems/fuse/run/<instanceId prefix>/`** — one directory per session: the union mountpoint, the remote tier's mount dir, a private `fusectl`, the generated tier table, and the mount record teardown and the boot sweep read. Removed when the session is torn down; **kept, marked and re-reported** when a teardown could not finish.
 - **`<store>/systems/fuse/bin/union-<sha256>`** — the union daemon, compiled on first use and content-addressed on its source plus the compiler flags, so a stale binary is impossible.
 - A session's CLI transcript still lands in the CLI's own `~/.claude/projects/<encodeCwd(cwd)>/` — and because `cwd` is now the project's real path on its system, two places whose cwds encode alike are **refused at registration** rather than allowed to share it.
 

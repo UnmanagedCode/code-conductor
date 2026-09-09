@@ -13,7 +13,7 @@
 
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
-import { fuseRunRoot } from './plan.ts';
+import { fuseRunDirName, fuseRunRoot } from './plan.ts';
 import { runTeardown, type TeardownReport } from './session.ts';
 import type { MountDriver } from './driver.ts';
 import { reclaimOrphanProcesses } from './orphans.ts';
@@ -33,7 +33,13 @@ export interface SweepOptions {
 
 export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<TeardownReport[]> {
   const log = opts.log ?? console;
-  const keep = new Set(opts.liveIds ?? []);
+  // TWO SETS OVER THE SAME IDS, BECAUSE THE TWO PASSES BELOW ARE KEYED
+  // DIFFERENTLY. `run/<name>` carries the id's PREFIX (plan.ts's
+  // `fuseRunDirName`), so the readdir loop must compare names; the orphan
+  // backstop matches `CC_FUSE_INSTANCE_ID` off `/proc/<pid>/environ`, which is
+  // the WHOLE id. One set for both would silently protect nothing in one pass.
+  const liveIds = new Set(opts.liveIds ?? []);
+  const keep = new Set([...liveIds].map(fuseRunDirName));
   const root = fuseRunRoot();
   let entries: string[];
   try { entries = await fsp.readdir(root); }
@@ -87,7 +93,7 @@ export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<Teardo
   // a private namespace never appears in /proc/1/mounts, and a destroyed record
   // is in no set to re-verify.
   try {
-    const backstop = await reclaimOrphanProcesses(root, { driver: opts.driver, scan: opts.scan, liveIds: keep, log });
+    const backstop = await reclaimOrphanProcesses(root, { driver: opts.driver, scan: opts.scan, liveIds, log });
     if (!backstop.enumerated) log.warn('cc-fuse sweep: could not enumerate processes — this boot cannot claim the store is clean');
   } catch (e) { log.warn(`cc-fuse sweep: the orphan-process backstop failed: ${(e as Error).message}`); }
   return reports;

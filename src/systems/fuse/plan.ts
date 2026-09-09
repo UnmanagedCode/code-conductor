@@ -31,8 +31,33 @@ export function fuseRunRoot(): string {
   return path.join(orchStoreRoot(), 'systems', 'fuse', 'run');
 }
 
+// THE UNIX-SOCKET PATH BUDGET. Linux's `sockaddr_un` is `char sun_path[108]`
+// and `bind` needs the terminating NUL, so 107 bytes is the whole budget for
+// `<runDir>/control.sock` — measured on this kernel: 107 binds, 108 and 109
+// give EINVAL.
+export const SUN_PATH_MAX = 107;
+
+// THE RUN DIRECTORY'S NAME IS A PREFIX OF THE INSTANCE ID, NOT THE WHOLE ID.
+// The full 36-char uuid put the control socket 2 bytes OVER the budget for a
+// store root of ordinary length, and left cc's DEFAULT root with 1 byte of
+// margin — a bind away from the same EINVAL. The uuid segment is the only
+// oversized thing cc owns below the store root, so it is where the room comes
+// from. Card 2026-0387 owns the id shape properly (its collision argument, and
+// a test that pins the budget).
+//
+// A PREFIX rather than a hash: the name must stay matchable against the id it
+// came from, and `name === id.slice(0, RUN_DIR_NAME_LEN)` recovers the relation
+// in both directions. This function is the ONE place either direction is
+// spelled — `sweepFuseSessions` derives its live-id filter through it, so the
+// filter cannot drift out of step with the names on disk.
+export const RUN_DIR_NAME_LEN = 12;
+
+export function fuseRunDirName(instanceId: string): string {
+  return instanceId.slice(0, RUN_DIR_NAME_LEN);
+}
+
 export function fuseRunDir(instanceId: string): string {
-  return path.join(fuseRunRoot(), instanceId);
+  return path.join(fuseRunRoot(), fuseRunDirName(instanceId));
 }
 
 // THE PER-SESSION EVENT LOG'S FILENAME, in one place because three layers name
@@ -282,6 +307,17 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     throw httpError(501, `FUSE_REMOTE_ROOT_CONTAINS_MIRROR: this session's staging mirror ${mirror} lies inside the remote root ${override} (at '${inside}'), so cc would read its own mirror back as remote content and serve it to the worker`, { code: 'FUSE_REMOTE_ROOT_CONTAINS_MIRROR' });
   }
 
+  // CONFIGURATION-TIME REFUSAL: THE CONTROL SOCKET MUST FIT IN `sun_path`.
+  // Over the budget, `net.Server.listen` fails with a bare `EINVAL: invalid
+  // argument` naming the path but no limit and no measurement — the errno for
+  // "too long" here is not ENAMETOOLONG, so the raw failure reads as a
+  // malformed address rather than as an overflow. This says the number.
+  const controlSock = path.join(rundir, 'control.sock');
+  const sockLen = Buffer.byteLength(controlSock);
+  if (sockLen > SUN_PATH_MAX) {
+    throw httpError(501, `FUSE_CONTROL_SOCK_PATH_TOO_LONG: this session's control socket path is ${sockLen} bytes and the limit is ${SUN_PATH_MAX} (Linux's sockaddr_un is char sun_path[108], one byte of it the terminating NUL); binding it would fail with a bare EINVAL. The path is ${controlSock}. Every segment below the store root is cc's own and already as short as it gets, so the ${sockLen - SUN_PATH_MAX} byte(s) have to come off the store root — move it somewhere shorter. Card 2026-0387 owns the budget.`, { code: 'FUSE_CONTROL_SOCK_PATH_TOO_LONG' });
+  }
+
   return {
     instanceId: input.instanceId,
     rundir,
@@ -293,7 +329,7 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     recordPath: path.join(rundir, 'mount.json'),
     daemonLog: path.join(rundir, 'daemon.log'),
     eventLog: path.join(rundir, EVENT_LOG_NAME),
-    controlSock: path.join(rundir, 'control.sock'),
+    controlSock,
     markPath: input.markPath,
     cwdInside: input.cwdInside,
     mountOpts: MOUNT_OPTS,
