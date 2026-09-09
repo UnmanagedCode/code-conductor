@@ -1733,7 +1733,7 @@ static void b29_escape(void)
 		0x01, 'g', 0x7f, (char)0xc3, (char)0xa9, 'z'
 	};
 	static const char want[] = "a\\\\b\\tc\\nd\\re\\0f\\x01g\\x7f\xc3\xa9z";
-	char enc[256], small[8];
+	char enc[256], small[8], exact[6];
 
 	CHECK(policy_escape(enc, sizeof(enc), src, sizeof(src)) == 1,
 	      "the whole string fit");
@@ -1761,11 +1761,43 @@ static void b29_escape(void)
 		CHECK(strcmp(a, b) != 0, "so the two are DISTINGUISHABLE on decode");
 	}
 
-	/* IT REPORTS A SHORT BUFFER RATHER THAN OVERRUNNING IT, and terminates
-	 * what it did write. */
+	/*
+	 * IT REPORTS A SHORT BUFFER RATHER THAN OVERRUNNING IT, AND TERMINATES
+	 * INSIDE IT — and the second half is the one that needs a poisoned buffer
+	 * to be visible at all.
+	 *
+	 * THE FIT CHECK IS `o + w >= cap` AND THE `=` IS LOAD-BEARING. Under `>` a
+	 * token that lands EXACTLY at `cap` is copied in full and the terminator
+	 * then goes ONE BYTE PAST the buffer, so the field comes back
+	 * unterminated. That matters beyond the overrun: "policy_escape never
+	 * writes a partial token, so its output is a complete token sequence" is
+	 * the premise `session.ts`'s alignment-aware decoder is sound on, and a
+	 * premise whose own unit check cannot see the difference is not pinned.
+	 *
+	 * POISONED, NOT ZEROED, AND NOT MEASURED WITH strlen. `strlen` reads
+	 * happily past the end, so it cannot see a MISSING in-bounds terminator;
+	 * a zero-initialised buffer would hand the mutant the NUL it failed to
+	 * write. `memchr` over exactly `sizeof` is the only form that observes it.
+	 */
+	memset(small, 'Z', sizeof(small));
 	CHECK(policy_escape(small, sizeof(small), "abcdefghijkl", 12) == 0,
 	      "a field that does not fit reports so");
-	CHECK(strlen(small) < sizeof(small), "and the partial result is terminated");
+	CHECK(memchr(small, '\0', sizeof(small)) != NULL,
+	      "and terminates INSIDE the buffer");
+	CHECK(strncmp(small, "abcdefg", 7) == 0,
+	      "keeping the bytes it did fit (%.8s)", small);
+
+	/* THE EXACT-EQUALITY ARM, which is the only one `>` and `>=` disagree on:
+	 * `ab\x01` escapes to `ab` + the four-character `\x01`, so the last token
+	 * ends precisely at cap 6. `>=` stops before it and terminates at index 2;
+	 * `>` copies it, fills the buffer, and puts the terminator at index 6. */
+	memset(exact, 'Z', sizeof(exact));
+	CHECK(policy_escape(exact, sizeof(exact), "ab\x01", 3) == 0,
+	      "a token ending EXACTLY at cap does not fit");
+	CHECK(memchr(exact, '\0', sizeof(exact)) != NULL,
+	      "and the terminator is still inside the buffer");
+	CHECK(strncmp(exact, "ab", 2) == 0 && exact[2] == '\0',
+	      "with the whole four-character escape left off rather than half of it");
 }
 
 /* ── B30: an absent identity is RECORDED, and cannot be forged ──────────── */

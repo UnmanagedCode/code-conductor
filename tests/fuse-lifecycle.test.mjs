@@ -1152,6 +1152,41 @@ describe('the policy event harvest', () => {
     assert.doesNotMatch(line, /--print/, line);
   });
 
+  // PINS: THE OPERATOR SENTENCE RENDERS ITS BYTE FIELDS AS TEXT. A row's
+  // strings are BYTES (`parsePolicyEvents`' input contract), and this sentence
+  // is the one place a human reads them — so `describePolicyEvents` reinterprets
+  // each one latin1→UTF-8 on the way out. Every other fixture in this file is
+  // pure ASCII, where that reinterpretation and the identity coincide, so
+  // nothing else can see it.
+  //
+  // ALL THREE CALL SITES, one per clause of the sentence: the refusal list, the
+  // pin instruction (whose entry `suggestPin` derives from the byte path) and
+  // the served list.
+  // DIES UNDER: dropping `asText`; applying it to the assembled sentence
+  // instead of per field (which would corrupt a `storePath` holding characters
+  // past U+00FF).
+  test('the operator sentence renders a UTF-8 path and comm as text, not as bytes', () => {
+    // LATIN-1 CODE UNITS, exactly what a `latin1` read of the daemon's log
+    // yields: `\xc2\xb5` are the two bytes of `µ` and `\xc3\xa9` of `é`.
+    const HI = [
+      'deny\tgetattr\t/lib/x86_64-linux-gnu/lib\xc2\xb5.so\tunpinned-fail-closed\t7\t7\tcaf\xc3\xa9\tcaf\xc3\xa9',
+      'served\tgetattr\t/run/\xc2\xb5s\tunmarked-host-served\t9\t9\tsh\t/bin/sh',
+    ].join('\n') + '\n';
+    const line = describePolicyEvents(parsePolicyEvents(HI), '/store/events.log');
+    assert.ok(line.includes('the daemon refused: /lib/x86_64-linux-gnu/libµ.so (café[7])'),
+      `the refusal clause did not render as text: ${line}`);
+    assert.ok(line.includes('add /usr/lib/x86_64-linux-gnu/libµ.so to LOADER_OBJECTS'),
+      `the pin instruction did not render as text: ${line}`);
+    assert.ok(line.includes('unmarked-host-served /run/µs'),
+      `the served clause did not render as text: ${line}`);
+    // THE MOJIBAKE TELL, asserted separately: leaving the bytes uninterpreted
+    // prints the lead byte of each sequence as its own latin-1 character.
+    assert.doesNotMatch(line, /[ÂÃ]/, `the sentence carries un-decoded bytes: ${line}`);
+    // NON-VACUITY: the fixture really is multi-byte, so the two renderings
+    // really do differ.
+    assert.notEqual('/lib/x86_64-linux-gnu/lib\xc2\xb5.so', '/lib/x86_64-linux-gnu/libµ.so');
+  });
+
   // PINS: the inline list is CAPPED at 20 ROWS and then says how many more and
   // where they are. Bounded output was the owner's requirement; a truncation
   // that did not say it truncated would be the same defect as a count.
@@ -1201,6 +1236,41 @@ describe('the policy event harvest', () => {
       return true;
     });
     assert.equal(tornDown, true, 'the half-built session was not torn down');
+  });
+
+  // PINS: `_awaitFuseMount` READS THE EVENT LOG AS BYTES. It is the third
+  // reader of a file `policy_escape` passes `0x80-0xff` through verbatim, and
+  // the only one whose fixture was pure ASCII — so the byte-file contract went
+  // unobserved here even though `harvestEvents`' copy of it is pinned.
+  //
+  // THE PATH CROSSES BOTH LAYERS, which is why the assertion is on the rendered
+  // message: a `utf8` read decodes `\xc2\xb5` to `µ` too early, and
+  // `describePolicyEvents`' latin1→UTF-8 reinterpretation then turns that single
+  // code unit into U+FFFD. Correct is `µ`; the mutant loses the character
+  // entirely rather than merely mis-spelling it.
+  // DIES UNDER: reading the log as `utf8` here.
+  test('a failed mount renders a UTF-8 path from the byte log, not a replacement char', async () => {
+    const rundir = await mkdtemp('cc-fuse-awaitmount-hi-');
+    const log = path.join(rundir, 'events.log');
+    // WRITTEN AS BYTES, or the fixture could not carry the shape it is for.
+    await fs.writeFile(log, Buffer.from(
+      'deny\tgetattr\t/lib/x86_64-linux-gnu/lib\xc2\xb5.so\tunpinned-fail-closed\t7\t7\tsh\t/bin/sh\n',
+      'latin1'));
+    const self = {
+      id: 'inst-await-hi', proc: null, _stderr: 'libµ.so: cannot open shared object file',
+      _fuse: {
+        plan: { rundir },
+        awaitHandshake: async () => null,
+        teardown: async () => { await fs.rm(log, { force: true }); },
+      },
+    };
+    await assert.rejects(() => Instance.prototype._awaitFuseMount.call(self), (e) => {
+      assert.match(e.message, /the daemon refused: \/lib\/x86_64-linux-gnu\/libµ\.so/, e.message);
+      assert.doesNotMatch(e.message, /�/,
+        `a byte was lost between the read and the sentence: ${e.message}`);
+      assert.doesNotMatch(e.message, /[ÂÃ]/, e.message);
+      return true;
+    });
   });
 });
 
