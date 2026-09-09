@@ -834,13 +834,20 @@ describe('the policy event harvest', () => {
   });
   after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
 
+  // THE DAEMON'S OWN EIGHT COLUMNS, header line included. `\\0` is the argv
+  // separator and `\\t` an escaped tab, both written the way `policy_escape`
+  // writes them — a fixture in a shape the daemon cannot produce would let the
+  // parser drift away from the producer unnoticed.
+  const EVENT_HEADER = '# cc-union events v2\tkind\top\tpath\treason\tpid\ttgid\tcomm\tcmdline'
+    + " — identity is sampled at POLICY TIME; the process may have exec'd since.";
   const EVENTS = [
-    'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed',
-    'deny\topen\t/etc/machine-id\tunpinned-fail-closed',
-    'deny\tgetattr\t/usr/bin/git\tunpinned-fail-closed',
-    'deny\tgetattr\t/var/opt/thing\tunpinned-fail-closed',
-    'served\tgetattr\t/run/user/1000\tunmarked-host-served',
-    'deny\tgetattr\t/srv/app/f.txt\tunmarked-project-denied',
+    EVENT_HEADER,
+    'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\t4243\t4242\tclaude\tclaude\\0--print',
+    'deny\topen\t/etc/machine-id\tunpinned-fail-closed\t4242\t4242\tclaude\tclaude\\0--print',
+    'deny\tgetattr\t/usr/bin/git\tunpinned-fail-closed\t4242\t4242\tclaude\tclaude\\0--print',
+    'deny\tgetattr\t/var/opt/thing\tunpinned-fail-closed\t4242\t4242\tclaude\tclaude\\0--print',
+    'served\tgetattr\t/run/user/1000\tunmarked-host-served\t5100\t5100\tsh\t/bin/sh\\0-c\\0echo\\thi',
+    'deny\tgetattr\t/srv/app/f.txt\tunmarked-project-denied\t5100\t5100\t\\!gone\t\\!gone',
   ].join('\n') + '\n';
 
   // PINS: `suggestPin` names the array that OWNS each shape of path, and the
@@ -901,14 +908,22 @@ describe('the policy event harvest', () => {
     const rows = store.split('\n').filter(Boolean).map(l => l.split('\t'))
       .filter(r => r[1] === record.instanceId);
     assert.equal(rows.length, 6, store);
-    // `<iso8601> <instanceId> <kind> <op> <path> <list> <entry>`
+    // `<iso8601> <instanceId> <kind> <op> <path> <pid> <tgid> <comm> <cmdline>
+    //  <list> <entry>`
     const libtinfo = rows.find(r => r[4] === '/lib/x86_64-linux-gnu/libtinfo.so.6');
     assert.ok(libtinfo, store);
     assert.match(libtinfo[0], /^\d{4}-\d\d-\d\dT/);
     assert.equal(libtinfo[1], record.instanceId);
     assert.equal(libtinfo[2], 'deny');
-    assert.equal(libtinfo[5], 'LOADER_OBJECTS');
-    assert.equal(libtinfo[6], '/usr/lib/x86_64-linux-gnu/libtinfo.so.6');
+    assert.equal(libtinfo[9], 'LOADER_OBJECTS');
+    assert.equal(libtinfo[10], '/usr/lib/x86_64-linux-gnu/libtinfo.so.6');
+    // THE ACTING PROCESS SURVIVES THE HARVEST — the whole point of the store is
+    // that it outlives the run directory, so an identity the session file had
+    // and the store dropped would answer "who asked?" nowhere.
+    assert.deepEqual([libtinfo[5], libtinfo[6], libtinfo[7]], ['4243', '4242', 'claude']);
+    // …in the DAEMON'S OWN ESCAPED SPELLING, so the store is the session format
+    // plus its provenance columns and a tab inside an argv cannot split a line.
+    assert.equal(libtinfo[8], 'claude\\0--print');
     // …and the report carries the distinct paths, so a caller need not re-read.
     assert.deepEqual(report.eventPaths, [
       '/lib/x86_64-linux-gnu/libtinfo.so.6', '/etc/machine-id', '/usr/bin/git',
@@ -940,10 +955,10 @@ describe('the policy event harvest', () => {
     // BOTH ORDERS, in two sessions, because a path-only key keeps whichever row
     // came FIRST — so one order alone passes against the bug half the time.
     for (const [label, rows] of [
-      ['served first', ['served\tgetattr\t/var\tunmarked-host-served',
-                        'deny\tgetattr\t/var\tunpinned-fail-closed']],
-      ['deny first', ['deny\tgetattr\t/var\tunpinned-fail-closed',
-                      'served\tgetattr\t/var\tunmarked-host-served']],
+      ['served first', ['served\tgetattr\t/var\tunmarked-host-served\t9\t9\tsh\t/bin/sh',
+                        'deny\tgetattr\t/var\tunpinned-fail-closed\t7\t7\tclaude\tclaude']],
+      ['deny first', ['deny\tgetattr\t/var\tunpinned-fail-closed\t7\t7\tclaude\tclaude',
+                      'served\tgetattr\t/var\tunmarked-host-served\t9\t9\tsh\t/bin/sh']],
     ]) {
       // The PARSE, where the dedupe lives.
       const parsed = parsePolicyEvents(rows.join('\n') + '\n');
@@ -967,11 +982,11 @@ describe('the policy event harvest', () => {
       assert.equal(stored.length, 2, `${label}: ${JSON.stringify(stored)}`);
       const deny = stored.find(r => r[2] === 'deny');
       assert.ok(deny, `${label}: the deny row for /var never reached the store`);
-      assert.deepEqual([deny[5], deny[6]], ['UNDECIDED', '/var'],
+      assert.deepEqual([deny[9], deny[10]], ['UNDECIDED', '/var'],
         `${label}: the deny row reached the store with no pin suggestion`);
       // The served row is still there and still carries none.
       const served = stored.find(r => r[2] === 'served');
-      assert.deepEqual([served[5], served[6]], ['', ''], label);
+      assert.deepEqual([served[9], served[10]], ['', ''], label);
       // `eventPaths` stays a DISTINCT-PATH list — it is a path list, and its one
       // consumer (the boot sweep) asks only whether it is empty.
       assert.deepEqual(report.eventPaths, ['/var'], label);
@@ -1009,7 +1024,7 @@ describe('the policy event harvest', () => {
         && (r[4] === '/run/user/1000' || r[4] === '/srv/app/f.txt'));
     assert.equal(rows.length, 2, JSON.stringify(rows));
     for (const r of rows)
-      assert.deepEqual([r[5], r[6]], ['', ''],
+      assert.deepEqual([r[9], r[10]], ['', ''],
         `${r[2]}/${r[3]} at ${r[4]} was given a pin suggestion, which points at the wrong repair`);
     // And the SENTENCE keeps the same split: the served row appears, without a
     // pin instruction attached to it.
@@ -1033,6 +1048,43 @@ describe('the policy event harvest', () => {
     assert.equal(describePolicyEvents([], '/store/events.log'), null);
   });
 
+  // PINS: THE `#` HEADER LINE IS SKIPPED, and the field test is not what skips
+  // it. The header CONTAINS TABS, so it splits into eight truthy-looking fields
+  // and would parse as a row whose "path" is `# cc-union events v2` — carried
+  // into `eventPaths`, into the operator sentence and into the store.
+  // DIES UNDER: dropping the `startsWith('#')` guard; moving it after the
+  // eight-field test (which the header passes).
+  test('the parser skips the daemon’s header line', () => {
+    const rows = parsePolicyEvents(EVENTS);
+    assert.equal(rows.length, 6, JSON.stringify(rows.map(r => r.path)));
+    assert.deepEqual(rows.filter(r => r.path.startsWith('#')), []);
+    // NON-VACUITY: the header really is in the fixture and really does have
+    // eight tab-separated fields, so the guard has something to do.
+    assert.ok(EVENTS.startsWith('# cc-union events v2\t'), EVENTS.slice(0, 40));
+    assert.ok(EVENT_HEADER.split('\t').length >= 8, EVENT_HEADER);
+  });
+
+  // PINS: THE DENIAL SENTENCE NAMES THE ACTING PROCESS as `comm[pid]`, which is
+  // the whole of what card 2026-0389 bought on this surface — `deny getattr
+  // /bin unpinned-fail-closed` could not tell the bootstrap shell dying at
+  // `exec` from a hook subprocess poking around. The PID is the calling thread's,
+  // which is what the trace can be joined on.
+  // DIES UNDER: dropping the identity from the sentence; printing the cmdline
+  // instead (unbounded — the 20-row cap exists to bound this line); printing a
+  // recorded absence as a plausible name rather than as its status.
+  test('the denial sentence names the acting process, and an absence as an absence', () => {
+    const line = describePolicyEvents(parsePolicyEvents(EVENTS), '/store/events.log');
+    assert.match(line, /\/lib\/x86_64-linux-gnu\/libtinfo\.so\.6 \(claude\[4243\]\)/, line);
+    assert.match(line, /\/usr\/bin\/git \(claude\[4242\]\)/, line);
+    // A `\!gone` comm prints its STATUS. Nothing in the sentence may look like
+    // a process name the reader could go hunting for.
+    assert.match(line, /\/srv\/app\/f\.txt \(gone\[5100\]\)/, line);
+    assert.doesNotMatch(line, /\\!gone/, line);
+    // AND NOT THE CMDLINE, which is unbounded and is one grep away in the file
+    // the sentence already names.
+    assert.doesNotMatch(line, /--print/, line);
+  });
+
   // PINS: the inline list is CAPPED at 20 ROWS and then says how many more and
   // where they are. Bounded output was the owner's requirement; a truncation
   // that did not say it truncated would be the same defect as a count.
@@ -1043,7 +1095,7 @@ describe('the policy event harvest', () => {
   // the wording says rows because that is what the code counts.
   // DIES UNDER: removing the cap; dropping the `+K more` clause.
   test('the line caps the inline rows at 20 and says where the rest are', () => {
-    const many = Array.from({ length: 31 }, (_, i) => `deny\tgetattr\t/etc/p${i}\tunpinned-fail-closed`).join('\n');
+    const many = Array.from({ length: 31 }, (_, i) => `deny\tgetattr\t/etc/p${i}\tunpinned-fail-closed\t7\t7\tclaude\tclaude`).join('\n');
     const line = describePolicyEvents(parsePolicyEvents(many), '/store/events.log');
     const named = [...line.matchAll(/\/etc\/p(\d+)/g)].map(m => Number(m[1]));
     // Each of the 20 appears twice — once in the refused list, once in the
@@ -1060,7 +1112,7 @@ describe('the policy event harvest', () => {
   test('a failed mount names the refused paths and the array to add them to', async () => {
     const rundir = await mkdtemp('cc-fuse-awaitmount-');
     const log = path.join(rundir, 'events.log');
-    await fs.writeFile(log, 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n');
+    await fs.writeFile(log, 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\t7\t7\tclaude\tclaude\n');
     let tornDown = false;
     const self = {
       id: 'inst-await', proc: null, _stderr: '  libtinfo.so.6: cannot open shared object file  ',
@@ -2319,7 +2371,7 @@ describe('the boot sweep', () => {
   // makes the filter's mutant distinguishable at all.
   test('a crashed session’s policy events reach the operator log', async () => {
     const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
-    const EVENTS = 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\n';
+    const EVENTS = 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\t7\t7\tclaude\tclaude\n';
     const sweep = async () => {
       const warned = [];
       const reports = await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => warned.push(a.join(' ')) } });

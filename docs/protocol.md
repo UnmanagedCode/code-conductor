@@ -501,14 +501,46 @@ A **file format with real readers**, which is why it is here and not only in [ar
 
 | | path | row |
 |---|---|---|
-| per session | `<rundir>/events.log`, written by the daemon (`CC_UNION_EVENTS`, `policy_event` in `policy.h`) | `<kind>\t<op>\t<path>\t<reason>` |
-| store-wide | `orchStoreRoot()/systems/fuse/events.log` (`fuseEventStore()`), appended by `runTeardown` immediately before the run directory is reclaimed | `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<suggested list>\t<suggested entry>` |
+| per session | `<rundir>/events.log`, written by the daemon (`CC_UNION_EVENTS`, `policy_event` in `policy.h`) | `<kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t<comm>\t<cmdline>` |
+| store-wide | `orchStoreRoot()/systems/fuse/events.log` (`fuseEventStore()`), appended by `runTeardown` immediately before the run directory is reclaimed | `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<pid>\t<tgid>\t<comm>\t<cmdline>\t<suggested list>\t<suggested entry>` |
 
-- **Deduped on `(path, reason)`**, never on the op and never on the kind. The kind is a **function of the reason** (set-compared against both C sources in both directions by `tests/fuse-union-policy.test.mjs`), so it is a derived field: on any emission the daemon can produce the two keys partition identically and the choice is **unobservable**. It is left out because a key should carry no derived field. **What that costs, named:** a defect emitting one reason under *both* kinds would collapse to a single row rather than showing two — acceptable only because the one-kind-per-reason property is checked at the **call sites**, where it is decidable, and never inferred from a row count here.
+**A `#` HEADER LINE IS WRITTEN ONCE**, when the daemon opens the session log (`main()`), naming the columns and the sampling caveat. **It contains tabs**, so a parser that only tests for N non-empty fields will read it as a row: `parsePolicyEvents` (`session.ts`) and the real gate's `eventsOf` both skip lines beginning with `#`.
+
+- **Deduped on `(path, reason, tgid)`**, never on the op and never on the kind, in the daemon and in the harvest — the two keys are the same by design, or the artifacts stop being comparable. **The tgid is load-bearing**: without it the first caller to reach a path wins the row and every later one is silently dropped, so the identity columns would answer *who asked* with *whoever happened to be first*. The kind is left out because it is a **function of the reason** (set-compared against both C sources in both directions by `tests/fuse-union-policy.test.mjs`), so on any emission the daemon can produce the two keys partition identically and that choice is **unobservable**. **What that costs, named:** a defect emitting one reason under *both* kinds would collapse to a single row rather than showing two — acceptable only because the one-kind-per-reason property is checked at the **call sites**, where it is decidable, and never inferred from a row count here.
 - **The last two store columns are for `deny`/`unpinned-fail-closed` rows only** and are empty otherwise: a pin does not fix an `unmarked-host-served` row, whose path already came from the host. `suggestPin` (`src/systems/fuse/tierTable.ts`) is the mapping.
 - **PATHS ONLY, never content.** A credential path may appear in either; a credential never does.
 - **Append-only, never rotated.** The store-wide file is the only record that outlives a session.
 - **Unstable by design**, like the rest of cc's surface: `enum ev_kind` and the reason set change with their callers.
+
+### The identity columns (card 2026-0389)
+
+`pid` is the **calling thread** (`fuse_get_context()->pid`, which S1 measured to be a TID); `tgid` is its thread group — the id the mark, the resolution cache and the dedupe key are all on, and the id `CC_FUSE_TRACE` rows can be joined on. Both are logged because neither substitutes for the other. `comm` and `cmdline` are read from the **tgid**.
+
+**IDENTITY IS SAMPLED AT POLICY TIME**, after the decision and after the dedupe — so it is paid once per distinct row, and it can never change an answer. `exec(2)` replaces `comm`, `cmdline` and `exe` while leaving pid, tgid and start time untouched, so **no validation can make the sample authoritative for the op that triggered it**: a row may name what the process *became*. The header line says so in the file.
+
+**ESCAPING — `policy_escape` in `policy.h`, applied to `path`, `comm` and `cmdline`.** `op` and `reason` are C string literals and need none. A `/proc/<pid>/cmdline` is NUL-separated and a `bash -c` argv carries the whole script, newlines included; the instrument this daemon was forked from produced **1662 unparsable rows out of ~3000** for exactly that reason.
+
+| input byte | output |
+|---|---|
+| `\` | `\\` — **handled first**, or the round trip collapses |
+| `\t` `\n` `\r` | `\t` `\n` `\r` (two chars each) |
+| `0x00` | `\0` — **and this is the argv separator** |
+| other `< 0x20`, `0x7f` | `\xHH`, lowercase hex |
+| `0x80`–`0xff` | verbatim (a UTF-8 path stays readable and still cannot break the parse) |
+| everything else | verbatim |
+
+`decodeEventField` (`src/systems/fuse/session.ts`) is the **only** inverse; `parsePolicyEvents` splits a decoded `cmdline` on `U+0000` into `argv`. The two implementations are cross-checked against real daemon output by `tests/fuse-union-policy.test.mjs`'s `argv-vectors` round trip.
+
+**RECORDED ABSENCES.** The escaper never emits `\` followed by `!`, so `\!` is an unforgeable sentinel namespace. A missing identity is one of these, never a value:
+
+| sentinel | meaning |
+|---|---|
+| `\!gone` | the `/proc` entry was not there — the process exited between the op and the sample |
+| `\!unreadable` | it was there and could not be read (`EACCES`, `EPERM`, a racing reap) |
+| `\!empty` | the read succeeded and returned zero bytes (a kernel thread, or a zombie) |
+| `\!truncated` | a **suffix** on an otherwise-valid encoded field that hit the cap |
+
+**`cmdline` IS CAPPED AT `POLICY_CMDLINE_MAX` (`policy.h`, 4096 bytes raw).** A cmdline can reach `ARG_MAX`; a log row cannot. A read that fills the buffer gets the `\!truncated` suffix and keeps the bytes it did read, so a reader gets *argv-so-far, truncated* rather than a short argv it would read as complete. Round-trip is exact **up to the cap**, and truncation is never silent.
 
 **EXACTLY TWO KINDS, and `R4`'s whole filter is `kind === 'deny'`** — a third would silently fall out of it and stop being checked at all. `enum ev_kind { EV_DENY = 0, EV_SERVED }`, rendered by `ev_kind_name`:
 
@@ -531,3 +563,4 @@ A **file format with real readers**, which is why it is here and not only in [ar
 | `self-recursion` | `served` | the daemon's own thread group at a project path — served from `host_fd`, **returns 0**. A liveness precondition, not a routing policy |
 | `pinned-children-truncated` | `served` | a `readdir` past `MAX_PINNED_CHILDREN`; the listing **succeeds** with a name dropped |
 | `unmarked-host-served` | `served` | an unmarked caller was routed to the host at an unpinned path (card 2026-0382). Fires on the **substitution**, whatever the host read then does — the host's own ENOENT is not a policy event and `route()` cannot know it. ~20 per shell startup; 535 rows over one real-CLI turn |
+| `cwd-traversal-served` | `served` | `policy_cwd_exempt` GRANTED an unmarked caller a `getattr` on a directory component of the CLI's cwd (card 2026-0389). Fires **after the whole conjunction**, so a refused traversal writes nothing. The exemption was silent before this, so no capture could show which process needed which link |

@@ -121,9 +121,12 @@
  *                        chain an unmarked caller may traverse (required)
  *   CC_UNION_MNT         the mountpoint, hidden implicitly (recursion guard)
  *   CC_UNION_TRACE       every path the kernel asks about, with caller identity
- *   CC_UNION_EVENTS      the policy event log — <kind>\t<op>\t<path>\t<reason>,
- *                        the instrument the pin list is derived from, and the
- *                        channel whose `deny` rows must be empty by the end
+ *   CC_UNION_EVENTS      the policy event log — a `#` header line, then
+ *                        <kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t
+ *                        <comm>\t<cmdline>. The instrument the pin list is
+ *                        derived from, and the channel whose `deny` rows must
+ *                        be empty by the end. Path, comm and cmdline are
+ *                        `policy_escape`d; identity is sampled at POLICY TIME.
  */
 #define FUSE_USE_VERSION 31
 #define _GNU_SOURCE
@@ -197,36 +200,33 @@ static void read_exe(pid_t pid, char *out, size_t n)
 }
 
 /*
- * THE COLUMN THAT ACTUALLY ATTRIBUTES AN OP. exe is the INTERPRETER for
- * anything script-shaped: a PreToolUse hook and the Bash forwarder are both
- * /bin/bash, and telling them apart is the entire containment question. The
- * kernel builds argv for a shebang script as [interpreter, script, args...],
- * so the script's own path is in the cmdline and nowhere else.
+ * THE TRACE'S CMDLINE, AND THE RENDERING IS THIS FILE'S ALONE.
+ *
+ * THE READ ITSELF IS policy.h's (`policy_proc.cmdline`), shared with the event
+ * log, because two readers of /proc for one fact is how they come to disagree.
+ * What is NOT shared is what happens to the bytes: NULs become spaces here --
+ * and so does EVERY other control character. A `bash -c` cmdline carries the
+ * whole script, newlines included, and an embedded newline splits one trace row
+ * into many: the first version of this instrument produced 1662 unparsable rows
+ * out of ~3000 for exactly that reason, and the analysis silently dropped them.
+ *
+ * IT IS LOSSY AND THAT IS DELIBERATE HERE. The trace is line-counted
+ * (tests/fuse-trace-count.mjs parses this format) and no consumer recovers argv
+ * out of it; the EVENT LOG is where argv fidelity is owed, and `policy_escape`
+ * gives it losslessly there. exe is the INTERPRETER for anything script-shaped
+ * -- a PreToolUse hook and the Bash forwarder are both /bin/bash -- so the
+ * script's own path is in the cmdline and nowhere else, which is why the trace
+ * carries one at all.
  */
-static void read_cmdline(pid_t pid, char *out, size_t n)
+static void trace_cmdline(pid_t pid, char *out, size_t n)
 {
-	char buf[64];
-	int f;
-	ssize_t k, i;
+	ssize_t k = policy_proc.cmdline(pid, out, n);
+	ssize_t i;
 
-	snprintf(out, n, "<gone>");
-	snprintf(buf, sizeof(buf), "/proc/%d/cmdline", (int)pid);
-	if ((f = open(buf, O_RDONLY)) == -1)
-		return;
-	k = read(f, out, n - 1);
-	close(f);
 	if (k <= 0) {
 		snprintf(out, n, "<gone>");
 		return;
 	}
-	out[k] = '\0';
-	/*
-	 * NULs become spaces -- and so does EVERY other control character. A
-	 * `bash -c` cmdline carries the whole script, newlines included, and an
-	 * embedded newline splits one trace row into many: the first version of
-	 * this instrument produced 1662 unparsable rows out of ~3000 for exactly
-	 * that reason, and the analysis silently dropped them.
-	 */
 	for (i = 0; i < k; i++)
 		if ((unsigned char)out[i] < 0x20 || (unsigned char)out[i] == 0x7f)
 			out[i] = ' ';
@@ -264,7 +264,7 @@ static void resolve_ids(pid_t pid, pid_t *tgid_out, pid_t *ppid_out,
 				continue;
 			}
 			read_exe(e->tgid > 0 ? e->tgid : pid, e->exe, sizeof(e->exe));
-			read_cmdline(e->tgid > 0 ? e->tgid : pid, e->cmd, sizeof(e->cmd));
+			trace_cmdline(e->tgid > 0 ? e->tgid : pid, e->cmd, sizeof(e->cmd));
 			tgid = e->tgid; ppid = e->ppid;
 			start = e->start; exe = e->exe; cmd = e->cmd;
 			break;
@@ -287,7 +287,7 @@ static void resolve_ids(pid_t pid, pid_t *tgid_out, pid_t *ppid_out,
 			}
 			e->start = policy_proc.starttime(pid);
 			read_exe(e->tgid > 0 ? e->tgid : pid, e->exe, sizeof(e->exe));
-			read_cmdline(e->tgid > 0 ? e->tgid : pid, e->cmd, sizeof(e->cmd));
+			trace_cmdline(e->tgid > 0 ? e->tgid : pid, e->cmd, sizeof(e->cmd));
 			tgid = e->tgid; ppid = e->ppid;
 			start = e->start; exe = e->exe; cmd = e->cmd;
 			break;
@@ -301,20 +301,13 @@ static void resolve_ids(pid_t pid, pid_t *tgid_out, pid_t *ppid_out,
 	if (cmd_out)   *cmd_out   = cmd;
 }
 
-static void read_comm(pid_t pid, char *out, size_t n)
+/* The trace's comm, over the same shared reader; `<gone>` where the event log
+ * would write a `\!` sentinel, because this format has no sentinel namespace
+ * and nothing parses it. */
+static void trace_comm(pid_t pid, char *out, size_t n)
 {
-	char buf[64];
-	FILE *f;
-
-	snprintf(out, n, "<gone>");
-	snprintf(buf, sizeof(buf), "/proc/%d/comm", (int)pid);
-	if ((f = fopen(buf, "r")) != NULL) {
-		if (fgets(out, n, f)) {
-			char *nl = strchr(out, '\n');
-			if (nl) *nl = '\0';
-		}
-		fclose(f);
-	}
+	if (policy_proc.comm(pid, out, n) < 0)
+		snprintf(out, n, "<gone>");
 }
 
 /*
@@ -366,7 +359,7 @@ static void tr(const char *op, const char *path, const char *tier, unsigned cfla
 		return;
 	ctx = fuse_get_context();
 	resolve_ids((pid_t)ctx->pid, &tgid, &ppid, &start, &exe, &cmd);
-	read_comm((pid_t)ctx->pid, comm, sizeof(comm));
+	trace_comm((pid_t)ctx->pid, comm, sizeof(comm));
 
 	pthread_mutex_lock(&trace_mu);
 	fprintf(trace_fp,
@@ -596,7 +589,8 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	 * only where the answer can differ. */
 	if (policy_tier_is_caller_sensitive(r->tier))
 		r->tier = policy_caller_tier(op, path, r->tier,
-			policy_is_marked_tid((pid_t)fuse_get_context()->pid));
+			policy_is_marked_tid((pid_t)fuse_get_context()->pid),
+			(pid_t)fuse_get_context()->pid);
 
 	switch (r->tier) {
 	case T_HIDE:
@@ -619,7 +613,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 			/* Liveness, not policy: the one answer that cannot
 			 * re-enter this daemon. */
 			r->fd = host_fd;
-			policy_event(EV_SERVED, op, path, "self-recursion");
+			policy_event(EV_SERVED, op, path, "self-recursion", (pid_t)fuse_get_context()->pid);
 			return 0;
 		}
 		/* THE CWD-CHAIN EXEMPTION — policy.h owns the whole
@@ -644,7 +638,7 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	case T_FAIL:
 		break;
 	}
-	policy_event(EV_DENY, op, path, "unpinned-fail-closed");
+	policy_event(EV_DENY, op, path, "unpinned-fail-closed", (pid_t)fuse_get_context()->pid);
 	return -ENOENT;
 }
 
@@ -834,7 +828,7 @@ static void pinned_children_collect(void *ctx, const char *name, const char *ful
 		/* AN HONEST BOUND. Silently dropping names would lose them from
 		 * `ls` while `stat` kept working — this function's own defect,
 		 * at scale. The log is the instrument that would show it. */
-		policy_event(EV_SERVED, "readdir", full, "pinned-children-truncated");
+		policy_event(EV_SERVED, "readdir", full, "pinned-children-truncated", (pid_t)fuse_get_context()->pid);
 		return;
 	}
 	/* Bounded copies rather than snprintf: both sources are already
@@ -1032,7 +1026,8 @@ static int push_mirror_flags(const char *op, const char *path, uint8_t flags)
 	rc = ccu_call(CCU_DIRTY, flags, path);
 	if (rc)
 		policy_event(EV_DENY, op, path,
-			     (flags & CCU_FLAG_REMOVED) ? "dirty-remove-refused" : "dirty-push-refused");
+			     (flags & CCU_FLAG_REMOVED) ? "dirty-remove-refused" : "dirty-push-refused",
+			     (pid_t)fuse_get_context()->pid);
 	return rc;
 }
 
@@ -1075,7 +1070,7 @@ static int refuse_unreconcilable(const char *op, const char *path, enum tier t)
 	int rc = policy_unreconcilable(t);
 
 	if (rc)
-		policy_event(EV_DENY, op, path, "not-reconcilable");
+		policy_event(EV_DENY, op, path, "not-reconcilable", (pid_t)fuse_get_context()->pid);
 	return rc;
 }
 
@@ -1180,7 +1175,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 	tr("rename", to, tier_name(rt.tier), rt.intent);
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) goto give_up;
 	if (rf.fd != rt.fd) {
-		policy_event(EV_DENY, "rename", to, "xdev-rename");
+		policy_event(EV_DENY, "rename", to, "xdev-rename", (pid_t)fuse_get_context()->pid);
 		rc = -EXDEV;
 		goto give_up;
 	}
@@ -1198,7 +1193,7 @@ static int pt_rename(const char *from, const char *to, unsigned int flags)
 		struct stat fst;
 
 		if (fstatat(rf.fd, rf.rp, &fst, AT_SYMLINK_NOFOLLOW) == 0 && S_ISDIR(fst.st_mode)) {
-			policy_event(EV_DENY, "rename", from, "not-reconcilable");
+			policy_event(EV_DENY, "rename", from, "not-reconcilable", (pid_t)fuse_get_context()->pid);
 			rc = -EOPNOTSUPP;
 			goto give_up;
 		}
@@ -1243,7 +1238,7 @@ static int pt_link(const char *from, const char *to)
 	if ((rc = policy_mutation_check(rf.tier)) || (rc = policy_mutation_check(rt.tier))) return rc;
 	if ((rc = refuse_unreconcilable("link", to, rt.tier)) != 0) return rc;
 	if (rf.fd != rt.fd) {
-		policy_event(EV_DENY, "link", to, "xdev-rename");
+		policy_event(EV_DENY, "link", to, "xdev-rename", (pid_t)fuse_get_context()->pid);
 		return -EXDEV;
 	}
 	cred_enter();
@@ -1766,6 +1761,18 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 		setvbuf(event_fp, NULL, _IOLBF, 0);
+		/*
+		 * THE COLUMNS AND THE ONE CAVEAT, IN THE FILE ITSELF. This log
+		 * outlives the run directory (cc harvests it into the store) and
+		 * is read by an operator or an agent who has not read
+		 * docs/protocol.md. `#` so both parsers skip it.
+		 */
+		fprintf(event_fp,
+			"# cc-union events v2\tkind\top\tpath\treason\tpid\ttgid\tcomm\tcmdline"
+			" — identity is sampled at POLICY TIME; the process may have exec'd"
+			" since, and comm/cmdline would then name what it became."
+			" \\!gone / \\!unreadable / \\!empty / \\!truncated are recorded"
+			" absences, not values.\n");
 	}
 
 	fprintf(stderr, "cc-union: host=%s mirror=%s pins=%zu synth=%zu "

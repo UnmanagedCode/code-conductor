@@ -10,8 +10,9 @@
  * THE BOUNDARY IS "WHAT CAN BE DRIVEN DETERMINISTICALLY", not "what has no
  * includes". Where the policy needs the kernel it takes an injected reader:
  *
- *   policy_proc   /proc field-22 starttime and TID->TGID, injected so pid reuse
- *                 and TID/TGID confusion are reproducible without forking.
+ *   policy_proc   /proc field-22 starttime, TID->TGID, comm and cmdline,
+ *                 injected so pid reuse, TID/TGID confusion and an argv full of
+ *                 NULs and newlines are reproducible without forking.
  *   policy_clock  monotonic milliseconds, injected so the resolution cache's
  *                 TTL is proven without sleeping.
  *   ccu_xport     the control-channel round trip, injected so the frame codec
@@ -468,17 +469,43 @@ static inline int policy_unreconcilable(enum tier t)
 
 /* ── caller identity, over an injected /proc reader ─────────────────────── */
 
+/*
+ * WHAT AN IDENTITY READER RETURNS: the byte count it wrote, or one of these.
+ * The count and the two failures are DIFFERENT FACTS and the event log records
+ * them as different values — a field that read as a value would say "this
+ * process is called <gone>".
+ */
+#define POLICY_PROC_GONE       (-1)     /* the /proc entry was not there */
+#define POLICY_PROC_UNREADABLE (-2)     /* it was, and could not be read */
+
+/* A cmdline can reach ARG_MAX; a log row cannot. Past this the field carries
+ * the bytes it did read and says so — see policy_event_field. */
+#define POLICY_CMDLINE_MAX 4096
+
 struct proc_reader {
 	/* /proc/<pid>/stat field 22, the process start time in clock ticks. */
 	unsigned long long (*starttime)(pid_t);
 	/* /proc/<pid>/status Tgid, i.e. the thread's thread-group leader. */
 	pid_t              (*tgid)(pid_t);
+	/* /proc/<pid>/comm and /proc/<pid>/cmdline, NUL-terminated in `out`.
+	 * Both return the byte count or a POLICY_PROC_* status. RAW: the cmdline
+	 * keeps its NUL separators and every control byte, because the caller
+	 * that renders it decides how — `policy_event` escapes losslessly, and
+	 * union.c's `tr()` flattens to spaces for a trace nothing parses argv
+	 * out of. Two readers for one fact is how they come to disagree, so
+	 * there is one, and the RENDERING is what differs. */
+	int                (*comm)(pid_t, char *, size_t);
+	int                (*cmdline)(pid_t, char *, size_t);
 };
 
 static inline unsigned long long policy_real_starttime(pid_t pid);
 static inline pid_t              policy_real_tgid(pid_t pid);
+static inline int                policy_real_comm(pid_t, char *, size_t);
+static inline int                policy_real_cmdline(pid_t, char *, size_t);
 
-static struct proc_reader policy_proc = { policy_real_starttime, policy_real_tgid };
+static struct proc_reader policy_proc = {
+	policy_real_starttime, policy_real_tgid, policy_real_comm, policy_real_cmdline
+};
 
 /*
  * Field 22 of /proc/<pid>/stat is the process start time in clock ticks. It is
@@ -536,6 +563,62 @@ static inline pid_t policy_real_tgid(pid_t pid)
 		}
 	fclose(f);
 	return tgid;
+}
+
+/* ENOENT IS THE PROCESS BEING GONE and everything else is a failure to read it,
+ * and the two are separated here rather than at the caller: only this function
+ * knows which syscall failed. */
+static inline int policy_real_comm(pid_t pid, char *out, size_t n)
+{
+	char buf[64];
+	size_t len;
+	FILE *f;
+
+	if (n == 0)
+		return POLICY_PROC_UNREADABLE;
+	out[0] = '\0';
+	snprintf(buf, sizeof(buf), "/proc/%d/comm", (int)pid);
+	if (!(f = fopen(buf, "r")))
+		return errno == ENOENT ? POLICY_PROC_GONE : POLICY_PROC_UNREADABLE;
+	if (!fgets(out, (int)n, f)) {
+		fclose(f);
+		return 0;                       /* readable and empty */
+	}
+	fclose(f);
+	len = strlen(out);
+	while (len > 0 && (out[len - 1] == '\n' || out[len - 1] == '\r'))
+		out[--len] = '\0';
+	return (int)len;
+}
+
+/*
+ * THE COLUMN THAT ACTUALLY ATTRIBUTES AN OP. `exe` is the INTERPRETER for
+ * anything script-shaped — a PreToolUse hook and the Bash forwarder are both
+ * /bin/bash — so the script's own path is in the cmdline and nowhere else.
+ *
+ * RAW, NUL SEPARATORS AND ALL. The separator IS the argv boundary, so a reader
+ * that flattened it here would destroy the one thing the field is for. `n - 1`
+ * so the result is also usable as a C string; the count is what carries the
+ * embedded NULs.
+ */
+static inline int policy_real_cmdline(pid_t pid, char *out, size_t n)
+{
+	char buf[64];
+	ssize_t k;
+	int f;
+
+	if (n == 0)
+		return POLICY_PROC_UNREADABLE;
+	out[0] = '\0';
+	snprintf(buf, sizeof(buf), "/proc/%d/cmdline", (int)pid);
+	if ((f = open(buf, O_RDONLY)) == -1)
+		return errno == ENOENT ? POLICY_PROC_GONE : POLICY_PROC_UNREADABLE;
+	k = read(f, out, n - 1);
+	close(f);
+	if (k < 0)
+		return POLICY_PROC_UNREADABLE;
+	out[k] = '\0';
+	return (int)k;
 }
 
 /* ── the CLAUDE mark ────────────────────────────────────────────────────── */
@@ -994,6 +1077,96 @@ static inline const char *ev_kind_name(enum ev_kind k)
 	return "deny";
 }
 
+/*
+ * ONE ESCAPER FOR EVERY FIELD THAT CAN CARRY AN ARBITRARY BYTE — the path, the
+ * comm and the cmdline. The row is TAB-SEPARATED and NEWLINE-TERMINATED, so a
+ * field holding either destroys it: the instrument this daemon was forked from
+ * produced 1662 unparsable rows out of ~3000 because `/proc/<pid>/cmdline` is
+ * NUL-separated and a `bash -c` argv carries the whole script, newlines
+ * included, and the analysis silently dropped them. The path is escaped by the
+ * same function rather than by a second rule — a path may contain a tab today.
+ *
+ *   \\ → \\\\          the escape character itself, HANDLED FIRST: escaping the
+ *                    tab first would make a literal `\` followed by `t` decode
+ *                    back as a tab.
+ *   \t \n \r        the three bytes that split a row or a field
+ *   NUL → \0        the argv separator, which is what makes `argv` recoverable
+ *   other < 0x20,
+ *   0x7f            \xHH, lowercase
+ *   0x80–0xff       VERBATIM, so a UTF-8 path stays readable and still cannot
+ *                   break a tab/line parse
+ *
+ * `\` IS NEVER FOLLOWED BY `!` in any output above, which is what makes `\!` a
+ * free sentinel namespace for the recorded absences below — unforgeable by
+ * construction rather than by hoping no argv spells one.
+ *
+ * `len` IS COUNTED, NEVER strlen'd: a cmdline's NULs are content.
+ * Returns 1 if the whole input fit, 0 if it was cut short (terminated either
+ * way, so the caller can append its own marker).
+ */
+static inline int policy_escape(char *dst, size_t cap, const char *src, size_t len)
+{
+	static const char hex[] = "0123456789abcdef";
+	size_t o = 0, i;
+
+	if (cap == 0)
+		return 0;
+	for (i = 0; i < len; i++) {
+		unsigned char c = (unsigned char)src[i];
+		char esc[4];
+		size_t w;
+
+		if      (c == '\\') { esc[0] = '\\'; esc[1] = '\\'; w = 2; }
+		else if (c == '\t') { esc[0] = '\\'; esc[1] = 't';  w = 2; }
+		else if (c == '\n') { esc[0] = '\\'; esc[1] = 'n';  w = 2; }
+		else if (c == '\r') { esc[0] = '\\'; esc[1] = 'r';  w = 2; }
+		else if (c == '\0') { esc[0] = '\\'; esc[1] = '0';  w = 2; }
+		else if (c < 0x20 || c == 0x7f) {
+			esc[0] = '\\'; esc[1] = 'x';
+			esc[2] = hex[c >> 4]; esc[3] = hex[c & 0xf]; w = 4;
+		} else { esc[0] = (char)c; w = 1; }
+		if (o + w >= cap) { dst[o] = '\0'; return 0; }
+		memcpy(dst + o, esc, w);
+		o += w;
+	}
+	dst[o] = '\0';
+	return 1;
+}
+
+/*
+ * AN ABSENT FIELD IS RECORDED, NEVER INFERRED, AND NEVER LOOKS LIKE A VALUE.
+ *
+ *   \!gone         the /proc entry was not there — the process exited between
+ *                  the op and the sample
+ *   \!unreadable   it was there and could not be read
+ *   \!empty        the read succeeded and returned nothing (a kernel thread,
+ *                  or a zombie)
+ *   \!truncated    a SUFFIX on an otherwise-valid encoded field that hit the
+ *                  cap, so a reader gets "argv-so-far, truncated" rather than
+ *                  a short argv it would read as complete
+ *
+ * `capped` is the caller's "the reader filled its buffer", which the encoder
+ * cannot see; a field too long to ENCODE is marked by the same suffix.
+ */
+#define POLICY_TRUNC_SUFFIX "\\!truncated"
+
+static inline void policy_event_field(char *dst, size_t cap, const char *raw,
+				      int n, int capped)
+{
+	size_t room;
+
+	if (n == POLICY_PROC_GONE) { memcpy(dst, "\\!gone", sizeof("\\!gone")); return; }
+	if (n < 0)  { memcpy(dst, "\\!unreadable", sizeof("\\!unreadable")); return; }
+	if (n == 0) { memcpy(dst, "\\!empty", sizeof("\\!empty")); return; }
+	room = cap - sizeof(POLICY_TRUNC_SUFFIX) + 1;
+	if (!policy_escape(dst, room, raw, (size_t)n) || capped)
+		memcpy(dst + strlen(dst), POLICY_TRUNC_SUFFIX, sizeof(POLICY_TRUNC_SUFFIX));
+}
+
+/* A field's worst case is four bytes out per byte in (`\xHH`), plus the
+ * terminator and the truncation suffix. */
+#define POLICY_ESC_CAP(n) ((n) * 4 + sizeof(POLICY_TRUNC_SUFFIX) + 1)
+
 static FILE           *event_fp = NULL;
 static pthread_mutex_t event_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -1018,34 +1191,69 @@ static inline int event_dup(const char *key)
 }
 
 /*
- * THE DEDUPE KEY IS (path, reason) AND NOT (kind, path, reason), AND THE CHOICE
- * IS UNOBSERVABLE RATHER THAN LOAD-BEARING — said plainly, because the opposite
- * was claimed here and no mutant could have tested it.
+ * THE DEDUPE KEY IS (path, reason, tgid), AND THE TGID IS IN IT BECAUSE
+ * ATTRIBUTION IS THE POINT OF THE ROW (card 2026-0389).
  *
- * The kind is a FUNCTION of the reason: every reason maps to exactly one kind,
- * derived from every `policy_event(` call site in both C sources and
- * set-compared in both directions by `tests/fuse-union-policy.test.mjs`. So on
- * any emission this daemon can produce the two keys partition identically, and
- * adding the kind could only split a row that is already unique. It is left out
- * because a key should carry no derived field.
+ * Without it the key is (path, reason) and the FIRST caller to reach a path
+ * wins the row while every later one is silently dropped — so the identity
+ * columns would answer "who asked?" with "whoever happened to be first", which
+ * is worse than not answering. Volume stays bounded, by distinct (path × thread
+ * group); `event_dup` already degrades gracefully past EVENT_SLOTS/2.
  *
- * WHAT THAT COSTS, NAMED: a defect emitting one reason under BOTH kinds would
- * collapse to a single row here rather than showing two. That is acceptable
- * only because the one-kind-per-reason property is checked AT THE CALL SITES,
- * where it is decidable from the source, and never inferred from a row count in
- * this log.
+ * THE KIND IS STILL OUT, AND THAT CHOICE IS UNOBSERVABLE rather than
+ * load-bearing. The kind is a FUNCTION of the reason: every reason maps to
+ * exactly one kind, derived from every `policy_event(` call site in both C
+ * sources and set-compared in both directions by
+ * `tests/fuse-union-policy.test.mjs`. So on any emission this daemon can
+ * produce the two keys partition identically, and adding the kind could only
+ * split a row that is already unique. WHAT THAT COSTS, NAMED: a defect emitting
+ * one reason under BOTH kinds would collapse to a single row rather than
+ * showing two — acceptable only because the one-kind-per-reason property is
+ * checked AT THE CALL SITES, where it is decidable from the source.
+ *
+ * `tid` IS THE CALLING THREAD — union.c hands every site
+ * `fuse_get_context()->pid`, which S1 measured to be a TID. BOTH ids are
+ * logged, because neither substitutes for the other: the TID is what the trace
+ * keys on, and the TGID is what the mark, the resolution cache and this key are
+ * on. `comm` and `cmdline` are read from the THREAD GROUP, matching
+ * `resolve_ids`.
+ *
+ * IDENTITY IS SAMPLED AT POLICY TIME, AFTER THE DECISION AND AFTER THE DEDUPE.
+ * It cannot change any answer — there is no error return and no branch on it —
+ * and it is paid once per distinct row rather than once per op. `exec(2)`
+ * replaces comm and cmdline while leaving pid, tgid and start time untouched,
+ * so no validation can make the sample authoritative for the op that triggered
+ * it; the header line written by `main()` says so in the file itself.
  */
 static inline void policy_event(enum ev_kind kind, const char *op,
-				const char *path, const char *reason)
+				const char *path, const char *reason, pid_t tid)
 {
-	char key[PATH_MAX + 64];
+	char key[PATH_MAX + 96];
+	char rawcomm[64], rawcmd[POLICY_CMDLINE_MAX];
+	char epath[POLICY_ESC_CAP(PATH_MAX)];
+	char ecomm[POLICY_ESC_CAP(sizeof(rawcomm))];
+	char ecmd[POLICY_ESC_CAP(sizeof(rawcmd))];
+	pid_t tgid;
+	int cn, mn;
 
 	if (!event_fp)
 		return;
-	snprintf(key, sizeof(key), "%s\t%s", path, reason);
+	tgid = policy_proc.tgid(tid);
+	snprintf(key, sizeof(key), "%s\t%s\t%d", path, reason, (int)tgid);
 	pthread_mutex_lock(&event_mu);
-	if (!event_dup(key))
-		fprintf(event_fp, "%s\t%s\t%s\t%s\n", ev_kind_name(kind), op, path, reason);
+	if (!event_dup(key)) {
+		mn = policy_proc.comm(tgid, rawcomm, sizeof(rawcomm));
+		cn = policy_proc.cmdline(tgid, rawcmd, sizeof(rawcmd));
+		/* `epath` cannot overflow — a path is PATH_MAX-bounded and the
+		 * buffer holds the worst-case encoding of one. */
+		policy_escape(epath, sizeof(epath), path, strlen(path));
+		policy_event_field(ecomm, sizeof(ecomm), rawcomm, mn, 0);
+		policy_event_field(ecmd, sizeof(ecmd), rawcmd, cn,
+				   cn == (int)sizeof(rawcmd) - 1);
+		fprintf(event_fp, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n",
+			ev_kind_name(kind), op, epath, reason,
+			(int)tid, (int)tgid, ecomm, ecmd);
+	}
 	pthread_mutex_unlock(&event_mu);
 }
 
@@ -1143,11 +1351,13 @@ static inline int policy_tier_is_caller_sensitive(enum tier t)
  * table over the tier enum and the mark, identity everywhere except
  * (unmarked, T_FAIL).
  *
- * `op` AND `path` ARE FOR THE LOG ROW ALONE, and keeping them out of the
- * DECISION is a property to preserve: an op-sensitive map would give
+ * `op`, `path` AND `tid` ARE FOR THE LOG ROW ALONE, and keeping them out of
+ * the DECISION is a property to preserve: an op-sensitive map would give
  * `pt_rename`'s and `pt_link`'s two routed paths different answers and
  * manufacture an EXDEV that S2 §8 already measured as a footgun (`mv` masks
- * it, `rename(2)` does not).
+ * it, `rename(2)` does not). `tid` is NOT a second mark check — the caller
+ * already resolved that into `marked`, and re-deriving it here would give one
+ * function two answers for one caller.
  *
  * THE ROW FIRES ON THE SUBSTITUTION, NOT ON THE OUTCOME of the host read that
  * follows — which is also all this function can know. It therefore means "an
@@ -1157,11 +1367,11 @@ static inline int policy_tier_is_caller_sensitive(enum tier t)
  * on (path, reason)).
  */
 static inline enum tier policy_caller_tier(const char *op, const char *path,
-					   enum tier t, int marked)
+					   enum tier t, int marked, pid_t tid)
 {
 	if (t != T_FAIL || marked)
 		return t;
-	policy_event(EV_SERVED, op, path, "unmarked-host-served");
+	policy_event(EV_SERVED, op, path, "unmarked-host-served", tid);
 	return T_HOST;
 }
 
@@ -1378,7 +1588,21 @@ static inline int policy_cwd_exempt(const char *op, const char *path, pid_t tid)
 	/* MARKED CALLERS ARE NOT EXEMPTED — they get the real routed answer, from
 	 * the mirror, with its control frame. Last, because it is the only step
 	 * that reads /proc. */
-	return !policy_is_marked_tid(tid);
+	if (policy_is_marked_tid(tid))
+		return 0;
+	/*
+	 * THE GRANT IS RECORDED, AND BEFORE THIS THE EXEMPTION WAS COMPLETELY
+	 * SILENT — so no capture could show WHICH PROCESS needed WHICH LINK of
+	 * the chain, which is the question the traversal bound has to be decided
+	 * from (card 2026-0389). `served`: the op succeeds, off the tier table's
+	 * script. Deduped like every row, so the volume is bounded by chain
+	 * length × thread group.
+	 *
+	 * AFTER THE WHOLE CONJUNCTION, never before: a row on a refused traversal
+	 * would report an exemption that did not happen.
+	 */
+	policy_event(EV_SERVED, op, path, "cwd-traversal-served", tid);
+	return 1;
 }
 
 /*
@@ -1452,7 +1676,7 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 	 * the mark it no longer holds.
 	 */
 	if (!mark_of(tgid)) {
-		policy_event(EV_DENY, op, path, "unmarked-project-denied");
+		policy_event(EV_DENY, op, path, "unmarked-project-denied", tid);
 		return -ENOENT;
 	}
 
@@ -1480,9 +1704,9 @@ static inline int policy_project_route(const char *op, const char *path, pid_t t
 	/* Three distinct reasons, because the event log is what the pin list is
 	 * DERIVED from and "the remote does not have it" is a different finding
 	 * from "cc would not carry it" and from "cc could not be reached". */
-	if (rc == -EIO)         policy_event(EV_DENY, op, path, "control-unavailable");
-	else if (rc == -ENOENT) policy_event(EV_DENY, op, path, "remote-absent");
-	else if (rc)            policy_event(EV_DENY, op, path, "control-refused");
+	if (rc == -EIO)         policy_event(EV_DENY, op, path, "control-unavailable", tid);
+	else if (rc == -ENOENT) policy_event(EV_DENY, op, path, "remote-absent", tid);
+	else if (rc)            policy_event(EV_DENY, op, path, "control-refused", tid);
 	return rc;
 }
 

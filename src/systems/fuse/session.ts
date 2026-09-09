@@ -105,20 +105,90 @@ export interface TeardownReport {
   notes: string[];
 }
 
-// One row of the daemon's event log: `<kind>\t<op>\t<path>\t<reason>`.
-export interface PolicyEventRow { kind: string; op: string; path: string; reason: string }
+// ONE /proc-SOURCED FIELD OF A ROW — the decoded value, or a RECORDED ABSENCE.
+// `value` is null exactly when the daemon wrote a `\!` sentinel instead of a
+// value, so a missing identity can never be read as a process called `<gone>`.
+// `raw` is the daemon's own escaped bytes, kept so the harvest can write the
+// store in the daemon's format without a second encoder in this language.
+export interface EventField {
+  raw: string;
+  value: string | null;
+  argv?: string[];
+  status: 'ok' | 'gone' | 'unreadable' | 'empty' | 'truncated';
+}
+
+// One row of the daemon's event log:
+// `<kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t<comm>\t<cmdline>`.
+// `pid` is the CALLING THREAD and `tgid` its thread group — the id the mark and
+// the daemon's dedupe key are on. `pathRaw` is the escaped spelling, for the
+// same reason `EventField.raw` exists.
+export interface PolicyEventRow {
+  kind: string; op: string; path: string; pathRaw: string; reason: string;
+  pid: number; tgid: number; comm: EventField; cmdline: EventField;
+}
+
+// THE INVERSE OF `policy_escape` (policy.h), and the ONLY one — the C encoder
+// and this decoder are cross-checked against each other on real daemon output
+// by tests/fuse-union-policy.test.mjs's argv round trip, rather than each
+// against its own transcription of the format.
+function decodeEscapes(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== '\\') { out += s[i]; continue; }
+    const n = s[++i];
+    if (n === '\\') out += '\\';
+    else if (n === 't') out += '\t';
+    else if (n === 'n') out += '\n';
+    else if (n === 'r') out += '\r';
+    else if (n === '0') out += '\u0000';
+    else if (n === 'x') { out += String.fromCharCode(parseInt(s.slice(i + 1, i + 3), 16)); i += 2; }
+    // Not an escape this encoder emits. Kept verbatim rather than dropped, so a
+    // row from a future daemon degrades into readable text instead of silence.
+    else if (n === undefined) out += '\\';
+    else out += '\\' + n;
+  }
+  return out;
+}
+
+const SENTINELS: Record<string, EventField['status']> =
+  { '\\!gone': 'gone', '\\!unreadable': 'unreadable', '\\!empty': 'empty' };
+const TRUNC = '\\!truncated';
+
+// EXPORTED because the cross-language round trip needs it: a decoder
+// transcribed into a test would be a second implementation of the format.
+export function decodeEventField(s: string): EventField {
+  const sentinel = SENTINELS[s];
+  if (sentinel) return { raw: s, value: null, status: sentinel };
+  const truncated = s.endsWith(TRUNC);
+  const value = decodeEscapes(truncated ? s.slice(0, -TRUNC.length) : s);
+  return { raw: s, value, status: truncated ? 'truncated' : 'ok' };
+}
+
+// …and a cmdline additionally splits on the decoded NUL, which is what
+// `/proc/<pid>/cmdline` separates argv with. The trailing separator leaves an
+// empty final element; it is dropped rather than reported as an empty argument.
+function decodeCmdline(s: string): EventField {
+  const f = decodeEventField(s);
+  if (f.value === null) return f;
+  const argv = f.value.split('\u0000');
+  if (argv.length && argv[argv.length - 1] === '') argv.pop();
+  return { ...f, argv };
+}
 
 // THE HARVEST. Reads a session's event log and APPENDS it to the store-wide one
 // so the evidence outlives the run directory.
 //
-// `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<suggested list>\t<suggested entry>`
+// `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<pid>\t<tgid>\t<comm>\t<cmdline>
+//  \t<suggested list>\t<suggested entry>` — the session row's own columns, in
+// the daemon's own ESCAPED spelling, plus the two provenance columns in front
+// and the two suggestion columns behind.
 //
 // THE LAST TWO COLUMNS ARE FOR `deny`/`unpinned-fail-closed` ROWS ONLY, and the
 // scoping is not cosmetic: a pin does not fix an `unmarked-host-served` row —
 // that path already came from the host — so suggesting one would send the reader
 // to change the wrong thing.
 //
-// DEDUPED ON `(path, reason)`, THE DAEMON'S OWN KEY, AND NOT ON THE PATH.
+// DEDUPED ON `(path, reason, tgid)`, THE DAEMON'S OWN KEY, AND NOT ON THE PATH.
 // THE PATH-KEYED VERSION WAS A REAL DEFECT and the reason is worth keeping: the
 // daemon writes two rows for one path whenever two CALLERS reach it, which
 // happens routinely — `/var` carries `deny`/`unpinned-fail-closed` from the
@@ -130,7 +200,9 @@ export interface PolicyEventRow { kind: string; op: string; path: string; reason
 //
 // This departs from plan §4a's "one row per distinct path" deliberately (owner,
 // recorded on card 2026-0382). Matching the daemon's key is also what makes the
-// two artifacts comparable at all.
+// two artifacts comparable at all — so the key gained the TGID here in the same
+// commit the daemon's did (card 2026-0389), or the two would silently stop
+// agreeing about what one row is.
 //
 // BEST-EFFORT THROUGHOUT. `runTeardown` never rejects, and a store the harvest
 // cannot write is not a reason to abandon a mount.
@@ -139,12 +211,20 @@ export function parsePolicyEvents(text: string): PolicyEventRow[] {
   const out: PolicyEventRow[] = [];
   for (const line of text.split('\n')) {
     if (line === '') continue;
-    const [kind, op, p, reason] = line.split('\t');
-    if (!kind || !op || !p || !reason) continue;
-    const key = `${p}\t${reason}`;
+    // THE HEADER, WHICH CONTAINS TABS — so the field test below would not catch
+    // it and it would parse as a row naming a path called `# cc-union events v2`.
+    if (line.startsWith('#')) continue;
+    const [kind, op, p, reason, pid, tgid, comm, cmdline] = line.split('\t');
+    if (!kind || !op || !p || !reason || pid === undefined || tgid === undefined
+      || comm === undefined || cmdline === undefined) continue;
+    const key = `${p}\t${reason}\t${tgid}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ kind, op, path: p, reason });
+    out.push({
+      kind, op, path: decodeEscapes(p), pathRaw: p, reason,
+      pid: Number(pid), tgid: Number(tgid),
+      comm: decodeEventField(comm), cmdline: decodeCmdline(cmdline),
+    });
   }
   return out;
 }
@@ -176,7 +256,11 @@ async function harvestEvents(rundir: string, instanceId: string): Promise<Policy
   const store = fuseEventStore();
   const body = rows.map((r) => {
     const s = pinSuggestionFor(r);
-    return [at, instanceId, r.kind, r.op, r.path, s?.list ?? '', s?.entry ?? ''].join('\t');
+    // THE DAEMON'S OWN ESCAPED SPELLING, verbatim: the store is the session file
+    // plus two prefix columns and two suffix ones, so a path or an argv carrying
+    // a tab cannot split a store line either.
+    return [at, instanceId, r.kind, r.op, r.pathRaw, r.pid, r.tgid,
+      r.comm.raw, r.cmdline.raw, s?.list ?? '', s?.entry ?? ''].join('\t');
   }).join('\n') + '\n';
   await fsp.mkdir(path.dirname(store), { recursive: true }).catch(() => {});
   await fsp.appendFile(store, body).catch(() => {});
@@ -201,7 +285,13 @@ export function describePolicyEvents(rows: readonly PolicyEventRow[], storePath 
   if (denials.length) {
     const shown = denials.slice(0, EVENT_LINE_CAP);
     const more = denials.length - shown.length;
-    parts.push(`the daemon refused: ${shown.map(r => r.path).join(', ')}`
+    // WHO ASKED, ON THE DENIAL LINE — which is the whole of what card 2026-0389
+    // bought here. `comm[pid]` and not the cmdline: an argv is unbounded, the
+    // 20-row cap exists to bound this sentence, and the full argv is one `grep`
+    // away in the store file the sentence already names. A recorded absence
+    // prints its STATUS (`gone[41231]`), never a plausible-looking name.
+    parts.push('the daemon refused: '
+      + shown.map(r => `${r.path} (${r.comm.value ?? r.comm.status}[${r.pid}])`).join(', ')
       + (more > 0 ? ` (+${more} more; full list at ${storePath})` : ''));
     // THE REPAIR, GROUPED BY THE ARRAY THAT OWNS IT, because that is the edit
     // the reader has to make. `suggestPin` (tierTable.ts) owns the mapping and
