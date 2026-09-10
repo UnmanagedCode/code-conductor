@@ -17,8 +17,15 @@
  *            callers alike. The CLI's execution closure lives here: its binary,
  *            ld-linux and its shared objects, $HOME, the session scratch dir,
  *            the specific /etc files the runtime needs.
- *   project  the remote tier, and ONLY for a caller marked as the CLI. There is
- *            no host side to fall back to, by design.
+ *   project  the remote tier; its bytes reach a caller marked as the CLI and no
+ *            other. THE SECOND CALLER-SENSITIVE CLASS (card 2026-0388): an
+ *            UNMARKED caller is substituted to `host` WHERE THE HOST HAS AN
+ *            ENTRY at the path (policy_host_has, policy.h), with a
+ *            `served/unmarked-project-host-served` row naming it, and gets
+ *            -ENOENT where the host has none. Never the remote's copy either
+ *            way, which is the whole invariant. It is not a host FALLBACK: the
+ *            host is chosen BEFORE the remote is consulted, never after it
+ *            failed.
  *   bind     a directory bootstrap.sh mounts the ORCHESTRATOR's own over, after
  *            the union is up. Served here as a read-only synthetic node purely
  *            so the bind target exists — /proc, /sys, /dev must never be tiers
@@ -28,10 +35,12 @@
  *            scaffolding, which it must not serve through itself.
  *   fail     ENOENT on both sides FOR THE MARKED CLI, because the system's
  *            advertisement excluded it or no pin covers it. Also refused at
- *            cc's file-tool seam, so it fails both surfaces. THE ONE
+ *            cc's file-tool seam, so it fails both surfaces. THE FIRST
  *            CALLER-SENSITIVE CLASS: for an UNMARKED caller it is substituted
- *            to `host` (policy_caller_tier, policy.h) and a
- *            `served/unmarked-host-served` row names the path.
+ *            to `host` UNCONDITIONALLY (policy_caller_tier, policy.h) and a
+ *            `served/unmarked-host-served` row names the path. Unconditional,
+ *            unlike `project`'s rule, because `fail` is a statement about cc's
+ *            pin list rather than about the mirror geometry.
  *   synth    DERIVED, never written in the pins file: the ancestors of every
  *            pin, so a pinned leaf is reachable without its parents being
  *            served from anywhere. Read-only, fixed attributes.

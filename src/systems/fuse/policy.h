@@ -1359,6 +1359,19 @@ static inline const char *policy_rel(const char *path)
  *
  * A NEGATIVE fd ANSWERS 0, which is the pre-substitution behaviour: the unit
  * fixture leaves it unset to drive the "host has nothing" axis.
+ *
+ * THE PROBE'S BOUND, STATED RATHER THAN BRANCHED ON: it answers "no" for ANY
+ * fstatat failure, not only for non-existence. That is exactly right for the
+ * errnos that MEAN non-existence — ENOENT, and ENOTDIR / ELOOP /
+ * ENAMETOOLONG, each of which says the host has no entry at this spelling —
+ * and EACCES is unreachable for a root probe on local storage. The residual is
+ * a host filesystem that can error on a metadata op for another reason (NFS
+ * under root_squash, a permission-enforcing FUSE beneath us): there the
+ * unmarked caller is DENIED where the ruling would have served the host. That
+ * is fail-closed — -ENOENT, never remote content, and identical to this path's
+ * pre-card behaviour — and it is left as a documented bound on purpose: an
+ * errno-classification branch would be unreachable on any host this is tested
+ * on, trading a remote silent miss for a real untested path (owner, 2026-09-10).
  */
 static inline int policy_host_has(const char *path)
 {
@@ -1752,11 +1765,18 @@ static inline int policy_cwd_getattr(const char *path, struct stat *st)
  *     key load-bearing: an unmarked caller reaches the lookup, and only the
  *     tgid stops it matching a marked caller's warmed entry. FETCH skips it —
  *     an open always revalidates.
- *  2. THE MARK. An UNMARKED caller at a project path gets -ENOENT. Not the
- *     remote's copy, and not a host fallback: the project tier has no host side
- *     by design, so "deny the remote" can only mean "deny". A host-pinned or
- *     bind-mounted path never reaches here and is served to marked and unmarked
- *     callers alike.
+ *  2. THE MARK. An UNMARKED caller that reaches here gets -ENOENT, and never
+ *     the remote's copy — which is the invariant, and the only one.
+ *
+ *     REACHING HERE UNMARKED MEANS THE HOST HAD NO ENTRY AT THIS PATH: since
+ *     card 2026-0388 `policy_caller_tier` runs first in route() and rewrote the
+ *     tier to T_HOST wherever `policy_host_has` said the host has one. So this
+ *     is not "the project tier has no host side" any more — it is "there was no
+ *     host entry to serve", and with no host entry and no remote entitlement
+ *     "deny the remote" can only mean "deny". A host-pinned or bind-mounted
+ *     path never reaches here and is served to marked and unmarked callers
+ *     alike. The cwd-chain exemption is the other thing route() consults before
+ *     this, and only below the first host-having ancestor.
  *  3. THE CONTROL CALL. A bare local stat of the mirror would report ENOENT for
  *     a file that exists on the remote and has simply not been materialised
  *     yet, so no remote-tier op touches the mirror before cc has answered.

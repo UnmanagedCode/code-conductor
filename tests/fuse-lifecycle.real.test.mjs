@@ -1844,8 +1844,18 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
   //
   // MUTANTS: substitute T_HIDE ⇒ (c) dies; leave T_FAIL unsubstituted ⇒ (a),
   // (b) and (f) die; gate the T_FAIL substitution on host existence ⇒ (f) dies;
-  // drop the host-existence test at T_PROJECT ⇒ (d)'s remote-only half dies;
   // emit `deny` for a substitution ⇒ (e) dies.
+  //
+  // DROP THE HOST-EXISTENCE TEST AT T_PROJECT (so `project` always substitutes)
+  // DIES AT (e), NOT AT (d) — and the difference is worth naming because the
+  // obvious reading is wrong. Under that mutant `<proj>/remote-only.txt` routes
+  // to T_HOST, the host has nothing there, and the caller gets the HOST's own
+  // -ENOENT: (d)'s remote-only half still sees a failed read and neither marker
+  // string, so it PASSES. What changes is the LOG — that path gains a
+  // `served`/`unmarked-project-host-served` row and loses its
+  // `deny`/`unmarked-project-denied` one, which is (e)'s assertion. At unit
+  // level the same mutant dies at `b34`, `b25` (a host-absent project path
+  // writes no row) and `b19` pass 0.
   test('R13 — an unmarked caller is served the host wherever the host has an entry, and never the remote', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker('chroot', 'appx');
@@ -2048,6 +2058,16 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       assert.equal(h.ok, true, `an unmarked caller was denied at a host-having project path: ${h.stderr}`);
       assert.equal(h.stdout.trim(), hostname.split('\n')[0].trim(),
         'the host-having project path did not answer with the orchestrator’s own file');
+      // AND THE ROW NAMES IT, as `R2` and `R13`(e) require of the default root.
+      // OBSERVABILITY AT THE MOUNT, not discrimination: the reason's kind and
+      // its per-path emission are pinned at unit level (`b24`, `b25`, `b34`),
+      // so no mutant survives this line's absence — what it buys is that a
+      // maintainer reading a WIDE-root run's log can see the substitution at a
+      // path outside the project at all.
+      assert.ok((await eventsOf(inst.id)).some(r => r[0] === 'served'
+        && r[2] === '/etc/hostname' && r[3] === 'unmarked-project-host-served'),
+        'no served/unmarked-project-host-served row for /etc/hostname — the substitution is '
+        + 'unobservable at a wide root outside the project tree');
 
       // (4) HOST ENTRY ABSENT ⇒ -ENOENT, NEVER REMOTE CONTENT.
       const projFile = inside(record, path.join(proj, 'remote-marker.txt'));

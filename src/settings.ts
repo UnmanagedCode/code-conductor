@@ -109,13 +109,17 @@ export function buildSettingsJSON({ hookCallbackUrl, redirect = false }: { hookC
   // cwd IS the project's tree, with its real `.git`.
   //
   // IT STAYS OFF, on a different reason. The CLI shells out to run that git
-  // itself, unmarked and outside cc's remote-forwarded Bash tool — and the
-  // union's project tier has NO host side by design (`policy_project_route` in
-  // src/systems/fuse/policy.h), so an unmarked caller there gets `-ENOENT`,
-  // never a usable working tree. Guidance derived from that is worse than none.
+  // itself, unmarked and outside cc's remote-forwarded Bash tool — and an
+  // unmarked caller at the project tier never reaches the REMOTE working tree.
+  // It gets `-ENOENT` where the host has no entry (`policy_project_route` in
+  // src/systems/fuse/policy.h), and since card 2026-0388 the ORCHESTRATOR's own
+  // file where the host shadows the path. Neither is the tree this session is
+  // working in, so the answer is wrong either way — and in the shadowed case it
+  // is wrong about a DIFFERENT REPOSITORY, which is the same defect this option
+  // was first turned off for. Guidance derived from that is worse than none.
   // The cwd-chain exemption (cards 2026-0373, 2026-0382) changes only WHERE that spawn
   // dies: it now starts, chdir's into the project root, and dies at its first
-  // project-tier read instead of at its chdir.
+  // project-tier read the host does not shadow instead of at its chdir.
   //
   // Chosen over CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: 2.1.250 reads that var as
   // `e !== undefined ? !e : settings.includeGitInstructions ?? true`, so "0"

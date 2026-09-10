@@ -373,11 +373,11 @@ describe('the compiled policy driver', { skip }, () => {
                       'the T_FAIL rule is NOT gated on host existence — unmarked at a fail-tier path the host does not have is still T_HOST, under unmarked-host-served',
                       'gate the T_FAIL substitution on policy_host_has ⇒ the unmarked CREATE at an unpinned path (real gate R13(f)) dies; reuse the project reason for it'],
     ['b36-traversal-bound-by-first-host-ancestor',
-                      'driven in route()’s order, the cwd chain is host-served down to the last ancestor the host has and the exemption is consulted only BELOW it — the traversal bound, with nothing that walks',
-                      'run the exemption before the substitution ⇒ the chain above the first host-having ancestor stops being host-served; drop the T_PROJECT substitution ⇒ the top four links stop being host; widen policy_cwd_component to a child or a sibling'],
+                      'the two ANSWERS the bound is made of: over one cwd chain, policy_caller_tier is host at every link the host has and declines at the two it does not, and policy_cwd_exempt then fires at exactly those two and at no child or sibling',
+                      'drop the T_PROJECT substitution ⇒ the top four links stop being host; gate it on something other than host existence; widen policy_cwd_component to a child or a sibling. NOT `run the exemption before the substitution` — this case hand-drives the two functions in its OWN fixed order, so reordering them in route() leaves it green. THE BOUND ITSELF IS A PROPERTY OF ORDERING AND OF NO FUNCTION, and its only killer is the source-shape assertion in `route() substitutes the caller-sensitive tier, after the mark and before dispatch` (`policy_tier_is_caller_sensitive(` before `policy_cwd_exempt(` in route()’s body). Deriving b36’s own order from route() would be more machinery than the claim is worth'],
     ['b37-unmarked-never-gets-remote',
                       'over 7 tiers × {host-has, host-lacks} × {marked, unmarked} the map returns the INPUT tier or T_HOST and nothing else, and at (unmarked, project, host-has) it is T_HOST',
-                      'return any third tier from the map; return T_PROJECT for an unmarked caller at a host-having project path (the ruling violated); make the map op-sensitive'],
+                      'return any third tier from the map; return T_PROJECT for an unmarked caller at a host-having project path (the ruling violated). NOT `make the map op-sensitive` — every case here drives `"getattr"` only, so a mutant that keys on the op while preserving getattr survives the whole unit fixture. That one dies SUITE-WIDE, at the real gate: R2 and R13(b)/(f) reach the substitution through `open` and `create`'],
   ];
 
   for (const [id, invariant] of CASES) {
