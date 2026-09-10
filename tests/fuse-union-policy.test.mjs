@@ -324,14 +324,14 @@ describe('the compiled policy driver', { skip }, () => {
                       'under a WIDE advertised mirror root an intermediate project-tier directory with no exact pin IS exempt as a cwd chain component, so the chdir lives (2026-0375 closed)',
                       'restore the pin_exact test ⇒ /srv stops being exempt and the chdir dies one component early again; widen to tier_of ⇒ a child of the cwd becomes exempt'],
     ['b19-caller-tier-matrix',
-                      'all 7 tiers × {marked, unmarked}: identity everywhere EXCEPT (unmarked, fail) → host',
-                      'T_PROJECT → T_HOST for unmarked (the owner ruling violated — the headline mutant); T_HIDE → T_HOST (the confinement hole); T_BIND → T_HOST (breaks the three bind targets); let the MARKED branch substitute'],
+                      'all 7 tiers × {marked, unmarked}, run once per HOST AXIS: identity everywhere EXCEPT (unmarked, fail) → host on both passes and (unmarked, project) → host on the host-has pass alone',
+                      'gate the T_FAIL substitution on host existence ⇒ pass 0’s fail row dies; drop the host-existence test at T_PROJECT ⇒ pass 0’s project identity dies; T_HIDE → T_HOST (the confinement hole); T_BIND → T_HOST (breaks the three bind targets); let the MARKED branch substitute'],
     ['b20-caller-sensitive-set',
-                      'policy_tier_is_caller_sensitive is true for EXACTLY {T_FAIL}, over all seven enum values',
-                      'add T_PROJECT to the set; add T_HIDE; drop T_FAIL; `return 1` for everything'],
+                      'policy_tier_is_caller_sensitive is true for EXACTLY {T_FAIL, T_PROJECT}, over all seven enum values',
+                      'drop T_PROJECT from the set (the 2026-09-09 ruling reverted — the headline mutant); add T_HIDE; add T_SYNTH (the default root’s `/` handed to an unmarked caller); drop T_FAIL; `return 1` for everything'],
     ['b21-unmarked-refused-only-at-project',
-                      'for an unmarked caller the substitution denies at NO tier, and the only denial policy.h can give one is policy_project_route’s',
-                      'make the substitution emit a `deny` row at T_FAIL; make T_PROJECT stop denying'],
+                      'with the host holding an entry at every probe path, the substitution denies at NO tier and serves at exactly two (fail + project); the only denial policy.h can give an unmarked caller is policy_project_route’s',
+                      'make the substitution emit a `deny` row at either substituted tier; drop either substitution ⇒ the served count falls to one; make policy_project_route stop denying'],
     ['b22-cwd-chain-extent',
                       'the cwd chain is ancestor-or-equal AT A COMPONENT BOUNDARY — both directions of the prefix-sharing sibling trap, and an unset cwd exempts nothing',
                       "drop the `/`-boundary check ⇒ /root/app and /roo become exempt for a cwd of /root/app3; use tier_of instead of the chain ⇒ a child becomes exempt; drop the op check; return T_CWD for a marked caller; make policy_cwd_component answer for a NULL cwd_path ⇒ the unset-cwd arm dies. NOT `default cwd_path in main()` — that mutant lives in union.c, which this fixture cannot reach; A16b's no-default source pin is what kills it"],
@@ -345,11 +345,11 @@ describe('the compiled policy driver', { skip }, () => {
                       'the cwd normalisation predicate rejects a trailing `/`, a `//` and a `.`/`..` component, and accepts a dotfile-named one',
                       'accept a doubled slash ⇒ the cwd itself stops matching and every chdir dies at its destination; accept a `..` component; reject a dotfile-named component ⇒ a real cwd is refused'],
     ['b24-event-kinds',
-                      'each reason policy.h emits carries exactly one kind, read back out of the sink, and five emissions produce five rows',
-                      'classify unmarked-host-served as `deny` (it would join R4’s fatal filter); classify unmarked-project-denied as `served`'],
-    ['b25-substitution-logged-at-fail-only',
-                      'an unmarked caller at `fail` emits exactly one served/unmarked-host-served row PER DISTINCT (PATH, THREAD GROUP); at `project` it emits a deny row and no served row',
-                      'emit `served` at T_PROJECT (the ruling violated, from the log’s side); drop the row at T_FAIL; emit `deny` for the substitution; key the dedupe on op as well ⇒ two rows for one path'],
+                      'each reason policy.h emits carries exactly one kind, read back out of the sink, and one emission per reason produces exactly one row each',
+                      'classify unmarked-host-served or unmarked-project-host-served as `deny` (either would join R4’s fatal filter); classify unmarked-project-denied as `served`; reuse unmarked-host-served for the project substitution ⇒ the seventh reason is never emitted'],
+    ['b25-substitution-logged-per-path-and-tgid',
+                      'each substitution emits exactly one served row PER DISTINCT (PATH, THREAD GROUP) under its OWN reason; at a project path the host has nothing at, no served row at all and policy_project_route’s deny is the answer',
+                      'reuse unmarked-host-served for the project substitution ⇒ the reason-specific count dies; drop either row; emit `deny` for a substitution; key the dedupe on op as well ⇒ two rows for one path; drop the host-existence test ⇒ the host-absent project path gains a served row'],
     ['b15-unreconcilable',
                       "a project-tier op outside the reconcile's domain refuses EOPNOTSUPP, and a host-tier one does not",
                       '`return -EOPNOTSUPP` → `return 0`; the T_PROJECT test flipped or widened to every tier; EOPNOTSUPP collapsed into EROFS'],
@@ -362,6 +362,22 @@ describe('the compiled policy driver', { skip }, () => {
                       'revert the key to (path, reason) ⇒ every caller after the first is silently dropped; add the op to the key ⇒ two rows for one caller; swap the pid and tgid columns; read comm from the TID instead of the thread group'],
     ['b32-cwd-row',   'a GRANTED cwd traversal writes exactly one served/cwd-traversal-served row naming the thread group that needed the link, and the three refused shapes write none',
                       'drop the emission ⇒ no capture can ever show which process needed which link; emit before the conjunction is decided ⇒ a marked caller, a non-getattr op or an off-chain path all report an exemption that never happened; log the TID instead of the thread group'],
+    // ── 2026-0388: THE DISCRIMINATOR IS HOST-ENTRY EXISTENCE, NOT TIER ────
+    ['b33-host-existence',
+                      'policy_host_has answers off policy_host_fd through policy_rel — a present file, a present directory and a DANGLING symlink are entries; an absent path and a negative fd are not; "/" is one via policy_rel’s "."',
+                      'drop AT_SYMLINK_NOFOLLOW ⇒ the dangling symlink reads as absent and a path the host names routes to the remote; open a second fd of its own ⇒ the probe and the T_HOST arm acquire two spellings; return 1 for a negative fd ⇒ the seam-unset axis every other case leans on collapses. THE TWO `policy_rel` MUTANTS ARE NOT THE SAME AND ONLY ONE IS KILLED: dropping the `"/" → "."` ROOT SPECIAL-CASE leaves an empty relative path, fstatat answers ENOENT and `/` reads as absent ⇒ this case dies (with b36); passing the RAW absolute path instead of `policy_rel(path)` is MEASURED-EQUIVALENT and nothing can kill it, because bootstrap.sh hard-codes CC_UNION_HOST_ROOT=/ — RATIONALE.md §5.1d has the standing condition that makes it so. NOR is `delete the negative-fd guard` killable: fstatat on a negative dirfd fails EBADF, so the first two checks below pass through the errno rather than through the guard'],
+    ['b34-project-host-substitution',
+                      'at T_PROJECT host-entry existence is the discriminator: unmarked + host-has → T_HOST with exactly one served/unmarked-project-host-served row; unmarked + host-lacks → T_PROJECT with no row; marked → T_PROJECT at both',
+                      'drop the policy_host_has test ⇒ the host-lacks path substitutes too; invert it; let the MARKED branch substitute ⇒ the CLI reads the host’s file at the project’s own spelling; drop the row'],
+    ['b35-fail-substitution-is-unconditional',
+                      'the T_FAIL rule is NOT gated on host existence — unmarked at a fail-tier path the host does not have is still T_HOST, under unmarked-host-served',
+                      'gate the T_FAIL substitution on policy_host_has ⇒ the unmarked CREATE at an unpinned path (real gate R13(f)) dies; reuse the project reason for it'],
+    ['b36-traversal-bound-by-first-host-ancestor',
+                      'the two ANSWERS the bound is made of: over one cwd chain, policy_caller_tier is host at every link the host has and declines at the two it does not, and policy_cwd_exempt then fires at exactly those two and at no child or sibling',
+                      'drop the T_PROJECT substitution ⇒ the top four links stop being host; gate it on something other than host existence; widen policy_cwd_component to a child or a sibling. NOT `run the exemption before the substitution` — this case hand-drives the two functions in its OWN fixed order, so reordering them in route() leaves it green. THE BOUND ITSELF IS A PROPERTY OF ORDERING AND OF NO FUNCTION, and its only killer is the source-shape assertion in `route() substitutes the caller-sensitive tier, after the mark and before dispatch` (`policy_tier_is_caller_sensitive(` before `policy_cwd_exempt(` in route()’s body). Deriving b36’s own order from route() would be more machinery than the claim is worth'],
+    ['b37-unmarked-never-gets-remote',
+                      'over 7 tiers × {host-has, host-lacks} × {marked, unmarked} the map returns the INPUT tier or T_HOST and nothing else, and at (unmarked, project, host-has) it is T_HOST',
+                      'return any third tier from the map; return T_PROJECT for an unmarked caller at a host-having project path (the ruling violated). NOT `make the map op-sensitive` — every case here drives `"getattr"` only, so a mutant keying on the op while PRESERVING getattr survives the whole unit fixture, and the graded mutation suite with it (that suite sets no RUN_FUSE_LIFECYCLE). Measured by hand at the real gate, where the two variants die in DIFFERENT places: keying the T_PROJECT rule alone dies at R2 and at R13(d)’s host-shadowed half — pt_getattr still substitutes, the shell’s open does not, and the read fails — while keying BOTH rules dies at R2 and at R13(a), the first fail-tier open in the file, so (b) and (f) never run'],
   ];
 
   for (const [id, invariant] of CASES) {
@@ -692,6 +708,11 @@ describe('the compiled policy driver', { skip }, () => {
     'pinned-children-truncated': 'EV_SERVED',
     // 2026-0382: an unmarked caller was routed to the host at an unpinned path.
     'unmarked-host-served':      'EV_SERVED',
+    // 2026-0388: an unmarked caller was routed to the host at a PROJECT path
+    // the host has an entry at. Its own reason, not a reuse of the row above:
+    // that one feeds `suggestPin`, while this one's volume BY PATH is how much
+    // of the project tree the host shadows under a wide mirrorRoot.
+    'unmarked-project-host-served': 'EV_SERVED',
     // 2026-0389: the cwd-chain exemption GRANTED — the getattr succeeds off the
     // tier table's script, and the row is what makes the traversal capturable.
     'cwd-traversal-served':      'EV_SERVED',
@@ -784,11 +805,11 @@ describe('the compiled policy driver', { skip }, () => {
   test('route() substitutes the caller-sensitive tier, after the mark and before dispatch', async () => {
     const src = await fs.readFile(UNION_C, 'utf8');
     assert.match(src,
-      /if \(policy_tier_is_caller_sensitive\(r->tier\)\)\s*\n\s*r->tier = policy_caller_tier\(op, path, r->tier,\s*\n\s*policy_is_marked_tid\(\(pid_t\)fuse_get_context\(\)->pid\),\s*\n\s*\(pid_t\)fuse_get_context\(\)->pid\);/,
-      'INVARIANT: route() asks policy_tier_is_caller_sensitive and reassigns r->tier from '
-      + 'policy_caller_tier with the CALLING THREAD id — for the mark AND for the log row\'s '
-      + 'identity columns. The call site is missing, takes a different id, or drops the '
-      + 'reassignment');
+      /if \(policy_tier_is_caller_sensitive\(r->tier\)\) \{\s*\n\s*marked = policy_is_marked_tid\(\(pid_t\)fuse_get_context\(\)->pid\);\s*\n\s*r->tier = policy_caller_tier\(op, path, r->tier, marked,\s*\n\s*\(pid_t\)fuse_get_context\(\)->pid\);\s*\n\s*\}/,
+      'INVARIANT: route() asks policy_tier_is_caller_sensitive, derives `marked` from the '
+      + 'CALLING THREAD id and reassigns r->tier from policy_caller_tier with it — for the mark '
+      + 'AND for the log row\'s identity columns. The call site is missing, takes a different '
+      + 'id, or drops the reassignment');
     // AFTER THE MARKING EVENT. `mark_maybe` is what makes the CLI's own thread
     // group marked at all; asking the mark before it fires would substitute the
     // host for the CLI's very first op.
@@ -803,10 +824,52 @@ describe('the compiled policy driver', { skip }, () => {
     assert.ok(body.indexOf('policy_tier_is_caller_sensitive(') < body.indexOf('switch (r->tier) {'),
       'INVARIANT: the substitution happens BEFORE the tier switch, so the T_HOST arm assigns '
       + 'the substituted route its host fd');
+    // ONE /proc READ PER OP, SHARED. `marked` is derived once inside the guard
+    // and handed to BOTH the substitution and the cwd-exemption short-circuit;
+    // a second `policy_is_marked_tid(` in route() would double the per-op /proc
+    // cost at the CLI's hottest tier under attr_timeout=0.
+    assert.equal((body.match(/policy_is_marked_tid\(/g) ?? []).length, 1,
+      'INVARIANT: route() derives the mark exactly once and shares it — a second call site '
+      + 'pays a second /proc read on every caller-sensitive op');
+    // ── THE TRAVERSAL BOUND, PINNED WHERE IT IS ENFORCED ───────────────────
+    // "stop at the first ancestor the host has" is a property of ORDERING and
+    // of no function, so nothing else can cover it: running the host-existence
+    // substitution BEFORE the cwd exemption is what confines the exemption to
+    // the chain BELOW the first host-having ancestor. Reverse these two and the
+    // bound silently disappears with every behavioural test still green.
+    assert.ok(body.includes('policy_cwd_exempt('),
+      'route() no longer calls policy_cwd_exempt — the ordering below would compare against -1');
+    assert.ok(body.indexOf('policy_tier_is_caller_sensitive(') < body.indexOf('policy_cwd_exempt('),
+      'INVARIANT: the host-existence substitution runs BEFORE the cwd exemption, so the '
+      + 'exemption is consulted only below the first ancestor the host has');
     // THE `fail` FALL-THROUGH IS STILL THE ONLY PLACE `unpinned-fail-closed` IS
     // WRITTEN, so the reason really is the marked CLI's alone.
     assert.equal((src.match(/"unpinned-fail-closed"/g) ?? []).length, 1,
       'unpinned-fail-closed is emitted from more than one place');
+  });
+
+  // ── ONE HOST fd, ONE RELATIVISER ──────────────────────────────────────────
+  //
+  // The host-existence probe (policy.h) and the T_HOST arm (union.c) must open
+  // the SAME fd through the SAME relativiser, or the probe can answer for a
+  // path the arm would not serve. Two variables for one fd is exactly the drift
+  // union.c's own comments warn about, so the single declaration is pinned
+  // rather than merely arranged: `b33` drives the probe but cannot see a second
+  // spelling reappearing in union.c.
+  test('the host fd and its relativiser are declared once, in policy.h', async () => {
+    const [policy, union] = await Promise.all([
+      fs.readFile(POLICY_H, 'utf8'), fs.readFile(UNION_C, 'utf8'),
+    ]);
+    assert.match(policy, /static int policy_host_fd = -1;/,
+      'INVARIANT: policy.h owns the host fd — the probe needs it and the unit fixture drives it');
+    assert.match(policy, /static inline const char \*policy_rel\(const char \*path\)/,
+      'INVARIANT: policy.h owns the relativiser the probe and the T_HOST arm share');
+    assert.ok(!/\bstatic\s+int\s+host_fd\b/.test(union),
+      'INVARIANT: union.c declares no host_fd of its own — two variables for one fd is the drift');
+    assert.ok(!/\bstatic\s+const\s+char\s+\*rel\(/.test(union),
+      'INVARIANT: union.c declares no rel() of its own');
+    assert.ok(!/(?<![_a-zA-Z0-9])rel\(/.test(union.replace(/policy_rel\(/g, 'policy_REL_OK(')),
+      'INVARIANT: no bare rel( identifier survives in union.c — every call goes through policy_rel');
   });
 
   // ── THE TIER ENUM'S MEMBER SET ────────────────────────────────────────────

@@ -53,6 +53,17 @@ state.
    check which files nest tests under `describe`, run `rg -l '^describe\(' tests/*.test.mjs` —
    don't rely on a remembered list, it drifts.
 
+   **AND THE ID IS THE TEST'S TITLE, SO RENAMING A TITLE SILENTLY INVALIDATES EVERY `expectFail`
+   SET THAT NAMES IT.** It surfaces as `IMPRECISE`, never as a failure, so a stale ref reads as a
+   *mutant* problem and invites rewriting a mutant that was already correct. This is a recurring
+   trap on the FUSE-union epic specifically, because its driver cases carry long invariant
+   sentences in their titles (`tests/fuse-union-policy.test.mjs`'s `CASES` table) and a card that
+   sharpens one wording re-anchors nothing: card 2026-0388 renamed `b24`'s and `b25`'s titles and
+   two inherited mutants (`m-b8-starttime-inverted`, `m-cevent-key-adds-op`) went `IMPRECISE` on
+   that alone — same killers, unchanged coverage. **On any round that touches a title in `CASES`,
+   re-run `--learn` for the inherited mutants before reading a verdict**, and re-anchor from the
+   observed set rather than editing the mutant.
+
 2. **Omit `narrowTo` from every mutant.** `narrowTo: "names"` does not work against this suite and
    `validate` will not warn you. It degrades safely — `IMPRECISE` or `ERROR`, never a false `KILLED`
    or `SURVIVED` — but it burns a review round on a non-finding. File granularity is the policy
@@ -66,6 +77,23 @@ state.
    `scope-empty` guard does not catch this: `ran` counts skipped tests, so a scope of an
    all-skipped file reports a *green* narrow baseline and the mutant reads `SURVIVED`, not
    `ERROR (scope-empty)`. RATIONALE.md §5 lists today's gates and how to re-derive them.
+
+## Declared non-behavioural mutants — waive, do not file
+
+A mutant listed here **legitimately SURVIVES**. Each is a construct whose removal changes no
+answer the suite (or any caller) can observe *under the stated condition*; they are declared by the
+implementer at the time the construct lands, so a prover waives them instead of re-discovering and
+re-filing them every round. State the waiver — and its condition — in the round's report; do not
+silently drop it.
+
+| construct | mutation that survives | why nothing can kill it |
+|---|---|---|
+| `!marked &&` at `route()`'s `policy_cwd_exempt` call site (`src/systems/fuse/union.c`, card 2026-0388) | delete `!marked &&` | `policy_cwd_exempt` **re-checks the mark itself** as its last condition (`policy.h`, `policy_is_marked_tid(tid)`), so **whenever the two reads agree — as they do for any live thread group — the short-circuit changes only how many `/proc` reads a MARKED project-tier op pays**, the CLI's hottest tier under `attr_timeout=0`. Kept for the cost, declared here rather than claimed as covered. The comment at the call site says the same thing. **The condition is not vacuous and the waiver does not claim it is**: the two reads can disagree if the SECOND transiently fails and returns unmarked, and there the exemption could fire for a marked caller. That is a pre-existing property of the internal re-check, not something the hoist introduced — the same window existed when `route()` had no `marked` at all — and it is not to be chased here. **Deleting the mark check inside `policy_cwd_exempt` is a different mutant and IS killed** (`b22`, `b32`) |
+
+And the standing one, which is not a construct but a test: **`A16`'s sha256 latch
+(`tests/fuse-lifecycle.test.mjs`) is a deliberate-edit disclosure, not coverage.** A C mutant whose
+only failing test is `A16` is **unattributed** — re-run it narrower rather than recording `KILLED`.
+RATIONALE.md §5.1c has the measurement and the scoping recipe.
 
 ## What to expect
 

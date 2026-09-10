@@ -17,8 +17,15 @@
  *            callers alike. The CLI's execution closure lives here: its binary,
  *            ld-linux and its shared objects, $HOME, the session scratch dir,
  *            the specific /etc files the runtime needs.
- *   project  the remote tier, and ONLY for a caller marked as the CLI. There is
- *            no host side to fall back to, by design.
+ *   project  the remote tier; its bytes reach a caller marked as the CLI and no
+ *            other. THE SECOND CALLER-SENSITIVE CLASS (card 2026-0388): an
+ *            UNMARKED caller is substituted to `host` WHERE THE HOST HAS AN
+ *            ENTRY at the path (policy_host_has, policy.h), with a
+ *            `served/unmarked-project-host-served` row naming it, and gets
+ *            -ENOENT where the host has none. Never the remote's copy either
+ *            way, which is the whole invariant. It is not a host FALLBACK: the
+ *            host is chosen BEFORE the remote is consulted, never after it
+ *            failed.
  *   bind     a directory bootstrap.sh mounts the ORCHESTRATOR's own over, after
  *            the union is up. Served here as a read-only synthetic node purely
  *            so the bind target exists — /proc, /sys, /dev must never be tiers
@@ -28,10 +35,12 @@
  *            scaffolding, which it must not serve through itself.
  *   fail     ENOENT on both sides FOR THE MARKED CLI, because the system's
  *            advertisement excluded it or no pin covers it. Also refused at
- *            cc's file-tool seam, so it fails both surfaces. THE ONE
+ *            cc's file-tool seam, so it fails both surfaces. THE FIRST
  *            CALLER-SENSITIVE CLASS: for an UNMARKED caller it is substituted
- *            to `host` (policy_caller_tier, policy.h) and a
- *            `served/unmarked-host-served` row names the path.
+ *            to `host` UNCONDITIONALLY (policy_caller_tier, policy.h) and a
+ *            `served/unmarked-host-served` row names the path. Unconditional,
+ *            unlike `project`'s rule, because `fail` is a statement about cc's
+ *            pin list rather than about the mirror geometry.
  *   synth    DERIVED, never written in the pins file: the ancestors of every
  *            pin, so a pinned leaf is reachable without its parents being
  *            served from anywhere. Read-only, fixed attributes.
@@ -152,7 +161,7 @@
 
 #include "policy.h"
 
-static int   host_fd = -1, remote_fd = -1;
+static int   remote_fd = -1;
 static char  host_root[PATH_MAX]   = "/";
 static char  remote_root[PATH_MAX] = "";
 static pid_t self_tgid = 0;
@@ -489,13 +498,6 @@ static inline void cred_leave(void)
 
 /* ── routing ────────────────────────────────────────────────────────────── */
 
-static const char *rel(const char *path)
-{
-	if (path[0] == '/' && path[1] == '\0')
-		return ".";
-	return path + 1;
-}
-
 struct route {
 	enum tier   tier;
 	int         fd;
@@ -556,8 +558,8 @@ static void fd_tier_set(int fd, enum tier t, int writable)
  * member a later edit adds — fails closed and says so in the event log.
  *
  * T_FAIL REACHES THAT FALL-THROUGH ONLY FOR A MARKED CALLER now: the
- * caller-sensitive substitution above rewrote it to T_HOST for an unmarked one,
- * so `unpinned-fail-closed` is the marked CLI's reason alone.
+ * caller-sensitive substitution above rewrote it to T_HOST for an unmarked one
+ * UNCONDITIONALLY, so `unpinned-fail-closed` is the marked CLI's reason alone.
  */
 /*
  * `cflags` IS THE WHOLE FLAGS BYTE, PASSED THROUGH UNTOUCHED — not a boolean.
@@ -573,7 +575,9 @@ static void fd_tier_set(int fd, enum tier t, int writable)
 static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		 struct route *r)
 {
-	r->rp     = rel(path);
+	int marked = 0;
+
+	r->rp     = policy_rel(path);
 	r->fd     = -1;
 	r->intent = cflags;
 	r->tier   = resolve_class(path);
@@ -582,22 +586,25 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 	 * is a host-tier op, so a mark set after dispatch would never fire. */
 	mark_maybe(path);
 
-	/* THE ONE CALLER-SENSITIVE TIER — policy.h owns the whole decision and the
+	/* THE CALLER-SENSITIVE TIERS — policy.h owns the whole decision and the
 	 * log row; this only asks. Placed here rather than inside an arm because
 	 * the substitution has to happen BEFORE dispatch: the T_HOST arm below is
 	 * what gives the substituted route its host fd. The /proc read is paid
-	 * only where the answer can differ. */
-	if (policy_tier_is_caller_sensitive(r->tier))
-		r->tier = policy_caller_tier(op, path, r->tier,
-			policy_is_marked_tid((pid_t)fuse_get_context()->pid),
+	 * only where the answer can differ, and `marked` is derived ONCE and
+	 * shared with the exemption below — a second read would double the per-op
+	 * /proc cost at the CLI's hottest tier under attr_timeout=0. */
+	if (policy_tier_is_caller_sensitive(r->tier)) {
+		marked = policy_is_marked_tid((pid_t)fuse_get_context()->pid);
+		r->tier = policy_caller_tier(op, path, r->tier, marked,
 			(pid_t)fuse_get_context()->pid);
+	}
 
 	switch (r->tier) {
 	case T_HIDE:
 		return -ENOENT;
 
 	case T_HOST:
-		r->fd = host_fd;
+		r->fd = policy_host_fd;
 		return 0;
 
 	/* Answered by the caller from the ancestor table — there is no backing
@@ -611,14 +618,51 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		int rc;
 		if (caller_is_self()) {
 			/* Liveness, not policy: the one answer that cannot
-			 * re-enter this daemon. */
-			r->fd = host_fd;
+			 * re-enter this daemon.
+			 *
+			 * A DISPLACED ROW, NOT A LOST GUARD. This daemon's own
+			 * thread group is permanently unmarked, so at a project
+			 * path THE HOST HAS the substitution above now answers
+			 * first and the route is T_HOST +
+			 * `unmarked-project-host-served` instead of this arm's
+			 * `self-recursion`. Liveness holds in BOTH branches: the
+			 * host answer is precisely the one that cannot re-enter
+			 * this daemon, and where the host has NO entry this arm
+			 * is still reached and this guard still fires first. */
+			r->fd = policy_host_fd;
 			policy_event(EV_SERVED, op, path, "self-recursion", (pid_t)fuse_get_context()->pid);
 			return 0;
 		}
 		/* THE CWD-CHAIN EXEMPTION — policy.h owns the whole
-		 * decision; this only asks and dispatches. */
-		if (policy_cwd_exempt(op, path, (pid_t)fuse_get_context()->pid)) {
+		 * decision; this only asks and dispatches.
+		 *
+		 * `!marked` IS A READ-COUNT GUARD, and saying so is the point:
+		 * `policy_cwd_exempt` re-checks the mark itself, so WHENEVER
+		 * THE TWO READS AGREE — as they do for any live thread group —
+		 * deleting `!marked` changes no answer, only how many /proc
+		 * reads a MARKED project-tier op pays, which is the CLI's
+		 * hottest tier under attr_timeout=0. Kept for the cost, and
+		 * recorded here exactly as `policy_cwd_normalised`'s
+		 * trailing-slash clause is.
+		 *
+		 * THE QUALIFIER IS NOT DECORATION AND THE GUARD IS NOT
+		 * UNCONDITIONALLY UNOBSERVABLE: the two reads can disagree if
+		 * the SECOND one transiently fails and answers unmarked, and
+		 * there the exemption could fire for a marked caller. That
+		 * window is a pre-existing property of `policy_cwd_exempt`'s
+		 * internal re-check — it existed before this function hoisted
+		 * `marked` at all — so the hoist neither introduced it nor is
+		 * the place to close it. Stated so the mutation waiver in
+		 * harness/mutation/README.md and this comment carry the SAME
+		 * claim; they are each other's mirror and a bare "deliberately
+		 * unobservable" here would make one of them false.
+		 *
+		 * REACHING THIS ARM UNMARKED ALREADY MEANS THE HOST HAS NO
+		 * ENTRY — the substitution above ran first — so the exemption is
+		 * consulted only BELOW the first ancestor the host has. THAT IS
+		 * THE TRAVERSAL BOUND, enforced by ordering, with nothing that
+		 * walks. */
+		if (!marked && policy_cwd_exempt(op, path, (pid_t)fuse_get_context()->pid)) {
 			r->tier = T_CWD;
 			return 0;
 		}
@@ -888,7 +932,7 @@ static void pinned_children_emit(struct pinned_children *pc,
 			emit(ctx, pc->name[i], pc->full[i], pc->tier[i]);
 			continue;
 		}
-		if (fstatat(host_fd, rel(pc->full[i]), &st, AT_SYMLINK_NOFOLLOW) == -1)
+		if (fstatat(policy_host_fd, policy_rel(pc->full[i]), &st, AT_SYMLINK_NOFOLLOW) == -1)
 			continue;
 		emit(ctx, pc->name[i], pc->full[i], pc->tier[i]);
 	}
@@ -918,7 +962,7 @@ static int pt_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	 * PINNED CHILDREN OF A REAL DIRECTORY ARE EMITTED TOO, and this is the
 	 * half a round-2 fix removed. cc materialises ONLY `project` content
 	 * into the mirror (control.ts `#servable`) — correctly, since a host pin
-	 * is served from `host_fd` and a mirror copy of it would be a second copy
+	 * is served from `policy_host_fd` and a mirror copy of it would be a second copy
 	 * of the orchestrator's file inside the run directory, never read. But
 	 * the mirror is what this loop reads, so a `host` or `bind` child of a
 	 * project directory had no dirent at all while `stat` and `open` on it
@@ -1405,7 +1449,7 @@ static int pt_statfs(const char *path, struct statvfs *stbuf)
 	/* `df /` must answer, and a synthetic node has no backing store of its
 	 * own — every tier but `host` is materialised into the mirror, so that
 	 * is the filesystem whose free space the caller is actually consuming. */
-	int fd = r.tier == T_HOST ? host_fd : remote_fd;
+	int fd = r.tier == T_HOST ? policy_host_fd : remote_fd;
 	return fstatvfs(fd, stbuf) == -1 ? -errno : 0;
 }
 
@@ -1738,7 +1782,7 @@ int main(int argc, char *argv[])
 	 * table, so the mountpoint's own parents are synthetic too. */
 	anc_build();
 
-	if ((host_fd = open(host_root, O_PATH | O_DIRECTORY)) == -1) {
+	if ((policy_host_fd = open(host_root, O_PATH | O_DIRECTORY)) == -1) {
 		fprintf(stderr, "cc-union: host root %s: %s\n",
 			host_root, strerror(errno));
 		return 1;

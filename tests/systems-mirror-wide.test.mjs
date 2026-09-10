@@ -31,7 +31,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { adoptProject, orchStoreRoot } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
-import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
+import { buildTierTable, resolveTierEntry } from '../src/systems/fuse/tierTable.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, 'fixtures', 'mirrorFixtureProvider.mjs');
@@ -138,5 +138,44 @@ describe('a mirror root wider than the project', () => {
     });
     assert.equal(tierOf(narrow, '/box/nest/app/src/main.js'), 'project');
     assert.equal(tierOf(narrow, '/box/OUT-OF-PROJECT.txt'), null);
+  });
+
+  // PINS: THE INPUT TO CARD 2026-0388'S REGRESSION. Under `mirrorRoot: '/'`
+  // `buildTierTable` emits a `project /` pin, so every UNPINNED INTERMEDIATE
+  // DIRECTORY — /bin, /usr/lib, /etc, /root — resolves `project` instead of
+  // being derived as a synthetic ancestor, while the exact host pins inside them
+  // keep their own tier. That collapse is what left an unmarked `chroot` unable
+  // to resolve /bin, and it is why no pin can fix it: the parent of every pinned
+  // library is project too.
+  //
+  // Kept as a TABLE case with no mount so the policy fix cannot be read as
+  // addressing a table that no longer produces the case. Read through
+  // `resolveTierEntry` — the function the daemon's own pins file is rendered
+  // from — rather than this file's local `tierOf`, so the two cannot diverge.
+  test('a wide advertisement swallows every unpinned intermediate directory', () => {
+    const input = {
+      localRoots: [], claudeCommand: '', execPath: '/usr/bin/node',
+      selfProjectDir: '/repo', projectsRoot: '/projects', homeDir: '/home/u',
+      runDir: '/projects/.code-conductor/systems/fuse/run/i1',
+      systemPath: '/box/nest/app', exclude: [],
+    };
+    const wide = buildTierTable({ ...input, mirrorRoot: '/' });
+    const at = (entries, p) => resolveTierEntry(entries, p)?.tier ?? null;
+
+    for (const p of ['/', '/bin', '/usr', '/usr/lib', '/etc', '/root'])
+      assert.equal(at(wide, p), 'project',
+        `${p} is not project tier under a wide root — the regression's input is gone`);
+    // …while the exact host pins INSIDE those directories keep their own tier,
+    // which is why the failure is multiply determined rather than one bad pin.
+    assert.equal(at(wide, '/bin/sh'), 'host');
+    assert.equal(at(wide, '/etc/hosts'), 'host');
+
+    // THE NARROW CONTROL: the same intermediate paths belong to no tier at all,
+    // so the daemon derives them as synthetic ancestors and an unmarked caller
+    // is never asked the project question there.
+    const narrowRoot = buildTierTable({ ...input, mirrorRoot: '/box/nest/app' });
+    for (const p of ['/bin', '/usr/lib', '/etc', '/root'])
+      assert.equal(at(narrowRoot, p), null,
+        `${p} already answers a tier under the DEFAULT root — the control is vacuous`);
   });
 });

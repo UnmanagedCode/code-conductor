@@ -32,11 +32,20 @@
 //
 // EVERY ENTRY STAYS, BECAUSE "DEAD" IS CONFIGURATION-DEPENDENT. A pin is dead
 // only if every path it covers is read exclusively by an unmarked caller — and
-// only under the DEFAULT `mirrorRoot` (= the project's own path). Under an
-// advertised `mirrorRoot: '/'`, `add('project', '/')` covers everything
-// unpinned, `tier_of` can never return `T_FAIL`, the substitution never fires,
-// and every entry below is load-bearing again. Measured by building the real
-// table both ways.
+// only under the DEFAULT `mirrorRoot` (= the project's own path), where an
+// unpinned path is `fail` and an unmarked caller is served the host anyway.
+//
+// UNDER AN ADVERTISED `mirrorRoot: '/'` EVERY ENTRY BELOW IS LOAD-BEARING
+// AGAIN, AND FOR THE MARKED CALLER. `add('project', '/')` covers everything
+// unpinned, so `tier_of` can never return `T_FAIL` and an unpinned `/bin/sh`
+// would be `project` tier — i.e. the REMOTE's shell, not the orchestrator's
+// one the chroot is built around. The pin is a longer prefix than `project /`,
+// which is the only thing keeping it host-served. (What is NOT the reason any
+// more, since card 2026-0388: it is not that the unmarked caller loses the
+// substitution there — `policy_caller_tier` substitutes `project` → `host`
+// wherever the host has an entry, so an unmarked caller is covered at a wide
+// root with or without these pins.) Measured by building the real table both
+// ways.
 //
 // The split, from the measured pre-mark window plus `ldd`, recorded rather than
 // acted on:
