@@ -1362,16 +1362,22 @@ static inline const char *policy_rel(const char *path)
  *
  * THE PROBE'S BOUND, STATED RATHER THAN BRANCHED ON: it answers "no" for ANY
  * fstatat failure, not only for non-existence. That is exactly right for the
- * errnos that MEAN non-existence — ENOENT, and ENOTDIR / ELOOP /
- * ENAMETOOLONG, each of which says the host has no entry at this spelling —
- * and EACCES is unreachable for a root probe on local storage. The residual is
- * a host filesystem that can error on a metadata op for another reason (NFS
- * under root_squash, a permission-enforcing FUSE beneath us): there the
- * unmarked caller is DENIED where the ruling would have served the host. That
- * is fail-closed — -ENOENT, never remote content, and identical to this path's
- * pre-card behaviour — and it is left as a documented bound on purpose: an
- * errno-classification branch would be unreachable on any host this is tested
- * on, trading a remote silent miss for a real untested path (owner, 2026-09-10).
+ * errnos that MEAN non-existence — ENOENT and ENOTDIR / ENAMETOOLONG, each of
+ * which says the host has no entry at this spelling — and EACCES is
+ * unreachable for a root probe on local storage.
+ *
+ * THE RESIDUAL IS A HOST FILESYSTEM THAT CAN ERROR ON A METADATA OP FOR
+ * ANOTHER REASON: NFS under root_squash, a permission-enforcing FUSE beneath
+ * us, and ELOOP — which belongs HERE and not above, because
+ * AT_SYMLINK_NOFOLLOW spares only the FINAL component. An intermediate
+ * symlink loop raises ELOOP while an entry at the final spelling may well
+ * exist, so ELOOP is not a statement about the entry. In every case in this
+ * class the unmarked caller is DENIED where the ruling would have served the
+ * host. That is fail-closed — -ENOENT, never remote content, and identical to
+ * this path's pre-card behaviour — and it is left as a documented bound on
+ * purpose: an errno-classification branch would be unreachable on any host
+ * this is tested on, trading a remote silent miss for a real untested path
+ * (owner, 2026-09-10).
  */
 static inline int policy_host_has(const char *path)
 {

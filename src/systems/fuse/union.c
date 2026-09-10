@@ -636,13 +636,26 @@ static int route(const char *op, const char *path, uint8_t cflags, uint8_t fop,
 		/* THE CWD-CHAIN EXEMPTION — policy.h owns the whole
 		 * decision; this only asks and dispatches.
 		 *
-		 * `!marked` IS A READ-COUNT GUARD AND NOTHING ELSE, and saying
-		 * so is the point: `policy_cwd_exempt` re-checks the mark
-		 * itself, so deleting `!marked` changes no answer — only how
-		 * many /proc reads a MARKED project-tier op pays, which is the
-		 * CLI's hottest tier under attr_timeout=0. Deliberately
-		 * unobservable, kept for the cost, and recorded here exactly as
-		 * `policy_cwd_normalised`'s trailing-slash clause is.
+		 * `!marked` IS A READ-COUNT GUARD, and saying so is the point:
+		 * `policy_cwd_exempt` re-checks the mark itself, so WHENEVER
+		 * THE TWO READS AGREE — as they do for any live thread group —
+		 * deleting `!marked` changes no answer, only how many /proc
+		 * reads a MARKED project-tier op pays, which is the CLI's
+		 * hottest tier under attr_timeout=0. Kept for the cost, and
+		 * recorded here exactly as `policy_cwd_normalised`'s
+		 * trailing-slash clause is.
+		 *
+		 * THE QUALIFIER IS NOT DECORATION AND THE GUARD IS NOT
+		 * UNCONDITIONALLY UNOBSERVABLE: the two reads can disagree if
+		 * the SECOND one transiently fails and answers unmarked, and
+		 * there the exemption could fire for a marked caller. That
+		 * window is a pre-existing property of `policy_cwd_exempt`'s
+		 * internal re-check — it existed before this function hoisted
+		 * `marked` at all — so the hoist neither introduced it nor is
+		 * the place to close it. Stated so the mutation waiver in
+		 * harness/mutation/README.md and this comment carry the SAME
+		 * claim; they are each other's mirror and a bare "deliberately
+		 * unobservable" here would make one of them false.
 		 *
 		 * REACHING THIS ARM UNMARKED ALREADY MEANS THE HOST HAS NO
 		 * ENTRY — the substitution above ran first — so the exemption is
