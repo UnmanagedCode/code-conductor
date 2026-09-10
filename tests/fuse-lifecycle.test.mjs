@@ -1423,8 +1423,10 @@ describe('the mount literals', () => {
     assert.equal(path.dirname(plan.root), plan.rundir);
     assert.equal(plan.mirror.startsWith(plan.root + path.sep), false, 'the mirror is inside the chroot');
     assert.equal(plan.tiers.find(e => e.prefix === plan.rundir)?.tier, 'hide');
-    // And nothing inside the chroot can name it: the pins file's only mention of
-    // the run directory is the `hide` rule itself.
+    // And nothing inside the chroot can name it THROUGH THE UNION — which is
+    // exactly what this asserts and all it asserts: the pins file's only
+    // mention of the run directory is the `hide` rule itself. It says nothing
+    // about the bind-mounted /proc, which reaches it (card 2026-0394).
     const named = plan.pinsText.split('\n').filter(l => !l.startsWith('#') && l.includes(plan.rundir));
     assert.deepEqual(named, [`hide\t${plan.rundir}`]);
   });
@@ -2337,17 +2339,23 @@ describe('the record-independent orphan backstop', () => {
 
   // T4 — CARD 2026-0387. PINS THE SECOND SET: `liveIds` reaching
   // `reclaimOrphanProcesses` as WHOLE ids, read off `/proc/<pid>/environ`'s
-  // `CC_FUSE_INSTANCE_ID` — never through a directory name.
+  // `CC_FUSE_INSTANCE_ID` — never through a directory name. BOTH DIRECTIONS:
+  // the skip alone is also what a backstop that never fires produces, so the
+  // reclaim beside it is its control.
   //
-  // A REAL UUID IN A RUN DIRECTORY OF THAT NAME, which the mkdtemp-basename
-  // fixture this replaces could not be: its id and its directory name were one
-  // 22-character string, so a prefix applied to either set still matched. Here
-  // a `keep`-shaped derivation leaking into this pass stops protecting the
-  // session, and the SIGKILL lands on a live worker.
-  //
-  // BOTH DIRECTIONS. T3 and T4 together are what make the dual set
-  // non-vacuous; the skip alone is also what a backstop that never fires
-  // produces, so the reclaim is its control.
+  // WHAT IT DOES *NOT* KILL TODAY, stated because the honest version is the
+  // useful one. `fuseRunDirName` is the identity, so `keep` and `liveIds` are
+  // equal as sets and a `keep`-shaped derivation leaking into this pass is
+  // behaviourally identical — no SIGKILL lands, and no mutant distinguishes
+  // the two here. The discrimination becomes real only under a future
+  // TRUNCATING name shape, where a `keep`-derived entry would stop matching
+  // the whole id this pass compares against and the signal would reach a live
+  // worker. The fixture is a real uuid in a run directory of that name so it
+  // is ready for that day: the fixture it replaces used a mkdtemp basename —
+  // `'cc-fuse-orphan-'` (15) plus 6 mkdtemp characters, ONE 21-character
+  // string serving as both id and directory name — under which a prefix
+  // applied to either set still matched and the question could not even be
+  // asked. T3 is where the dual set's readdir half is killable today.
   test('T4: a live full-uuid session id is never signalled, and the same row without it is', async () => {
     const runRoot = await mkdtemp('cc-fuse-orphan-');
     const id = randomUUID();

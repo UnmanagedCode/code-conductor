@@ -10,8 +10,13 @@
 // that stat'd anything under the union would be waiting on itself.
 //
 // The socket lives at `<rundir>/control.sock`. `rundir` is a SIBLING of the
-// mount root and is tiered `hide`, so nothing inside the chroot can name it —
-// containment is structural rather than policy.
+// mount root and is tiered `hide`, so nothing inside the chroot can name it
+// THROUGH THE UNION: `route()` answers -ENOENT for the path before any frame
+// is sent. That is the whole of the property — it is NOT structural
+// containment. The worker runs as cc's own uid and the architecture
+// bind-mounts the orchestrator's real /proc, so
+// `/proc/<ccpid>/root/<rundir>/control.sock` names and reaches this socket
+// from inside the chroot today (measured; card 2026-0394 owns that route).
 
 import net from 'node:net';
 import path from 'node:path';
@@ -127,9 +132,10 @@ export type Fault =
 // ── the socket's ADDRESS, which is not its path ─────────────────────────────
 //
 // Linux's `sockaddr_un` is `char sun_path[108]` and bind(2)/connect(2) need the
-// terminating NUL, so 107 bytes is the whole budget for the address — and the
-// budget binds BOTH ends. It lives here rather than in `plan.ts` because it
-// governs the two syscalls this module makes, not any path on disk.
+// terminating NUL, so 107 bytes is the whole budget for the address. The budget
+// binds BOTH ends: the mechanism makes one syscall per side, bind(2) here and
+// connect(2) in `union.c`. It lives here rather than in `plan.ts` because it
+// governs those two calls, not any path on disk.
 export const SUN_PATH_MAX = 107;
 
 // THE ADDRESS, NOT THE PATH. The socket FILE is unmoved — it is still created

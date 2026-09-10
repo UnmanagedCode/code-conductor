@@ -140,8 +140,10 @@ export interface FusePlan {
   mountOpts: string;
   // cc's control socket, which the daemon connects to and refuses to mount
   // without. It is under `rundir` — a SIBLING of `root`, tiered `hide` — so
-  // nothing inside the chroot can name it. Containment is structural here,
-  // not policy.
+  // nothing inside the chroot can name it THROUGH THE UNION. That is the whole
+  // of the property and it is not structural containment: the bind-mounted
+  // /proc reaches the same socket at `/proc/<ccpid>/root/<rundir>/` today
+  // (card 2026-0394). See `control.ts`'s header.
   controlSock: string;
   // THE PATH WHOSE RESOLUTION MARKS A THREAD GROUP AS THE CLI — the launcher
   // binary, absolute, in the spelling the kernel will ask the union about. The

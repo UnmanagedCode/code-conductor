@@ -1024,8 +1024,10 @@ describe('the control socket binds and connects at any store-root depth', () => 
       const r = await call(sock, CCU_OP.STAT, 0, '/srv/app/deep.txt');
       assert.equal(r.magic, CCU_MAGIC);
       assert.equal(r.status, CCU_STATUS.READY, `status ${r.status} errno ${r.err}`);
-      // The socket FILE is unmoved — the mirror entry materialised under the
-      // deep real path, which is the half a listen-only assertion cannot see.
+      // THE FRAME WAS REALLY SERVED, which is the half a listen-only assertion
+      // cannot see: the round trip drove a materialise. (The mirror is a short
+      // sibling, deliberately — only the SOCKET sits at the deep path, and it
+      // is the socket's address that this block is about.)
       assert.equal((await fs.stat(path.join(mirror, 'srv/app/deep.txt'))).size, 4);
       await fs.stat(sockPath);
     } finally {
