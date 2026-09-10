@@ -37,7 +37,7 @@ import {
 } from '../src/conductorConventions.ts';
 
 const SEED_WORKSPACE_SLUGS = [
-  'git-hygiene', 'readme-maintenance', 'system-prompt-docs', 'opening-urls',
+  'git-hygiene', 'readme-maintenance', 'system-prompt-docs', 'opening-urls', 'answering-questions',
 ];
 const SEED_CONDUCTOR_SLUGS = [
   'intent-disambiguation', 'canonical-workflow', 'worker-lifecycle', 'operational-tasks',

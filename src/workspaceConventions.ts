@@ -1,11 +1,11 @@
 // Workspace conventions — the "applies to every project" sections, composed
 // alongside the always-on core into one text with no destination of its own.
 //
-// CORE (conventions/workspace/core.md) is always present. The four built-in
-// conventions (conventions/workspace/<slug>.md) and any user-defined custom
-// conventions are toggled via a single GLOBAL selection — installation-wide by
-// design, so it can never drift per project — persisted at
-// <orchStoreRoot>/conventions/workspace.json as { disabled: [...], rules: [...] }.
+// CORE (conventions/workspace/core.md) is always present. The built-in
+// conventions (SEED_CONVENTIONS; bodies in conventions/workspace/<slug>.md) and
+// any user-defined custom conventions are toggled via a single GLOBAL selection
+// — installation-wide by design, so it can never drift per project — persisted
+// at <orchStoreRoot>/conventions/workspace.json as { disabled: [...], rules: [...] }.
 //
 // Delivery is per destination, and every destination is app-owned + fully
 // overwritten: src/projectClaudeMd.ts folds this text into each project's
@@ -41,6 +41,8 @@ export const SEED_CONVENTIONS: Array<{ slug: string; name: string; description: 
     description: 'CLAUDE.md + the conductor role doc cost tokens every session — cut color, keep behavior-changing instruction' },
   { slug: 'opening-urls', name: 'Opening URLs',
     description: 'Render actionable URLs as tappable ▶ buttons; never open them yourself; use sparingly' },
+  { slug: 'answering-questions', name: 'Answering questions',
+    description: 'Answer a question before acting on it; name the implied work and wait for the go-ahead' },
 ];
 
 const catalog = createFragmentCatalog({

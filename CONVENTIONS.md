@@ -25,6 +25,7 @@ These instructions apply to every project code-conductor manages. They are regen
 - **Keep related docs in sync.** Within a file, changing one half means checking the other. Across a layered doc set, a change spanning layers updates every layer it touches — or keep the fact in one file and cross-link.
 - **Optimize reference docs for retrieval, not token economy.** An omitted fact costs the reader more than an included one — they re-derive it. Be complete on the facts a reader needs: short, fact-dense bullets and tables over dense paragraphs; one fact findable at a glance. Name exact paths, commands, flags, regexes, constants, and refusal codes; skip rationale unless the *why* is non-obvious.
 - **Reference code-defined values, don't restate them.** In a doc or comment, name the constant, schema, or code that owns a value, count, or list — "the supported modes", not "three modes". Where a reader must act on the value, state it anchored to its source.
+- **Cite names, not positions.** Never put a commit sha or a `path:line` in a doc or comment — anchor to what an edit or a rebase cannot move: a symbol, constant, test title, bare file path, or card id. For a measurement, the date plus the named change it describes.
 - **Split a doc before its section sprawls.** When a subsystem fits no single host doc, or its section outgrows its host — larger than the rest of that file, or past a screenful — promote it to its own `docs/<subsystem>.md` and link it from the routing list.
 
 ## System-prompt docs
@@ -40,6 +41,13 @@ This file, each project's `CLAUDE.md`, everything they import, and the conductor
 
 - **Render URLs as tappable buttons.** When the user would benefit from visiting a URL (docs, an auth flow, a generated preview, a search result, a created PR, etc.), present it as a markdown link with a leading `▶` glyph and a short action label — e.g. `[▶ Open Google](https://google.com)` — rather than dropping a bare URL into prose or writing "you can visit …". Never try to open a URL yourself; in environments without direct browser access (such as Termux, where `am start`/`termux-open-url` are blocked while backgrounded), a presented markdown link is the only reliable path to the user's browser.
 - **Use sparingly.** One or two per turn, only when the user actually needs to navigate. Don't button-ify every URL you mention in passing — keep those as plain inline links so the buttons stay meaningful.
+
+## Answering questions
+
+- **A question is a request for information, not an instruction to act.** Answer it, and stop there. Don't reply with an edit, a fix, or a started plan.
+- **Judge the ask, not the punctuation.** "Can you make X faster?" is a question; "make X faster" is an instruction. When the wording reads both ways, answer first and offer the work — a wasted turn is cheaper than an unwanted change.
+- **When the answer implies work, say what you'd do and wait for the go-ahead.** Name the change concretely enough to approve or redirect. Reading, grepping and running commands to answer well is part of answering, not acting.
+- **A go-ahead covers the work it agreed to** — carry it out without re-checking each step. A question asked mid-work re-enters this rule.
 
 # Project conventions
 
