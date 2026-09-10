@@ -206,6 +206,28 @@ behaviour is covered. Measured on card 2026-0355: `abandon_claim`'s two mutants 
   is why `policy.h` exists and why logic keeps moving into it.
 
 
+### §5.1d Measured equivalences in the FUSE policy — do not re-derive these
+
+**These four were authored, run and PROVED equivalent rather than assumed.** Each reads A16-only
+(§5.1c) *by necessity*: it changes `policy.h` or `union.c` bytes, so the latch fires, and no
+behavioural test can fire because there is no behaviour to catch. A future prover re-authoring them
+burns a round to reach the same verdict, so the reasoning is recorded here — in a committed file,
+because `.mutation/` is gitignored and does not survive a merge. The catalog entries carry the same
+text in their `waivedNote`; **if the two ever disagree, this file is the record and the catalog is
+the scratch copy.**
+
+| mutant | mutation | why it is equivalent |
+|---|---|---|
+| `m-388-ct-rule-order-swap` | swap the two rules inside `policy_caller_tier` | The rules discriminate on **disjoint tier values** (`t == T_FAIL` vs `t == T_PROJECT && …`), so at most one can fire for any input and neither can shadow the other. Order is not load-bearing **here** — which is NOT true of the ordering in `route()`, where the substitution must precede `policy_cwd_exempt` (that one is killed, and by a source-shape assertion; see `b36`'s note) |
+| `m-388-hh-drop-negfd` | delete `if (policy_host_fd < 0) return 0;` from `policy_host_has` | `fstatat` on a negative dirfd fails **`EBADF`**, and `== 0` still answers 0. **THE NON-OBVIOUS HALF, and the reason this is an equivalence rather than a coverage gap: the negative-fd answer IS pinned — by `b33`'s first two checks — but it is pinned THROUGH THE EBADF FALLBACK, not through the guard.** The guard is a fast path, not the mechanism. Do not read this verdict as "nothing covers the unset seam"; every case that leaves `policy_host_fd = -1` still gets the answer it relies on |
+| `m-388-hh-raw-path` | `fstatat(policy_host_fd, path, …)` instead of `policy_rel(path)` | **EQUIVALENT ONLY UNDER A STANDING CONDITION, and the condition is the durable fact here:** `bootstrap.sh` hard-codes `CC_UNION_HOST_ROOT=/` (`bootstrap.sh:151`), so the host fd is always on `/` and a raw absolute path names the same object `policy_rel(path)` does. **If the host root ever becomes non-`/`, `policy_rel` becomes load-bearing and this mutant stops being equivalent** — it would then answer for a path on the whole host filesystem instead of one relative to the host root. Re-derive the verdict at that point rather than carrying it forward. The *distinct* mutant that drops `policy_rel`'s `"/" → "."` root special-case (`m-388-rel-root-case`) is **not** equivalent and **is** killed, by `b33` and `b36` |
+| `m-388-route-drop-notmarked` | delete `!marked &&` at `route()`'s `policy_cwd_exempt` call site | Declared non-behavioural before the round ran — a read-count guard, because `policy_cwd_exempt` re-checks the mark itself. **[README.md](README.md) → "Declared non-behavioural mutants" is the authoritative entry**, including the condition under which the equivalence holds (both `/proc` reads agree, as they do for any live thread group) and the pre-existing window in which it does not |
+
+**Why not just mark them `waived` and move on?** Because two of them are equivalent *for a stated
+reason that can expire* — the host-root spelling for `m-388-hh-raw-path`, the agreement of the two
+mark reads for `m-388-route-drop-notmarked` — and a bare "waived" loses the condition. A waiver
+whose condition is not written down becomes an unexamined assumption the next round inherits.
+
 **§5.1b The CAPABILITY gate, which is a different animal from an env flag.**
 
 `tests/fuse-union-policy.test.mjs` compiles `tests/fixtures/union-policy-driver.c` and skips when it

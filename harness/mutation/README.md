@@ -53,6 +53,17 @@ state.
    check which files nest tests under `describe`, run `rg -l '^describe\(' tests/*.test.mjs` —
    don't rely on a remembered list, it drifts.
 
+   **AND THE ID IS THE TEST'S TITLE, SO RENAMING A TITLE SILENTLY INVALIDATES EVERY `expectFail`
+   SET THAT NAMES IT.** It surfaces as `IMPRECISE`, never as a failure, so a stale ref reads as a
+   *mutant* problem and invites rewriting a mutant that was already correct. This is a recurring
+   trap on the FUSE-union epic specifically, because its driver cases carry long invariant
+   sentences in their titles (`tests/fuse-union-policy.test.mjs`'s `CASES` table) and a card that
+   sharpens one wording re-anchors nothing: card 2026-0388 renamed `b24`'s and `b25`'s titles and
+   two inherited mutants (`m-b8-starttime-inverted`, `m-cevent-key-adds-op`) went `IMPRECISE` on
+   that alone — same killers, unchanged coverage. **On any round that touches a title in `CASES`,
+   re-run `--learn` for the inherited mutants before reading a verdict**, and re-anchor from the
+   observed set rather than editing the mutant.
+
 2. **Omit `narrowTo` from every mutant.** `narrowTo: "names"` does not work against this suite and
    `validate` will not warn you. It degrades safely — `IMPRECISE` or `ERROR`, never a false `KILLED`
    or `SURVIVED` — but it burns a review round on a non-finding. File granularity is the policy
