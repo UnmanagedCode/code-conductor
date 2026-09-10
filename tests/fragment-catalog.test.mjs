@@ -119,6 +119,37 @@ test('patchState preserves rules; saveCustom preserves sibling state', async () 
 // non-string name/description to '' and non-string body to undefined — not pass
 // the raw values through, where a numeric body would be string-concatenated into
 // composed markdown and a null name would slip past re-validation as "valid".
+// customSlugsOf is what lets the selection collaborator build "everything this
+// scope knows, minus the off-switches" from the ONE readState() it already
+// makes — no catalog resolution, so no seed fragment is re-read off disk per
+// getSelection(). Two claims, and both matter: it agrees with the catalog's own
+// custom entries, and it does no I/O (proved by handing it a literal state
+// object for a store file that does not exist).
+test('customSlugsOf projects custom slugs out of already-read state, with no I/O', async () => {
+  const { dir, catalog } = await mkFixture();
+  try {
+    await catalog.addCustom({ slug: 'baz', name: 'Baz', description: 'd', body: '## Baz' });
+    await catalog.addCustom({ slug: 'qux', name: 'Qux', description: 'd', body: '## Qux' });
+
+    const state = await catalog.readState();
+    assert.deepEqual(catalog.customSlugsOf(state), ['baz', 'qux']);
+    // Agrees with the catalog's own notion of which entries are custom.
+    assert.deepEqual(
+      (await catalog.getCatalog()).filter(c => !c.builtin).map(c => c.slug),
+      catalog.customSlugsOf(state),
+    );
+
+    // Pure: a state literal for a store that was never written still answers,
+    // and the same normalisation loadCustom applies drops the junk rules.
+    assert.deepEqual(catalog.customSlugsOf({}), []);
+    assert.deepEqual(catalog.customSlugsOf({ rules: 'nope' }), []);
+    assert.deepEqual(
+      catalog.customSlugsOf({ rules: [{ slug: 'ok' }, null, { name: 'no slug' }, { slug: 7 }] }),
+      ['ok'],
+    );
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
 test('a malformed rule in the store JSON is coerced, not concatenated into markdown', async () => {
   const { dir, catalog } = await mkFixture();
   try {

@@ -7,14 +7,21 @@
 // no selection concept at all — its picks live in the in-tree CONVENTIONS.md
 // line-1 marker, owned by src/projectClaudeMd.ts.
 //
-// The shared body owns the base read, the setSelection validation (array guard +
-// unknown-slug 400) and the delete-drops-it-from-`enabled` rule. Everything a
-// scope does differently rides one of two hooks:
+// THE PERSISTED STATE IS A DENY-LIST (`disabled`), never an allow-list — card
+// 2026-0123. Everything the scope knows about is enabled unless the user
+// switched it off, so a slug added to SEED_CONVENTIONS reaches every install,
+// fresh or existing, with no migration. The allow-list this replaced needed one
+// per added seed (migrations 0015, 0029): any store that had ever persisted a
+// selection froze the set it was written with, and every later seed sat
+// unchecked forever.
+//
+// The shared body owns the base read (everything the scope knows, minus
+// `disabled`), the setSelection validation (array guard + unknown-slug 400), the
+// submitted-set → `disabled` diff, and the delete-prunes-it-from-`disabled`
+// rule. A scope that derives more than it persists rides one hook:
 //
 //   derive  — store state → effective selection (conductor folds in the enabled
-//             plugins' conventions minus its pluginOff list)
-//   persist — submitted set → the store patch (conductor splits it into
-//             `enabled` + `pluginOff`)
+//             plugins' conventions, minus `disabled`)
 //
 // `derive` receives the catalog as a LAZY THUNK, not a resolved list. Workspace's
 // derivation is store-read-only, and every composeCurrentWorkspace() /
@@ -26,14 +33,13 @@ import { httpError } from './httpError.ts';
 
 interface SelectionStoreConfig {
   // catalog: the FragmentCatalog this selection sits on (state + entry list)
-  // seeds:   built-in metadata; their slugs are the default selection when the
-  //          store carries no `enabled` key (so a future-added built-in defaults on)
+  // seeds:   built-in metadata; every slug is enabled unless the store's
+  //          `disabled` deny-list names it (so a future-added built-in is on)
   // noun:    label used in the unknown-slug 400 — pass the same one the catalog got
   catalog: FragmentCatalog;
   seeds: Array<{ slug: string }>;
   noun?: string;
   derive?: (ctx: { base: string[]; state: Record<string, unknown>; catalog: () => Promise<CatalogList> }) => Promise<string[]>;
-  persist?: (ctx: { submitted: string[]; state: Record<string, unknown>; catalog: CatalogList }) => Record<string, unknown>;
 }
 
 export interface SelectionStore {
@@ -42,20 +48,45 @@ export interface SelectionStore {
   deleteCustom(slug: string): Promise<{ slug: string }>;
 }
 
+// The persisted off-switches. Exported because the conductor scope's `derive`
+// subtracts the very same set from its live plugin entries — one reader of the
+// key, not two shapes of it.
+export function disabledOf(state: Record<string, unknown>): Set<string> {
+  return new Set(Array.isArray(state.disabled) ? state.disabled as string[] : []);
+}
+
 export function createSelectionStore({
   catalog,
   seeds,
   noun = 'convention',
   derive = async ({ base }) => base,
-  persist = ({ submitted }) => ({ enabled: submitted }),
 }: SelectionStoreConfig): SelectionStore {
-  // Base = the persisted selection, or all seed slugs when the key is absent.
-  // Absence is the DEFAULT state, not an empty selection: a fresh install
-  // composes every built-in.
+  // Base = everything this scope knows about (seed + custom slugs), minus the
+  // persisted off-switches. Order is seed order then custom order — the base is
+  // built from the catalog's own ordering, so it never echoes the order a
+  // settings save happened to submit.
   async function getSelection(): Promise<string[]> {
     const state = await catalog.readState();
-    const base = Array.isArray(state.enabled) ? state.enabled as string[] : seeds.map(s => s.slug);
+    const off = disabledOf(state);
+    const base = [...seeds.map(s => s.slug), ...catalog.customSlugsOf(state)]
+      .filter(s => !off.has(s));
     return derive({ base, state, catalog: () => catalog.getCatalog() });
+  }
+
+  // The submitted checkbox set, folded into the persisted deny-list: for every
+  // slug the LIVE CATALOG can see, checked clears its off-switch and unchecked
+  // records one. A slug the catalog cannot currently see — an unreachable or
+  // disabled plugin's convention — keeps whatever off-state it already had, so
+  // an off-switch survives a disable→re-enable round trip.
+  function nextDisabled({ submitted, state, catalog: cat }:
+  { submitted: string[]; state: Record<string, unknown>; catalog: CatalogList }): Record<string, unknown> {
+    const submittedSet = new Set(submitted);
+    const off = disabledOf(state);
+    for (const m of cat) {
+      if (submittedSet.has(m.slug)) off.delete(m.slug);
+      else off.add(m.slug);
+    }
+    return { disabled: [...off] };
   }
 
   async function setSelection(enabled: string[]): Promise<string[]> {
@@ -70,18 +101,19 @@ export function createSelectionStore({
       }
     }
     const state = await catalog.readState();
-    await catalog.patchState(persist({ submitted: enabled, state, catalog: cat }));
+    await catalog.patchState(nextDisabled({ submitted: enabled, state, catalog: cat }));
     return enabled;
   }
 
-  // Deleting a custom entry also drops it from the persisted selection — the
-  // base `enabled` array is the only place a custom slug can appear (plugin
-  // slugs are never custom), so no derive/persist hook is involved.
+  // Deleting a custom entry also prunes it from the deny-list. Without that, a
+  // custom the user had switched off leaves an off-switch behind, and a
+  // re-created entry of the same slug would silently come back OFF while every
+  // other new entry is on.
   async function deleteCustom(slug: string): Promise<{ slug: string }> {
     const result = await catalog.deleteCustom(slug);
-    const enabled = (await catalog.readState()).enabled;
-    if (Array.isArray(enabled) && (enabled as string[]).includes(slug)) {
-      await catalog.patchState({ enabled: (enabled as string[]).filter(s => s !== slug) });
+    const off = disabledOf(await catalog.readState());
+    if (off.delete(slug)) {
+      await catalog.patchState({ disabled: [...off] });
     }
     return result;
   }
