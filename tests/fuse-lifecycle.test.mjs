@@ -1409,9 +1409,17 @@ describe('the mount literals', () => {
   });
 
   // A18 — PINS criterion 9's geometry: the per-session mirror is OUTSIDE the
-  // chroot and has no spelling inside it. `rundir` is tiered `hide`, so the
-  // union answers -ENOENT for its own backing store; moving `mirror` under
-  // `root` would put the remote tier's backing store inside the tree it backs.
+  // chroot and has no spelling inside it THROUGH THE UNION. `rundir` is tiered
+  // `hide`, so the union answers -ENOENT for its own backing store; moving
+  // `mirror` under `root` would put the remote tier's backing store inside the
+  // tree it backs.
+  //
+  // THE SCOPE IS THE CONJUNCTION'S SECOND HALF, and it is the whole of the
+  // correction: "outside the chroot" is true unconditionally, "no spelling
+  // inside it" only of paths resolved through the mount. The bind-mounted
+  // /proc supplies another spelling — `/proc/<ccpid>/root/<rundir>/mirror` —
+  // which resolves today (card 2026-0394). See the comment on the pins-file
+  // assertion below.
   test('A18: the mirror is under rundir, not under root, and rundir is hidden', async () => {
     const { buildFusePlan, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
     const plan = buildFusePlan({

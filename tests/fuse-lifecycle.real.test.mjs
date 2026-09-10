@@ -995,10 +995,18 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
   // ── R5 ───────────────────────────────────────────────────────────────────
   // PINS criterion 9: the per-session mirror is OUTSIDE the chroot and has NO
-  // spelling inside it, and it goes with the session. A18 pins the geometry
-  // deterministically; this pins that the daemon actually answers -ENOENT for
-  // it, which is the half a plan file cannot establish.
-  test('R5 — the run directory is unreachable from inside the chroot and dies with the session', async () => {
+  // spelling inside it THROUGH THE UNION, and it goes with the session. A18
+  // pins the geometry deterministically; this pins that the daemon actually
+  // answers -ENOENT for it, which is the half a plan file cannot establish.
+  //
+  // "THROUGH THE UNION" IS EXACTLY WHAT THE PROBE BELOW MEASURES and exactly
+  // what the claim may say: every path it tries is `inside(record, …)`, i.e.
+  // re-rooted and asked of the mount. It is NOT a reachability claim about the
+  // chroot as a whole — the worker runs as cc's own uid and the architecture
+  // bind-mounts the orchestrator's real /proc, so
+  // `/proc/<ccpid>/root/<rundir>/mirror` is another spelling of the same
+  // directory and it resolves (measured; card 2026-0394 owns that route).
+  test('R5 — the run directory is unreachable through the union from inside the chroot, and dies with the session', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
     const rundir = fuseRunDir(inst.id);
@@ -1009,7 +1017,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       for (const hidden of [rundir, path.join(rundir, 'mirror'), path.join(rundir, 'control.sock')]) {
         const probe = await inNs(record.anchorPid,
           '[ -e "$1" ] && echo PRESENT || echo ABSENT', inside(record, hidden));
-        assert.match(probe.stdout, /ABSENT/, `${hidden} is reachable from inside the chroot`);
+        assert.match(probe.stdout, /ABSENT/, `${hidden} is reachable THROUGH THE UNION from inside the chroot`);
       }
       // NON-VACUITY: the mirror really was populated on the outside, so ABSENT
       // above is the tier answering rather than an empty tree. The CLI's own
