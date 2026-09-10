@@ -9,7 +9,7 @@
 // owns the load/CRUD/compose logic so no scope reimplements it.
 //
 // The JSON store shape is { rules: [...], ...siblingKeys }. Sibling keys
-// (e.g. the conductor/workspace scopes' `enabled` selection) are preserved
+// (e.g. the conductor/workspace scopes' `disabled` selection) are preserved
 // across rule writes and exposed via readState/patchState.
 
 import { promises as fs } from 'node:fs';
@@ -31,6 +31,33 @@ function validateFields({ name, description, body }: { name: unknown; descriptio
       throw httpError(400, `${noun} ${field} is required`);
     }
   }
+}
+
+// Normalises a store's `rules` array to the CustomRule shape: slug is
+// guaranteed a string by the filter; name/description/body are coerced from
+// whatever was persisted. Well-formed rules (always written as strings by
+// add/update) are untouched; malformed values become '' — the same shape
+// updateCustom's re-validation expects, so a stored null can't slip through as
+// "valid".
+//
+// Pure and I/O-free, so it serves both loadCustom (which reads the store) and
+// customSlugsOf (which is handed state the caller already read) off ONE
+// definition of the store shape.
+function normalizeRules(store: Record<string, unknown>): CustomRule[] {
+  if (!Array.isArray(store.rules)) return [];
+  const out: CustomRule[] = [];
+  for (const r of store.rules) {
+    if (!r || typeof r !== 'object') continue;
+    const rec = r as Record<string, unknown>;
+    if (typeof rec.slug !== 'string') continue;
+    out.push({
+      slug: rec.slug,
+      name: typeof rec.name === 'string' ? rec.name : '',
+      description: typeof rec.description === 'string' ? rec.description : '',
+      body: typeof rec.body === 'string' ? rec.body : undefined,
+    });
+  }
+  return out;
 }
 
 interface FragmentSeed {
@@ -121,6 +148,11 @@ export interface FragmentCatalog {
   composeWithMeta(slugs: string[]): Promise<{ text: string; degraded: boolean }>;
   readState(): Promise<Record<string, unknown>>;
   patchState(patch: Record<string, unknown>): Promise<void>;
+  // The custom-entry slugs of an ALREADY-READ state — pure, no I/O. The
+  // selection collaborator builds its base from it (seeds ∪ customs − off) off
+  // the single readState() it already makes, without resolving the catalog (and
+  // so without re-reading every seed fragment off disk).
+  customSlugsOf(state: Record<string, unknown>): string[];
   validateSlug(slug: string): string;
 }
 
@@ -151,27 +183,8 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
     await writeFileAtomic(storeFile(), JSON.stringify(obj, null, 2) + '\n');
   }
 
-  // Normalises each stored rule to the CustomRule shape: slug is guaranteed a
-  // string by the filter; name/description/body are coerced from whatever was
-  // persisted. Well-formed rules (always written as strings by add/update) are
-  // untouched; malformed values become '' — the same shape updateCustom's
-  // re-validation expects, so a stored null can't slip through as "valid".
   async function loadCustom(): Promise<CustomRule[]> {
-    const store = await loadStore();
-    if (!Array.isArray(store.rules)) return [];
-    const out: CustomRule[] = [];
-    for (const r of store.rules) {
-      if (!r || typeof r !== 'object') continue;
-      const rec = r as Record<string, unknown>;
-      if (typeof rec.slug !== 'string') continue;
-      out.push({
-        slug: rec.slug,
-        name: typeof rec.name === 'string' ? rec.name : '',
-        description: typeof rec.description === 'string' ? rec.description : '',
-        body: typeof rec.body === 'string' ? rec.body : undefined,
-      });
-    }
-    return out;
+    return normalizeRules(await loadStore());
   }
 
   async function saveCustom(rules: CustomRule[]): Promise<void> {
@@ -304,9 +317,12 @@ export function createFragmentCatalog({ seeds, seedDir, seedExt = '.md', storeFi
 
   const compose = async (slugs: string[]): Promise<string> => (await composeWithMeta(slugs)).text;
 
+  const customSlugsOf = (state: Record<string, unknown>): string[] =>
+    normalizeRules(state).map(r => r.slug);
+
   return {
     getCatalog, addCustom, updateCustom, deleteCustom, compose, composeWithMeta,
-    readState, patchState, validateSlug,
+    readState, patchState, customSlugsOf, validateSlug,
   };
 }
 

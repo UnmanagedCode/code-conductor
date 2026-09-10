@@ -156,8 +156,10 @@ test('POST creates a custom convention (201); PUT /:slug updates; DELETE removes
   });
   assert.equal(add.status, 201);
   assert.equal(add.body.convention.builtin, false);
-  // Custom conventions are off by default (not in the default all-builtins selection),
-  // so the body is present in the catalog but not yet in the composed text.
+  // A custom convention is enabled the moment it is created (nothing switches
+  // it off, and the persisted state is a deny-list), so its body is already in
+  // the composed text. The explicit save below is the round trip, not the
+  // enablement.
   await api(baseUrl, 'PUT', '/api/settings/conventions/workspace/selection', {
     enabled: [...SEED_CONVENTIONS.map(m => m.slug), 'rest-mod'],
   });

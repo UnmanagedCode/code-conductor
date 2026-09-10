@@ -5,7 +5,7 @@
 // conventions (conventions/workspace/<slug>.md) and any user-defined custom
 // conventions are toggled via a single GLOBAL selection — installation-wide by
 // design, so it can never drift per project — persisted at
-// <orchStoreRoot>/conventions/workspace.json as { enabled: [...], rules: [...] }.
+// <orchStoreRoot>/conventions/workspace.json as { disabled: [...], rules: [...] }.
 //
 // Delivery is per destination, and every destination is app-owned + fully
 // overwritten: src/projectClaudeMd.ts folds this text into each project's
@@ -67,10 +67,11 @@ export const validateSlug = catalog.validateSlug;
 
 // ── Global selection (the shared collaborator, no overrides) ────────────────
 //
-// Plain selection: the persisted `enabled` array is the whole story, and its
-// absence defaults to all built-ins so a fresh install composes the equivalent
-// of the pre-carve bundled canonical. Deleting a custom convention also drops
-// it from that array.
+// Plain selection: the persisted `disabled` deny-list is the whole story, and
+// every built-in and custom convention it does not name is composed — so a
+// fresh install (no store at all) composes the equivalent of the pre-carve
+// bundled canonical, and so does an install that has saved its settings.
+// Deleting a custom convention also prunes it from that array.
 
 const selection = createSelectionStore({ catalog, seeds: SEED_CONVENTIONS, noun: 'convention' });
 
