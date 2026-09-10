@@ -1792,6 +1792,19 @@ describe('the configuration-time containment refusal', () => {
     const { sunPathAddress, SUN_PATH_MAX } = await import('../src/systems/fuse/control.ts');
     assert.equal(sunPathAddress(3, 'control.sock'), '/proc/self/fd/3/control.sock');
     assert.ok(Buffer.byteLength(sunPathAddress(3, 'control.sock')) <= SUN_PATH_MAX);
+    // KEYED ON THE FORMED ADDRESS, NOT ON THE BASENAME — and only a basename
+    // in this band can tell the two apart. The address carries a 16-byte
+    // `/proc/self/fd/3/` prefix, so a 100-byte basename is UNDER the 107-byte
+    // limit on its own and OVER it once formed. Every real caller passes
+    // `control.sock` (12 bytes) and the 200-char case below is refused by a
+    // basename-keyed check too, so without this arm a check reading `name`
+    // instead of `addr` is invisible.
+    assert.throws(() => sunPathAddress(3, 'c'.repeat(100)), (e) => {
+      assert.equal(e.code, 'FUSE_CONTROL_SOCK_PATH_TOO_LONG');
+      assert.ok(Buffer.byteLength('c'.repeat(100)) <= SUN_PATH_MAX,
+        'the discriminating case must have a basename UNDER the limit, or it proves nothing');
+      return true;
+    });
     assert.throws(() => sunPathAddress(3, 'c'.repeat(200)), (e) => {
       assert.equal(e.code, 'FUSE_CONTROL_SOCK_PATH_TOO_LONG');
       assert.equal(e.statusCode, 501);
@@ -2230,6 +2243,21 @@ describe('FuseSession lifecycle', () => {
     const foreign = randomUUID();
     assert.notEqual(foreign, p.instanceId);
     await fs.writeFile(p.intentPath, JSON.stringify({ schema: 1, instanceId: foreign, rundir }));
+    // THE OTHER SESSION'S MOUNT RECORD, seeded because it is what the guard
+    // actually protects and what the ORDERING is about. `#prepare()`'s next
+    // act after this guard is `rm(p.recordPath)`, so a guard placed AFTER that
+    // rm still throws the right code while having already destroyed the live
+    // session's only handle on its daemon, its anchor and its minor.
+    //
+    // NON-WEDGED ON PURPOSE: `wedged: true` is caught by the earlier
+    // FUSE_PREVIOUS_TEARDOWN_WEDGED check and this arm would never reach the
+    // ownership guard at all.
+    const otherRecord = {
+      schema: 1, stage: 'mounted', instanceId: foreign, rundir,
+      daemonPid: 4242, anchorPid: 4243, minor: '99',
+    };
+    await fs.writeFile(p.recordPath, JSON.stringify(otherRecord));
+
     await assert.rejects(() => s.prepare(), (e) => {
       assert.equal(e.code, 'FUSE_RUN_DIR_FOREIGN');
       assert.equal(e.statusCode, 500);
@@ -2238,8 +2266,12 @@ describe('FuseSession lifecycle', () => {
       assert.ok(e.message.includes(foreign) && e.message.includes(p.instanceId), e.message);
       return true;
     });
-    // AND IT REFUSED BEFORE DESTROYING ANYTHING — the other session's record
-    // is the thing the guard exists to protect.
+    // AND IT REFUSED *BEFORE* DESTROYING ANYTHING. The mount record is the
+    // load-bearing assertion — `intent.json` alone cannot see this, because
+    // prepare() rewrites intent LATER and a prepare that rm'd the record and
+    // then threw leaves intent untouched either way.
+    assert.deepEqual(JSON.parse(await fs.readFile(p.recordPath, 'utf8')), otherRecord,
+      'the foreign session’s mount.json was destroyed before the refusal');
     assert.equal(JSON.parse(await fs.readFile(p.intentPath, 'utf8')).instanceId, foreign);
   });
 });

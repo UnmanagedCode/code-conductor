@@ -1037,4 +1037,63 @@ describe('the control socket binds and connects at any store-root depth', () => 
     }
     await assert.rejects(() => fs.stat(sockPath), 'close() left the socket file behind at the real path');
   });
+
+  // T9 — THE CLOSE ORDERING, deterministically. `close()` must close `#dirfd`
+  // only AFTER `await server.close()` resolves, because libuv unlinks the pipe
+  // by THE ADDRESS IT BOUND WITH — `/proc/self/fd/<n>/control.sock` — resolved
+  // in cc's own fd table AT UNLINK TIME. Close the fd first and that address
+  // resolves to whatever later takes the number, so the unlink can land on
+  // ANOTHER session's `control.sock`.
+  //
+  // WHY THE OBVIOUS TEST CANNOT WORK, recorded so nobody rebuilds it. The
+  // hazard needs an intervening `open()` between the early `closeSync` and the
+  // unlink — and MEASURED, that window contains no yield point at all: libuv
+  // performs the unlink SYNCHRONOUSLY inside `server.close()` (a probe found
+  // the file already gone on the statement after the call, before any
+  // microtask, `nextTick`, `setImmediate` or timer). No in-process JS can be
+  // scheduled into it, so a single-threaded test cannot steal the descriptor
+  // and a spin loop would only ever be green-either-way.
+  //
+  // SO PIN THE CAUSE, NOT THE RACY CONSEQUENCE. Renaming the socket's parent
+  // after bind is the instrument: the dirfd is on the INODE, so the bound
+  // address still resolves, while `opts.socketPath` goes stale — which takes
+  // `close()`'s own `fsp.rm` out of the picture and leaves libuv's unlink as
+  // the ONLY thing that can remove the file. It succeeds if and only if the
+  // dirfd is still open when `server.close()` runs.
+  //
+  // PINS: the dirfd outlives `server.close()`. Dies under a mutant moving
+  // `closeSync(#dirfd)` ahead of it — the one T7 cannot see, because with a
+  // single server the explicit `fsp.rm` on the real path produces an identical
+  // end state. (That `rm` is deliberate and measured-redundant on the happy
+  // path; it is what keeps this reorder latent instead of catastrophic, so do
+  // not "simplify" it away.)
+  test('T9: close() unlinks through a dirfd that is still open, not one already released', async () => {
+    const box2 = await mkdtemp('cc-ctl-order-');
+    const live = path.join(box2, 'live');
+    const mirror2 = path.join(box2, 'mirror');
+    await fs.mkdir(live, { recursive: true });
+    await fs.mkdir(mirror2, { recursive: true });
+    const sockPath = path.join(live, 'control.sock');
+
+    const server = await ControlServer.listen({
+      socketPath: sockPath, mirror: mirror2, source: localDirSource(box2), tiers, log: () => {},
+    });
+    await fs.stat(sockPath);
+
+    // THE INSTRUMENT. After this the recorded path names nothing.
+    const moved = path.join(box2, 'moved');
+    await fs.rename(live, moved);
+    const movedSock = path.join(moved, 'control.sock');
+    // Both preconditions asserted, because the whole attribution rests on
+    // them: the socket travelled with its parent, and `close()`'s `fsp.rm`
+    // now has a stale path and cannot be what removes it.
+    await fs.stat(movedSock);
+    await assert.rejects(() => fs.stat(sockPath),
+      'the recorded socketPath still resolves, so fsp.rm could remove the file and this test proves nothing');
+
+    await server.close();
+
+    await assert.rejects(() => fs.stat(movedSock),
+      'the socket survived close() — libuv could not unlink through the bound address, so the dirfd was already released when it tried');
+  });
 });
