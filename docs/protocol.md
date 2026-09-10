@@ -556,7 +556,7 @@ A **file format with real readers**, which is why it is here and not only in [ar
 | reason | kind | emitted where, and what the caller got |
 |---|---|---|
 | `unpinned-fail-closed` | `deny` | `route()`'s fall-through, `-ENOENT`. **The MARKED CLI's alone** since card 2026-0382 — an unmarked caller at `fail` is substituted to `host` before the switch |
-| `unmarked-project-denied` | `deny` | `policy_project_route`'s mark check, `-ENOENT`. **A live production denial**, not defence in depth: it is the only thing closing the project tree to an unmarked caller. Observed at the real CLI as unmarked `git` dying at `<proj>/.git` |
+| `unmarked-project-denied` | `deny` | `policy_project_route`'s mark check, `-ENOENT`. **A live production denial**, not defence in depth: it is the only thing closing the project tree to an unmarked caller. Since card 2026-0388 it fires only where **the host has no entry** at the path *and* no cwd-traversal exemption applies — where the host has one, `policy_caller_tier` substitutes `host` before this is reached. Observed at the real CLI as unmarked `git` dying at `<proj>/.git` |
 | `control-unavailable` | `deny` | cc could not be reached, `-EIO` |
 | `remote-absent` | `deny` | the remote does not have it, `-ENOENT` |
 | `control-refused` | `deny` | cc would not carry it, `-EACCES` |
@@ -564,7 +564,8 @@ A **file format with real readers**, which is why it is here and not only in [ar
 | `xdev-rename` | `deny` | the two routed ends are on different backing stores, `-EXDEV` |
 | `dirty-push-refused` | `deny` | the reconcile could not land; the op returns cc's errno |
 | `dirty-remove-refused` | `deny` | as above, for a removal |
-| `self-recursion` | `served` | the daemon's own thread group at a project path — served from `host_fd`, **returns 0**. A liveness precondition, not a routing policy |
+| `self-recursion` | `served` | the daemon's own thread group at a project path — served from `policy_host_fd`, **returns 0**. A liveness precondition, not a routing policy |
 | `pinned-children-truncated` | `served` | a `readdir` past `MAX_PINNED_CHILDREN`; the listing **succeeds** with a name dropped |
 | `unmarked-host-served` | `served` | an unmarked caller was routed to the host at an unpinned path (card 2026-0382). Fires on the **substitution**, whatever the host read then does — the host's own ENOENT is not a policy event and `route()` cannot know it. ~20 per shell startup; 535 rows over one real-CLI turn |
+| `unmarked-project-host-served` | `served` | an unmarked caller was routed to the host at a **`project`-tier path the host has an entry at** (card 2026-0388, owner ruling 2026-09-09: an unmarked process always gets the host entry where one exists, whatever the `mirrorRoot`). Gated on one `fstatat` through the daemon's host fd (`policy_host_has`), which is the asymmetry with `unmarked-host-served`: `fail` substitutes **unconditionally**, `project` only where the host has something. **Its own reason, not a reuse**: this one gets no `suggestPin` entry, and its **volume by path** is how much of the project tree the host shadows — the divergence surface a wide `mirrorRoot` accepts |
 | `cwd-traversal-served` | `served` | `policy_cwd_exempt` GRANTED an unmarked caller a `getattr` on a directory component of the CLI's cwd (card 2026-0389). Fires **after the whole conjunction**, so a refused traversal writes nothing. The exemption was silent before this, so no capture could show which process needed which link |

@@ -67,6 +67,22 @@ state.
    all-skipped file reports a *green* narrow baseline and the mutant reads `SURVIVED`, not
    `ERROR (scope-empty)`. RATIONALE.md §5 lists today's gates and how to re-derive them.
 
+## Declared non-behavioural mutants — waive, do not file
+
+A mutant listed here **legitimately SURVIVES**. Each is a construct whose removal changes no
+answer the suite (or any caller) can observe; they are declared by the implementer at the time the
+construct lands, so a prover waives them instead of re-discovering and re-filing them every round.
+State the waiver in the round's report with the reason below — do not silently drop it.
+
+| construct | mutation that survives | why nothing can kill it |
+|---|---|---|
+| `!marked &&` at `route()`'s `policy_cwd_exempt` call site (`src/systems/fuse/union.c`, card 2026-0388) | delete `!marked &&` | `policy_cwd_exempt` **re-checks the mark itself** as its last condition, so the short-circuit changes only how many `/proc` reads a MARKED project-tier op pays — the CLI's hottest tier under `attr_timeout=0`. Kept for the cost, declared here rather than claimed as covered. The comment at the call site says the same thing. **Deleting the mark check inside `policy_cwd_exempt` is a different mutant and IS killed** (`b22`, `b32`) |
+
+And the standing one, which is not a construct but a test: **`A16`'s sha256 latch
+(`tests/fuse-lifecycle.test.mjs`) is a deliberate-edit disclosure, not coverage.** A C mutant whose
+only failing test is `A16` is **unattributed** — re-run it narrower rather than recording `KILLED`.
+RATIONALE.md §5.1c has the measurement and the scoping recipe.
+
 ## What to expect
 
 - `baseline` is **two full-suite passes** (baseline + canary). On a 16-core host a full suite pass is

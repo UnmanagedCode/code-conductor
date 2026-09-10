@@ -221,6 +221,66 @@ static void pin(const char *line)
 	}
 }
 
+/* ── the host-existence probe's fixture ─────────────────────────────────── */
+/*
+ * ONE mkdtemp'd TREE PER CASE, with `policy_host_fd` opened on the REAL ROOT
+ * and every probe path spelled ABSOLUTELY from it. That is production's
+ * arrangement exactly — `main()` opens the host root, every union path arrives
+ * absolute — so `policy_rel` is exercised here the way production exercises it.
+ *
+ * DETERMINISTIC DESPITE NAMING THE REAL ROOT: every path asserted PRESENT is
+ * created by the case itself, and every path asserted ABSENT is inside this
+ * process's own mkdtemp, which no other process can name.
+ */
+static int host_root_fd(void)
+{
+	int fd = open("/", O_PATH | O_DIRECTORY);
+	if (fd == -1) { printf("FAIL %s: open /\n", case_name); exit(1); }
+	return fd;
+}
+
+static void host_box(char *box)
+{
+	if (!mkdtemp(box)) { printf("FAIL %s: mkdtemp\n", case_name); exit(1); }
+}
+
+static void hjoin(char *out, size_t n, const char *box, const char *suffix)
+{
+	snprintf(out, n, "%s%s", box, suffix);
+}
+
+static void hmkdir(const char *box, const char *suffix)
+{
+	char p[PATH_MAX];
+	hjoin(p, sizeof(p), box, suffix);
+	if (mkdir(p, 0755) != 0) { printf("FAIL %s: mkdir %s\n", case_name, p); exit(1); }
+}
+
+static void hfile(const char *box, const char *suffix)
+{
+	char p[PATH_MAX];
+	int fd;
+	hjoin(p, sizeof(p), box, suffix);
+	if ((fd = open(p, O_CREAT | O_WRONLY | O_TRUNC, 0644)) < 0) {
+		printf("FAIL %s: create %s\n", case_name, p); exit(1);
+	}
+	close(fd);
+}
+
+static void hsymlink(const char *box, const char *suffix, const char *target)
+{
+	char p[PATH_MAX];
+	hjoin(p, sizeof(p), box, suffix);
+	if (symlink(target, p) != 0) { printf("FAIL %s: symlink %s\n", case_name, p); exit(1); }
+}
+
+static void hrm(const char *box, const char *suffix)
+{
+	char p[PATH_MAX];
+	hjoin(p, sizeof(p), box, suffix);
+	if (unlink(p) != 0 && rmdir(p) != 0) { /* best effort teardown */ }
+}
+
 /* ── B1: longest prefix wins, at a component boundary ───────────────────── */
 static void b1_prefix(void)
 {
@@ -929,6 +989,11 @@ static void b17_cwd_exempt(int argc, char **argv)
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
 	event_fp = fdopen(fd, "w+");
 	setvbuf(event_fp, NULL, _IOLBF, 0);
+	/* NO HOST fd: this case drives the exemption, whose answer the
+	 * host-existence substitution does not change — and stating the seam
+	 * explicitly is what stops a future default silently substituting
+	 * this chain out from under the case. */
+	policy_host_fd = -1;
 
 	pin("project\t/srv/app");              /* pins[0] */
 	pin("host\t/etc");                     /* pins[1] */
@@ -1107,6 +1172,11 @@ static void b17_cwd_exempt(int argc, char **argv)
  */
 static void b18_cwd_wide_mirror(void)
 {
+	/* NO HOST fd: this case drives the exemption, whose answer the
+	 * host-existence substitution does not change — and stating the seam
+	 * explicitly is what stops a future default silently substituting
+	 * this chain out from under the case. */
+	policy_host_fd = -1;
 	pin("project\t/");
 	pin("project\t/srv/app");
 	anc_build();
@@ -1131,8 +1201,11 @@ static void b18_cwd_wide_mirror(void)
 
 /* ── B19: the caller-tier matrix, all seven tiers × {marked, unmarked} ───── */
 /*
- * THE RULING IN ONE TRUTH TABLE. Identity everywhere EXCEPT (unmarked, T_FAIL),
- * which becomes T_HOST.
+ * THE RULING IN ONE TRUTH TABLE, RUN TWICE — ONCE PER HOST AXIS. Since the
+ * 2026-09-09 ruling the map is no longer a function of `(t, marked)` alone:
+ * `path` enters it through the host filesystem, so a single-pass matrix would
+ * pin only half of it. Pass 1 leaves `policy_host_fd = -1` (the host has
+ * nothing) and pass 2 opens the real root at a path this case created.
  *
  * THE LOOP BOUND CANNOT SILENTLY UNDER-COVER. `tier_name` (policy.h) switches
  * over `enum tier` with no `default:` arm, so an eighth member fails the
@@ -1142,41 +1215,75 @@ static void b18_cwd_wide_mirror(void)
  */
 static void b19_caller_tier_matrix(void)
 {
-	int t;
-	int seen_fail_sub = 0, seen_identity = 0;
+	char box[] = "/tmp/cc-policy-b19XXXXXX";
+	char probe[PATH_MAX];
+	int pass;
 
-	for (t = 0; t <= (int)T_CWD; t++) {
-		enum tier ti = (enum tier)t;
-		enum tier marked   = policy_caller_tier("getattr", "/p", ti, 1, 500);
-		enum tier unmarked = policy_caller_tier("getattr", "/p", ti, 0, 500);
+	host_box(box);
+	hfile(box, "/p");
+	hjoin(probe, sizeof(probe), box, "/p");
 
-		/* THE MARKED SIDE IS IDENTITY AT EVERY TIER. A substitution that
-		 * fired for the CLI too would serve it the host at `fail`, which
-		 * is the "one path, two answers" the epic removed. */
-		CHECK(marked == ti, "marked: %s is unchanged (got %s)",
-		      tier_name(ti), tier_name(marked));
-		if (ti == T_FAIL) {
-			CHECK(unmarked == T_HOST,
-			      "unmarked: fail → host (got %s)", tier_name(unmarked));
-			seen_fail_sub = 1;
-		} else {
-			/* project, hide, bind, synth, host, cwd — EVERY ONE
-			 * unchanged, and each for its own reason: project is the
-			 * owner's ruling, hide is what keeps the mirror and the
-			 * control socket unreachable, bind is resolved by unmarked
-			 * `mount` before the mark fires. */
-			CHECK(unmarked == ti, "unmarked: %s is unchanged (got %s)",
-			      tier_name(ti), tier_name(unmarked));
-			seen_identity++;
+	for (pass = 0; pass < 2; pass++) {
+		int t;
+		int seen_fail_sub = 0, seen_project_sub = 0, seen_identity = 0;
+
+		/* PASS 0: no host fd at all — the host has nothing anywhere.
+		 * PASS 1: the real root, at a path this case created. */
+		policy_host_fd = pass ? host_root_fd() : -1;
+		CHECK(policy_host_has(probe) == pass,
+		      "pass %d: the host axis is really %s", pass, pass ? "host-has" : "host-lacks");
+
+		for (t = 0; t <= (int)T_CWD; t++) {
+			enum tier ti = (enum tier)t;
+			enum tier marked   = policy_caller_tier("getattr", probe, ti, 1, 500);
+			enum tier unmarked = policy_caller_tier("getattr", probe, ti, 0, 500);
+
+			/* THE MARKED SIDE IS IDENTITY AT EVERY TIER, ON BOTH
+			 * AXES. A substitution that fired for the CLI too would
+			 * serve it the host at `fail` — or, worse, at `project`,
+			 * where the host copy is a DIFFERENT FILE. */
+			CHECK(marked == ti, "pass %d marked: %s is unchanged (got %s)",
+			      pass, tier_name(ti), tier_name(marked));
+			if (ti == T_FAIL) {
+				/* UNCONDITIONAL, so it fires on both passes. */
+				CHECK(unmarked == T_HOST,
+				      "pass %d unmarked: fail → host (got %s)", pass, tier_name(unmarked));
+				seen_fail_sub++;
+			} else if (ti == T_PROJECT && pass == 1) {
+				CHECK(unmarked == T_HOST,
+				      "pass 1 unmarked: project → host WHERE THE HOST HAS AN ENTRY (got %s)",
+				      tier_name(unmarked));
+				seen_project_sub++;
+			} else {
+				/* project-without-a-host-entry, hide, bind,
+				 * synth, host, cwd — EVERY ONE unchanged, and
+				 * each for its own reason: hide is what keeps
+				 * the mirror and the control socket
+				 * unreachable, bind is resolved by unmarked
+				 * `mount` before the mark fires, synth answers
+				 * a fixed stat, host already IS the host. */
+				CHECK(unmarked == ti, "pass %d unmarked: %s is unchanged (got %s)",
+				      pass, tier_name(ti), tier_name(unmarked));
+				seen_identity++;
+			}
 		}
+		/* NON-VACUITY, PER PASS: the loop really drove seven tiers and
+		 * really saw the substitutions this pass is meant to see, so an
+		 * empty or short loop cannot read as a pass. */
+		CHECK(seen_fail_sub == 1, "pass %d: the T_FAIL row was driven", pass);
+		CHECK(seen_project_sub == (pass ? 1 : 0),
+		      "pass %d: the T_PROJECT substitution fired exactly where the host axis says (%d)",
+		      pass, seen_project_sub);
+		CHECK(seen_identity == (pass ? 5 : 6),
+		      "pass %d: and the remaining rows were identity (%d)", pass, seen_identity);
+		if (policy_host_fd >= 0) close(policy_host_fd);
+		policy_host_fd = -1;
 	}
-	/* NON-VACUITY: the loop really drove seven tiers and really saw the one
-	 * substitution, so an empty or short loop cannot read as a pass. */
-	CHECK(seen_fail_sub == 1, "the T_FAIL row was driven");
-	CHECK(seen_identity == 6, "and the other six were too (%d)", seen_identity);
+	hrm(box, "/p");
+	rmdir(box);
 }
 
-/* ── B20: the caller-sensitive set is EXACTLY {T_FAIL} ──────────────────── */
+/* ── B20: the caller-sensitive set is EXACTLY {T_FAIL, T_PROJECT} ───────── */
 /*
  * SEPARATE FROM B19 BECAUSE THE PREDICATE IS SEPARATE, and route() consults it
  * BEFORE the map: a tier wrongly in this set pays two /proc reads per op and
@@ -1190,29 +1297,29 @@ static void b20_caller_sensitive_set(void)
 
 	for (t = 0; t <= (int)T_CWD; t++) {
 		enum tier ti = (enum tier)t;
-		int want = (ti == T_FAIL);
+		int want = (ti == T_FAIL || ti == T_PROJECT);
 		CHECK(policy_tier_is_caller_sensitive(ti) == want,
 		      "%s is %scaller-sensitive", tier_name(ti), want ? "" : "NOT ");
 		if (policy_tier_is_caller_sensitive(ti))
 			n_sensitive++;
 	}
-	CHECK(n_sensitive == 1, "exactly one tier is caller-sensitive (%d)", n_sensitive);
+	CHECK(n_sensitive == 2, "exactly two tiers are caller-sensitive (%d)", n_sensitive);
 }
 
-/* ── B21: for an unmarked caller, only the PROJECT tier denies ──────────── */
+/* ── B21: the substitution denies nowhere; only policy_project_route does ── */
 /*
  * THE OTHER HALF OF THE RULING, READ OFF THE LOG RATHER THAN OFF A RETURN
- * VALUE. Card 2026-0382's title said "never consults the tier table at all";
- * the owner narrowed it to one tier, and this is the narrowing asserted from
- * the side a maintainer sees: driving every tier through the substitution
- * writes NO `deny` row at all, and the only denial an unmarked caller can take
- * inside policy.h is `policy_project_route`'s mark check.
+ * VALUE: driving every tier through the substitution — with the host holding an
+ * entry at each probe path, which is the side where the T_PROJECT rule can
+ * fire — writes NO `deny` row at all, and the only denial an unmarked caller
+ * can take inside policy.h is `policy_project_route`'s mark check.
  */
 static void b21_unmarked_refused_only_at_project(void)
 {
+	char box[] = "/tmp/cc-policy-b21hXXXXXX";
 	char tmpl[] = "/tmp/cc-policy-b21XXXXXX";
 	int fd = mkstemp(tmpl);
-	char line[512];
+	char line[4096];
 	int t, n_deny = 0, n_served = 0, n_project_deny = 0;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
@@ -1224,11 +1331,20 @@ static void b21_unmarked_refused_only_at_project(void)
 	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);               /* unmarked, and stays unmarked */
 
+	/* THE HOST HAS AN ENTRY AT EVERY PROBE PATH, so the T_PROJECT rule is
+	 * exercised on the side where it CAN substitute — the arm that would
+	 * write a `deny` row if the substitution ever denied. */
+	host_box(box);
+	policy_host_fd = host_root_fd();
+
 	/* EVERY TIER, one distinct path each so the dedupe cannot collapse rows
 	 * and hide one. */
 	for (t = 0; t <= (int)T_CWD; t++) {
-		char path[64];
-		snprintf(path, sizeof(path), "/probe-%d", t);
+		char suffix[32], path[PATH_MAX];
+		snprintf(suffix, sizeof(suffix), "/probe-%d", t);
+		hfile(box, suffix);
+		hjoin(path, sizeof(path), box, suffix);
+		CHECK(policy_host_has(path) == 1, "the host has probe-%d", t);
 		(void)policy_caller_tier("getattr", path, (enum tier)t, 0, 500);
 	}
 	rewind(event_fp);
@@ -1237,7 +1353,7 @@ static void b21_unmarked_refused_only_at_project(void)
 		if (strncmp(line, "served\t", 7) == 0)   n_served++;
 	}
 	CHECK(n_deny == 0, "the substitution denies at NO tier (%d deny rows)", n_deny);
-	CHECK(n_served == 1, "and it serves at exactly one — T_FAIL (%d served rows)", n_served);
+	CHECK(n_served == 2, "and it serves at exactly two — T_FAIL and T_PROJECT (%d served rows)", n_served);
 
 	/* AND THE ONE DENIAL THERE IS. Non-vacuity for the zero above: an
 	 * unmarked caller CAN be denied, at the project tier, and the sink this
@@ -1253,6 +1369,14 @@ static void b21_unmarked_refused_only_at_project(void)
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	for (t = 0; t <= (int)T_CWD; t++) {
+		char suffix[32];
+		snprintf(suffix, sizeof(suffix), "/probe-%d", t);
+		hrm(box, suffix);
+	}
+	rmdir(box);
 }
 
 /* ── B22: the cwd chain's EXTENT, and both directions of the sibling trap ── */
@@ -1270,6 +1394,11 @@ static void b21_unmarked_refused_only_at_project(void)
  */
 static void b22_cwd_chain_extent(void)
 {
+	/* NO HOST fd: this case drives the exemption, whose answer the
+	 * host-existence substitution does not change — and stating the seam
+	 * explicitly is what stops a future default silently substituting
+	 * this chain out from under the case. */
+	policy_host_fd = -1;
 	pin("project\t/");
 	pin("project\t/root/app3");
 	anc_build();
@@ -1329,7 +1458,7 @@ static void b22_cwd_chain_extent(void)
  * asserted against a second transcription of the classification.
  *
  * THIS CASE COVERS EVERY REASON policy.h EMITS — the four control/mark ones,
- * the caller-sensitive substitution and the granted cwd traversal.
+ * BOTH caller-sensitive substitutions and the granted cwd traversal.
  * The other seven live in union.c op bodies no deterministic fixture can reach;
  * their kinds are pinned by a SOURCE-DERIVED two-directional set equality in
  * tests/fuse-union-policy.test.mjs, which reads every `policy_event(` call site
@@ -1338,19 +1467,22 @@ static void b22_cwd_chain_extent(void)
  */
 static void b24_event_kinds(void)
 {
+	char box[] = "/tmp/cc-policy-b24hXXXXXX";
 	char tmpl[] = "/tmp/cc-policy-b24XXXXXX";
+	char hostpath[PATH_MAX];
 	int fd = mkstemp(tmpl);
-	char line[512];
+	char line[4096];
 	int i, rows = 0;
 	static const struct { const char *reason; const char *kind; } want[] = {
-		{ "unmarked-project-denied", "deny"   },
-		{ "control-unavailable",     "deny"   },
-		{ "remote-absent",           "deny"   },
-		{ "control-refused",         "deny"   },
-		{ "unmarked-host-served",    "served" },
-		{ "cwd-traversal-served",    "served" },
+		{ "unmarked-project-denied",      "deny"   },
+		{ "control-unavailable",          "deny"   },
+		{ "remote-absent",                "deny"   },
+		{ "control-refused",              "deny"   },
+		{ "unmarked-host-served",         "served" },
+		{ "unmarked-project-host-served", "served" },
+		{ "cwd-traversal-served",         "served" },
 	};
-	int found[6] = { 0, 0, 0, 0, 0, 0 };
+	int found[7] = { 0, 0, 0, 0, 0, 0, 0 };
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
 	event_fp = fdopen(fd, "w+");
@@ -1373,6 +1505,13 @@ static void b24_event_kinds(void)
 	canned_reply(CCU_REFUSED, 0);
 	(void)policy_project_route("getattr", "/srv/app/refused", 4000, CCU_STAT, 0);
 	(void)policy_caller_tier("getattr", "/unpinned/thing", T_FAIL, 0, 5000);
+	host_box(box);
+	hfile(box, "/collide");
+	hjoin(hostpath, sizeof(hostpath), box, "/collide");
+	policy_host_fd = host_root_fd();
+	(void)policy_caller_tier("getattr", hostpath, T_PROJECT, 0, 5000);
+	close(policy_host_fd);
+	policy_host_fd = -1;
 	(void)policy_cwd_exempt("getattr", "/srv/app", 5000);
 
 	rewind(event_fp);
@@ -1392,34 +1531,44 @@ static void b24_event_kinds(void)
 	for (i = 0; i < (int)(sizeof(want) / sizeof(want[0])); i++)
 		CHECK(found[i] == 1, "`%s` was emitted exactly once (%d)",
 		      want[i].reason, found[i]);
-	/* SET EQUALITY, THE OTHER DIRECTION: six emissions, six rows and no
-	 * seventh — so a reason this table does not name cannot slip through
-	 * unclassified. */
+	/* SET EQUALITY, THE OTHER DIRECTION: one emission per reason, one row
+	 * each and no extra — so a reason this table does not name cannot slip
+	 * through unclassified. */
 	CHECK(rows == (int)(sizeof(want) / sizeof(want[0])),
-	      "six reasons, six rows, nothing unclassified (%d)", rows);
+	      "one row per reason, nothing unclassified (%d)", rows);
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
+	hrm(box, "/collide");
+	rmdir(box);
 }
 
-/* ── B25: the substitution is logged at `fail`, and ONLY at `fail` ──────── */
+/* ── B25: one served row per (path, thread group), for BOTH substitutions ── */
 /*
- * THE SUBSTITUTION'S COST, PAID. After `fail → host` an unmarked caller's
+ * THE SUBSTITUTION'S COST, PAID. After a substitution an unmarked caller's
  * missing object writes no `deny` row at all — the host's ENOENT is not a
  * policy event, and route() could not know about it anyway. So the row fires on
  * the SUBSTITUTION itself, whatever the subsequent host read does, and it means
- * "an unmarked caller was routed to the host at an unpinned path" — which is
- * precisely the fact the pin list is derived from.
+ * "an unmarked caller was routed to the host" — which is precisely the fact the
+ * pin list, and now the host-shadowing surface, are read from.
  *
  * AND IT IS `served`, NOT `deny`: the op was not refused. A `deny` here would
  * put an every-shell-startup path into R4's fatal filter.
+ *
+ * THE TWO REASONS ARE DISTINCT AND BOTH ARE DRIVEN HERE, because they answer
+ * different questions: the `fail` row feeds `suggestPin`, while the `project`
+ * row's volume by path is how much of the project tree the host shadows.
  */
-static void b25_substitution_logged_at_fail_only(void)
+static void b25_substitution_logged_per_path_and_tgid(void)
 {
+	char box[] = "/tmp/cc-policy-b25hXXXXXX";
 	char tmpl[] = "/tmp/cc-policy-b25XXXXXX";
+	char have[PATH_MAX], lack[PATH_MAX];
+	char n_have[PATH_MAX + 64], n_lack[PATH_MAX + 64];
+	char line[4096];
 	int fd = mkstemp(tmpl);
-	char line[512];
-	int n_served_a = 0, n_served_b = 0, n_any_project = 0, n_deny_project = 0, rows = 0;
+	int n_served_a = 0, n_served_b = 0, n_served_have = 0, n_any_lack = 0;
+	int n_any_project = 0, n_deny_project = 0, rows = 0;
 
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
 	event_fp = fdopen(fd, "w+");
@@ -1430,6 +1579,12 @@ static void b25_substitution_logged_at_fail_only(void)
 	cwd_path = "/srv/app";
 	proc_set(500, 500, 111);               /* unmarked */
 
+	host_box(box);
+	hfile(box, "/have");
+	hjoin(have, sizeof(have), box, "/have");
+	hjoin(lack, sizeof(lack), box, "/lack");
+	policy_host_fd = host_root_fd();
+
 	/* TWICE at one path, once at another, ONE CALLER THROUGHOUT: the row is
 	 * per distinct (path, thread group), which is what bounds the volume to
 	 * roughly twenty per shell startup rather than to the op count. The
@@ -1437,11 +1592,22 @@ static void b25_substitution_logged_at_fail_only(void)
 	(void)policy_caller_tier("getattr", "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
 	(void)policy_caller_tier("open",    "/lib/x86_64-linux-gnu/libtinfo.so.6", T_FAIL, 0, 500);
 	(void)policy_caller_tier("getattr", "/var/other", T_FAIL, 0, 500);
-	/* AND AT THE PROJECT TIER, which must produce a DENIAL and no `served`
-	 * row — the ruling read from the log's side. */
+	/* AND THE SAME AGAIN AT T_PROJECT WHERE THE HOST HAS AN ENTRY: two ops,
+	 * one row, under the reason of its own. */
+	(void)policy_caller_tier("getattr", have, T_PROJECT, 0, 500);
+	(void)policy_caller_tier("open",    have, T_PROJECT, 0, 500);
+	/* AT A PROJECT PATH THE HOST HAS NOTHING AT the substitution declines
+	 * and writes NOTHING — this is the path that still reaches
+	 * `policy_project_route`. */
+	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 0, 500) == T_PROJECT,
+	      "a host-absent project path is not substituted");
+	/* AND THERE THE DENIAL IS STILL THE ANSWER — the ruling read from the
+	 * log's side. */
 	CHECK(policy_project_route("getattr", "/srv/app/f", 500, CCU_STAT, 0) == -ENOENT,
-	      "the project tier still denies an unmarked caller");
+	      "the project tier still denies an unmarked caller where the host has nothing");
 
+	snprintf(n_have, sizeof(n_have), "served\tgetattr\t%s\tunmarked-project-host-served\t", have);
+	snprintf(n_lack, sizeof(n_lack), "\t%s\t", lack);
 	rewind(event_fp);
 	while (fgets(line, sizeof(line), event_fp)) {
 		rows++;
@@ -1449,6 +1615,8 @@ static void b25_substitution_logged_at_fail_only(void)
 			n_served_a++;
 		if (strstr(line, "served\tgetattr\t/var/other\tunmarked-host-served\t"))
 			n_served_b++;
+		if (strstr(line, n_have)) n_served_have++;
+		if (strstr(line, n_lack)) n_any_lack++;
 		if (strstr(line, "\t/srv/app/f\t")) {
 			n_any_project++;
 			if (strncmp(line, "deny\t", 5) == 0) n_deny_project++;
@@ -1456,12 +1624,20 @@ static void b25_substitution_logged_at_fail_only(void)
 	}
 	CHECK(n_served_a == 1, "one served row per distinct path for one caller, across two ops (%d)", n_served_a);
 	CHECK(n_served_b == 1, "and the second distinct path has its own (%d)", n_served_b);
-	CHECK(n_any_project == 1, "the project path produced exactly one row (%d)", n_any_project);
+	CHECK(n_served_have == 1,
+	      "the project substitution writes ONE unmarked-project-host-served row across two ops (%d)",
+	      n_served_have);
+	CHECK(n_any_lack == 0, "and a host-absent project path writes no row at all (%d)", n_any_lack);
+	CHECK(n_any_project == 1, "the denied project path produced exactly one row (%d)", n_any_project);
 	CHECK(n_deny_project == 1, "and it is a DENY row, never a served one (%d)", n_deny_project);
-	CHECK(rows == 3, "three rows in total, so nothing extra was emitted (%d)", rows);
+	CHECK(rows == 4, "four rows in total, so nothing extra was emitted (%d)", rows);
 	fclose(event_fp);
 	event_fp = NULL;
 	unlink(tmpl);
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	hrm(box, "/have");
+	rmdir(box);
 }
 
 /* ── B26: the cwd node is traverse-only, at EVERY chain component ────────── */
@@ -1491,6 +1667,11 @@ static void b26_cwd_traverse_only(int argc, char **argv)
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
 	event_fp = fdopen(fd, "w+");
 	setvbuf(event_fp, NULL, _IOLBF, 0);
+	/* NO HOST fd: this case drives the exemption, whose answer the
+	 * host-existence substitution does not change — and stating the seam
+	 * explicitly is what stops a future default silently substituting
+	 * this chain out from under the case. */
+	policy_host_fd = -1;
 
 	/* A WIDE ADVERTISED ROOT, so every chain component really is project tier
 	 * and `policy_project_route` is the function that would answer it. */
@@ -1978,6 +2159,11 @@ static void b32_cwd_row(void)
 	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
 	event_fp = fdopen(fd, "w+");
 	setvbuf(event_fp, NULL, _IOLBF, 0);
+	/* NO HOST fd: this case drives the exemption, whose answer the
+	 * host-existence substitution does not change — and stating the seam
+	 * explicitly is what stops a future default silently substituting
+	 * this chain out from under the case. */
+	policy_host_fd = -1;
 
 	pin("project\t/");
 	pin("project\t/root/app3");
@@ -2043,6 +2229,281 @@ static void b32_cwd_row(void)
  *
  * `argv[2]` is the log path, and it is NOT unlinked — the .mjs reads it.
  */
+/* ── B33: the host-existence probe ──────────────────────────────────────── */
+/*
+ * PINS: `policy_host_has` answers off `policy_host_fd` using `policy_rel` — the
+ * same fd and the same relativiser the T_HOST arm opens with, which is what
+ * makes a second spelling structurally impossible rather than merely absent.
+ */
+static void b33_host_existence(void)
+{
+	char box[] = "/tmp/cc-policy-b33XXXXXX";
+	char f[PATH_MAX], d[PATH_MAX], dangle[PATH_MAX], absent[PATH_MAX];
+
+	host_box(box);
+	hfile(box, "/f");
+	hmkdir(box, "/d");
+	hsymlink(box, "/dangle", "./nothing-here");
+	hjoin(f, sizeof(f), box, "/f");
+	hjoin(d, sizeof(d), box, "/d");
+	hjoin(dangle, sizeof(dangle), box, "/dangle");
+	hjoin(absent, sizeof(absent), box, "/absent");
+
+	/* A NEGATIVE fd ANSWERS 0 — the pre-substitution behaviour, and the axis
+	 * every case that leaves the seam unset relies on. Asserted at a path
+	 * that DOES exist, so it cannot pass by accident. */
+	policy_host_fd = -1;
+	CHECK(policy_host_has(f) == 0, "with no host fd the probe answers 0 for a file that EXISTS");
+	CHECK(policy_host_has("/") == 0, "and 0 for / as well");
+
+	policy_host_fd = host_root_fd();
+	CHECK(policy_host_has(f) == 1, "a present file is a host entry");
+	CHECK(policy_host_has(d) == 1, "so is a present directory");
+	CHECK(policy_host_has(absent) == 0, "an absent path is not");
+	/* AT_SYMLINK_NOFOLLOW, matching pt_getattr's own T_HOST arm: a dangling
+	 * host symlink IS a host entry. Following instead would route a path the
+	 * host names to the remote. */
+	CHECK(policy_host_has(dangle) == 1, "and a DANGLING symlink is one too");
+	CHECK(policy_host_has("/") == 1, "the root itself is an entry, via policy_rel's \".\"");
+
+	/* THE RELATIVISER ITSELF, both arms — the probe and the T_HOST arm share
+	 * this one function, so its contract is pinned where it is defined. */
+	CHECK(strcmp(policy_rel("/"), ".") == 0, "policy_rel maps \"/\" to \".\"");
+	CHECK(policy_rel(f) == f + 1, "and strips exactly the leading slash otherwise");
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	hrm(box, "/f");
+	hrm(box, "/d");
+	hrm(box, "/dangle");
+	rmdir(box);
+}
+
+/* ── B34: host-entry existence is the discriminator at T_PROJECT ────────── */
+/*
+ * PINS: at T_PROJECT an UNMARKED caller is substituted to T_HOST exactly where
+ * the host has an entry, stays T_PROJECT where it has none, and a MARKED caller
+ * is identity at both — with the substitution's own row written once and only
+ * for the substituted path.
+ */
+static void b34_project_host_substitution(void)
+{
+	char box[] = "/tmp/cc-policy-b34XXXXXX";
+	char tmpl[] = "/tmp/cc-policy-b34evXXXXXX";
+	char have[PATH_MAX], lack[PATH_MAX], needle[PATH_MAX + 64];
+	char line[4096];
+	int fd = mkstemp(tmpl);
+	int rows = 0, n_have = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	host_box(box);
+	hfile(box, "/have");
+	hjoin(have, sizeof(have), box, "/have");
+	hjoin(lack, sizeof(lack), box, "/lack");
+	policy_host_fd = host_root_fd();
+
+	proc_set(500, 500, 111);               /* unmarked, and stays unmarked */
+	proc_set(600, 600, 222);
+	policy_mark_tid(600);
+
+	CHECK(policy_host_has(have) == 1, "the host HAS the first probe path");
+	CHECK(policy_host_has(lack) == 0, "and has NOTHING at the second");
+
+	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 0, 500) == T_HOST,
+	      "unmarked at a project path the host has → host");
+	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 0, 500) == T_PROJECT,
+	      "unmarked at a project path the host lacks → project, unchanged");
+	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 1, 600) == T_PROJECT,
+	      "MARKED at the host-having path → project: the mirror, never a host fallback");
+	CHECK(policy_caller_tier("getattr", lack, T_PROJECT, 1, 600) == T_PROJECT,
+	      "and marked at the host-lacking one is project too");
+
+	snprintf(needle, sizeof(needle), "served\tgetattr\t%s\tunmarked-project-host-served\t", have);
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		rows++;
+		if (strstr(line, needle)) n_have++;
+	}
+	CHECK(n_have == 1, "the substitution wrote exactly one served/unmarked-project-host-served row (%d)", n_have);
+	CHECK(rows == 1, "and it is the ONLY row: the three non-substituting calls wrote none (%d)", rows);
+
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	hrm(box, "/have");
+	rmdir(box);
+}
+
+/* ── B35: the T_FAIL substitution was NOT gated on host existence ───────── */
+/*
+ * PINS: at T_FAIL an unmarked caller is substituted to T_HOST even where the
+ * host has NOTHING — which is what leaves the unmarked CREATE at an unpinned
+ * path working (real gate R13(f)), and is the deliberate asymmetry with
+ * T_PROJECT's rule.
+ */
+static void b35_fail_substitution_is_unconditional(void)
+{
+	char box[] = "/tmp/cc-policy-b35XXXXXX";
+	char tmpl[] = "/tmp/cc-policy-b35evXXXXXX";
+	char lack[PATH_MAX], needle[PATH_MAX + 64];
+	char line[4096];
+	int fd = mkstemp(tmpl);
+	int rows = 0, n_row = 0;
+
+	if (fd < 0) { printf("FAIL %s: mkstemp\n", case_name); exit(1); }
+	event_fp = fdopen(fd, "w+");
+	setvbuf(event_fp, NULL, _IOLBF, 0);
+
+	host_box(box);
+	hjoin(lack, sizeof(lack), box, "/never-created");
+	policy_host_fd = host_root_fd();
+	proc_set(500, 500, 111);               /* unmarked */
+
+	/* NON-VACUITY FIRST: the probe really answers "no host entry" here, so a
+	 * substitution that HAD been gated would not fire. */
+	CHECK(policy_host_has(lack) == 0, "the host has nothing at the fail-tier path");
+	CHECK(policy_caller_tier("getattr", lack, T_FAIL, 0, 500) == T_HOST,
+	      "and T_FAIL substitutes to host anyway — the rule is unconditional");
+
+	snprintf(needle, sizeof(needle), "served\tgetattr\t%s\tunmarked-host-served\t", lack);
+	rewind(event_fp);
+	while (fgets(line, sizeof(line), event_fp)) {
+		rows++;
+		if (strstr(line, needle)) n_row++;
+	}
+	CHECK(n_row == 1, "and it is logged under its OWN reason, unmarked-host-served (%d)", n_row);
+	CHECK(rows == 1, "with no second row (%d)", rows);
+
+	fclose(event_fp);
+	event_fp = NULL;
+	unlink(tmpl);
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	rmdir(box);
+}
+
+/* ── B36: the traversal bound falls out of route()'s ORDERING ───────────── */
+/*
+ * PINS: run in route()'s order — substitution first, exemption second — the cwd
+ * chain is served from the host down to the LAST ancestor the host has, and the
+ * exemption is consulted only BELOW it. No walk, no new mechanism: the bound is
+ * a property of the order alone.
+ *
+ * FIVE CHAIN LEVELS, and the host holds the top three: "/", "/tmp" and the
+ * mkdtemp'd box are real, `<box>/a` is created here, `<box>/a/b` and
+ * `<box>/a/b/c` are named and never created.
+ */
+static void b36_traversal_bound_by_first_host_ancestor(void)
+{
+	char box[] = "/tmp/cc-policy-b36XXXXXX";
+	char a[PATH_MAX], b[PATH_MAX], c[PATH_MAX], child[PATH_MAX], sibling[PATH_MAX];
+
+	host_box(box);
+	hmkdir(box, "/a");
+	hjoin(a, sizeof(a), box, "/a");
+	hjoin(b, sizeof(b), box, "/a/b");
+	hjoin(c, sizeof(c), box, "/a/b/c");
+	hjoin(child, sizeof(child), box, "/a/b/c/child");
+	hjoin(sibling, sizeof(sibling), box, "/a/bb");
+	policy_host_fd = host_root_fd();
+
+	cwd_path = c;
+	proc_set(500, 500, 111);               /* unmarked */
+
+	/* ABOVE AND AT THE FIRST HOST-HAVING ANCESTOR: the substitution answers
+	 * first, so route() never reaches the exemption for these links. */
+	CHECK(policy_caller_tier("getattr", "/", T_PROJECT, 0, 500) == T_HOST,
+	      "/ is host-served, so the exemption is not consulted there");
+	CHECK(policy_caller_tier("getattr", "/tmp", T_PROJECT, 0, 500) == T_HOST,
+	      "and so is /tmp");
+	CHECK(policy_caller_tier("getattr", box, T_PROJECT, 0, 500) == T_HOST,
+	      "and the box itself");
+	CHECK(policy_caller_tier("getattr", a, T_PROJECT, 0, 500) == T_HOST,
+	      "and <box>/a — the LAST link the host has");
+
+	/* BELOW IT: the substitution declines, so the T_PROJECT arm is reached
+	 * and the exemption is what answers. */
+	CHECK(policy_caller_tier("getattr", b, T_PROJECT, 0, 500) == T_PROJECT,
+	      "<box>/a/b has no host entry, so the tier stands");
+	CHECK(policy_cwd_exempt("getattr", b, 500) == 1, "and THERE the exemption fires");
+	CHECK(policy_caller_tier("getattr", c, T_PROJECT, 0, 500) == T_PROJECT,
+	      "the cwd leaf has no host entry either");
+	CHECK(policy_cwd_exempt("getattr", c, 500) == 1, "and it is exempt too");
+
+	/* AND NO FURTHER, in either direction. */
+	CHECK(policy_cwd_exempt("getattr", child, 500) == 0, "a CHILD of the cwd is not exempt");
+	CHECK(policy_cwd_exempt("getattr", sibling, 500) == 0, "nor an off-chain sibling");
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	cwd_path = NULL;
+	hrm(box, "/a");
+	rmdir(box);
+}
+
+/* ── B37: an unmarked caller can never be routed to the remote ──────────── */
+/*
+ * PINS: over all seven tiers × {host-has, host-lacks} × {marked, unmarked},
+ * `policy_caller_tier` returns either its INPUT tier or T_HOST and nothing
+ * else, and at (unmarked, T_PROJECT, host-has) it is T_HOST rather than
+ * T_PROJECT. That is the mechanical statement of "an unmarked caller never
+ * receives remote file content, at any mirrorRoot".
+ */
+static void b37_unmarked_never_gets_remote(void)
+{
+	char box[] = "/tmp/cc-policy-b37XXXXXX";
+	char have[PATH_MAX], lack[PATH_MAX];
+	int t, h, m;
+	int n_fail_sub = 0, n_project_sub = 0, n_identity = 0;
+
+	host_box(box);
+	hfile(box, "/have");
+	hjoin(have, sizeof(have), box, "/have");
+	hjoin(lack, sizeof(lack), box, "/lack");
+	policy_host_fd = host_root_fd();
+	proc_set(500, 500, 111);
+
+	CHECK(policy_host_has(have) == 1, "the host-has axis is real");
+	CHECK(policy_host_has(lack) == 0, "and so is the host-lacks axis");
+
+	for (t = 0; t <= (int)T_CWD; t++) {
+		for (h = 0; h < 2; h++) {
+			const char *p = h ? have : lack;
+			for (m = 0; m < 2; m++) {
+				enum tier ti = (enum tier)t;
+				enum tier got = policy_caller_tier("getattr", p, ti, m, 500);
+
+				CHECK(got == ti || got == T_HOST,
+				      "%s/%s/%s → %s: the map returns the input tier or host, nothing else",
+				      tier_name(ti), h ? "host-has" : "host-lacks",
+				      m ? "marked" : "unmarked", tier_name(got));
+				if (got == ti) { n_identity++; continue; }
+				if (ti == T_FAIL) n_fail_sub++;
+				if (ti == T_PROJECT) n_project_sub++;
+			}
+		}
+	}
+	/* THE HEADLINE, ASSERTED ON ITS OWN so it cannot be lost inside the
+	 * disjunction above. */
+	CHECK(policy_caller_tier("getattr", have, T_PROJECT, 0, 500) == T_HOST,
+	      "unmarked at a host-having project path is HOST, never project");
+	/* NON-VACUITY: both substitutions were driven, and so were the
+	 * identities — a loop that ran zero times would satisfy the disjunction. */
+	CHECK(n_fail_sub == 2, "the T_FAIL substitution fired on both host axes, unmarked (%d)", n_fail_sub);
+	CHECK(n_project_sub == 1, "the T_PROJECT one fired on the host-has axis alone (%d)", n_project_sub);
+	CHECK(n_identity >= 4, "and at least four identities were driven (%d)", n_identity);
+
+	close(policy_host_fd);
+	policy_host_fd = -1;
+	hrm(box, "/have");
+	rmdir(box);
+}
+
 static void print_vec(const char *label, const char *b, size_t n)
 {
 	size_t i;
@@ -2154,7 +2615,7 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b21-unmarked-refused-only-at-project")) b21_unmarked_refused_only_at_project();
 	else if (!strcmp(c, "b22-cwd-chain-extent")) b22_cwd_chain_extent();
 	else if (!strcmp(c, "b24-event-kinds")) b24_event_kinds();
-	else if (!strcmp(c, "b25-substitution-logged-at-fail-only")) b25_substitution_logged_at_fail_only();
+	else if (!strcmp(c, "b25-substitution-logged-per-path-and-tgid")) b25_substitution_logged_per_path_and_tgid();
 	else if (!strcmp(c, "b26-cwd-traverse-only")) b26_cwd_traverse_only(argc, argv);
 	else if (!strcmp(c, "b27-cwd-ino-distinct")) b27_cwd_ino_distinct();
 	else if (!strcmp(c, "b28-cwd-input-validated")) b28_cwd_input_validated();
@@ -2162,6 +2623,11 @@ int main(int argc, char **argv)
 	else if (!strcmp(c, "b30-absence"))   b30_absence();
 	else if (!strcmp(c, "b31-dedupe-tgid")) b31_dedupe_tgid();
 	else if (!strcmp(c, "b32-cwd-row"))   b32_cwd_row();
+	else if (!strcmp(c, "b33-host-existence")) b33_host_existence();
+	else if (!strcmp(c, "b34-project-host-substitution")) b34_project_host_substitution();
+	else if (!strcmp(c, "b35-fail-substitution-is-unconditional")) b35_fail_substitution_is_unconditional();
+	else if (!strcmp(c, "b36-traversal-bound-by-first-host-ancestor")) b36_traversal_bound_by_first_host_ancestor();
+	else if (!strcmp(c, "b37-unmarked-never-gets-remote")) b37_unmarked_never_gets_remote();
 	else if (!strcmp(c, "frame-vectors")) frame_vectors();
 	else if (!strcmp(c, "field-vectors")) field_vectors(argc, argv);
 	else { fprintf(stderr, "union-policy-driver: unknown case '%s'\n", c); return 2; }

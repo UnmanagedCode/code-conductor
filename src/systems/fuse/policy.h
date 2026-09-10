@@ -17,6 +17,9 @@
  *                 TTL is proven without sleeping.
  *   ccu_xport     the control-channel round trip, injected so the frame codec
  *                 and the reply->errno mapping are proven without a socket.
+ *   policy_host_fd  an O_PATH fd on the host root, injected so the
+ *                 host-existence probe below is driven against a tree the
+ *                 fixture built rather than against the box's own filesystem.
  *
  * WHAT IS DELIBERATELY NOT PROVABLE HERE, stated so a later SURVIVED is read
  * against a known boundary rather than argued about (plan 2026-0355 §7.1):
@@ -63,10 +66,11 @@
  * is the "one path, two answers" the epic exists to remove. Fail-closed by
  * construction: an unpinned path is served from neither side TO THE MARKED CLI.
  *
- * IT IS ALSO THE ONE CALLER-SENSITIVE CLASS. For an UNMARKED caller
+ * IT IS ALSO A CALLER-SENSITIVE CLASS. For an UNMARKED caller
  * `policy_caller_tier` substitutes T_HOST, because `fail` is a statement about
  * cc's pin list and an unmarked caller was never going to be served the remote.
- * That set is `{T_FAIL}` exactly — see policy_tier_is_caller_sensitive.
+ * The set is `{T_FAIL, T_PROJECT}` — see policy_tier_is_caller_sensitive, where
+ * the two rules differ and why.
  *
  * T_SYNTH is DERIVED, never parsed from the pins file: `pins_load` rejects it
  * as an unknown kind. See the ancestor derivation below for why it has to
@@ -1309,31 +1313,100 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
 	(void)ccu_call(CCU_DIRTY, CCU_FLAG_RELEASE_ONLY, path);
 }
 
-/* ── the one caller-sensitive tier ──────────────────────────────────────── */
+/* ── the caller-sensitive tiers ─────────────────────────────────────────── */
 /*
- * THE TIER TABLE CLASSIFIES FOR EVERYONE. AN UNMARKED CALLER TAKES NO
- * TIER-DERIVED ROUTING OR REFUSAL DECISION AT `fail` AND AT NO OTHER TIER:
- * `fail` → `host`.
+ * THE HOST ROOT, AS AN O_PATH fd. ONE VARIABLE FOR ONE fd, and the placement is
+ * the point: the host-existence probe below and union.c's T_HOST arm must open
+ * the SAME descriptor through the SAME relativiser, or the probe can answer for
+ * a path the arm would not serve. `union.c` used to declare its own `host_fd`
+ * and its own `rel()`; two spellings for one thing is exactly the drift that
+ * file's comments warn about, so both live here — where the unit fixture can
+ * also drive them, the way it drives `policy_proc`, `policy_clock` and
+ * `ccu_xport`.
  *
- * WHY `fail` AND ONLY `fail`. `fail` means "no pin covers this", which is a
- * statement about the CLI's PIN LIST — not about a caller that was never going
- * to be served the remote. Every shell, hook, forwarder and MCP subprocess in
- * the chroot is a fresh, permanently unmarked thread group, and before this the
- * pin list had to cover every object every one of them loads: that is why
- * `libtinfo.so.6` killed `bash` although marking never enters it, and why the
- * list grew each time a new host tool appeared. A project path is pinned BY
- * CONSTRUCTION (`add('project', systemPath, …)`), so the project tier never was
- * a source of that growth — all of it was `fail`.
+ * NEGATIVE UNTIL `main()` OPENS IT, and the probe answers 0 on a negative fd —
+ * which is the pre-substitution behaviour, and the axis the unit fixture uses
+ * to drive "the host has nothing".
+ */
+static int policy_host_fd = -1;
+
+/* A UNION PATH RELATIVE TO THE HOST ROOT. Absolute paths arrive from libfuse
+ * with a leading `/`; `openat`/`fstatat` want them relative to the fd, and the
+ * root itself has to become `.` rather than the empty string. */
+static inline const char *policy_rel(const char *path)
+{
+	if (path[0] == '/' && path[1] == '\0')
+		return ".";
+	return path + 1;
+}
+
+/*
+ * DOES THE HOST HAVE AN ENTRY AT `path`? ONE fstatat, THROUGH THE SAME fd AND
+ * THE SAME relativiser THE T_HOST ARM WOULD OPEN — which is what makes a second
+ * spelling structurally impossible rather than merely absent.
  *
- * `project` IS NOT HERE, BY RULING (owner, 2026-09-08). An unmarked caller at
- * the project path gets NEITHER read NOR write, and `policy_cwd_exempt` below
- * is the sole exemption. Do not add it in either direction.
+ * AT_SYMLINK_NOFOLLOW, matching pt_getattr's own T_HOST arm: a dangling host
+ * symlink IS a host entry, and the ruling is about entries. Following instead
+ * would route a path the host names to the remote.
  *
- * `hide`, `bind`, `synth` and `host` are not here either, and each for its own
- * reason rather than by omission: `hide` is what keeps the mirror and cc's
- * control socket unreachable; `bind` is resolved by UNMARKED `mount` for
- * /proc, /sys and /dev before the marking event ever fires, so substituting it
- * breaks every launch; `synth` answers a fixed stat that reads nothing; `host`
+ * PROBED AS ROOT — no cred_enter/cred_leave — so the CLASSIFICATION does not
+ * vary with the caller's uid; permission is still enforced by the host op that
+ * follows.
+ *
+ * TOCTOU IS BENIGN AND IS STATED RATHER THAN DEFENDED AGAINST: both race
+ * directions land on a host answer or on -ENOENT, because the substitution only
+ * ever routes to T_HOST. Nothing it can do produces remote bytes.
+ *
+ * A NEGATIVE fd ANSWERS 0, which is the pre-substitution behaviour: the unit
+ * fixture leaves it unset to drive the "host has nothing" axis.
+ */
+static inline int policy_host_has(const char *path)
+{
+	struct stat st;
+
+	if (policy_host_fd < 0)
+		return 0;
+	return fstatat(policy_host_fd, policy_rel(path), &st, AT_SYMLINK_NOFOLLOW) == 0;
+}
+
+/*
+ * THE TIER TABLE CLASSIFIES FOR EVERYONE. AN UNMARKED CALLER TAKES A
+ * TIER-DERIVED ROUTING OR REFUSAL DECISION AT `fail` AND AT `project`, AND AT
+ * NO OTHER TIER — both to `host`, under the two rules in
+ * `policy_caller_tier` below.
+ *
+ * THE DISCRIMINATOR IS HOST-ENTRY EXISTENCE, NOT TIER (owner, 2026-09-09):
+ * "A unmarked process will always get the host entries if these entries exist.
+ * Full stop. … It doesn't matter what the mirrorRoot is. The mirror route will
+ * only change what happens if the host entry does not exist." The invariant
+ * marking protects is therefore narrower than this file used to assume: an
+ * unmarked caller must never see REMOTE FILE CONTENT; where the host has an
+ * entry it is served the host, and only where the host has none is the mirror
+ * geometry consulted at all.
+ *
+ * `project` IS HERE NOW, AND THE 2026-09-08 RULING THAT KEPT IT OUT IS
+ * SUPERSEDED BY THE 2026-09-09 ONE. Stating which ruling superseded which is
+ * load-bearing: the older one ("an unmarked caller at the project path gets
+ * NEITHER read NOR write") is still quoted in the epic's earlier cards, and a
+ * reader who finds it first will otherwise restore the old set. What the older
+ * ruling decided remains true WHERE THE HOST HAS NO ENTRY — which is the
+ * default configuration in production, and is why `policy_project_route`'s mark
+ * check is untouched.
+ *
+ * WHY `fail` IS HERE. `fail` means "no pin covers this", which is a statement
+ * about the CLI's PIN LIST — not about a caller that was never going to be
+ * served the remote. Every shell, hook, forwarder and MCP subprocess in the
+ * chroot is a fresh, permanently unmarked thread group, and before this the pin
+ * list had to cover every object every one of them loads: that is why
+ * `libtinfo.so.6` killed `bash` although marking never enters it.
+ *
+ * `hide`, `bind`, `synth` and `host` are not here, and each for its own reason
+ * rather than by omission: `hide` is what keeps the mirror and cc's control
+ * socket unreachable; `bind` is resolved by UNMARKED `mount` for /proc, /sys
+ * and /dev before the marking event ever fires, so substituting it breaks every
+ * launch; `synth` answers a fixed stat that reads nothing — and under the
+ * DEFAULT mirror root `/` is synth, so making it caller-sensitive would hand an
+ * unmarked caller the host's real `/` and change the default arm; `host`
  * already IS the host.
  *
  * THE ENOENT AT THE FAR SIDE IS THE HOST'S OWN ANSWER, not a policy denial, and
@@ -1346,36 +1419,59 @@ static inline void policy_abandon_claim(const char *path, enum tier tier)
  */
 static inline int policy_tier_is_caller_sensitive(enum tier t)
 {
-	return t == T_FAIL;
+	return t == T_FAIL || t == T_PROJECT;
 }
 
 /*
- * THE RETURNED TIER IS A FUNCTION OF (t, marked) AND NOTHING ELSE — a 7×2 truth
- * table over the tier enum and the mark, identity everywhere except
- * (unmarked, T_FAIL).
+ * THE RETURNED TIER IS A FUNCTION OF (t, marked, AND WHETHER THE HOST HAS AN
+ * ENTRY AT `path`). `path` entered the decision with the 2026-09-09 ruling —
+ * through the host filesystem, not through the tier table — so the old "a
+ * function of (t, marked) and nothing else" no longer holds and the 7×2 truth
+ * table became a 7×2×2 one.
  *
- * `op`, `path` AND `tid` ARE FOR THE LOG ROW ALONE, and keeping them out of
- * the DECISION is a property to preserve: an op-sensitive map would give
- * `pt_rename`'s and `pt_link`'s two routed paths different answers and
- * manufacture an EXDEV that S2 §8 already measured as a footgun (`mv` masks
- * it, `rename(2)` does not). `tid` is NOT a second mark check — the caller
- * already resolved that into `marked`, and re-deriving it here would give one
- * function two answers for one caller.
+ * `op` AND `tid` STAY OUT OF THE DECISION, and keeping them out is a property
+ * to preserve: an op-sensitive map would give `pt_rename`'s and `pt_link`'s two
+ * routed paths different answers and manufacture an EXDEV that S2 §8 already
+ * measured as a footgun (`mv` masks it, `rename(2)` does not). `tid` is NOT a
+ * second mark check — the caller already resolved that into `marked`, and
+ * re-deriving it here would give one function two answers for one caller.
  *
- * THE ROW FIRES ON THE SUBSTITUTION, NOT ON THE OUTCOME of the host read that
- * follows — which is also all this function can know. It therefore means "an
- * unmarked caller was routed to the host at an unpinned path", which is exactly
- * the fact a maintainer needs, and it is `served` rather than `deny` because
- * the op was not refused. Volume is bounded by distinct path × thread group
- * (the log dedupes on (path, reason, tgid)).
+ * IT CAN ONLY EVER RETURN THE INPUT TIER OR T_HOST. That is the mechanical
+ * statement of "an unmarked caller never receives remote file content, at any
+ * `mirrorRoot`".
+ *
+ * TWO RULES, AND THE ASYMMETRY IS THE POINT. `fail` substitutes
+ * UNCONDITIONALLY, because `fail` is a statement about cc's pin list: gating it
+ * on host existence would take away the unmarked CREATE at an unpinned path
+ * (real gate R13(f)), a deliberate owner decision ("host means host",
+ * 2026-09-08). `project` is a statement about the mirror geometry, and the
+ * ruling says the geometry is consulted only where the host has nothing.
+ *
+ * TWO REASONS, NOT ONE. `unmarked-project-host-served` is deliberately distinct
+ * from `unmarked-host-served`: the `fail` row feeds `suggestPin` (the project
+ * row correctly gets no suggestion), and the project row's VOLUME BY PATH is
+ * how much of the project tree the host shadows — the divergence surface a wide
+ * `mirrorRoot` accepts.
+ *
+ * THE ROW FIRES ON THE SUBSTITUTION, NOT ON THE OUTCOME of the host op that
+ * follows — which is also all this function can know. It is `served` rather
+ * than `deny` because the op was not refused. Volume is bounded by distinct
+ * path × thread group (the log dedupes on (path, reason, tgid)).
  */
 static inline enum tier policy_caller_tier(const char *op, const char *path,
 					   enum tier t, int marked, pid_t tid)
 {
-	if (t != T_FAIL || marked)
+	if (marked)
 		return t;
-	policy_event(EV_SERVED, op, path, "unmarked-host-served", tid);
-	return T_HOST;
+	if (t == T_FAIL) {
+		policy_event(EV_SERVED, op, path, "unmarked-host-served", tid);
+		return T_HOST;
+	}
+	if (t == T_PROJECT && policy_host_has(path)) {
+		policy_event(EV_SERVED, op, path, "unmarked-project-host-served", tid);
+		return T_HOST;
+	}
+	return t;
 }
 
 /* ── the cwd-chain exemption ────────────────────────────────────────────── */
