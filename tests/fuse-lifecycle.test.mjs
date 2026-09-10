@@ -25,6 +25,8 @@ import { parseScan, membersOf, orphansUnder } from '../src/systems/fuse/procScan
 import { FuseSession } from '../src/systems/fuse/session.ts';
 import { Instance, InstanceManager } from '../src/instances.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
+import { padPathTo } from './helpers.mjs';
+import { randomUUID } from 'node:crypto';
 
 // ── the fake driver ─────────────────────────────────────────────────────────
 //
@@ -1728,6 +1730,69 @@ describe('the configuration-time containment refusal', () => {
       `the host chain from ${input.projectsRoot} down to ${path.dirname(runDir)} must be walked, got ${checked} steps`);
     assert.equal(at('/'), 'project', 'the widest advertised mirror root is remote-tier');
   });
+
+  // ── CARD 2026-0387: THE STORE ROOT'S DEPTH IS NOT A CONFIGURATION ERROR ──
+
+  // T1 — PINS: no configuration-time length refusal governs the real socket
+  // path any more. The second assertion is the NON-VACUITY CONTROL: without it
+  // the test passes on a root that was never over the cliff.
+  //
+  // Dies under any mutant reinstating the `plan.ts` guard.
+  test('T1: a store root longer than sun_path plans without refusal', async () => {
+    const { buildFusePlan } = await import('../src/systems/fuse/plan.ts');
+    const { SUN_PATH_MAX } = await import('../src/systems/fuse/control.ts');
+    const { orchStoreRoot } = await import('../src/projects.ts');
+    const saved = process.env.PROJECTS_ROOT;
+    try {
+      process.env.PROJECTS_ROOT = await padPathTo(await mkdtemp('cc-fuse-deep-'), SUN_PATH_MAX + 1);
+      assert.ok(Buffer.byteLength(orchStoreRoot()) > SUN_PATH_MAX,
+        `the store root is only ${Buffer.byteLength(orchStoreRoot())} bytes — this test is vacuous`);
+      const plan = buildFusePlan({ ...planArgs, instanceId: randomUUID(), sourceOverrideRoot: null });
+      assert.ok(Buffer.byteLength(plan.controlSock) > SUN_PATH_MAX,
+        `the control socket path is only ${Buffer.byteLength(plan.controlSock)} bytes — the cliff was never crossed`);
+    } finally {
+      if (saved === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = saved;
+    }
+  });
+
+  // T2 — PINS: the run directory carries the WHOLE instance id, which is what
+  // restores the sweep's "a uuid per process, so anything left is dead"
+  // licence. A REAL 36-char uuid is load-bearing: every other fixture in this
+  // file uses a short id (`inst-x`, `live-1`, a mkdtemp basename) under which a
+  // truncation is invisible.
+  //
+  // Dies under any `.slice(0, N)` mutant on `fuseRunDirName`.
+  test('T2: the run directory is named with the whole uuid', async () => {
+    const { fuseRunDirName, fuseRunDir } = await import('../src/systems/fuse/plan.ts');
+    const id = randomUUID();
+    assert.equal(id.length, 36, 'the fixture must be a real uuid or truncation is invisible');
+    assert.equal(fuseRunDirName(id), id);
+    assert.equal(path.basename(fuseRunDir(id)), id);
+  });
+
+  // T6 — PINS: the diagnostic SURVIVED the mechanism change, is keyed on the
+  // FORMED ADDRESS rather than on any path on disk, and carries the corrected
+  // advice. The old message told the operator to move the store root; that is
+  // now false, and a message that still said it would send them at a lever
+  // that changes nothing.
+  //
+  // Dies under: deleting the check; checking `opts.socketPath` instead of the
+  // formed address; restoring the "move the store root" sentence.
+  test('T6: sunPathAddress forms the fd address and refuses only an over-long one', async () => {
+    const { sunPathAddress, SUN_PATH_MAX } = await import('../src/systems/fuse/control.ts');
+    assert.equal(sunPathAddress(3, 'control.sock'), '/proc/self/fd/3/control.sock');
+    assert.ok(Buffer.byteLength(sunPathAddress(3, 'control.sock')) <= SUN_PATH_MAX);
+    assert.throws(() => sunPathAddress(3, 'c'.repeat(200)), (e) => {
+      assert.equal(e.code, 'FUSE_CONTROL_SOCK_PATH_TOO_LONG');
+      assert.equal(e.statusCode, 501);
+      assert.match(e.message, /the address this session would hand bind\(\)\/connect\(\)/);
+      // THE CORRECTED ADVICE, asserted as an ABSENCE and a presence: the store
+      // root is named only to say it is NOT the lever.
+      assert.doesNotMatch(e.message, /move it somewhere shorter/);
+      assert.match(e.message, /store root's depth is NOT a factor/);
+      return true;
+    });
+  });
 });
 
 // ── the three callers that reclaim a session's mount scaffolding ────────────
@@ -2129,6 +2194,44 @@ describe('FuseSession lifecycle', () => {
       return true;
     });
   });
+
+  // T5 — CARD 2026-0387. PINS: `#prepare()` refuses a run directory ANOTHER
+  // instance owns, and the predicate is OWNERSHIP rather than EXISTENCE.
+  //
+  // Both arms are needed and neither is the other's restatement. Without the
+  // refusal, `mkdir(root, {recursive:true})` adopts the directory silently and
+  // the `rm(recordPath)` two lines on destroys the live session's mount
+  // record. Without the POSITIVE CONTROL the guard could be "refuse every
+  // pre-existing directory", which breaks the ordinary rewind/prune relaunch
+  // that the test above depends on.
+  test('T5: prepare() refuses a run directory owned by another instance, and relaunches its own', async (t) => {
+    const rundir = await mkdtemp('cc-fuse-life-');
+    const p = plan(rundir);
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: p, ccBootId: 'b', driver: d, scan: d.scan });
+    t.after(() => s.teardown());
+
+    // THE POSITIVE CONTROL FIRST, and it is a real relaunch: prepare() writes
+    // its own intent.json, so the second call reads the record it just left.
+    await s.prepare();
+    assert.equal(JSON.parse(await fs.readFile(p.intentPath, 'utf8')).instanceId, p.instanceId);
+    await s.prepare();
+
+    const foreign = randomUUID();
+    assert.notEqual(foreign, p.instanceId);
+    await fs.writeFile(p.intentPath, JSON.stringify({ schema: 1, instanceId: foreign, rundir }));
+    await assert.rejects(() => s.prepare(), (e) => {
+      assert.equal(e.code, 'FUSE_RUN_DIR_FOREIGN');
+      assert.equal(e.statusCode, 500);
+      // It names BOTH ids: an operator holding one of them has to be able to
+      // tell which session is the intruder.
+      assert.ok(e.message.includes(foreign) && e.message.includes(p.instanceId), e.message);
+      return true;
+    });
+    // AND IT REFUSED BEFORE DESTROYING ANYTHING — the other session's record
+    // is the thing the guard exists to protect.
+    assert.equal(JSON.parse(await fs.readFile(p.intentPath, 'utf8')).instanceId, foreign);
+  });
 });
 
 describe('the record-independent orphan backstop', () => {
@@ -2232,15 +2335,44 @@ describe('the record-independent orphan backstop', () => {
     assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
   });
 
-  test('a live session id is never signalled', async () => {
-    const rundir = await mkdtemp('cc-fuse-orphan-');
-    const id = path.basename(rundir);
-    const driver = fakeDriver({ procs: { 903: { starttime: '999', state: 'S' } }, mounts: { 903: [] } });
-    const out = await reclaimOrphanProcesses(path.dirname(rundir), {
-      driver, log: { warn() {} }, liveIds: [id], scan: scanOf(row(903, '999', 'mnt:[9]', id, rundir)),
+  // T4 — CARD 2026-0387. PINS THE SECOND SET: `liveIds` reaching
+  // `reclaimOrphanProcesses` as WHOLE ids, read off `/proc/<pid>/environ`'s
+  // `CC_FUSE_INSTANCE_ID` — never through a directory name.
+  //
+  // A REAL UUID IN A RUN DIRECTORY OF THAT NAME, which the mkdtemp-basename
+  // fixture this replaces could not be: its id and its directory name were one
+  // 22-character string, so a prefix applied to either set still matched. Here
+  // a `keep`-shaped derivation leaking into this pass stops protecting the
+  // session, and the SIGKILL lands on a live worker.
+  //
+  // BOTH DIRECTIONS. T3 and T4 together are what make the dual set
+  // non-vacuous; the skip alone is also what a backstop that never fires
+  // produces, so the reclaim is its control.
+  test('T4: a live full-uuid session id is never signalled, and the same row without it is', async () => {
+    const runRoot = await mkdtemp('cc-fuse-orphan-');
+    const id = randomUUID();
+    assert.equal(id.length, 36, 'a short id makes truncation invisible');
+    // No mount.json: the record pass has nothing here, so this row is the
+    // backstop's own business rather than one it defers.
+    const rundir = path.join(runRoot, id);
+    await fs.mkdir(rundir, { recursive: true });
+    const scan = scanOf(row(903, '999', 'mnt:[9]', id, rundir));
+    const procs = () => ({ 903: { starttime: '999', state: 'S' } });
+
+    const skipped = fakeDriver({ procs: procs(), mounts: { 903: [] } });
+    const out = await reclaimOrphanProcesses(runRoot, {
+      driver: skipped, log: { warn() {} }, liveIds: [id], scan,
     });
     assert.deepEqual(out.reclaimed, []);
-    assert.deepEqual(driver.calls.filter(c => c[0] === 'signal'), []);
+    assert.deepEqual(skipped.calls.filter(c => c[0] === 'signal'), []);
+
+    const reclaimed = fakeDriver({ procs: procs(), mounts: { 903: [] } });
+    const out2 = await reclaimOrphanProcesses(runRoot, {
+      driver: reclaimed, log: { warn() {} }, scan,
+    });
+    assert.equal(out2.reclaimed[0]?.killed, true, JSON.stringify(out2));
+    assert.ok(reclaimed.calls.some(c => c[0] === 'signal' && c[1] === 903),
+      'the pass never fires at all, so the skip above proves nothing');
   });
 });
 
@@ -2587,15 +2719,32 @@ describe('the boot sweep', () => {
   // PINS: a LIVE session's directory is not touched. The sweep runs at boot
   // where there are none, but the parameter exists and a sweep that ignored it
   // would tear down a running worker.
-  test('skips a live session id entirely', async () => {
+  // T3 — CARD 2026-0387. PINS the readdir loop's `keep.has(name)` keying,
+  // where `keep` is derived through `fuseRunDirName`.
+  //
+  // FULL UUIDS, AND THAT IS THE WHOLE POINT. The fixture this replaces used
+  // the 6-character `'live-1'`, under which the truncated name and the whole
+  // id are the SAME STRING — so it was green against the prefix shape and is
+  // green against the identity, and killed neither a truncation mutant nor a
+  // mutant deleting the `fuseRunDirName` derivation. With a real uuid a
+  // truncated `keep` entry no longer matches the directory on disk and the
+  // live session is torn down under itself.
+  //
+  // TWO ENTRIES, because "skipped" alone passes against a sweep that does
+  // nothing at all: B is the control that proves the pass ran.
+  test('T3: skips a live session id entirely, and reclaims the dead one beside it', async () => {
     const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
-    const dir = await seedEntry('live-1');
+    const liveId = randomUUID(), deadId = randomUUID();
+    assert.equal(liveId.length, 36, 'a short id makes truncation invisible');
+    const live = await seedEntry(liveId);
+    const dead = await seedEntry(deadId);
     const driver = fakeDriver();
-    const reports = await sweepFuseSessions({ driver, scan: emptyScan, liveIds: ['live-1'], log: { warn() {} } });
-    assert.deepEqual(reports, []);
-    await fs.stat(path.join(dir, 'mount.json'));
-    assert.deepEqual(driver.calls, [], 'a live session was touched');
-    await fs.rm(dir, { recursive: true, force: true });
+    const reports = await sweepFuseSessions({ driver, scan: emptyScan, liveIds: [liveId], log: { warn() {} } });
+    assert.deepEqual(reports.map(r => r.instanceId), [deadId], 'the wrong set of sessions was swept');
+    await fs.stat(path.join(live, 'mount.json'));
+    assert.equal(await fs.stat(dead).then(() => true, () => false), false, 'the dead session survived the sweep');
+    await fs.rm(live, { recursive: true, force: true });
+    await fs.rm(dead, { recursive: true, force: true });
   });
 
   // PINS: a wedged entry is REPORTED and its record KEPT, so the next boot

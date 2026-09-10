@@ -465,11 +465,11 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
 
   const notes: string[] = [];
   const report: TeardownReport = {
-    // The directory name — the instance id's PREFIX (plan.ts's
-    // `fuseRunDirName`), not the whole id. It is only ever the FALLBACK: step 0
-    // below replaces it with the full id from intent.json/mount.json whenever
-    // either is readable, and it survives only for a run directory that has
-    // neither.
+    // The directory name, which IS the whole instance id (plan.ts's
+    // `fuseRunDirName`). It is only ever the FALLBACK: step 0 below replaces it
+    // with the id read from intent.json/mount.json whenever either is
+    // readable, and it survives only for a run directory that has neither —
+    // where it is now exact rather than a lossy prefix.
     instanceId: path.basename(rundir),
     source: 'NO-RECORD',
     workerPid: null, workerStopped: false, daemonPid: null, anchorPid: null, survivingPids: [],
@@ -950,6 +950,21 @@ export class FuseSession {
       // that handle. Fail loudly instead; the run directory is the operator's
       // (and the next boot sweep's) evidence.
       throw httpError(500, `FUSE_PREVIOUS_TEARDOWN_WEDGED: ${p.rundir} still records an unfinished teardown (${stale.terminalState ?? 'wedged'}); refusing to reuse it`, { code: 'FUSE_PREVIOUS_TEARDOWN_WEDGED' });
+    }
+    // OWNERSHIP, NOT EXISTENCE — and the distinction is forced rather than
+    // stylistic. `mkdir(p.root, {recursive:true})` below adopts a
+    // pre-existing run directory silently, so two instances mapped to one name
+    // would share a control socket, a mirror and a record set, and the `rm`
+    // on the next line would destroy the LIVE session's mount record. A bare
+    // EEXIST refusal is not available: the relaunch above is ordinary and
+    // lands in this same directory with this same id.
+    //
+    // The whole uuid in the directory name (`fuseRunDirName`, plan.ts) already
+    // makes a collision impossible; this turns any future change to that shape
+    // from a silently shared socket into a named refusal.
+    const owner = await readJson<FuseIntent>(p.intentPath);
+    if (owner && owner.instanceId !== p.instanceId) {
+      throw httpError(500, `FUSE_RUN_DIR_FOREIGN: ${p.rundir} belongs to instance ${owner.instanceId}, not to ${p.instanceId}; reusing it would give the two sessions ONE control socket, mirror and record set, and this launch would destroy the other's mount record`, { code: 'FUSE_RUN_DIR_FOREIGN' });
     }
     await fsp.rm(p.recordPath, { force: true }).catch(() => {});
     this.record = null;

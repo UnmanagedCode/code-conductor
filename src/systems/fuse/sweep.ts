@@ -34,10 +34,12 @@ export interface SweepOptions {
 export async function sweepFuseSessions(opts: SweepOptions = {}): Promise<TeardownReport[]> {
   const log = opts.log ?? console;
   // TWO SETS OVER THE SAME IDS, BECAUSE THE TWO PASSES BELOW ARE KEYED
-  // DIFFERENTLY. `run/<name>` carries the id's PREFIX (plan.ts's
-  // `fuseRunDirName`), so the readdir loop must compare names; the orphan
-  // backstop matches `CC_FUSE_INSTANCE_ID` off `/proc/<pid>/environ`, which is
-  // the WHOLE id. One set for both would silently protect nothing in one pass.
+  // DIFFERENTLY. The readdir loop compares DIRECTORY NAMES, so it goes through
+  // `fuseRunDirName` (plan.ts); the orphan backstop matches
+  // `CC_FUSE_INSTANCE_ID` off `/proc/<pid>/environ`, which is the whole id.
+  // `fuseRunDirName` is the identity today — DERIVED rather than assumed
+  // equal, because the two passes ask different questions and only the
+  // derivation survives the name shape being revisited.
   const liveIds = new Set(opts.liveIds ?? []);
   const keep = new Set([...liveIds].map(fuseRunDirName));
   const root = fuseRunRoot();

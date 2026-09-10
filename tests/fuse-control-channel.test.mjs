@@ -15,8 +15,9 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { promises as fs, openSync, closeSync, constants as fsConstants } from 'node:fs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { padPathTo } from './helpers.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
          CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
@@ -952,5 +953,86 @@ describe('localDirSource — the S2 fake remote', () => {
     execFileSync('mkfifo', [path.join(root, 'pipe')]);
     assert.equal(await s.stat('/pipe'), null);
     assert.deepEqual((await s.list('/')).map(c => c.name).sort(), ['a'], 'and is omitted from a listing');
+  });
+});
+
+// ── CARD 2026-0387: THE ADDRESS HAS NO LENGTH BUDGET ────────────────────────
+//
+// The socket FILE still lives at `<rundir>/control.sock`, whose depth follows
+// the store root's. What changed is the ADDRESS handed to bind(2)/connect(2):
+// `/proc/self/fd/<dirfd>/control.sock`, formed from an O_PATH-style directory
+// fd each side opens for itself. `sun_path` caps the address at 107 usable
+// bytes and the cap binds BOTH ends, so the round trip below — not just the
+// listen — is what proves it.
+describe('the control socket binds and connects at any store-root depth', () => {
+  let box, deep, srcRoot, mirror, sockPath, tiers;
+
+  before(async () => {
+    box = await mkdtemp('cc-ctl-deep-');
+    // PAST THE CLIFF BY CONSTRUCTION, never by reasoning about headroom: the
+    // DIRECTORY alone is longer than sun_path, so the socket path inside it
+    // cannot be under the limit however the basename is spelled.
+    deep = await padPathTo(box, 130);
+    srcRoot = path.join(box, 'remote');
+    mirror = path.join(box, 'mirror');
+    sockPath = path.join(deep, 'control.sock');
+    await fs.mkdir(path.join(srcRoot, 'srv', 'app'), { recursive: true });
+    await fs.mkdir(mirror, { recursive: true });
+    tiers = buildTierTable(tierFixtureInput({ systemPath: '/srv/app', mirrorRoot: '/srv/app' }));
+    assert.ok(Buffer.byteLength(sockPath) > 107,
+      `the fixture socket path is ${Buffer.byteLength(sockPath)} bytes — not over sun_path, so this block is vacuous`);
+  });
+
+  // T8 — T7'S PREMISE, and the thing that stops this whole block going vacuous
+  // the day someone shortens the padding. A bare listen on the SAME real path
+  // must still be EINVAL: that is the defect card 2026-0387 removes, and the
+  // errno is neither ENAMETOOLONG nor anything else self-describing.
+  //
+  // PINS: the fixture path really is over the cliff, at the syscall.
+  test('T8: a bare listen on the same real path is still EINVAL', async () => {
+    const srv = net.createServer();
+    const err = await new Promise((resolve) => {
+      srv.once('error', resolve);
+      srv.listen(sockPath, () => resolve(null));
+    });
+    srv.close();
+    assert.ok(err, 'net.Server.listen accepted a path longer than sun_path — the premise is gone');
+    assert.equal(err.code, 'EINVAL', err.message);
+  });
+
+  // T7 — THE CARD'S CENTRAL PROPERTY, at the actual syscall and with no FUSE
+  // and no sudo. `ControlServer.listen` must bind at a path no bind(2) can
+  // take; a client forming its OWN fd address must complete a real frame; and
+  // `close()` must still unlink the socket from the REAL path.
+  //
+  // PINS: bind, connect and unlink are all independent of the store root's
+  // depth. Dies if either end addresses `socketPath` directly, and if close()
+  // stops removing the real file.
+  test('T7: ControlServer listens past sun_path, serves a real frame, and unlinks on close', async () => {
+    const server = await ControlServer.listen({
+      socketPath: sockPath, mirror, source: localDirSource(srcRoot), tiers, log: () => {},
+    });
+    let dirfd = -1, sock;
+    try {
+      await fs.writeFile(path.join(srcRoot, 'srv', 'app', 'deep.txt'), 'deep');
+      // THE CLIENT FORMS ITS OWN ADDRESS. The daemon does exactly this per
+      // connect (`control_connect` in union.c) rather than holding an fd: it
+      // reconnects lazily per FUSE worker thread and again after any framing
+      // error, so an fd with a lifetime rule would have to outlive all of it.
+      dirfd = openSync(path.dirname(sockPath), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+      sock = await connect(`/proc/self/fd/${dirfd}/${path.basename(sockPath)}`);
+      const r = await call(sock, CCU_OP.STAT, 0, '/srv/app/deep.txt');
+      assert.equal(r.magic, CCU_MAGIC);
+      assert.equal(r.status, CCU_STATUS.READY, `status ${r.status} errno ${r.err}`);
+      // The socket FILE is unmoved — the mirror entry materialised under the
+      // deep real path, which is the half a listen-only assertion cannot see.
+      assert.equal((await fs.stat(path.join(mirror, 'srv/app/deep.txt'))).size, 4);
+      await fs.stat(sockPath);
+    } finally {
+      sock?.destroy();
+      if (dirfd >= 0) closeSync(dirfd);
+      await server.close();
+    }
+    await assert.rejects(() => fs.stat(sockPath), 'close() left the socket file behind at the real path');
   });
 });
