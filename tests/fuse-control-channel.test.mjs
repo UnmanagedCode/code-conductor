@@ -15,8 +15,9 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { promises as fs, openSync, closeSync, constants as fsConstants } from 'node:fs';
 import { mkdtemp } from './tmpRegistry.mjs';
+import { padPathTo } from './helpers.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
          CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
@@ -952,5 +953,147 @@ describe('localDirSource — the S2 fake remote', () => {
     execFileSync('mkfifo', [path.join(root, 'pipe')]);
     assert.equal(await s.stat('/pipe'), null);
     assert.deepEqual((await s.list('/')).map(c => c.name).sort(), ['a'], 'and is omitted from a listing');
+  });
+});
+
+// ── CARD 2026-0387: THE ADDRESS HAS NO LENGTH BUDGET ────────────────────────
+//
+// The socket FILE still lives at `<rundir>/control.sock`, whose depth follows
+// the store root's. What changed is the ADDRESS handed to bind(2)/connect(2):
+// `/proc/self/fd/<dirfd>/control.sock`, formed from an O_PATH-style directory
+// fd each side opens for itself. `sun_path` caps the address at 107 usable
+// bytes and the cap binds BOTH ends, so the round trip below — not just the
+// listen — is what proves it.
+describe('the control socket binds and connects at any store-root depth', () => {
+  let box, deep, srcRoot, mirror, sockPath, tiers;
+
+  before(async () => {
+    box = await mkdtemp('cc-ctl-deep-');
+    // PAST THE CLIFF BY CONSTRUCTION, never by reasoning about headroom: the
+    // DIRECTORY alone is longer than sun_path, so the socket path inside it
+    // cannot be under the limit however the basename is spelled.
+    deep = await padPathTo(box, 130);
+    srcRoot = path.join(box, 'remote');
+    mirror = path.join(box, 'mirror');
+    sockPath = path.join(deep, 'control.sock');
+    await fs.mkdir(path.join(srcRoot, 'srv', 'app'), { recursive: true });
+    await fs.mkdir(mirror, { recursive: true });
+    tiers = buildTierTable(tierFixtureInput({ systemPath: '/srv/app', mirrorRoot: '/srv/app' }));
+    assert.ok(Buffer.byteLength(sockPath) > 107,
+      `the fixture socket path is ${Buffer.byteLength(sockPath)} bytes — not over sun_path, so this block is vacuous`);
+  });
+
+  // T8 — T7'S PREMISE, and the thing that stops this whole block going vacuous
+  // the day someone shortens the padding. A bare listen on the SAME real path
+  // must still be EINVAL: that is the defect card 2026-0387 removes, and the
+  // errno is neither ENAMETOOLONG nor anything else self-describing.
+  //
+  // PINS: the fixture path really is over the cliff, at the syscall.
+  test('T8: a bare listen on the same real path is still EINVAL', async () => {
+    const srv = net.createServer();
+    const err = await new Promise((resolve) => {
+      srv.once('error', resolve);
+      srv.listen(sockPath, () => resolve(null));
+    });
+    srv.close();
+    assert.ok(err, 'net.Server.listen accepted a path longer than sun_path — the premise is gone');
+    assert.equal(err.code, 'EINVAL', err.message);
+  });
+
+  // T7 — THE CARD'S CENTRAL PROPERTY, at the actual syscall and with no FUSE
+  // and no sudo. `ControlServer.listen` must bind at a path no bind(2) can
+  // take; a client forming its OWN fd address must complete a real frame; and
+  // `close()` must still unlink the socket from the REAL path.
+  //
+  // PINS: bind, connect and unlink are all independent of the store root's
+  // depth. Dies if either end addresses `socketPath` directly, and if close()
+  // stops removing the real file.
+  test('T7: ControlServer listens past sun_path, serves a real frame, and unlinks on close', async () => {
+    const server = await ControlServer.listen({
+      socketPath: sockPath, mirror, source: localDirSource(srcRoot), tiers, log: () => {},
+    });
+    let dirfd = -1, sock;
+    try {
+      await fs.writeFile(path.join(srcRoot, 'srv', 'app', 'deep.txt'), 'deep');
+      // THE CLIENT FORMS ITS OWN ADDRESS. The daemon does exactly this per
+      // connect (`control_connect` in union.c) rather than holding an fd: it
+      // reconnects lazily per FUSE worker thread and again after any framing
+      // error, so an fd with a lifetime rule would have to outlive all of it.
+      dirfd = openSync(path.dirname(sockPath), fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+      sock = await connect(`/proc/self/fd/${dirfd}/${path.basename(sockPath)}`);
+      const r = await call(sock, CCU_OP.STAT, 0, '/srv/app/deep.txt');
+      assert.equal(r.magic, CCU_MAGIC);
+      assert.equal(r.status, CCU_STATUS.READY, `status ${r.status} errno ${r.err}`);
+      // THE FRAME WAS REALLY SERVED, which is the half a listen-only assertion
+      // cannot see: the round trip drove a materialise. (The mirror is a short
+      // sibling, deliberately — only the SOCKET sits at the deep path, and it
+      // is the socket's address that this block is about.)
+      assert.equal((await fs.stat(path.join(mirror, 'srv/app/deep.txt'))).size, 4);
+      await fs.stat(sockPath);
+    } finally {
+      sock?.destroy();
+      if (dirfd >= 0) closeSync(dirfd);
+      await server.close();
+    }
+    await assert.rejects(() => fs.stat(sockPath), 'close() left the socket file behind at the real path');
+  });
+
+  // T9 — THE CLOSE ORDERING, deterministically. `close()` must close `#dirfd`
+  // only AFTER `await server.close()` resolves, because libuv unlinks the pipe
+  // by THE ADDRESS IT BOUND WITH — `/proc/self/fd/<n>/control.sock` — resolved
+  // in cc's own fd table AT UNLINK TIME. Close the fd first and that address
+  // resolves to whatever later takes the number, so the unlink can land on
+  // ANOTHER session's `control.sock`.
+  //
+  // WHY THE OBVIOUS TEST CANNOT WORK, recorded so nobody rebuilds it. The
+  // hazard needs an intervening `open()` between the early `closeSync` and the
+  // unlink — and MEASURED, that window contains no yield point at all: libuv
+  // performs the unlink SYNCHRONOUSLY inside `server.close()` (a probe found
+  // the file already gone on the statement after the call, before any
+  // microtask, `nextTick`, `setImmediate` or timer). No in-process JS can be
+  // scheduled into it, so a single-threaded test cannot steal the descriptor
+  // and a spin loop would only ever be green-either-way.
+  //
+  // SO PIN THE CAUSE, NOT THE RACY CONSEQUENCE. Renaming the socket's parent
+  // after bind is the instrument: the dirfd is on the INODE, so the bound
+  // address still resolves, while `opts.socketPath` goes stale — which takes
+  // `close()`'s own `fsp.rm` out of the picture and leaves libuv's unlink as
+  // the ONLY thing that can remove the file. It succeeds if and only if the
+  // dirfd is still open when `server.close()` runs.
+  //
+  // PINS: the dirfd outlives `server.close()`. Dies under a mutant moving
+  // `closeSync(#dirfd)` ahead of it — the one T7 cannot see, because with a
+  // single server the explicit `fsp.rm` on the real path produces an identical
+  // end state. (That `rm` is deliberate and measured-redundant on the happy
+  // path; it is what keeps this reorder latent instead of catastrophic, so do
+  // not "simplify" it away.)
+  test('T9: close() unlinks through a dirfd that is still open, not one already released', async () => {
+    const box2 = await mkdtemp('cc-ctl-order-');
+    const live = path.join(box2, 'live');
+    const mirror2 = path.join(box2, 'mirror');
+    await fs.mkdir(live, { recursive: true });
+    await fs.mkdir(mirror2, { recursive: true });
+    const sockPath = path.join(live, 'control.sock');
+
+    const server = await ControlServer.listen({
+      socketPath: sockPath, mirror: mirror2, source: localDirSource(box2), tiers, log: () => {},
+    });
+    await fs.stat(sockPath);
+
+    // THE INSTRUMENT. After this the recorded path names nothing.
+    const moved = path.join(box2, 'moved');
+    await fs.rename(live, moved);
+    const movedSock = path.join(moved, 'control.sock');
+    // Both preconditions asserted, because the whole attribution rests on
+    // them: the socket travelled with its parent, and `close()`'s `fsp.rm`
+    // now has a stale path and cannot be what removes it.
+    await fs.stat(movedSock);
+    await assert.rejects(() => fs.stat(sockPath),
+      'the recorded socketPath still resolves, so fsp.rm could remove the file and this test proves nothing');
+
+    await server.close();
+
+    await assert.rejects(() => fs.stat(movedSock),
+      'the socket survived close() — libuv could not unlink through the bound address, so the dirfd was already released when it tried');
   });
 });

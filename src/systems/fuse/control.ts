@@ -10,12 +10,18 @@
 // that stat'd anything under the union would be waiting on itself.
 //
 // The socket lives at `<rundir>/control.sock`. `rundir` is a SIBLING of the
-// mount root and is tiered `hide`, so nothing inside the chroot can name it —
-// containment is structural rather than policy.
+// mount root and is tiered `hide`, so nothing inside the chroot can name it
+// THROUGH THE UNION: `route()` answers -ENOENT for the path before any frame
+// is sent. That is the whole of the property — it is NOT structural
+// containment. The worker runs as cc's own uid and the architecture
+// bind-mounts the orchestrator's real /proc, so
+// `/proc/<ccpid>/root/<rundir>/control.sock` names and reaches this socket
+// from inside the chroot today (measured; card 2026-0394 owns that route).
 
 import net from 'node:net';
 import path from 'node:path';
-import { promises as fsp, constants as fsc } from 'node:fs';
+import { promises as fsp, constants as fsc, openSync, closeSync } from 'node:fs';
+import { httpError } from '../../httpError.ts';
 import { withinPosix } from '../mirror.ts';
 import { resolveTierEntry, type TierEntry } from './tierTable.ts';
 import { isSourceError, type RemoteSource } from './remoteSource.ts';
@@ -123,6 +129,45 @@ export type Fault =
   | { kind: 'diverged'; detail: string; refuses: 'writes' }
   | { kind: 'over-cap'; size: number; cap: number; refuses: 'all' };
 
+// ── the socket's ADDRESS, which is not its path ─────────────────────────────
+//
+// Linux's `sockaddr_un` is `char sun_path[108]` and bind(2)/connect(2) need the
+// terminating NUL, so 107 bytes is the whole budget for the address. The budget
+// binds BOTH ends: the mechanism makes one syscall per side, bind(2) here and
+// connect(2) in `union.c`. It lives here rather than in `plan.ts` because it
+// governs those two calls, not any path on disk.
+export const SUN_PATH_MAX = 107;
+
+// THE ADDRESS, NOT THE PATH. The socket FILE is unmoved — it is still created
+// at `<dirfd>/<name>`, i.e. `<rundir>/control.sock`, whose depth follows the
+// store root's. What is bounded by construction is the STRING handed to the
+// syscall: `/proc/self/fd/<dirfd>/<name>` resolves in the CALLING process's own
+// fd table, so no store root, however deep, can overflow `sun_path`.
+//
+// IT ADDS NO REACHABLE OBJECT. A process inside the chroot has its own
+// `/proc/self/fd`, holding its own fds, so the string is meaningless there;
+// `<rundir>` keeps its `hide` pin and `route()` still answers -ENOENT for the
+// socket's real path before any control frame is sent.
+//
+// The daemon forms the same address in `control_connect` (union.c) from an fd
+// it opens per connect.
+export function sunPathAddress(dirfd: number, name: string): string {
+  const addr = `/proc/self/fd/${dirfd}/${name}`;
+  const len = Buffer.byteLength(addr);
+  if (len > SUN_PATH_MAX) {
+    // A DIAGNOSTIC FOR A CASE THE MECHANISM MAKES UNREACHABLE, kept because a
+    // bare EINVAL from bind(2) names neither a limit nor a measurement.
+    // `/proc/self/fd/` (14) + the fd's decimal digits + the basename: at any
+    // ordinary RLIMIT_NOFILE the fd is at most 7 digits, so this address tops
+    // out around 34 bytes. THE STORE ROOT'S DEPTH IS NOT A FACTOR — it is not
+    // in the address at all. Reaching the limit means cc chose a basename of
+    // ~80 characters or an 80-digit fd number, both cc DEFECTS, so the repair
+    // belongs at the caller that chose the basename, not at the operator.
+    throw httpError(501, `FUSE_CONTROL_SOCK_PATH_TOO_LONG: the address this session would hand bind()/connect() is ${len} bytes and the limit is ${SUN_PATH_MAX} (Linux's sockaddr_un is char sun_path[108], one byte of it the terminating NUL). The address is ${addr}. It is formed from a directory fd, so the store root's depth is NOT a factor and moving the store somewhere shorter would change nothing; the length is cc's own socket basename plus the fd number. This is a cc DEFECT and the repair belongs at the caller that chose the basename. Card 2026-0387 owns the mechanism.`, { code: 'FUSE_CONTROL_SOCK_PATH_TOO_LONG' });
+  }
+  return addr;
+}
+
 // ── the handler ─────────────────────────────────────────────────────────────
 
 const ENOENT = 2, EIO = 5, EACCES = 13, EFBIG = 27;
@@ -148,6 +193,15 @@ export interface ControlServerOptions {
 export class ControlServer {
   #server: net.Server;
   #opts: ControlServerOptions;
+  // THE DIRECTORY FD THE SOCKET IS ADDRESSED THROUGH, held for the server's
+  // whole life and closed only AFTER `server.close()` resolves.
+  //
+  // THAT ORDER IS LOAD-BEARING, not tidiness: libuv unlinks the pipe by the
+  // NAME IT BOUND WITH, and a closed fd number is reused immediately (measured
+  // — the very next open takes it). Closing first would let that unlink land on
+  // a `control.sock` inside whatever directory now owns the number. The
+  // authoritative unlink is `close()`'s `fsp.rm` on the REAL path.
+  #dirfd = -1;
   // SERIALISED PER PATH — the PATH ALONE, and the op is deliberately not in the
   // key. Two FUSE worker threads reaching the same file would otherwise
   // materialise it twice; worse, a `STAT` that did not wait on an in-flight
@@ -292,10 +346,22 @@ export class ControlServer {
     });
     // A per-connection error must not take cc down; the daemon reconnects.
     server.on('error', (e) => opts.log?.(`cc-union control: server error: ${String(e)}`));
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(opts.socketPath, () => { server.off('error', reject); resolve(); });
-    });
+    // `O_RDONLY|O_DIRECTORY` rather than `O_PATH`: node does not export
+    // `fs.constants.O_PATH` (it is `undefined`), and this needs no magic
+    // numeric constant to do the same job for an address-only fd.
+    self.#dirfd = openSync(path.dirname(opts.socketPath), fsc.O_RDONLY | fsc.O_DIRECTORY);
+    try {
+      const address = sunPathAddress(self.#dirfd, path.basename(opts.socketPath));
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(address, () => { server.off('error', reject); resolve(); });
+      });
+    } catch (e) {
+      // Or a refused spawn leaks a directory fd per attempt.
+      closeSync(self.#dirfd);
+      self.#dirfd = -1;
+      throw e;
+    }
     return self;
   }
 
@@ -349,6 +415,8 @@ export class ControlServer {
     for (const sock of [...this.#conns]) sock.destroy();
     this.#conns.clear();
     await new Promise<void>((resolve) => this.#server.close(() => resolve()));
+    // AFTER close() resolves, never before — see `#dirfd`.
+    if (this.#dirfd >= 0) { closeSync(this.#dirfd); this.#dirfd = -1; }
     await fsp.rm(this.#opts.socketPath, { force: true }).catch(() => {});
   }
 

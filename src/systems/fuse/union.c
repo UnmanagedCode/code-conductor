@@ -405,23 +405,82 @@ static void control_close(void *v)
 		close(fd);
 }
 
+/*
+ * THE ADDRESS IS NOT THE PATH. `sun_path` is 108 bytes while the socket's real
+ * path grows with cc's store root, so the string handed to connect(2) is
+ * `/proc/self/fd/<dirfd>/<basename>`, formed from a directory fd on the
+ * socket's PARENT — bounded by construction and independent of that depth. cc
+ * forms the same shape for bind(2) (`sunPathAddress`, control.ts). The socket
+ * FILE is unmoved, and `/proc/self/fd` resolves in THIS process's own fd table,
+ * so the address names nothing a chrooted caller could reach.
+ *
+ * AN fd PER CONNECT, HELD BY NOTHING. This runs lazily per FUSE worker thread
+ * and again after every framing error (`control_drop`), at arbitrary times over
+ * the mount's life, so a held fd would need a lifetime rule spanning all of it.
+ * cc must hold its own, because libuv unlinks by the name it bound with; this
+ * side unlinks nothing, so open/format/connect/close is free of that hazard.
+ *
+ * The daemon is never chrooted (bootstrap.sh execs `chroot` only for the CLI
+ * chain) and its cwd is `/`, so `/proc/self/fd` resolves for the mount's life.
+ */
 static int control_connect(void)
 {
 	struct sockaddr_un sa;
 	struct timeval tv;
-	int fd;
+	char dir[PATH_MAX];
+	const char *base;
+	size_t dirlen;
+	int fd, dirfd, n, saved;
 
-	if (!control_path || strlen(control_path) >= sizeof(sa.sun_path))
+	if (!control_path)
 		return -1;
-	if ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) == -1)
+	/* `strrchr`, NOT libgen's `dirname()`: that mutates its argument and
+	 * `control_path` points into `environ`. A path with no '/' at all, or
+	 * one ending in '/', names no socket to connect to. */
+	base = strrchr(control_path, '/');
+	if (!base || base[1] == '\0') {
+		errno = EINVAL;
+		return -1;
+	}
+	dirlen = (size_t)(base - control_path);
+	if (dirlen >= sizeof(dir)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	memcpy(dir, control_path, dirlen);
+	dir[dirlen] = '\0';
+	if (dirlen == 0) {			/* the socket sits at "/" itself */
+		dir[0] = '/';
+		dir[1] = '\0';
+	}
+	base++;
+	if ((dirfd = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC)) == -1)
 		return -1;
 	memset(&sa, 0, sizeof(sa));
 	sa.sun_family = AF_UNIX;
-	snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", control_path);
-	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == -1) {
-		close(fd);
+	/* The length check that remains, now against the FORMED ADDRESS rather
+	 * than against a path on disk — the limit the old `strlen(control_path)`
+	 * test asserted no longer governs anything. */
+	n = snprintf(sa.sun_path, sizeof(sa.sun_path), "/proc/self/fd/%d/%s", dirfd, base);
+	if (n < 0 || (size_t)n >= sizeof(sa.sun_path)) {
+		close(dirfd);
+		errno = ENAMETOOLONG;
 		return -1;
 	}
+	if ((fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0)) == -1) {
+		saved = errno;
+		close(dirfd);
+		errno = saved;
+		return -1;
+	}
+	if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) == -1) {
+		saved = errno;
+		close(fd);
+		close(dirfd);
+		errno = saved;
+		return -1;
+	}
+	close(dirfd);
 	tv.tv_sec  = CONTROL_TIMEOUT_MS / 1000;
 	tv.tv_usec = (CONTROL_TIMEOUT_MS % 1000) * 1000;
 	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));

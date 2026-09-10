@@ -32,7 +32,7 @@ import { promises as fs, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
-import { bootServer, api, freshProjectsRoot, rmrf, waitFor } from './helpers.mjs';
+import { bootServer, api, freshProjectsRoot, padPathTo, rmrf, waitFor } from './helpers.mjs';
 import { seedRepo } from './remoteSystem.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { killPids } from './procTree.mjs';
@@ -40,6 +40,7 @@ import { adoptProject, orchStoreRoot } from '../src/projects.ts';
 import { addSystem } from '../src/appSettings.ts';
 import { disposeSystemHandles } from '../src/systems/registry.ts';
 import { EVENT_LOG_NAME, fuseRunDir, fuseRunRoot } from '../src/systems/fuse/plan.ts';
+import { SUN_PATH_MAX } from '../src/systems/fuse/control.ts';
 import { resolveTierEntry } from '../src/systems/fuse/tierTable.ts';
 import { scanProcesses, orphansUnder } from '../src/systems/fuse/procScan.ts';
 import { assertFuseAvailable } from '../src/systems/fuse/preflight.ts';
@@ -167,6 +168,20 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
     ctx = await bootServer({ realProcess: true, scenarioPath: SCENARIO });
     ({ baseUrl, instances } = ctx);
     ({ home } = await freshProjectsRoot());
+    // ── CARD 2026-0387: THE WHOLE GATE RUNS AT A LONG STORE ROOT ────────────
+    //
+    // The control socket used to be addressed by its real path, so the store
+    // root's depth was a spawn-time cliff: past Linux's 107-byte `sun_path`,
+    // `bind(2)` answered a bare `EINVAL`. It is now addressed through a
+    // directory fd, and every arm below is the proof — spawn, mount, serve,
+    // tear down, sweep — rather than one dedicated arm that would need a
+    // second fake-remote scaffold to duplicate.
+    //
+    // CONSTRUCTED, NEVER REASONED ABOUT. The assertion is on the store root
+    // ALONE, so no accounting of what cc adds below it can quietly go slack.
+    process.env.PROJECTS_ROOT = await padPathTo(process.env.PROJECTS_ROOT, SUN_PATH_MAX + 1);
+    assert.ok(Buffer.byteLength(orchStoreRoot()) > SUN_PATH_MAX,
+      `the gate must run at a store root longer than sun_path itself — this is card 2026-0387's bar; got ${Buffer.byteLength(orchStoreRoot())} bytes at ${orchStoreRoot()}`);
     runRoot = fuseRunRoot();
 
     // The fake remote is DELIBERATELY NARROW: one project tree and nothing
@@ -980,10 +995,18 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
 
   // ── R5 ───────────────────────────────────────────────────────────────────
   // PINS criterion 9: the per-session mirror is OUTSIDE the chroot and has NO
-  // spelling inside it, and it goes with the session. A18 pins the geometry
-  // deterministically; this pins that the daemon actually answers -ENOENT for
-  // it, which is the half a plan file cannot establish.
-  test('R5 — the run directory is unreachable from inside the chroot and dies with the session', async () => {
+  // spelling inside it THROUGH THE UNION, and it goes with the session. A18
+  // pins the geometry deterministically; this pins that the daemon actually
+  // answers -ENOENT for it, which is the half a plan file cannot establish.
+  //
+  // "THROUGH THE UNION" IS EXACTLY WHAT THE PROBE BELOW MEASURES and exactly
+  // what the claim may say: every path it tries is `inside(record, …)`, i.e.
+  // re-rooted and asked of the mount. It is NOT a reachability claim about the
+  // chroot as a whole — the worker runs as cc's own uid and the architecture
+  // bind-mounts the orchestrator's real /proc, so
+  // `/proc/<ccpid>/root/<rundir>/mirror` is another spelling of the same
+  // directory and it resolves (measured; card 2026-0394 owns that route).
+  test('R5 — the run directory is unreachable through the union from inside the chroot, and dies with the session', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
     const rundir = fuseRunDir(inst.id);
@@ -994,7 +1017,7 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       for (const hidden of [rundir, path.join(rundir, 'mirror'), path.join(rundir, 'control.sock')]) {
         const probe = await inNs(record.anchorPid,
           '[ -e "$1" ] && echo PRESENT || echo ABSENT', inside(record, hidden));
-        assert.match(probe.stdout, /ABSENT/, `${hidden} is reachable from inside the chroot`);
+        assert.match(probe.stdout, /ABSENT/, `${hidden} is reachable THROUGH THE UNION from inside the chroot`);
       }
       // NON-VACUITY: the mirror really was populated on the outside, so ABSENT
       // above is the tier answering rather than an empty tree. The CLI's own

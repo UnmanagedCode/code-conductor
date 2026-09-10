@@ -202,8 +202,10 @@ write_record mounted
 #       step 9 binds /sys into the chroot and fusectl at its conventional path
 #       would hand the worker both a tell that its root is FUSE and an abort
 #       surface against its own filesystem. $CC_FUSE_FUSECTL is OUTSIDE
-#       $CC_FUSE_ROOT, so it is invisible inside the chroot and reachable by cc
-#       through nsenter.
+#       $CC_FUSE_ROOT, so the union serves no spelling of it to a caller inside
+#       the chroot, and cc reaches it through nsenter. (NOT "invisible inside
+#       the chroot": the bind-mounted /proc gives it another spelling at
+#       /proc/<ccpid>/root/$CC_FUSE_FUSECTL — card 2026-0394.)
 mount -t fusectl none "$CC_FUSE_FUSECTL" || die "could not mount fusectl at $CC_FUSE_FUSECTL"
 
 # ── 9. real bind mounts OVER the union, after it is up and NEVER as tiers. A
