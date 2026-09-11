@@ -18,7 +18,7 @@
  *   ccu_xport     the control-channel round trip, injected so the frame codec
  *                 and the reply->errno mapping are proven without a socket.
  *   policy_host_fd  an O_PATH fd on the host root, injected so the
- *                 host-existence probe below is driven against a tree the
+ *                 host-absence probe below is driven against a tree the
  *                 fixture built rather than against the box's own filesystem.
  *
  * WHAT IS DELIBERATELY NOT PROVABLE HERE, stated so a later SURVIVED is read
@@ -55,6 +55,39 @@
 #define PATH_MAX 4096
 #endif
 
+/* ── the two views ──────────────────────────────────────────────────────── */
+/*
+ * ONE RULE, TWO VIEWS, AND NO GEOMETRY IN EITHER (card 2026-0398). `VIEW_CLI` is
+ * what the MARKED CLI resolves against: the whole tier table, unchanged by that
+ * card. `VIEW_HOST` is what EVERYONE ELSE resolves against, and it is the rule
+ * in one sentence — the union subtracts nothing from the orchestrator's own
+ * filesystem and adds only what the chroot cannot run without. Mechanically that
+ * is two subtractions from the table and no third:
+ *
+ *   1. THE `project` PINS ARE STRUCK (tier_of), so the remote tier is not in
+ *      this view at all. That is what makes "an unmarked caller never receives
+ *      remote file content" STRUCTURAL rather than guarded: `tier_of` cannot
+ *      return T_PROJECT here, so no unmarked resolution can name the remote,
+ *      send a control frame or read the mirror.
+ *   2. THE ANCESTOR TABLE IS NOT CONSULTED (resolve_class), because a synthetic
+ *      read-only node standing in for a directory the orchestrator HAS is a
+ *      subtraction — epic criterion 4 calls it "a violation, not a rounding".
+ *      Such a path falls to `fail`, and `fail` means host.
+ *
+ * The one thing this view ADDS is the OVERLAY: a traverse-only node at a
+ * component of the CLI's cwd the orchestrator does not have. It is irreducible —
+ * a floor changes a mode, and at `systemPath` there is no node to put a mode on,
+ * so `chdir` would get -ENOENT at every geometry including today's default.
+ *
+ * WHY THE UNMARKED ANSWERS DO NOT VARY WITH THE GEOMETRY, which is the property
+ * that makes 2026-0398's bug unreachable rather than merely fixed: with the
+ * `project` entries struck, the pin list an unmarked caller resolves against does
+ * not mention `mirrorRoot` at all, and the cwd chain does not vary with it
+ * either, because `mirrorRoot` is always an ancestor-or-equal of `systemPath`,
+ * which IS the cwd. `b38` asserts that identity across three geometries.
+ */
+enum view { VIEW_CLI = 0, VIEW_HOST };
+
 /* ── the tier table ─────────────────────────────────────────────────────── */
 
 /*
@@ -69,21 +102,17 @@
  * IT IS ALSO A CALLER-SENSITIVE CLASS. For an UNMARKED caller
  * `policy_caller_tier` substitutes T_HOST, because `fail` is a statement about
  * cc's pin list and an unmarked caller was never going to be served the remote.
- * The set is `{T_FAIL, T_PROJECT}` — see policy_tier_is_caller_sensitive, where
- * the two rules differ and why.
+ * The set is `{T_FAIL, T_PROJECT, T_SYNTH}` — see
+ * policy_tier_is_caller_sensitive, which is an OPTIMISATION over the view and
+ * not a rule of its own.
  *
  * T_SYNTH is DERIVED, never parsed from the pins file: `pins_load` rejects it
  * as an unknown kind. See the ancestor derivation below for why it has to
- * exist at all.
- *
- * T_CWD is the SECOND derived class: the cwd-chain exemption (below) assigns it
- * in `route()` for an unmarked caller at a directory component of the CLI's
- * cwd, and nowhere else. `pins_load` rejects `cwd` as an
- * unknown kind exactly as it rejects `synth`, and `resolve_class` never returns
- * it — so it cannot enter the pins file the hook's tier table is rendered from.
- * Appended, so T_FAIL keeps index 0.
+ * exist at all — and note the derivation is `VIEW_CLI`'s alone: in `VIEW_HOST`
+ * the same enumerator carries the OVERLAY node instead, which is keyed on the
+ * cwd chain and on nothing else.
  */
-enum tier { T_FAIL = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH, T_CWD };
+enum tier { T_FAIL = 0, T_HOST, T_PROJECT, T_HIDE, T_BIND, T_SYNTH };
 
 static inline const char *tier_name(enum tier t)
 {
@@ -93,7 +122,6 @@ static inline const char *tier_name(enum tier t)
 	case T_HIDE:    return "hide";
 	case T_BIND:    return "bind";
 	case T_SYNTH:   return "synth";
-	case T_CWD:     return "cwd";
 	case T_FAIL:    break;
 	}
 	return "fail";
@@ -136,8 +164,14 @@ static inline int pin_add(enum tier t, const char *prefix)
  * Longest prefix wins. A prefix matches a path when the path IS it or lies
  * under it at a component boundary -- "/tmp/apple" must not match the pin
  * "/tmp/app", which a bare strncmp would happily do.
+ *
+ * IN `VIEW_HOST` THE `project` PINS ARE SKIPPED, and that one `continue` is half
+ * the rule. It is not a filter applied to the answer: a struck pin does not
+ * enter the longest-prefix contest at all, so a SHORTER host or bind pin can win
+ * it, and the path lands where the orchestrator's own filesystem puts it rather
+ * than at a blanket refusal.
  */
-static inline enum tier tier_of(const char *path)
+static inline enum tier tier_of(const char *path, enum view v)
 {
 	enum tier best_t = T_FAIL;
 	size_t    best   = 0;
@@ -145,6 +179,8 @@ static inline enum tier tier_of(const char *path)
 
 	for (i = 0; i < npins; i++) {
 		const struct pin *p = &pins[i];
+		if (v == VIEW_HOST && p->tier == T_PROJECT)
+			continue;
 		if (p->len <= best)
 			continue;
 		if (strncmp(path, p->prefix, p->len) != 0)
@@ -292,11 +328,37 @@ static inline void anc_build(void)
  * in union.c goes through it. A path is synthetic only where it is EXACTLY a
  * member of the ancestor set — membership by prefix would make every leaf under
  * an unpinned directory a directory too.
+ *
+ * THE TWO VIEWS DIVERGE HERE AS WELL AS IN `tier_of`, AND THAT SECOND DIVERGENCE
+ * IS WHY `policy_tier_is_caller_sensitive` CARRIES T_SYNTH. `VIEW_HOST` does not
+ * consult the ancestor table: a scaffold node over a directory the orchestrator
+ * HAS is a subtraction, so in that view such a path is `fail` — and `fail` means
+ * host. Its only synthetic nodes come from the OVERLAY below.
+ *
+ * THE OVERLAY: a traverse-only directory where the orchestrator has none and the
+ * chroot cannot run without one. Its two conjuncts and their ORDER are a
+ * correctness requirement rather than a style: `policy_cwd_component` is a
+ * bounded string compare and `policy_host_absent` is a syscall, and this
+ * function is called once PER DIRENT in readdir's real arm. Reverse them and a
+ * listing of a large directory pays one fstatat per entry.
+ *
+ * The probe is deliberately PER-OP and not cached at mount. The set needing the
+ * decision is `depth(cwd)` paths behind a string compare, so the cost is a
+ * handful of fstatats per process spawn — and a cache would buy that back for a
+ * stale window in which the orchestrator GAINS a directory and a cached "absent"
+ * keeps a synthetic node over real host data, hiding it silently. That is what
+ * constraints 1 and 2 forbid.
  */
-static inline enum tier resolve_class(const char *path)
+static inline int policy_cwd_component(const char *path);
+static inline int policy_host_absent(const char *path);
+
+static inline enum tier resolve_class(const char *path, enum view v)
 {
-	enum tier t = tier_of(path);
-	if (t == T_FAIL && anc_find(path) >= 0)
+	enum tier t = tier_of(path, v);
+
+	if (v == VIEW_CLI)
+		return (t == T_FAIL && anc_find(path) >= 0) ? T_SYNTH : t;
+	if (t == T_FAIL && policy_cwd_component(path) && policy_host_absent(path))
 		return T_SYNTH;
 	return t;
 }
@@ -312,6 +374,7 @@ static inline enum tier resolve_class(const char *path)
  * 0555 root:root, nlink 2, size 0, all three times 0.
  */
 static inline unsigned long long policy_bind_ino(const char *path);
+static inline unsigned long long policy_cwd_ino(const char *path);
 
 /* A fixed directory node's attributes. The MODE is the caller's, because the
  * two classes make two different statements and each is pinned on its own. */
@@ -326,37 +389,37 @@ static inline void policy_fixed_dir(struct stat *st, mode_t mode, unsigned long 
 	st->st_ino   = ino;
 }
 
-static inline int policy_synth_getattr(const char *path, struct stat *st)
+/*
+ * ONE MODE FOR BOTH SYNTHETIC CLASSES — 0555 — AND THE ARGUMENT THAT KEPT THEM
+ * APART IS DISSOLVED RATHER THAN OVERRULED. Until card 2026-0398 the cwd node
+ * was 0111, traverse-only, because it sat over a PROJECT path where a listing
+ * could name remote content; 0555 there would have handed an unmarked caller
+ * "the content of these remote directories", which the 2026-09-08 amendment
+ * forbade. With the remote struck from `VIEW_HOST` the overlay node's listing is
+ * EMPTY BY CONSTRUCTION — `policy_synth_children` finds no pin or ancestor under
+ * a path the orchestrator does not have — so it names nothing remote and the
+ * reason for the split is gone. `policy_mutation_check`'s -EROFS still applies
+ * and is still right: the orchestrator has nothing at this path, so constraint 1
+ * owes nothing there.
+ *
+ * THE INODE COMES FROM THE VIEW'S OWN RANGE. `policy_cwd_ino` has a sub-range
+ * disjoint from the ancestor and exact-pin ranges precisely because the chain
+ * covers intermediate components with NO exact pin, which `policy_bind_ino`
+ * would collapse to one shared fallback; `b27` pins the disjointness.
+ */
+static inline int policy_synth_getattr(const char *path, struct stat *st, enum view v)
 {
-	int idx = anc_find(path);
+	int idx = v == VIEW_CLI ? anc_find(path) : -1;
 	unsigned long long ino;
 
 	if (idx >= 0)
 		ino = SYNTH_INO_BASE + (unsigned long long)idx;
-	else if (resolve_class(path) == T_BIND)
+	else if (resolve_class(path, v) == T_BIND)
 		ino = policy_bind_ino(path);
+	else if (v == VIEW_HOST && resolve_class(path, v) == T_SYNTH)
+		ino = policy_cwd_ino(path);
 	else
 		return -ENOENT;
-	/* 0555 HERE AND 0111 AT THE CWD NODE, AND THEY MUST NOT BE UNIFIED.
-	 * A synthetic ancestor is read-only scaffolding a caller may LIST — it
-	 * exists so a pinned leaf is reachable, and `ls /` inside the chroot is
-	 * how the pin set is inspected. The cwd node is a directory an unmarked
-	 * spawn may ENTER AND NOT READ. Unifying them would either hand an
-	 * unmarked caller the project root's listing or take traversal away from
-	 * the ancestors.
-	 *
-	 * THE PRESSURE TO UNIFY IS NEW, AND THE ARGUMENT NOW CUTS BOTH WAYS.
-	 * Since the cwd exemption widened to the whole chain, both classes are
-	 * ANCESTOR DIRECTORIES and a simplification pass will want them merged.
-	 * Downward (ancestors adopt 0111) makes them traverse-only and breaks a
-	 * MARKED caller's listing — `policy_synth_children` exists precisely so
-	 * a pinned leaf is reachable, and 0555 is what lets that listing happen
-	 * under default_permissions. Upward (T_CWD adopts 0555) hands an unmarked
-	 * caller read-and-list on the cwd chain, which is "the content of these
-	 * remote directories" — the precise thing the 2026-09-08 amendment
-	 * forbade. And it breaks MECHANICALLY too: T_CWD is deliberately NOT in
-	 * the ancestor set, so a node routed here would find no entry and answer
-	 * -ENOENT (see pt_getattr's ordering comment, union.c). */
 	policy_fixed_dir(st, 0555, ino);
 	return 0;
 }
@@ -384,20 +447,50 @@ static inline unsigned long long policy_bind_ino(const char *path)
 }
 
 /*
+ * CAN THIS VIEW OPEN THIS CHILD? THE DIRENT STREAM'S WHOLE RULE, in one place so
+ * both of `pt_readdir`'s arms and the pinned-children collector ask the same
+ * question — card 2026-0403 was two instances of the same defect, one per arm.
+ *
+ *   T_HIDE  invisible to EVERYONE. It is what keeps the mirror and cc's control
+ *           socket unreachable, and it is the reason constraint 2 reads
+ *           "everything of the host except cc's own run directory": that
+ *           exception is FORCED by constraint 3, not chosen.
+ *   T_FAIL  invisible to the CLI, whose every op at such a name answers -ENOENT;
+ *           VISIBLE to everyone else, because `fail -> host` serves it
+ *           unconditionally. The old caller-insensitive filter took the CLI's
+ *           answer for both, so an unmarked `ls /tmp` emitted nothing while
+ *           `cat /tmp/x` returned its bytes — measured at a real mount, card
+ *           2026-0398 step 0.
+ *
+ * Everything else — host, bind, synth, and project to the CLI that may have it —
+ * is a name that view can open, so it is a name that view must see.
+ */
+static inline int policy_dirent_visible(const char *child, enum view v)
+{
+	enum tier t = resolve_class(child, v);
+
+	if (t == T_HIDE)
+		return 0;
+	if (t == T_FAIL)
+		return v == VIEW_HOST;
+	return 1;
+}
+
+/*
  * The immediate children of a synthetic directory, and NOTHING ELSE. A
  * synthetic dir that also listed the host's would be exactly the leak criterion
- * 3 forbids: the host's `/usr` has hundreds of names the chroot cannot serve.
+ * 3 forbids for the MARKED CLI: the host's `/usr` has hundreds of names the
+ * chroot cannot serve. (`VIEW_HOST` merges the orchestrator's own names in
+ * `pt_readdir`'s synthetic arm, where the node has no remote behind it at all —
+ * union.c states why that is not the same rule.)
  *
- * WHAT IS OMITTED, and why it is not the same rule as "pinned children":
- *   T_HIDE  the union's own scaffolding — the rig suppressed it from every
- *           listing and that is carried unchanged.
- *   T_FAIL  a name whose every op answers -ENOENT. Listing it would put `ls`
- *           and `cat` in disagreement about whether a file exists, from one
- *           caller — the same defect the merged readdir existed to avoid.
+ * WHAT IS OMITTED IS `policy_dirent_visible`'s DECISION, not a second copy of
+ * it: `hide` never, `fail` to the CLI alone. Asking one predicate is what keeps
+ * the two arms from drifting.
  *
  * Calls `cb` once per child with the child's own class. Returns the count.
  */
-static inline size_t policy_synth_children(const char *dir,
+static inline size_t policy_synth_children(const char *dir, enum view v,
                                            void (*cb)(void *ctx, const char *name,
                                                       const char *full, enum tier t),
                                            void *ctx)
@@ -421,7 +514,7 @@ static inline size_t policy_synth_children(const char *dir,
 			if (*name == '\0' || strchr(name, '/'))
 				continue;      /* not an IMMEDIATE child */
 			t = src == 0 ? pins[i].tier : T_SYNTH;
-			if (t == T_HIDE || t == T_FAIL)
+			if (!policy_dirent_visible(full, v))
 				continue;
 			cb(ctx, name, full, t);
 			emitted++;
@@ -1341,92 +1434,158 @@ static inline const char *policy_rel(const char *path)
 }
 
 /*
- * DOES THE HOST HAVE AN ENTRY AT `path`? ONE fstatat, THROUGH THE SAME fd AND
- * THE SAME relativiser THE T_HOST ARM WOULD OPEN — which is what makes a second
- * spelling structurally impossible rather than merely absent.
+ * IS THE HOST DEFINITELY WITHOUT AN ENTRY AT `path`? ONE fstatat, THROUGH THE
+ * SAME fd AND THE SAME relativiser THE T_HOST ARM WOULD OPEN — which is what
+ * makes a second spelling structurally impossible rather than merely absent.
+ *
+ * DEFINITE ABSENCE ONLY, AND THAT IS THE INVERSE POLARITY OF THE DELETED
+ * `policy_host_has` — which is why that function is gone rather than reused at a
+ * new call site. Reusing it would have picked the wrong failure direction
+ * SILENTLY, and this probe's failure direction is the whole of its risk.
  *
  * AT_SYMLINK_NOFOLLOW, matching pt_getattr's own T_HOST arm: a dangling host
- * symlink IS a host entry, and the ruling is about entries. Following instead
- * would route a path the host names to the remote.
+ * symlink IS a host entry, so it is not an absence and no node is synthesized
+ * over it. Following instead would overlay a path the host names.
  *
  * PROBED AS ROOT — no cred_enter/cred_leave — so the CLASSIFICATION does not
  * vary with the caller's uid; permission is still enforced by the host op that
- * follows.
+ * follows. EACCES is therefore unreachable here, exactly as it was for the
+ * deleted probe.
  *
- * TOCTOU IS BENIGN AND IS STATED RATHER THAN DEFENDED AGAINST: both race
- * directions land on a host answer or on -ENOENT, because the substitution only
- * ever routes to T_HOST. Nothing it can do produces remote bytes.
+ * A NEGATIVE fd ANSWERS 1 — "no host at all", the axis the unit fixture drives
+ * by leaving the seam unset.
  *
- * A NEGATIVE fd ANSWERS 0, which is the pre-substitution behaviour: the unit
- * fixture leaves it unset to drive the "host has nothing" axis.
+ * THE FAILURE DIRECTION, STATED AND CHOSEN RATHER THAN LEFT TO FALL OUT. On any
+ * failure that is not an absence errno — ELOOP from an intermediate symlink
+ * (AT_SYMLINK_NOFOLLOW spares only the FINAL component), EIO, NFS under
+ * root_squash, a permission-enforcing FUSE beneath us — this answers NOT ABSENT,
+ * so NO node is synthesized. Which constraint that sacrifices, and why it is the
+ * right one:
  *
- * THE PROBE'S BOUND, STATED RATHER THAN BRANCHED ON: it answers "no" for ANY
- * fstatat failure, not only for non-existence. That is exactly right for the
- * errnos that MEAN non-existence — ENOENT and ENOTDIR / ENAMETOOLONG, each of
- * which says the host has no entry at this spelling — and EACCES is
- * unreachable for a root probe on local storage.
+ *   Falling ABSENT on an unknown error would place a 0555 traverse-only node
+ *   over a directory the orchestrator may really have, hiding it and its write
+ *   surface — violating constraints 1 and 2 SILENTLY, with an unmarked caller
+ *   quietly unable to see or write a host directory that exists. That is the
+ *   exact failure class card 2026-0398 took a day to diagnose.
  *
- * THE RESIDUAL IS A HOST FILESYSTEM THAT CAN ERROR ON A METADATA OP FOR
- * ANOTHER REASON: NFS under root_squash, a permission-enforcing FUSE beneath
- * us, and ELOOP — which belongs HERE and not above, because
- * AT_SYMLINK_NOFOLLOW spares only the FINAL component. An intermediate
- * symlink loop raises ELOOP while an entry at the final spelling may well
- * exist, so ELOOP is not a statement about the entry. In every case in this
- * class the unmarked caller is DENIED where the ruling would have served the
- * host. That is fail-closed — -ENOENT, never remote content, and identical to
- * this path's pre-card behaviour — and it is left as a documented bound on
- * purpose: an errno-classification branch would be unreachable on any host
- * this is tested on, trading a remote silent miss for a real untested path
- * (owner, 2026-09-10).
+ *   Falling NOT ABSENT lets the path fall to `fail -> host`, where the host
+ *   answers for itself. If the orchestrator genuinely has nothing there, `chdir`
+ *   fails with the host's own errno and an event row names the path — violating
+ *   constraint 4 at that ONE path, LOUDLY and diagnosably, and degrading to
+ *   exactly this path's behaviour before the card.
+ *
+ * Loud and reversible beats silent and hiding.
  */
-static inline int policy_host_has(const char *path)
+static inline int policy_host_absent(const char *path)
 {
 	struct stat st;
 
 	if (policy_host_fd < 0)
+		return 1;               /* the fixture's "no host at all" axis */
+	if (fstatat(policy_host_fd, policy_rel(path), &st, AT_SYMLINK_NOFOLLOW) == 0)
 		return 0;
-	return fstatat(policy_host_fd, policy_rel(path), &st, AT_SYMLINK_NOFOLLOW) == 0;
+	return errno == ENOENT || errno == ENOTDIR || errno == ENAMETOOLONG;
+}
+
+/* ── the floor ──────────────────────────────────────────────────────────── */
+/*
+ * THE ONLY MUTATION OF A HOST STAT THIS DAEMON MAKES: a cwd-chain directory the
+ * orchestrator HAS is reported to an unmarked caller with its `--x` bits set, so
+ * the kernel — which decides traversal from the mode the union reports, because
+ * the mount carries `default_permissions` — lets the walk through. Without it a
+ * `drwx------ root root` link kills every spawn in chdir() before execve.
+ *
+ * SCOPED TO THE CWD CHAIN, AND THE SCOPE IS WHAT MAKES CONSTRAINT 1 MORE
+ * EXACTLY SATISFIED, NOT LESS: everything else keeps its real mode, where an
+ * unscoped floor would grant traversal the host itself denies.
+ *
+ * THE RESIDUAL IS IRREDUCIBLE AND IS NAMED RATHER THAN PAPERED OVER: a floored
+ * 0700 directory advertises a traversal its CONTENTS then refuse — `stat /root`
+ * says traversable, `stat /root/secret` says EACCES, because the daemon's own op
+ * runs under cred_enter against the real mode. It cannot be closed. `cred_enter`
+ * is mandatory (S1 §7.2 measured the CLI's Bash tool failing outright without
+ * it), and permitting the walk REQUIRES reporting `x`. The floor grants PATH
+ * RESOLUTION ONLY, NEVER ACCESS: everything under such a directory stays refused
+ * by the real filesystem, and the chain itself works because the next component
+ * is either also floored or is the overlay node, which touches no host.
+ *
+ * TWO ENTRY POINTS OVER ONE PREDICATE, and the split is mechanical rather than a
+ * second rule: three of the four reporting ops hold a `struct stat` and
+ * `pt_access` holds a mask. A source-shape assertion in
+ * tests/fuse-union-policy.test.mjs enumerates both across exactly four op bodies
+ * and nowhere else — apply it at fewer and the floor becomes a seam inside the
+ * seam it exists to close, with `stat` and `test -x` disagreeing from one
+ * caller.
+ */
+static inline int policy_floor_applies(const char *path, mode_t mode, enum view v)
+{
+	return v == VIEW_HOST && S_ISDIR(mode) && policy_cwd_component(path);
+}
+
+static inline void policy_floor_traversal(const char *path, struct stat *st, enum view v)
+{
+	if (policy_floor_applies(path, st->st_mode, v))
+		st->st_mode |= 0111;
 }
 
 /*
- * THE TIER TABLE CLASSIFIES FOR EVERYONE. AN UNMARKED CALLER TAKES A
- * TIER-DERIVED ROUTING OR REFUSAL DECISION AT `fail` AND AT `project`, AND AT
- * NO OTHER TIER — both to `host`, under the two rules in
- * `policy_caller_tier` below.
+ * THE FLOOR AS `pt_access` HAS TO ASK IT: the mask the real `faccessat` should
+ * be given. X_OK is cleared where the floor applies, so an empty remainder means
+ * "permitted" and the caller's `test -x` agrees with the `stat` it just made.
  *
- * THE DISCRIMINATOR IS HOST-ENTRY EXISTENCE, NOT TIER (owner, 2026-09-09):
- * "A unmarked process will always get the host entries if these entries exist.
- * Full stop. … It doesn't matter what the mirrorRoot is. The mirror route will
- * only change what happens if the host entry does not exist." The invariant
- * marking protects is therefore narrower than this file used to assume: an
- * unmarked caller must never see REMOTE FILE CONTENT; where the host has an
- * entry it is served the host, and only where the host has none is the mirror
- * geometry consulted at all.
+ * THE MODE COMES FROM A ROOT-SIDE fstatat, gated behind the string compare for
+ * the same reason the overlay's conjuncts are ordered — and probed as root for
+ * the same reason `policy_host_absent` is: the CLASSIFICATION must not vary with
+ * the caller's uid, and permission is still enforced by the `faccessat` that
+ * follows. A probe that cannot answer leaves the mask untouched, which is the
+ * pre-floor behaviour.
+ */
+static inline int policy_floor_mask(const char *path, int mask, enum view v)
+{
+	struct stat st;
+
+	if (v != VIEW_HOST || !policy_cwd_component(path))
+		return mask;
+	if (policy_host_fd < 0)
+		return mask;
+	if (fstatat(policy_host_fd, policy_rel(path), &st, 0) != 0)
+		return mask;
+	if (!policy_floor_applies(path, st.st_mode, v))
+		return mask;
+	return mask & ~X_OK;
+}
+
+/*
+ * THE TIER TABLE CLASSIFIES FOR EVERYONE; AN UNMARKED CALLER RESOLVES IT IN
+ * `VIEW_HOST`. This predicate is not that rule — it is the cheap conservative
+ * GATE on the /proc mark read, and naming it an optimisation rather than a rule
+ * is load-bearing: a reader who takes it for the policy will look for the
+ * behaviour in the wrong place. The set is exactly the tiers whose `VIEW_CLI`
+ * answer CAN differ in `VIEW_HOST`, and the three are there for two reasons:
  *
- * `project` IS HERE NOW, AND THE 2026-09-08 RULING THAT KEPT IT OUT IS
- * SUPERSEDED BY THE 2026-09-09 ONE. Stating which ruling superseded which is
- * load-bearing: the older one ("an unmarked caller at the project path gets
- * NEITHER read NOR write") is still quoted in the epic's earlier cards, and a
- * reader who finds it first will otherwise restore the old set. What the older
- * ruling decided remains true WHERE THE HOST HAS NO ENTRY — which is the
- * default configuration in production, and is why `policy_project_route`'s mark
- * check is untouched.
+ *   T_PROJECT  the `project` pins are struck in `VIEW_HOST`, so the answer moves
+ *              to whatever shorter pin covers the path, or to `fail`.
+ *   T_SYNTH    `VIEW_HOST` does not consult the ancestor table, so an
+ *              ancestor-of-a-pin directory falls to `fail` there — and `fail`
+ *              means host. Without this member nothing would ever ask, and an
+ *              unmarked caller would keep meeting a 0555 scaffold node over a
+ *              directory the orchestrator HAS: "a violation, not a rounding"
+ *              (epic criterion 4). Added by the conductor ruling of 2026-09-11.
+ *   T_FAIL     substituted to host UNCONDITIONALLY, and it may also become the
+ *              OVERLAY node on the cwd chain.
  *
- * WHY `fail` IS HERE. `fail` means "no pin covers this", which is a statement
- * about the CLI's PIN LIST — not about a caller that was never going to be
- * served the remote. Every shell, hook, forwarder and MCP subprocess in the
- * chroot is a fresh, permanently unmarked thread group, and before this the pin
- * list had to cover every object every one of them loads: that is why
- * `libtinfo.so.6` killed `bash` although marking never enters it.
+ * WHY THE OTHER THREE ARE NOT HERE, each for its own reason rather than by
+ * omission: `hide` is what keeps the mirror and cc's control socket unreachable
+ * and `VIEW_HOST` does not strike it; `bind` is resolved by UNMARKED `mount` for
+ * /proc, /sys and /dev before the marking event ever fires, and is not struck
+ * either, so both answer identically in both views; `host` already IS the host.
  *
- * `hide`, `bind`, `synth` and `host` are not here, and each for its own reason
- * rather than by omission: `hide` is what keeps the mirror and cc's control
- * socket unreachable; `bind` is resolved by UNMARKED `mount` for /proc, /sys
- * and /dev before the marking event ever fires, so substituting it breaks every
- * launch; `synth` answers a fixed stat that reads nothing — and under the
- * DEFAULT mirror root `/` is synth, so making it caller-sensitive would hand an
- * unmarked caller the host's real `/` and change the default arm; `host`
- * already IS the host.
+ * WHY `fail` IS CALLER-SENSITIVE AT ALL. `fail` means "no pin covers this",
+ * which is a statement about the CLI's PIN LIST — not about a caller that was
+ * never going to be served the remote. Every shell, hook, forwarder and MCP
+ * subprocess in the chroot is a fresh, permanently unmarked thread group, and
+ * before this the pin list had to cover every object every one of them loads:
+ * that is why `libtinfo.so.6` killed `bash` although marking never enters it.
  *
  * THE ENOENT AT THE FAR SIDE IS THE HOST'S OWN ANSWER, not a policy denial, and
  * that is the one thing the substitution costs: an unmarked caller's missing
@@ -1438,39 +1597,33 @@ static inline int policy_host_has(const char *path)
  */
 static inline int policy_tier_is_caller_sensitive(enum tier t)
 {
-	return t == T_FAIL || t == T_PROJECT;
+	return t == T_FAIL || t == T_PROJECT || t == T_SYNTH;
 }
 
 /*
- * THE RETURNED TIER IS A FUNCTION OF (t, marked, AND WHETHER THE HOST HAS AN
- * ENTRY AT `path`). `path` entered the decision with the 2026-09-09 ruling —
- * through the host filesystem, not through the tier table — so the old "a
- * function of (t, marked) and nothing else" no longer holds and the 7×2 truth
- * table became a 7×2×2 one.
+ * AN UNMARKED CALLER RESOLVES IN `VIEW_HOST`, FULL STOP — that is the whole of
+ * this function, and the two `if`s below are that sentence plus the `fail`
+ * rule. The 2026-09-09 "host-entry existence is the discriminator" ruling and
+ * the 2026-09-08 "an unmarked caller at the project path gets neither read nor
+ * write" one are both PRESERVED and both now fall out of the view rather than
+ * being tested for: the remote tier is not in the view, so the geometry cannot
+ * be consulted, and where the orchestrator has an entry the host serves it.
  *
- * `op` AND `tid` STAY OUT OF THE DECISION, and keeping them out is a property
- * to preserve: an op-sensitive map would give `pt_rename`'s and `pt_link`'s two
+ * `op` AND `tid` STAY OUT OF THE DECISION, and keeping them out is a property to
+ * preserve: an op-sensitive map would give `pt_rename`'s and `pt_link`'s two
  * routed paths different answers and manufacture an EXDEV that S2 §8 already
  * measured as a footgun (`mv` masks it, `rename(2)` does not). `tid` is NOT a
  * second mark check — the caller already resolved that into `marked`, and
  * re-deriving it here would give one function two answers for one caller.
  *
- * IT CAN ONLY EVER RETURN THE INPUT TIER OR T_HOST. That is the mechanical
- * statement of "an unmarked caller never receives remote file content, at any
- * `mirrorRoot`".
+ * IT CAN NEVER RETURN T_PROJECT FOR AN UNMARKED CALLER, and that is now
+ * STRUCTURAL rather than asserted: `resolve_class(path, VIEW_HOST)` cannot
+ * produce it, because `tier_of` skips every `project` pin in that view. The
+ * re-resolution's range is provably {T_HOST, T_SYNTH, T_FAIL}; `b41` asserts it
+ * rather than assuming it.
  *
- * TWO RULES, AND THE ASYMMETRY IS THE POINT. `fail` substitutes
- * UNCONDITIONALLY, because `fail` is a statement about cc's pin list: gating it
- * on host existence would take away the unmarked CREATE at an unpinned path
- * (real gate R13(f)), a deliberate owner decision ("host means host",
- * 2026-09-08). `project` is a statement about the mirror geometry, and the
- * ruling says the geometry is consulted only where the host has nothing.
- *
- * TWO REASONS, NOT ONE. `unmarked-project-host-served` is deliberately distinct
- * from `unmarked-host-served`: the `fail` row feeds `suggestPin` (the project
- * row correctly gets no suggestion), and the project row's VOLUME BY PATH is
- * how much of the project tree the host shadows — the divergence surface a wide
- * `mirrorRoot` accepts.
+ * TWO REASONS, NOT ONE, and the `fail` row keeps its own: it feeds `suggestPin`,
+ * which the substituted-project row correctly must not.
  *
  * THE ROW FIRES ON THE SUBSTITUTION, NOT ON THE OUTCOME of the host op that
  * follows — which is also all this function can know. It is `served` rather
@@ -1482,56 +1635,58 @@ static inline enum tier policy_caller_tier(const char *op, const char *path,
 {
 	if (marked)
 		return t;
+	if (t == T_PROJECT || t == T_SYNTH)
+		t = resolve_class(path, VIEW_HOST);   /* the remote tier is not yours */
 	if (t == T_FAIL) {
 		policy_event(EV_SERVED, op, path, "unmarked-host-served", tid);
 		return T_HOST;
 	}
-	if (t == T_PROJECT && policy_host_has(path)) {
-		policy_event(EV_SERVED, op, path, "unmarked-project-host-served", tid);
-		return T_HOST;
-	}
-	return t;
+	return t;             /* a shorter host/bind pin, or the overlay node */
 }
 
-/* ── the cwd-chain exemption ────────────────────────────────────────────── */
+/* ── the cwd chain ──────────────────────────────────────────────────────── */
 /*
- * AN UNMARKED CALLER MAY TRAVERSE THE DIRECTORY COMPONENTS OF THE CLI'S CWD,
- * AND READ NOTHING — not the files under them, and not their listings.
+ * EACH COMPONENT OF THE CLI'S CWD IS MADE TRAVERSABLE FOR AN UNMARKED CALLER:
+ * by the ORCHESTRATOR'S OWN DIRECTORY floored to `--x` where it has one, or by
+ * the OVERLAY node where it has none. The chain is the whole domain of both, and
+ * this section owns the predicate they share.
  *
  * WHY IT HAS TO EXIST. A spawn chdir()s into the CLI's cwd IN THE FORKED CHILD,
- * before it execs — so the caller is a new, unmarked thread group, and the
- * project-tier denial kills the process before its own image runs. Every child
- * the CLI spawns at its own cwd died of this (card 2026-0373).
+ * before it execs — so the caller is a new, unmarked thread group, and a denial
+ * or an unsearchable directory kills the process before its own image runs.
+ * Every child the CLI spawns at its own cwd died of this (card 2026-0373), and
+ * under a `mirrorRoot` that is a strict ancestor of `systemPath` every one of
+ * them died again at an intervening component (card 2026-0398).
  *
  * WHY IT IS THE WHOLE CHAIN AND NOT THE PROJECT ROOT ALONE (owner amendment,
  * 2026-09-08: "I'm fine with allowing the read of the full traversed cwd of the
  * remote. Just the directories. Not the files or the content of these remote
- * directories."). A chdir walks EVERY component, and under an advertised
- * `mirrorRoot: '/'` the intermediate ones are project-tier with no exact pin —
- * so a chdir to `<systemPath>` died one component early at, say, `/srv`. That
- * was card 2026-0375, and this replaces the exact-pin test rather than being
- * disjoined with it: the narrower sufficient form, since the exact project pin
- * should not be exempt when the CLI never chdirs there.
+ * directories."). A chdir walks EVERY component.
  *
- * WHY IT IS STILL NARROW. Marking exists to stop a custom backend template's
- * proxy setup, spawned by the CLI before `claude` runs, from reading remote
- * bytes. A directory a spawn ENTERS is not a channel for reading bytes. A file
- * is, and so is a listing. So: the cwd's directory components, `getattr` alone,
- * a fixed traverse-only node, and no control frame.
- *
- * THE EXTENT NEEDS NO EXTRA CONDITION. Nothing says "only components that would
- * otherwise be denied", because this is consulted INSIDE route()'s T_PROJECT
- * arm and nowhere else — under the default `mirrorRoot` the shallow components
- * resolve T_SYNTH and never reach it.
- *
- * FOUR CONDITIONS, ALL NECESSARY, AND THIS IS THE WHOLE DECISION — union.c's
- * route() only asks. Keeping the conjunction here is what makes it provable from
- * the unit fixture, where the real mount's kernel gate cannot mask it.
- *
- * ADDING AN OP HERE ALSO MEANS GIVING THAT OP'S BODY A T_CWD ARM. The op
- * enumeration in tests/fuse-union-policy.test.mjs is what forces the decision.
+ * THE EXEMPTION THAT USED TO LIVE HERE IS GONE, AND WITH IT `T_CWD`, the op
+ * allow-list and the 0111 node (card 2026-0398). There is no conditional grant
+ * any more: an unmarked caller simply resolves in `VIEW_HOST`, where the chain
+ * is answered by the host itself or by the overlay. What survives is this
+ * section's three subjects — the injected cwd, the component predicate and the
+ * chain's inode sub-range — each with a new role and none with a new rule.
  */
 
+/* THE CWD, INJECTED ONCE, COMPARED PER OP. Same shape as `mark_path`: one
+ * string, no derived table, so NOTHING CAN GO STALE when the cwd changes —
+ * there is no component list to leave behind.
+ *
+ * IT LIVES HERE AND NOT IN union.c, AND THAT IS A DESIGN REQUIREMENT. The unit
+ * fixture compiles policy.h alone and assigns this directly as a seam, the way
+ * it assigns `policy_proc`, `policy_clock` and `ccu_xport`; a variable in
+ * union.c is undrivable, which is exactly why `mark_path`'s own event is
+ * COVERED NOWHERE. Do not repeat that placement.
+ *
+ * NULL IS FAIL-CLOSED AND union.c REFUSES TO MOUNT ON IT: with no cwd the chain
+ * is empty, so nothing is floored and no overlay node exists — every spawn dies
+ * in chdir() exactly as it did before 2026-0373, while the mount looks healthy.
+ * `main()` refuses, alongside CC_UNION_MARK_PATH and CC_UNION_CONTROL and for
+ * the same class of reason — one input enables the project tier at all, this one
+ * enables entry to it. */
 /* THE CWD, INJECTED ONCE, COMPARED PER OP. Same shape as `mark_path`: one
  * string, no derived table, so NOTHING CAN GO STALE when the cwd changes —
  * there is no component list to leave behind.
@@ -1693,68 +1848,6 @@ static inline int policy_cwd_normalised(const char *p)
 	return 1;
 }
 
-static inline int policy_cwd_exempt(const char *op, const char *path, pid_t tid)
-{
-	/* A DIRECTORY COMPONENT OF THE CWD. A path UNDER one is a file or a
-	 * subdirectory and stays denied, which is why this is the chain
-	 * predicate and not `tier_of`. THE TIER STATEMENT IS THE CALLER'S:
-	 * route() asks this only inside its T_PROJECT arm. */
-	if (!policy_cwd_component(path))
-		return 0;
-	if (strcmp(op, "getattr") != 0)
-		return 0;
-	/* MARKED CALLERS ARE NOT EXEMPTED — they get the real routed answer, from
-	 * the mirror, with its control frame. Last, because it is the only step
-	 * that reads /proc. */
-	if (policy_is_marked_tid(tid))
-		return 0;
-	/*
-	 * THE GRANT IS RECORDED, AND BEFORE THIS THE EXEMPTION WAS COMPLETELY
-	 * SILENT — so no capture could show WHICH PROCESS needed WHICH LINK of
-	 * the chain, which is the question the traversal bound has to be decided
-	 * from (card 2026-0389). `served`: the op succeeds, off the tier table's
-	 * script. Deduped like every row, so the volume is bounded by chain
-	 * length × thread group.
-	 *
-	 * AFTER THE WHOLE CONJUNCTION, never before: a row on a refused traversal
-	 * would report an exemption that did not happen.
-	 */
-	policy_event(EV_SERVED, op, path, "cwd-traversal-served", tid);
-	return 1;
-}
-
-/*
- * A CWD COMPONENT AS AN UNMARKED CALLER SEES IT: 0111 root:root, nlink 2, size
- * 0, all three times 0, and an inode from the chain's own sub-range. EVERY FIELD
- * IS A POLICY VALUE, not a placeholder:
- *
- *   S_IFDIR      REQUIRED, not cosmetic. The kernel refuses `chdir` on a
- *                non-directory with ENOTDIR before the mode is considered at
- *                all, so the file type IS the traversal.
- *   0111         `d--x--x--x` says "you may enter, you may not read" — so with
- *                default_permissions the KERNEL refuses an unmarked `opendir`
- *                before this daemon is asked, and `stat` succeeding while a
- *                listing refuses is a coherent POSIX shape rather than the
- *                one-caller-two-answers defect criterion 1 exists to remove.
- *                The daemon's op allow-list above is the second gate, and it is
- *                the only one for a caller with CAP_DAC_READ_SEARCH.
- *   nlink 2      A DELIBERATE UNDERSTATEMENT, and the second half of the
- *                ruling: 2 is the minimum for any directory (`.` and `..`),
- *                and a truthful nlink would disclose HOW MANY SUBDIRECTORIES
- *                the remote directory has — which is "the content of these
- *                remote directories".
- *   uid/gid 0    with mode 0111, unambiguously traverse-only for EVERY uid:
- *                nobody owns it, so no owner-bit path widens it.
- *   times, size  all 0 — no timing or size signal about the remote.
- */
-static inline int policy_cwd_getattr(const char *path, struct stat *st)
-{
-	if (!policy_cwd_component(path))
-		return -ENOENT;
-	policy_fixed_dir(st, 0111, policy_cwd_ino(path));
-	return 0;
-}
-
 /* ── the project tier's whole decision, in one place ────────────────────── */
 /*
  * CRITERION 6, AND THE ORDER IS THE POLICY.
@@ -1771,18 +1864,19 @@ static inline int policy_cwd_getattr(const char *path, struct stat *st)
  *     key load-bearing: an unmarked caller reaches the lookup, and only the
  *     tgid stops it matching a marked caller's warmed entry. FETCH skips it —
  *     an open always revalidates.
- *  2. THE MARK. An UNMARKED caller that reaches here gets -ENOENT, and never
- *     the remote's copy — which is the invariant, and the only one.
+ *  2. THE MARK — RETAINED AS DEFENCE IN DEPTH, AND NO LONGER THE LIVE
+ *     MECHANISM. Since card 2026-0398 an UNMARKED caller cannot reach here at
+ *     all: it resolves in `VIEW_HOST`, where `tier_of` skips every `project`
+ *     pin, so no unmarked resolution can produce T_PROJECT and route() cannot
+ *     dispatch one to this function. The invariant it used to enforce — an
+ *     unmarked caller never receives remote file content — is now a property of
+ *     the VIEW, which is structural.
  *
- *     REACHING HERE UNMARKED MEANS THE HOST HAD NO ENTRY AT THIS PATH: since
- *     card 2026-0388 `policy_caller_tier` runs first in route() and rewrote the
- *     tier to T_HOST wherever `policy_host_has` said the host has one. So this
- *     is not "the project tier has no host side" any more — it is "there was no
- *     host entry to serve", and with no host entry and no remote entitlement
- *     "deny the remote" can only mean "deny". A host-pinned or bind-mounted
- *     path never reaches here and is served to marked and unmarked callers
- *     alike. The cwd-chain exemption is the other thing route() consults before
- *     this, and only below the first host-having ancestor.
+ *     IT STAYS ANYWAY, AND DELIBERATELY. This is a liveness guard on the only
+ *     path that sends a control frame; deleting it on the strength of a
+ *     structural proof is not worth the risk, and its -ENOENT is the correct
+ *     answer if a later edit ever reopens the route. `b7` pins it under that
+ *     reading.
  *  3. THE CONTROL CALL. A bare local stat of the mirror would report ENOENT for
  *     a file that exists on the remote and has simply not been materialised
  *     yet, so no remote-tier op touches the mirror before cc has answered.
