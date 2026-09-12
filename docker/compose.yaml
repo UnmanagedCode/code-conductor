@@ -33,6 +33,11 @@ services:
       HOME: ${CC_HOME_DIR:-/workspaces/projects/.cc-home}
       CC_HOME_DIR: ${CC_HOME_DIR:-}             # entrypoint defaults it to <root>/.cc-home
       CLAUDE_BIN: ${CLAUDE_BIN:-}
+      # Always exported; meaningful with the docker socket mounted (CC_WITH_DOCKER=1).
+      # Containers run from INSIDE this container resolve -v sources on the
+      # HOST, so use this host path for their volume sources — not the
+      # container's PROJECTS_ROOT.
+      HOST_PROJECTS_DIR: ${CC_PROJECTS_DIR}
       # Where the cc checkout is bind-mounted (CC_MOUNT resolved by the
       # Makefile, or set directly for raw compose — see docker/README.md).
       REPO_DIR: ${CC_REPO_TARGET:-/workspaces/code-conductor}

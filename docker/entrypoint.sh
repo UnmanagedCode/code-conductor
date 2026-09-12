@@ -52,7 +52,7 @@ fi
 # Optional tooling vs runtime enablement: the CLI tooling alone is useless
 # without the socket mount.
 if [ "${CC_WITH_DOCKER:-0}" = "1" ] && [ ! -S /var/run/docker.sock ]; then
-  echo "WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket in this container — add docker/compose.docker.yaml to the -f list (make up-docker-provider)." >&2
+  echo "WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket in this container — add docker/compose.docker.yaml to the -f list (the Makefile chains it automatically; raw compose must add -f compose.docker.yaml itself)." >&2
 fi
 
 # ── Deps, then exec ──────────────────────────────────────────────────────

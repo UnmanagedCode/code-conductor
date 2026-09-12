@@ -6,17 +6,23 @@
 # exported DOCKER_COMPOSE env var — ?= won't override a defined env var).
 DOCKER_COMPOSE ?= docker compose
 
+# .env is compose's dotenv; make reads it too, so one flag (CC_WITH_DOCKER)
+# drives both the tooling build and the socket-mount chain. A command-line or
+# exported variable wins over the .env value (make's own definitions beat an
+# included file's).
+-include .env
+
 SYSTEMS ?= 0            # 1 → chain compose.systems.yaml (/dev/fuse + SYS_ADMIN + apparmor)
-DOCKER_PROVIDER ?= 0    # 1 → chain compose.docker.yaml (docker.sock; pair with CC_WITH_DOCKER=1)
 GPU ?= 0                # 1 → chain compose.gpu.yaml (host GPU for ollama; needs nvidia-container-toolkit)
 CC_MOUNT ?= outside     # outside | inside — where the cc checkout binds (see docker/README.md)
 
 # Recursively expanded so the target-specific variables set by up-systems /
-# up-docker-provider / GPU=1-style overrides are visible at recipe time; an
-# ifeq at parse time would miss them.
+# GPU=1-style overrides are visible at recipe time; an ifeq at parse time
+# would miss them. CC_WITH_DOCKER=1 chains compose.docker.yaml from here —
+# one flag turns on BOTH the docker.io tooling build and the socket mount.
 COMPOSE_FILES = -f compose.yaml \
   $(if $(filter 1,$(SYSTEMS)),-f compose.systems.yaml) \
-  $(if $(filter 1,$(DOCKER_PROVIDER)),-f compose.docker.yaml) \
+  $(if $(filter 1,$(CC_WITH_DOCKER)),-f compose.docker.yaml) \
   $(if $(filter 1,$(GPU)),-f compose.gpu.yaml)
 
 ifneq ($(filter-out inside outside,$(CC_MOUNT)),)
@@ -34,9 +40,9 @@ export CC_REPO_TARGET = $(CC_REPO_TARGET_RESOLVED)
 endif
 
 # With the Makefile, CC_MOUNT is the mount-position knob; a CC_REPO_TARGET in
-# docker/.env is NOT read by make and is ignored by this resolution — set
-# CC_REPO_TARGET on the make command line or in the environment instead.
-.PHONY: build up down logs restart login up-systems up-docker-provider
+# docker/.env IS read by make now (via -include above) and, being defined,
+# wins over the CC_MOUNT resolution.
+.PHONY: build up down logs restart login up-systems
 
 build:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) build
@@ -65,6 +71,3 @@ login:
 # prerequisites, so `up-systems: up` runs `up` with SYSTEMS=1 in effect.
 up-systems: SYSTEMS = 1
 up-systems: up
-
-up-docker-provider: DOCKER_PROVIDER = 1
-up-docker-provider: up
