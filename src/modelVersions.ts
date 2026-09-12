@@ -87,7 +87,7 @@ export const MODEL_FAMILIES: readonly ModelFamily[] = [
   {
     family: 'opus',
     label: 'Opus',
-    default: 'claude-opus-4-8',
+    default: 'claude-opus-5',
     versions: [
       { id: 'claude-opus-5', label: 'Opus 5', contextWindow: 1_000_000 },
       { id: 'claude-opus-4-8', label: 'Opus 4.8', contextWindow: 1_000_000 },
