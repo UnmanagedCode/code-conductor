@@ -1,7 +1,10 @@
 # code-conductor image. Build context is this docker/ directory only — the
 # repo itself is bind-mounted at runtime, so nothing from the repo is baked
 # into the image.
-FROM node:24-bookworm
+# Debian trixie, not bookworm: the claude-code-proxy prebuilt binary (installed
+# with CC_WITH_CODEX=1) is dynamically linked and requires GLIBC 2.39; trixie
+# ships 2.41, bookworm only 2.36.
+FROM node:24-trixie
 
 # The claude CLI is needed at session-spawn time; install it into the image so
 # containers don't have to.
