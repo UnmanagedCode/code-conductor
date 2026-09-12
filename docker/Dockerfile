@@ -34,7 +34,10 @@ ARG WITH_OLLAMA=0
 RUN if [ "$WITH_OLLAMA" = "1" ]; then curl -fsSL https://ollama.com/install.sh | sh; fi
 
 ARG WITH_CODEX=0
-RUN if [ "$WITH_CODEX" = "1" ]; then npm install -g @openai/codex; fi
+# One flag installs codex AND claude-code-proxy (its required companion —
+# codex runs through the proxy; installed via the upstream install script).
+RUN if [ "$WITH_CODEX" = "1" ]; then npm install -g @openai/codex \
+      && curl -fsSL https://raw.githubusercontent.com/raine/claude-code-proxy/main/scripts/install.sh | bash; fi
 
 COPY entrypoint.sh /usr/local/bin/cc-entrypoint
 RUN chmod 0755 /usr/local/bin/cc-entrypoint
