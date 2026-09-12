@@ -60,13 +60,19 @@ Escape hatch: **`CLAUDE_BIN`** — point at a different claude-compatible binary
 
 The server boots regardless of auth state (banner warning only); `claude` is needed at session spawn.
 
-**claude-code-proxy (with `CC_WITH_CODEX=1`).** The flag installs `codex` together with `claude-code-proxy`, which codex runs through. The proxy needs **no config file** — the upstream install script sets up defaults; it stores its credentials under `$HOME/.config/claude-code-proxy/` (`.cc-home` on the host bind, so they persist like the claude sign-in). Authenticate inside the container after `make up`:
+**claude-code-proxy (with `CC_WITH_CODEX=1`).** The flag installs `codex`, the `claude-code-proxy` binary, and a `claude-via-codex` wrapper. The proxy serves an **Anthropic-compatible API backed by a ChatGPT sign-in** — claude runs through it, translated to the provider. Three in-container steps:
 
-```bash
-docker compose -f compose.yaml exec conductor claude-code-proxy codex auth login
-```
-
-That auth store is what the devcontainer bind-mounts at `~/.config/claude-code-proxy` — a pre-seeding mechanism the container doesn't need, since auth is done in-container.
+1. **Sign in** — ChatGPT Plus or Pro account, not an OpenAI API account:
+   ```bash
+   docker compose -f compose.yaml exec conductor claude-code-proxy codex auth login
+   ```
+   Credentials persist under `$HOME` (`.cc-home` on the host bind) like the claude sign-in.
+2. **Start the proxy** — long-running, like ollama's `ollama serve`: start it manually and restart it after container recreation:
+   ```bash
+   docker compose -f compose.yaml exec conductor claude-code-proxy serve
+   ```
+   It binds `127.0.0.1:18765` (verified default).
+3. **Route sessions through it** — set `CLAUDE_BIN=/usr/local/bin/claude-via-codex` in `.env`. cc's resolver names a binary by `CLAUDE_BIN` for every spawned session; the baked wrapper sets `ANTHROPIC_BASE_URL=http://127.0.0.1:18765` + `ANTHROPIC_AUTH_TOKEN` and execs `claude`. (Chosen over compose passthrough of those two env vars on purpose: passthrough would route `make login` and *every* session unconditionally, while `CLAUDE_BIN` is cc's documented seam and scopes the routing to the sessions that opt in.) Upstream model-routing envs (`ANTHROPIC_MODEL` etc.) are documented at claude-code-proxy.raine.dev and can ride cc's per-backend env pairs (Settings → Backends).
 
 ## cc mount position (`CC_MOUNT`)
 
