@@ -7,9 +7,6 @@ FROM node:24-bookworm
 # containers don't have to.
 RUN npm install -g @anthropic-ai/claude-code
 
-# The server's boot readiness probe expects ~/.claude to exist (src/health.ts).
-RUN mkdir -p /home/node/.claude
-
 # WORKDIR is the PROJECTS ROOT, not the cc checkout, so `docker exec` /
 # `docker compose exec` land in the projects dir by default. The entrypoint
 # cds into the checkout (REPO_DIR) itself right before exec'ing.
