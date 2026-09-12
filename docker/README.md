@@ -8,10 +8,11 @@ The **Makefile in this directory is the canonical invocation**. Raw `docker comp
 
 ```bash
 cd <repo>/docker
-cp .env.example .env         # set CC_PROJECTS_DIR + auth
+cp .env.example .env         # set CC_PROJECTS_DIR
 set -a; . ./.env; set +a     # put CC_PROJECTS_DIR in the shell (compose reads .env itself)
 mkdir -p "$CC_PROJECTS_DIR"  # OUTSIDE the cc repo, writable by CC_UID/CC_GID
 make up                      # = docker compose -f compose.yaml up -d --build
+make login                   # sign in to claude inside the container (credentials persist)
 open http://127.0.0.1:8787   # logs: make logs · stop: make down
 ```
 
@@ -35,7 +36,6 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_UID` / `CC_GID` | `1000` / `1000` | Container uid/gid; set to the owner of `CC_PROJECTS_DIR`. |
 | `CC_HOME_DIR` | `<root>/.cc-home` | Container `$HOME` — credentials, transcripts, `.claude.json`, `.gitconfig`, npm cache. |
 | `CC_TZ` | `UTC` | Container timezone. |
-| `ANTHROPIC_API_KEY` | *(empty)* | Auth for spawned claude sessions (children inherit the orchestrator env). |
 | `CLAUDE_BIN` | *(empty)* | Alternative claude binary inside the container. |
 | `CC_WITH_DOCKERIO` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CODEX` | `0` | Build-time tooling flags — see below. |
 
@@ -48,16 +48,19 @@ Make variables (not env vars): `SYSTEMS`, `DOCKER_PROVIDER`, `GPU`, `CC_MOUNT`, 
 | `${CC_PROJECTS_DIR}` (required) | `/workspaces/projects` | Projects root: user projects, worktrees, cc's store `.code-conductor/`, `.conduct/`. |
 | The tree containing `docker/` | `${CC_REPO_TARGET}` — `/workspaces/code-conductor` (default) or `/workspaces/projects/code-conductor` | The running cc checkout, served in place. |
 | *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data. |
-| *(commented in compose.yaml)* host `~/.claude` | `$HOME/.claude` | Optional: reuse the host OAuth sign-in instead of an API key. |
+| *(commented in compose.yaml)* host `~/.claude` | `$HOME/.claude` | Optional: reuse the host OAuth sign-in instead of `make login`. |
 | *(override file)* `/var/run/docker.sock` | `/var/run/docker.sock` | Optional: cc's docker System provider. |
 
 No named volumes in the default path — everything durable sits on the two host bind mounts, so `docker compose down` keeps everything and the state is directly inspectable/backable.
 
-## Auth options
+## Auth
 
-1. **`ANTHROPIC_API_KEY` in `.env`** — simplest. Spawned claude sessions inherit the orchestrator env (`src/instances.ts` passes `process.env` through).
-2. **Host `~/.claude` bind** — uncomment the commented volume in `compose.yaml` to reuse an existing host OAuth sign-in.
-3. **`CLAUDE_BIN`** — point at a different claude-compatible binary inside the container.
+**Primary: sign in inside the container.** After `make up`, run `make login` (= `docker compose -f compose.yaml exec conductor claude`) and complete the sign-in there — other services sign in the same way, inside the container. Credentials persist across container recreation (`down` + `up -d`) because `$HOME` is `<CC_PROJECTS_DIR>/.cc-home` on the host projects-root bind, and spawned claude sessions inherit the orchestrator's `$HOME` (`src/instances.ts` passes `process.env` through).
+
+Alternatives:
+
+1. **Host `~/.claude` bind** — uncomment the commented volume in `compose.yaml` to reuse an existing host OAuth sign-in instead of `make login`.
+2. **`CLAUDE_BIN`** — point at a different claude-compatible binary inside the container.
 
 The server boots regardless of auth state (banner warning only); `claude` is needed at session spawn.
 

@@ -36,7 +36,7 @@ endif
 # With the Makefile, CC_MOUNT is the mount-position knob; a CC_REPO_TARGET in
 # docker/.env is NOT read by make and is ignored by this resolution — set
 # CC_REPO_TARGET on the make command line or in the environment instead.
-.PHONY: build up down logs restart up-systems up-docker-provider
+.PHONY: build up down logs restart login up-systems up-docker-provider
 
 build:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) build
@@ -52,6 +52,12 @@ logs:
 
 restart:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) restart conductor
+
+# Sign in to claude inside the running container — the primary auth flow.
+# Credentials persist across container recreation ($HOME is on the host
+# projects-root bind).
+login:
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor claude
 
 # Convenience aliases: target-specific variables are inherited by their
 # prerequisites, so `up-systems: up` runs `up` with SYSTEMS=1 in effect.

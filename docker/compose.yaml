@@ -27,7 +27,6 @@ services:
       PORT: "8787"
       PROJECTS_ROOT: /workspaces/projects   # explicit, not the parent-dir default
       CC_HOME_DIR: ${CC_HOME_DIR:-}             # entrypoint defaults it to <root>/.cc-home
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-} # claude-CLI children inherit orchestrator env
       CLAUDE_BIN: ${CLAUDE_BIN:-}
       # Where the cc checkout is bind-mounted (CC_MOUNT resolved by the
       # Makefile, or set directly for raw compose — see docker/README.md).
@@ -44,7 +43,8 @@ services:
         source: ..                          # the tree containing docker/ — always correct
         target: ${CC_REPO_TARGET:-/workspaces/code-conductor}   # outside (default) | inside → /workspaces/projects/code-conductor
       # Optional, commented: bind the host's ~/.claude into $HOME/.claude to
-      # reuse the host OAuth sign-in instead of ANTHROPIC_API_KEY:
+      # reuse the host OAuth sign-in instead of signing in inside the
+      # container (make login):
       # - type: bind
       #   source: ~/.claude
       #   target: /workspaces/projects/.cc-home/.claude
