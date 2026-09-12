@@ -51,6 +51,7 @@ Make variables: `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`
 | The tree containing `docker/` | `${CC_REPO_TARGET}` — `/workspaces/code-conductor` (default) or `/workspaces/projects/code-conductor` | The running cc checkout, served in place. |
 | *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data. |
 | *(override file, chained by `CC_WITH_DOCKER=1`)* `/var/run/docker.sock` | `/var/run/docker.sock` | Optional: docker usable from inside the container. Containers you run from inside then get `HOST_PROJECTS_DIR` = the host path you set in `CC_PROJECTS_DIR` — use it as the `-v` source for their mounts (bind sources resolve on the HOST, not in this container). |
+| *(manual, post-boot)* any host dir | `/workspaces/<basename>` | One-off extra bind via `docker/cc-mount.py` — see "Mounting an extra host directory" below. Not visible to `docker inspect .Mounts`; gone on container restart. |
 
 No named volumes in the default path — everything durable sits on the two host bind mounts, so `docker compose down` keeps everything and the state is directly inspectable/backable.
 
@@ -82,6 +83,36 @@ Where this checkout binds inside the container is **behavioral**, because `findS
 Compose interpolation can't map `outside|inside` to a path, so the Makefile resolves `CC_MOUNT` into `CC_REPO_TARGET` (the concrete container path), exported for both the bind target and the `REPO_DIR` env. **A directly-set `CC_REPO_TARGET` wins** — `make CC_REPO_TARGET=/custom up` bypasses the `CC_MOUNT` resolution.
 
 Raw-compose users set `CC_REPO_TARGET` directly instead: `/workspaces/code-conductor` (outside) or `/workspaces/projects/code-conductor` (inside). A `CC_REPO_TARGET` in `.env` is read by make too (it `-include`s `.env`) and wins over the `CC_MOUNT` resolution; the make command line still wins over `.env`.
+
+## Mounting an extra host directory into the running container
+
+`docker/cc-mount.py` bind-mounts one host directory into the **running** conductor container — no container restart, no compose edit:
+
+```bash
+sudo python3 docker/cc-mount.py [-r] [--container NAME | --pid PID] [--check] HOST-DIR
+```
+
+It mounts `HOST-DIR` at `/workspaces/<basename>` (target name derived from the given path, not its realpath). The container is found automatically from the `com.docker.compose.service=conductor` label; `docker/.env`'s `COMPOSE_PROJECT_NAME` (fallback `code-conductor`) or the `code-conductor:local` image break ties. `--container`/`--pid` skip auto-resolution (`--pid` skips docker entirely). `--check` reports platform, kernel support, docker resolution, host-dir validity and target collision without mounting (exit 0 = all pass).
+
+Internally it uses the new mount API against the container's PID — detached `open_tree` in the host's namespace, then `setns`, then `move_mount` — stdlib-only (Linux ≥ 5.2, host root/CAP_SYS_ADMIN, Python 3.8+). The container must run first (`make up`); `init: true` means the PID belongs to tini, whose mount namespace is the container's.
+
+| Exit | Cause |
+|---|---|
+| 0 | mounted |
+| 2 | non-Linux, unsupported arch, bad args, non-absolute/missing/not-dir host dir, empty/`.`/`..`/reserved (`projects`, `code-conductor`) basename — all knowable without touching the container |
+| 3 | docker unavailable, no/ambiguous conductor container, container not running, bad/exited pid |
+| 4 | kernel < 5.2 (`ENOSYS`), missing privilege (`EPERM`), any other mount-API errno |
+| 5 | target exists (refused — no auto-suffix; rename or symlink the host dir), target mkdir failure, `move_mount` ENOENT/ENOTDIR, `/workspaces` not a dir |
+
+Limitations:
+
+- **Invisible to `docker inspect .Mounts`** and **gone on container restart** — for a permanent bind, add it to compose instead.
+- **Removal** (the container has no SYS_ADMIN): host-side
+  `sudo nsenter -t $(docker inspect --format '{{.State.Pid}}' <container>) -m umount /workspaces/<name>`
+  The empty mountpoint dir persists in the container's overlay afterwards.
+- The mounted dir is a **sibling of the projects root → cc does not auto-adopt it**; adopt via MCP `adopt_project({name, path: "/workspaces/<name>"})` or `POST /api/projects/external` (`docs/features.md` → Out-of-root projects).
+- Not inherited by containers spawned from inside via docker.sock (their `-v` sources resolve on the host — use the host path there).
+- Read-only source stays read-only; submounts under the source are excluded unless `-r`. Userns-remap / rootless docker excluded (the tool runs as root against the host pid).
 
 ## Optional tooling
 
@@ -130,3 +161,5 @@ Raw-compose equivalent, from this directory: `docker compose -f compose.yaml -f 
 | GPU absent for ollama | Install nvidia-container-toolkit on the host, or run ollama CPU-only. |
 | Compose too old for `gpus: all` | Use the `deploy.resources.reservations.devices` spelling in `compose.gpu.yaml`'s comment. |
 | `create_host_path: false` unsupported | Compose ≥ 2.x required; `mkdir -p` the projects dir yourself — the entrypoint pre-flight covers either way. |
+| `cc-mount` exit 4 (`EPERM`) | Run it on the host with sudo — CAP_SYS_ADMIN is needed in the user namespace owning the container's mount namespace. |
+| `cc-mount` exit 3 (no container) | No running container carries the `com.docker.compose.service=conductor` label — `make up` first, or pass `--container`/`--pid`. |
