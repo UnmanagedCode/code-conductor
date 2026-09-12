@@ -25,6 +25,7 @@ git clone <repo-url> code-conductor
 cd code-conductor
 npm install            # express, ws, typescript + @types/node (dev)
 npm start              # http://127.0.0.1:8787  (process title: code-conductor)
+Docker Compose: [docker/README.md](docker/README.md) — one host projects dir + this checkout, no devcontainer needed.
 npm run typecheck      # tsc --noEmit — strict; also runs before every npm test (pretest)
 npm test               # integration suite (node:test)
 RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
