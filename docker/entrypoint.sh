@@ -8,7 +8,6 @@ set -euo pipefail
 PROJECTS_ROOT="${PROJECTS_ROOT:-/workspaces/projects}"
 REPO_DIR="${REPO_DIR:-/workspaces/code-conductor}"
 export HOME="${CC_HOME_DIR:-${PROJECTS_ROOT}/.cc-home}"
-mkdir -p "$HOME/.claude"
 
 fatal() { echo "FATAL (cc-entrypoint): $*" >&2; exit 1; }
 
@@ -26,6 +25,11 @@ fi
 if [ ! -w "$PROJECTS_ROOT" ]; then
   fatal "the projects root $PROJECTS_ROOT is not writable by uid $(id -u). chown it to the CC_UID/CC_GID configured in docker/.env (default 1000:1000)."
 fi
+
+# Boot readiness probe expects ~/.claude to exist; with the default HOME this
+# is the first write into the projects root, so it needs the writability
+# check above to have passed (an override CC_HOME_DIR needs its own parent).
+mkdir -p "$HOME/.claude" 2>/dev/null || fatal "cannot create $HOME/.claude — make HOME ($HOME) writable by uid $(id -u) (default: chown the projects root to CC_UID/CC_GID)."
 
 # The cc store must not sit inside a git repository: cc's own check
 # (src/systems/sessionRoot.ts) refuses such placements at System registration
