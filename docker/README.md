@@ -56,7 +56,7 @@ No named volumes in the default path — everything durable sits on the two host
 
 **Sign in inside the container — the only auth path.** After `make up`, run `make login` (= `docker compose -f compose.yaml exec conductor claude auth login`): it starts the claude sign-in flow directly in the container — open the URL it prints in your host's browser, complete the sign-in, then exit. Other services sign in the same way, inside the container. Credentials land under `<CC_PROJECTS_DIR>/.cc-home/.claude` on the host projects-root bind, so they persist across container recreation (`down` + `up -d`); spawned claude sessions inherit the orchestrator's `$HOME` (`src/instances.ts` passes `process.env` through), so they see them.
 
-Escape hatch: **`CLAUDE_BIN`** — point at a different claude-compatible binary inside the container.
+Escape hatch: **`CLAUDE_BIN`** — point at a different claude-compatible binary inside the container. `make login` signs in the stock `claude`; a `CLAUDE_BIN` binary manages its own auth.
 
 The server boots regardless of auth state (banner warning only); `claude` is needed at session spawn.
 
@@ -94,7 +94,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 | `CC_WITH_DOCKERIO=1` | ~350 MB | docker.io CLI. Enable the socket mount too: `make up-docker-provider`. |
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
 | `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. |
-| `CC_WITH_CODEX=1` | ~100–200 MB | `@openai/codex` npm global **plus `claude-code-proxy`** (its required companion, installed by the same flag — see Auth below). |
+| `CC_WITH_CODEX=1` | ~100–200 MB | `@openai/codex` npm global **plus `claude-code-proxy`** (+ a `claude-via-codex` wrapper; claude runs through the proxy — see Auth below). |
 | `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; `ollama serve` must be started manually inside the container if wanted. Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 
 Sizes are upstream estimates, not measured here.
@@ -102,7 +102,7 @@ Sizes are upstream estimates, not measured here.
 **Why override files, not compose profiles:** profiles attach to whole services/top-level elements; they cannot toggle an individual mount, device, capability, or `security_opt` on the shared `conductor` service. Override files chained through the Makefile's `-f` list are compose's documented mechanism for per-service deltas and keep the base file single-purpose. The runtime deltas ride on three files, all default OFF:
 
 - `compose.docker.yaml` — `/var/run/docker.sock` (pair with `CC_WITH_DOCKERIO=1`).
-- `compose.systems.yaml` — `/dev/fuse` + `SYS_ADMIN` + `apparmor=unconfined` (mirrors the devcontainer's runArgs for the fuse-union worktree feature).
+- `compose.systems.yaml` — `/dev/fuse` + `SYS_ADMIN` + `apparmor=unconfined` (the runtime deltas cc's fuse-union worktree feature needs).
 - `compose.gpu.yaml` — `gpus: all`. Requires **nvidia-container-toolkit on the host**; ollama auto-detects CUDA devices when present, and falls back to CPU otherwise. Compose ≥ v2.30 (2024-09); the `deploy.resources.reservations.devices` / `driver: nvidia` spelling is in the file's comment for older compose.
 
 Raw-compose equivalent, from this directory: `docker compose -f compose.yaml -f compose.systems.yaml up -d --build`.
