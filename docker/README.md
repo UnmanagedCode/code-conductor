@@ -96,7 +96,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
 | `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. |
 | `CC_WITH_CODEX=1` | ~100–200 MB | `@openai/codex` npm global **plus `claude-code-proxy`** (claude runs through the proxy; wired via cc's backends — see Auth below). |
-| `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; `ollama serve` must be started manually inside the container if wanted. Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
+| `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; the entrypoint starts `ollama serve` detached at boot (log: `<projects dir>/.cc-home/logs/ollama-serve.log`). Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 
 Sizes are upstream estimates, not measured here.
 

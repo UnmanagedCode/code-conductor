@@ -55,6 +55,19 @@ if [ "${CC_WITH_DOCKER:-0}" = "1" ] && [ ! -S /var/run/docker.sock ]; then
   echo "WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket in this container — add docker/compose.docker.yaml to the -f list (the Makefile chains it automatically; raw compose must add -f compose.docker.yaml itself)." >&2
 fi
 
+# ── Detached services (flag-gated; they restart with the container) ──────
+mkdir -p "$HOME/logs"
+
+# ollama serve must already be listening for `ollama launch claude` backends.
+if [ "${CC_WITH_OLLAMA:-0}" = "1" ]; then
+  if command -v ollama >/dev/null 2>&1; then
+    echo "starting ollama serve (log: $HOME/logs/ollama-serve.log)" >&2
+    nohup ollama serve >>"$HOME/logs/ollama-serve.log" 2>&1 &
+  else
+    echo "WARNING (cc-entrypoint): CC_WITH_OLLAMA=1 but ollama is not installed in this image — set the flag and rebuild." >&2
+  fi
+fi
+
 # ── Deps, then exec ──────────────────────────────────────────────────────
 cd "$REPO_DIR"
 

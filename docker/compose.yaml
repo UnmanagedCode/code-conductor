@@ -33,6 +33,10 @@ services:
       HOME: ${CC_HOME_DIR:-/workspaces/projects/.cc-home}
       CC_HOME_DIR: ${CC_HOME_DIR:-}             # entrypoint defaults it to <root>/.cc-home
       CLAUDE_BIN: ${CLAUDE_BIN:-}
+      # Flag passthroughs the entrypoint acts on (the build args above do not
+      # reach the container's env): both gated services start detached at boot.
+      CC_WITH_OLLAMA: ${CC_WITH_OLLAMA:-0}
+      CC_WITH_CLAUDE_CODE_PROXY: ${CC_WITH_CLAUDE_CODE_PROXY:-0}
       # Always exported; meaningful with the docker socket mounted (CC_WITH_DOCKER=1).
       # Containers run from INSIDE this container resolve -v sources on the
       # HOST, so use this host path for their volume sources — not the
