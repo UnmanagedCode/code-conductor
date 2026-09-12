@@ -81,6 +81,25 @@ if [ "${CC_WITH_CLAUDE_CODE_PROXY:-0}" = "1" ]; then
   fi
 fi
 
+# tailscaled in userspace-networking mode needs no NET_ADMIN or /dev/net/tun,
+# so it runs as the container's non-root CC_UID. Its default state dir
+# (/var/lib/tailscale) is root-owned, so state lives under $HOME (the host
+# bind — it persists across restarts). The control socket stays at the
+# default /var/run/tailscale/tailscaled.sock: the image pre-creates that
+# directory world-writable, so daemon and CLI share the default socket path
+# — plain `tailscale up` needs no flags (documented in docker/README.md).
+if [ "${CC_WITH_TAILSCALE:-0}" = "1" ]; then
+  if command -v tailscaled >/dev/null 2>&1; then
+    mkdir -p "$HOME/.tailscale"
+    echo "starting tailscaled --tun userspace-networking (log: $HOME/logs/tailscaled.log)" >&2
+    nohup tailscaled --tun userspace-networking \
+      --statedir="$HOME/.tailscale" \
+      >>"$HOME/logs/tailscaled.log" 2>&1 &
+  else
+    echo "WARNING (cc-entrypoint): CC_WITH_TAILSCALE=1 but tailscaled is not installed in this image — set the flag and rebuild." >&2
+  fi
+fi
+
 # ── Deps, then exec ──────────────────────────────────────────────────────
 cd "$REPO_DIR"
 

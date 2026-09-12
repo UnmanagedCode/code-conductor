@@ -35,9 +35,10 @@ services:
       CC_HOME_DIR: ${CC_HOME_DIR:-}             # entrypoint defaults it to <root>/.cc-home
       CLAUDE_BIN: ${CLAUDE_BIN:-}
       # Flag passthroughs the entrypoint acts on (the build args above do not
-      # reach the container's env): both gated services start detached at boot.
+      # reach the container's env): the gated services start detached at boot.
       CC_WITH_OLLAMA: ${CC_WITH_OLLAMA:-0}
       CC_WITH_CLAUDE_CODE_PROXY: ${CC_WITH_CLAUDE_CODE_PROXY:-0}
+      CC_WITH_TAILSCALE: ${CC_WITH_TAILSCALE:-0}
       # Lets the entrypoint's docker-sock warning fire when a raw-compose user
       # sets the flag but forgets -f compose.docker.yaml.
       CC_WITH_DOCKER: ${CC_WITH_DOCKER:-0}
