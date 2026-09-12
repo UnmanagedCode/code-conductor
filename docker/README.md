@@ -9,6 +9,7 @@ The **Makefile in this directory is the canonical invocation**. Raw `docker comp
 ```bash
 cd <repo>/docker
 cp .env.example .env         # set CC_PROJECTS_DIR + auth
+set -a; . ./.env; set +a     # put CC_PROJECTS_DIR in the shell (compose reads .env itself)
 mkdir -p "$CC_PROJECTS_DIR"  # OUTSIDE the cc repo, writable by CC_UID/CC_GID
 make up                      # = docker compose -f compose.yaml up -d --build
 open http://127.0.0.1:8787   # logs: make logs · stop: make down
