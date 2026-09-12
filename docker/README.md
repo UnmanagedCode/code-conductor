@@ -51,6 +51,7 @@ Make variables: `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`
 | The tree containing `docker/` | `${CC_REPO_TARGET}` — `/workspaces/code-conductor` (default) or `/workspaces/projects/code-conductor` | The running cc checkout, served in place. |
 | *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data. |
 | *(override file, chained by `CC_WITH_DOCKER=1`)* `/var/run/docker.sock` | `/var/run/docker.sock` | Optional: docker usable from inside the container. Containers you run from inside then get `HOST_PROJECTS_DIR` = the host path you set in `CC_PROJECTS_DIR` — use it as the `-v` source for their mounts (bind sources resolve on the HOST, not in this container). |
+| *(manual, post-boot)* any host dir | `/workspaces/<basename>` | One-off extra bind via `make PROJECT=… mount` (`docker/cc-mount.py`) — see "Mounting an extra host directory" below. Not visible to `docker inspect .Mounts`; gone on container restart. |
 
 No named volumes in the default path — everything durable sits on the two host bind mounts, so `docker compose down` keeps everything and the state is directly inspectable/backable.
 
@@ -82,6 +83,24 @@ Where this checkout binds inside the container is **behavioral**, because `findS
 Compose interpolation can't map `outside|inside` to a path, so the Makefile resolves `CC_MOUNT` into `CC_REPO_TARGET` (the concrete container path), exported for both the bind target and the `REPO_DIR` env. **A directly-set `CC_REPO_TARGET` wins** — `make CC_REPO_TARGET=/custom up` bypasses the `CC_MOUNT` resolution.
 
 Raw-compose users set `CC_REPO_TARGET` directly instead: `/workspaces/code-conductor` (outside) or `/workspaces/projects/code-conductor` (inside). A `CC_REPO_TARGET` in `.env` is read by make too (it `-include`s `.env`) and wins over the `CC_MOUNT` resolution; the make command line still wins over `.env`.
+
+## Mounting an extra host directory into the running container
+
+Bind-mount one host directory into the **running** conductor container — no container restart, no compose edit:
+
+```bash
+make PROJECT=/x/y/project mount    # from this directory; flags via ARGS= (e.g. ARGS=-r)
+sudo python3 cc-mount.py [-r] [--container NAME | --pid PID] [--check] HOST-DIR
+docker compose -f compose.yaml exec conductor ls /workspaces/<basename>   # verify
+```
+
+`HOST-DIR` lands at `/workspaces/<basename>` (name derived from the given path, not its realpath); the container is found automatically via the `com.docker.compose.service=conductor` label, `--container`/`--pid` override that (`--pid` skips docker). Requires host root (CAP_SYS_ADMIN), Linux ≥ 5.2, Python 3; unprivileged `--check` diagnoses platform/kernel/docker/target without mounting. Non-zero exits: 2 bad usage · 3 container not found/running · 4 kernel < 5.2 or missing privilege · 5 target exists/missing.
+
+Notes:
+
+- Invisible to `docker inspect .Mounts` and **gone on container restart** — re-run the command to restore; for a permanent bind, add it to compose instead.
+- Removal (the container has no SYS_ADMIN): host-side `sudo nsenter -t $(docker inspect --format '{{.State.Pid}}' <container>) -m umount /workspaces/<name>` — the empty mountpoint dir persists in the overlay afterwards.
+- The mounted dir is a sibling of the projects root → cc does not auto-adopt it: MCP `adopt_project({name, path: "/workspaces/<name>"})` or `POST /api/projects/external`.
 
 ## Optional tooling
 
@@ -130,3 +149,5 @@ Raw-compose equivalent, from this directory: `docker compose -f compose.yaml -f 
 | GPU absent for ollama | Install nvidia-container-toolkit on the host, or run ollama CPU-only. |
 | Compose too old for `gpus: all` | Use the `deploy.resources.reservations.devices` spelling in `compose.gpu.yaml`'s comment. |
 | `create_host_path: false` unsupported | Compose ≥ 2.x required; `mkdir -p` the projects dir yourself — the entrypoint pre-flight covers either way. |
+| `cc-mount` exit 4 (`EPERM`) | Run it on the host with sudo — CAP_SYS_ADMIN is needed in the user namespace owning the container's mount namespace. |
+| `cc-mount` exit 3 (no container) | No running container carries the `com.docker.compose.service=conductor` label — `make up` first, or pass `--container`/`--pid`. |
