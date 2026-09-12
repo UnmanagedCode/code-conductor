@@ -1,6 +1,5 @@
 # Optional override: runtime deltas for cc's in-development SYSTEMS /
-# fuse-union worktree feature, mirroring the devcontainer's runArgs:
-#   --device /dev/fuse, capAdd: SYS_ADMIN, securityOpt: apparmor=unconfined
+# fuse-union worktree feature — /dev/fuse, SYS_ADMIN, apparmor=unconfined.
 # Enable via `make up-systems`.
 services:
   conductor:
