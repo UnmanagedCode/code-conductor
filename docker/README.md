@@ -61,7 +61,7 @@ Escape hatch: **`CLAUDE_BIN`** — point at a different claude-compatible binary
 
 The server boots regardless of auth state (banner warning only); `claude` is needed at session spawn.
 
-**claude-code-proxy (with `CC_WITH_CLAUDE_CODE_PROXY=1`).** The flag installs the `claude-code-proxy` binary — a local server that exposes an **Anthropic-compatible API backed by a ChatGPT sign-in**, which claude sessions run through (the proxy translates claude's API traffic to the provider) — and the entrypoint starts `claude-code-proxy serve` detached at boot; it restarts with the container (log: `<projects dir>/.cc-home/logs/claude-code-proxy-serve.log`). The deployment launches the process; its **authentication** stays in-container and the `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` **routing** is configured in **cc's backends feature** inside the orchestrator — see `docs/models.md` → Backends and Settings → Backends for the template/env rules:
+**claude-code-proxy (with `CC_WITH_CLAUDE_CODE_PROXY=1`).** The flag installs the `claude-code-proxy` binary — a local server that exposes an **Anthropic-compatible API backed by a ChatGPT sign-in**, which claude sessions run through (the proxy translates claude's API traffic to the provider) — and the entrypoint starts `claude-code-proxy serve` detached at boot; it restarts with the container (log: `<projects dir>/.cc-home/logs/claude-code-proxy-serve.log`, default HOME). The deployment launches the process; its **authentication** stays in-container and the `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` **routing** is configured in **cc's backends feature** inside the orchestrator — see `docs/models.md` → Backends and Settings → Backends for the template/env rules:
 
 1. **Sign in** — ChatGPT Plus or Pro account, not an OpenAI API account:
    ```bash
@@ -92,7 +92,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
 | `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. |
 | `CC_WITH_CLAUDE_CODE_PROXY=1` | ~30 MB | `claude-code-proxy`; the entrypoint starts `claude-code-proxy serve` detached at boot (claude runs through the proxy; wired via cc's backends — see Auth below). |
-| `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; the entrypoint starts `ollama serve` detached at boot (log: `<projects dir>/.cc-home/logs/ollama-serve.log`). Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
+| `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; the entrypoint starts `ollama serve` detached at boot (log: `<projects dir>/.cc-home/logs/ollama-serve.log`, default HOME). Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 
 Sizes are upstream estimates, not measured here.
 

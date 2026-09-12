@@ -37,6 +37,9 @@ services:
       # reach the container's env): both gated services start detached at boot.
       CC_WITH_OLLAMA: ${CC_WITH_OLLAMA:-0}
       CC_WITH_CLAUDE_CODE_PROXY: ${CC_WITH_CLAUDE_CODE_PROXY:-0}
+      # Lets the entrypoint's docker-sock warning fire when a raw-compose user
+      # sets the flag but forgets -f compose.docker.yaml.
+      CC_WITH_DOCKER: ${CC_WITH_DOCKER:-0}
       # Always exported; meaningful with the docker socket mounted (CC_WITH_DOCKER=1).
       # Containers run from INSIDE this container resolve -v sources on the
       # HOST, so use this host path for their volume sources — not the
