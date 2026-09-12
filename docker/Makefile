@@ -49,7 +49,7 @@ endif
 ifneq ($(CC_BASE_IMAGE),)
 export CC_BASE_IMAGE
 endif
-.PHONY: build up down logs restart login up-systems
+.PHONY: build up down logs restart mount login up-systems
 
 build:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) build
@@ -65,6 +65,16 @@ logs:
 
 restart:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) restart conductor
+
+# Bind-mount a host directory into the RUNNING conductor container (no
+# restart): make PROJECT=/x/y/project [ARGS=-r] mount. Needs host root, so
+# the recipe sudo's; removal is the host-side nsenter one-liner in
+# docker/README.md.
+mount:
+ifndef PROJECT
+	$(error PROJECT is required: make PROJECT=/path/to/dir mount)
+endif
+	sudo python3 cc-mount.py "$(PROJECT)" $(ARGS)
 
 # Sign in to claude inside the running container — the primary auth flow.
 # `claude auth login` (not the REPL) is the most direct form: it starts the

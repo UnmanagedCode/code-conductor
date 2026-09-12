@@ -10,8 +10,10 @@ container's PID: detached open_tree -> setns -> move_mount. stdlib-only.
 
 Requires: Linux >= 5.2, root (CAP_SYS_ADMIN in the owning user namespace) on
 the host, Python 3.8+. The mount is invisible to `docker inspect .Mounts` and
-does not survive a container restart. Full contract, exit codes and the
-removal recipe: docker/README.md.
+does not survive a container restart (removal: the host-side nsenter
+one-liner in docker/README.md). Exits: 2 bad usage · 3 container/pid not
+resolved · 4 kernel < 5.2 or missing privilege · 5 target exists/missing;
+--check: 0 all pass, 1 failed checks.
 """
 
 import argparse

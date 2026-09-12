@@ -51,7 +51,7 @@ Make variables: `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`
 | The tree containing `docker/` | `${CC_REPO_TARGET}` — `/workspaces/code-conductor` (default) or `/workspaces/projects/code-conductor` | The running cc checkout, served in place. |
 | *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data. |
 | *(override file, chained by `CC_WITH_DOCKER=1`)* `/var/run/docker.sock` | `/var/run/docker.sock` | Optional: docker usable from inside the container. Containers you run from inside then get `HOST_PROJECTS_DIR` = the host path you set in `CC_PROJECTS_DIR` — use it as the `-v` source for their mounts (bind sources resolve on the HOST, not in this container). |
-| *(manual, post-boot)* any host dir | `/workspaces/<basename>` | One-off extra bind via `docker/cc-mount.py` — see "Mounting an extra host directory" below. Not visible to `docker inspect .Mounts`; gone on container restart. |
+| *(manual, post-boot)* any host dir | `/workspaces/<basename>` | One-off extra bind via `make PROJECT=… mount` (`docker/cc-mount.py`) — see "Mounting an extra host directory" below. Not visible to `docker inspect .Mounts`; gone on container restart. |
 
 No named volumes in the default path — everything durable sits on the two host bind mounts, so `docker compose down` keeps everything and the state is directly inspectable/backable.
 
@@ -86,51 +86,21 @@ Raw-compose users set `CC_REPO_TARGET` directly instead: `/workspaces/code-condu
 
 ## Mounting an extra host directory into the running container
 
-`docker/cc-mount.py` bind-mounts one host directory into the **running** conductor container — no container restart, no compose edit:
+Bind-mount one host directory into the **running** conductor container — no container restart, no compose edit:
 
 ```bash
-sudo python3 docker/cc-mount.py [-r] [--container NAME | --pid PID] [--check] HOST-DIR
+make PROJECT=/x/y/project mount    # from this directory; flags via ARGS= (e.g. ARGS=-r)
+sudo python3 cc-mount.py [-r] [--container NAME | --pid PID] [--check] HOST-DIR
+docker compose -f compose.yaml exec conductor ls /workspaces/<basename>   # verify
 ```
 
-It mounts `HOST-DIR` at `/workspaces/<basename>` (target name derived from the given path, not its realpath). The container is found automatically from the `com.docker.compose.service=conductor` label; `docker/.env`'s `COMPOSE_PROJECT_NAME` (fallback `code-conductor`) or the `code-conductor:local` image break ties. `--container`/`--pid` skip auto-resolution (`--pid` skips docker entirely). `--check` reports platform, kernel support, docker resolution, host-dir validity and target collision without mounting (exit 0 = all pass).
+`HOST-DIR` lands at `/workspaces/<basename>` (name derived from the given path, not its realpath); the container is found automatically via the `com.docker.compose.service=conductor` label, `--container`/`--pid` override that (`--pid` skips docker). Requires host root (CAP_SYS_ADMIN), Linux ≥ 5.2, Python 3; unprivileged `--check` diagnoses platform/kernel/docker/target without mounting. Non-zero exits: 2 bad usage · 3 container not found/running · 4 kernel < 5.2 or missing privilege · 5 target exists/missing.
 
-Internally it uses the new mount API against the container's PID — detached `open_tree` in the host's namespace, then `setns`, then `move_mount` — stdlib-only (Linux ≥ 5.2, host root/CAP_SYS_ADMIN, Python 3.8+). The container must run first (`make up`); `init: true` means the PID belongs to tini, whose mount namespace is the container's.
+Notes:
 
-| Exit | Cause |
-|---|---|
-| 0 | mounted (or `--check` all pass) |
-| 1 | `--check` found at least one failed check |
-| 2 | non-Linux, unsupported arch, bad args, non-absolute/missing/not-dir host dir, empty/`.`/`..`/reserved (`projects`, `code-conductor`) basename — all knowable without touching the container |
-| 3 | docker unavailable, no/ambiguous conductor container, container not running, bad/exited pid |
-| 4 | kernel < 5.2 (`ENOSYS`), missing privilege (`EPERM`), any other mount-API errno |
-| 5 | target exists (refused — no auto-suffix; rename or symlink the host dir), target mkdir failure, `move_mount` ENOENT/ENOTDIR, `/workspaces` not a dir |
-
-Smoke (from this directory):
-
-```bash
-make up                                                 # 1. boot the deployment
-mkdir -p /tmp/cc-mount-demo
-python3 cc-mount.py --check /tmp/cc-mount-demo          # 2. unprivileged: expect "check passed"
-                                                        #    (kernel ok/needs-sudo, target SKIP without privileges)
-sudo python3 cc-mount.py /tmp/cc-mount-demo             # 3. → exit 0
-docker compose -f compose.yaml exec conductor ls /workspaces/cc-mount-demo   # 4. mount visible
-echo demo > /tmp/cc-mount-demo/marker && \
-  docker compose -f compose.yaml exec conductor cat /workspaces/cc-mount-demo/marker   # 5. host write, container read
-docker compose -f compose.yaml restart conductor        # 6. mount gone, mountpoint dir persists
-sudo python3 cc-mount.py /tmp/cc-mount-demo             # 7. re-mount, then remove per Limitations above
-```
-
-Exit-code walkthrough (no container needed): `python3 cc-mount.py /no/such/dir` → 2; `python3 cc-mount.py --pid 999999 /tmp` → 3; `python3 cc-mount.py --pid 1 /path/to/a/dir/named/projects` → 2 (reserved).
-
-Limitations:
-
-- **Invisible to `docker inspect .Mounts`** and **gone on container restart** — for a permanent bind, add it to compose instead.
-- **Removal** (the container has no SYS_ADMIN): host-side
-  `sudo nsenter -t $(docker inspect --format '{{.State.Pid}}' <container>) -m umount /workspaces/<name>`
-  The empty mountpoint dir persists in the container's overlay afterwards.
-- The mounted dir is a **sibling of the projects root → cc does not auto-adopt it**; adopt via MCP `adopt_project({name, path: "/workspaces/<name>"})` or `POST /api/projects/external` (`docs/features.md` → Out-of-root projects).
-- Not inherited by containers spawned from inside via docker.sock (their `-v` sources resolve on the host — use the host path there).
-- Read-only source stays read-only; submounts under the source are excluded unless `-r`. Userns-remap / rootless docker excluded (the tool runs as root against the host pid).
+- Invisible to `docker inspect .Mounts` and **gone on container restart** — re-run the command to restore; for a permanent bind, add it to compose instead.
+- Removal (the container has no SYS_ADMIN): host-side `sudo nsenter -t $(docker inspect --format '{{.State.Pid}}' <container>) -m umount /workspaces/<name>` — the empty mountpoint dir persists in the overlay afterwards.
+- The mounted dir is a sibling of the projects root → cc does not auto-adopt it: MCP `adopt_project({name, path: "/workspaces/<name>"})` or `POST /api/projects/external`.
 
 ## Optional tooling
 
