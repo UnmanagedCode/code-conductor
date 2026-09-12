@@ -31,7 +31,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CC_PROJECTS_DIR` | *(required)* | Host projects root. Must exist, be outside the cc repo, and be writable by `CC_UID`/`CC_GID`. |
+| `CC_PROJECTS_DIR` | *(required)* | Absolute host projects root. Must exist, be outside the cc repo, and be writable by `CC_UID`/`CC_GID`. |
 | `CC_PORT` | `8787` | Host port (container side is fixed 8787). |
 | `CC_BIND` | `127.0.0.1` | Host IP the port publishes on. Loopback by default on purpose — widen deliberately. |
 | `CC_UID` / `CC_GID` | `1000` / `1000` | Container uid/gid; set to the owner of `CC_PROJECTS_DIR`. |
@@ -40,7 +40,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CLAUDE_BIN` | *(empty)* | Alternative claude binary inside the container. |
 | `CC_WITH_DOCKER` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CODEX` | `0` | Build-time tooling flags — see below. |
 
-Make variables (not env vars): `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`.
+Make variables: `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET` — `CC_MOUNT` and `CC_REPO_TARGET` may also be set in `.env` (the Makefile `-include`s it; the make command line still wins over `.env`).
 
 ## What lives where
 
@@ -84,7 +84,7 @@ Where this checkout binds inside the container is **behavioral**, because `findS
 
 Compose interpolation can't map `outside|inside` to a path, so the Makefile resolves `CC_MOUNT` into `CC_REPO_TARGET` (the concrete container path), exported for both the bind target and the `REPO_DIR` env. **A directly-set `CC_REPO_TARGET` wins** — `make CC_REPO_TARGET=/custom up` bypasses the `CC_MOUNT` resolution.
 
-Raw-compose users set `CC_REPO_TARGET` directly instead: `/workspaces/code-conductor` (outside) or `/workspaces/projects/code-conductor` (inside). A `CC_REPO_TARGET` in `.env` is not read by make — set it on the make command line or in the environment.
+Raw-compose users set `CC_REPO_TARGET` directly instead: `/workspaces/code-conductor` (outside) or `/workspaces/projects/code-conductor` (inside). A `CC_REPO_TARGET` in `.env` is read by make too (it `-include`s `.env`) and wins over the `CC_MOUNT` resolution; the make command line still wins over `.env`.
 
 ## Optional tooling
 
