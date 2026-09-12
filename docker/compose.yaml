@@ -13,6 +13,7 @@ services:
       context: .                          # context = docker/ only
       dockerfile: Dockerfile
       args:
+        BASE_IMAGE: ${CC_BASE_IMAGE:-node:24-trixie}
         WITH_DOCKER:     ${CC_WITH_DOCKER:-0}
         WITH_CLOUDFLARED: ${CC_WITH_CLOUDFLARED:-0}
         WITH_TAILSCALE:   ${CC_WITH_TAILSCALE:-0}

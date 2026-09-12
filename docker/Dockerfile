@@ -1,10 +1,14 @@
 # code-conductor image. Build context is this docker/ directory only — the
 # repo itself is bind-mounted at runtime, so nothing from the repo is baked
 # into the image.
-# Debian trixie, not bookworm: the claude-code-proxy prebuilt binary (installed
-# with CC_WITH_CLAUDE_CODE_PROXY=1) is dynamically linked and requires
-# GLIBC 2.39; trixie ships 2.41, bookworm only 2.36.
-FROM node:24-trixie
+# Default base is Debian trixie: the claude-code-proxy prebuilt binary
+# (installed with CC_WITH_CLAUDE_CODE_PROXY=1) is dynamically linked and
+# requires GLIBC 2.39; trixie ships 2.41, bookworm only 2.36. Override via
+# the BASE_IMAGE build arg (CC_BASE_IMAGE in .env) — an older base is fine
+# EXCEPT that proxy build fails there; the base must provide Node >= 24
+# (cc's engines requirement).
+ARG BASE_IMAGE=node:24-trixie
+FROM ${BASE_IMAGE}
 
 # The claude CLI is needed at session-spawn time; install it into the image so
 # containers don't have to.

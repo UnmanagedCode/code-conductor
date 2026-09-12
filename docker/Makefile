@@ -42,6 +42,13 @@ endif
 # With the Makefile, CC_MOUNT is the mount-position knob; a CC_REPO_TARGET in
 # docker/.env IS read by make now (via -include above) and, being defined,
 # wins over the CC_MOUNT resolution.
+
+# CC_BASE_IMAGE: compose reads .env itself, so exporting is only needed to
+# honor a command-line/exported value (make CC_BASE_IMAGE=… up); an empty or
+# unset value is NOT exported, so compose's own default applies.
+ifneq ($(CC_BASE_IMAGE),)
+export CC_BASE_IMAGE
+endif
 .PHONY: build up down logs restart login up-systems
 
 build:
