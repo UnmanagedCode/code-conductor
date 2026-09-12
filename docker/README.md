@@ -73,13 +73,13 @@ The server boots regardless of auth state (banner warning only); `claude` is nee
 2. **The proxy is already serving** — started by the container at boot when the flag is on, detached, and it restarts with the container; no manual serve step. It binds `127.0.0.1:18765` (verified default).
 3. **Route sessions through it** — in the orchestrator's **Settings → Backends**, add a user backend row whose env pairs carry `ANTHROPIC_BASE_URL=http://127.0.0.1:18765` and `ANTHROPIC_AUTH_TOKEN=unused` (upstream model-routing envs — `ANTHROPIC_MODEL` etc., documented at claude-code-proxy.raine.dev — ride the same pairs).
 
-**tailscale (with `CC_WITH_TAILSCALE=1`).** The entrypoint starts `tailscaled --tun userspace-networking` detached at boot — userspace mode needs no `NET_ADMIN` or `/dev/net/tun`, so the daemon runs as the container's non-root uid (it restarts with the container; log: `<projects dir>/.cc-home/logs/tailscaled.log`, default HOME). Starting the daemon does **not** join the tailnet — authenticate once, then approve the node in the browser:
+**tailscale (with `CC_WITH_TAILSCALE=1`).** The entrypoint starts `tailscaled --tun userspace-networking` detached at boot (it restarts with the container; log: `<projects dir>/.cc-home/logs/tailscaled.log`, default HOME). Starting the daemon does **not** join the tailnet — authenticate once, then approve the node in the browser:
 
 ```bash
-docker compose -f compose.yaml exec conductor tailscale up
+make login/tailscale
 ```
 
-State lives under `$HOME` (`<projects dir>/.cc-home/.tailscale/` — tailscaled's `/var/lib/tailscale` default is root-owned and unwritable by the container uid), so the node key persists across container recreation: after the first join, later boots come up connected automatically. The control socket stays at the CLI's default `/var/run/tailscale/tailscaled.sock` — the image pre-creates that directory world-writable so the daemon (running as the non-root uid) can put its socket there and plain `tailscale up` needs no flags.
+(= `docker compose -f compose.yaml exec conductor tailscale up`.) State lives under `$HOME` (`<projects dir>/.cc-home/.tailscale/`), so the node key persists across container recreation: after the first join, later boots come up connected automatically.
 
 ## cc mount position (`CC_MOUNT`)
 
@@ -118,7 +118,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 |---|---|---|
 | `CC_WITH_DOCKER=1` | ~350 MB | docker.io CLI **and** the `/var/run/docker.sock` mount (the Makefile chains `compose.docker.yaml` from the same flag — one knob; raw compose must add `-f compose.docker.yaml` itself). Also exports `HOST_PROJECTS_DIR` into the container — see What lives where. |
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
-| `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. The entrypoint starts `tailscaled --tun userspace-networking` detached at boot (log: `<projects dir>/.cc-home/logs/tailscaled.log`, default HOME); joining the tailnet needs a one-time manual `tailscale up` — see Auth. |
+| `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. The entrypoint starts `tailscaled --tun userspace-networking` detached at boot (log: `<projects dir>/.cc-home/logs/tailscaled.log`, default HOME); joining the tailnet needs a one-time `make login/tailscale` — see Auth. |
 | `CC_WITH_CLAUDE_CODE_PROXY=1` | ~30 MB | `claude-code-proxy`; the entrypoint starts `claude-code-proxy serve` detached at boot (claude runs through the proxy; wired via cc's backends — see Auth below). |
 | `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; the entrypoint starts `ollama serve` detached at boot (log: `<projects dir>/.cc-home/logs/ollama-serve.log`, default HOME). Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 

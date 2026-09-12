@@ -37,10 +37,8 @@ RUN if [ "$WITH_CLOUDFLARED" = "1" ]; then \
 
 ARG WITH_TAILSCALE=0
 RUN if [ "$WITH_TAILSCALE" = "1" ]; then curl -fsSL https://tailscale.com/install.sh | sh; fi
-# The daemon runs as the non-root CC_UID, and /var/run/tailscale — the default
-# socket directory for BOTH tailscaled and the tailscale CLI — is root-owned;
-# pre-create it world-writable so both sides use their defaults and plain
-# `tailscale up` needs no flags.
+# /var/run/tailscale — the default socket dir for tailscaled and the CLI — is
+# root-owned; pre-create it world-writable so plain `tailscale up` needs no flags.
 RUN if [ "$WITH_TAILSCALE" = "1" ]; then mkdir -p /var/run/tailscale && chmod 0777 /var/run/tailscale; fi
 
 ARG WITH_OLLAMA=0
