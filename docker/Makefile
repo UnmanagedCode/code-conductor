@@ -49,7 +49,7 @@ endif
 ifneq ($(CC_BASE_IMAGE),)
 export CC_BASE_IMAGE
 endif
-.PHONY: build up down logs restart mount login up-systems
+.PHONY: build up down logs restart mount login login/tailscale up-systems
 
 build:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) build
@@ -83,6 +83,12 @@ endif
 # projects-root bind).
 login:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor claude auth login
+
+# One-time tailscale join inside the running container: authenticate via the
+# URL `tailscale up` prints, then approve the node in the browser. The node
+# key persists across container recreation (<projects>/.cc-home/.tailscale).
+login/tailscale:
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor tailscale up
 
 # Convenience aliases: target-specific variables are inherited by their
 # prerequisites, so `up-systems: up` runs `up` with SYSTEMS=1 in effect.

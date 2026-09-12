@@ -37,6 +37,9 @@ RUN if [ "$WITH_CLOUDFLARED" = "1" ]; then \
 
 ARG WITH_TAILSCALE=0
 RUN if [ "$WITH_TAILSCALE" = "1" ]; then curl -fsSL https://tailscale.com/install.sh | sh; fi
+# /var/run/tailscale — the default socket dir for tailscaled and the CLI — is
+# root-owned; pre-create it world-writable so plain `tailscale up` needs no flags.
+RUN if [ "$WITH_TAILSCALE" = "1" ]; then mkdir -p /var/run/tailscale && chmod 0777 /var/run/tailscale; fi
 
 ARG WITH_OLLAMA=0
 RUN if [ "$WITH_OLLAMA" = "1" ]; then curl -fsSL https://ollama.com/install.sh | sh; fi

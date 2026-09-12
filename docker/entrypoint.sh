@@ -81,6 +81,21 @@ if [ "${CC_WITH_CLAUDE_CODE_PROXY:-0}" = "1" ]; then
   fi
 fi
 
+# tailscaled: userspace mode (runs as the non-root CC_UID), state under $HOME
+# on the host bind (persists); the image pre-creates the default socket dir
+# /var/run/tailscale world-writable so `tailscale up` needs no flags.
+if [ "${CC_WITH_TAILSCALE:-0}" = "1" ]; then
+  if command -v tailscaled >/dev/null 2>&1; then
+    mkdir -p "$HOME/.tailscale"
+    echo "starting tailscaled --tun userspace-networking (log: $HOME/logs/tailscaled.log)" >&2
+    nohup tailscaled --tun userspace-networking \
+      --statedir="$HOME/.tailscale" \
+      >>"$HOME/logs/tailscaled.log" 2>&1 &
+  else
+    echo "WARNING (cc-entrypoint): CC_WITH_TAILSCALE=1 but tailscaled is not installed in this image — set the flag and rebuild." >&2
+  fi
+fi
+
 # ── Deps, then exec ──────────────────────────────────────────────────────
 cd "$REPO_DIR"
 

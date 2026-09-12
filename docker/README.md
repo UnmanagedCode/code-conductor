@@ -39,7 +39,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_TZ` | `UTC` | Container timezone. |
 | `CC_BASE_IMAGE` | `node:24-trixie` | Docker base image (passed to the build as `BASE_IMAGE`). Must provide Node ≥ 24 (cc's engines requirement); the claude CLI installs via npm on whatever base is chosen. An older base is fine **except** with `CC_WITH_CLAUDE_CODE_PROXY=1` — the proxy's prebuilt binary is dynamically linked and needs GLIBC ≥ 2.39 (`node:24-bookworm` ships 2.36, trixie 2.41). |
 | `CLAUDE_BIN` | *(empty)* | Alternative claude binary inside the container. |
-| `CC_WITH_DOCKER` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CLAUDE_CODE_PROXY` | `0` | Build-time tooling flags — see below. `CC_WITH_OLLAMA` and `CC_WITH_CLAUDE_CODE_PROXY` also start their service detached at boot. |
+| `CC_WITH_DOCKER` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CLAUDE_CODE_PROXY` | `0` | Build-time tooling flags — see below. `CC_WITH_OLLAMA`, `CC_WITH_CLAUDE_CODE_PROXY`, and `CC_WITH_TAILSCALE` also start their service detached at boot. |
 
 Make variables: `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET` — `CC_MOUNT` and `CC_REPO_TARGET` may also be set in `.env` (the Makefile `-include`s it; the make command line still wins over `.env`).
 
@@ -49,7 +49,7 @@ Make variables: `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`
 |---|---|---|
 | `${CC_PROJECTS_DIR}` (required) | `/workspaces/projects` | Projects root: user projects, worktrees, cc's store `.code-conductor/`, `.conduct/`. |
 | The tree containing `docker/` | `${CC_REPO_TARGET}` — `/workspaces/code-conductor` (default) or `/workspaces/projects/code-conductor` | The running cc checkout, served in place. |
-| *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data. |
+| *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data, `.tailscale` (tailscaled state / node key). |
 | *(override file, chained by `CC_WITH_DOCKER=1`)* `/var/run/docker.sock` | `/var/run/docker.sock` | Optional: docker usable from inside the container. Containers you run from inside then get `HOST_PROJECTS_DIR` = the host path you set in `CC_PROJECTS_DIR` — use it as the `-v` source for their mounts (bind sources resolve on the HOST, not in this container). |
 | *(manual, post-boot)* any host dir | `/workspaces/<basename>` | One-off extra bind via `make PROJECT=… mount` (`docker/cc-mount.py`) — see "Mounting an extra host directory" below. Not visible to `docker inspect .Mounts`; gone on container restart. |
 
@@ -72,6 +72,14 @@ The server boots regardless of auth state (banner warning only); `claude` is nee
    Credentials persist under `$HOME` (`.cc-home` on the host bind) like the claude sign-in. (`codex auth login` is the proxy's own subcommand name — it manages the codex/ChatGPT side.)
 2. **The proxy is already serving** — started by the container at boot when the flag is on, detached, and it restarts with the container; no manual serve step. It binds `127.0.0.1:18765` (verified default).
 3. **Route sessions through it** — in the orchestrator's **Settings → Backends**, add a user backend row whose env pairs carry `ANTHROPIC_BASE_URL=http://127.0.0.1:18765` and `ANTHROPIC_AUTH_TOKEN=unused` (upstream model-routing envs — `ANTHROPIC_MODEL` etc., documented at claude-code-proxy.raine.dev — ride the same pairs).
+
+**tailscale (with `CC_WITH_TAILSCALE=1`).** The entrypoint starts `tailscaled --tun userspace-networking` detached at boot (it restarts with the container; log: `<projects dir>/.cc-home/logs/tailscaled.log`, default HOME). Starting the daemon does **not** join the tailnet — authenticate once, then approve the node in the browser:
+
+```bash
+make login/tailscale
+```
+
+(= `docker compose -f compose.yaml exec conductor tailscale up`.) State lives under `$HOME` (`<projects dir>/.cc-home/.tailscale/`), so the node key persists across container recreation: after the first join, later boots come up connected automatically.
 
 ## cc mount position (`CC_MOUNT`)
 
@@ -110,7 +118,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 |---|---|---|
 | `CC_WITH_DOCKER=1` | ~350 MB | docker.io CLI **and** the `/var/run/docker.sock` mount (the Makefile chains `compose.docker.yaml` from the same flag — one knob; raw compose must add `-f compose.docker.yaml` itself). Also exports `HOST_PROJECTS_DIR` into the container — see What lives where. |
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
-| `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. |
+| `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. The entrypoint starts `tailscaled --tun userspace-networking` detached at boot (log: `<projects dir>/.cc-home/logs/tailscaled.log`, default HOME); joining the tailnet needs a one-time `make login/tailscale` — see Auth. |
 | `CC_WITH_CLAUDE_CODE_PROXY=1` | ~30 MB | `claude-code-proxy`; the entrypoint starts `claude-code-proxy serve` detached at boot (claude runs through the proxy; wired via cc's backends — see Auth below). |
 | `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; the entrypoint starts `ollama serve` detached at boot (log: `<projects dir>/.cc-home/logs/ollama-serve.log`, default HOME). Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 
