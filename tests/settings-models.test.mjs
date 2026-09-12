@@ -176,7 +176,7 @@ test('GET /api/settings/models returns the registry, catalog, and {backend,model
     });
     assert.deepEqual(r.body.tiers.map(t => t.tier), ['fast', 'balanced', 'powerful', 'frontier']);
     // Unset → default {backend,model} bindings (each family's default version).
-    assert.deepEqual(r.body.tierBackend.powerful, { backend: 'claude', model: 'claude-opus-4-8' });
+    assert.deepEqual(r.body.tierBackend.powerful, { backend: 'claude', model: 'claude-opus-5' });
     assert.deepEqual(r.body.tierBackend.balanced, { backend: 'claude', model: 'claude-sonnet-5' });
   }
 });
@@ -633,7 +633,7 @@ test('appSettings: getTierBackend defaults to DEFAULT_TIER_BACKEND when unset', 
   try {
     await withEnv({ PROJECTS_ROOT: root }, async () => {
       assert.deepEqual(getTierBackend('fast'), DEFAULT_TIER_BACKEND.fast);
-      assert.deepEqual(getTierBackend('powerful'), { backend: 'claude', model: 'claude-opus-4-8' });
+      assert.deepEqual(getTierBackend('powerful'), { backend: 'claude', model: 'claude-opus-5' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
@@ -1052,7 +1052,7 @@ test('removeCustomRole does not materialize a roleEffort map in a store that nev
 //      `settings.models.tierBackend[tier]` raw and falling back only when the key
 //      is ABSENT: such an implementation returns `{ollama, gone:v1}` here.
 const REBOUND_POWERFUL = { backend: 'claude', model: 'claude-haiku-4-5' };
-const POWERFUL_REVERT_TARGET = { backend: 'claude', model: 'claude-opus-4-8' };
+const POWERFUL_REVERT_TARGET = { backend: 'claude', model: 'claude-opus-5' };
 
 test('defaultSpawnBinding: a malformed defaultTier lands on the powerful tier\'s STORED binding', async () => {
   const cases = [
@@ -1089,7 +1089,7 @@ test('defaultSpawnBinding: a DEAD stored binding reverts to the tier\'s built-in
       await fs.writeFile(settingsFile, JSON.stringify({
         models: { defaultTier: 'powerful', tierBackend: { powerful: { backend: 'ollama', model: 'gone:v1' } } },
       }));
-      assert.deepEqual(defaultSpawnBinding(), { backend: 'claude', model: 'claude-opus-4-8' });
+      assert.deepEqual(defaultSpawnBinding(), { backend: 'claude', model: 'claude-opus-5' });
     });
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
