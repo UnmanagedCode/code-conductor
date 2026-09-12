@@ -19,7 +19,7 @@ open http://127.0.0.1:8787   # logs: make logs · stop: make down
 Optional stacks:
 
 ```bash
-make up-systems              # + /dev/fuse + SYS_ADMIN + apparmor=unconfined (cc's SYSTEMS/fuse-union feature)
+make up-systems              # + /dev/fuse + SYS_ADMIN + apparmor=unconfined (cc's Systems feature)
 make up-docker-provider      # + host docker.sock (pair with CC_WITH_DOCKERIO=1)
 make GPU=1 up                # + host GPU via gpus: all (needs nvidia-container-toolkit; pair with CC_WITH_OLLAMA=1)
 ```
@@ -102,7 +102,7 @@ Sizes are upstream estimates, not measured here.
 **Why override files, not compose profiles:** profiles attach to whole services/top-level elements; they cannot toggle an individual mount, device, capability, or `security_opt` on the shared `conductor` service. Override files chained through the Makefile's `-f` list are compose's documented mechanism for per-service deltas and keep the base file single-purpose. The runtime deltas ride on three files, all default OFF:
 
 - `compose.docker.yaml` — `/var/run/docker.sock` (pair with `CC_WITH_DOCKERIO=1`).
-- `compose.systems.yaml` — `/dev/fuse` + `SYS_ADMIN` + `apparmor=unconfined` (the runtime deltas cc's fuse-union worktree feature needs).
+- `compose.systems.yaml` — `/dev/fuse` + `SYS_ADMIN` + `apparmor=unconfined` (the runtime deltas cc's Systems feature needs to run — ⚙ Settings → Systems / placing a project on another machine).
 - `compose.gpu.yaml` — `gpus: all`. Requires **nvidia-container-toolkit on the host**; ollama auto-detects CUDA devices when present, and falls back to CPU otherwise. Compose ≥ v2.30 (2024-09); the `deploy.resources.reservations.devices` / `driver: nvidia` spelling is in the file's comment for older compose.
 
 Raw-compose equivalent, from this directory: `docker compose -f compose.yaml -f compose.systems.yaml up -d --build`.
