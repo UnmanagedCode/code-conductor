@@ -12,7 +12,7 @@ cp .env.example .env         # set CC_PROJECTS_DIR
 set -a; . ./.env; set +a     # put CC_PROJECTS_DIR in the shell (compose reads .env itself)
 mkdir -p "$CC_PROJECTS_DIR"  # OUTSIDE the cc repo, writable by CC_UID/CC_GID
 make up                      # = docker compose -f compose.yaml up -d --build
-make login                   # sign in to claude inside the container (credentials persist)
+make login                   # sign in inside the container: `claude auth login` (credentials persist)
 open http://127.0.0.1:8787   # logs: make logs · stop: make down
 ```
 
