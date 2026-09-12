@@ -63,7 +63,9 @@ if ! node -e "require.resolve('express/package.json');require.resolve('ws/packag
   # A git-worktree checkout can have a BROKEN node_modules symlink from the
   # host; drop the symlink only, never a real directory.
   if [ -L node_modules ]; then rm node_modules; fi
-  npm install --omit=dev --no-audit --no-fund
+  if ! npm install --omit=dev --no-audit --no-fund; then
+    fatal "npm could not install into $REPO_DIR/node_modules as uid $(id -u) — an existing node_modules there is likely not writable by you (e.g. root-owned from a run with the wrong CC_UID). chown it to this container's uid/gid, or remove it and re-up: rm -rf <checkout>/node_modules"
+  fi
 fi
 
 exec ./conductor.sh "$@"
