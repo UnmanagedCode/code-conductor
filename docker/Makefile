@@ -54,10 +54,12 @@ restart:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) restart conductor
 
 # Sign in to claude inside the running container — the primary auth flow.
+# `claude auth login` (not the REPL) is the most direct form: it starts the
+# sign-in flow immediately; open the URL it prints on the host's browser.
 # Credentials persist across container recreation ($HOME is on the host
 # projects-root bind).
 login:
-	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor claude
+	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor claude auth login
 
 # Convenience aliases: target-specific variables are inherited by their
 # prerequisites, so `up-systems: up` runs `up` with SYSTEMS=1 in effect.
