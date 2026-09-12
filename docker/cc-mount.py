@@ -23,7 +23,7 @@ import stat
 import subprocess
 import sys
 
-# Kernel syscall numbers by platform.machine() (getpid entry dropped: test seam).
+# Kernel syscall numbers by platform.machine().
 ARCH_SYSCALLS = {
     "x86_64": {"setns": 308, "open_tree": 428, "move_mount": 429},
     "aarch64": {"setns": 268, "open_tree": 428, "move_mount": 429},
@@ -42,8 +42,12 @@ MOVE_MOUNT_T_SYMLINKS = 0x00000010
 RESERVED_NAMES = ("projects", "code-conductor")
 EX_USAGE, EX_RESOLVE, EX_MOUNT, EX_TARGET = 2, 3, 4, 5
 _RD_CLOEXEC = os.O_RDONLY | os.O_CLOEXEC
+_PTRACE_HINT = ("; reading another process's %s requires PTRACE_MODE_READ on it"
+                " (run with sudo)")
 
-_NUMBERS = None
+NUMBERS = ARCH_SYSCALLS.get(platform.machine())
+_PLATFORM_FAIL = "unsupported platform %s/%s (need linux on %s)" % (
+    sys.platform, platform.machine(), ", ".join(sorted(ARCH_SYSCALLS)))
 _TRAMPOLINE = None
 
 
@@ -67,7 +71,7 @@ def _trampoline():
 
 def ns_syscall(op, *args):
     ctypes.set_errno(0)
-    ret = _trampoline()(_NUMBERS[op], *args)
+    ret = _trampoline()(NUMBERS[op], *args)
     if ret == -1:
         code = ctypes.get_errno()
         name = errno.errorcode.get(code, str(code))
@@ -85,9 +89,6 @@ def ns_syscall(op, *args):
     return ret
 
 
-# --- container resolution -------------------------------------------------
-
-
 def _docker(argv):
     try:
         return subprocess.run(["docker"] + argv, capture_output=True, text=True, timeout=30)
@@ -98,7 +99,7 @@ def _docker(argv):
 
 
 def _compose_project():
-    """COMPOSE_PROJECT_NAME from docker/.env; compose.yaml names it code-conductor."""
+    """compose.yaml names the compose project code-conductor."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"),
                   encoding="utf-8") as fh:
@@ -169,9 +170,6 @@ def resolve(args):
     return pid, user, name
 
 
-# --- target + procedure ---------------------------------------------------
-
-
 def validate_host_dir(host_dir):
     if not os.path.isabs(host_dir):
         fail(EX_USAGE, "host dir must be absolute: %r" % host_dir)
@@ -204,7 +202,8 @@ def create_target(pid, name, user):
     except OSError as exc:
         if exc.errno in (errno.ENOENT, errno.ESRCH):
             fail(EX_RESOLVE, "pid %d: no such process (bad or exited pid)" % pid)
-        fail(EX_RESOLVE, "cannot access pid %d's root: %s" % (pid, exc))
+        hint = _PTRACE_HINT % "root" if exc.errno in (errno.EACCES, errno.EPERM) else ""
+        fail(EX_RESOLVE, "cannot access pid %d's root: %s%s" % (pid, exc, hint))
     try:
         os.mkdir(path, 0o755)
     except FileExistsError:
@@ -244,6 +243,7 @@ def undo_target(path):
 
 def mount_into(pid, host_dir, target, recursive):
     target_fd = own_fd = fd_mnt = None
+    switched = False
     try:
         try:
             target_fd = os.open("/proc/%d/ns/mnt" % pid, _RD_CLOEXEC)
@@ -251,7 +251,9 @@ def mount_into(pid, host_dir, target, recursive):
         except OSError as exc:
             if exc.errno in (errno.ENOENT, errno.ESRCH):
                 fail(EX_RESOLVE, "pid %d: no such process (bad or exited pid)" % pid)
-            fail(EX_RESOLVE, "cannot open pid %d's mount namespace: %s" % (pid, exc))
+            hint = (_PTRACE_HINT % "namespace fd"
+                    if exc.errno in (errno.EACCES, errno.EPERM) else "")
+            fail(EX_RESOLVE, "cannot open pid %d's mount namespace: %s%s" % (pid, exc, hint))
         st_t, st_o = os.fstat(target_fd), os.fstat(own_fd)
         flags = OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC
         if recursive:
@@ -262,19 +264,27 @@ def mount_into(pid, host_dir, target, recursive):
         # no namespace and survives the switch (brauner.io, "Mounting into
         # mount namespaces").
         fd_mnt = ns_syscall("open_tree", AT_FDCWD, os.fsencode(host_dir), flags)
-        # setns resets root and cwd into the target namespace; requires
-        # CAP_SYS_ADMIN there, evaluated against our unchanged creds.
+        # setns requires CAP_SYS_ADMIN in the user namespace owning the target
+        # mntns, evaluated against our unchanged creds.
         if (st_t.st_dev, st_t.st_ino) != (st_o.st_dev, st_o.st_ino):
             ns_syscall("setns", target_fd, CLONE_NEWNS)
+            switched = True
         ns_syscall("move_mount", fd_mnt, b"", AT_FDCWD, os.fsencode(target),
                    MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_SYMLINKS)
+    except SystemExit:
+        # A cross-ns setns put us in the container's pid namespace: its procfs
+        # has no /proc/<host-pid>, so /proc/<pid>/root no longer resolves and
+        # main's undo would silently fail — switch back while own_fd is open.
+        if switched:
+            try:
+                ns_syscall("setns", own_fd, CLONE_NEWNS)
+            except SystemExit:
+                pass
+        raise
     finally:
         for fd in (fd_mnt, target_fd, own_fd):
             if fd is not None:
                 os.close(fd)
-
-
-# --- --check ----------------------------------------------------------------
 
 
 def run_check(args):
@@ -285,13 +295,10 @@ def run_check(args):
         if state == "FAIL":
             failures.append(label)
 
-    machine = platform.machine()
-    numbers = ARCH_SYSCALLS.get(machine)
-    if sys.platform != "linux" or numbers is None:
-        line("platform", "FAIL", "%s/%s unsupported (need linux on %s)"
-             % (sys.platform, machine, ", ".join(sorted(ARCH_SYSCALLS))))
+    if sys.platform != "linux" or NUMBERS is None:
+        line("platform", "FAIL", _PLATFORM_FAIL)
     else:
-        line("platform", "ok", "linux %s" % machine)
+        line("platform", "ok", "linux %s" % platform.machine())
 
     name = None
     try:
@@ -301,9 +308,9 @@ def run_check(args):
     except SystemExit:
         line("host-dir", "FAIL", "see the cc-mount: line above")
 
-    if numbers is not None and name is not None:
+    if NUMBERS is not None and name is not None:
         ctypes.set_errno(0)
-        ret = _trampoline()(numbers["open_tree"], AT_FDCWD,
+        ret = _trampoline()(NUMBERS["open_tree"], AT_FDCWD,
                             os.fsencode(args.host_dir), OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC)
         if ret >= 0:
             os.close(ret)
@@ -351,9 +358,6 @@ def run_check(args):
     return 0
 
 
-# --- CLI --------------------------------------------------------------------
-
-
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="cc-mount",
@@ -372,20 +376,19 @@ def parse_args(argv):
     parser.add_argument("host_dir", metavar="HOST-DIR",
                         help="host directory to mount (lands at /workspaces/<basename>)")
     args = parser.parse_args(argv)
+    if args.container is not None and args.pid is not None:
+        parser.error("--container and --pid are mutually exclusive")
     if args.pid is not None and args.pid <= 0:
         parser.error("--pid must be a positive PID (got %d)" % args.pid)
     return args
 
 
 def main(argv=None):
-    global _NUMBERS
     args = parse_args(argv)
-    _NUMBERS = ARCH_SYSCALLS.get(platform.machine())
-    if sys.platform != "linux" or _NUMBERS is None:
-        fail(EX_USAGE, "unsupported platform %s/%s (need linux on %s)"
-             % (sys.platform, platform.machine(), ", ".join(sorted(ARCH_SYSCALLS))))
     if args.check:
         return run_check(args)
+    if sys.platform != "linux" or NUMBERS is None:
+        fail(EX_USAGE, _PLATFORM_FAIL)
 
     validate_host_dir(args.host_dir)
     name = target_name(args.host_dir)

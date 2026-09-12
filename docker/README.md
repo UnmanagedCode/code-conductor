@@ -98,11 +98,29 @@ Internally it uses the new mount API against the container's PID — detached `o
 
 | Exit | Cause |
 |---|---|
-| 0 | mounted |
+| 0 | mounted (or `--check` all pass) |
+| 1 | `--check` found at least one failed check |
 | 2 | non-Linux, unsupported arch, bad args, non-absolute/missing/not-dir host dir, empty/`.`/`..`/reserved (`projects`, `code-conductor`) basename — all knowable without touching the container |
 | 3 | docker unavailable, no/ambiguous conductor container, container not running, bad/exited pid |
 | 4 | kernel < 5.2 (`ENOSYS`), missing privilege (`EPERM`), any other mount-API errno |
 | 5 | target exists (refused — no auto-suffix; rename or symlink the host dir), target mkdir failure, `move_mount` ENOENT/ENOTDIR, `/workspaces` not a dir |
+
+Smoke (from this directory):
+
+```bash
+make up                                                 # 1. boot the deployment
+python3 cc-mount.py --check /tmp/cc-mount-demo          # 2. unprivileged: expect "check passed"
+                                                        #    (kernel ok/needs-sudo, target SKIP without privileges)
+mkdir -p /tmp/cc-mount-demo
+sudo python3 cc-mount.py /tmp/cc-mount-demo             # 3. → exit 0
+docker compose -f compose.yaml exec conductor ls /workspaces/cc-mount-demo   # 4. mount visible
+echo demo > /tmp/cc-mount-demo/marker && \
+  docker compose -f compose.yaml exec conductor cat /workspaces/cc-mount-demo/marker   # 5. host write, container read
+docker compose -f compose.yaml restart conductor        # 6. mount gone, mountpoint dir persists
+sudo python3 cc-mount.py /tmp/cc-mount-demo             # 7. re-mount, then remove per Limitations above
+```
+
+Exit-code walkthrough (no container needed): `python3 cc-mount.py /no/such/dir` → 2; `python3 cc-mount.py --pid 999999 /tmp` → 3; `python3 cc-mount.py --pid 1 /path/to/a/dir/named/projects` → 2 (reserved).
 
 Limitations:
 
