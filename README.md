@@ -30,6 +30,8 @@ npm test               # integration suite (node:test)
 RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 ```
 
+Prefer containers? **Docker Compose**: [docker/README.md](docker/README.md) — one host projects dir + this checkout.
+
 Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=<abs-path>` to override.
 
 **Startup check.** Server probes `claude --version` (3s timeout) and credentials (`~/.claude/.credentials.json` or `ANTHROPIC_API_KEY`). Emits `claude OK — v…, authenticated via…` or a framed `WARNING` block per issue. Server starts either way. Implemented in `src/health.ts`.

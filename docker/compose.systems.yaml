@@ -1,0 +1,8 @@
+# Optional override: runtime deltas cc's Systems feature needs to run
+# (⚙ Settings → Systems / placing a project on another machine):
+# /dev/fuse, SYS_ADMIN, apparmor=unconfined. Enable via `make up-systems`.
+services:
+  conductor:
+    devices: ["/dev/fuse:/dev/fuse"]
+    cap_add: ["SYS_ADMIN"]
+    security_opt: ["apparmor=unconfined"]

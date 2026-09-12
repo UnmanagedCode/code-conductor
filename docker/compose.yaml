@@ -1,0 +1,69 @@
+# Base compose file for the code-conductor deployment. The Makefile in this
+# directory is the canonical invocation (it owns the -f override chaining);
+# raw compose from docker/ must pass an explicit -f list, e.g.
+#   docker compose -f compose.yaml -f compose.systems.yaml up -d --build
+# Do NOT mix raw compose with a COMPOSE_FILE env var — a -f flag silently
+# overrides COMPOSE_FILE, and keeping both spellings is the confusion this
+# avoids.
+name: code-conductor
+
+services:
+  conductor:
+    build:
+      context: .                          # context = docker/ only
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${CC_BASE_IMAGE:-node:24-trixie}
+        WITH_DOCKER:     ${CC_WITH_DOCKER:-0}
+        WITH_CLOUDFLARED: ${CC_WITH_CLOUDFLARED:-0}
+        WITH_TAILSCALE:   ${CC_WITH_TAILSCALE:-0}
+        WITH_OLLAMA:      ${CC_WITH_OLLAMA:-0}
+        WITH_CLAUDE_CODE_PROXY: ${CC_WITH_CLAUDE_CODE_PROXY:-0}
+    image: code-conductor:local
+    init: true                       # tini: signal delivery + zombie reaping
+    restart: unless-stopped
+    user: "${CC_UID:-1000}:${CC_GID:-1000}"
+    environment:
+      HOST: 0.0.0.0                  # mandatory: server.ts defaults to 127.0.0.1
+      PORT: "8787"
+      PROJECTS_ROOT: /workspaces/projects   # explicit, not the parent-dir default
+      # Declared so `docker compose exec` (make login) sees the same $HOME the
+      # entrypoint computes — exec derives HOME from the container user's
+      # passwd entry otherwise, which would persist credentials to the
+      # container's ephemeral layer instead of the host bind.
+      HOME: ${CC_HOME_DIR:-/workspaces/projects/.cc-home}
+      CC_HOME_DIR: ${CC_HOME_DIR:-}             # entrypoint defaults it to <root>/.cc-home
+      CLAUDE_BIN: ${CLAUDE_BIN:-}
+      # Flag passthroughs the entrypoint acts on (the build args above do not
+      # reach the container's env): both gated services start detached at boot.
+      CC_WITH_OLLAMA: ${CC_WITH_OLLAMA:-0}
+      CC_WITH_CLAUDE_CODE_PROXY: ${CC_WITH_CLAUDE_CODE_PROXY:-0}
+      # Lets the entrypoint's docker-sock warning fire when a raw-compose user
+      # sets the flag but forgets -f compose.docker.yaml.
+      CC_WITH_DOCKER: ${CC_WITH_DOCKER:-0}
+      # Always exported; meaningful with the docker socket mounted (CC_WITH_DOCKER=1).
+      # Containers run from INSIDE this container resolve -v sources on the
+      # HOST, so use this host path for their volume sources — not the
+      # container's PROJECTS_ROOT.
+      HOST_PROJECTS_DIR: ${CC_PROJECTS_DIR}
+      # Where the cc checkout is bind-mounted (CC_MOUNT resolved by the
+      # Makefile, or set directly for raw compose — see docker/README.md).
+      REPO_DIR: ${CC_REPO_TARGET:-/workspaces/code-conductor}
+      TZ: ${CC_TZ:-UTC}
+    ports:
+      - "${CC_BIND:-127.0.0.1}:${CC_PORT:-8787}:8787"
+    volumes:
+      - type: bind
+        source: ${CC_PROJECTS_DIR:?set CC_PROJECTS_DIR in docker/.env — must be OUTSIDE the cc repo, not inside a git tree}
+        target: /workspaces/projects
+        bind: { create_host_path: false }   # fail fast instead of docker's root-owned auto-create
+      - type: bind
+        source: ..                          # the tree containing docker/ — always correct
+        target: ${CC_REPO_TARGET:-/workspaces/code-conductor}   # outside (default) | inside → /workspaces/projects/code-conductor
+    healthcheck:
+      # Node 24 has global fetch; no curl dependency.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s   # boot runs migrations + sweeps + readiness probing

@@ -1,0 +1,2 @@
+# Local compose env — host paths and settings; never commit it.
+.env
