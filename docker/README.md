@@ -64,6 +64,14 @@ Alternatives:
 
 The server boots regardless of auth state (banner warning only); `claude` is needed at session spawn.
 
+**claude-code-proxy (with `CC_WITH_CODEX=1`).** The flag installs `codex` together with `claude-code-proxy`, which codex runs through. The proxy needs **no config file** — the upstream install script sets up defaults; it stores its credentials under `$HOME/.config/claude-code-proxy/` (`.cc-home` on the host bind, so they persist like the claude sign-in). Authenticate inside the container after `make up`:
+
+```bash
+docker compose -f compose.yaml exec conductor claude-code-proxy codex auth login
+```
+
+That auth store is what the devcontainer bind-mounts at `~/.config/claude-code-proxy` — a pre-seeding mechanism the container doesn't need, since auth is done in-container.
+
 ## cc mount position (`CC_MOUNT`)
 
 Where this checkout binds inside the container is **behavioral**, because `findSelfProject` (`src/projects.ts`) auto-adopts a checkout as a managed project only when it sits *directly under* the projects root:
@@ -84,7 +92,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 | `CC_WITH_DOCKERIO=1` | ~350 MB | docker.io CLI. Enable the socket mount too: `make up-docker-provider`. |
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
 | `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. |
-| `CC_WITH_CODEX=1` | ~100–200 MB | `@openai/codex` npm global. |
+| `CC_WITH_CODEX=1` | ~100–200 MB | `@openai/codex` npm global **plus `claude-code-proxy`** (its required companion, installed by the same flag — see Auth below). |
 | `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; `ollama serve` must be started manually inside the container if wanted. Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 
 Sizes are upstream estimates, not measured here.
