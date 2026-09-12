@@ -30,7 +30,7 @@ npm test               # integration suite (node:test)
 RUN_REAL_CLAUDE=1 npm test   # also runs opt-in real-claude smoke
 ```
 
-Prefer containers? **Docker Compose**: [docker/README.md](docker/README.md) — one host projects dir + this checkout, no devcontainer needed.
+Prefer containers? **Docker Compose**: [docker/README.md](docker/README.md) — one host projects dir + this checkout.
 
 Projects root defaults to the parent directory of this repo; set `PROJECTS_ROOT=<abs-path>` to override.
 
