@@ -69,9 +69,9 @@ The server boots regardless of auth state (banner warning only); `claude` is nee
    Credentials persist under `$HOME` (`.cc-home` on the host bind) like the claude sign-in.
 2. **Start the proxy** — long-running, like ollama's `ollama serve`, and cc's backends do not launch or manage this process:
    ```bash
-   docker compose -f compose.yaml exec conductor claude-code-proxy serve
+   docker compose -f compose.yaml exec -d conductor claude-code-proxy serve
    ```
-   It binds `127.0.0.1:18765` (verified default); restart it after container recreation.
+   Run it detached (`exec -d`) so it survives the closing terminal. It binds `127.0.0.1:18765` (verified default); restart it after closing the terminal or recreating the container.
 3. **Route sessions through it** — in the orchestrator's **Settings → Backends**, add a user backend row whose env pairs carry `ANTHROPIC_BASE_URL=http://127.0.0.1:18765` and `ANTHROPIC_AUTH_TOKEN=unused` (upstream model-routing envs — `ANTHROPIC_MODEL` etc., documented at claude-code-proxy.raine.dev — ride the same pairs).
 
 ## cc mount position (`CC_MOUNT`)
