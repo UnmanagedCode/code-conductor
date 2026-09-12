@@ -26,6 +26,11 @@ services:
       HOST: 0.0.0.0                  # mandatory: server.ts defaults to 127.0.0.1
       PORT: "8787"
       PROJECTS_ROOT: /workspaces/projects   # explicit, not the parent-dir default
+      # Declared so `docker compose exec` (make login) sees the same $HOME the
+      # entrypoint computes — exec derives HOME from the container user's
+      # passwd entry otherwise, which would persist credentials to the
+      # container's ephemeral layer instead of the host bind.
+      HOME: ${CC_HOME_DIR:-/workspaces/projects/.cc-home}
       CC_HOME_DIR: ${CC_HOME_DIR:-}             # entrypoint defaults it to <root>/.cc-home
       CLAUDE_BIN: ${CLAUDE_BIN:-}
       # Where the cc checkout is bind-mounted (CC_MOUNT resolved by the
@@ -44,7 +49,7 @@ services:
         target: ${CC_REPO_TARGET:-/workspaces/code-conductor}   # outside (default) | inside → /workspaces/projects/code-conductor
       # Optional, commented: bind the host's ~/.claude into $HOME/.claude to
       # reuse the host OAuth sign-in instead of signing in inside the
-      # container (make login):
+      # container (make login) — assumes the default CC_HOME_DIR:
       # - type: bind
       #   source: ~/.claude
       #   target: /workspaces/projects/.cc-home/.claude
