@@ -1,6 +1,6 @@
 # Optional override: mount the host docker socket so cc's docker System
 # provider can talk to the host daemon. Enable via `make up-docker-provider`,
-# and pair it with the CC_WITH_DOCKERIO=1 build flag for the CLI tooling.
+# and pair it with the CC_WITH_DOCKER=1 build flag for the CLI tooling.
 services:
   conductor:
     volumes:

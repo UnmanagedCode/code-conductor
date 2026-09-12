@@ -20,7 +20,7 @@ Optional stacks:
 
 ```bash
 make up-systems              # + /dev/fuse + SYS_ADMIN + apparmor=unconfined (cc's Systems feature)
-make up-docker-provider      # + host docker.sock (pair with CC_WITH_DOCKERIO=1)
+make up-docker-provider      # + host docker.sock (pair with CC_WITH_DOCKER=1)
 make GPU=1 up                # + host GPU via gpus: all (needs nvidia-container-toolkit; pair with CC_WITH_OLLAMA=1)
 ```
 
@@ -37,7 +37,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_HOME_DIR` | `<root>/.cc-home` | Container `$HOME` — credentials, transcripts, `.claude.json`, `.gitconfig`, npm cache. |
 | `CC_TZ` | `UTC` | Container timezone. |
 | `CLAUDE_BIN` | *(empty)* | Alternative claude binary inside the container. |
-| `CC_WITH_DOCKERIO` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CODEX` | `0` | Build-time tooling flags — see below. |
+| `CC_WITH_DOCKER` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CODEX` | `0` | Build-time tooling flags — see below. |
 
 Make variables (not env vars): `SYSTEMS`, `DOCKER_PROVIDER`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET`.
 
@@ -91,7 +91,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 
 | Flag | Size | Notes |
 |---|---|---|
-| `CC_WITH_DOCKERIO=1` | ~350 MB | docker.io CLI. Enable the socket mount too: `make up-docker-provider`. |
+| `CC_WITH_DOCKER=1` | ~350 MB | docker.io CLI. Enable the socket mount too: `make up-docker-provider`. |
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
 | `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. |
 | `CC_WITH_CODEX=1` | ~100–200 MB | `@openai/codex` npm global **plus `claude-code-proxy`** (claude runs through the proxy; wired via cc's backends — see Auth below). |
@@ -101,7 +101,7 @@ Sizes are upstream estimates, not measured here.
 
 **Why override files, not compose profiles:** profiles attach to whole services/top-level elements; they cannot toggle an individual mount, device, capability, or `security_opt` on the shared `conductor` service. Override files chained through the Makefile's `-f` list are compose's documented mechanism for per-service deltas and keep the base file single-purpose. The runtime deltas ride on three files, all default OFF:
 
-- `compose.docker.yaml` — `/var/run/docker.sock` (pair with `CC_WITH_DOCKERIO=1`).
+- `compose.docker.yaml` — `/var/run/docker.sock` (pair with `CC_WITH_DOCKER=1`).
 - `compose.systems.yaml` — `/dev/fuse` + `SYS_ADMIN` + `apparmor=unconfined` (the runtime deltas cc's Systems feature needs to run — ⚙ Settings → Systems / placing a project on another machine).
 - `compose.gpu.yaml` — `gpus: all`. Requires **nvidia-container-toolkit on the host**; ollama auto-detects CUDA devices when present, and falls back to CPU otherwise. Compose ≥ v2.30 (2024-09); the `deploy.resources.reservations.devices` / `driver: nvidia` spelling is in the file's comment for older compose.
 
@@ -126,7 +126,7 @@ Raw-compose equivalent, from this directory: `docker compose -f compose.yaml -f 
 | `FATAL (cc-entrypoint): the cc checkout is not mounted at …` | Repo bind mount missing or `CC_REPO_TARGET`/`CC_MOUNT` misconfigured. |
 | `FATAL (cc-entrypoint): … is inside a git repository` | `CC_PROJECTS_DIR` sits inside a git tree (`.git` present at some ancestor — file or directory). Move it outside the repo; cc refuses such store placements. |
 | `FATAL (cc-entrypoint): the projects root … is not writable` | uid mismatch — `chown` the dir to `CC_UID:CC_GID` (find them: `stat -c '%u %g' <dir>`). |
-| `WARNING (cc-entrypoint): CC_WITH_DOCKERIO=1 but /var/run/docker.sock is not a socket` | The `compose.docker.yaml` override isn't in the `-f` list — use `make up-docker-provider`. |
+| `WARNING (cc-entrypoint): CC_WITH_DOCKER=1 but /var/run/docker.sock is not a socket` | The `compose.docker.yaml` override isn't in the `-f` list — use `make up-docker-provider`. |
 | Port already in use | Change `CC_PORT` in `.env`. |
 | Health banner at boot | Same readiness codes as native boots (`src/health.ts`) — missing `claude` CLI or credentials. The server starts anyway. |
 | GPU absent for ollama | Install nvidia-container-toolkit on the host, or run ollama CPU-only. |

@@ -13,7 +13,7 @@ services:
       context: .                          # context = docker/ only
       dockerfile: Dockerfile
       args:
-        WITH_DOCKERIO:    ${CC_WITH_DOCKERIO:-0}
+        WITH_DOCKER:     ${CC_WITH_DOCKER:-0}
         WITH_CLOUDFLARED: ${CC_WITH_CLOUDFLARED:-0}
         WITH_TAILSCALE:   ${CC_WITH_TAILSCALE:-0}
         WITH_OLLAMA:      ${CC_WITH_OLLAMA:-0}

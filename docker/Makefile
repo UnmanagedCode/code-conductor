@@ -7,7 +7,7 @@
 DOCKER_COMPOSE ?= docker compose
 
 SYSTEMS ?= 0            # 1 → chain compose.systems.yaml (/dev/fuse + SYS_ADMIN + apparmor)
-DOCKER_PROVIDER ?= 0    # 1 → chain compose.docker.yaml (docker.sock; pair with CC_WITH_DOCKERIO=1)
+DOCKER_PROVIDER ?= 0    # 1 → chain compose.docker.yaml (docker.sock; pair with CC_WITH_DOCKER=1)
 GPU ?= 0                # 1 → chain compose.gpu.yaml (host GPU for ollama; needs nvidia-container-toolkit)
 CC_MOUNT ?= outside     # outside | inside — where the cc checkout binds (see docker/README.md)
 

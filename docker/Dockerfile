@@ -19,8 +19,8 @@ WORKDIR /workspaces/projects
 # Each install uses the devcontainer's own method. Nothing is ever downloaded
 # at container startup; change the flags and rebuild (--build --pull).
 
-ARG WITH_DOCKERIO=0
-RUN if [ "$WITH_DOCKERIO" = "1" ]; then apt-get update \
+ARG WITH_DOCKER=0
+RUN if [ "$WITH_DOCKER" = "1" ]; then apt-get update \
       && apt-get install -y --no-install-recommends docker.io \
       && rm -rf /var/lib/apt/lists/*; fi
 
