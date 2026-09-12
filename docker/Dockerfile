@@ -2,8 +2,8 @@
 # repo itself is bind-mounted at runtime, so nothing from the repo is baked
 # into the image.
 # Debian trixie, not bookworm: the claude-code-proxy prebuilt binary (installed
-# with CC_WITH_CODEX=1) is dynamically linked and requires GLIBC 2.39; trixie
-# ships 2.41, bookworm only 2.36.
+# with CC_WITH_CLAUDE_CODE_PROXY=1) is dynamically linked and requires
+# GLIBC 2.39; trixie ships 2.41, bookworm only 2.36.
 FROM node:24-trixie
 
 # The claude CLI is needed at session-spawn time; install it into the image so
@@ -16,7 +16,8 @@ RUN npm install -g @anthropic-ai/claude-code
 WORKDIR /workspaces/projects
 
 # ── Optional tooling, baked at build time only (all default OFF) ─────────
-# Each install uses the devcontainer's own method. Nothing is ever downloaded
+# Each install uses its upstream project's own install method. Nothing is
+# ever downloaded
 # at container startup; change the flags and rebuild (--build --pull).
 
 ARG WITH_DOCKER=0
@@ -36,15 +37,15 @@ RUN if [ "$WITH_TAILSCALE" = "1" ]; then curl -fsSL https://tailscale.com/instal
 ARG WITH_OLLAMA=0
 RUN if [ "$WITH_OLLAMA" = "1" ]; then curl -fsSL https://ollama.com/install.sh | sh; fi
 
-ARG WITH_CODEX=0
-# One flag installs codex AND claude-code-proxy (upstream install script).
-# The proxy serves an Anthropic-compatible API on 127.0.0.1:18765 backed by a
-# ChatGPT sign-in, and claude runs through it; the proxy is signed in inside
-# the container (`claude-code-proxy codex auth login`) and routing claude at
-# it is configured in cc's backends feature (docs/models.md → Backends) —
-# see docker/README.md → Auth.
-RUN if [ "$WITH_CODEX" = "1" ]; then npm install -g @openai/codex \
-      && curl -fsSL https://raw.githubusercontent.com/raine/claude-code-proxy/main/scripts/install.sh | bash; fi
+ARG WITH_CLAUDE_CODE_PROXY=0
+# claude-code-proxy serves an Anthropic-compatible API on 127.0.0.1:18765
+# backed by a ChatGPT sign-in, and claude runs through it; the entrypoint
+# starts `claude-code-proxy serve` detached at boot, the proxy is signed in
+# inside the container (`claude-code-proxy codex auth login` — that codex
+# subcommand is upstream naming), and routing claude at it is configured in
+# cc's backends feature (docs/models.md → Backends) — see docker/README.md → Auth.
+RUN if [ "$WITH_CLAUDE_CODE_PROXY" = "1" ]; then \
+      curl -fsSL https://raw.githubusercontent.com/raine/claude-code-proxy/main/scripts/install.sh | bash; fi
 
 COPY entrypoint.sh /usr/local/bin/cc-entrypoint
 RUN chmod 0755 /usr/local/bin/cc-entrypoint

@@ -17,7 +17,7 @@ services:
         WITH_CLOUDFLARED: ${CC_WITH_CLOUDFLARED:-0}
         WITH_TAILSCALE:   ${CC_WITH_TAILSCALE:-0}
         WITH_OLLAMA:      ${CC_WITH_OLLAMA:-0}
-        WITH_CODEX:       ${CC_WITH_CODEX:-0}
+        WITH_CLAUDE_CODE_PROXY: ${CC_WITH_CLAUDE_CODE_PROXY:-0}
     image: code-conductor:local
     init: true                       # tini: signal delivery + zombie reaping
     restart: unless-stopped

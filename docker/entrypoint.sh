@@ -68,6 +68,19 @@ if [ "${CC_WITH_OLLAMA:-0}" = "1" ]; then
   fi
 fi
 
+# claude-code-proxy serve must already be listening for backends that point
+# ANTHROPIC_BASE_URL at it (configured in cc's backends feature).
+if [ "${CC_WITH_CLAUDE_CODE_PROXY:-0}" = "1" ]; then
+  if command -v claude-code-proxy >/dev/null 2>&1; then
+    echo "starting claude-code-proxy serve (log: $HOME/logs/claude-code-proxy-serve.log)" >&2
+    # --port is pinned (and PORT dropped): the proxy reads the ambient PORT
+    # env as its default, which would collide with the cc server's :8787.
+    nohup env -u PORT claude-code-proxy serve --port 18765 >>"$HOME/logs/claude-code-proxy-serve.log" 2>&1 &
+  else
+    echo "WARNING (cc-entrypoint): CC_WITH_CLAUDE_CODE_PROXY=1 but claude-code-proxy is not installed in this image — set the flag and rebuild." >&2
+  fi
+fi
+
 # ── Deps, then exec ──────────────────────────────────────────────────────
 cd "$REPO_DIR"
 

@@ -1,6 +1,6 @@
 # code-conductor — Docker Compose deployment
 
-Run the code-conductor orchestrator on any host with Docker, self-contained — no `.devcontainer`, no Termux. One `docker/.env` file drives it; the container bind-mounts this checkout (the running code) and a projects directory (the state) and boots exactly what `npm start` boots.
+Run the code-conductor orchestrator on any host with Docker, self-contained — one `docker/.env` plus the Makefile drive it. The container bind-mounts this checkout (the running code) and a projects directory (the state) and boots exactly what `npm start` boots.
 
 The **Makefile in this directory is the canonical invocation**. Raw `docker compose` from this directory with an explicit `-f` list is the documented equivalent; never mix raw compose with a `COMPOSE_FILE` env var (a `-f` flag silently overrides it).
 
@@ -38,7 +38,7 @@ Older setups: `make DOCKER_COMPOSE=docker-compose up` (or an exported `DOCKER_CO
 | `CC_HOME_DIR` | `<root>/.cc-home` | Container `$HOME` — credentials, transcripts, `.claude.json`, `.gitconfig`, npm cache. |
 | `CC_TZ` | `UTC` | Container timezone. |
 | `CLAUDE_BIN` | *(empty)* | Alternative claude binary inside the container. |
-| `CC_WITH_DOCKER` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CODEX` | `0` | Build-time tooling flags — see below. |
+| `CC_WITH_DOCKER` / `CC_WITH_CLOUDFLARED` / `CC_WITH_TAILSCALE` / `CC_WITH_OLLAMA` / `CC_WITH_CLAUDE_CODE_PROXY` | `0` | Build-time tooling flags — see below. `CC_WITH_OLLAMA` and `CC_WITH_CLAUDE_CODE_PROXY` also start their service detached at boot. |
 
 Make variables: `SYSTEMS`, `GPU`, `CC_MOUNT`, `DOCKER_COMPOSE`, `CC_REPO_TARGET` — `CC_MOUNT` and `CC_REPO_TARGET` may also be set in `.env` (the Makefile `-include`s it; the make command line still wins over `.env`).
 
@@ -61,18 +61,14 @@ Escape hatch: **`CLAUDE_BIN`** — point at a different claude-compatible binary
 
 The server boots regardless of auth state (banner warning only); `claude` is needed at session spawn.
 
-**claude-code-proxy (with `CC_WITH_CODEX=1`).** The flag installs `codex` and the `claude-code-proxy` binary — a local server that exposes an **Anthropic-compatible API backed by a ChatGPT sign-in**, which claude sessions run through (the proxy translates claude's API traffic to the provider). The deployment only installs the binary; its authentication and the `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` routing are configured in **cc's backends feature** inside the orchestrator — see `docs/models.md` → Backends and Settings → Backends for the template/env rules:
+**claude-code-proxy (with `CC_WITH_CLAUDE_CODE_PROXY=1`).** The flag installs the `claude-code-proxy` binary — a local server that exposes an **Anthropic-compatible API backed by a ChatGPT sign-in**, which claude sessions run through (the proxy translates claude's API traffic to the provider) — and the entrypoint starts `claude-code-proxy serve` detached at boot; it restarts with the container (log: `<projects dir>/.cc-home/logs/claude-code-proxy-serve.log`). The deployment launches the process; its **authentication** stays in-container and the `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` **routing** is configured in **cc's backends feature** inside the orchestrator — see `docs/models.md` → Backends and Settings → Backends for the template/env rules:
 
 1. **Sign in** — ChatGPT Plus or Pro account, not an OpenAI API account:
    ```bash
    docker compose -f compose.yaml exec conductor claude-code-proxy codex auth login
    ```
-   Credentials persist under `$HOME` (`.cc-home` on the host bind) like the claude sign-in.
-2. **Start the proxy** — long-running, like ollama's `ollama serve`, and cc's backends do not launch or manage this process:
-   ```bash
-   docker compose -f compose.yaml exec -d conductor claude-code-proxy serve
-   ```
-   Run it detached (`exec -d`) so it survives the closing terminal. It binds `127.0.0.1:18765` (verified default); restart it after closing the terminal or recreating the container.
+   Credentials persist under `$HOME` (`.cc-home` on the host bind) like the claude sign-in. (`codex auth login` is the proxy's own subcommand name — it manages the codex/ChatGPT side.)
+2. **The proxy is already serving** — started by the container at boot when the flag is on, detached, and it restarts with the container; no manual serve step. It binds `127.0.0.1:18765` (verified default).
 3. **Route sessions through it** — in the orchestrator's **Settings → Backends**, add a user backend row whose env pairs carry `ANTHROPIC_BASE_URL=http://127.0.0.1:18765` and `ANTHROPIC_AUTH_TOKEN=unused` (upstream model-routing envs — `ANTHROPIC_MODEL` etc., documented at claude-code-proxy.raine.dev — ride the same pairs).
 
 ## cc mount position (`CC_MOUNT`)
@@ -95,7 +91,7 @@ Baked at build time behind `ARG`s (all default OFF) via the `CC_WITH_*` env vars
 | `CC_WITH_DOCKER=1` | ~350 MB | docker.io CLI **and** the `/var/run/docker.sock` mount (the Makefile chains `compose.docker.yaml` from the same flag — one knob; raw compose must add `-f compose.docker.yaml` itself). Also exports `HOST_PROJECTS_DIR` into the container — see What lives where. |
 | `CC_WITH_CLOUDFLARED=1` | ~60 MB | cloudflared, via the cloudflare apt repo. |
 | `CC_WITH_TAILSCALE=1` | ~120 MB | tailscale, via `tailscale.com/install.sh`. |
-| `CC_WITH_CODEX=1` | ~100–200 MB | `@openai/codex` npm global **plus `claude-code-proxy`** (claude runs through the proxy; wired via cc's backends — see Auth below). |
+| `CC_WITH_CLAUDE_CODE_PROXY=1` | ~30 MB | `claude-code-proxy`; the entrypoint starts `claude-code-proxy serve` detached at boot (claude runs through the proxy; wired via cc's backends — see Auth below). |
 | `CC_WITH_OLLAMA=1` | ~1–2 GB | ollama; the entrypoint starts `ollama serve` detached at boot (log: `<projects dir>/.cc-home/logs/ollama-serve.log`). Pulled models persist under `$HOME` (`.cc-home/.ollama`). |
 
 Sizes are upstream estimates, not measured here.
