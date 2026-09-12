@@ -39,15 +39,11 @@ RUN if [ "$WITH_OLLAMA" = "1" ]; then curl -fsSL https://ollama.com/install.sh |
 ARG WITH_CODEX=0
 # One flag installs codex AND claude-code-proxy (upstream install script).
 # The proxy serves an Anthropic-compatible API on 127.0.0.1:18765 backed by a
-# ChatGPT sign-in; claude runs through it. `claude-via-codex` is the CLAUDE_BIN
-# wrapper that routes claude at the proxy (see docker/README.md → Auth).
+# ChatGPT sign-in, and claude runs through it; signing the proxy in and
+# routing claude at it are configured in cc's backends feature
+# (docs/models.md → Backends) — see docker/README.md → Auth.
 RUN if [ "$WITH_CODEX" = "1" ]; then npm install -g @openai/codex \
-      && curl -fsSL https://raw.githubusercontent.com/raine/claude-code-proxy/main/scripts/install.sh | bash \
-      && printf '%s\n' '#!/usr/bin/env bash' \
-           'export ANTHROPIC_BASE_URL=http://127.0.0.1:18765' \
-           'export ANTHROPIC_AUTH_TOKEN=unused' \
-           'exec claude "$@"' > /usr/local/bin/claude-via-codex \
-      && chmod 0755 /usr/local/bin/claude-via-codex; fi
+      && curl -fsSL https://raw.githubusercontent.com/raine/claude-code-proxy/main/scripts/install.sh | bash; fi
 
 COPY entrypoint.sh /usr/local/bin/cc-entrypoint
 RUN chmod 0755 /usr/local/bin/cc-entrypoint
