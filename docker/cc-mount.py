@@ -272,9 +272,9 @@ def mount_into(pid, host_dir, target, recursive):
         ns_syscall("move_mount", fd_mnt, b"", AT_FDCWD, os.fsencode(target),
                    MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_SYMLINKS)
     except SystemExit:
-        # A cross-ns setns put us in the container's pid namespace: its procfs
-        # has no /proc/<host-pid>, so /proc/<pid>/root no longer resolves and
-        # main's undo would silently fail — switch back while own_fd is open.
+        # In the container's mount namespace /proc is the container's procfs,
+        # scoped to its pid namespace, so /proc/<host-pid> is gone and main's
+        # undo would silently fail — switch back while own_fd is open.
         if switched:
             try:
                 ns_syscall("setns", own_fd, CLONE_NEWNS)

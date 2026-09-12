@@ -109,9 +109,9 @@ Smoke (from this directory):
 
 ```bash
 make up                                                 # 1. boot the deployment
+mkdir -p /tmp/cc-mount-demo
 python3 cc-mount.py --check /tmp/cc-mount-demo          # 2. unprivileged: expect "check passed"
                                                         #    (kernel ok/needs-sudo, target SKIP without privileges)
-mkdir -p /tmp/cc-mount-demo
 sudo python3 cc-mount.py /tmp/cc-mount-demo             # 3. → exit 0
 docker compose -f compose.yaml exec conductor ls /workspaces/cc-mount-demo   # 4. mount visible
 echo demo > /tmp/cc-mount-demo/marker && \
