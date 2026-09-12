@@ -1,0 +1,2 @@
+# Never ship the local .env (secrets) into the image build context.
+.env
