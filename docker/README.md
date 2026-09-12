@@ -48,19 +48,15 @@ Make variables (not env vars): `SYSTEMS`, `DOCKER_PROVIDER`, `GPU`, `CC_MOUNT`, 
 | `${CC_PROJECTS_DIR}` (required) | `/workspaces/projects` | Projects root: user projects, worktrees, cc's store `.code-conductor/`, `.conduct/`. |
 | The tree containing `docker/` | `${CC_REPO_TARGET}` — `/workspaces/code-conductor` (default) or `/workspaces/projects/code-conductor` | The running cc checkout, served in place. |
 | *(derived, no extra mount)* `<root>/.cc-home` | `$HOME` | `~/.claude` (credentials, transcripts, settings), `~/.claude.json`, `~/.gitconfig`, npm cache, `.ollama` model data. |
-| *(commented in compose.yaml)* host `~/.claude` | `$HOME/.claude` | Optional: reuse the host OAuth sign-in instead of `make login`. |
 | *(override file)* `/var/run/docker.sock` | `/var/run/docker.sock` | Optional: cc's docker System provider. |
 
 No named volumes in the default path — everything durable sits on the two host bind mounts, so `docker compose down` keeps everything and the state is directly inspectable/backable.
 
 ## Auth
 
-**Primary: sign in inside the container.** After `make up`, run `make login` (= `docker compose -f compose.yaml exec conductor claude`) and complete the sign-in there — other services sign in the same way, inside the container. Credentials persist across container recreation (`down` + `up -d`) because `$HOME` is `<CC_PROJECTS_DIR>/.cc-home` on the host projects-root bind, and spawned claude sessions inherit the orchestrator's `$HOME` (`src/instances.ts` passes `process.env` through).
+**Sign in inside the container — the only auth path.** After `make up`, run `make login` (= `docker compose -f compose.yaml exec conductor claude auth login`): it starts the claude sign-in flow directly in the container — open the URL it prints in your host's browser, complete the sign-in, then exit. Other services sign in the same way, inside the container. Credentials land under `<CC_PROJECTS_DIR>/.cc-home/.claude` on the host projects-root bind, so they persist across container recreation (`down` + `up -d`); spawned claude sessions inherit the orchestrator's `$HOME` (`src/instances.ts` passes `process.env` through), so they see them.
 
-Alternatives:
-
-1. **Host `~/.claude` bind** — uncomment the commented volume in `compose.yaml` to reuse an existing host OAuth sign-in instead of `make login`.
-2. **`CLAUDE_BIN`** — point at a different claude-compatible binary inside the container.
+Escape hatch: **`CLAUDE_BIN`** — point at a different claude-compatible binary inside the container.
 
 The server boots regardless of auth state (banner warning only); `claude` is needed at session spawn.
 
