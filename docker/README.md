@@ -96,7 +96,7 @@ Raw-compose equivalent, from this directory: `docker compose -f compose.yaml -f 
 
 ## Behavior notes
 
-- The container may create `node_modules/`, `server.log`, `.claude/` in the **host checkout** (deps install into the bind mount — image-baked ones would be shadowed). All gitignored; a worktree's broken `node_modules` symlink is removed (the symlink only) before reinstalling.
+- The container may create `node_modules/`, `.claude/` in the **host checkout** (deps install into the bind mount — image-baked ones would be shadowed). All gitignored; a worktree's broken `node_modules` symlink is removed (the symlink only) before reinstalling.
 - An empty/missing projects dir boots with **zero projects**: unset `CC_PROJECTS_DIR` → compose fails with a `:?` message; set-but-missing → `create_host_path: false` errors instead of docker's root-owned auto-create; the entrypoint pre-flight is the final layer (existence, writability, `.git`-ancestor probe) with remediation text. With `CC_MOUNT=inside`, cc additionally self-adopts the repo into workspace `CC-Dev`.
 - `docker compose exec conductor <cmd>` lands in the projects root (`WORKDIR` is `/workspaces/projects`, not the checkout) — convenient for poking at projects. The entrypoint `cd`s into the checkout itself before exec'ing.
 - **Don't run cc's self-update from a worktree checkout** — its `.git` is a file, not a directory.
