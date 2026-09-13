@@ -376,7 +376,7 @@ Rules:
   that id — but leave the process, and anything it backgrounded, running.
   **`exec` ids only.** Keep reading the command's streams and discard what
   arrives: pausing them blocks a survivor still writing, and destroying them
-  kills it with SIGPIPE (both measured, card 2026-0318 §3), and either is a
+  kills it with SIGPIPE (both measured), and either is a
   divergence from what a local background job gets.
   - cc sends it when a **redirected shell command** settles on cc's own framing
     sentinel (below), which may be long before — or instead of — the command's
@@ -393,7 +393,7 @@ Rules:
   deliberately carry no timeout, because locally there is nothing to time out
   against). For a redirected shell command, whose `timeoutMs` is
   `DEFAULT_COMMAND_TIMEOUT_MS`, that sum is 610 000 ms — **measured at
-  610 083 ms** (card 2026-0318 §1). Read the sum from the constants rather than
+  610 083 ms**. Read the sum from the constants rather than
   the number: `timeoutMs` is per-command and `ORCH_SHELL_COMMAND_TIMEOUT_MS`
   moves it. Expiry sends `close`, which is the provider's instruction
   to kill the command, and reports `{code:124, timedOut:true}` with
@@ -442,7 +442,7 @@ and returns. The `exit` frame may arrive later, or never.
 **So cc does NOT require a provider to report `exit` promptly after the process
 exits — and this protocol deliberately does not ask for it.** Measured on the
 reference provider, both same-host and across a real container boundary, in
-both capability configurations (card 2026-0318 §1, §4, §G5):
+both capability configurations:
 
 - A provider that reports `exit` when the child's **streams close** never
   reports it for a command that backgrounded a job, because the job inherits the
@@ -732,7 +732,7 @@ as "no such file" turns one fixable fault into a fleet of misses.
 | Situation | cc's behaviour |
 |---|---|
 | The provider will not launch, or dies | Every in-flight operation fails `ETRANSPORT` at once. `exec` still resolves (with a `spawnError`) rather than throwing — its callers all branch on the result. The result also carries **`transportFailure: true`**, which is the ONLY way to tell this from the far side answering "I could not start that command": a transport failure's `spawnError` embeds the provider's dying stderr tail, so it may name any errno at all and must never be classified by its text. `runGit` reads exactly that flag to decide between refusing by system and reporting a git answer. |
-| The next operation after a death | Relaunches and redoes the handshake. Supervision is **restart-on-demand**: nothing reconnects a channel nobody is using. This is for a provider that **died**; a connection cc **disposed** is terminal, and every later operation on it fails `ETRANSPORT` without relaunching (card 2026-0347). |
+| The next operation after a death | Relaunches and redoes the handshake. Supervision is **restart-on-demand**: nothing reconnects a channel nobody is using. This is for a provider that **died**; a connection cc **disposed** is terminal, and every later operation on it fails `ETRANSPORT` without relaunching. |
 | Repeated failures | Exponential backoff, 100 ms doubling to a 5 s ceiling. **Inside the window an operation is refused, not queued** — a caller told "unreachable" now beats one held open across a restart storm. |
 | A malformed frame | The connection is torn down and restarted like a death. |
 | cc tears the connection down (`dispose`, a protocol violation, a handshake timeout) | cc **closes the provider's stdin** and lets MUST 3 do the work, then **SIGKILLs** it if it has not exited within a bounded grace. A provider that ignores EOF is still terminated — but cc cannot reap what such a provider started, which is what MUST 3 exists to prevent. After `dispose` the connection is **not reusable**: a caller still holding the handle is refused, not reconnected. |
