@@ -2,9 +2,11 @@
 //
 // The guard compares `encodeCwd(<the CLI's cwd>)` — the place's real path on
 // whatever machine it lives on — ACROSS EVERY SYSTEM. It cannot key on a
-// cc-owned name under the store: `encodeCwd(sessionRootKey(project, worktree))`
-// is null for the local system, because a local place has no session root to
-// collide on.
+// cc-owned name under the store: `sessionRootKey`, and the
+// `sessionRootKeyCollision` lookup built over it, no longer exist and must not
+// be reintroduced. That lookup answered null for the local system outright,
+// because a local place has no session root to collide on — so it could never
+// have carried this guard.
 //
 // THE WIDENING IS FORCED, not tidy-minded. While a remote cwd lived under cc's
 // store it was disjoint from every local project path by construction, so a
